@@ -333,9 +333,30 @@ function decayTable(tableName, referenceTime) {
   return affected;
 }
 
+// ─── Dump & Archive (for dreaming worker) ─────────────────────────────────
+
+function dumpActive() {
+  const memories = query("SELECT * FROM memories WHERE status = 'active' ORDER BY score DESC");
+  const decisions = query("SELECT * FROM decisions WHERE status = 'active' ORDER BY score DESC");
+  return { memories, decisions };
+}
+
+function archiveEntries(type, ids) {
+  if (!ids || !ids.length) return { affected: 0 };
+  const table = type === 'memories' ? 'memories' : 'decisions';
+  let affected = 0;
+  for (const id of ids) {
+    run(`UPDATE ${table} SET status = 'archived', updated_at = datetime('now') WHERE id = ? AND status = 'active'`, [id]);
+    affected++;
+  }
+  if (affected > 0) persist();
+  return { affected };
+}
+
 module.exports = {
   getDb, close, getStats, ensureCortexDir,
   run, query, get, insert, persist, markDirty,
   searchMemories, searchDecisions, decayPass,
+  dumpActive, archiveEntries,
   DB_PATH, CORTEX_DIR
 };
