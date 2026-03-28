@@ -23,7 +23,11 @@ const STATE_SECTIONS = ['## What Was Done', '## Next Session', '## Pending', '##
 async function init() {
   await db.getDb();
   await indexAll();
+  const decay = db.decayPass();
   await buildEmbeddings();
+  if (decay.affected > 0) {
+    logEvent('decay_pass', { affected: decay.affected });
+  }
   logEvent('brain_init', { timestamp: new Date().toISOString() });
 }
 
@@ -355,8 +359,7 @@ async function recall(queryText, k = 7) {
   for (const row of memResults) {
     const key = row.source || `memory::${row.id}`;
     const existing = results.get(key);
-    // Keyword results get a base relevance of 0.5, scaled by score
-    const relevance = parseFloat((0.5 * (row.score || 1.0)).toFixed(4));
+    const relevance = row._keyword_score ?? parseFloat((0.5 * (row.score || 1.0)).toFixed(4));
     if (!existing || relevance > existing.relevance) {
       results.set(key, {
         source: key,
@@ -371,7 +374,7 @@ async function recall(queryText, k = 7) {
   for (const row of decResults) {
     const key = row.context || `decision::${row.id}`;
     const existing = results.get(key);
-    const relevance = parseFloat((0.5 * (row.score || 1.0)).toFixed(4));
+    const relevance = row._keyword_score ?? parseFloat((0.5 * (row.score || 1.0)).toFixed(4));
     if (!existing || relevance > existing.relevance) {
       results.set(key, {
         source: key,
@@ -436,13 +439,23 @@ function extractKeywords(text) {
 function bumpRetrieval(source) {
   try {
     db.run(
-      'UPDATE memories SET retrievals = retrievals + 1 WHERE source = ?',
+      "UPDATE memories SET retrievals = retrievals + 1, last_accessed = datetime('now') WHERE source = ?",
       [source]
     );
-    db.run(
-      'UPDATE decisions SET retrievals = retrievals + 1 WHERE context = ?',
-      [source]
-    );
+    if (source.startsWith('decision::')) {
+      const id = parseInt(source.slice('decision::'.length), 10);
+      if (Number.isFinite(id)) {
+        db.run(
+          "UPDATE decisions SET retrievals = retrievals + 1, last_accessed = datetime('now') WHERE id = ?",
+          [id]
+        );
+      }
+    } else {
+      db.run(
+        "UPDATE decisions SET retrievals = retrievals + 1, last_accessed = datetime('now') WHERE context = ?",
+        [source]
+      );
+    }
   } catch {
     // Non-critical — don't let counter bumps break recall
   }

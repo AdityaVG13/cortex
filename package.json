@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/daemon.js serve",
     "mcp": "node src/daemon.js mcp",
-    "test": "node --test test/*.test.js",
+    "test": "node test/run-tests.js",
     "migrate": "node scripts/migrate-v1.js"
   },
   "keywords": ["ai", "memory", "brain", "mcp", "cortex"],

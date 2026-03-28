@@ -8,6 +8,7 @@ const CORTEX_DIR = path.join(process.env.USERPROFILE || process.env.HOME, '.cort
 let _db = null;
 let _dirty = false;
 let _saveTimer = null;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function ensureCortexDir() {
   if (!fs.existsSync(CORTEX_DIR)) {
@@ -49,6 +50,8 @@ function initSchema(db) {
       status TEXT DEFAULT 'active',
       score REAL DEFAULT 1.0,
       retrievals INTEGER DEFAULT 0,
+      last_accessed TEXT,
+      pinned INTEGER DEFAULT 0,
       disputes_id INTEGER,
       supersedes_id INTEGER,
       confirmed_by TEXT,
@@ -69,6 +72,8 @@ function initSchema(db) {
       status TEXT DEFAULT 'active',
       score REAL DEFAULT 1.0,
       retrievals INTEGER DEFAULT 0,
+      last_accessed TEXT,
+      pinned INTEGER DEFAULT 0,
       parent_id INTEGER,
       disputes_id INTEGER,
       supersedes_id INTEGER,
@@ -107,6 +112,19 @@ function initSchema(db) {
   db.run('CREATE INDEX IF NOT EXISTS idx_decisions_source_agent ON decisions(source_agent)');
   db.run('CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_type, target_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_events_type ON events(type)');
+
+  ensureColumn(db, 'memories', 'last_accessed', 'TEXT');
+  ensureColumn(db, 'memories', 'pinned', 'INTEGER DEFAULT 0');
+  ensureColumn(db, 'decisions', 'last_accessed', 'TEXT');
+  ensureColumn(db, 'decisions', 'pinned', 'INTEGER DEFAULT 0');
+}
+
+function ensureColumn(db, tableName, columnName, columnSql) {
+  const info = db.exec(`PRAGMA table_info(${tableName})`);
+  const columns = info[0]?.values?.map((row) => row[1]) || [];
+  if (!columns.includes(columnName)) {
+    db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSql}`);
+  }
 }
 
 // Persist database to disk (debounced)
@@ -184,24 +202,140 @@ function getStats() {
 
 // Keyword search using LIKE (sql.js doesn't have FTS5 in WASM build)
 function searchMemories(queryText) {
-  const pattern = `%${queryText}%`;
-  return query(
-    'SELECT * FROM memories WHERE status = ? AND (text LIKE ? OR source LIKE ?) ORDER BY score DESC, created_at DESC LIMIT 20',
-    ['active', pattern, pattern]
-  );
+  return searchRows({
+    tableName: 'memories',
+    textFields: ['text', 'source', 'tags'],
+    queryText,
+  });
 }
 
 function searchDecisions(queryText) {
-  const pattern = `%${queryText}%`;
-  return query(
-    'SELECT * FROM decisions WHERE status = ? AND (decision LIKE ? OR context LIKE ?) ORDER BY score DESC, created_at DESC LIMIT 20',
-    ['active', pattern, pattern]
+  return searchRows({
+    tableName: 'decisions',
+    textFields: ['decision', 'context'],
+    queryText,
+  });
+}
+
+function searchRows({ tableName, textFields, queryText, limit = 20 }) {
+  const keywords = extractSearchKeywords(queryText);
+  const rows = query(`SELECT * FROM ${tableName} WHERE status = ?`, ['active']);
+
+  if (keywords.length === 0) {
+    return rows
+      .sort((a, b) => getTimestampMs(b.created_at) - getTimestampMs(a.created_at))
+      .slice(0, limit);
+  }
+
+  const ranked = [];
+
+  for (const row of rows) {
+    const haystacks = textFields
+      .map((field) => String(row[field] || '').toLowerCase())
+      .filter(Boolean);
+
+    let matchedKeywords = 0;
+    for (const keyword of keywords) {
+      if (haystacks.some((text) => text.includes(keyword))) {
+        matchedKeywords++;
+      }
+    }
+
+    if (matchedKeywords === 0) continue;
+
+    const scoreWeight = Math.max(0, Number(row.score) || 0);
+    const recencyDays = getRecencyDays(row.last_accessed || row.created_at);
+    const recencyWeight = 1 / (1 + recencyDays / 7);
+    const keywordWeight = matchedKeywords / keywords.length;
+    const ranking = (keywordWeight * 0.6) + (recencyWeight * 0.25) + (Math.min(scoreWeight, 5) / 5 * 0.15);
+
+    ranked.push({
+      ...row,
+      _matched_keywords: matchedKeywords,
+      _recency_days: recencyDays,
+      _keyword_score: parseFloat(ranking.toFixed(4)),
+    });
+  }
+
+  return ranked
+    .sort((a, b) =>
+      b._keyword_score - a._keyword_score ||
+      b._matched_keywords - a._matched_keywords ||
+      (Number(b.score) || 0) - (Number(a.score) || 0) ||
+      getTimestampMs(b.last_accessed || b.created_at) - getTimestampMs(a.last_accessed || a.created_at)
+    )
+    .slice(0, limit);
+}
+
+function extractSearchKeywords(queryText) {
+  return String(queryText || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((token) => token.length > 1);
+}
+
+function getTimestampMs(value) {
+  if (!value) return 0;
+  const normalized = String(value).replace(' ', 'T') + (String(value).includes('T') ? '' : 'Z');
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getRecencyDays(value) {
+  const ts = getTimestampMs(value);
+  if (ts === 0) return 3650;
+  return Math.max(0, Math.floor((Date.now() - ts) / DAY_MS));
+}
+
+function decayPass(referenceTime = Date.now()) {
+  let affected = 0;
+
+  affected += decayTable('memories', referenceTime);
+  affected += decayTable('decisions', referenceTime);
+
+  if (affected > 0) {
+    persist();
+  }
+
+  return { affected };
+}
+
+function decayTable(tableName, referenceTime) {
+  const rows = query(
+    `SELECT id, score, pinned, created_at, updated_at, last_accessed FROM ${tableName} WHERE status = ?`,
+    ['active']
   );
+
+  let affected = 0;
+
+  for (const row of rows) {
+    if (Number(row.pinned) === 1) continue;
+
+    const baselineMs = Math.max(
+      getTimestampMs(row.last_accessed || row.created_at),
+      getTimestampMs(row.updated_at || row.created_at)
+    );
+    const daysSince = Math.max(0, Math.floor((referenceTime - baselineMs) / DAY_MS));
+    if (daysSince <= 0) continue;
+
+    const currentScore = Math.max(0, Number(row.score) || 0);
+    const nextScore = Math.max(0.1, currentScore * Math.pow(0.95, daysSince));
+    if (Math.abs(nextScore - currentScore) < 0.0001) continue;
+
+    run(
+      `UPDATE ${tableName} SET score = ?, updated_at = datetime('now') WHERE id = ?`,
+      [parseFloat(nextScore.toFixed(4)), row.id]
+    );
+    affected++;
+  }
+
+  return affected;
 }
 
 module.exports = {
   getDb, close, getStats, ensureCortexDir,
   run, query, get, insert, persist, markDirty,
-  searchMemories, searchDecisions,
+  searchMemories, searchDecisions, decayPass,
   DB_PATH, CORTEX_DIR
 };
