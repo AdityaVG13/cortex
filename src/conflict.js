@@ -57,6 +57,9 @@ async function detectConflict(newText, sourceAgent) {
     let bestMatch = null;
     let bestSim = -1;
 
+    // Convert new embedding to blob — cosineSim expects Buffer/Uint8Array, not Float32Array
+    const newBlob = embeddings.vectorToBlob(newEmbedding);
+
     for (const dec of decisions) {
       const row = db.get(
         "SELECT vector FROM embeddings WHERE target_type = 'decision' AND target_id = ?",
@@ -64,8 +67,8 @@ async function detectConflict(newText, sourceAgent) {
       );
       if (!row || !row.vector) continue;
 
-      const existingVector = embeddings.blobToVector(row.vector);
-      const sim = embeddings.cosineSim(newEmbedding, existingVector);
+      // row.vector is already a blob from SQLite — pass directly
+      const sim = embeddings.cosineSim(newBlob, row.vector);
 
       if (sim > bestSim) {
         bestSim = sim;

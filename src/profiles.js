@@ -11,12 +11,12 @@ const PROFILES_PATH = path.join(__dirname, '..', 'cortex-profiles.json');
 const FALLBACK_PROFILES = {
   full: {
     maxTokens: 700,
-    sections: ['identity', 'nextSession', 'recentDecisions', 'keyRules', 'pending', 'knownIssues', 'activeLessons', 'underperformers', 'openConflicts'],
+    sections: ['identity', 'openConflicts', 'nextSession', 'recentDecisions', 'keyRules', 'pending', 'knownIssues', 'activeLessons', 'underperformers'],
     description: 'Full context for Claude Code sessions',
   },
   operational: {
     maxTokens: 500,
-    sections: ['identity', 'constraints', 'recentDecisions', 'sharpEdges', 'openConflicts'],
+    sections: ['identity', 'openConflicts', 'constraints', 'recentDecisions', 'sharpEdges'],
     description: 'Execution-focused for Codex CLI',
   },
   subagent: {

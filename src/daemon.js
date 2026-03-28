@@ -217,6 +217,11 @@ async function handleStore(req, res) {
 }
 
 async function handleDiary(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
   try {
     const raw = await readBody(req);
     const body = JSON.parse(raw);
@@ -251,6 +256,11 @@ async function handleHealth(req, res) {
 }
 
 async function handleForget(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
   try {
     const raw = await readBody(req);
     const body = JSON.parse(raw);
@@ -273,6 +283,11 @@ async function handleForget(req, res) {
 }
 
 async function handleResolve(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
   try {
     const raw = await readBody(req);
     const body = JSON.parse(raw);

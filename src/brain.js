@@ -699,14 +699,16 @@ function writeDiary(data = {}) {
   }
 
   // Preserve any existing Key Decisions section if not overwritten
+  // Accept both 'decisions' (API field name) and 'keyDecisions' (legacy)
+  const keyDecisions = data.decisions || data.keyDecisions;
   const existingDecisions = extractSection(existing, '## Key Decisions');
-  if (existingDecisions && !data.keyDecisions) {
+  if (existingDecisions && !keyDecisions) {
     lines.push('## Key Decisions');
     lines.push(existingDecisions);
     lines.push('');
-  } else if (data.keyDecisions) {
+  } else if (keyDecisions) {
     lines.push('## Key Decisions');
-    lines.push(data.keyDecisions);
+    lines.push(keyDecisions);
     lines.push('');
   }
 

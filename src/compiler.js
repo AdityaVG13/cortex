@@ -194,15 +194,30 @@ function genSharpEdges() {
 function genOpenConflicts() {
   try {
     const rows = db.query(
-      "SELECT decision, context FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 3"
+      "SELECT id, decision, context, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6"
     );
-    if (!rows.length) return '_No open conflicts._';
-    return rows
-      .map((r) => {
-        const ctx = r.context ? `\n  Context: ${r.context}` : '';
-        return `- **Disputed:** ${r.decision}${ctx}`;
-      })
-      .join('\n');
+    if (!rows.length) return '';  // Empty string = section omitted entirely (saves tokens)
+
+    // Group disputed pairs so each conflict is shown once with both sides
+    const seen = new Set();
+    const pairs = [];
+    for (const r of rows) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      if (r.disputes_id) seen.add(r.disputes_id);
+
+      const partner = r.disputes_id
+        ? db.get("SELECT decision, source_agent FROM decisions WHERE id = ?", [r.disputes_id])
+        : null;
+
+      let line = `- **#${r.id}** (${r.source_agent}): ${r.decision}`;
+      if (partner) {
+        line += `\n  **vs #${r.disputes_id}** (${partner.source_agent}): ${partner.decision}`;
+      }
+      pairs.push(line);
+    }
+
+    return pairs.join('\n');
   } catch {
     return '_Conflicts unavailable._';
   }

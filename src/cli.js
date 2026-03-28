@@ -297,20 +297,21 @@ async function cmdStore(positional, flags) {
     return 1;
   }
 
+  const entry = res.entry || {};
   if (res.stored) {
     const preview = text.length > 80 ? text.slice(0, 80) + '...' : text;
     process.stdout.write(`Stored: ${preview}\n`);
-    if (res.status === 'disputed') {
-      process.stdout.write(`  Warning: conflicts with decision #${res.conflictWith}\n`);
+    if (entry.status === 'disputed') {
+      process.stdout.write(`  Warning: conflicts with decision #${entry.conflictWith}\n`);
     }
-    if (res.surprise !== undefined) {
-      process.stdout.write(`  Surprise: ${res.surprise.toFixed(3)}\n`);
+    if (entry.surprise !== undefined) {
+      process.stdout.write(`  Surprise: ${entry.surprise.toFixed(3)}\n`);
     }
   } else {
-    const reason = res.reason || 'unknown';
+    const reason = entry.reason || 'unknown';
     process.stderr.write(`Not stored: ${reason}\n`);
     if (reason === 'duplicate') {
-      process.stderr.write(`  Similarity too high (surprise: ${(res.surprise || 0).toFixed(3)})\n`);
+      process.stderr.write(`  Similarity too high (surprise: ${(entry.surprise || 0).toFixed(3)})\n`);
     }
     return 1;
   }
@@ -325,15 +326,15 @@ async function cmdHealth() {
     return 1;
   }
 
+  const s = res.stats || {};
   process.stdout.write(`Cortex Health\n`);
   process.stdout.write(`─────────────\n`);
   process.stdout.write(`Status:     ${res.status || 'unknown'}\n`);
-  process.stdout.write(`Uptime:     ${formatUptime(res.uptime)}\n`);
-  process.stdout.write(`Ollama:     ${res.ollama || 'unknown'}\n`);
-  process.stdout.write(`Memories:   ${res.memories ?? '?'}\n`);
-  process.stdout.write(`Decisions:  ${res.decisions ?? '?'}\n`);
-  process.stdout.write(`Embeddings: ${res.embeddings ?? '?'}\n`);
-  process.stdout.write(`Events:     ${res.events ?? '?'}\n`);
+  process.stdout.write(`Ollama:     ${s.ollama || 'unknown'}\n`);
+  process.stdout.write(`Memories:   ${s.memories ?? '?'}\n`);
+  process.stdout.write(`Decisions:  ${s.decisions ?? '?'}\n`);
+  process.stdout.write(`Embeddings: ${s.embeddings ?? '?'}\n`);
+  process.stdout.write(`Events:     ${s.events ?? '?'}\n`);
   return 0;
 }
 
@@ -437,14 +438,14 @@ async function cmdStatus() {
 
   // Fetch full health for stats
   const res = await request('GET', '/health');
+  const s = res.stats || {};
 
   process.stdout.write(`Cortex Status\n`);
   process.stdout.write(`─────────────\n`);
   process.stdout.write(`PID:        ${pid || 'unknown'}\n`);
-  process.stdout.write(`Uptime:     ${formatUptime(res.uptime)}\n`);
-  process.stdout.write(`Memories:   ${res.memories ?? '?'}\n`);
-  process.stdout.write(`Decisions:  ${res.decisions ?? '?'}\n`);
-  process.stdout.write(`Embeddings: ${res.embeddings ?? '?'}\n`);
+  process.stdout.write(`Memories:   ${s.memories ?? '?'}\n`);
+  process.stdout.write(`Decisions:  ${s.decisions ?? '?'}\n`);
+  process.stdout.write(`Embeddings: ${s.embeddings ?? '?'}\n`);
   return 0;
 }
 
