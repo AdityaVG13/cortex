@@ -928,12 +928,16 @@ async function main() {
       process.exit(1);
     }
 
-    // Start HTTP server
+    // Start HTTP server (skip if port already in use — serve mode may be running)
     try {
       await startHttpServer();
     } catch (err) {
-      log('error', 'HTTP server failed to start', { error: err.message });
-      process.exit(1);
+      if (err.code === 'EADDRINUSE') {
+        log('info', `Port ${PORT} already in use — HTTP serve mode likely running. MCP will use stdio only.`);
+      } else {
+        log('error', 'HTTP server failed to start', { error: err.message });
+        process.exit(1);
+      }
     }
 
     // Start MCP transport on original stdin/stdout
