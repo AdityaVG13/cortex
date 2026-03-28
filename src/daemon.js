@@ -149,13 +149,19 @@ function getPathname(url) {
 async function handleBoot(req, res) {
   const params = parseQuery(req.url);
   const profile = params.profile || 'full';
+  const agent = params.agent || req.headers['x-source-agent'] || 'unknown';
 
   try {
-    const result = compiler.compile(profile);
+    // Use capsule compiler when agent is identified, legacy otherwise
+    const result = (agent && agent !== 'unknown')
+      ? compiler.compileCapsules(agent, parseInt(params.budget, 10) || 600)
+      : compiler.compile(profile);
+
     sendJson(res, 200, {
       bootPrompt: result.bootPrompt,
       tokenEstimate: result.tokenEstimate,
       profile: result.profile,
+      capsules: result.capsules || null,
     });
   } catch (err) {
     log('error', 'boot failed', { error: err.message });
@@ -458,11 +464,13 @@ process.on('unhandledRejection', (reason) => {
 const MCP_TOOLS = [
   {
     name: 'cortex_boot',
-    description: 'Get compiled boot prompt with session context (~500 tokens). Call once at session start.',
+    description: 'Get compiled boot prompt with session context. Uses capsule system: identity (stable) + delta (what changed since your last boot). Call once at session start.',
     inputSchema: {
       type: 'object',
       properties: {
-        profile: { type: 'string', description: 'Profile name (default: full)' },
+        profile: { type: 'string', description: 'Legacy profile name. Ignored when agent is set.' },
+        agent: { type: 'string', description: 'Your agent ID (e.g. claude-opus, gemini, codex). Enables delta tracking.' },
+        budget: { type: 'number', description: 'Max token budget for boot prompt (default: 600)' },
       },
     },
   },
@@ -545,8 +553,11 @@ const MCP_TOOLS = [
 async function mcpDispatch(toolName, args) {
   switch (toolName) {
     case 'cortex_boot': {
-      const profile = args.profile || 'full';
-      return compiler.compile(profile);
+      const agent = args.source_agent || args.agent || 'mcp';
+      if (agent && agent !== 'unknown') {
+        return compiler.compileCapsules(agent, parseInt(args.budget, 10) || 600);
+      }
+      return compiler.compile(args.profile || 'full');
     }
 
     case 'cortex_recall': {

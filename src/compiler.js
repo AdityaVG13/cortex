@@ -11,18 +11,14 @@ const STATE_PATH = path.join(
   'state.md'
 );
 
-// --- Helpers ----------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Estimate token count from text. ~3.8 chars per token on average.
- */
 function estimateTokens(text) {
   return Math.ceil(text.length / 3.8);
 }
 
-/**
- * Read state.md from disk. Returns empty string on failure.
- */
 function readState() {
   try {
     if (!fs.existsSync(STATE_PATH)) return '';
@@ -32,15 +28,6 @@ function readState() {
   }
 }
 
-/**
- * Extract a markdown section from state.md by heading.
- * Returns lines under the heading up to the next same-level heading.
- *
- * @param {string} content - Full state.md content
- * @param {string} heading - Heading text without `##` prefix
- * @param {number} [maxLines=Infinity] - Maximum lines to return
- * @returns {string}
- */
 function extractSection(content, heading, maxLines = Infinity) {
   const lines = content.split('\n');
   let capturing = false;
@@ -48,7 +35,6 @@ function extractSection(content, heading, maxLines = Infinity) {
 
   for (const line of lines) {
     if (capturing) {
-      // Stop at the next same-level (##) heading
       if (/^## /.test(line)) break;
       captured.push(line);
       if (captured.length >= maxLines) break;
@@ -60,8 +46,270 @@ function extractSection(content, heading, maxLines = Infinity) {
   return captured.join('\n').trim();
 }
 
-// --- Section generators -----------------------------------------------------
-// Each returns a markdown string (may be empty if data is unavailable).
+// ═══════════════════════════════════════════════════════════════════════════
+// Capsule System (new)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Boot tracking ────────────────────────────────────────────────────────
+
+/**
+ * Get the timestamp of this agent's previous boot.
+ * Returns ISO string or null if first boot.
+ */
+function getLastBootTime(agentId) {
+  try {
+    const row = db.get(
+      "SELECT data FROM events WHERE type = 'agent_boot' AND source_agent = ? ORDER BY created_at DESC LIMIT 1",
+      [agentId]
+    );
+    if (!row) return null;
+    const data = JSON.parse(row.data);
+    const ts = data.timestamp || null;
+    if (!ts) return null;
+    // Normalize to SQLite format and truncate milliseconds to match datetime('now')
+    return ts.replace('T', ' ').replace('Z', '').replace(/\.\d+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record this boot so the next session knows when we last connected.
+ */
+function recordBoot(agentId) {
+  // Use SQLite-compatible format: space separator, no Z, no milliseconds
+  const now = new Date().toISOString().replace('T', ' ').replace('Z', '').replace(/\.\d+$/, '');
+  try {
+    db.insert(
+      'INSERT INTO events (type, data, source_agent) VALUES (?, ?, ?)',
+      ['agent_boot', JSON.stringify({ timestamp: now, agent: agentId }), agentId]
+    );
+  } catch {
+    // Non-critical
+  }
+  return now;
+}
+
+// ─── Identity Capsule ─────────────────────────────────────────────────────
+// Stable across sessions. Changes only when user prefs or rules change.
+// Target: ~200 tokens.
+
+function buildIdentityCapsule() {
+  const parts = [];
+
+  // Core identity
+  parts.push('User: Aditya. Platform: Windows 10. Shell: bash. Python: uv only. Git: conventional commits.');
+
+  // Hard constraints (never/always/must rules)
+  try {
+    const rows = db.query(
+      "SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20"
+    );
+    const constraintPattern = /\b(never|always|must|do not|don't|required|mandatory)\b/i;
+    const constraints = rows.filter(r => constraintPattern.test(r.text)).slice(0, 5);
+    if (constraints.length) {
+      parts.push('Rules: ' + constraints.map(r => r.text.slice(0, 120)).join(' | '));
+    }
+  } catch { /* non-critical */ }
+
+  // Platform sharp edges (Windows-specific gotchas)
+  try {
+    const rows = db.query(
+      "SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20"
+    );
+    const edgePattern = /\b(windows|win32|encoding|cp1252|bash\.exe|CRLF)\b/i;
+    const edges = rows.filter(r => edgePattern.test(r.text)).slice(0, 3);
+    if (edges.length) {
+      parts.push('Sharp edges: ' + edges.map(r => r.text.slice(0, 100)).join(' | '));
+    }
+  } catch { /* non-critical */ }
+
+  const text = parts.join('\n');
+  return {
+    name: 'identity',
+    text,
+    tokens: estimateTokens(text),
+    freshness: 'stable',
+  };
+}
+
+// ─── Delta Capsule ────────────────────────────────────────────────────────
+// What changed since this agent last connected.
+// High relevance, changes every session. Target: ~300 tokens.
+
+function buildDeltaCapsule(agentId) {
+  const lastBoot = getLastBootTime(agentId);
+  const parts = [];
+
+  // 1. Open conflicts (always include — highest priority)
+  try {
+    const disputes = db.query(
+      "SELECT id, decision, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6"
+    );
+    if (disputes.length) {
+      const seen = new Set();
+      const lines = [];
+      for (const r of disputes) {
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+        if (r.disputes_id) seen.add(r.disputes_id);
+        const partner = r.disputes_id
+          ? db.get("SELECT decision, source_agent FROM decisions WHERE id = ?", [r.disputes_id])
+          : null;
+        let line = `#${r.id} (${r.source_agent}): ${r.decision}`;
+        if (partner) line += ` vs #${r.disputes_id} (${partner.source_agent}): ${partner.decision}`;
+        lines.push(line);
+      }
+      parts.push('CONFLICTS:\n' + lines.map(l => `- ${l}`).join('\n'));
+    }
+  } catch { /* non-critical */ }
+
+  // 2. State.md: next session + pending (always fresh)
+  const state = readState();
+  if (state) {
+    const next = extractSection(state, 'Next Session', 5);
+    if (next) parts.push('Next: ' + next.replace(/\n/g, ' | '));
+
+    const pending = extractSection(state, 'Pending', 3);
+    if (pending) parts.push('Pending: ' + pending.replace(/\n/g, ' | '));
+
+    const issues = extractSection(state, 'Known Issues', 3);
+    if (issues) parts.push('Issues: ' + issues.replace(/\n/g, ' | '));
+  }
+
+  // 3. New decisions since last boot
+  if (lastBoot) {
+    try {
+      const newDecisions = db.query(
+        "SELECT decision, context, source_agent FROM decisions WHERE status = 'active' AND created_at >= ? ORDER BY created_at DESC LIMIT 5",
+        [lastBoot]
+      );
+      if (newDecisions.length) {
+        const lines = newDecisions.map(r => {
+          const ctx = r.context ? ` (${r.context})` : '';
+          return `- [${r.source_agent}] ${r.decision}${ctx}`;
+        });
+        parts.push('New decisions:\n' + lines.join('\n'));
+      }
+    } catch { /* non-critical */ }
+
+    // 4. New memories indexed since last boot
+    try {
+      const newMemories = db.query(
+        "SELECT text, type FROM memories WHERE status = 'active' AND updated_at >= ? AND type != 'state' ORDER BY updated_at DESC LIMIT 3",
+        [lastBoot]
+      );
+      if (newMemories.length) {
+        const lines = newMemories.map(r => `- [${r.type}] ${r.text.slice(0, 100)}`);
+        parts.push('New knowledge:\n' + lines.join('\n'));
+      }
+    } catch { /* non-critical */ }
+
+    // 5. Events since last boot (summarized)
+    try {
+      const eventCounts = db.query(
+        "SELECT type, COUNT(*) as cnt FROM events WHERE created_at > ? AND type NOT IN ('brain_init', 'index_all', 'agent_boot') GROUP BY type",
+        [lastBoot]
+      );
+      if (eventCounts.length) {
+        const summary = eventCounts.map(r => `${r.cnt} ${r.type.replace(/_/g, ' ')}`).join(', ');
+        parts.push('Activity since last boot: ' + summary);
+      }
+    } catch { /* non-critical */ }
+  } else {
+    // First boot for this agent — include recent decisions as orientation
+    try {
+      const recent = db.query(
+        "SELECT decision, context FROM decisions WHERE status = 'active' ORDER BY created_at DESC LIMIT 5"
+      );
+      if (recent.length) {
+        const lines = recent.map(r => {
+          const ctx = r.context ? ` — ${r.context}` : '';
+          return `- ${r.decision}${ctx}`;
+        });
+        parts.push('Recent decisions:\n' + lines.join('\n'));
+      }
+    } catch { /* non-critical */ }
+  }
+
+  const text = parts.join('\n\n');
+  return {
+    name: 'delta',
+    text,
+    tokens: estimateTokens(text),
+    freshness: lastBoot ? `since ${lastBoot.slice(0, 16)}` : 'first boot',
+    lastBoot,
+  };
+}
+
+// ─── Capsule Compiler ─────────────────────────────────────────────────────
+
+/**
+ * Compile boot prompt using the capsule system.
+ *
+ * Pipeline:
+ *  1. Build identity capsule (stable, ~200 tokens)
+ *  2. Build delta capsule (what's changed, ~300 tokens)
+ *  3. Record this boot for next session's delta
+ *  4. Return assembled prompt with capsule metadata
+ *
+ * @param {string} agentId - Agent identifier (e.g. 'claude-opus', 'gemini', 'codex')
+ * @param {number} [maxTokens=600] - Token budget
+ * @returns {{ bootPrompt, tokenEstimate, profile, capsules }}
+ */
+function compileCapsules(agentId, maxTokens = 600) {
+  const identity = buildIdentityCapsule();
+  const delta = buildDeltaCapsule(agentId);
+
+  // Record this boot for next session
+  recordBoot(agentId);
+
+  // Assemble: identity first, then delta
+  const capsules = [identity, delta].filter(c => c.text);
+  let assembled = '';
+
+  const included = [];
+  for (const capsule of capsules) {
+    const section = `## ${capsule.name === 'identity' ? 'Identity' : 'Delta'}\n${capsule.text}`;
+    const candidate = assembled ? `${assembled}\n\n${section}` : section;
+    const tokens = estimateTokens(candidate);
+
+    if (tokens > maxTokens && included.length > 0) {
+      // Over budget — delta gets trimmed
+      // Try to fit a truncated delta
+      const remaining = maxTokens - estimateTokens(assembled) - 10; // 10 for header overhead
+      if (remaining > 50 && capsule.text) {
+        const truncChars = Math.floor(remaining * 3.8);
+        const truncText = capsule.text.slice(0, truncChars) + '...';
+        assembled += `\n\n## Delta\n${truncText}`;
+        included.push({ ...capsule, tokens: estimateTokens(truncText), truncated: true });
+      }
+      break;
+    }
+
+    assembled = candidate;
+    included.push(capsule);
+  }
+
+  const bootPrompt = assembled;
+  const tokenEstimate = estimateTokens(bootPrompt);
+
+  return {
+    bootPrompt,
+    tokenEstimate,
+    profile: 'capsules',
+    capsules: included.map(c => ({
+      name: c.name,
+      tokens: c.tokens,
+      freshness: c.freshness,
+      truncated: c.truncated || false,
+    })),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Legacy Section-Based Compiler (preserved as fallback)
+// ═══════════════════════════════════════════════════════════════════════════
 
 function genIdentity() {
   return 'User: Aditya. Platform: Windows 10. Shell: bash. Python: uv only. Git: conventional commits.';
@@ -147,7 +395,6 @@ function genUnderperformers() {
     );
     if (!rows.length) return '_No skill-tracker data._';
 
-    // Aggregate success rates per skill
     const stats = {};
     for (const row of rows) {
       try {
@@ -157,9 +404,7 @@ function genUnderperformers() {
         if (!stats[skill]) stats[skill] = { total: 0, success: 0 };
         stats[skill].total++;
         if (d.success || d.result === 'pass') stats[skill].success++;
-      } catch {
-        // skip malformed event data
-      }
+      } catch { /* skip */ }
     }
 
     const underperformers = Object.entries(stats)
@@ -196,9 +441,8 @@ function genOpenConflicts() {
     const rows = db.query(
       "SELECT id, decision, context, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6"
     );
-    if (!rows.length) return '';  // Empty string = section omitted entirely (saves tokens)
+    if (!rows.length) return '';
 
-    // Group disputed pairs so each conflict is shown once with both sides
     const seen = new Set();
     const pairs = [];
     for (const r of rows) {
@@ -225,13 +469,11 @@ function genOpenConflicts() {
 
 function genTopicIndex() {
   try {
-    // Unique memory types
     const types = db.query(
       "SELECT DISTINCT type FROM memories WHERE status = 'active' ORDER BY type"
     );
     const typeList = types.map((r) => r.type).join(', ') || 'none';
 
-    // Top topics by frequency (from tags)
     const tagRows = db.query(
       "SELECT tags FROM memories WHERE status = 'active' AND tags IS NOT NULL AND tags != '' LIMIT 100"
     );
@@ -257,8 +499,6 @@ function genTopicIndex() {
   }
 }
 
-// --- Section registry -------------------------------------------------------
-
 const SECTION_GENERATORS = {
   identity: genIdentity,
   nextSession: genNextSession,
@@ -274,9 +514,6 @@ const SECTION_GENERATORS = {
   topicIndex: genTopicIndex,
 };
 
-/**
- * Human-readable heading for each section key.
- */
 const SECTION_HEADINGS = {
   identity: 'Identity',
   nextSession: 'Next Session',
@@ -292,25 +529,18 @@ const SECTION_HEADINGS = {
   topicIndex: 'Topic Index',
 };
 
-// --- Compiler ---------------------------------------------------------------
-
 /**
- * Compile a boot prompt for the given profile.
- *
- * Pipeline:
- *  1. Load profile (sections + maxTokens)
- *  2. Generate markdown for each section
- *  3. Assemble with ## headers
- *  4. Trim lowest-priority (bottom) sections if over budget
- *  5. Return { bootPrompt, tokenEstimate, profile }
- *
- * @param {string} profileName - Profile name to compile for
- * @returns {{ bootPrompt: string, tokenEstimate: number, profile: string }}
+ * Legacy compile — section-based, profile-driven.
+ * Kept as fallback for profiles that don't use capsules.
  */
 function compile(profileName) {
+  // Route to capsule compiler when agent info is available
+  if (profileName === 'capsules') {
+    return compileCapsules('unknown');
+  }
+
   const profile = getProfile(profileName);
 
-  // Generate each section's content
   const sectionBlocks = [];
   for (const sectionKey of profile.sections) {
     const generator = SECTION_GENERATORS[sectionKey];
@@ -326,7 +556,6 @@ function compile(profileName) {
     });
   }
 
-  // Assemble and enforce token budget by dropping from the bottom
   let assembled = '';
   let includedCount = 0;
 
@@ -337,7 +566,6 @@ function compile(profileName) {
     const tokens = estimateTokens(candidate);
 
     if (tokens > profile.maxTokens && includedCount > 0) {
-      // Budget exceeded — stop adding sections
       break;
     }
 
@@ -355,4 +583,4 @@ function compile(profileName) {
   };
 }
 
-module.exports = { compile };
+module.exports = { compile, compileCapsules };
