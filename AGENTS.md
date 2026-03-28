@@ -27,6 +27,15 @@ src/cli.js        CLI wrapper, auto-start, HTTP client
 - No external deps beyond sql.js
 - Conventional commits: feat:, fix:, refactor:
 
+## Brain Boot (do this FIRST)
+Even when editing this codebase, connect to the running daemon:
+```bash
+curl -s http://localhost:7437/boot?agent=YOUR_NAME
+```
+Print the brain status at session start. Store important decisions.
+Confirm every store to the user: "Stored to Cortex: [summary]"
+Full protocol: see `CONNECTING.md` in this repo.
+
 ## Testing
 ```bash
 npm test    # node:test built-in runner

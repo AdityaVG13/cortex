@@ -41,6 +41,12 @@ curl localhost:7437/health
 node src/cli.js health
 ```
 
+## Brain Boot (do this FIRST)
+Even when editing Cortex code, connect to the running daemon:
+1. Call `cortex_boot()` — print the brain status line
+2. Before changes: `cortex_recall("topic")` to check prior context
+3. After changes: `cortex_store(decision, context)` and confirm: "Stored to Cortex: [summary]"
+
 ## MCP Registration
 ```bash
 claude mcp add cortex -s user -- node C:\Users\aditya\cortex\src\daemon.js mcp

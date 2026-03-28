@@ -86,6 +86,46 @@ function removePid() {
   }
 }
 
+/**
+ * Kill any stale daemon process before starting a new one.
+ * Handles Windows (taskkill) and Unix (process.kill) gracefully.
+ */
+function killStaleDaemon() {
+  let stalePid;
+  try {
+    stalePid = parseInt(fs.readFileSync(PID_PATH, 'utf-8').trim(), 10);
+  } catch {
+    return; // No PID file — nothing stale
+  }
+
+  if (!stalePid || stalePid === process.pid) return;
+
+  // Check if the process is actually running
+  try {
+    process.kill(stalePid, 0); // Signal 0 = existence check
+  } catch {
+    // Process doesn't exist — just clean up stale files
+    log('info', `Stale PID file found (${stalePid}), process already dead — cleaning up`);
+    removePid();
+    return;
+  }
+
+  // Process exists — kill it
+  log('info', `Killing stale daemon (PID ${stalePid})`);
+  try {
+    if (process.platform === 'win32') {
+      require('child_process').execSync(`taskkill /PID ${stalePid} /F`, { stdio: 'ignore' });
+    } else {
+      process.kill(stalePid, 'SIGTERM');
+    }
+  } catch (err) {
+    log('warn', `Could not kill stale daemon (PID ${stalePid}): ${err.message}`);
+  }
+
+  // Wait briefly for port release
+  removePid();
+}
+
 // ─── HTTP helpers ──────────────────────────────────────────────────────────
 
 function readBody(req) {
@@ -872,6 +912,9 @@ async function main() {
 
     log('info', '=== Cortex v2.0.0 starting (MCP mode) ===');
 
+    // Kill stale daemon if one exists
+    killStaleDaemon();
+
     // Generate auth token + PID
     generateToken();
     writePid();
@@ -910,6 +953,9 @@ async function main() {
 
     log('info', '=== Cortex v2.0.0 starting (serve mode) ===');
     process.stderr.write(`[cortex] Starting Cortex v2.0.0 on port ${PORT}...\n`);
+
+    // Kill stale daemon if one exists
+    killStaleDaemon();
 
     // Generate auth token + PID
     generateToken();

@@ -28,6 +28,10 @@ curl "localhost:7437/recall?q=your+query&k=5"
 - src/compiler.js — Per-agent boot prompts
 - src/db.js — SQLite via sql.js
 
+## Store Confirmation
+After every store call, tell the user: "Stored to Cortex: [summary]". Never store silently.
+Before booting, read `C:/Users/aditya/.claude/brain-status.json` and print the `oneliner` field as the FIRST line of your reply.
+
 ## Conventions
 - Node.js 24+, sql.js only dependency
 - Port 7437 (HTTP), 11434 (Ollama)
