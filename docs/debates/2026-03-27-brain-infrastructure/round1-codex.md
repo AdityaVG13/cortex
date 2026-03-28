@@ -1,0 +1,1 @@
+Error loading configuration: config profile `You are CODEX, the IMPLEMENTATION FOCUSED engineer in this debate. You care about what actually works in practice on Windows, what breaks, what's maintainable. Answer all 12 questions with concrete implementation details.` not found
