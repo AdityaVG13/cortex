@@ -1,0 +1,20 @@
+# Cortex v2 — Universal AI Brain
+
+Multi-transport memory daemon. SQLite + Ollama embeddings + per-agent profiles.
+
+## Structure
+- src/daemon.js — HTTP :7437 + MCP stdio server
+- src/brain.js — Core logic (index, recall, store, forget)
+- src/embeddings.js — Ollama nomic-embed-text vectors
+- src/compiler.js — Boot prompt compiler with token budgets
+- src/conflict.js — Cross-agent conflict detection and resolution
+- src/db.js — SQLite via sql.js (WASM)
+- src/cli.js — CLI wrapper (talks to daemon over HTTP)
+
+## Conventions
+- Node.js 24+, zero deps except sql.js
+- Manual arg parsing (no commander)
+- All Windows paths via process.env.USERPROFILE
+- Port 7437 for HTTP, 11434 for Ollama
+- Auth token at ~/.cortex/cortex.token for POST endpoints
+- Conflict check before surprise filter on store path

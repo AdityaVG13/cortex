@@ -1,0 +1,33 @@
+{
+  "profiles": {
+    "full": {
+      "maxTokens": 700,
+      "sections": ["identity", "nextSession", "recentDecisions", "keyRules", "pending", "knownIssues", "activeLessons", "underperformers", "openConflicts"],
+      "description": "Full context for Claude Code sessions"
+    },
+    "operational": {
+      "maxTokens": 500,
+      "sections": ["identity", "constraints", "recentDecisions", "sharpEdges", "openConflicts"],
+      "description": "Execution-focused for Codex CLI"
+    },
+    "subagent": {
+      "maxTokens": 200,
+      "sections": ["identity", "constraints"],
+      "description": "Minimal context for sub-agents"
+    },
+    "index": {
+      "maxTokens": 300,
+      "sections": ["identity", "topicIndex"],
+      "description": "Topic list only for Gemini CLI"
+    }
+  },
+  "agentDefaults": {
+    "claude-opus": "full",
+    "claude-sonnet": "subagent",
+    "gemini": "index",
+    "codex": "operational",
+    "cursor": "operational",
+    "qwen": "subagent",
+    "cli-manual": "full"
+  }
+}

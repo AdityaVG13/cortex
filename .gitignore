@@ -1,0 +1,6 @@
+node_modules/
+cortex.db
+cortex.db-wal
+cortex.db-shm
+*.log
+.cortex/
