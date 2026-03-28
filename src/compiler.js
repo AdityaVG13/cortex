@@ -257,6 +257,37 @@ function buildDeltaCapsule(agentId) {
  * @param {number} [maxTokens=600] - Token budget
  * @returns {{ bootPrompt, tokenEstimate, profile, capsules }}
  */
+/**
+ * Estimate what raw file reads would cost (the baseline Cortex replaces).
+ * Counts chars in state.md + all memory files.
+ */
+function estimateRawBaseline() {
+  const HOME = process.env.USERPROFILE || process.env.HOME;
+  let totalChars = 0;
+
+  // state.md
+  try {
+    if (fs.existsSync(STATE_PATH)) {
+      totalChars += fs.readFileSync(STATE_PATH, 'utf-8').length;
+    }
+  } catch { /* non-critical */ }
+
+  // Memory files
+  const memDir = path.join(HOME, '.claude', 'projects', 'C--Users-aditya', 'memory');
+  try {
+    if (fs.existsSync(memDir)) {
+      const files = fs.readdirSync(memDir).filter(f => f.endsWith('.md'));
+      for (const file of files) {
+        try {
+          totalChars += fs.readFileSync(path.join(memDir, file), 'utf-8').length;
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* non-critical */ }
+
+  return estimateTokens(String.fromCharCode(0).repeat(totalChars));  // chars/3.8
+}
+
 function compileCapsules(agentId, maxTokens = 600) {
   const identity = buildIdentityCapsule();
   const delta = buildDeltaCapsule(agentId);
@@ -293,11 +324,34 @@ function compileCapsules(agentId, maxTokens = 600) {
 
   const bootPrompt = assembled;
   const tokenEstimate = estimateTokens(bootPrompt);
+  const rawBaseline = estimateRawBaseline();
+  const tokensSaved = Math.max(0, rawBaseline - tokenEstimate);
+  const savingsPercent = rawBaseline > 0 ? Math.round((tokensSaved / rawBaseline) * 100) : 0;
+
+  // Log boot event with savings data
+  try {
+    db.insert(
+      'INSERT INTO events (type, data, source_agent) VALUES (?, ?, ?)',
+      ['boot_savings', JSON.stringify({
+        agent: agentId,
+        served: tokenEstimate,
+        baseline: rawBaseline,
+        saved: tokensSaved,
+        percent: savingsPercent,
+      }), agentId]
+    );
+  } catch { /* non-critical */ }
 
   return {
     bootPrompt,
     tokenEstimate,
     profile: 'capsules',
+    savings: {
+      rawBaseline,
+      served: tokenEstimate,
+      saved: tokensSaved,
+      percent: savingsPercent,
+    },
     capsules: included.map(c => ({
       name: c.name,
       tokens: c.tokens,

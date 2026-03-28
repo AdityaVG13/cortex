@@ -477,6 +477,19 @@ async function cmdDigest() {
     process.stdout.write(`Agents:     no boots today\n`);
   }
 
+  const savings = res.tokenSavings || {};
+  const allTime = savings.allTime || {};
+  const todaySavings = savings.today || {};
+  if (allTime.saved > 0) {
+    process.stdout.write(`\nToken Savings:\n`);
+    process.stdout.write(`  Today:    ${(todaySavings.saved || 0).toLocaleString()} tokens saved across ${todaySavings.boots || 0} boots\n`);
+    process.stdout.write(`  All time: ${(allTime.saved || 0).toLocaleString()} tokens saved across ${allTime.boots || 0} boots\n`);
+    if (allTime.served > 0) {
+      const ratio = ((allTime.saved / (allTime.saved + allTime.served)) * 100).toFixed(0);
+      process.stdout.write(`  Efficiency: ${ratio}% reduction vs raw file reads\n`);
+    }
+  }
+
   if (top.length) {
     process.stdout.write(`\nTop Recalled:\n`);
     for (const r of top.slice(0, 5)) {

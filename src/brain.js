@@ -808,23 +808,54 @@ function getDigest() {
     [`${todayPrefix}%`]
   )?.c || 0;
 
+  // Token savings (cumulative from boot_savings events)
+  let totalSaved = 0;
+  let totalServed = 0;
+  let bootCount = 0;
+  try {
+    const savingsEvents = db.query("SELECT data FROM events WHERE type = 'boot_savings'");
+    for (const row of savingsEvents) {
+      try {
+        const d = JSON.parse(row.data);
+        totalSaved += d.saved || 0;
+        totalServed += d.served || 0;
+        bootCount++;
+      } catch { /* skip */ }
+    }
+  } catch { /* non-critical */ }
+
+  const savingsToday = { saved: 0, served: 0, boots: 0 };
+  try {
+    const todaySavings = db.query(
+      "SELECT data FROM events WHERE type = 'boot_savings' AND created_at LIKE ?",
+      [`${todayPrefix}%`]
+    );
+    for (const row of todaySavings) {
+      try {
+        const d = JSON.parse(row.data);
+        savingsToday.saved += d.saved || 0;
+        savingsToday.served += d.served || 0;
+        savingsToday.boots++;
+      } catch { /* skip */ }
+    }
+  } catch { /* non-critical */ }
+
   // Build oneliner
   const agentStr = agentBoots.length
     ? agentBoots.map(a => `${a.source_agent} (${a.cnt})`).join(', ')
     : 'none';
-  const topStr = topRecalled.length
-    ? topRecalled.slice(0, 3).map(r => {
-        const label = (r.source || r.text || '').slice(0, 40);
-        return `"${label}" (${r.retrievals}x)`;
-      }).join(', ')
-    : 'none';
 
-  const oneliner = `Cortex Daily — ${todayPrefix} | Mem: ${totalMemories} (+${newMemoriesToday}) | Dec: ${totalDecisions} (+${newDecisionsToday}) | Conflicts: ${totalConflicts} | Decaying: ${decayedCount + decayedDecisions} | Agents: ${agentStr}`;
+  const savingsStr = totalSaved > 0 ? ` | Saved: ${totalSaved.toLocaleString()} tokens (${bootCount} boots)` : '';
+  const oneliner = `Cortex Daily — ${todayPrefix} | Mem: ${totalMemories} (+${newMemoriesToday}) | Dec: ${totalDecisions} (+${newDecisionsToday}) | Conflicts: ${totalConflicts} | Decaying: ${decayedCount + decayedDecisions} | Agents: ${agentStr}${savingsStr}`;
 
   return {
     date: todayPrefix,
     totals: { memories: totalMemories, decisions: totalDecisions, conflicts: totalConflicts },
     today: { newMemories: newMemoriesToday, newDecisions: newDecisionsToday, stores: storesToday, conflictsDetected: conflictsToday },
+    tokenSavings: {
+      allTime: { saved: totalSaved, served: totalServed, boots: bootCount },
+      today: savingsToday,
+    },
     topRecalled: topRecalled.map(r => ({ source: r.source, text: (r.text || '').slice(0, 80), retrievals: r.retrievals })),
     decay: { memories: decayedCount, decisions: decayedDecisions },
     agentBoots,

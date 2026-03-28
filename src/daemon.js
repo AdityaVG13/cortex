@@ -162,6 +162,7 @@ async function handleBoot(req, res) {
       tokenEstimate: result.tokenEstimate,
       profile: result.profile,
       capsules: result.capsules || null,
+      savings: result.savings || null,
     });
   } catch (err) {
     log('error', 'boot failed', { error: err.message });
