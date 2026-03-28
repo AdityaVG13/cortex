@@ -751,6 +751,87 @@ function logEvent(type, data = {}, sourceAgent = 'brain') {
   }
 }
 
+// ─── Digest (Health Report) ──────────────────────────────────────────────
+
+/**
+ * Generate a daily health digest showing brain activity and trends.
+ * Returns structured data + a human-readable oneliner.
+ */
+function getDigest() {
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10).replace(/-/g, '-');
+  // SQLite datetime is 'YYYY-MM-DD HH:MM:SS' — match the date prefix
+  const todayPrefix = todayStr;
+  const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').replace('Z', '').replace(/\.\d+$/, '');
+
+  // Counts
+  const totalMemories = db.get("SELECT COUNT(*) as c FROM memories WHERE status = 'active'")?.c || 0;
+  const totalDecisions = db.get("SELECT COUNT(*) as c FROM decisions WHERE status = 'active'")?.c || 0;
+  const totalConflicts = db.get("SELECT COUNT(*) as c FROM decisions WHERE status = 'disputed'")?.c || 0;
+
+  // Today's activity
+  const newMemoriesToday = db.get(
+    "SELECT COUNT(*) as c FROM memories WHERE created_at LIKE ?", [`${todayPrefix}%`]
+  )?.c || 0;
+  const newDecisionsToday = db.get(
+    "SELECT COUNT(*) as c FROM decisions WHERE created_at LIKE ?", [`${todayPrefix}%`]
+  )?.c || 0;
+
+  // Top recalled (most retrievals this week)
+  const topRecalled = db.query(
+    "SELECT text, source, retrievals FROM memories WHERE status = 'active' AND retrievals > 0 ORDER BY retrievals DESC LIMIT 5"
+  );
+
+  // Decayed entries (score < 0.5, not pinned)
+  const decayedCount = db.get(
+    "SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0"
+  )?.c || 0;
+  const decayedDecisions = db.get(
+    "SELECT COUNT(*) as c FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0"
+  )?.c || 0;
+
+  // Agent boots today
+  const agentBoots = db.query(
+    "SELECT source_agent, COUNT(*) as cnt FROM events WHERE type = 'agent_boot' AND created_at LIKE ? GROUP BY source_agent",
+    [`${todayPrefix}%`]
+  );
+
+  // Stores today
+  const storesToday = db.get(
+    "SELECT COUNT(*) as c FROM events WHERE type = 'decision_stored' AND created_at LIKE ?",
+    [`${todayPrefix}%`]
+  )?.c || 0;
+
+  // Conflicts today
+  const conflictsToday = db.get(
+    "SELECT COUNT(*) as c FROM events WHERE type = 'decision_conflict' AND created_at LIKE ?",
+    [`${todayPrefix}%`]
+  )?.c || 0;
+
+  // Build oneliner
+  const agentStr = agentBoots.length
+    ? agentBoots.map(a => `${a.source_agent} (${a.cnt})`).join(', ')
+    : 'none';
+  const topStr = topRecalled.length
+    ? topRecalled.slice(0, 3).map(r => {
+        const label = (r.source || r.text || '').slice(0, 40);
+        return `"${label}" (${r.retrievals}x)`;
+      }).join(', ')
+    : 'none';
+
+  const oneliner = `Cortex Daily — ${todayPrefix} | Mem: ${totalMemories} (+${newMemoriesToday}) | Dec: ${totalDecisions} (+${newDecisionsToday}) | Conflicts: ${totalConflicts} | Decaying: ${decayedCount + decayedDecisions} | Agents: ${agentStr}`;
+
+  return {
+    date: todayPrefix,
+    totals: { memories: totalMemories, decisions: totalDecisions, conflicts: totalConflicts },
+    today: { newMemories: newMemoriesToday, newDecisions: newDecisionsToday, stores: storesToday, conflictsDetected: conflictsToday },
+    topRecalled: topRecalled.map(r => ({ source: r.source, text: (r.text || '').slice(0, 80), retrievals: r.retrievals })),
+    decay: { memories: decayedCount, decisions: decayedDecisions },
+    agentBoots,
+    oneliner,
+  };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -760,6 +841,7 @@ module.exports = {
   store,
   forget,
   getStats,
+  getDigest,
   writeDiary,
   logEvent,
 

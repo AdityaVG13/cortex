@@ -261,6 +261,16 @@ async function handleHealth(req, res) {
   }
 }
 
+async function handleDigest(req, res) {
+  try {
+    const digest = brain.getDigest();
+    sendJson(res, 200, digest);
+  } catch (err) {
+    log('error', 'digest failed', { error: err.message });
+    sendError(res, 500, `Digest failed: ${err.message}`);
+  }
+}
+
 async function handleForget(req, res) {
   if (!validateAuth(req)) {
     sendError(res, 401, 'Unauthorized');
@@ -334,6 +344,7 @@ const ROUTES = {
   'POST /store': handleStore,
   'POST /diary': handleDiary,
   'GET /health': handleHealth,
+  'GET /digest': handleDigest,
   'POST /forget': handleForget,
   'POST /resolve': handleResolve,
   'POST /shutdown': handleShutdown,
@@ -523,6 +534,14 @@ const MCP_TOOLS = [
     },
   },
   {
+    name: 'cortex_digest',
+    description: 'Daily health digest: memory counts, today\'s activity, top recalls, decay stats, agent boots. Use to check if the brain is compounding.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'cortex_forget',
     description: 'Decay matching memories/decisions by keyword (multiply score by 0.3).',
     inputSchema: {
@@ -591,6 +610,10 @@ async function mcpDispatch(toolName, args) {
     case 'cortex_health': {
       const stats = await brain.getStats();
       return { stats, overall: stats.ollama === 'connected' ? 'healthy' : 'degraded' };
+    }
+
+    case 'cortex_digest': {
+      return brain.getDigest();
     }
 
     case 'cortex_forget': {

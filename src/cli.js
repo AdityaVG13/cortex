@@ -449,6 +449,45 @@ async function cmdStatus() {
   return 0;
 }
 
+async function cmdDigest() {
+  const res = await request('GET', '/digest');
+
+  if (res.error) {
+    process.stderr.write(`Error: ${res.error}\n`);
+    return 1;
+  }
+
+  const t = res.totals || {};
+  const d = res.today || {};
+  const boots = res.agentBoots || [];
+  const top = res.topRecalled || [];
+  const decay = res.decay || {};
+
+  process.stdout.write(`Cortex Daily — ${res.date || 'unknown'}\n`);
+  process.stdout.write(`${'─'.repeat(50)}\n`);
+  process.stdout.write(`Memories:   ${t.memories ?? '?'} (+${d.newMemories ?? 0} today)\n`);
+  process.stdout.write(`Decisions:  ${t.decisions ?? '?'} (+${d.newDecisions ?? 0} today)\n`);
+  process.stdout.write(`Conflicts:  ${t.conflicts ?? 0}\n`);
+  process.stdout.write(`Decaying:   ${(decay.memories || 0) + (decay.decisions || 0)} entries below 0.5 score\n`);
+
+  if (boots.length) {
+    const agentStr = boots.map(a => `${a.source_agent} (${a.cnt})`).join(', ');
+    process.stdout.write(`Agents:     ${agentStr}\n`);
+  } else {
+    process.stdout.write(`Agents:     no boots today\n`);
+  }
+
+  if (top.length) {
+    process.stdout.write(`\nTop Recalled:\n`);
+    for (const r of top.slice(0, 5)) {
+      const label = (r.source || r.text || '').slice(0, 60);
+      process.stdout.write(`  ${r.retrievals}x  ${label}\n`);
+    }
+  }
+
+  return 0;
+}
+
 function cmdHelp() {
   const help = `
 Cortex v2 — Universal AI Memory CLI
@@ -460,6 +499,7 @@ Commands:
   recall <query>                           Search memories, print results
   store <text> [--agent <n>] [--type <t>]  Store a decision or memory
   health                                   Show system health status
+  digest                                   Daily health digest (activity, trends)
   forget <keyword>                         Decay matching entries
   resolve <id> --keep|--supersede <other>  Resolve a conflict between decisions
   stop                                     Shutdown the daemon
@@ -538,6 +578,9 @@ async function main() {
         break;
       case 'health':
         exitCode = await cmdHealth();
+        break;
+      case 'digest':
+        exitCode = await cmdDigest();
         break;
       case 'forget':
         exitCode = await cmdForget(positional);
