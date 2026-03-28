@@ -1,5 +1,23 @@
 # Connecting to Cortex — Universal AI Brain
 
+## Start Here
+
+To boot yourself with full context, run this command now:
+
+```bash
+curl http://localhost:7437/boot
+```
+
+If you get "connection refused", the daemon is not running. Start it first:
+
+```bash
+node C:/Users/aditya/cortex/src/daemon.js serve
+```
+
+Then run the curl command again. Read the `bootPrompt` field from the JSON response — that is your context about Aditya, his projects, and his preferences. Then read the rest of this document to learn how to recall, store, and interact with the brain.
+
+---
+
 ## What This Is
 
 Cortex is a persistent local memory system that runs on Aditya's machine.
