@@ -1,207 +1,269 @@
 # Connecting to Cortex — Universal AI Brain
 
-## Start Here
+## Start Here (ANY AI, ANY tool)
 
-To boot yourself with full context, run this command now:
+You are an AI connecting to Aditya's persistent brain. Run this now:
 
 ```bash
-curl http://localhost:7437/boot
+curl http://localhost:7437/boot?agent=YOUR_NAME
 ```
 
-If you get "connection refused", the daemon is not running. Start it first:
+Replace `YOUR_NAME` with your agent ID (e.g., `factory-glm`, `cline`, `cursor`, `gemini`).
+
+If you get "connection refused", start the daemon first:
 
 ```bash
 node C:/Users/aditya/cortex/src/daemon.js serve
 ```
 
-Then run the curl command again. Read the `bootPrompt` field from the JSON response — that is your context about Aditya, his projects, and his preferences. Then read the rest of this document to learn how to recall, store, and interact with the brain.
+Read the `bootPrompt` from the JSON response — that is your context. Then read this document for the full API.
 
 ---
 
 ## What This Is
 
-Cortex is a persistent local memory system that runs on Aditya's machine.
-It stores decisions, preferences, project context, lessons learned, and institutional knowledge across all AI sessions.
-When you connect, you get full context about who Aditya is, what projects are active, what conventions to follow, and what was decided in prior sessions — without Aditya having to re-explain anything.
+Cortex is a persistent memory daemon running on `localhost:7437`. It stores decisions, preferences, project context, and lessons across ALL AI sessions. When you connect, you get instant context about Aditya, his projects, and his conventions — without him re-explaining anything.
 
-You are not the only AI using this brain.
-Claude Code, Gemini CLI, Codex CLI, Cursor, and local models all read from and write to the same memory.
-Anything you store becomes available to every other AI in future sessions.
+**You are not the only AI.** Claude Code, Codex CLI, Gemini CLI, Factory Droids, Cline, Cursor, and local Ollama models all share the same brain. What you store becomes available to every other AI. What they stored is available to you.
 
-## How to Connect
+**Token savings are tracked.** Every boot logs how many tokens you consumed vs what raw file reads would cost. Current efficiency: ~97% reduction.
 
-Cortex runs as an HTTP daemon on localhost port 7437.
-If the daemon is not running, start it:
+---
 
+## Quick Setup by Platform
+
+### Claude Code (MCP — automatic)
+Already connected via MCP. Use `cortex_boot`, `cortex_recall`, `cortex_store` tools directly.
+
+### Factory Droid CLI
+At session start, read this file and run:
 ```bash
-node C:/Users/aditya/cortex/src/daemon.js serve
+TOKEN=$(cat C:/Users/aditya/.cortex/cortex.token)
+curl -s http://localhost:7437/boot?agent=factory-MODEL_NAME
+```
+Replace `MODEL_NAME` with the model you're using (e.g., `factory-glm47`, `factory-minimax`).
+
+Store decisions with:
+```bash
+curl -X POST http://localhost:7437/store \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Source-Agent: factory-MODEL_NAME" \
+  -d '{"decision": "What you learned", "context": "Why it matters"}'
 ```
 
-Or use the CLI (auto-starts the daemon if needed):
+### Gemini CLI
+Reads `~/GEMINI.md` at startup which instructs it to check `~/.claude/brain-status.json` and call `/boot`.
 
-```bash
-node C:/Users/aditya/cortex/src/cli.js boot
+### Codex CLI
+Reads `~/AGENTS.md` at startup with the same protocol.
+
+### Cline (VS Code)
+Connect via MCP or HTTP. Add to your Cline MCP config:
+```json
+{
+  "cortex": {
+    "command": "node",
+    "args": ["C:/Users/aditya/cortex/src/daemon.js", "mcp"]
+  }
+}
 ```
+Or use HTTP directly via terminal commands.
+
+### Cursor
+Uses Claude Code's MCP registration. If MCP is registered, Cursor sees Cortex tools automatically.
+
+### Aider / Any CLI tool
+Run before starting work:
+```bash
+curl -s http://localhost:7437/boot?agent=aider | python -c "import json,sys; print(json.load(sys.stdin)['bootPrompt'])"
+```
+Use `--read` flag to pass the output as context.
+
+### Any new AI tool
+If it can make HTTP requests or run shell commands, it can connect. The protocol is:
+1. `GET /boot?agent=your-name` — get context
+2. `GET /recall?q=topic` — search memories
+3. `POST /store` with auth — save decisions
+That's it. Three endpoints. Any language, any platform.
+
+---
 
 ## Core Operations
 
-### 1. Boot (get full context)
-
-Call this FIRST at the start of any session.
+### 1. Boot (get context — call FIRST)
 
 ```bash
-curl http://localhost:7437/boot
+curl "http://localhost:7437/boot?agent=YOUR_NAME"
 ```
 
-With a specific profile:
+The capsule compiler returns two things:
+- **Identity capsule** (~200 tokens): who Aditya is, platform rules, constraints. Stable across sessions.
+- **Delta capsule** (~50-100 tokens): what changed since YOUR last boot. New decisions, conflicts, state changes.
 
-```bash
-curl "http://localhost:7437/boot?profile=index"
-```
-
-**Profiles available:**
-- `full` (default) — ~300-700 tokens. Identity, active project, recent decisions, key rules, pending work, lessons, conflicts.
-- `operational` — ~500 tokens. Identity, hard constraints, active decisions, sharp edges. Best for execution-focused work.
-- `subagent` — ~200 tokens. Identity and hard constraints only. Best for sub-agents doing focused tasks.
-- `index` — ~60 tokens. Identity and a topic list of what Cortex knows. Best for lightweight discovery before targeted recall.
-
-The response is JSON:
+Response:
 ```json
 {
-  "bootPrompt": "## Identity\nUser: Aditya...",
-  "tokenEstimate": 310,
-  "profile": "full"
+  "bootPrompt": "## Identity\n...\n\n## Delta\n...",
+  "tokenEstimate": 300,
+  "profile": "capsules",
+  "savings": {
+    "rawBaseline": 14777,
+    "served": 300,
+    "saved": 14477,
+    "percent": 97
+  },
+  "capsules": [
+    {"name": "identity", "tokens": 245, "freshness": "stable"},
+    {"name": "delta", "tokens": 55, "freshness": "since 2026-03-28 04:17"}
+  ]
 }
 ```
 
-Use the `bootPrompt` field as system context for your session.
-
 ### 2. Recall (search memories)
-
-When you need context about a specific topic:
 
 ```bash
 curl "http://localhost:7437/recall?q=authentication+architecture&k=5"
 ```
 
-Returns ranked results with relevance scores:
-```json
-{
-  "results": [
-    { "source": "memory::feedback_auth.md", "relevance": 0.87, "excerpt": "...", "method": "semantic" }
-  ]
-}
-```
+Hybrid search: semantic (Ollama embeddings) + tokenized keyword fallback. Always works even if Ollama is down.
 
-The search is hybrid: semantic (Ollama embeddings) + keyword fallback.
-If Ollama is not running, you still get keyword results.
-
-### 3. Store (save a learning)
-
-When you discover something important that future sessions should know:
+### 3. Store (save a decision)
 
 ```bash
+TOKEN=$(cat C:/Users/aditya/.cortex/cortex.token)
 curl -X POST http://localhost:7437/store \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "X-Source-Agent: YOUR_AGENT_NAME" \
-  -d '{
-    "decision": "What you learned or decided",
-    "context": "Why this matters (optional)",
-    "type": "decision"
-  }'
+  -d '{"decision": "What you learned", "context": "Why", "type": "decision"}'
 ```
 
-**Getting the auth token:** Read from `~/.cortex/cortex.token` (C:\Users\aditya\.cortex\cortex.token).
+Types: `decision`, `lesson`, `preference`, `bugfix`
+
+**Conflict detection is automatic.** If you store something that contradicts another AI's decision, both are flagged as "disputed" and surfaced in every future boot until a human resolves it.
+
+### 4. Digest (check brain health)
 
 ```bash
-TOKEN=$(cat ~/.cortex/cortex.token)
+curl http://localhost:7437/digest
 ```
 
-**Types:** `decision`, `lesson`, `preference`, `bugfix`
+Returns: memory counts, today's activity, token savings, top recalled entries, agent boot history.
 
-**Your agent name:** Use a consistent identifier. Examples: `gemini-2.5`, `codex-gpt5.4`, `cursor`, `qwen-32b`. This gets recorded as provenance so we can trace who stored what.
+### 5. Dump (batch read — for workers)
 
-**Conflict handling:** If you store something that contradicts what another AI previously stored, both entries are kept and flagged as "disputed." Neither is deleted. Aditya or a future session resolves disputes.
+```bash
+TOKEN=$(cat C:/Users/aditya/.cortex/cortex.token)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:7437/dump
+```
 
-### 4. Health Check
+Returns ALL active memories and decisions. Used by the dreaming/compaction worker.
+
+### 6. Archive (batch status change)
+
+```bash
+curl -X POST http://localhost:7437/archive \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"type": "memories", "ids": [1, 2, 3]}'
+```
+
+### 7. Health
 
 ```bash
 curl http://localhost:7437/health
 ```
 
-Returns system status including Ollama connectivity and entry counts.
+---
+
+## Rules for All AIs
+
+1. **Boot first.** Call `/boot?agent=your-name` before doing anything else.
+2. **Recall before researching.** Check if Cortex already knows before spending tokens: `curl "localhost:7437/recall?q=your+topic"`.
+3. **Store sparingly.** Only durable insights — decisions, lessons, preferences. Not session chatter.
+4. **Use your real agent name.** Set `X-Source-Agent` honestly. Provenance tracking matters.
+5. **Don't overwrite.** If you disagree with an existing entry, store your perspective. The conflict system handles it.
+6. **Don't delete.** Never try to remove another AI's entries. Archive, don't destroy.
+
+---
 
 ## What You Should Know About Aditya
 
-Rather than listing everything here, call `/boot` and read the compiled context.
-Key facts the boot prompt will include:
-- Platform: Windows 10
-- Python: Always use `uv`, never pip
-- Git: Conventional commits (feat:, fix:, etc.)
+Call `/boot` for compiled context. Key facts:
+- Platform: Windows 10, no WSL
+- Python: Always `uv`, never pip
+- Git: Conventional commits (`feat:`, `fix:`, `docs:`)
 - Shell: bash (Unix syntax even on Windows)
 - Identity: The user is ADITYA. Diya and Adi are family members.
+- Node.js for daemon code, Python for intelligence workers
+- 12GB VRAM, CPU inference for local models
 
-## Rules for Using the Brain
+---
 
-1. **Boot first.** Call `/boot` or `/boot?profile=index` at session start. This is the single most important step.
-2. **Recall before researching.** Before spending tokens exploring files or searching the web, check if Cortex already has the answer: `curl "localhost:7437/recall?q=your+topic"`.
-3. **Store sparingly.** Only store durable insights — decisions, lessons, preferences, bug fixes. Do not store transient task state or session chatter.
-4. **Use your real agent name.** Set `X-Source-Agent` honestly so provenance tracking works.
-5. **Do not overwrite.** If you disagree with an existing entry, store your perspective. The conflict system handles it. Never try to delete or modify another AI's entries.
-6. **Sub-agents should not store directly.** If you are a sub-agent running a focused task, return your findings to the orchestrator and let it decide what to persist.
+## Full Endpoint Reference
 
-## Endpoints Reference
-
-| Method | Path | Auth Required | Description |
-|--------|------|---------------|-------------|
-| GET | `/boot?profile=full` | No | Compiled boot prompt |
-| GET | `/recall?q=QUERY&k=7` | No | Semantic + keyword search |
-| POST | `/store` | Yes (Bearer token) | Store decision/lesson |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/boot?agent=NAME` | No | Capsule-compiled boot prompt |
+| GET | `/recall?q=QUERY&k=7` | No | Hybrid semantic + keyword search |
+| POST | `/store` | Yes | Store decision with conflict detection |
 | POST | `/diary` | Yes | Write session handoff to state.md |
-| GET | `/health` | No | System status |
-| POST | `/forget` | Yes | Decay old entries |
-| POST | `/resolve` | Yes | Resolve disputed entries |
-| POST | `/shutdown` | Yes | Stop the daemon |
+| GET | `/health` | No | System status + Ollama connectivity |
+| GET | `/digest` | No | Daily health digest with token savings |
+| GET | `/dump` | Yes | All active memories + decisions (batch) |
+| POST | `/archive` | Yes | Bulk status change to archived |
+| POST | `/forget` | Yes | Decay entries matching keyword |
+| POST | `/resolve` | Yes | Resolve disputed decision pair |
+| POST | `/shutdown` | Yes | Graceful daemon shutdown |
+
+Auth = `Authorization: Bearer TOKEN` where TOKEN is from `~/.cortex/cortex.token`.
+
+---
 
 ## Troubleshooting
 
-**Connection refused on port 7437:**
-The daemon is not running. Start it:
+**Connection refused:** Daemon not running. Start it:
 ```bash
 node C:/Users/aditya/cortex/src/daemon.js serve
 ```
 
-**Empty boot prompt:**
-The database may not have been migrated yet. Run:
+**Empty boot prompt:** Database may need migration:
 ```bash
 node C:/Users/aditya/cortex/scripts/migrate-v1.js
 ```
 
-**Recall returns no semantic results:**
-Ollama may not be running. Start it, then recall falls back to keyword search automatically.
+**No semantic results:** Ollama not running. Keyword fallback still works.
 
-**Auth token not found:**
-The token is generated on daemon startup. Start the daemon first, then read `~/.cortex/cortex.token`.
+**Auth token not found:** Token generates on daemon start. Start daemon first.
 
-## Architecture (for AIs that want to understand the internals)
+---
+
+## Architecture
 
 ```
 C:\Users\aditya\cortex\
 ├── src/
-│   ├── daemon.js      HTTP server + MCP stdio + lifecycle
-│   ├── brain.js       Index, recall, store, forget logic
+│   ├── daemon.js      HTTP + MCP server, auth, lifecycle
+│   ├── brain.js       Index, recall, store, forget, digest
+│   ├── compiler.js    Capsule compiler (identity + delta)
 │   ├── embeddings.js  Ollama vectors + cosine similarity
-│   ├── compiler.js    Per-profile boot prompt compilation
-│   ├── conflict.js    Cross-agent conflict detection
-│   ├── profiles.js    Profile loader
-│   ├── db.js          SQLite via sql.js (WASM)
-│   └── cli.js         CLI wrapper
-├── cortex.db          SQLite database (all memories, decisions, embeddings)
-├── cortex-profiles.json  Profile definitions
-└── CONNECTING.md      This file
+│   ├── conflict.js    Cross-agent semantic conflict detection
+│   ├── profiles.js    Profile loader (full/operational/subagent/index)
+│   ├── db.js          SQLite via sql.js, search, decay
+│   └── cli.js         CLI wrapper with auto-start
+├── workers/
+│   ├── cortex_client.py   Python HTTP client (zero deps)
+│   └── cortex_dream.py    Memory compaction worker
+├── cortex.db              SQLite database
+├── cortex-profiles.json   Compilation profiles
+├── README.md              Full docs + roadmap
+├── CONNECTING.md          This file
+├── CLAUDE.md              Claude Code specific instructions
+├── GEMINI.md              Gemini CLI instructions
+└── AGENTS.md              Codex CLI instructions
 ```
 
-The database has 4 tables: `memories`, `decisions`, `embeddings`, `events`.
-Every entry has `source_agent`, `confidence`, `status`, and `score` fields.
-Embeddings are 768-dimensional vectors from Ollama's nomic-embed-text model, stored as binary BLOBs.
+Database tables: `memories`, `decisions`, `embeddings`, `events`.
+Every entry has: `source_agent`, `confidence`, `status`, `score`, `last_accessed`, `pinned`.
+Embeddings: 768-dim vectors from nomic-embed-text via Ollama.
