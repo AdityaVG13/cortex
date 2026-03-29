@@ -1457,3 +1457,252 @@ test('Boot prompt injects pending and claimed tasks', { concurrency: false }, as
   assert.match(bootRes.body.bootPrompt, /Your Active Tasks/);
   assert.match(bootRes.body.bootPrompt, /My active task/);
 });
+
+// Shared Feed Tests
+
+test('POST /feed creates feed entry', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  const res = await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: {
+      agent: 'claude-code',
+      kind: 'completion',
+      summary: 'Implemented Task Board with 6 endpoints',
+      content: 'Full detailed output here...',
+      files: ['/src/daemon.js'],
+      priority: 'normal'
+    }
+  });
+
+  assert.equal(res.statusCode, 201);
+  assert.ok(res.body.feedId);
+  assert.equal(res.body.recorded, true);
+});
+
+test('GET /feed returns recent entries with summary only', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: {
+      agent: 'claude-code',
+      kind: 'completion',
+      summary: 'Built the feed',
+      content: 'This is the full content that should NOT appear in list'
+    }
+  });
+
+  const res = await httpJson(sandbox.port, 'GET', '/feed?since=5m', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.entries.length, 1);
+  assert.equal(res.body.entries[0].summary, 'Built the feed');
+  assert.equal(res.body.entries[0].content, undefined);
+});
+
+test('GET /feed filters by kind', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'user', kind: 'prompt', summary: 'Build the task board' }
+  });
+
+  await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'claude-code', kind: 'completion', summary: 'Task board done' }
+  });
+
+  const res = await httpJson(sandbox.port, 'GET', '/feed?kind=prompt', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  assert.equal(res.body.entries.length, 1);
+  assert.equal(res.body.entries[0].kind, 'prompt');
+});
+
+test('GET /feed?unread=true returns only unacked entries', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  const entry1 = await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'claude-code', kind: 'completion', summary: 'First entry' }
+  });
+
+  await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'claude-code', kind: 'completion', summary: 'Second entry' }
+  });
+
+  // Ack the first entry
+  await httpJson(sandbox.port, 'POST', '/feed/ack', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'factory-droid', lastSeenId: entry1.body.feedId }
+  });
+
+  // Unread for factory-droid should only be the second
+  const res = await httpJson(sandbox.port, 'GET', '/feed?unread=true&agent=factory-droid', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  assert.equal(res.body.entries.length, 1);
+  assert.equal(res.body.entries[0].summary, 'Second entry');
+});
+
+test('POST /feed/ack marks entries as read', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  const entry = await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'claude-code', kind: 'completion', summary: 'Some work' }
+  });
+
+  const ackRes = await httpJson(sandbox.port, 'POST', '/feed/ack', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { agent: 'factory-droid', lastSeenId: entry.body.feedId }
+  });
+
+  assert.equal(ackRes.statusCode, 200);
+  assert.equal(ackRes.body.acked, true);
+});
+
+test('Feed entries have secrets redacted', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: {
+      agent: 'claude-code',
+      kind: 'completion',
+      summary: 'Used Bearer abc123def456abc123def456abc123def456abc1 to auth',
+      content: 'token: sk_live_supersecretvalue123'
+    }
+  });
+
+  const res = await httpJson(sandbox.port, 'GET', '/feed?since=5m', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  assert.ok(!res.body.entries[0].summary.includes('abc123def456'));
+  assert.match(res.body.entries[0].summary, /HASH_REDACTED/);
+});
+
+test('Task completion auto-posts to feed', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  // Create and complete a task
+  const createRes = await httpJson(sandbox.port, 'POST', '/tasks', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { title: 'Fix the bug', priority: 'high' }
+  });
+
+  await httpJson(sandbox.port, 'POST', '/tasks/claim', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { taskId: createRes.body.taskId, agent: 'claude-code' }
+  });
+
+  await httpJson(sandbox.port, 'POST', '/tasks/complete', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: { taskId: createRes.body.taskId, agent: 'claude-code', summary: 'Bug squashed' }
+  });
+
+  // Feed should have the auto-posted entry
+  const feed = await httpJson(sandbox.port, 'GET', '/feed?kind=task_complete', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  assert.equal(feed.body.entries.length, 1);
+  assert.equal(feed.body.entries[0].kind, 'task_complete');
+  assert.match(feed.body.entries[0].summary, /Fix the bug/);
+});
+
+test('Boot prompt injects unread feed entries', { concurrency: false }, async (t) => {
+  const sandbox = await createSandbox();
+  t.after(() => sandbox.cleanup());
+  const daemon = await startDaemonInProcess(sandbox);
+  const tokenPath = path.join(sandbox.homeDir, '.cortex', 'cortex.token');
+  t.after(async () => {
+    const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath, 'utf-8').trim() : null;
+    await daemon.stop(token);
+  });
+  const token = fs.readFileSync(tokenPath, 'utf-8').trim();
+
+  // Post feed entries from another agent
+  await httpJson(sandbox.port, 'POST', '/feed', {
+    headers: { Authorization: `Bearer ${token}` },
+    body: {
+      agent: 'factory-droid',
+      kind: 'completion',
+      summary: 'Built the dashboard with 6 tabs'
+    }
+  });
+
+  // Boot as claude-code — should see droid's work
+  const bootRes = await httpJson(sandbox.port, 'GET', '/boot?agent=claude-code', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  assert.equal(bootRes.statusCode, 200);
+  assert.match(bootRes.body.bootPrompt, /Feed/);
+  assert.match(bootRes.body.bootPrompt, /factory-droid/);
+  assert.match(bootRes.body.bootPrompt, /dashboard/);
+});

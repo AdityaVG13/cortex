@@ -176,7 +176,17 @@ function buildDeltaCapsule(agentId, conductorState = null) {
     parts.push('## Active Locks\n' + lockLines.map(l => `- ${l}`).join('\n'));
   }
 
-  // 0d. Task board (pending tasks + agent's claimed tasks)
+  // 0d. Shared feed (unread entries from other agents)
+  if (conductorState && conductorState.feed && conductorState.feed.length > 0) {
+    const feedLines = conductorState.feed.map(e => {
+      const ago = Math.ceil((new Date() - new Date(e.timestamp)) / 60000);
+      const agoStr = ago < 60 ? `${ago}m ago` : `${Math.floor(ago / 60)}h ago`;
+      return `- [${e.kind}] ${e.agent}: ${e.summary} (${agoStr})`;
+    });
+    parts.push('## Feed\n' + feedLines.join('\n'));
+  }
+
+  // 0e. Task board (pending tasks + agent's claimed tasks)
   if (conductorState && conductorState.tasks && conductorState.tasks.length > 0) {
     const pendingTasks = conductorState.tasks.filter(t => t.status === 'pending');
     const myTasks = conductorState.tasks.filter(t => t.status === 'claimed' && t.claimedBy === agentId);

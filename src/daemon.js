@@ -33,9 +33,13 @@ const activities = []; // { id, agent, description, files, timestamp }
 const messages = []; // { id, from, to, message, timestamp }
 const sessions = new Map(); // agent -> { sessionId, agent, project, files, description, startedAt, lastHeartbeat, expiresAt }
 const tasks = new Map(); // taskId -> TaskObject
+const feed = []; // { id, agent, kind, summary, content, files, taskId, traceId, priority, timestamp, tokens }
+const feedAcks = new Map(); // agent -> lastSeenId
 const MAX_ACTIVITIES = 1000;
 const MAX_MESSAGES_PER_AGENT = 100;
 const MAX_TASKS = 500;
+const MAX_FEED = 200;
+const FEED_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const SESSION_TTL = 120; // seconds (2 minutes default)
 const PRIORITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
 
@@ -105,6 +109,60 @@ function cleanOldTasks() {
       tasks.delete(completed[i].taskId);
     }
   }
+}
+
+// Helper to clean old feed entries (TTL + FIFO)
+function cleanOldFeed() {
+  const cutoff = Date.now() - FEED_TTL_MS;
+  while (feed.length > 0 && new Date(feed[0].timestamp).getTime() < cutoff) {
+    feed.shift();
+  }
+  while (feed.length > MAX_FEED) {
+    feed.shift();
+  }
+}
+
+// Helper to redact secrets from text
+function redactSecrets(text) {
+  if (!text) return text;
+  return text
+    .replace(/Bearer\s+[a-f0-9]{32,}/gi, 'Bearer [REDACTED]')
+    .replace(/[a-f0-9]{40,}/gi, '[HASH_REDACTED]')
+    .replace(/(?:token|key|secret|password)\s*[:=]\s*\S+/gi, '[CREDENTIAL_REDACTED]');
+}
+
+// Helper to get unread feed entries for an agent
+function getUnreadFeed(forAgent) {
+  const lastSeenId = feedAcks.get(forAgent);
+  if (!lastSeenId) return feed.filter(e => e.agent !== forAgent);
+
+  let pastAck = false;
+  const unread = [];
+  for (const entry of feed) {
+    if (entry.id === lastSeenId) { pastAck = true; continue; }
+    if (pastAck && entry.agent !== forAgent) unread.push(entry);
+  }
+  return unread;
+}
+
+// Helper to auto-post feed entry (used by task complete)
+function autoPostFeed(entry) {
+  cleanOldFeed();
+  const feedEntry = {
+    id: generateId(),
+    agent: entry.agent,
+    kind: entry.kind,
+    summary: redactSecrets(entry.summary),
+    content: entry.content ? redactSecrets(entry.content) : null,
+    files: entry.files || [],
+    taskId: entry.taskId || null,
+    traceId: entry.traceId || null,
+    priority: entry.priority || 'normal',
+    timestamp: new Date().toISOString(),
+    tokens: entry.summary ? Math.ceil(entry.summary.length / 4) : 0
+  };
+  feed.push(feedEntry);
+  return feedEntry;
 }
 
 // Helper to clean old messages (FIFO per agent)
@@ -265,7 +323,8 @@ function sendJson(res, statusCode, data) {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
-    // No CORS headers — deny all cross-origin
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
   });
   res.end(body);
 }
@@ -306,12 +365,20 @@ async function handleBoot(req, res) {
     // Prepare conductor state for boot injection
     cleanExpiredLocks();
     cleanExpiredSessions();
+    cleanOldFeed();
+    const unreadFeed = getUnreadFeed(agent);
     const conductorState = {
       locks: Array.from(locks.values()),
       messages: messages.filter(m => m.to === agent),
       sessions: Array.from(sessions.values()),
-      tasks: Array.from(tasks.values())
+      tasks: Array.from(tasks.values()),
+      feed: unreadFeed.slice(-10) // cap at 10 most recent
     };
+
+    // Auto-ack feed on boot
+    if (unreadFeed.length > 0) {
+      feedAcks.set(agent, unreadFeed[unreadFeed.length - 1].id);
+    }
 
     // Use capsule compiler when agent is identified, legacy otherwise
     const result = (agent && agent !== 'unknown')
@@ -1073,6 +1140,20 @@ async function handleCompleteTask(req, res) {
     task.summary = body.summary || null;
 
     log('info', `Task completed: "${task.title}" by ${body.agent}`);
+
+    // Auto-post to feed (dedupe by taskId)
+    const alreadyPosted = feed.some(e => e.taskId === task.taskId && e.kind === 'task_complete');
+    if (!alreadyPosted) {
+      autoPostFeed({
+        agent: body.agent,
+        kind: 'task_complete',
+        summary: `Completed: ${task.title}`,
+        content: task.summary || null,
+        taskId: task.taskId,
+        files: task.files || []
+      });
+    }
+
     sendJson(res, 200, { completed: true, taskId: task.taskId });
   } catch (err) {
     if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
@@ -1147,6 +1228,107 @@ async function handleNextTask(req, res) {
   }
 }
 
+// ─── Shared Feed handlers ─────────────────────────────────────────────────
+
+async function handlePostFeed(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.agent || !body.kind || !body.summary) {
+      sendError(res, 400, 'Missing required fields: agent, kind, summary');
+      return;
+    }
+
+    const entry = autoPostFeed({
+      agent: body.agent,
+      kind: body.kind,
+      summary: body.summary,
+      content: body.content || null,
+      files: body.files || [],
+      taskId: body.taskId || null,
+      traceId: body.traceId || null,
+      priority: body.priority || 'normal'
+    });
+
+    log('info', `Feed: [${entry.kind}] ${entry.agent}: ${entry.summary.slice(0, 60)}`);
+    sendJson(res, 201, { feedId: entry.id, recorded: true });
+  } catch (err) {
+    if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
+    log('error', 'post feed failed', { error: err.message });
+    sendError(res, 500, `Post feed failed: ${err.message}`);
+  }
+}
+
+async function handleGetFeed(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    cleanOldFeed();
+    const params = parseQuery(req.url);
+    const sinceStr = params.since || '1h';
+    const sinceMs = parseDuration(sinceStr);
+    const cutoff = new Date(Date.now() - sinceMs);
+    const kindFilter = params.kind || null;
+    const agentFilter = params.agent || null;
+    const unread = params.unread === 'true';
+
+    let entries;
+    if (unread && agentFilter) {
+      entries = getUnreadFeed(agentFilter);
+    } else {
+      entries = feed.filter(e => new Date(e.timestamp) >= cutoff);
+    }
+
+    if (kindFilter) entries = entries.filter(e => e.kind === kindFilter);
+    if (agentFilter && !unread) entries = entries.filter(e => e.agent !== agentFilter || true);
+
+    // Return summary only, strip content for list view
+    const slim = entries.map(({ content, ...rest }) => rest);
+
+    sendJson(res, 200, { entries: slim });
+  } catch (err) {
+    log('error', 'get feed failed', { error: err.message });
+    sendError(res, 500, `Get feed failed: ${err.message}`);
+  }
+}
+
+async function handleGetFeedById(req, res, feedId) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  const entry = feed.find(e => e.id === feedId);
+  if (!entry) {
+    sendJson(res, 404, { error: 'feed_entry_not_found' });
+    return;
+  }
+
+  sendJson(res, 200, entry);
+}
+
+async function handleFeedAck(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.agent || !body.lastSeenId) {
+      sendError(res, 400, 'Missing required fields: agent, lastSeenId');
+      return;
+    }
+
+    feedAcks.set(body.agent, body.lastSeenId);
+    log('info', `Feed ack: ${body.agent} seen up to ${body.lastSeenId}`);
+    sendJson(res, 200, { acked: true });
+  } catch (err) {
+    if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
+    log('error', 'feed ack failed', { error: err.message });
+    sendError(res, 500, `Feed ack failed: ${err.message}`);
+  }
+}
+
 // ─── HTTP router ───────────────────────────────────────────────────────────
 
 const ROUTES = {
@@ -1188,6 +1370,11 @@ const ROUTES = {
   'POST /tasks/complete': handleCompleteTask,
   'POST /tasks/abandon': handleAbandonTask,
   'GET /tasks/next': handleNextTask,
+
+  // Shared Feed endpoints
+  'POST /feed': handlePostFeed,
+  'GET /feed': handleGetFeed,
+  'POST /feed/ack': handleFeedAck,
 };
 
 async function handleRequest(req, res) {
@@ -1197,14 +1384,30 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // Handle CORS preflight — deny all
+  // Handle CORS preflight — allow Tauri desktop app + localhost tools
   if (req.method === 'OPTIONS') {
-    res.writeHead(204);
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
     res.end();
     return;
   }
 
   const pathname = getPathname(req.url);
+
+  // Dynamic route: GET /feed/:id
+  const feedMatch = pathname.match(/^\/feed\/([a-f0-9-]+)$/);
+  if (req.method === 'GET' && feedMatch) {
+    try { await handleGetFeedById(req, res, feedMatch[1]); } catch (err) {
+      log('error', 'Unhandled route error', { route: `GET /feed/:id`, error: err.message });
+      if (!res.headersSent) sendError(res, 500, 'Internal server error');
+    }
+    return;
+  }
+
   const routeKey = `${req.method} ${pathname}`;
   const handler = ROUTES[routeKey];
 
@@ -1859,6 +2062,8 @@ module.exports.activities = activities;
 module.exports.messages = messages;
 module.exports.sessions = sessions;
 module.exports.tasks = tasks;
+module.exports.feed = feed;
+module.exports.feedAcks = feedAcks;
 module.exports.cleanExpiredLocks = cleanExpiredLocks;
 module.exports.cleanExpiredSessions = cleanExpiredSessions;
 
