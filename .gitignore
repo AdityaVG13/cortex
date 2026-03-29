@@ -1,6 +1,8 @@
 node_modules/
+target/
 cortex.db
 cortex.db-wal
 cortex.db-shm
 *.log
 .cortex/
+.aider*

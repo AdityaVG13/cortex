@@ -137,9 +137,66 @@ function buildIdentityCapsule() {
 // What changed since this agent last connected.
 // High relevance, changes every session. Target: ~300 tokens.
 
-function buildDeltaCapsule(agentId) {
+function buildDeltaCapsule(agentId, conductorState = null) {
   const lastBoot = getLastBootTime(agentId);
   const parts = [];
+
+  // 0. Pending messages (highest priority, goes first)
+  if (conductorState && conductorState.messages && conductorState.messages.length > 0) {
+    const myMessages = conductorState.messages.filter(m => m.to === agentId);
+    if (myMessages.length > 0) {
+      const lines = [];
+      for (const msg of myMessages) {
+        lines.push(`- From ${msg.from}: "${msg.message}"`);
+      }
+      parts.push('## Pending Messages\n' + lines.join('\n'));
+    }
+  }
+
+  // 0b. Active agents (session bus — who else is online)
+  if (conductorState && conductorState.sessions && conductorState.sessions.length > 0) {
+    const otherSessions = conductorState.sessions.filter(s => s.agent !== agentId);
+    if (otherSessions.length > 0) {
+      const sessionLines = [];
+      for (const s of otherSessions) {
+        const filePart = s.files && s.files.length > 0 ? ` (files: ${s.files.join(', ')})` : '';
+        sessionLines.push(`- ${s.agent} working on ${s.project || 'unknown'}: "${s.description || 'no description'}"${filePart}`);
+      }
+      parts.push('## Active Agents\n' + sessionLines.join('\n'));
+    }
+  }
+
+  // 0c. Active locks (high priority)
+  if (conductorState && conductorState.locks && conductorState.locks.length > 0) {
+    const lockLines = [];
+    for (const lock of conductorState.locks) {
+      const minutesLeft = Math.ceil((new Date(lock.expiresAt) - new Date()) / 60000);
+      lockLines.push(`${lock.path} locked by ${lock.agent} (${minutesLeft}m remaining)`);
+    }
+    parts.push('## Active Locks\n' + lockLines.map(l => `- ${l}`).join('\n'));
+  }
+
+  // 0d. Task board (pending tasks + agent's claimed tasks)
+  if (conductorState && conductorState.tasks && conductorState.tasks.length > 0) {
+    const pendingTasks = conductorState.tasks.filter(t => t.status === 'pending');
+    const myTasks = conductorState.tasks.filter(t => t.status === 'claimed' && t.claimedBy === agentId);
+
+    if (pendingTasks.length > 0) {
+      const lines = pendingTasks.slice(0, 5).map(t => {
+        const filePart = t.files && t.files.length > 0 ? ` (files: ${t.files.join(', ')})` : '';
+        return `- [${t.priority}] ${t.title}${t.project ? ' (' + t.project + ')' : ''}${filePart}`;
+      });
+      parts.push('## Pending Tasks\n' + lines.join('\n'));
+    }
+
+    if (myTasks.length > 0) {
+      const lines = myTasks.map(t => {
+        const ago = Math.ceil((new Date() - new Date(t.claimedAt)) / 60000);
+        return `- [${t.priority}] ${t.title} (claimed ${ago}m ago)`;
+      });
+      parts.push('## Your Active Tasks\n' + lines.join('\n'));
+    }
+  }
 
   // 1. Open conflicts (always include — highest priority)
   try {
@@ -288,9 +345,9 @@ function estimateRawBaseline() {
   return estimateTokens(String.fromCharCode(0).repeat(totalChars));  // chars/3.8
 }
 
-function compileCapsules(agentId, maxTokens = 600) {
+function compileCapsules(agentId, maxTokens = 600, conductorState = null) {
   const identity = buildIdentityCapsule();
-  const delta = buildDeltaCapsule(agentId);
+  const delta = buildDeltaCapsule(agentId, conductorState);
 
   // Record this boot for next session
   recordBoot(agentId);

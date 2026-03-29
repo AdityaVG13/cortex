@@ -74,6 +74,169 @@ def health() -> dict:
     return _get("/health")
 
 
+# ─── Conductor & Session endpoints ──────────────────────────────────────
+
+
+def get_locks() -> dict:
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    req = Request(f"{BASE_URL}/locks")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def get_activity(since: str = "1h") -> dict:
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    req = Request(f"{BASE_URL}/activity?since={since}")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def get_sessions() -> dict:
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    req = Request(f"{BASE_URL}/sessions")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def post_activity(agent: str, description: str, files: list[str] | None = None) -> dict:
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    body = {"agent": agent, "description": description, "files": files or []}
+    req = Request(f"{BASE_URL}/activity", data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+# ─── Task Board endpoints ───────────────────────────────────────────────
+
+
+def get_tasks(status: str = "pending") -> dict:
+    """Get tasks from the task board. status: pending|claimed|completed|all"""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    req = Request(f"{BASE_URL}/tasks?status={status}")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def get_next_task(agent: str, capability: str = "any") -> dict | None:
+    """Get the highest priority task for this agent."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    req = Request(f"{BASE_URL}/tasks/next?agent={agent}&capability={capability}")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def create_task(
+    title: str,
+    description: str = "",
+    project: str = "cortex",
+    files: list[str] | None = None,
+    priority: str = "medium",
+    required_capability: str = "any",
+) -> dict:
+    """Create a new task on the board."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    body = {
+        "title": title,
+        "description": description,
+        "project": project,
+        "files": files or [],
+        "priority": priority,
+        "requiredCapability": required_capability,
+    }
+    req = Request(f"{BASE_URL}/tasks", data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def claim_task(task_id: str, agent: str) -> dict:
+    """Claim a task for the given agent."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    body = {"taskId": task_id, "agent": agent}
+    req = Request(f"{BASE_URL}/tasks/claim", data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def complete_task(task_id: str, agent: str, summary: str = "") -> dict:
+    """Mark a task as completed."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    body = {"taskId": task_id, "agent": agent, "summary": summary}
+    req = Request(f"{BASE_URL}/tasks/complete", data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def abandon_task(task_id: str, agent: str) -> dict:
+    """Return a claimed task to pending."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    body = {"taskId": task_id, "agent": agent}
+    req = Request(f"{BASE_URL}/tasks/abandon", data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+# ─── Inter-Agent Messaging ─────────────────────────────────────────────
+
+
+def send_message(from_agent: str, to_agent: str, message: str) -> dict:
+    """Send a message to another agent."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    body = {"from": from_agent, "to": to_agent, "message": message}
+    req = Request(f"{BASE_URL}/message", data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
+def get_messages(agent: str) -> dict:
+    """Get messages for a specific agent."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+    req = Request(f"{BASE_URL}/messages?agent={agent}")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 if __name__ == "__main__":
     try:
         h = health()

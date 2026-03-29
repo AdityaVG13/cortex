@@ -1,5 +1,6 @@
 'use strict';
 
+const { exec } = require('child_process');
 const { query, get, run, insert, persist } = require('./db');
 
 const OLLAMA_URL = 'http://localhost:11434';
@@ -8,12 +9,83 @@ const MAX_INPUT_CHARS = 512;
 const EMBED_DIM = 768;
 const TIMEOUT_MS = 10_000;
 
+// Ollama state tracking
+let ollamaStatus = 'unknown'; // 'online' | 'offline' | 'starting' | 'unknown'
+let lastStatusLog = 0;
+let consecutiveFailures = 0;
+const MAX_FAILURES_BEFORE_OFFLINE = 3;
+const STATUS_LOG_INTERVAL = 60000; // Only log status once per minute
+
+/**
+ * Check if Ollama is running, optionally try to start it.
+ * Returns true if Ollama is available.
+ */
+async function ensureOllamaRunning() {
+  // If we know it's online, quick check
+  if (ollamaStatus === 'online') {
+    return true;
+  }
+
+  // If we're already trying to start it, wait
+  if (ollamaStatus === 'starting') {
+    return false;
+  }
+
+  // Try to connect
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { method: 'GET', signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      if (ollamaStatus !== 'online' && Date.now() - lastStatusLog > STATUS_LOG_INTERVAL) {
+        console.error('[embeddings] Ollama connected');
+        lastStatusLog = Date.now();
+      }
+      ollamaStatus = 'online';
+      consecutiveFailures = 0;
+      return true;
+    }
+  } catch {
+    // Ollama not responding
+  }
+
+  // If offline and not recently tried, attempt to start
+  if (ollamaStatus !== 'starting' && consecutiveFailures >= MAX_FAILURES_BEFORE_OFFLINE) {
+    if (Date.now() - lastStatusLog > STATUS_LOG_INTERVAL) {
+      console.error('[embeddings] Ollama offline - attempting to start...');
+      lastStatusLog = Date.now();
+    }
+    ollamaStatus = 'starting';
+
+    // Try to start Ollama (Windows)
+    const ollamaPath = process.env.LOCALAPPDATA
+      ? `${process.env.LOCALAPPDATA}\\Programs\\Ollama\\ollama.exe`
+      : 'ollama';
+
+    exec(`"${ollamaPath}" app`, (err) => {
+      if (err && Date.now() - lastStatusLog > STATUS_LOG_INTERVAL) {
+        console.error('[embeddings] Could not start Ollama:', err.message);
+        lastStatusLog = Date.now();
+      }
+    });
+
+    // Give it a moment to start
+    await new Promise(r => setTimeout(r, 3000));
+    ollamaStatus = 'unknown'; // Will be checked next call
+  }
+
+  return false;
+}
+
 /**
  * Get embedding vector from Ollama for a text string.
  * Truncates input to 512 chars. Returns Float32Array (768-dim) or null on error.
  */
 async function getEmbedding(text) {
   if (!text || typeof text !== 'string') return null;
+
+  // Only try if Ollama might be available
+  if (ollamaStatus === 'offline' && consecutiveFailures > 10) {
+    return null; // Give up until status reset
+  }
 
   const truncated = text.slice(0, MAX_INPUT_CHARS);
 
@@ -31,22 +103,27 @@ async function getEmbedding(text) {
     clearTimeout(timer);
 
     if (!res.ok) {
-      console.error(`[embeddings] Ollama returned ${res.status}: ${res.statusText}`);
+      consecutiveFailures++;
       return null;
     }
 
     const data = await res.json();
     if (!data.embedding || !Array.isArray(data.embedding)) {
-      console.error('[embeddings] Unexpected Ollama response shape');
+      consecutiveFailures++;
       return null;
     }
 
+    ollamaStatus = 'online';
+    consecutiveFailures = 0;
     return new Float32Array(data.embedding);
   } catch (err) {
-    if (err.name === 'AbortError') {
-      console.error('[embeddings] Ollama request timed out');
-    } else {
-      console.error(`[embeddings] Ollama error: ${err.message}`);
+    consecutiveFailures++;
+    if (consecutiveFailures === MAX_FAILURES_BEFORE_OFFLINE) {
+      ollamaStatus = 'offline';
+      if (Date.now() - lastStatusLog > STATUS_LOG_INTERVAL) {
+        console.error('[embeddings] Ollama offline - embeddings disabled until restart');
+        lastStatusLog = Date.now();
+      }
     }
     return null;
   }
@@ -108,7 +185,7 @@ function cosineSim(a, b) {
 /**
  * Build embeddings for all un-embedded memories and decisions.
  * Reads rows that lack an entry in the embeddings table, computes vectors
- * via Ollama, and stores as BLOBs.
+ * via Ollama in parallel batches, and stores as BLOBs.
  * Returns { total, computed }.
  */
 async function buildEmbeddings() {
@@ -135,28 +212,41 @@ async function buildEmbeddings() {
   const total = unembeddedMemories.length + unembeddedDecisions.length;
   let computed = 0;
 
-  // Process memories
-  for (const row of unembeddedMemories) {
-    const vec = await getEmbedding(row.text);
-    if (vec) {
-      insert(
-        'INSERT INTO embeddings (target_type, target_id, vector, model) VALUES (?, ?, ?, ?)',
-        ['memory', row.id, vectorToBlob(vec), EMBED_MODEL]
-      );
-      computed++;
-    }
+  // Batch size for parallel requests (tune based on Ollama capacity)
+  const BATCH_SIZE = 8;
+
+  // Helper to process a batch in parallel
+  async function processBatch(items, targetType) {
+    const results = await Promise.all(
+      items.map(async (item) => {
+        try {
+          const vec = await getEmbedding(item.text);
+          if (vec) {
+            insert(
+              'INSERT INTO embeddings (target_type, target_id, vector, model) VALUES (?, ?, ?, ?)',
+              [targetType, item.id, vectorToBlob(vec), EMBED_MODEL]
+            );
+            return 1; // Computed successfully
+          }
+        } catch (err) {
+          console.error(`[embeddings] Failed to embed ${targetType} id ${item.id}: ${err.message}`);
+        }
+        return 0; // Failed or skipped
+      })
+    );
+    return results.reduce((sum, val) => sum + val, 0);
   }
 
-  // Process decisions
-  for (const row of unembeddedDecisions) {
-    const vec = await getEmbedding(row.text);
-    if (vec) {
-      insert(
-        'INSERT INTO embeddings (target_type, target_id, vector, model) VALUES (?, ?, ?, ?)',
-        ['decision', row.id, vectorToBlob(vec), EMBED_MODEL]
-      );
-      computed++;
-    }
+  // Process memories in batches
+  for (let i = 0; i < unembeddedMemories.length; i += BATCH_SIZE) {
+    const batch = unembeddedMemories.slice(i, i + BATCH_SIZE);
+    computed += await processBatch(batch, 'memory');
+  }
+
+  // Process decisions in batches
+  for (let i = 0; i < unembeddedDecisions.length; i += BATCH_SIZE) {
+    const batch = unembeddedDecisions.slice(i, i + BATCH_SIZE);
+    computed += await processBatch(batch, 'decision');
   }
 
   if (computed > 0) persist();

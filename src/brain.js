@@ -24,7 +24,8 @@ async function init() {
   await db.getDb();
   await indexAll();
   const decay = db.decayPass();
-  await buildEmbeddings();
+  // Build embeddings in background - don't block startup
+  buildEmbeddings().catch(err => console.error('[brain] Embedding build failed:', err.message));
   if (decay.affected > 0) {
     logEvent('decay_pass', { affected: decay.affected });
   }
@@ -663,6 +664,23 @@ const PERMANENT_SECTIONS = ['## DO NOT REMOVE'];
 function writeDiary(data = {}) {
   const { accomplished, nextSteps, pending, knownIssues } = data;
 
+  // Sanitize user-provided content to prevent header injection
+  function sanitizeMarkdown(content, fieldName) {
+    if (!content) return '';
+    const lines = content.split('\n');
+    // Escape lines that start with ## (headers) unless they're the section separator
+    return lines.map(line => {
+      // Don't escape lines that are just dashes under headers (they're underlines)
+      if (/^-{3,}$/.test(line.trim())) return line;
+      // Comment out user-provided ## headers to prevent structure breakage
+      if (/^##+/.test(line.trim())) {
+        console.warn(`[brain] Escaped user-provided header in ${fieldName}: "${line}"`);
+        return `<!-- ${line} -->`;
+      }
+      return line;
+    }).join('\n');
+  }
+
   let existing = '';
   if (fs.existsSync(STATE_PATH)) {
     existing = fs.readFileSync(STATE_PATH, 'utf-8');
@@ -687,41 +705,46 @@ function writeDiary(data = {}) {
     lines.push('');
   }
 
-  if (accomplished) {
+  const safeAccomplished = sanitizeMarkdown(accomplished, 'accomplished');
+  const safeNextSteps = sanitizeMarkdown(nextSteps, 'nextSteps');
+  const safePending = sanitizeMarkdown(pending, 'pending');
+  const safeKnownIssues = sanitizeMarkdown(knownIssues, 'knownIssues');
+  const safeKeyDecisions = sanitizeMarkdown(data.decisions || data.keyDecisions, 'decisions');
+
+  if (safeAccomplished) {
     lines.push('## What Was Done This Session');
-    lines.push(accomplished);
+    lines.push(safeAccomplished);
     lines.push('');
   }
 
-  if (nextSteps) {
+  if (safeNextSteps) {
     lines.push('## Next Session');
-    lines.push(nextSteps);
+    lines.push(safeNextSteps);
     lines.push('');
   }
 
-  if (pending) {
+  if (safePending) {
     lines.push('## Pending');
-    lines.push(pending);
+    lines.push(safePending);
     lines.push('');
   }
 
-  if (knownIssues) {
+  if (safeKnownIssues) {
     lines.push('## Known Issues');
-    lines.push(knownIssues);
+    lines.push(safeKnownIssues);
     lines.push('');
   }
 
   // Preserve any existing Key Decisions section if not overwritten
   // Accept both 'decisions' (API field name) and 'keyDecisions' (legacy)
-  const keyDecisions = data.decisions || data.keyDecisions;
   const existingDecisions = extractSection(existing, '## Key Decisions');
-  if (existingDecisions && !keyDecisions) {
+  if (existingDecisions && !safeKeyDecisions) {
     lines.push('## Key Decisions');
     lines.push(existingDecisions);
     lines.push('');
-  } else if (keyDecisions) {
+  } else if (safeKeyDecisions) {
     lines.push('## Key Decisions');
-    lines.push(keyDecisions);
+    lines.push(safeKeyDecisions);
     lines.push('');
   }
 

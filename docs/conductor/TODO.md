@@ -1,7 +1,9 @@
-# Conductor — Master Plan
+# Conductor — Master Plan (ARCHIVED)
+
+**Superseded by `docs/TODO.md` — read that instead.**
 
 **Last updated:** 2026-03-28
-**Status:** Building Phase 0 — file locking + inter-agent communication
+**Status:** Phase 0 COMPLETE. Planning moved to docs/TODO.md.
 
 ## What Is The Conductor?
 

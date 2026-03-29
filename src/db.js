@@ -132,8 +132,17 @@ function persist() {
   if (!_db) return;
   const data = _db.export();
   const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
-  _dirty = false;
+  try {
+    fs.writeFileSync(DB_PATH, buffer);
+    _dirty = false;
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      // Tests can remove temp DB dirs during teardown; ignore stale flushes.
+      _dirty = false;
+      return;
+    }
+    throw err;
+  }
 }
 
 function markDirty() {
@@ -142,6 +151,9 @@ function markDirty() {
   _saveTimer = setTimeout(() => {
     if (_dirty) persist();
   }, 1000); // Auto-persist after 1s of inactivity
+  if (typeof _saveTimer.unref === 'function') {
+    _saveTimer.unref();
+  }
 }
 
 // Execute a write query and auto-persist
@@ -247,7 +259,9 @@ function searchRows({ tableName, textFields, queryText, limit = 20 }) {
     const recencyDays = getRecencyDays(row.last_accessed || row.created_at);
     const recencyWeight = 1 / (1 + recencyDays / 7);
     const keywordWeight = matchedKeywords / keywords.length;
-    const ranking = (keywordWeight * 0.6) + (recencyWeight * 0.25) + (Math.min(scoreWeight, 5) / 5 * 0.15);
+    const retrievals = Math.max(0, Number(row.retrievals) || 0);
+    const retrievalWeight = Math.min(retrievals, 20) / 20; // cap at 20 retrievals
+    const ranking = (keywordWeight * 0.5) + (recencyWeight * 0.2) + (retrievalWeight * 0.15) + (Math.min(scoreWeight, 5) / 5 * 0.15);
 
     ranked.push({
       ...row,

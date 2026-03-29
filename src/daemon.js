@@ -27,6 +27,99 @@ let httpServer = null;
 let mcpCalls = 0;
 let shuttingDown = false;
 
+// Conductor state (in-memory for MVP)
+const locks = new Map(); // path -> { id, agent, lockedAt, expiresAt }
+const activities = []; // { id, agent, description, files, timestamp }
+const messages = []; // { id, from, to, message, timestamp }
+const sessions = new Map(); // agent -> { sessionId, agent, project, files, description, startedAt, lastHeartbeat, expiresAt }
+const tasks = new Map(); // taskId -> TaskObject
+const MAX_ACTIVITIES = 1000;
+const MAX_MESSAGES_PER_AGENT = 100;
+const MAX_TASKS = 500;
+const SESSION_TTL = 120; // seconds (2 minutes default)
+const PRIORITY_RANK = { critical: 4, high: 3, medium: 2, low: 1 };
+
+// Helper to generate UUID
+function generateId() {
+  return crypto.randomUUID();
+}
+
+// Helper to parse duration string (e.g., "5m", "1h", "1d")
+function parseDuration(durationStr) {
+  const match = durationStr.match(/^(\d+)([mhd])$/);
+  if (!match) return 60 * 60 * 1000; // Default 1 hour
+
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  const multipliers = { m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+  return value * multipliers[unit];
+}
+
+// Helper to clean expired locks
+function cleanExpiredLocks() {
+  const now = new Date();
+  for (const [path, lock] of locks) {
+    try {
+      if (!lock.expiresAt) continue;
+      const expiresDate = new Date(lock.expiresAt);
+      // Check if the date is valid (not Invalid Date)
+      if (isNaN(expiresDate.getTime())) continue;
+      if (expiresDate < now) {
+        locks.delete(path);
+        log('info', `Lock expired: ${path}`);
+      }
+    } catch (err) {
+      // Silently skip malformed lock entries, don't break cleanup
+      log('warn', `Skipping malformed lock entry for ${path}: ${err.message}`);
+    }
+  }
+}
+
+// Helper to clean old activities (FIFO)
+function cleanOldActivities() {
+  if (activities.length > MAX_ACTIVITIES) {
+    const removeCount = activities.length - MAX_ACTIVITIES;
+    activities.splice(0, removeCount);
+  }
+}
+
+// Helper to clean expired sessions
+function cleanExpiredSessions() {
+  const now = new Date();
+  for (const [agent, session] of sessions) {
+    if (new Date(session.expiresAt) < now) {
+      sessions.delete(agent);
+      log('info', `Session expired: ${agent}`);
+    }
+  }
+}
+
+// Helper to evict old completed tasks (FIFO)
+function cleanOldTasks() {
+  if (tasks.size > MAX_TASKS) {
+    const completed = Array.from(tasks.values())
+      .filter(t => t.status === 'completed')
+      .sort((a, b) => new Date(a.completedAt) - new Date(b.completedAt));
+    const removeCount = tasks.size - MAX_TASKS;
+    for (let i = 0; i < Math.min(removeCount, completed.length); i++) {
+      tasks.delete(completed[i].taskId);
+    }
+  }
+}
+
+// Helper to clean old messages (FIFO per agent)
+function cleanOldMessages(agent) {
+  const agentMessages = messages.filter(m => m.to === agent);
+  if (agentMessages.length > MAX_MESSAGES_PER_AGENT) {
+    const removeCount = agentMessages.length - MAX_MESSAGES_PER_AGENT;
+    const toRemove = agentMessages.slice(0, removeCount);
+    for (const msg of toRemove) {
+      const idx = messages.indexOf(msg);
+      if (idx !== -1) messages.splice(idx, 1);
+    }
+  }
+}
+
 // ─── Logging ───────────────────────────────────────────────────────────────
 
 let logStream = null;
@@ -42,11 +135,24 @@ function log(level, msg, data) {
     ? `[${ts}] [${level}] ${msg} ${JSON.stringify(data)}`
     : `[${ts}] [${level}] ${msg}`;
 
-  if (logStream) {
-    logStream.write(entry + '\n');
-  } else {
-    // Fallback before log stream is open (serve mode only)
-    process.stderr.write(entry + '\n');
+  const canWriteToFile = logStream && !logStream.destroyed && !logStream.writableEnded;
+
+  if (canWriteToFile) {
+    try {
+      logStream.write(entry + '\n');
+      return;
+    } catch {
+      // Fall through to stderr fallback
+    }
+  }
+
+  // Fallback before log stream is open or after it is closed
+  if (process.stderr?.writable) {
+    try {
+      process.stderr.write(entry + '\n');
+    } catch {
+      // Best-effort logging only; never crash on logger fallback
+    }
   }
 }
 
@@ -132,18 +238,23 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let destroyed = false;
 
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > MAX_BODY) {
         req.destroy();
+        destroyed = true;
         reject(new Error('Request body too large'));
         return;
       }
       chunks.push(chunk);
     });
 
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('end', () => {
+      if (destroyed) return; // Don't resolve if we already rejected
+      resolve(Buffer.concat(chunks).toString('utf-8'));
+    });
     req.on('error', reject);
   });
 }
@@ -192,9 +303,19 @@ async function handleBoot(req, res) {
   const agent = params.agent || req.headers['x-source-agent'] || 'unknown';
 
   try {
+    // Prepare conductor state for boot injection
+    cleanExpiredLocks();
+    cleanExpiredSessions();
+    const conductorState = {
+      locks: Array.from(locks.values()),
+      messages: messages.filter(m => m.to === agent),
+      sessions: Array.from(sessions.values()),
+      tasks: Array.from(tasks.values())
+    };
+
     // Use capsule compiler when agent is identified, legacy otherwise
     const result = (agent && agent !== 'unknown')
-      ? compiler.compileCapsules(agent, parseInt(params.budget, 10) || 600)
+      ? compiler.compileCapsules(agent, parseInt(params.budget, 10) || 600, conductorState)
       : compiler.compile(profile);
 
     sendJson(res, 200, {
@@ -419,6 +540,613 @@ async function handleArchive(req, res) {
   }
 }
 
+// ─── Phase 0: Conductor route handlers ──────────────────────────────────────
+
+async function handleLock(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.path || !body.agent) {
+      sendError(res, 400, 'Missing required fields: path, agent');
+      return;
+    }
+
+    cleanExpiredLocks();
+
+    const ttl = body.ttl ?? 300;
+    const now = new Date();
+    const existingLock = locks.get(body.path);
+
+    if (existingLock) {
+      // Same agent can renew
+      if (existingLock.agent === body.agent) {
+        const newExpiresAt = new Date(now.getTime() + ttl * 1000).toISOString();
+        existingLock.expiresAt = newExpiresAt;
+        log('info', `Lock renewed: ${body.path} by ${body.agent}`);
+        sendJson(res, 200, {
+          locked: true,
+          lockId: existingLock.id,
+          expiresAt: newExpiresAt
+        });
+        return;
+      }
+
+      // Different agent gets 409
+      const minutesLeft = Math.ceil((new Date(existingLock.expiresAt) - now) / 60000);
+      sendJson(res, 409, {
+        error: 'file_already_locked',
+        holder: existingLock.agent,
+        expiresAt: existingLock.expiresAt,
+        minutesLeft
+      });
+      return;
+    }
+
+    // Create new lock
+    const lock = {
+      id: generateId(),
+      path: body.path,
+      agent: body.agent,
+      lockedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttl * 1000).toISOString()
+    };
+
+    locks.set(body.path, lock);
+    log('info', `Lock acquired: ${body.path} by ${body.agent}`);
+    sendJson(res, 200, {
+      locked: true,
+      lockId: lock.id,
+      expiresAt: lock.expiresAt
+    });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'lock failed', { error: err.message });
+    sendError(res, 500, `Lock failed: ${err.message}`);
+  }
+}
+
+async function handleUnlock(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.path || !body.agent) {
+      sendError(res, 400, 'Missing required fields: path, agent');
+      return;
+    }
+
+    cleanExpiredLocks();
+    const lock = locks.get(body.path);
+
+    if (!lock) {
+      sendJson(res, 404, { error: 'no_lock_found' });
+      return;
+    }
+
+    if (lock.agent !== body.agent) {
+      sendJson(res, 403, { error: 'not_lock_holder', holder: lock.agent });
+      return;
+    }
+
+    locks.delete(body.path);
+    log('info', `Lock released: ${body.path} by ${body.agent}`);
+    sendJson(res, 200, { unlocked: true });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'unlock failed', { error: err.message });
+    sendError(res, 500, `Unlock failed: ${err.message}`);
+  }
+}
+
+async function handleLocks(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    cleanExpiredLocks();
+    const activeLocks = Array.from(locks.values());
+
+    sendJson(res, 200, { locks: activeLocks });
+  } catch (err) {
+    log('error', 'get locks failed', { error: err.message });
+    sendError(res, 500, `Get locks failed: ${err.message}`);
+  }
+}
+
+async function handleActivity(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.agent || !body.description) {
+      sendError(res, 400, 'Missing required fields: agent, description');
+      return;
+    }
+
+    cleanOldActivities();
+
+    const activity = {
+      id: generateId(),
+      agent: body.agent,
+      description: body.description,
+      files: body.files || [],
+      timestamp: new Date().toISOString()
+    };
+
+    activities.push(activity);
+    log('info', `Activity recorded: ${body.agent} - ${body.description}`);
+    sendJson(res, 200, { recorded: true, activityId: activity.id });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'post activity failed', { error: err.message });
+    sendError(res, 500, `Post activity failed: ${err.message}`);
+  }
+}
+
+async function handleGetActivity(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const params = parseQuery(req.url);
+    const sinceStr = params.since || '1h';
+    const sinceMs = parseDuration(sinceStr);
+    const cutoff = new Date(Date.now() - sinceMs);
+
+    const recentActivities = activities.filter(a => new Date(a.timestamp) >= cutoff);
+
+    sendJson(res, 200, { activities: recentActivities });
+  } catch (err) {
+    log('error', 'get activity failed', { error: err.message });
+    sendError(res, 500, `Get activity failed: ${err.message}`);
+  }
+}
+
+async function handleMessage(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.from || !body.to || !body.message) {
+      sendError(res, 400, 'Missing required fields: from, to, message');
+      return;
+    }
+
+    const message = {
+      id: generateId(),
+      from: body.from,
+      to: body.to,
+      message: body.message,
+      timestamp: new Date().toISOString()
+    };
+
+    cleanOldMessages(body.to);
+    messages.push(message);
+    log('info', `Message sent: ${body.from} -> ${body.to}: "${body.message.slice(0, 50)}..."`);
+    sendJson(res, 200, { sent: true, messageId: message.id });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'post message failed', { error: err.message });
+    sendError(res, 500, `Post message failed: ${err.message}`);
+  }
+}
+
+async function handleGetMessages(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const params = parseQuery(req.url);
+    const agent = params.agent;
+
+    if (!agent) {
+      sendError(res, 400, 'Missing parameter: agent');
+      return;
+    }
+
+    const agentMessages = messages.filter(m => m.to === agent);
+
+    sendJson(res, 200, { messages: agentMessages });
+  } catch (err) {
+    log('error', 'get messages failed', { error: err.message });
+    sendError(res, 500, `Get messages failed: ${err.message}`);
+  }
+}
+
+// ─── Session Bus handlers ─────────────────────────────────────────────���────
+
+async function handleSessionStart(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.agent) {
+      sendError(res, 400, 'Missing required field: agent');
+      return;
+    }
+
+    const ttl = body.ttl ?? SESSION_TTL;
+    const now = new Date();
+    const session = {
+      sessionId: generateId(),
+      agent: body.agent,
+      project: body.project || null,
+      files: body.files || [],
+      description: body.description || null,
+      startedAt: now.toISOString(),
+      lastHeartbeat: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttl * 1000).toISOString()
+    };
+
+    sessions.set(body.agent, session);
+    log('info', `Session started: ${body.agent} on ${body.project || 'unknown'}`);
+    sendJson(res, 200, {
+      sessionId: session.sessionId,
+      heartbeatInterval: 60
+    });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'session start failed', { error: err.message });
+    sendError(res, 500, `Session start failed: ${err.message}`);
+  }
+}
+
+async function handleSessionHeartbeat(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.agent || typeof body.agent !== 'string' || body.agent.trim().length === 0) {
+      sendError(res, 400, 'Missing or invalid required field: agent');
+      return;
+    }
+
+    // Basic agent format validation (reject clearly malicious patterns)
+    const agent = body.agent.trim();
+    if (agent.length > 100) {
+      sendError(res, 400, 'Invalid agent: name too long (max 100 chars)');
+      return;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(agent)) {
+      sendError(res, 400, 'Invalid agent: name contains invalid characters (use alphanumeric, underscore, hyphen only)');
+      return;
+    }
+
+    cleanExpiredSessions();
+    const session = sessions.get(agent);
+
+    if (!session) {
+      sendJson(res, 404, { error: 'no_active_session' });
+      return;
+    }
+
+    // Update session using validated agent string
+    const now = new Date();
+    session.lastHeartbeat = now.toISOString();
+    session.expiresAt = new Date(now.getTime() + SESSION_TTL * 1000).toISOString();
+
+    if (body.files !== undefined) session.files = body.files;
+    if (body.description !== undefined) session.description = body.description;
+
+    sendJson(res, 200, {
+      renewed: true,
+      expiresAt: session.expiresAt
+    });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'session heartbeat failed', { error: err.message });
+    sendError(res, 500, `Session heartbeat failed: ${err.message}`);
+  }
+}
+
+async function handleSessionEnd(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.agent) {
+      sendError(res, 400, 'Missing required field: agent');
+      return;
+    }
+
+    const existed = sessions.delete(body.agent);
+    log('info', `Session ended: ${body.agent}`);
+    sendJson(res, 200, { ended: true });
+  } catch (err) {
+    if (err.message === 'Request body too large') {
+      sendError(res, 413, 'Request body too large (max 10KB)');
+      return;
+    }
+    log('error', 'session end failed', { error: err.message });
+    sendError(res, 500, `Session end failed: ${err.message}`);
+  }
+}
+
+async function handleSessions(req, res) {
+  if (!validateAuth(req)) {
+    sendError(res, 401, 'Unauthorized');
+    return;
+  }
+
+  try {
+    cleanExpiredSessions();
+    const activeSessions = Array.from(sessions.values());
+    sendJson(res, 200, { sessions: activeSessions });
+  } catch (err) {
+    log('error', 'get sessions failed', { error: err.message });
+    sendError(res, 500, `Get sessions failed: ${err.message}`);
+  }
+}
+
+// ─── Task Board handlers ──────────────────────────────────────────────────
+
+async function handleCreateTask(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.title) {
+      sendError(res, 400, 'Missing required field: title');
+      return;
+    }
+
+    cleanOldTasks();
+
+    const task = {
+      taskId: generateId(),
+      title: body.title,
+      description: body.description || null,
+      project: body.project || null,
+      files: body.files || [],
+      priority: body.priority || 'medium',
+      requiredCapability: body.requiredCapability || 'any',
+      status: 'pending',
+      claimedBy: null,
+      createdAt: new Date().toISOString(),
+      claimedAt: null,
+      completedAt: null,
+      summary: null
+    };
+
+    tasks.set(task.taskId, task);
+    log('info', `Task created: [${task.priority}] ${task.title}`);
+    sendJson(res, 201, { taskId: task.taskId, status: 'pending' });
+  } catch (err) {
+    if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
+    log('error', 'create task failed', { error: err.message });
+    sendError(res, 500, `Create task failed: ${err.message}`);
+  }
+}
+
+async function handleGetTasks(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const params = parseQuery(req.url);
+    const statusFilter = params.status || 'pending';
+    const projectFilter = params.project || null;
+
+    let result = Array.from(tasks.values());
+
+    if (statusFilter !== 'all') {
+      result = result.filter(t => t.status === statusFilter);
+    }
+    if (projectFilter) {
+      result = result.filter(t => t.project === projectFilter);
+    }
+
+    sendJson(res, 200, { tasks: result });
+  } catch (err) {
+    log('error', 'get tasks failed', { error: err.message });
+    sendError(res, 500, `Get tasks failed: ${err.message}`);
+  }
+}
+
+async function handleClaimTask(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.taskId || !body.agent) {
+      sendError(res, 400, 'Missing required fields: taskId, agent');
+      return;
+    }
+
+    const task = tasks.get(body.taskId);
+    if (!task) {
+      sendJson(res, 404, { error: 'task_not_found' });
+      return;
+    }
+
+    if (task.status === 'claimed') {
+      sendJson(res, 409, { error: 'task_already_claimed', claimedBy: task.claimedBy });
+      return;
+    }
+
+    if (task.status === 'completed') {
+      sendJson(res, 409, { error: 'task_already_completed' });
+      return;
+    }
+
+    task.status = 'claimed';
+    task.claimedBy = body.agent;
+    task.claimedAt = new Date().toISOString();
+
+    log('info', `Task claimed: "${task.title}" by ${body.agent}`);
+    sendJson(res, 200, { claimed: true, taskId: task.taskId });
+  } catch (err) {
+    if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
+    log('error', 'claim task failed', { error: err.message });
+    sendError(res, 500, `Claim task failed: ${err.message}`);
+  }
+}
+
+async function handleCompleteTask(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.taskId || !body.agent) {
+      sendError(res, 400, 'Missing required fields: taskId, agent');
+      return;
+    }
+
+    const task = tasks.get(body.taskId);
+    if (!task) {
+      sendJson(res, 404, { error: 'task_not_found' });
+      return;
+    }
+
+    if (task.claimedBy !== body.agent) {
+      sendJson(res, 403, { error: 'not_task_holder', claimedBy: task.claimedBy });
+      return;
+    }
+
+    task.status = 'completed';
+    task.completedAt = new Date().toISOString();
+    task.summary = body.summary || null;
+
+    log('info', `Task completed: "${task.title}" by ${body.agent}`);
+    sendJson(res, 200, { completed: true, taskId: task.taskId });
+  } catch (err) {
+    if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
+    log('error', 'complete task failed', { error: err.message });
+    sendError(res, 500, `Complete task failed: ${err.message}`);
+  }
+}
+
+async function handleAbandonTask(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const raw = await readBody(req);
+    const body = JSON.parse(raw);
+
+    if (!body.taskId || !body.agent) {
+      sendError(res, 400, 'Missing required fields: taskId, agent');
+      return;
+    }
+
+    const task = tasks.get(body.taskId);
+    if (!task) {
+      sendJson(res, 404, { error: 'task_not_found' });
+      return;
+    }
+
+    if (task.claimedBy !== body.agent) {
+      sendJson(res, 403, { error: 'not_task_holder', claimedBy: task.claimedBy });
+      return;
+    }
+
+    task.status = 'pending';
+    task.claimedBy = null;
+    task.claimedAt = null;
+
+    log('info', `Task abandoned: "${task.title}" by ${body.agent}`);
+    sendJson(res, 200, { abandoned: true, taskId: task.taskId, status: 'pending' });
+  } catch (err) {
+    if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
+    log('error', 'abandon task failed', { error: err.message });
+    sendError(res, 500, `Abandon task failed: ${err.message}`);
+  }
+}
+
+async function handleNextTask(req, res) {
+  if (!validateAuth(req)) { sendError(res, 401, 'Unauthorized'); return; }
+
+  try {
+    const params = parseQuery(req.url);
+    const agent = params.agent;
+    const capability = params.capability || 'any';
+
+    if (!agent) {
+      sendError(res, 400, 'Missing parameter: agent');
+      return;
+    }
+
+    const pending = Array.from(tasks.values())
+      .filter(t => t.status === 'pending')
+      .filter(t => capability === 'any' || t.requiredCapability === 'any' || t.requiredCapability === capability)
+      .sort((a, b) => {
+        const pa = PRIORITY_RANK[a.priority] || 0;
+        const pb = PRIORITY_RANK[b.priority] || 0;
+        if (pb !== pa) return pb - pa; // higher priority first
+        return new Date(a.createdAt) - new Date(b.createdAt); // older first (FIFO)
+      });
+
+    sendJson(res, 200, { task: pending[0] || null });
+  } catch (err) {
+    log('error', 'get next task failed', { error: err.message });
+    sendError(res, 500, `Get next task failed: ${err.message}`);
+  }
+}
+
 // ─── HTTP router ───────────────────────────────────────────────────────────
 
 const ROUTES = {
@@ -433,6 +1161,33 @@ const ROUTES = {
   'POST /shutdown': handleShutdown,
   'GET /dump': handleDump, // New endpoint
   'POST /archive': handleArchive, // New endpoint
+
+  // MCP-over-HTTP transport (Streamable HTTP)
+  'POST /mcp': handleMcpHttp,
+  'GET /mcp': handleMcpSse,
+
+  // Phase 0: Conductor endpoints
+  'POST /lock': handleLock,
+  'POST /unlock': handleUnlock,
+  'GET /locks': handleLocks,
+  'POST /activity': handleActivity,
+  'GET /activity': handleGetActivity,
+  'POST /message': handleMessage,
+  'GET /messages': handleGetMessages,
+
+  // Session Bus endpoints
+  'POST /session/start': handleSessionStart,
+  'POST /session/heartbeat': handleSessionHeartbeat,
+  'POST /session/end': handleSessionEnd,
+  'GET /sessions': handleSessions,
+
+  // Task Board endpoints
+  'POST /tasks': handleCreateTask,
+  'GET /tasks': handleGetTasks,
+  'POST /tasks/claim': handleClaimTask,
+  'POST /tasks/complete': handleCompleteTask,
+  'POST /tasks/abandon': handleAbandonTask,
+  'GET /tasks/next': handleNextTask,
 };
 
 async function handleRequest(req, res) {
@@ -764,7 +1519,7 @@ async function handleMcpMessage(msg) {
     case 'initialize':
       return mcpSuccess(id, {
         protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
+        capabilities: { tools: { listChanged: true } },
         serverInfo: { name: 'cortex', version: '2.0.0' },
       });
 
@@ -820,9 +1575,105 @@ async function handleMcpMessage(msg) {
   }
 }
 
+// ─── MCP-over-HTTP transport (Streamable HTTP) ─────────────────────────────
+
+const mcpSessions = new Map(); // sessionId -> { createdAt, lastActivity }
+
+async function handleMcpHttp(req, res) {
+  // Security: validate Origin header to prevent DNS rebinding
+  const origin = req.headers['origin'] || '';
+  if (origin && !['http://localhost', 'http://127.0.0.1', ''].includes(origin)) {
+    sendError(res, 403, 'Forbidden: invalid origin');
+    return;
+  }
+
+  // Check for MCP-Protocol-Version header
+  const protocolVersion = req.headers['mcp-protocol-version'] || '2024-11-05';
+
+  try {
+    const raw = await readBody(req);
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }));
+      return;
+    }
+
+    // Validate JSON-RPC
+    if (!msg.jsonrpc || msg.jsonrpc !== '2.0') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid JSON-RPC version' }, id: msg.id || null }));
+      return;
+    }
+
+    // Handle session management
+    let sessionId = req.headers['mcp-session-id'];
+    if (msg.method === 'initialize') {
+      // Create new session on initialize
+      sessionId = crypto.randomBytes(16).toString('hex');
+      mcpSessions.set(sessionId, { createdAt: Date.now(), lastActivity: Date.now() });
+    } else if (!sessionId) {
+      // Require session for non-initialize requests
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Missing Mcp-Session-Id header' }, id: msg.id || null }));
+      return;
+    }
+
+    // Update session activity
+    if (sessionId && mcpSessions.has(sessionId)) {
+      const session = mcpSessions.get(sessionId);
+      session.lastActivity = Date.now();
+    }
+
+    // Process the MCP message
+    const response = await handleMcpMessage(msg);
+
+    // For notifications (no id), return 202 Accepted
+    if (msg.id == null || response === null) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+
+    // For requests, return the response with session header
+    const headers = {
+      'Content-Type': 'application/json',
+      'MCP-Protocol-Version': protocolVersion,
+    };
+    if (sessionId) {
+      headers['Mcp-Session-Id'] = sessionId;
+    }
+
+    res.writeHead(200, headers);
+    res.end(JSON.stringify(response));
+  } catch (err) {
+    log('error', 'MCP HTTP error', { error: err.message });
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32603, message: `Internal error: ${err.message}` }, id: null }));
+  }
+}
+
+async function handleMcpSse(req, res) {
+  // GET /mcp opens SSE stream for server-to-client messages
+  // For now, we return 405 as we don't have push notifications
+  // This is valid per MCP spec
+  res.writeHead(405, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'SSE streaming not implemented. Use POST for requests.' }));
+}
+
 // ─── MCP stdio transport ──────────────────────────────────────────────────
 
-function startMcpTransport(stdinStream, stdoutStream) {
+function startMcpTransport(stdinStream, stdoutWrite) {
+  // On Windows, ensure stdin is readable
+  if (process.platform === 'win32') {
+    // Force stdin to be readable if it's not already
+    if (!stdinStream.readable) {
+      stdinStream.resume();
+    }
+  }
+  
   const rl = readline.createInterface({
     input: stdinStream,
     terminal: false,
@@ -830,7 +1681,8 @@ function startMcpTransport(stdinStream, stdoutStream) {
 
   function send(obj) {
     if (obj === null) return;
-    stdoutStream.write(JSON.stringify(obj) + '\n');
+    // Use the provided write function directly (bypasses log redirection)
+    stdoutWrite(JSON.stringify(obj) + '\n');
   }
 
   rl.on('line', async (line) => {
@@ -884,28 +1736,39 @@ async function main() {
 
   if (mode === 'mcp') {
     // ── MCP mode ─────────────────────────────────────────────────────
-    // Capture original stdin/stdout BEFORE redirecting
+    // Capture original stdin/stdout write functions BEFORE redirecting
     const origStdin = process.stdin;
     const origStdout = process.stdout;
+    const origStdoutWrite = process.stdout.write.bind(process.stdout);
+    const origStderrWrite = process.stderr.write.bind(process.stderr);
 
     // Redirect stdout and stderr to log file
     openLogStream();
 
     // Replace process.stdout.write and process.stderr.write to go to log
     // This prevents brain.js console.error from corrupting the JSON-RPC stream
-    const origStdoutWrite = process.stdout.write.bind(process.stdout);
-    const origStderrWrite = process.stderr.write.bind(process.stderr);
-
     process.stdout.write = (chunk, encoding, callback) => {
       if (logStream) {
-        return logStream.write(chunk, encoding, callback);
+        try {
+          const result = logStream.write(chunk, encoding, callback);
+          return result;
+        } catch (streamErr) {
+          // Fallback to original stdout if log stream fails
+          return origStdoutWrite(chunk, encoding, callback);
+        }
       }
       return origStdoutWrite(chunk, encoding, callback);
     };
 
     process.stderr.write = (chunk, encoding, callback) => {
       if (logStream) {
-        return logStream.write(chunk, encoding, callback);
+        try {
+          const result = logStream.write(chunk, encoding, callback);
+          return result;
+        } catch (streamErr) {
+          // Fallback to original stderr if log stream fails
+          return origStderrWrite(chunk, encoding, callback);
+        }
       }
       return origStderrWrite(chunk, encoding, callback);
     };
@@ -940,8 +1803,8 @@ async function main() {
       }
     }
 
-    // Start MCP transport on original stdin/stdout
-    startMcpTransport(origStdin, origStdout);
+    // Start MCP transport with original write function (not patched stdout)
+    startMcpTransport(origStdin, origStdoutWrite);
 
   } else {
     // ── Serve mode ───────────────────────────────────────────────────
@@ -980,12 +1843,24 @@ async function main() {
       process.stderr.write(`[cortex] Listening on http://127.0.0.1:${PORT}\n`);
       process.stderr.write(`[cortex] Auth token at ${TOKEN_PATH}\n`);
       process.stderr.write(`[cortex] PID ${process.pid} written to ${PID_PATH}\n`);
+
+      // Keep process alive - HTTP server should do this but ensure it
+      setInterval(() => {}, 24 * 60 * 60 * 1000); // 24hr interval (minimal CPU)
     } catch (err) {
       process.stderr.write(`[cortex] FATAL: ${err.message}\n`);
       process.exit(1);
     }
   }
 }
+
+// Expose Phase 0 state for compiler (boot injection)
+module.exports.activeLocks = locks;
+module.exports.activities = activities;
+module.exports.messages = messages;
+module.exports.sessions = sessions;
+module.exports.tasks = tasks;
+module.exports.cleanExpiredLocks = cleanExpiredLocks;
+module.exports.cleanExpiredSessions = cleanExpiredSessions;
 
 main().catch((err) => {
   const msg = `[cortex] Fatal startup error: ${err.message}\n`;
