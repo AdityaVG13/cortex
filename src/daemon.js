@@ -35,6 +35,7 @@ const sessions = new Map(); // agent -> { sessionId, agent, project, files, desc
 const tasks = new Map(); // taskId -> TaskObject
 const feed = []; // { id, agent, kind, summary, content, files, taskId, traceId, priority, timestamp, tokens }
 const feedAcks = new Map(); // agent -> lastSeenId
+const sseClients = new Set(); // active SSE connections
 const MAX_ACTIVITIES = 1000;
 const MAX_MESSAGES_PER_AGENT = 100;
 const MAX_TASKS = 500;
@@ -132,6 +133,15 @@ function redactSecrets(text) {
 }
 
 // Helper to get unread feed entries for an agent
+// SSE: broadcast event to all connected clients
+function emitEvent(type, data) {
+  const payload = JSON.stringify({ type, ...data, timestamp: new Date().toISOString() });
+  const msg = `event: ${type}\ndata: ${payload}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(msg); } catch { sseClients.delete(res); }
+  }
+}
+
 function getUnreadFeed(forAgent) {
   const lastSeenId = feedAcks.get(forAgent);
   if (!lastSeenId) return feed.filter(e => e.agent !== forAgent);
@@ -162,6 +172,7 @@ function autoPostFeed(entry) {
     tokens: entry.summary ? Math.ceil(entry.summary.length / 4) : 0
   };
   feed.push(feedEntry);
+  emitEvent('feed', { feedId: feedEntry.id, agent: feedEntry.agent, kind: feedEntry.kind, summary: feedEntry.summary });
   return feedEntry;
 }
 
@@ -666,6 +677,7 @@ async function handleLock(req, res) {
 
     locks.set(body.path, lock);
     log('info', `Lock acquired: ${body.path} by ${body.agent}`);
+    emitEvent('lock', { action: 'acquired', path: body.path, agent: body.agent });
     sendJson(res, 200, {
       locked: true,
       lockId: lock.id,
@@ -711,6 +723,7 @@ async function handleUnlock(req, res) {
 
     locks.delete(body.path);
     log('info', `Lock released: ${body.path} by ${body.agent}`);
+    emitEvent('lock', { action: 'released', path: body.path, agent: body.agent });
     sendJson(res, 200, { unlocked: true });
   } catch (err) {
     if (err.message === 'Request body too large') {
@@ -891,6 +904,7 @@ async function handleSessionStart(req, res) {
 
     sessions.set(body.agent, session);
     log('info', `Session started: ${body.agent} on ${body.project || 'unknown'}`);
+    emitEvent('session', { action: 'started', agent: body.agent, project: body.project });
     sendJson(res, 200, {
       sessionId: session.sessionId,
       heartbeatInterval: 60
@@ -978,6 +992,7 @@ async function handleSessionEnd(req, res) {
 
     const existed = sessions.delete(body.agent);
     log('info', `Session ended: ${body.agent}`);
+    emitEvent('session', { action: 'ended', agent: body.agent });
     sendJson(res, 200, { ended: true });
   } catch (err) {
     if (err.message === 'Request body too large') {
@@ -1039,6 +1054,7 @@ async function handleCreateTask(req, res) {
 
     tasks.set(task.taskId, task);
     log('info', `Task created: [${task.priority}] ${task.title}`);
+    emitEvent('task', { action: 'created', taskId: task.taskId, title: task.title, priority: task.priority });
     sendJson(res, 201, { taskId: task.taskId, status: 'pending' });
   } catch (err) {
     if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
@@ -1104,6 +1120,7 @@ async function handleClaimTask(req, res) {
     task.claimedAt = new Date().toISOString();
 
     log('info', `Task claimed: "${task.title}" by ${body.agent}`);
+    emitEvent('task', { action: 'claimed', taskId: task.taskId, title: task.title, agent: body.agent });
     sendJson(res, 200, { claimed: true, taskId: task.taskId });
   } catch (err) {
     if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
@@ -1140,6 +1157,7 @@ async function handleCompleteTask(req, res) {
     task.summary = body.summary || null;
 
     log('info', `Task completed: "${task.title}" by ${body.agent}`);
+    emitEvent('task', { action: 'completed', taskId: task.taskId, title: task.title, agent: body.agent });
 
     // Auto-post to feed (dedupe by taskId)
     const alreadyPosted = feed.some(e => e.taskId === task.taskId && e.kind === 'task_complete');
@@ -1190,6 +1208,7 @@ async function handleAbandonTask(req, res) {
     task.claimedAt = null;
 
     log('info', `Task abandoned: "${task.title}" by ${body.agent}`);
+    emitEvent('task', { action: 'abandoned', taskId: task.taskId, title: task.title, agent: body.agent });
     sendJson(res, 200, { abandoned: true, taskId: task.taskId, status: 'pending' });
   } catch (err) {
     if (err.message === 'Request body too large') { sendError(res, 413, 'Request body too large (max 10KB)'); return; }
@@ -1226,6 +1245,34 @@ async function handleNextTask(req, res) {
     log('error', 'get next task failed', { error: err.message });
     sendError(res, 500, `Get next task failed: ${err.message}`);
   }
+}
+
+// ─── SSE Event Stream handler ─────────────────────────────────────────────
+
+async function handleEventStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+
+  // Send initial connected event
+  res.write(`event: connected\ndata: ${JSON.stringify({ timestamp: new Date().toISOString(), clients: sseClients.size + 1 })}\n\n`);
+
+  sseClients.add(res);
+  log('info', `SSE client connected (${sseClients.size} total)`);
+
+  // Keep-alive ping every 30s
+  const keepAlive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch { clearInterval(keepAlive); }
+  }, 30000);
+
+  req.on('close', () => {
+    sseClients.delete(res);
+    clearInterval(keepAlive);
+    log('info', `SSE client disconnected (${sseClients.size} remaining)`);
+  });
 }
 
 // ─── Shared Feed handlers ─────────────────────────────────────────────────
@@ -1375,6 +1422,9 @@ const ROUTES = {
   'POST /feed': handlePostFeed,
   'GET /feed': handleGetFeed,
   'POST /feed/ack': handleFeedAck,
+
+  // SSE Event Stream
+  'GET /events/stream': handleEventStream,
 };
 
 async function handleRequest(req, res) {
