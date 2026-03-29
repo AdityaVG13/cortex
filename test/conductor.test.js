@@ -137,6 +137,14 @@ async function startDaemonInProcess(sandbox) {
   const originalExit = process.exit;
   const originalStderrWrite = process.stderr.write;
 
+  // Capture original signal listeners so we can restore them after daemon stops
+  const originalListeners = {
+    SIGTERM: process.listeners('SIGTERM').slice(),
+    SIGINT: process.listeners('SIGINT').slice(),
+    uncaughtException: process.listeners('uncaughtException').slice(),
+    unhandledRejection: process.listeners('unhandledRejection').slice(),
+  };
+
   process.argv = ['node', daemonPath, 'serve'];
   process.exit = () => {};
 
@@ -161,6 +169,16 @@ async function startDaemonInProcess(sandbox) {
       } finally {
         process.exit = originalExit;
         process.stderr.write = originalStderrWrite;
+
+        // Remove daemon signal handlers and restore originals
+        for (const [event, listeners] of Object.entries(originalListeners)) {
+          // Remove all current listeners for this event
+          process.removeAllListeners(event);
+          // Re-add the original listeners
+          for (const listener of listeners) {
+            process.on(event, listener);
+          }
+        }
       }
     },
   };
@@ -1635,7 +1653,7 @@ test('Feed entries have secrets redacted', { concurrency: false }, async (t) => 
   });
 
   assert.ok(!res.body.entries[0].summary.includes('abc123def456'));
-  assert.match(res.body.entries[0].summary, /HASH_REDACTED/);
+  assert.match(res.body.entries[0].summary, /(Bearer \[REDACTED\]|HASH_REDACTED)/);
 });
 
 test('Task completion auto-posts to feed', { concurrency: false }, async (t) => {

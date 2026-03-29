@@ -26,6 +26,7 @@ let authToken = null;
 let httpServer = null;
 let mcpCalls = 0;
 let shuttingDown = false;
+let keepAliveInterval = null;
 
 // Conductor state (in-memory for MVP)
 const locks = new Map(); // path -> { id, agent, lockedAt, expiresAt }
@@ -425,6 +426,31 @@ async function handleRecall(req, res) {
   } catch (err) {
     log('error', 'recall failed', { error: err.message });
     sendError(res, 500, `Recall failed: ${err.message}`);
+  }
+}
+
+async function handlePeek(req, res) {
+  const params = parseQuery(req.url);
+  const q = params.q || '';
+  const k = parseInt(params.k, 10) || 10;
+
+  if (!q) {
+    sendError(res, 400, 'Missing query parameter: q');
+    return;
+  }
+
+  try {
+    const results = await brain.recall(q, k);
+    // Strip excerpts — return only source, relevance, method (~80% token savings)
+    const peek = results.map(r => ({
+      source: r.source,
+      relevance: r.relevance,
+      method: r.method,
+    }));
+    sendJson(res, 200, { count: peek.length, matches: peek });
+  } catch (err) {
+    log('error', 'peek failed', { error: err.message });
+    sendError(res, 500, `Peek failed: ${err.message}`);
   }
 }
 
@@ -1376,15 +1402,59 @@ async function handleFeedAck(req, res) {
   }
 }
 
+async function handleSavings(req, res) {
+  try {
+    const allSavings = db.query("SELECT data, created_at FROM events WHERE type = 'boot_savings' ORDER BY created_at ASC");
+    const points = allSavings.map(row => {
+      const d = JSON.parse(row.data);
+      return {
+        timestamp: row.created_at,
+        agent: d.agent || 'unknown',
+        served: d.served || 0,
+        baseline: d.baseline || 0,
+        saved: d.saved || 0,
+        percent: d.percent || 0,
+      };
+    });
+
+    // Aggregates
+    const totalSaved = points.reduce((sum, p) => sum + p.saved, 0);
+    const totalServed = points.reduce((sum, p) => sum + p.served, 0);
+    const totalBaseline = points.reduce((sum, p) => sum + p.baseline, 0);
+    const avgPercent = points.length > 0 ? Math.round(points.reduce((sum, p) => sum + p.percent, 0) / points.length) : 0;
+
+    // Daily aggregation for charts
+    const daily = {};
+    for (const p of points) {
+      const day = (p.timestamp || '').slice(0, 10);
+      if (!day) continue;
+      if (!daily[day]) daily[day] = { saved: 0, served: 0, boots: 0 };
+      daily[day].saved += p.saved;
+      daily[day].served += p.served;
+      daily[day].boots += 1;
+    }
+
+    sendJson(res, 200, {
+      summary: { totalSaved, totalServed, totalBaseline, avgPercent, totalBoots: points.length },
+      daily: Object.entries(daily).map(([date, d]) => ({ date, ...d })),
+      recent: points.slice(-20),
+    });
+  } catch (err) {
+    sendError(res, 500, `Savings query failed: ${err.message}`);
+  }
+}
+
 // ─── HTTP router ───────────────────────────────────────────────────────────
 
 const ROUTES = {
   'GET /boot': handleBoot,
   'GET /recall': handleRecall,
+  'GET /peek': handlePeek,
   'POST /store': handleStore,
   'POST /diary': handleDiary,
   'GET /health': handleHealth,
   'GET /digest': handleDigest,
+  'GET /savings': handleSavings,
   'POST /forget': handleForget,
   'POST /resolve': handleResolve,
   'POST /shutdown': handleShutdown,
@@ -1507,6 +1577,12 @@ function gracefulShutdown() {
 
   log('info', 'Graceful shutdown initiated');
 
+  // Clear keep-alive interval
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+
   // Close HTTP server (stop accepting new connections)
   if (httpServer) {
     httpServer.close(() => {
@@ -1579,8 +1655,20 @@ const MCP_TOOLS = [
     },
   },
   {
+    name: 'cortex_peek',
+    description: 'Lightweight check: returns source names and relevance scores only (no excerpts). Use BEFORE cortex_recall to check if relevant memories exist. Saves ~80% tokens vs full recall. Cost ladder: peek first, recall only if matches look relevant.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query text' },
+        limit: { type: 'number', description: 'Max results (default 10)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'cortex_recall',
-    description: 'Hybrid semantic+keyword search across all Cortex memories and decisions.',
+    description: 'Full hybrid semantic+keyword search with excerpts. Use cortex_peek first to check if recall is worth the tokens.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1670,6 +1758,14 @@ async function mcpDispatch(toolName, args) {
         return compiler.compileCapsules(agent, parseInt(args.budget, 10) || 600);
       }
       return compiler.compile(args.profile || 'full');
+    }
+
+    case 'cortex_peek': {
+      if (!args.query) throw new Error('Missing required argument: query');
+      const limit = args.limit || 10;
+      const results = await brain.recall(args.query, limit);
+      const peek = results.map(r => ({ source: r.source, relevance: r.relevance, method: r.method }));
+      return { count: peek.length, matches: peek };
     }
 
     case 'cortex_recall': {
@@ -2098,7 +2194,7 @@ async function main() {
       process.stderr.write(`[cortex] PID ${process.pid} written to ${PID_PATH}\n`);
 
       // Keep process alive - HTTP server should do this but ensure it
-      setInterval(() => {}, 24 * 60 * 60 * 1000); // 24hr interval (minimal CPU)
+      keepAliveInterval = setInterval(() => {}, 24 * 60 * 60 * 1000); // 24hr interval (minimal CPU)
     } catch (err) {
       process.stderr.write(`[cortex] FATAL: ${err.message}\n`);
       process.exit(1);

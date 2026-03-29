@@ -3,6 +3,13 @@ target/
 cortex.db
 cortex.db-wal
 cortex.db-shm
-*.log
 .cortex/
+
+# Logs
+logs/
+*.log
+
+# Editor/tool artifacts
 .aider*
+.tmp-*
+__pycache__/

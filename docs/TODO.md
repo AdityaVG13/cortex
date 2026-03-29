@@ -23,11 +23,23 @@ Both AIs read this FIRST before starting work.
 
 ## Up Next (ordered)
 
-1. **CRITICAL: Tauri Desktop App** — Native Cortex Control Center. Tray icon + daemon management + dashboard. Replaces Streamlit. ~5MB binary vs 80MB+ Electron. **Owner: needs assignment**
-2. **Phase 3: Keyword Fallback + Decay** — Tokenized OR matching, recency weighting, decay-on-boot scoring, pinned flag. Already spec'd in ROADMAP.md. **Owner: claude (node.js)**
-3. **SSE Event Feed** — `GET /events/stream` for real-time push. Dashboard and agents subscribe. **Owner: claude (node.js)**
-4. **Ambient Capture** — PostToolUse hook auto-captures decisions to inbox table with confidence gating. Promotion pipeline: inbox → episodic → canonical. **Owner: droid (python workers)**
-5. **Ollama Sidecar Workers** — Python workers poll /tasks for completed work, run Qwen/DeepSeek review on changed files, store findings. **Owner: droid (python)**
+1. **CRITICAL: Tauri Production Build** — Single .exe with embedded daemon lifecycle. Phases: (1) Rust setup() spawns node daemon, (2) system tray + minimize, (3) dashboard UI inside native window, (4) `cargo tauri build` → installer, (5) airgap-ready packaging. **Owner: droid**
+2. **Rust Daemon Rewrite** — Port daemon.js to Rust. Eliminates Node.js dependency entirely — single binary, zero external deps. Tauri is already Rust so daemon becomes embedded module, not spawned child process. Target: <5MB binary. **Owner: droid, long-term**
+3. **Phase 3: Keyword Fallback + Decay** — Tokenized OR matching, recency weighting, decay-on-boot scoring, pinned flag. Already spec'd in ROADMAP.md. **Owner: claude (node.js)**
+4. **SSE Event Feed** — `GET /events/stream` for real-time push. Dashboard and agents subscribe. **Owner: claude (node.js)**
+5. **Ambient Capture** — PostToolUse hook auto-captures decisions to inbox table with confidence gating. Promotion pipeline: inbox → episodic → canonical. **Owner: droid (python workers)**
+6. **Ollama Sidecar Workers** — Python workers poll /tasks for completed work, run Qwen/DeepSeek review on changed files, store findings. **Owner: droid (python)**
+
+## Stolen Ideas (from competitive research 2026-03-29, see docs/competitive-intel.md)
+
+- [ ] **cortex_peek** — One-line summaries before full recall. Cost ladder: peek → skim → full. Saves tokens. (from cx)
+- [ ] **cortex skill** — Command that emits an optimal agent prompt. Self-teaching pattern. (from cx)
+- [ ] **Capsule dedup threshold** — Calibrate at 0.92 cosine similarity. Reference from 724-office.
+- [ ] **Async capsule compilation** — LLM compression in background threads during idle time. (from 724-office)
+- [ ] **Emit helpers** — `cortex.emit_decision()` for zero-friction stores without explicit API calls. (from Agent Lightning)
+- [ ] **Memory pressure eviction** — 70% RAM trigger → evict to 56% for in-memory caches. (from Agent Lightning)
+- [ ] **Self-check cron** — Scheduled self-audits with LLM-driven remediation. (from 724-office)
+- [ ] **Formal JSON-RPC relay** — Tighten agent API surface with typed contracts. (from Parchi)
 
 ## Deferred (good ideas, need foundation first)
 

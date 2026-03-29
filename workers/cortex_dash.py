@@ -451,6 +451,87 @@ def render_messages_tab():
             st.warning("Please enter a message")
 
 
+def render_feed_tab():
+    """Render shared inter-agent feed."""
+    st.subheader("📰 Shared Feed")
+
+    c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
+    with c1:
+        since = st.selectbox(
+            "Since",
+            options=["15m", "1h", "4h", "1d"],
+            index=1,
+            key="feed_since",
+        )
+    with c2:
+        kind = st.selectbox(
+            "Kind",
+            options=["all", "prompt", "completion", "task_complete", "system"],
+            index=0,
+            key="feed_kind",
+        )
+    with c3:
+        agent = st.text_input(
+            "Agent (optional)",
+            placeholder="factory-droid",
+            key="feed_agent",
+        ).strip()
+    with c4:
+        unread_only = st.checkbox("Unread only", value=False, key="feed_unread")
+
+    if unread_only and not agent:
+        st.warning("Unread filter requires an agent. Showing all entries.")
+    unread_filter = unread_only if agent else None
+
+    try:
+        result = cortex_client.get_feed(
+            since=since,
+            agent=agent or None,
+            kind=kind,
+            unread=unread_filter,
+        )
+    except Exception as e:
+        if "404" in str(e):
+            st.info("Feed endpoint not available yet.")
+            return
+        st.error(f"Failed to fetch feed: {e}")
+        return
+
+    entries = result.get("entries", [])
+    if not entries:
+        st.info("No feed entries found")
+        return
+
+    kind_icon = {
+        "prompt": "📝",
+        "completion": "✅",
+        "task_complete": "🎯",
+        "system": "⚙️",
+    }
+
+    for entry in reversed(entries[-30:]):
+        entry_kind = entry.get("kind", "system")
+        icon = kind_icon.get(entry_kind, "•")
+        entry_agent = entry.get("agent", "unknown")
+        timestamp = format_timestamp(entry.get("timestamp", ""))
+        summary = entry.get("summary", "(no summary)")
+        priority = entry.get("priority", "normal")
+        files = entry.get("files", []) or []
+        task_id = entry.get("taskId")
+        trace_id = entry.get("traceId")
+        tokens = entry.get("tokens")
+
+        st.markdown(f"{icon} **[{entry_kind}]** `{entry_agent}` — {summary}")
+        st.caption(f"{timestamp} | priority: {priority}" + (f" | tokens: {tokens}" if tokens is not None else ""))
+        if files:
+            st.caption("📁 " + ", ".join(files[:6]) + ("..." if len(files) > 6 else ""))
+        if task_id:
+            st.caption(f"taskId: `{task_id}`")
+        if trace_id:
+            st.caption(f"traceId: `{trace_id}`")
+        st.divider()
+
+
 def main():
     """Main dashboard application."""
     init_page_config()
@@ -469,8 +550,8 @@ def main():
             # Users need to use browser refresh or an external auto-reload extension
     
     # Main content - use tabs for organization
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["📊 Dashboard", "👥 Agents & Locks", "📜 Activity", "📋 Task Board", "💬 Messages", "⚡ Actions"]
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+        ["📊 Dashboard", "👥 Agents & Locks", "📜 Activity", "📋 Task Board", "💬 Messages", "📰 Feed", "⚡ Actions"]
     )
     
     with tab1:
@@ -508,6 +589,10 @@ def main():
         render_messages_tab()
     
     with tab6:
+        # Shared Feed tab
+        render_feed_tab()
+
+    with tab7:
         # Quick actions
         render_quick_actions()
         st.markdown("---")

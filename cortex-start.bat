@@ -10,8 +10,8 @@ setlocal enabledelayedexpansion
 set CORTEX_DIR=%~dp0
 set DAEMON_JS=%CORTEX_DIR%src\daemon.js
 set PID_FILE=%USERPROFILE%\.cortex\cortex.pid
-set LOG_OUT=%CORTEX_DIR%daemon.out.log
-set LOG_ERR=%CORTEX_DIR%daemon.err.log
+set LOG_OUT=%CORTEX_DIR%logs\daemon.out.log
+set LOG_ERR=%CORTEX_DIR%logs\daemon.err.log
 
 if "%1"=="stop" goto :stop
 if "%1"=="status" goto :status

@@ -237,6 +237,31 @@ def get_messages(agent: str) -> dict:
         return json.loads(resp.read())
 
 
+def get_feed(
+    since: str = "1h",
+    agent: str | None = None,
+    kind: str | None = None,
+    unread: bool | None = None,
+) -> dict:
+    """Get shared feed entries."""
+    token = _read_token()
+    if not token:
+        raise RuntimeError("No auth token found")
+
+    params: dict[str, str] = {"since": since}
+    if agent:
+        params["agent"] = agent
+    if kind and kind != "all":
+        params["kind"] = kind
+    if unread is not None:
+        params["unread"] = "true" if unread else "false"
+
+    req = Request(f"{BASE_URL}/feed?{urlencode(params)}")
+    req.add_header("Authorization", f"Bearer {token}")
+    with urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+
 if __name__ == "__main__":
     try:
         h = health()
