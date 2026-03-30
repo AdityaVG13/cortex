@@ -1,5 +1,6 @@
 pub mod boot;
 pub mod conductor;
+pub mod diary;
 pub mod events;
 pub mod feed;
 pub mod health;

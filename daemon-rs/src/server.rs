@@ -15,6 +15,8 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/recall", get(handlers::recall::handle_recall))
         .route("/peek", get(handlers::recall::handle_peek))
         .route("/boot", get(handlers::boot::handle_boot))
+        .route("/diary", post(handlers::diary::handle_diary))
+        .route("/recall/budget", get(handlers::recall::handle_budget_recall))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
         .route("/archive", post(handlers::mutate::handle_archive))

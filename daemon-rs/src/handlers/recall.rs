@@ -84,6 +84,53 @@ pub async fn handle_recall(
     }
 }
 
+// ─── GET /recall/budget ──────────────────────────────────────────────────────
+
+pub async fn handle_budget_recall(
+    State(state): State<RuntimeState>,
+    Query(query): Query<RecallQuery>,
+) -> Response {
+    let q = match query.q.as_deref() {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Missing query parameter: q" }),
+            )
+        }
+    };
+
+    let budget = query.budget.unwrap_or(300);
+    let k = query.k.unwrap_or(10);
+
+    let mut conn = state.db.lock().await;
+    match run_budget_recall(&mut conn, &q, budget, k) {
+        Ok(results) => {
+            let spent: usize = results
+                .iter()
+                .map(|item| {
+                    item.tokens
+                        .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+                })
+                .sum();
+            let saved = budget as i64 - spent as i64;
+            json_response(
+                StatusCode::OK,
+                json!({
+                    "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
+                    "budget": budget,
+                    "spent": spent,
+                    "saved": saved,
+                }),
+            )
+        }
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Budget recall failed: {e}") }),
+        ),
+    }
+}
+
 // ─── GET /peek ───────────────────────────────────────────────────────────────
 
 pub async fn handle_peek(
