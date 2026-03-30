@@ -65,6 +65,8 @@ pub struct RuntimeState {
     pub home: std::path::PathBuf,
     /// Absolute path of the SQLite database file.
     pub db_path: std::path::PathBuf,
+    /// In-process ONNX embedding engine (None if model not downloaded yet).
+    pub embedding_engine: Option<Arc<crate::embeddings::EmbeddingEngine>>,
 }
 
 impl RuntimeState {
@@ -125,6 +127,16 @@ pub fn initialize(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
+    // Load embedding engine (non-blocking -- model may not be downloaded yet).
+    let models_dir = crate::auth::cortex_dir().join("models");
+    let embedding_engine = crate::embeddings::EmbeddingEngine::load(&models_dir).map(Arc::new);
+
+    if embedding_engine.is_some() {
+        eprintln!("[cortex] Embedding engine loaded ({}-dim, in-process ONNX)", crate::embeddings::DIMENSION);
+    } else {
+        eprintln!("[cortex] Embedding engine not available -- keyword search only until model downloaded");
+    }
+
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
         token: Arc::new(token),
@@ -137,6 +149,7 @@ pub fn initialize(
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         home,
         db_path: db_path.to_path_buf(),
+        embedding_engine,
     };
 
     Ok((state, shutdown_rx))

@@ -20,6 +20,16 @@ tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "sync", "
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 
+# Embeddings (in-process ONNX)
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+ndarray = "0.16"
+tokenizers = { version = "0.21", default-features = false, features = ["progressbar", "fancy-regex"] }
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+dirs = "6"
+
+# HTTP middleware
+tower-http = { version = "0.6", features = ["cors"] }
+
 [profile.release]
 opt-level = 3
 lto = true
