@@ -8,6 +8,7 @@ REM        cortex-start status   (check if running)
 setlocal enabledelayedexpansion
 
 set CORTEX_DIR=%~dp0
+set DAEMON_RS=%CORTEX_DIR%daemon-rs\target\release\cortex.exe
 set DAEMON_JS=%CORTEX_DIR%src\daemon.js
 set PID_FILE=%USERPROFILE%\.cortex\cortex.pid
 set LOG_OUT=%CORTEX_DIR%logs\daemon.out.log
@@ -37,7 +38,7 @@ if exist "%PID_FILE%" (
 
 REM Start daemon detached via wmic (survives terminal close)
 echo [cortex] Starting daemon...
-start "Cortex Daemon" /MIN cmd /c "node "%DAEMON_JS%" serve >"%LOG_OUT%" 2>"%LOG_ERR%""
+start "Cortex Daemon" /MIN cmd /c ""%DAEMON_RS%" serve >"%LOG_OUT%" 2>"%LOG_ERR%""
 
 REM Wait for it to come up (max 5s)
 for /L %%i in (1,1,10) do (
