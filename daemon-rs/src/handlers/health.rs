@@ -59,7 +59,7 @@ pub async fn handle_digest(State(state): State<RuntimeState>) -> Response {
     }
 }
 
-fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
+pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let today_like = format!("{today}%");
 

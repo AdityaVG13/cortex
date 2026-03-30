@@ -4,6 +4,7 @@ pub mod diary;
 pub mod events;
 pub mod feed;
 pub mod health;
+pub mod mcp;
 pub mod mutate;
 pub mod recall;
 pub mod store;

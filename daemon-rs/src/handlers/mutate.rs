@@ -62,7 +62,7 @@ pub async fn handle_forget(
     }
 }
 
-fn forget_keyword(conn: &mut Connection, keyword: &str) -> Result<usize, String> {
+pub fn forget_keyword(conn: &mut Connection, keyword: &str) -> Result<usize, String> {
     let pattern = format!("%{}%", keyword.to_lowercase());
     let now = now_iso();
     let memories = conn
@@ -132,7 +132,7 @@ pub async fn handle_resolve(
     }
 }
 
-fn resolve_decision(
+pub fn resolve_decision(
     conn: &mut Connection,
     keep_id: i64,
     action: &str,

@@ -171,7 +171,7 @@ pub async fn handle_peek(
 
 // ─── Unified recall pipeline ─────────────────────────────────────────────────
 
-async fn execute_unified_recall(
+pub async fn execute_unified_recall(
     state: &RuntimeState,
     query_text: &str,
     budget: usize,

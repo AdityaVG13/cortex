@@ -78,7 +78,7 @@ pub async fn handle_store(
 ///      disputes_id, then mark existing entry as 'disputed' too.
 ///   4. No conflict: compute surprise = 1 - max_sim; reject if surprise < 0.25
 ///      (duplicate suppression). Otherwise insert as 'active'.
-fn store_decision(
+pub fn store_decision(
     conn: &mut Connection,
     decision: &str,
     context: Option<String>,
