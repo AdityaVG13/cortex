@@ -1,5 +1,6 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
+import * as THREE from "three";
 
 const CORTEX_BASE = "http://127.0.0.1:7437";
 
@@ -109,7 +110,13 @@ export function BrainVisualizer() {
 
   const fetchBrainData = useCallback(async () => {
     try {
-      const dumpRes = await fetch(`${CORTEX_BASE}/dump`)
+      const invoke = window.__TAURI__?.core?.invoke || null;
+      const token = invoke
+        ? await invoke("read_auth_token").catch(() => "")
+        : "";
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+      const dumpRes = await fetch(`${CORTEX_BASE}/dump`, { headers })
         .then(r => r.ok ? r.json() : null)
         .catch(() => null);
 
@@ -205,6 +212,36 @@ export function BrainVisualizer() {
 
   const memoryCt = useMemo(() => graphData.nodes.filter(n => n.group === "memory").length, [graphData]);
   const decisionCt = useMemo(() => graphData.nodes.filter(n => n.group === "decision").length, [graphData]);
+  const nodeThreeObject = useCallback((node) => {
+    const color = getAgentColor(node.agent);
+    const radius = Math.max(1.6, (node.val || 3) * 0.45);
+
+    const group = new THREE.Group();
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 18, 18),
+      new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity: 0.9,
+        metalness: 0.12,
+        roughness: 0.32,
+      })
+    );
+    group.add(core);
+
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(radius * 1.9, 18, 18),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.22,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      })
+    );
+    group.add(glow);
+    return group;
+  }, []);
 
   // Error / loading states
   if (error) {
@@ -324,8 +361,8 @@ export function BrainVisualizer() {
       <ForceGraph3D
         ref={graphRef}
         graphData={graphData}
-        nodeColor={node => getAgentColor(node.agent)}
-        nodeVal={node => node.val || 3}
+        nodeThreeObject={nodeThreeObject}
+        nodeThreeObjectExtend={true}
         nodeLabel={node => `${node.label} (${node.agent})`}
         linkColor={link => link.type === "conflict" ? "#ff1744" : "rgba(0, 212, 255, 0.06)"}
         linkWidth={link => link.type === "conflict" ? 1.5 : 0.3}

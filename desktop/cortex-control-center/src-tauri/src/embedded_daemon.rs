@@ -33,6 +33,8 @@ const MAX_MESSAGES_PER_AGENT: i64 = 100;
 const MAX_TASKS: i64 = 500;
 const MAX_FEED: i64 = 200;
 const FEED_TTL_SECONDS: i64 = 4 * 60 * 60;
+const PRECACHE_TTL_MS: i64 = 5 * 60 * 1000;
+const MAX_RECALL_HISTORY: usize = 50;
 
 #[derive(Clone)]
 struct FeedEntry {
@@ -55,6 +57,20 @@ struct RecallItem {
   relevance: f64,
   excerpt: String,
   method: String,
+  tokens: Option<usize>,
+}
+
+#[derive(Clone)]
+struct RecallHistoryEntry {
+  query: String,
+  timestamp: i64,
+}
+
+#[derive(Clone)]
+struct PreCacheEntry {
+  query: String,
+  results: Vec<RecallItem>,
+  expires_at: i64,
 }
 
 #[derive(Clone)]
@@ -80,6 +96,9 @@ struct RuntimeState {
   events: broadcast::Sender<DaemonEvent>,
   mcp_calls: Arc<AtomicU64>,
   mcp_sessions: Arc<Mutex<HashMap<String, i64>>>,
+  recall_history: Arc<Mutex<HashMap<String, Vec<RecallHistoryEntry>>>>,
+  pre_cache: Arc<Mutex<HashMap<String, PreCacheEntry>>>,
+  served_content: Arc<Mutex<HashMap<String, HashSet<u32>>>>,
 }
 
 impl RuntimeState {
@@ -205,6 +224,11 @@ fn run_daemon(shutdown_rx: mpsc::Receiver<()>, started_tx: mpsc::Sender<Result<(
       let _ = graceful_rx.await;
     });
     let _ = server.await;
+
+    {
+      let conn = state.db.lock().await;
+      checkpoint_wal_best_effort(&conn);
+    }
   });
 }
 
@@ -261,6 +285,7 @@ fn initialize_state() -> Result<RuntimeState, String> {
 
   let conn = Connection::open(&db_path)
     .map_err(|err| format!("Failed to open DB {}: {err}", db_path.display()))?;
+  configure_sqlite(&conn).map_err(|err| format!("Failed to configure SQLite pragmas: {err}"))?;
   initialize_schema(&conn).map_err(|err| format!("Failed to initialize schema: {err}"))?;
 
   let token = if let Ok(existing) = fs::read_to_string(&token_path) {
@@ -287,7 +312,30 @@ fn initialize_state() -> Result<RuntimeState, String> {
     events,
     mcp_calls: Arc::new(AtomicU64::new(0)),
     mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
+    recall_history: Arc::new(Mutex::new(HashMap::new())),
+    pre_cache: Arc::new(Mutex::new(HashMap::new())),
+    served_content: Arc::new(Mutex::new(HashMap::new())),
   })
+}
+
+fn configure_sqlite(conn: &Connection) -> rusqlite::Result<()> {
+  conn.execute_batch(
+    r#"
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = FULL;
+    PRAGMA foreign_keys = ON;
+    "#,
+  )?;
+  Ok(())
+}
+
+fn checkpoint_wal(conn: &Connection) -> rusqlite::Result<()> {
+  conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+  Ok(())
+}
+
+fn checkpoint_wal_best_effort(conn: &Connection) {
+  let _ = checkpoint_wal(conn);
 }
 
 fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
@@ -352,6 +400,14 @@ fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
       data TEXT,
       source_agent TEXT,
       created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS co_occurrence (
+      source_a TEXT NOT NULL,
+      source_b TEXT NOT NULL,
+      count INTEGER DEFAULT 1,
+      last_seen TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (source_a, source_b)
     );
 
     CREATE TABLE IF NOT EXISTS locks (
@@ -424,6 +480,9 @@ fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
       last_seen_id TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_cooccur_a ON co_occurrence(source_a);
+    CREATE INDEX IF NOT EXISTS idx_cooccur_b ON co_occurrence(source_b);
     "#,
   )?;
   Ok(())
@@ -452,6 +511,8 @@ struct BootQuery {
 struct RecallQuery {
   q: Option<String>,
   k: Option<usize>,
+  budget: Option<usize>,
+  agent: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -953,6 +1014,8 @@ async fn handle_boot(
   let profile = query.profile.unwrap_or_else(|| "full".to_string());
   let max_tokens = query.budget.unwrap_or(600) as usize;
 
+  clear_served_on_boot(&state, &agent).await;
+
   let conn = state.db.lock().await;
   let _ = clean_expired_locks(&conn);
   let _ = clean_expired_sessions(&conn);
@@ -968,8 +1031,8 @@ async fn handle_boot(
     "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
     params![
       "agent_boot",
-      serde_json::to_string(&json!({"timestamp": boot_ts, "agent": agent})).unwrap_or_default(),
-      agent
+      serde_json::to_string(&json!({"timestamp": boot_ts, "agent": agent.clone()})).unwrap_or_default(),
+      agent.clone()
     ],
   );
 
@@ -1017,6 +1080,23 @@ async fn handle_boot(
   let saved = raw_baseline.saturating_sub(token_estimate);
   let percent = if raw_baseline > 0 { (saved * 100) / raw_baseline } else { 0 };
 
+  let _ = conn.execute(
+    "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
+    params![
+      "boot_savings",
+      serde_json::to_string(&json!({
+        "agent": agent.clone(),
+        "served": token_estimate,
+        "baseline": raw_baseline,
+        "saved": saved,
+        "percent": percent
+      }))
+      .unwrap_or_default(),
+      "rust-daemon"
+    ],
+  );
+  checkpoint_wal_best_effort(&conn);
+
   state.emit("agent_boot", json!({"agent": agent, "profile": profile}));
 
   json_response(
@@ -1034,9 +1114,21 @@ async fn handle_boot(
 async fn handle_recall(
   State(state): State<RuntimeState>,
   Query(query): Query<RecallQuery>,
+  headers: HeaderMap,
 ) -> Response {
   let q = query.q.unwrap_or_default();
-  let k = query.k.unwrap_or(7);
+  let k = query.k.unwrap_or(10);
+  let budget = query.budget.unwrap_or(200);
+  let agent = query
+    .agent
+    .or_else(|| {
+      headers
+        .get("x-source-agent")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+    })
+    .unwrap_or_else(|| "http".to_string());
+
   if q.trim().is_empty() {
     return json_response(
       StatusCode::BAD_REQUEST,
@@ -1044,12 +1136,8 @@ async fn handle_recall(
     );
   }
 
-  let mut conn = state.db.lock().await;
-  match run_recall(&mut conn, &q, k) {
-    Ok(results) => json_response(
-      StatusCode::OK,
-      json!({ "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>() }),
-    ),
+  match execute_unified_recall(&state, q.trim(), budget, k, &agent).await {
+    Ok(payload) => json_response(StatusCode::OK, payload),
     Err(err) => json_response(
       StatusCode::INTERNAL_SERVER_ERROR,
       json!({ "error": format!("Recall failed: {err}") }),
@@ -1144,32 +1232,64 @@ async fn handle_digest(State(state): State<RuntimeState>) -> Response {
   }
 }
 
-async fn handle_dump(State(state): State<RuntimeState>) -> Response {
+async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+  if let Err(resp) = ensure_auth(&headers, &state) {
+    return resp;
+  }
+
   let conn = state.db.lock().await;
   let memories: Vec<Value> = conn.prepare(
-    "SELECT id, text, source, type, score, source_agent FROM memories WHERE status = 'active' ORDER BY id"
+    "SELECT id, text, source, type, tags, source_agent, confidence, status, score, retrievals, last_accessed, pinned, disputes_id, supersedes_id, confirmed_by, created_at, updated_at
+     FROM memories
+     WHERE status = 'active'
+     ORDER BY score DESC"
   ).and_then(|mut stmt| {
     stmt.query_map([], |row| Ok(json!({
       "id": row.get::<_, i64>(0)?,
       "text": row.get::<_, String>(1).unwrap_or_default(),
       "source": row.get::<_, Option<String>>(2).unwrap_or(None),
       "type": row.get::<_, String>(3).unwrap_or_default(),
-      "score": row.get::<_, f64>(4).unwrap_or(1.0),
+      "tags": row.get::<_, Option<String>>(4).unwrap_or(None),
       "source_agent": row.get::<_, Option<String>>(5).unwrap_or(None),
+      "confidence": row.get::<_, Option<f64>>(6).unwrap_or(Some(0.8)),
+      "status": row.get::<_, Option<String>>(7).unwrap_or(Some("active".to_string())),
+      "score": row.get::<_, Option<f64>>(8).unwrap_or(Some(1.0)),
+      "retrievals": row.get::<_, Option<i64>>(9).unwrap_or(Some(0)),
+      "last_accessed": row.get::<_, Option<String>>(10).unwrap_or(None),
+      "pinned": row.get::<_, Option<i64>>(11).unwrap_or(Some(0)),
+      "disputes_id": row.get::<_, Option<i64>>(12).unwrap_or(None),
+      "supersedes_id": row.get::<_, Option<i64>>(13).unwrap_or(None),
+      "confirmed_by": row.get::<_, Option<String>>(14).unwrap_or(None),
+      "created_at": row.get::<_, Option<String>>(15).unwrap_or(None),
+      "updated_at": row.get::<_, Option<String>>(16).unwrap_or(None),
     }))).map(|rows| rows.filter_map(|r| r.ok()).collect())
   }).unwrap_or_default();
 
   let decisions: Vec<Value> = conn.prepare(
-    "SELECT id, decision, context, score, source_agent, status, disputes_id FROM decisions WHERE status IN ('active','disputed') ORDER BY id"
+    "SELECT id, decision, context, type, source_agent, confidence, surprise, status, score, retrievals, last_accessed, pinned, parent_id, disputes_id, supersedes_id, confirmed_by, created_at, updated_at
+     FROM decisions
+     WHERE status = 'active'
+     ORDER BY score DESC"
   ).and_then(|mut stmt| {
     stmt.query_map([], |row| Ok(json!({
       "id": row.get::<_, i64>(0)?,
       "decision": row.get::<_, String>(1).unwrap_or_default(),
       "context": row.get::<_, Option<String>>(2).unwrap_or(None),
-      "score": row.get::<_, f64>(3).unwrap_or(1.0),
+      "type": row.get::<_, Option<String>>(3).unwrap_or(Some("decision".to_string())),
       "source_agent": row.get::<_, Option<String>>(4).unwrap_or(None),
-      "status": row.get::<_, String>(5).unwrap_or_default(),
-      "disputes_id": row.get::<_, Option<i64>>(6).unwrap_or(None),
+      "confidence": row.get::<_, Option<f64>>(5).unwrap_or(Some(0.8)),
+      "surprise": row.get::<_, Option<f64>>(6).unwrap_or(Some(1.0)),
+      "status": row.get::<_, Option<String>>(7).unwrap_or(Some("active".to_string())),
+      "score": row.get::<_, Option<f64>>(8).unwrap_or(Some(1.0)),
+      "retrievals": row.get::<_, Option<i64>>(9).unwrap_or(Some(0)),
+      "last_accessed": row.get::<_, Option<String>>(10).unwrap_or(None),
+      "pinned": row.get::<_, Option<i64>>(11).unwrap_or(Some(0)),
+      "parent_id": row.get::<_, Option<i64>>(12).unwrap_or(None),
+      "disputes_id": row.get::<_, Option<i64>>(13).unwrap_or(None),
+      "supersedes_id": row.get::<_, Option<i64>>(14).unwrap_or(None),
+      "confirmed_by": row.get::<_, Option<String>>(15).unwrap_or(None),
+      "created_at": row.get::<_, Option<String>>(16).unwrap_or(None),
+      "updated_at": row.get::<_, Option<String>>(17).unwrap_or(None),
     }))).map(|rows| rows.filter_map(|r| r.ok()).collect())
   }).unwrap_or_default();
 
@@ -1359,6 +1479,7 @@ async fn handle_lock(
         "UPDATE locks SET expires_at = ?1 WHERE path = ?2",
         params![expires_at.clone(), path],
       );
+      checkpoint_wal_best_effort(&conn);
       return json_response(
         StatusCode::OK,
         json!({ "locked": true, "lockId": lock_id, "expiresAt": expires_at }),
@@ -1387,6 +1508,7 @@ async fn handle_lock(
     params![lock_id.clone(), path.clone(), agent.clone(), now_iso(), expires_at.clone()],
   ) {
     Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit(
         "lock",
         json!({ "action": "acquired", "path": path, "agent": agent }),
@@ -1456,6 +1578,7 @@ async fn handle_unlock(
   }
 
   let _ = conn.execute("DELETE FROM locks WHERE path = ?1", params![path.clone()]);
+  checkpoint_wal_best_effort(&conn);
   state.emit(
     "lock",
     json!({ "action": "released", "path": path, "agent": agent }),
@@ -1521,7 +1644,10 @@ async fn handle_post_activity(
       now_iso()
     ],
   ) {
-    Ok(_) => json_response(StatusCode::OK, json!({ "recorded": true, "activityId": id })),
+    Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
+      json_response(StatusCode::OK, json!({ "recorded": true, "activityId": id }))
+    }
     Err(err) => json_response(
       StatusCode::INTERNAL_SERVER_ERROR,
       json!({ "error": format!("Post activity failed: {err}") }),
@@ -1624,7 +1750,10 @@ async fn handle_post_message(
     "INSERT INTO messages (id, sender, recipient, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
     params![id.clone(), from, to, message, now_iso()],
   ) {
-    Ok(_) => json_response(StatusCode::OK, json!({ "sent": true, "messageId": id })),
+    Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
+      json_response(StatusCode::OK, json!({ "sent": true, "messageId": id }))
+    }
     Err(err) => json_response(
       StatusCode::INTERNAL_SERVER_ERROR,
       json!({ "error": format!("Post message failed: {err}") }),
@@ -1702,6 +1831,7 @@ async fn handle_session_start(
     params![agent.clone(), session_id.clone(), body.project.clone(), files_json, body.description.clone(), started_at, expires_at],
   ) {
     Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit("session", json!({ "action": "started", "agent": agent, "project": body.project }));
       json_response(
         StatusCode::OK,
@@ -1775,10 +1905,13 @@ async fn handle_session_heartbeat(
      WHERE agent = ?5",
     params![now.to_rfc3339(), expires_at.clone(), files_json, body.description, agent],
   ) {
-    Ok(_) => json_response(
-      StatusCode::OK,
-      json!({ "renewed": true, "expiresAt": expires_at }),
-    ),
+    Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
+      json_response(
+        StatusCode::OK,
+        json!({ "renewed": true, "expiresAt": expires_at }),
+      )
+    }
     Err(err) => json_response(
       StatusCode::INTERNAL_SERVER_ERROR,
       json!({ "error": format!("Session heartbeat failed: {err}") }),
@@ -1808,6 +1941,7 @@ async fn handle_session_end(
   let mut conn = state.db.lock().await;
   match conn.execute("DELETE FROM sessions WHERE agent = ?1", params![agent.clone()]) {
     Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit("session", json!({ "action": "ended", "agent": agent }));
       json_response(StatusCode::OK, json!({ "ended": true }))
     }
@@ -1872,6 +2006,7 @@ async fn handle_create_task(
     ],
   ) {
     Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit("task", json!({ "action": "created", "taskId": task_id, "title": title }));
       json_response(StatusCode::CREATED, json!({ "taskId": task_id, "status": "pending" }))
     }
@@ -1945,6 +2080,7 @@ async fn handle_claim_task(
     params![agent.clone(), now_iso(), task_id.clone()],
   ) {
     Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit("task", json!({ "action": "claimed", "taskId": task_id, "title": title, "agent": agent }));
       json_response(StatusCode::OK, json!({ "claimed": true, "taskId": task_id }))
     }
@@ -2021,6 +2157,7 @@ async fn handle_complete_task(
           json!({ "feedId": entry.id, "agent": entry.agent, "kind": entry.kind, "summary": entry.summary }),
         );
       }
+      checkpoint_wal_best_effort(&conn);
       json_response(StatusCode::OK, json!({ "completed": true, "taskId": task_id }))
     }
     Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("Complete task failed: {err}") })),
@@ -2067,6 +2204,7 @@ async fn handle_abandon_task(
     params![task_id.clone()],
   ) {
     Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit("task", json!({ "action": "abandoned", "taskId": task_id, "title": title, "agent": agent }));
       json_response(StatusCode::OK, json!({ "abandoned": true, "taskId": task_id, "status": "pending" }))
     }
@@ -2174,6 +2312,7 @@ async fn handle_post_feed(
   let _ = clean_old_feed(&conn);
   match insert_feed_entry(&conn, &entry) {
     Ok(()) => {
+      checkpoint_wal_best_effort(&conn);
       state.emit(
         "feed",
         json!({ "feedId": entry.id, "agent": agent, "kind": kind, "summary": entry.summary }),
@@ -2282,7 +2421,10 @@ async fn handle_feed_ack(
      ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
     params![agent, last_seen_id, now_iso()],
   ) {
-    Ok(_) => json_response(StatusCode::OK, json!({ "acked": true })),
+    Ok(_) => {
+      checkpoint_wal_best_effort(&conn);
+      json_response(StatusCode::OK, json!({ "acked": true }))
+    }
     Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("Feed ack failed: {err}") })),
   }
 }
@@ -2554,9 +2696,17 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing required argument: query".to_string())?;
-      let mut conn = state.db.lock().await;
-      let results = run_recall(&mut conn, query, 7)?;
-      Ok(json!({ "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>() }))
+      let budget = args
+        .get("budget")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(200);
+      let agent = args
+        .get("source_agent")
+        .and_then(|v| v.as_str())
+        .or_else(|| args.get("agent").and_then(|v| v.as_str()))
+        .unwrap_or("mcp");
+      execute_unified_recall(state, query, budget, 10, agent).await
     }
     "cortex_store" => {
       let decision = args
@@ -2638,10 +2788,14 @@ fn mcp_tools() -> Vec<Value> {
     }),
     json!({
       "name": "cortex_recall",
-      "description": "Full hybrid semantic+keyword search with excerpts. Use cortex_peek first to check if recall is worth the tokens.",
+      "description": "Search Cortex brain for memories and decisions. Adapts detail level to token budget: 0=headlines, 200=balanced, 500+=full.",
       "inputSchema": {
         "type": "object",
-        "properties": { "query": { "type": "string", "description": "Search query text" } },
+        "properties": {
+          "query": { "type": "string", "description": "Search query text" },
+          "budget": { "type": "number", "description": "Token budget. 0=headlines only, 200=balanced, 500+=full detail" },
+          "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" }
+        },
         "required": ["query"]
       }
     }),
@@ -2747,6 +2901,390 @@ async fn response_to_json(response: Response) -> Result<Value, String> {
   Ok(value)
 }
 
+async fn execute_unified_recall(
+  state: &RuntimeState,
+  query_text: &str,
+  budget: usize,
+  k: usize,
+  agent: &str,
+) -> Result<Value, String> {
+  if budget > 0 {
+    if let Some(cached) = get_pre_cached(state, agent, query_text).await {
+      let deduped_cached = dedup_and_mark_served(state, agent, cached).await;
+      return Ok(json!({
+        "results": deduped_cached.into_iter().map(recall_to_json).collect::<Vec<_>>(),
+        "budget": budget,
+        "spent": 0,
+        "saved": budget as i64,
+        "mode": if budget >= 500 { "full" } else { "balanced" },
+        "cached": true
+      }));
+    }
+  }
+
+  let mut conn = state.db.lock().await;
+  let mut results = if budget == 0 {
+    run_recall(&mut conn, query_text, k)?
+  } else {
+    run_budget_recall(&mut conn, query_text, budget, k)?
+  };
+
+  let sources: Vec<String> = results.iter().map(|item| item.source.clone()).collect();
+  let predictions = if sources.len() >= 2 {
+    if record_co_occurrence(&conn, &sources).is_ok() {
+      checkpoint_wal_best_effort(&conn);
+    } else {
+      let _ = reset_co_occurrence_table(&conn);
+    }
+
+    match predict_from_co_occurrence(&conn, &sources, 3) {
+      Ok(predictions) => predictions,
+      Err(_) => {
+        let _ = reset_co_occurrence_table(&conn);
+        vec![]
+      }
+    }
+  } else {
+    vec![]
+  };
+  drop(conn);
+
+  record_recall_pattern(state, agent, query_text).await;
+  let state_clone = state.clone();
+  let agent_owned = agent.to_string();
+  let query_owned = query_text.to_string();
+  tokio::spawn(async move {
+    let _ = predict_and_cache(state_clone, &agent_owned, &query_owned).await;
+  });
+
+  if budget == 0 {
+    let headlines = results
+      .iter()
+      .map(|item| {
+        json!({
+          "source": item.source,
+          "relevance": item.relevance,
+          "method": item.method
+        })
+      })
+      .collect::<Vec<_>>();
+    return Ok(json!({
+      "count": headlines.len(),
+      "results": headlines,
+      "budget": 0,
+      "spent": 0,
+      "mode": "headlines"
+    }));
+  }
+
+  results = dedup_and_mark_served(state, agent, results).await;
+  let spent: usize = results
+    .iter()
+    .map(|item| {
+      item
+        .tokens
+        .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+    })
+    .sum();
+  let saved = budget as i64 - spent as i64;
+
+  let mut payload = json!({
+    "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
+    "budget": budget,
+    "spent": spent,
+    "saved": saved,
+    "mode": if budget >= 500 { "full" } else { "balanced" }
+  });
+
+  if let Value::Object(ref mut map) = payload {
+    if !predictions.is_empty() {
+      map.insert("predictions".to_string(), Value::Array(predictions));
+    }
+  }
+
+  Ok(payload)
+}
+
+fn run_budget_recall(
+  conn: &mut Connection,
+  query_text: &str,
+  token_budget: usize,
+  k: usize,
+) -> Result<Vec<RecallItem>, String> {
+  let raw = run_recall(conn, query_text, k)?;
+  if raw.is_empty() {
+    return Ok(vec![]);
+  }
+
+  let mut spent = 0usize;
+  let mut budgeted = Vec::new();
+  for (idx, item) in raw.into_iter().enumerate() {
+    let remaining = token_budget.saturating_sub(spent);
+    if remaining <= 10 {
+      break;
+    }
+
+    let max_chars = if idx == 0 {
+      ((remaining as f64 * 3.8) as usize).min(400)
+    } else if idx <= 2 {
+      ((remaining as f64 * 3.8) as usize).min(150)
+    } else {
+      ((remaining as f64 * 3.8) as usize).min(60)
+    };
+
+    let original = item.excerpt.clone();
+    let mut excerpt = truncate_chars(&original, max_chars);
+    if excerpt.chars().count() < original.chars().count() {
+      excerpt.push_str("...");
+    }
+    let tokens = estimate_tokens(&format!("{}{}", item.source, excerpt));
+    spent += tokens;
+
+    budgeted.push(RecallItem {
+      source: item.source,
+      relevance: item.relevance,
+      excerpt,
+      method: item.method,
+      tokens: Some(tokens),
+    });
+  }
+
+  Ok(budgeted)
+}
+
+fn record_co_occurrence(conn: &Connection, sources: &[String]) -> Result<(), String> {
+  if sources.len() < 2 {
+    return Ok(());
+  }
+
+  let unique = sources
+    .iter()
+    .filter(|source| !source.trim().is_empty())
+    .cloned()
+    .collect::<HashSet<_>>()
+    .into_iter()
+    .take(10)
+    .collect::<Vec<_>>();
+  if unique.len() < 2 {
+    return Ok(());
+  }
+
+  for i in 0..unique.len() {
+    for j in (i + 1)..unique.len() {
+      let (a, b) = if unique[i] <= unique[j] {
+        (unique[i].clone(), unique[j].clone())
+      } else {
+        (unique[j].clone(), unique[i].clone())
+      };
+      conn
+        .execute(
+          "INSERT INTO co_occurrence (source_a, source_b, count, last_seen)
+           VALUES (?1, ?2, 1, datetime('now'))
+           ON CONFLICT(source_a, source_b) DO UPDATE SET
+             count = count + 1,
+             last_seen = datetime('now')",
+          params![a, b],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+  }
+
+  Ok(())
+}
+
+fn predict_from_co_occurrence(
+  conn: &Connection,
+  recalled_sources: &[String],
+  limit: usize,
+) -> Result<Vec<Value>, String> {
+  if recalled_sources.is_empty() {
+    return Ok(vec![]);
+  }
+
+  let already_have = recalled_sources
+    .iter()
+    .filter(|source| !source.trim().is_empty())
+    .cloned()
+    .collect::<HashSet<_>>();
+  let mut candidates: HashMap<String, i64> = HashMap::new();
+
+  for source in &already_have {
+    let mut stmt = conn
+      .prepare(
+        "SELECT
+          CASE WHEN source_a = ?1 THEN source_b ELSE source_a END AS partner,
+          count
+         FROM co_occurrence
+         WHERE source_a = ?1 OR source_b = ?1
+         ORDER BY count DESC
+         LIMIT 10",
+      )
+      .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+      .query_map(params![source], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+      })
+      .map_err(|e| e.to_string())?;
+
+    for row in rows.flatten() {
+      let (partner, count) = row;
+      if already_have.contains(&partner) {
+        continue;
+      }
+      let existing = candidates.get(&partner).copied().unwrap_or(0);
+      candidates.insert(partner, existing + count);
+    }
+  }
+
+  let mut ranked = candidates.into_iter().collect::<Vec<_>>();
+  ranked.sort_by(|a, b| b.1.cmp(&a.1));
+  ranked.truncate(limit);
+
+  Ok(ranked
+    .into_iter()
+    .map(|(source, score)| json!({ "source": source, "coScore": score }))
+    .collect())
+}
+
+async fn record_recall_pattern(state: &RuntimeState, agent: &str, query: &str) {
+  let mut history = state.recall_history.lock().await;
+  let entries = history
+    .entry(agent.to_string())
+    .or_insert_with(Vec::<RecallHistoryEntry>::new);
+  entries.push(RecallHistoryEntry {
+    query: query.to_string(),
+    timestamp: Utc::now().timestamp_millis(),
+  });
+  if entries.len() > MAX_RECALL_HISTORY {
+    let overflow = entries.len() - MAX_RECALL_HISTORY;
+    entries.drain(0..overflow);
+  }
+}
+
+async fn get_pre_cached(
+  state: &RuntimeState,
+  agent: &str,
+  query: &str,
+) -> Option<Vec<RecallItem>> {
+  let mut cache = state.pre_cache.lock().await;
+  let now = Utc::now().timestamp_millis();
+  if let Some(entry) = cache.get(agent) {
+    if entry.query == query && entry.expires_at > now {
+      return Some(entry.results.clone());
+    }
+  }
+
+  let should_remove = cache
+    .get(agent)
+    .map(|entry| entry.expires_at <= now)
+    .unwrap_or(false);
+  if should_remove {
+    cache.remove(agent);
+  }
+  None
+}
+
+async fn predict_and_cache(
+  state: RuntimeState,
+  agent: &str,
+  current_query: &str,
+) -> Result<(), String> {
+  let predicted_query = {
+    let history = state.recall_history.lock().await;
+    let entries = match history.get(agent) {
+      Some(entries) if entries.len() >= 3 => entries,
+      _ => return Ok(()),
+    };
+
+    let mut followers: HashMap<String, (i64, i64)> = HashMap::new();
+    for pair in entries.windows(2) {
+      if pair[0].query == current_query {
+        let next_query = pair[1].query.clone();
+        let entry = followers.entry(next_query).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 = entry.1.max(pair[1].timestamp);
+      }
+    }
+
+    followers
+      .into_iter()
+      .filter(|(query, _)| query != current_query)
+      .max_by(|a, b| {
+        a.1
+          .0
+          .cmp(&b.1.0)
+          .then_with(|| a.1.1.cmp(&b.1.1))
+          .then_with(|| b.0.cmp(&a.0))
+      })
+      .map(|(query, _)| query)
+  };
+
+  let predicted_query = match predicted_query {
+    Some(query) if !query.trim().is_empty() => query,
+    _ => return Ok(()),
+  };
+
+  let mut conn = state.db.lock().await;
+  let results = run_budget_recall(&mut conn, &predicted_query, 200, 5)?;
+  drop(conn);
+  if results.is_empty() {
+    return Ok(());
+  }
+
+  let mut cache = state.pre_cache.lock().await;
+  cache.insert(
+    agent.to_string(),
+    PreCacheEntry {
+      query: predicted_query,
+      results,
+      expires_at: Utc::now().timestamp_millis() + PRECACHE_TTL_MS,
+    },
+  );
+  Ok(())
+}
+
+fn hash_content(content: &str) -> u32 {
+  let mut hash: u32 = 2_166_136_261;
+  for ch in content.chars().take(100) {
+    hash ^= ch as u32;
+    hash = hash.wrapping_mul(16_777_619);
+  }
+  hash
+}
+
+async fn dedup_and_mark_served(
+  state: &RuntimeState,
+  agent: &str,
+  results: Vec<RecallItem>,
+) -> Vec<RecallItem> {
+  if results.is_empty() {
+    return results;
+  }
+
+  let mut served = state.served_content.lock().await;
+  let set = served
+    .entry(agent.to_string())
+    .or_insert_with(HashSet::<u32>::new);
+
+  let mut filtered = Vec::new();
+  for result in results {
+    let hash = hash_content(&result.excerpt);
+    if set.contains(&hash) {
+      continue;
+    }
+    set.insert(hash);
+    filtered.push(result);
+  }
+
+  filtered
+}
+
+async fn clear_served_on_boot(state: &RuntimeState, agent: &str) {
+  let mut served = state.served_content.lock().await;
+  served.remove(agent);
+}
+
 fn run_recall(conn: &mut Connection, query_text: &str, k: usize) -> Result<Vec<RecallItem>, String> {
   let extracted = extract_keywords(query_text);
   let keyword_query = if extracted.is_empty() {
@@ -2770,6 +3308,7 @@ fn run_recall(conn: &mut Connection, query_text: &str, k: usize) -> Result<Vec<R
           relevance: row.relevance,
           excerpt: row.excerpt,
           method: "keyword".to_string(),
+          tokens: None,
         },
       );
     }
@@ -2789,6 +3328,7 @@ fn run_recall(conn: &mut Connection, query_text: &str, k: usize) -> Result<Vec<R
           relevance: row.relevance,
           excerpt: row.excerpt,
           method: "keyword".to_string(),
+          tokens: None,
         },
       );
     }
@@ -3041,6 +3581,7 @@ fn store_decision(
     json!({ "id": id, "source_agent": source_agent }),
     "rust-daemon",
   );
+  checkpoint_wal_best_effort(conn);
   Ok(json!({ "stored": true, "id": id, "status": "active", "surprise": 1.0 }))
 }
 
@@ -3069,6 +3610,7 @@ fn forget_keyword(conn: &mut Connection, keyword: &str) -> Result<usize, String>
       json!({ "keyword": keyword, "affected": affected }),
       "rust-daemon",
     );
+    checkpoint_wal_best_effort(conn);
   }
   Ok(affected)
 }
@@ -3120,6 +3662,7 @@ fn resolve_decision(
     json!({ "keepId": keep_id, "action": action, "supersededId": superseded_id }),
     "rust-daemon",
   );
+  checkpoint_wal_best_effort(conn);
   Ok(())
 }
 
@@ -3720,10 +4263,16 @@ fn bump_retrieval(conn: &Connection, source: &str) {
 }
 
 fn recall_to_json(item: RecallItem) -> Value {
-  json!({
+  let mut payload = json!({
     "source": item.source,
     "relevance": item.relevance,
     "excerpt": item.excerpt,
     "method": item.method
-  })
+  });
+  if let Some(tokens) = item.tokens {
+    if let Value::Object(ref mut map) = payload {
+      map.insert("tokens".to_string(), Value::Number((tokens as u64).into()));
+    }
+  }
+  payload
 }

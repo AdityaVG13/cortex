@@ -3,6 +3,7 @@
 mod embedded_daemon;
 
 use embedded_daemon::{EmbeddedDaemon, EmbeddedDaemonStatus};
+use rusqlite::Connection;
 use serde::Serialize;
 use std::env;
 use std::fs;
@@ -86,6 +87,10 @@ fn token_path() -> Result<PathBuf, String> {
   Ok(cortex_home()?.join(".cortex").join("cortex.token"))
 }
 
+fn cortex_db_path() -> Result<PathBuf, String> {
+  Ok(cortex_home()?.join("cortex").join("cortex.db"))
+}
+
 fn is_cortex_reachable() -> bool {
   let addr = SocketAddr::from(([127, 0, 0, 1], 7437));
   TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
@@ -115,6 +120,29 @@ fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 fn shutdown_embedded_daemon<R: Runtime>(app: &tauri::AppHandle<R>) {
   let daemon_state = app.state::<DaemonState>();
   let _ = daemon_state.stop();
+  let _ = flush_cortex_db_on_shutdown();
+}
+
+fn flush_cortex_db_on_shutdown() -> Result<(), String> {
+  let db_path = cortex_db_path()?;
+  if !db_path.exists() {
+    return Ok(());
+  }
+
+  let conn = Connection::open(&db_path)
+    .map_err(|err| format!("Failed to open DB for shutdown flush {}: {err}", db_path.display()))?;
+  conn.execute_batch(
+    r#"
+    PRAGMA journal_mode = WAL;
+    PRAGMA wal_checkpoint(TRUNCATE);
+    PRAGMA optimize;
+    "#,
+  )
+  .map_err(|err| format!("Failed to flush WAL on shutdown {}: {err}", db_path.display()))?;
+  conn
+    .close()
+    .map_err(|(_, err)| format!("Failed to close DB after shutdown flush: {err}"))?;
+  Ok(())
 }
 
 fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {

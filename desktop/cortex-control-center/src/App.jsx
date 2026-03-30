@@ -18,6 +18,7 @@ class BrainErrorBoundary extends Component {
 
 const CORTEX_BASE = "http://127.0.0.1:7437";
 const FALLBACK_REFRESH_MS = 15000;
+const ANALYTICS_REFRESH_MS = 60000;
 const SSE_REFRESH_THROTTLE_MS = 300;
 const SSE_RECONNECT_BASE_MS = 1000;
 const SSE_RECONNECT_MAX_MS = 30000;
@@ -533,6 +534,15 @@ export function App() {
   }, [refreshActivity]);
 
   useEffect(() => {
+    if (panel !== "analytics") return;
+    refreshSavings();
+    const timer = setInterval(() => {
+      refreshSavings();
+    }, ANALYTICS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [panel, refreshSavings]);
+
+  useEffect(() => {
     let stream = null;
     let refreshTimer = null;
     let reconnectTimer = null;
@@ -772,7 +782,7 @@ export function App() {
           </div>
           <p className="sidebar-status">{feedbackMessage}</p>
           <button type="button" className="btn-sidebar-collapse" onClick={() => setSidebarCollapsed(c => !c)}>
-            {sidebarCollapsed ? "▶" : "◀ Collapse"}
+            {sidebarCollapsed ? "▶" : "◀"}
           </button>
         </div>
       </aside>
