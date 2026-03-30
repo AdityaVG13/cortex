@@ -104,7 +104,19 @@ function initSchema(db) {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS co_occurrence (
+      source_a TEXT NOT NULL,
+      source_b TEXT NOT NULL,
+      count INTEGER DEFAULT 1,
+      last_seen TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (source_a, source_b)
+    )
+  `);
+
   // Create indexes for common queries
+  db.run('CREATE INDEX IF NOT EXISTS idx_cooccur_a ON co_occurrence(source_a)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_cooccur_b ON co_occurrence(source_b)');
   db.run('CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status)');
   db.run('CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)');
   db.run('CREATE INDEX IF NOT EXISTS idx_memories_source_agent ON memories(source_agent)');

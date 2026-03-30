@@ -931,6 +931,82 @@ function getDigest() {
   };
 }
 
+// ─── Co-occurrence Matrix ─────────────────────────────────────────────────
+// Tracks which memories/decisions get recalled together across sessions.
+// Used for predictive preloading: recall A → system knows B co-occurs → pre-cache B.
+
+/**
+ * Record that a set of sources were recalled together in a session.
+ * Updates the co_occurrence table with pair frequencies.
+ */
+function recordCoOccurrence(sources) {
+  if (!sources || sources.length < 2) return;
+  // Only track unique pairs from top 10 sources to bound computation
+  const unique = [...new Set(sources)].slice(0, 10);
+  for (let i = 0; i < unique.length; i++) {
+    for (let j = i + 1; j < unique.length; j++) {
+      const [a, b] = [unique[i], unique[j]].sort();
+      try {
+        db.run(`
+          INSERT INTO co_occurrence (source_a, source_b, count, last_seen)
+          VALUES (?, ?, 1, datetime('now'))
+          ON CONFLICT(source_a, source_b) DO UPDATE SET
+            count = count + 1,
+            last_seen = datetime('now')
+        `, [a, b]);
+      } catch { /* table may not exist yet — non-critical */ }
+    }
+  }
+}
+
+/**
+ * Get the top co-occurring sources for a given source.
+ * Returns sources most frequently recalled alongside the input.
+ */
+function getCoOccurrences(source, limit = 5) {
+  try {
+    const rows = db.query(`
+      SELECT
+        CASE WHEN source_a = ? THEN source_b ELSE source_a END AS partner,
+        count,
+        last_seen
+      FROM co_occurrence
+      WHERE source_a = ? OR source_b = ?
+      ORDER BY count DESC
+      LIMIT ?
+    `, [source, source, source, limit]);
+    return rows;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Given a recall result set, predict what else the agent will need
+ * based on co-occurrence patterns. Returns sources not in the input set.
+ */
+function predictFromCoOccurrence(recalledSources, limit = 5) {
+  if (!recalledSources || recalledSources.length === 0) return [];
+
+  const alreadyHave = new Set(recalledSources);
+  const candidates = new Map(); // source → total co-occurrence score
+
+  for (const src of recalledSources) {
+    const partners = getCoOccurrences(src, 10);
+    for (const p of partners) {
+      if (alreadyHave.has(p.partner)) continue;
+      const existing = candidates.get(p.partner) || 0;
+      candidates.set(p.partner, existing + p.count);
+    }
+  }
+
+  // Sort by cumulative co-occurrence score
+  return [...candidates.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([source, score]) => ({ source, coScore: score }));
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -938,6 +1014,8 @@ module.exports = {
   indexAll,
   recall,
   budgetRecall,
+  recordCoOccurrence,
+  predictFromCoOccurrence,
   store,
   forget,
   getStats,

@@ -1908,11 +1908,25 @@ async function mcpDispatch(toolName, args) {
       const results = await brain.budgetRecall(args.query, budget, 10);
       recordRecallPattern(agent, args.query);
 
+      // Record co-occurrence for predictive preloading
+      const sources = results.map(r => r.source).filter(Boolean);
+      brain.recordCoOccurrence(sources);
+
+      // Get predictions for what else the agent might need
+      const predicted = brain.predictFromCoOccurrence(sources, 3);
+
       // Mark served for dedup
       for (const r of results) markServed(agent, r.excerpt);
 
       const spent = results.reduce((sum, r) => sum + (r.tokens || 0), 0);
-      return { results, budget, spent, saved: budget - spent, mode: budget >= 500 ? 'full' : 'balanced' };
+      return {
+        results,
+        budget,
+        spent,
+        saved: budget - spent,
+        mode: budget >= 500 ? 'full' : 'balanced',
+        predictions: predicted.length > 0 ? predicted : undefined,
+      };
     }
 
     case 'cortex_store': {
