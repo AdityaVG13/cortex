@@ -398,6 +398,51 @@ async function recall(queryText, k = 7) {
 }
 
 /**
+ * Budget-aware recall: returns results that fit within a token budget.
+ * First result gets full excerpt, subsequent results get progressively shorter.
+ * Much more token-efficient than fixed-length recall.
+ *
+ * @param {string} queryText - Search query
+ * @param {number} [tokenBudget=300] - Max tokens to spend on results
+ * @param {number} [k=10] - Max results to consider
+ * @returns {Array} Results with budget-adapted excerpts
+ */
+async function budgetRecall(queryText, tokenBudget = 300, k = 10) {
+  const raw = await recall(queryText, k);
+  if (!raw.length) return [];
+
+  const estimateTokens = (text) => Math.ceil((text || '').length / 3.8);
+  let spent = 0;
+  const budgeted = [];
+
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i];
+    const remaining = tokenBudget - spent;
+    if (remaining <= 10) break; // Not enough budget for even a one-liner
+
+    // Progressive detail: first result = full, then shorter
+    let maxChars;
+    if (i === 0) maxChars = Math.min(remaining * 3.8, 400); // Top result = up to 400 chars
+    else if (i <= 2) maxChars = Math.min(remaining * 3.8, 150); // Next 2 = 150 chars
+    else maxChars = Math.min(remaining * 3.8, 60); // Rest = one-liners
+
+    const excerpt = (r.excerpt || '').slice(0, Math.floor(maxChars));
+    const tokens = estimateTokens(r.source + excerpt);
+    spent += tokens;
+
+    budgeted.push({
+      source: r.source,
+      relevance: r.relevance,
+      excerpt: excerpt + (excerpt.length < (r.excerpt || '').length ? '...' : ''),
+      method: r.method,
+      tokens,
+    });
+  }
+
+  return budgeted;
+}
+
+/**
  * Load the text + source for a given target_type + target_id.
  */
 function loadTarget(targetType, targetId) {
@@ -892,6 +937,7 @@ module.exports = {
   init,
   indexAll,
   recall,
+  budgetRecall,
   store,
   forget,
   getStats,

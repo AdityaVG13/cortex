@@ -37,6 +37,98 @@ const tasks = new Map(); // taskId -> TaskObject
 const feed = []; // { id, agent, kind, summary, content, files, taskId, traceId, priority, timestamp, tokens }
 const feedAcks = new Map(); // agent -> lastSeenId
 const sseClients = new Set(); // active SSE connections
+
+// ─── Predictive Context Cache ─────────────────────────────────────────────
+// Tracks recall patterns per agent. When an agent recalls X, predict what
+// they'll recall next and pre-cache it. Eliminates cold-start on common flows.
+const recallHistory = new Map(); // agent -> [{ query, timestamp }]
+const preCache = new Map(); // agent -> { query, results, expires }
+const PRECACHE_TTL = 5 * 60 * 1000; // 5 min
+const MAX_RECALL_HISTORY = 50;
+
+function recordRecallPattern(agent, query) {
+  if (!recallHistory.has(agent)) recallHistory.set(agent, []);
+  const history = recallHistory.get(agent);
+  history.push({ query, timestamp: Date.now() });
+  if (history.length > MAX_RECALL_HISTORY) history.shift();
+
+  // Predict next query: if this agent has done A→B before, pre-cache B
+  predictAndCache(agent, query).catch(() => {});
+}
+
+async function predictAndCache(agent, currentQuery) {
+  const history = recallHistory.get(agent) || [];
+  if (history.length < 3) return;
+
+  // Find what query typically follows the current one
+  const followers = new Map(); // query -> count
+  for (let i = 0; i < history.length - 1; i++) {
+    if (history[i].query === currentQuery) {
+      const next = history[i + 1].query;
+      followers.set(next, (followers.get(next) || 0) + 1);
+    }
+  }
+
+  if (followers.size === 0) return;
+
+  // Get the most common follower
+  const [predicted] = [...followers.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!predicted || predicted === currentQuery) return;
+
+  // Pre-cache the predicted recall
+  try {
+    const results = await brain.budgetRecall(predicted, 200, 5);
+    preCache.set(agent, {
+      query: predicted,
+      results,
+      expires: Date.now() + PRECACHE_TTL,
+    });
+  } catch { /* non-critical */ }
+}
+
+// ─── Context Dedup (Bloom-like) ───────────────────────────────────────────
+// Track what content has been served to each agent this session.
+// Prevents re-serving the same info in boot + recall.
+const servedContent = new Map(); // agent -> Set<hash>
+
+function hashContent(text) {
+  // Simple FNV-1a 32-bit hash — fast, good enough for dedup
+  let hash = 2166136261;
+  for (let i = 0; i < Math.min(text.length, 100); i++) {
+    hash ^= text.charCodeAt(i);
+    hash = (hash * 16777619) >>> 0;
+  }
+  return hash;
+}
+
+function markServed(agent, text) {
+  if (!text) return;
+  if (!servedContent.has(agent)) servedContent.set(agent, new Set());
+  servedContent.get(agent).add(hashContent(text));
+}
+
+function wasServed(agent, text) {
+  if (!text) return false;
+  const set = servedContent.get(agent);
+  if (!set) return false;
+  return set.has(hashContent(text));
+}
+
+function clearServedOnBoot(agent) {
+  // Reset dedup tracking on boot — new session starts fresh
+  servedContent.delete(agent);
+}
+
+function getPreCached(agent, query) {
+  const cached = preCache.get(agent);
+  if (!cached) return null;
+  if (cached.query !== query) return null;
+  if (Date.now() > cached.expires) {
+    preCache.delete(agent);
+    return null;
+  }
+  return cached.results;
+}
 const MAX_ACTIVITIES = 1000;
 const MAX_MESSAGES_PER_AGENT = 100;
 const MAX_TASKS = 500;
@@ -414,6 +506,7 @@ async function handleRecall(req, res) {
   const params = parseQuery(req.url);
   const q = params.q || '';
   const k = parseInt(params.k, 10) || 7;
+  const agent = req.headers['x-source-agent'] || 'http';
 
   if (!q) {
     sendError(res, 400, 'Missing query parameter: q');
@@ -421,7 +514,15 @@ async function handleRecall(req, res) {
   }
 
   try {
+    // Check predictive cache first
+    const cached = getPreCached(agent, q);
+    if (cached) {
+      sendJson(res, 200, { results: cached, cached: true });
+      return;
+    }
+
     const results = await brain.recall(q, k);
+    recordRecallPattern(agent, q);
     sendJson(res, 200, { results });
   } catch (err) {
     log('error', 'recall failed', { error: err.message });
@@ -451,6 +552,26 @@ async function handlePeek(req, res) {
   } catch (err) {
     log('error', 'peek failed', { error: err.message });
     sendError(res, 500, `Peek failed: ${err.message}`);
+  }
+}
+
+async function handleBudgetRecall(req, res) {
+  const params = parseQuery(req.url);
+  const q = params.q || '';
+  const budget = parseInt(params.budget, 10) || 300;
+  const k = parseInt(params.k, 10) || 10;
+
+  if (!q) {
+    sendError(res, 400, 'Missing query parameter: q');
+    return;
+  }
+
+  try {
+    const results = await brain.budgetRecall(q, budget, k);
+    const totalTokens = results.reduce((sum, r) => sum + (r.tokens || 0), 0);
+    sendJson(res, 200, { results, budget, spent: totalTokens, saved: budget - totalTokens });
+  } catch (err) {
+    sendError(res, 500, `Budget recall failed: ${err.message}`);
   }
 }
 
@@ -1450,6 +1571,7 @@ const ROUTES = {
   'GET /boot': handleBoot,
   'GET /recall': handleRecall,
   'GET /peek': handlePeek,
+  'GET /recall/budget': handleBudgetRecall,
   'POST /store': handleStore,
   'POST /diary': handleDiary,
   'GET /health': handleHealth,
@@ -1667,8 +1789,20 @@ const MCP_TOOLS = [
     },
   },
   {
+    name: 'cortex_recall_budget',
+    description: 'Token-budgeted recall: first result gets full detail, subsequent results get progressively shorter excerpts. Respects a token budget so you never overspend. Preferred over cortex_recall for most use cases.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query text' },
+        budget: { type: 'number', description: 'Max tokens to spend on results (default 300)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'cortex_recall',
-    description: 'Full hybrid semantic+keyword search with excerpts. Use cortex_peek first to check if recall is worth the tokens.',
+    description: 'Full recall with fixed-length excerpts. Use cortex_recall_budget instead for token efficiency, or cortex_peek for quick checks.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1766,6 +1900,14 @@ async function mcpDispatch(toolName, args) {
       const results = await brain.recall(args.query, limit);
       const peek = results.map(r => ({ source: r.source, relevance: r.relevance, method: r.method }));
       return { count: peek.length, matches: peek };
+    }
+
+    case 'cortex_recall_budget': {
+      if (!args.query) throw new Error('Missing required argument: query');
+      const budget = args.budget || 300;
+      const results = await brain.budgetRecall(args.query, budget);
+      const spent = results.reduce((sum, r) => sum + (r.tokens || 0), 0);
+      return { results, budget, spent, saved: budget - spent };
     }
 
     case 'cortex_recall': {
