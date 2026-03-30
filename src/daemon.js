@@ -505,7 +505,7 @@ async function handleBoot(req, res) {
 async function handleRecall(req, res) {
   const params = parseQuery(req.url);
   const q = params.q || '';
-  const k = parseInt(params.k, 10) || 7;
+  const budget = params.budget !== undefined ? parseInt(params.budget, 10) : 200;
   const agent = req.headers['x-source-agent'] || 'http';
 
   if (!q) {
@@ -517,13 +517,25 @@ async function handleRecall(req, res) {
     // Check predictive cache first
     const cached = getPreCached(agent, q);
     if (cached) {
-      sendJson(res, 200, { results: cached, cached: true });
+      sendJson(res, 200, { results: cached, budget, spent: 0, cached: true });
       return;
     }
 
-    const results = await brain.recall(q, k);
+    if (budget === 0) {
+      // Headlines only mode
+      const raw = await brain.recall(q, 10);
+      recordRecallPattern(agent, q);
+      const headlines = raw.map(r => ({ source: r.source, relevance: r.relevance, method: r.method }));
+      sendJson(res, 200, { count: headlines.length, results: headlines, budget: 0, mode: 'headlines' });
+      return;
+    }
+
+    const results = await brain.budgetRecall(q, budget, 10);
     recordRecallPattern(agent, q);
-    sendJson(res, 200, { results });
+    for (const r of results) markServed(agent, r.excerpt);
+
+    const spent = results.reduce((sum, r) => sum + (r.tokens || 0), 0);
+    sendJson(res, 200, { results, budget, spent, saved: budget - spent, mode: budget >= 500 ? 'full' : 'balanced' });
   } catch (err) {
     log('error', 'recall failed', { error: err.message });
     sendError(res, 500, `Recall failed: ${err.message}`);
@@ -1777,36 +1789,13 @@ const MCP_TOOLS = [
     },
   },
   {
-    name: 'cortex_peek',
-    description: 'Lightweight check: returns source names and relevance scores only (no excerpts). Use BEFORE cortex_recall to check if relevant memories exist. Saves ~80% tokens vs full recall. Cost ladder: peek first, recall only if matches look relevant.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Search query text' },
-        limit: { type: 'number', description: 'Max results (default 10)' },
-      },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'cortex_recall_budget',
-    description: 'Token-budgeted recall: first result gets full detail, subsequent results get progressively shorter excerpts. Respects a token budget so you never overspend. Preferred over cortex_recall for most use cases.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Search query text' },
-        budget: { type: 'number', description: 'Max tokens to spend on results (default 300)' },
-      },
-      required: ['query'],
-    },
-  },
-  {
     name: 'cortex_recall',
-    description: 'Full recall with fixed-length excerpts. Use cortex_recall_budget instead for token efficiency, or cortex_peek for quick checks.',
+    description: 'Search Cortex brain for memories and decisions. Adapts detail level to your token budget:\n- budget=0: headlines only (source + relevance, no excerpts) ~30 tokens\n- budget=200: top result detailed, rest compressed ~200 tokens\n- budget=500: all results with full excerpts ~500 tokens\n- Default: 200 tokens. ONE call gets everything you need. No need to call peek first.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query text' },
+        budget: { type: 'number', description: 'Token budget. 0=headlines only, 200=balanced (default), 500+=full detail' },
       },
       required: ['query'],
     },
@@ -1894,26 +1883,36 @@ async function mcpDispatch(toolName, args) {
       return compiler.compile(args.profile || 'full');
     }
 
-    case 'cortex_peek': {
-      if (!args.query) throw new Error('Missing required argument: query');
-      const limit = args.limit || 10;
-      const results = await brain.recall(args.query, limit);
-      const peek = results.map(r => ({ source: r.source, relevance: r.relevance, method: r.method }));
-      return { count: peek.length, matches: peek };
-    }
-
-    case 'cortex_recall_budget': {
-      if (!args.query) throw new Error('Missing required argument: query');
-      const budget = args.budget || 300;
-      const results = await brain.budgetRecall(args.query, budget);
-      const spent = results.reduce((sum, r) => sum + (r.tokens || 0), 0);
-      return { results, budget, spent, saved: budget - spent };
-    }
-
+    case 'cortex_peek':
+    case 'cortex_recall_budget':
     case 'cortex_recall': {
       if (!args.query) throw new Error('Missing required argument: query');
-      const results = await brain.recall(args.query);
-      return { results };
+      const agent = args.source_agent || 'mcp';
+      const budget = typeof args.budget === 'number' ? args.budget : 200;
+
+      // Check predictive cache first
+      const cached = getPreCached(agent, args.query);
+      if (cached) {
+        return { results: cached, budget, spent: 0, cached: true };
+      }
+
+      if (budget === 0) {
+        // Headlines only — like peek
+        const raw = await brain.recall(args.query, 10);
+        recordRecallPattern(agent, args.query);
+        const headlines = raw.map(r => ({ source: r.source, relevance: r.relevance, method: r.method }));
+        return { count: headlines.length, results: headlines, budget: 0, spent: 0, mode: 'headlines' };
+      }
+
+      // Budget-aware recall
+      const results = await brain.budgetRecall(args.query, budget, 10);
+      recordRecallPattern(agent, args.query);
+
+      // Mark served for dedup
+      for (const r of results) markServed(agent, r.excerpt);
+
+      const spent = results.reduce((sum, r) => sum + (r.tokens || 0), 0);
+      return { results, budget, spent, saved: budget - spent, mode: budget >= 500 ? 'full' : 'balanced' };
     }
 
     case 'cortex_store': {

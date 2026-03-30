@@ -34,7 +34,27 @@ curl -s http://localhost:7437/boot?agent=YOUR_NAME
 ```
 Print the brain status at session start. Store important decisions.
 Confirm every store to the user: "Stored to Cortex: [summary]"
-Full protocol: see `CONNECTING.md` in this repo.
+
+## How to Recall (Token-Efficient)
+ONE function: `cortex_recall(query, budget)`. The budget controls detail level:
+- `budget=0` — Headlines only. Source + relevance. ~30 tokens. Use to check if anything exists.
+- `budget=200` — Balanced (DEFAULT). Top result full, rest compressed. ~200 tokens.
+- `budget=500` — Full detail. All results with complete excerpts. ~500 tokens.
+
+Call ONCE with the right budget. Do NOT call peek then recall — that wastes tokens.
+```bash
+# Quick check — anything about Python?
+curl "http://localhost:7437/recall?q=python&budget=0"
+
+# Normal recall — get useful context
+curl "http://localhost:7437/recall?q=python+packaging&budget=200"
+
+# Deep research — need everything
+curl "http://localhost:7437/recall?q=cortex+architecture&budget=500"
+```
+
+The system also has a predictive cache — if you recall A then B repeatedly,
+it pre-caches B so your second call is instant (0 tokens spent on search).
 
 ## Testing
 ```bash
