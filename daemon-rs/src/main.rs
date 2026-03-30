@@ -1,5 +1,8 @@
 use std::env;
 
+mod co_occurrence;
+mod db;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("");
