@@ -1,4 +1,7 @@
 pub mod boot;
+pub mod conductor;
+pub mod events;
+pub mod feed;
 pub mod health;
 pub mod mutate;
 pub mod recall;
