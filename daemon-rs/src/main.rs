@@ -24,19 +24,66 @@ async fn main() {
                 state::initialize(&db_path).expect("Failed to initialize state");
 
             auth::write_pid();
+            let token_path = auth::cortex_dir().join("cortex.token");
+            let pid_path = auth::cortex_dir().join("cortex.pid");
+            eprintln!("[cortex] Auth token at {}", token_path.display());
             eprintln!(
-                "[cortex] Auth token at {}",
-                auth::cortex_dir().join("cortex.token").display()
+                "[cortex] PID {} written to {}",
+                std::process::id(),
+                pid_path.display()
             );
-            eprintln!("[cortex] PID {} written", std::process::id());
+
+            // Clone the DB handle before state is moved into the router.
+            let db_for_shutdown = state.db.clone();
 
             let router = server::build_router(state);
-            server::run(router, 7437, async {
-                shutdown_rx.await.ok();
-            })
-            .await;
 
-            eprintln!("[cortex] Shut down cleanly.");
+            // Combine shutdown sources: HTTP /shutdown endpoint OR Ctrl+C/SIGTERM.
+            //
+            // On Unix we also listen for SIGTERM; on Windows that signal does not exist
+            // so we use a future that never resolves as a no-op third branch.
+            #[cfg(unix)]
+            async fn sigterm_future() {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate())
+                    .expect("Failed to register SIGTERM handler");
+                sigterm.recv().await;
+            }
+            #[cfg(not(unix))]
+            async fn sigterm_future() {
+                std::future::pending::<()>().await;
+            }
+
+            let shutdown_future = async {
+                tokio::select! {
+                    _ = shutdown_rx => {
+                        eprintln!("[cortex] Shutdown requested via HTTP");
+                    }
+                    _ = tokio::signal::ctrl_c() => {
+                        eprintln!("[cortex] Received Ctrl+C, shutting down...");
+                    }
+                    _ = sigterm_future() => {
+                        eprintln!("[cortex] Received SIGTERM, shutting down...");
+                    }
+                }
+            };
+
+            server::run(router, 7437, shutdown_future).await;
+
+            // After server stops: WAL checkpoint + DB cleanup.
+            eprintln!("[cortex] Flushing database...");
+            {
+                let conn = db_for_shutdown.lock().await;
+                if let Err(e) =
+                    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
+                {
+                    eprintln!("[cortex] Warning: WAL checkpoint failed: {e}");
+                }
+            }
+
+            // Clean up PID file.
+            let _ = std::fs::remove_file(&pid_path);
+            eprintln!("[cortex] Shutdown complete.");
         }
         "mcp" => {
             let db_path = auth::db_path();
@@ -70,9 +117,19 @@ async fn main() {
                 }
             });
 
-            // Run MCP stdio transport — blocks until stdin is closed
-            mcp_stdio::run(state).await;
+            // Run MCP stdio transport — blocks until stdin is closed.
+            mcp_stdio::run(state.clone()).await;
             eprintln!("[cortex-mcp] MCP session ended.");
+
+            // After stdin closes: checkpoint WAL so nothing is stranded in the journal.
+            {
+                let conn = state.db.lock().await;
+                if let Err(e) =
+                    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
+                {
+                    eprintln!("[cortex-mcp] Warning: WAL checkpoint failed: {e}");
+                }
+            }
         }
         _ => {
             eprintln!("Usage: cortex <serve|mcp>");
