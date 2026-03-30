@@ -71,7 +71,7 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str) ->
         }
     }
 
-    if best_sim > 0.7 {
+    if best_sim > 0.6 {  // Threshold 0.6 matches Node.js
         if best_agent.as_deref() == Some(source_agent) {
             // Same agent, high similarity => update (supersede)
             ConflictResult {
@@ -96,6 +96,60 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str) ->
             matched_id: None,
             matched_agent: None,
         }
+    }
+}
+
+/// Embedding-based conflict detection.  Returns a result if cosine > 0.85.
+/// Falls through to `None` when no match or engine unavailable.
+pub fn detect_conflict_cosine(
+    decision: &str,
+    source_agent: &str,
+    engine: &crate::embeddings::EmbeddingEngine,
+    conn: &Connection,
+) -> Option<ConflictResult> {
+    let new_vec = engine.embed(decision)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.id, d.source_agent, e.vector \
+             FROM decisions d \
+             JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
+             WHERE d.status = 'active'",
+        )
+        .ok()?;
+
+    let rows: Vec<(i64, String, Vec<u8>)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut best_sim = 0.0f32;
+    let mut best_id: Option<i64> = None;
+    let mut best_agent: Option<String> = None;
+
+    for (id, agent, blob) in &rows {
+        let existing_vec = crate::embeddings::blob_to_vector(blob);
+        let sim = crate::embeddings::cosine_similarity(&new_vec, &existing_vec);
+        if sim > best_sim {
+            best_sim = sim;
+            best_id = Some(*id);
+            best_agent = Some(agent.clone());
+        }
+    }
+
+    const COSINE_THRESHOLD: f32 = 0.85;
+
+    if best_sim > COSINE_THRESHOLD {
+        let is_update = best_agent.as_deref() == Some(source_agent);
+        Some(ConflictResult {
+            is_conflict: !is_update,
+            is_update,
+            matched_id: best_id,
+            matched_agent: best_agent,
+        })
+    } else {
+        None
     }
 }
 

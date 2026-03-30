@@ -49,16 +49,45 @@ pub async fn handle_store(
         .or(body.source_agent)
         .unwrap_or_else(|| "http".to_string());
 
+    // Try cosine conflict detection first (if embeddings available).
+    let cosine_conflict = if let Some(engine) = &state.embedding_engine {
+        let conn = state.db.lock().await;
+        crate::conflict::detect_conflict_cosine(decision.trim(), &source_agent, engine, &conn)
+    } else {
+        None
+    };
+
     let mut conn = state.db.lock().await;
-    match store_decision(
+    let result = store_decision(
         &mut conn,
         decision.trim(),
         body.context,
         body.entry_type,
-        source_agent,
+        source_agent.clone(),
         body.confidence,
-    ) {
-        Ok(entry) => json_response(StatusCode::OK, json!({ "stored": true, "entry": entry })),
+        cosine_conflict,
+    );
+
+    match result {
+        Ok((entry, new_id)) => {
+            // Fire-and-forget: generate embedding for the new decision.
+            if let (Some(id), Some(engine)) = (new_id, state.embedding_engine.clone()) {
+                let db = state.db.clone();
+                let text = decision.trim().to_string();
+                tokio::spawn(async move {
+                    if let Some(vec) = engine.embed(&text) {
+                        let blob = crate::embeddings::vector_to_blob(&vec);
+                        let conn = db.lock().await;
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
+                             VALUES ('decision', ?1, ?2, 'all-MiniLM-L6-v2')",
+                            rusqlite::params![id, blob],
+                        );
+                    }
+                });
+            }
+            json_response(StatusCode::OK, json!({ "stored": true, "entry": entry }))
+        }
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Store failed: {err}") }),
@@ -78,6 +107,7 @@ pub async fn handle_store(
 ///      disputes_id, then mark existing entry as 'disputed' too.
 ///   4. No conflict: compute surprise = 1 - max_sim; reject if surprise < 0.25
 ///      (duplicate suppression). Otherwise insert as 'active'.
+/// Returns `(json_entry, Option<new_id>)`.
 pub fn store_decision(
     conn: &mut Connection,
     decision: &str,
@@ -85,13 +115,14 @@ pub fn store_decision(
     entry_type: Option<String>,
     source_agent: String,
     confidence: Option<f64>,
-) -> Result<Value, String> {
+    cosine_conflict: Option<crate::conflict::ConflictResult>,
+) -> Result<(Value, Option<i64>), String> {
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let confidence = confidence.unwrap_or(0.8);
     let ts = now_iso();
 
-    // ── 1. Conflict detection ────────────────────────────────────────────────
-    let cr = detect_conflict(conn, decision, &source_agent);
+    // ── 1. Conflict detection (cosine first, then Jaccard fallback) ──────────
+    let cr = cosine_conflict.unwrap_or_else(|| detect_conflict(conn, decision, &source_agent));
 
     if cr.is_conflict {
         // Different-agent conflict: insert new entry as 'disputed', then mark
@@ -126,12 +157,12 @@ pub fn store_decision(
         );
         checkpoint_wal_best_effort(conn);
 
-        return Ok(json!({
+        return Ok((json!({
             "stored": true,
             "id": new_id,
             "status": "disputed",
             "conflictWith": existing_id,
-        }));
+        }), Some(new_id)));
     }
 
     if cr.is_update {
@@ -164,12 +195,12 @@ pub fn store_decision(
         );
         checkpoint_wal_best_effort(conn);
 
-        return Ok(json!({
+        return Ok((json!({
             "stored": true,
             "id": new_id,
             "status": "superseded_old",
             "supersedes": old_id,
-        }));
+        }), Some(new_id)));
     }
 
     // ── 2. Duplicate suppression via Jaccard surprise ────────────────────────
@@ -208,7 +239,7 @@ pub fn store_decision(
             "rust-daemon",
         );
         checkpoint_wal_best_effort(conn);
-        return Ok(json!({ "stored": false, "reason": "duplicate", "surprise": surprise }));
+        return Ok((json!({ "stored": false, "reason": "duplicate", "surprise": surprise }), None));
     }
 
     // ── 3. Normal insert ─────────────────────────────────────────────────────
@@ -230,5 +261,5 @@ pub fn store_decision(
     );
     checkpoint_wal_best_effort(conn);
 
-    Ok(json!({ "stored": true, "id": id, "status": "active", "surprise": surprise_rounded }))
+    Ok((json!({ "stored": true, "id": id, "status": "active", "surprise": surprise_rounded }), Some(id)))
 }

@@ -263,7 +263,8 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             let confidence = args.get("confidence").and_then(|v| v.as_f64());
 
             let mut conn = state.db.lock().await;
-            store_decision(&mut conn, decision, context, entry_type, source_agent, confidence)
+            let (entry, _id) = store_decision(&mut conn, decision, context, entry_type, source_agent, confidence, None)?;
+            Ok(entry)
         }
 
         "cortex_health" => {

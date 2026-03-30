@@ -194,10 +194,11 @@ pub async fn execute_unified_recall(
     }
 
     let mut conn = state.db.lock().await;
+    let engine = state.embedding_engine.as_deref();
     let results = if budget == 0 {
-        run_recall(&mut conn, query_text, k)?
+        run_recall_with_engine(&mut conn, query_text, k, engine)?
     } else {
-        run_budget_recall(&mut conn, query_text, budget, k)?
+        run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine)?
     };
 
     // Co-occurrence tracking + prediction
@@ -288,6 +289,15 @@ fn run_recall(
     query_text: &str,
     k: usize,
 ) -> Result<Vec<RecallItem>, String> {
+    run_recall_with_engine(conn, query_text, k, None)
+}
+
+fn run_recall_with_engine(
+    conn: &mut Connection,
+    query_text: &str,
+    k: usize,
+    engine: Option<&crate::embeddings::EmbeddingEngine>,
+) -> Result<Vec<RecallItem>, String> {
     let extracted = extract_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
         query_text.to_string()
@@ -297,6 +307,74 @@ fn run_recall(
 
     let mut merged: HashMap<String, RecallItem> = HashMap::new();
 
+    // ── Pass 1: Semantic search via embeddings (if available) ────────────────
+    if let Some(engine) = engine {
+        if let Some(query_vec) = engine.embed(query_text) {
+            // Search memory embeddings
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT e.target_id, e.vector, m.text, m.source \
+                 FROM embeddings e \
+                 JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active'"
+            ) {
+                let rows: Vec<(Vec<u8>, String, String)> = stmt
+                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?)))
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r.ok())
+                    .collect();
+
+                for (blob, text, source) in rows {
+                    let existing_vec = crate::embeddings::blob_to_vector(&blob);
+                    let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
+                    if sim > 0.3 {
+                        merged.insert(source.clone(), RecallItem {
+                            source,
+                            relevance: sim as f64,
+                            excerpt: text.chars().take(200).collect(),
+                            method: "semantic".to_string(),
+                            tokens: None,
+                        });
+                    }
+                }
+            }
+
+            // Search decision embeddings
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT e.target_id, e.vector, d.decision, d.context \
+                 FROM embeddings e \
+                 JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active'"
+            ) {
+                let rows: Vec<(Vec<u8>, String, Option<String>)> = stmt
+                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?)))
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r.ok())
+                    .collect();
+
+                for (blob, decision, context) in rows {
+                    let existing_vec = crate::embeddings::blob_to_vector(&blob);
+                    let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
+                    if sim > 0.3 {
+                        let source = context.unwrap_or_else(|| format!("decision::{}", decision.chars().take(40).collect::<String>()));
+                        let existing = merged.get(&source);
+                        if existing.is_none() || sim as f64 > existing.unwrap().relevance {
+                            merged.insert(source.clone(), RecallItem {
+                                source,
+                                relevance: sim as f64,
+                                excerpt: decision.chars().take(200).collect(),
+                                method: "semantic".to_string(),
+                                tokens: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Pass 2: Keyword search ──────────────────────────────────────────────
     for row in search_memories(conn, &keyword_query, 20)? {
         let key = row.source.clone();
         let should_replace = merged
@@ -358,7 +436,17 @@ fn run_budget_recall(
     token_budget: usize,
     k: usize,
 ) -> Result<Vec<RecallItem>, String> {
-    let raw = run_recall(conn, query_text, k)?;
+    run_budget_recall_with_engine(conn, query_text, token_budget, k, None)
+}
+
+fn run_budget_recall_with_engine(
+    conn: &mut Connection,
+    query_text: &str,
+    token_budget: usize,
+    k: usize,
+    engine: Option<&crate::embeddings::EmbeddingEngine>,
+) -> Result<Vec<RecallItem>, String> {
+    let raw = run_recall_with_engine(conn, query_text, k, engine)?;
     if raw.is_empty() {
         return Ok(vec![]);
     }
