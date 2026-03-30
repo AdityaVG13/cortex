@@ -1826,8 +1826,14 @@ body {
   left: -6px;
 }
 
-.sidebar.collapsed .sidebar-footer {
+.sidebar.collapsed .sidebar-footer .daemon-controls-grid,
+.sidebar.collapsed .sidebar-footer .sidebar-status {
   display: none;
+}
+
+.sidebar.collapsed .btn-sidebar-collapse {
+  font-size: 14px;
+  padding: 8px 0;
 }
 
 .sidebar.collapsed .sidebar-collapse-btn {
