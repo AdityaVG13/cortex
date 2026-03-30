@@ -1178,16 +1178,7 @@ body {
 .task-columns .card:nth-child(2) { border-top: 2px solid rgba(0, 212, 255, 0.3); }
 .task-columns .card:nth-child(3) { border-top: 2px solid rgba(0, 230, 118, 0.3); }
 
-/* ─── Feed Enhancement ──────────────────────────────────────────────────── */
-
-.item-list li:has(.feed-summary) {
-  border-left: 2px solid var(--border);
-  padding-left: 16px;
-}
-
-.item-list li:has(.feed-summary):hover {
-  border-left-color: var(--cyan);
-}
+/* (duplicate feed-summary rules removed — already defined above) */
 
 /* ─── Phase 3: Animations & Transitions ─────────────────────────────────── */
 

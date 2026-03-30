@@ -90,25 +90,31 @@ function AnimatedNumber({ value, duration = 600 }) {
       return;
     }
 
+    let cancelled = false;
     const start = performance.now();
     const diff = to - from;
 
     function tick(now) {
+      if (cancelled) return;
       const elapsed = now - start;
       const progress = Math.min(elapsed / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      const eased = 1 - Math.pow(1 - progress, 3);
       setDisplay(Math.round(from + diff * eased));
       if (progress < 1) requestAnimationFrame(tick);
     }
 
     requestAnimationFrame(tick);
     prevRef.current = to;
+    return () => { cancelled = true; };
   }, [value, duration]);
 
   return <>{typeof display === "number" ? display.toLocaleString() : display}</>;
 }
 
+let sparklineCounter = 0;
+
 function Sparkline({ data, width = 280, height = 60, color = "var(--cyan)" }) {
+  const [id] = useState(() => `spark-fill-${++sparklineCounter}`);
   if (!data || data.length < 2) return <div className="sparkline-empty">No data yet</div>;
   const max = Math.max(...data, 1);
   const min = Math.min(...data, 0);
@@ -122,14 +128,14 @@ function Sparkline({ data, width = 280, height = 60, color = "var(--cyan)" }) {
   return (
     <svg width={width} height={height} className="sparkline">
       <defs>
-        <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.2" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
       <polygon
         points={`0,${height} ${points} ${width},${height}`}
-        fill="url(#spark-fill)"
+        fill={`url(#${id})`}
       />
       <polyline
         points={points}
@@ -165,9 +171,10 @@ function agentColor(name) {
   if (!name) return "var(--cyan)";
   const n = name.toLowerCase();
   if (n.includes("claude")) return "var(--agent-claude)";
-  if (n.includes("droid") || n.includes("factory") || n.includes("gemini")) return "var(--agent-droid)";
+  if (n.includes("droid") || n.includes("factory")) return "var(--agent-droid)";
+  if (n.includes("gemini")) return "var(--agent-gemini)";
   if (n.includes("ollama") || n.includes("qwen") || n.includes("deepseek")) return "var(--agent-ollama)";
-  return "var(--agent-gemini)";
+  return "var(--cyan)";
 }
 
 function AgentItem({ session }) {
@@ -702,14 +709,6 @@ export function App() {
     }
     await refreshAll();
   }
-
-  const uptime = useMemo(() => {
-    const now = new Date();
-    const hours = now.getHours().toString().padStart(2, "0");
-    const mins = now.getMinutes().toString().padStart(2, "0");
-    const secs = now.getSeconds().toString().padStart(2, "0");
-    return `${hours}:${mins}:${secs}`;
-  }, [stats]);
 
   // Keyboard nav
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import * as THREE from "three";
 
@@ -95,7 +95,9 @@ export function BrainVisualizer() {
 
   const fetchBrainData = useCallback(async () => {
     try {
-      const dumpRes = await fetch(`${CORTEX_BASE}/dump`).then(r => r.json()).catch(() => null);
+      const dumpRes = await fetch(`${CORTEX_BASE}/dump`)
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null);
 
       if (!dumpRes) {
         setLoading(false);
@@ -104,10 +106,13 @@ export function BrainVisualizer() {
 
       const nodes = [];
       const links = [];
+      const nodeIds = new Set();
       const linkSet = new Set();
+      const MAX_LINKS = 500;
 
       const memories = dumpRes.memories || [];
       for (const mem of memories) {
+        nodeIds.add(`mem-${mem.id}`);
         nodes.push({
           id: `mem-${mem.id}`,
           label: truncate(mem.source || mem.text || `Memory ${mem.id}`, 50),
@@ -122,6 +127,7 @@ export function BrainVisualizer() {
 
       const decisions = dumpRes.decisions || [];
       for (const dec of decisions) {
+        nodeIds.add(`dec-${dec.id}`);
         nodes.push({
           id: `dec-${dec.id}`,
           label: truncate(dec.decision || `Decision ${dec.id}`, 50),
@@ -157,9 +163,10 @@ export function BrainVisualizer() {
       }
 
       for (const [, ids] of keywordMap) {
+        if (links.length >= MAX_LINKS) break;
         if (ids.length >= 2 && ids.length <= 5) {
-          for (let i = 0; i < ids.length - 1; i++) {
-            for (let j = i + 1; j < ids.length; j++) {
+          for (let i = 0; i < ids.length - 1 && links.length < MAX_LINKS; i++) {
+            for (let j = i + 1; j < ids.length && links.length < MAX_LINKS; j++) {
               const key = [ids[i], ids[j]].sort().join("|");
               if (!linkSet.has(key)) {
                 linkSet.add(key);
@@ -272,8 +279,8 @@ export function BrainVisualizer() {
     );
   }
 
-  const memoryCt = graphData.nodes.filter(n => n.group === "memory").length;
-  const decisionCt = graphData.nodes.filter(n => n.group === "decision").length;
+  const memoryCt = useMemo(() => graphData.nodes.filter(n => n.group === "memory").length, [graphData]);
+  const decisionCt = useMemo(() => graphData.nodes.filter(n => n.group === "decision").length, [graphData]);
 
   return (
     <div className="brain-container" onMouseDown={handleInteraction} onWheel={handleInteraction}>
