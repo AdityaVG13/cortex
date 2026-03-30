@@ -36,6 +36,11 @@ pub async fn handle_diary(
         return resp;
     }
 
+    let agent = headers
+        .get("x-source-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("http")
+        .to_string();
     let state_path = state.home.join(".claude").join("state.md");
 
     // Ensure parent directory exists
@@ -128,7 +133,17 @@ pub async fn handle_diary(
     let content = lines.join("\n");
 
     match fs::write(&state_path, &content) {
-        Ok(_) => json_response(StatusCode::OK, json!({ "written": true })),
+        Ok(_) => {
+            // Log diary_write event
+            let conn = state.db.lock().await;
+            let _ = super::log_event(
+                &conn,
+                "diary_write",
+                json!({ "agent": agent, "timestamp": super::now_iso() }),
+                &agent,
+            );
+            json_response(StatusCode::OK, json!({ "written": true }))
+        }
         Err(e) => json_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to write state.md: {e}"),

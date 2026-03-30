@@ -170,38 +170,18 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
 
             let conn = state.db.lock().await;
 
-            let memory_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM memories WHERE status = 'active'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            let decision_count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
+            // Use the full capsule compiler (same as HTTP /boot).
+            let result = crate::compiler::compile(&conn, &state.home, &agent, _budget);
 
-            let identity_text =
-                "User: Aditya. Platform: Windows 10. Shell: bash. Python: uv only. Git: conventional commits.";
-            let assembled = format!(
-                "## Identity\n{identity_text}\n\n## Stats\nMemories: {memory_count} | Decisions: {decision_count}\n\n## Note\nRust daemon boot — full compiler coming in Task 7."
-            );
-            let token_estimate = estimate_tokens(&assembled);
-
-            let boot_ts = now_iso();
+            // Auto-ack feed on boot
             let _ = conn.execute(
-                "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
-                rusqlite::params![
-                    "agent_boot",
-                    serde_json::to_string(&json!({"timestamp": boot_ts, "agent": agent.clone()}))
-                        .unwrap_or_default(),
-                    agent.clone()
-                ],
+                "INSERT OR IGNORE INTO feed_acks (feed_id, agent, acked_at) \
+                 SELECT id, ?1, datetime('now') FROM feed \
+                 WHERE id NOT IN (SELECT feed_id FROM feed_acks WHERE agent = ?1)",
+                rusqlite::params![agent],
             );
+
+            crate::db::checkpoint_wal_best_effort(&conn);
 
             state.emit(
                 "agent_boot",
@@ -209,12 +189,11 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             );
 
             Ok(json!({
-                "bootPrompt": assembled,
-                "tokenEstimate": token_estimate,
+                "bootPrompt": result.boot_prompt,
+                "tokenEstimate": result.token_estimate,
                 "profile": if profile_str == "full" { "capsules" } else { &profile_str },
-                "capsules": [
-                    { "name": "identity", "tokens": estimate_tokens(identity_text), "freshness": "stable", "truncated": false }
-                ]
+                "capsules": result.capsules,
+                "savings": result.savings
             }))
         }
 

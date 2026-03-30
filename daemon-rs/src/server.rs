@@ -1,10 +1,16 @@
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::handlers;
 use crate::state::RuntimeState;
 
 pub fn build_router(state: RuntimeState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         // ── Core endpoints ──────────────────────────────────────────
         .route("/health", get(handlers::health::handle_health))
@@ -85,6 +91,7 @@ pub fn build_router(state: RuntimeState) -> Router {
             "/events/stream",
             get(handlers::events::handle_events_stream),
         )
+        .layer(cors)
         .with_state(state)
 }
 

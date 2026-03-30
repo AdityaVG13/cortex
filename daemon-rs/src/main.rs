@@ -18,6 +18,7 @@ async fn main() {
 
     match mode {
         "serve" => {
+            auth::kill_stale_daemon();
             let db_path = auth::db_path();
             eprintln!("[cortex] Starting Cortex v2.1.0 (Rust)...");
             eprintln!("[cortex] DB: {}", db_path.display());
@@ -34,6 +35,30 @@ async fn main() {
                 std::process::id(),
                 pid_path.display()
             );
+
+            // ── Knowledge indexing + score decay ────────────────────────
+            {
+                let conn = state.db.lock().await;
+                let indexed = indexer::index_all(&conn, &state.home);
+                let decayed = indexer::decay_pass(&conn);
+                eprintln!("[cortex] Indexed {indexed} entries, decayed {decayed} scores");
+            }
+
+            // ── Background embedding builder ─────────────────────────
+            if let Some(engine) = state.embedding_engine.clone() {
+                let db = state.db.clone();
+                tokio::spawn(async move {
+                    let conn = db.lock().await;
+                    build_embeddings(&engine, &conn);
+                });
+            } else {
+                // Try downloading model in background for next restart.
+                tokio::spawn(async {
+                    if let Some(dir) = embeddings::ensure_model_downloaded().await {
+                        eprintln!("[embeddings] Model ready at {} -- restart to activate", dir.display());
+                    }
+                });
+            }
 
             // Clone the DB handle before state is moved into the router.
             let db_for_shutdown = state.db.clone();
@@ -140,4 +165,67 @@ async fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Build embeddings for all un-embedded memories and decisions.
+fn build_embeddings(engine: &embeddings::EmbeddingEngine, conn: &rusqlite::Connection) {
+    // Un-embedded memories.
+    let unembedded_mem: Vec<(i64, String)> = conn
+        .prepare(
+            "SELECT m.id, m.text FROM memories m \
+             WHERE m.status = 'active' \
+               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'memory' AND e.target_id = m.id)",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    // Un-embedded decisions.
+    let unembedded_dec: Vec<(i64, String)> = conn
+        .prepare(
+            "SELECT d.id, d.decision FROM decisions d \
+             WHERE d.status = 'active' \
+               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'decision' AND e.target_id = d.id)",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    let total = unembedded_mem.len() + unembedded_dec.len();
+    if total == 0 {
+        return;
+    }
+
+    eprintln!("[embeddings] Building embeddings for {total} entries...");
+    let mut computed = 0;
+
+    for (id, text) in &unembedded_mem {
+        if let Some(vec) = engine.embed(text) {
+            let blob = embeddings::vector_to_blob(&vec);
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
+                 VALUES ('memory', ?1, ?2, 'all-MiniLM-L6-v2')",
+                rusqlite::params![id, blob],
+            );
+            computed += 1;
+        }
+    }
+
+    for (id, text) in &unembedded_dec {
+        if let Some(vec) = engine.embed(text) {
+            let blob = embeddings::vector_to_blob(&vec);
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
+                 VALUES ('decision', ?1, ?2, 'all-MiniLM-L6-v2')",
+                rusqlite::params![id, blob],
+            );
+            computed += 1;
+        }
+    }
+
+    eprintln!("[embeddings] Built {computed}/{total} embeddings");
 }

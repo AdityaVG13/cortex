@@ -39,6 +39,44 @@ pub fn validate_auth(headers: &axum::http::HeaderMap, expected_token: &str) -> b
         .unwrap_or(false)
 }
 
+/// Kill a stale daemon process if PID file exists and process is still alive.
+pub fn kill_stale_daemon() {
+    let pid_path = cortex_dir().join("cortex.pid");
+    if !pid_path.exists() {
+        return;
+    }
+
+    if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            // Don't kill ourselves.
+            if pid == std::process::id() {
+                return;
+            }
+
+            #[cfg(windows)]
+            {
+                use std::process::Command;
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .output();
+            }
+
+            #[cfg(unix)]
+            {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            }
+
+            eprintln!("[cortex] Killed stale daemon (PID {pid})");
+            let _ = fs::remove_file(&pid_path);
+
+            // Brief pause for port release.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
 /// Returns the default database path: `~/cortex/cortex.db`.
 pub fn db_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")

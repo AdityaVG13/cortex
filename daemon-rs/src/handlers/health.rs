@@ -39,11 +39,25 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
                 "decisions": decisions,
                 "embeddings": embeddings,
                 "events": events,
-                "ollama": "offline",
+                "ollama": check_ollama_status().await,
                 "home": home
             }
         }),
     )
+}
+
+/// Check if Ollama is running at localhost:11434.
+async fn check_ollama_status() -> &'static str {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build();
+    match client {
+        Ok(c) => match c.get("http://localhost:11434/api/tags").send().await {
+            Ok(resp) if resp.status().is_success() => "online",
+            _ => "offline",
+        },
+        Err(_) => "offline",
+    }
 }
 
 // ─── GET /digest ─────────────────────────────────────────────────────────────
