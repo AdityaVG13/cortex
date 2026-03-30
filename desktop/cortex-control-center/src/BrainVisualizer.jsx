@@ -33,13 +33,14 @@ export function BrainVisualizer() {
   const rotationRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [hoverNode, setHoverNode] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [autoRotate, setAutoRotate] = useState(true);
+  const [autoRotate, setAutoRotate] = useState(false); // Start paused — less likely to crash
   const [stats, setStats] = useState({ nodes: 0, links: 0 });
   const [dimensions, setDimensions] = useState({
-    width: window.innerWidth - 240,
-    height: window.innerHeight,
+    width: Math.max(window.innerWidth - 260, 400),
+    height: Math.max(window.innerHeight - 20, 300),
   });
 
   // Track window resize
@@ -182,11 +183,16 @@ export function BrainVisualizer() {
         }
       }
 
-      setGraphData({ nodes, links });
-      setStats({ nodes: nodes.length, links: links.length });
+      // Filter out links that reference non-existent nodes
+      const nodeIdSet = new Set(nodes.map(n => n.id));
+      const validLinks = links.filter(l => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
+
+      setGraphData({ nodes, links: validLinks });
+      setStats({ nodes: nodes.length, links: validLinks.length });
       setLoading(false);
     } catch (err) {
       console.error("Brain fetch failed:", err);
+      setError(err.message || "Failed to load brain data");
       setLoading(false);
     }
   }, []);
@@ -270,11 +276,22 @@ export function BrainVisualizer() {
     );
   }
 
+  if (error) {
+    return (
+      <div className="brain-loading">
+        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <p>Error: {error}</p>
+        <button className="btn-sm btn-primary" onClick={() => { setError(null); setLoading(true); fetchBrainData(); }}>Retry</button>
+      </div>
+    );
+  }
+
   if (graphData.nodes.length === 0) {
     return (
       <div className="brain-loading">
         <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
         <p>No data from /dump endpoint.</p>
+        <button className="btn-sm btn-primary" onClick={() => { setLoading(true); fetchBrainData(); }}>Retry</button>
       </div>
     );
   }
@@ -352,10 +369,10 @@ export function BrainVisualizer() {
         backgroundColor="#060a12"
         width={dimensions.width}
         height={dimensions.height}
-        d3AlphaDecay={0.03}
-        d3VelocityDecay={0.4}
-        warmupTicks={60}
-        cooldownTime={3000}
+        d3AlphaDecay={0.05}
+        d3VelocityDecay={0.5}
+        warmupTicks={30}
+        cooldownTime={2000}
         onNodeHover={node => setHoverNode(node || null)}
         onNodeClick={handleNodeClick}
       />

@@ -1,20 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-const BrainVisualizer = lazy(() => import("./BrainVisualizer.jsx").then(m => ({ default: m.BrainVisualizer })));
-
-// Prevent Suspense fallback from unmounting the graph on re-renders
-function BrainWrapper() {
-  return (
-    <Suspense fallback={
-      <div className="brain-loading">
-        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
-        <p>Initializing Three.js renderer...</p>
-      </div>
-    }>
-      <BrainVisualizer />
-    </Suspense>
-  );
-}
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrainVisualizer } from "./BrainVisualizer.jsx";
 
 const CORTEX_BASE = "http://127.0.0.1:7437";
 const FALLBACK_REFRESH_MS = 15000;
@@ -1127,11 +1112,14 @@ export function App() {
           <section className="panel active">
             <div className="panel-header">
               <h1>Analytics</h1>
-              <span className="panel-subtitle">Token savings & brain health</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span className="panel-subtitle">Token savings & brain health</span>
+                <button type="button" className="btn-sm" onClick={refreshSavings}>Refresh</button>
+              </div>
             </div>
             {savings ? (
               <>
-                <div className="metrics">
+                <div className="metrics" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
                   <div className="metric" data-accent="cyan">
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} /></span>
                     <span className="metric-label">Tokens Saved</span>
@@ -1152,6 +1140,15 @@ export function App() {
                     <span className="metric-label">Tokens Served</span>
                     <span className="metric-icon">→</span>
                   </div>
+                  <div className="metric" data-accent="green">
+                    <span className="metric-value">${((savings.summary?.totalSaved || 0) * 15 / 1000000).toFixed(2)}</span>
+                    <span className="metric-label">Est. USD Saved</span>
+                    <span className="metric-icon">$</span>
+                  </div>
+                </div>
+
+                <div className="analytics-explainer">
+                  <p>Cortex compiles a token-budgeted boot prompt instead of reading raw files. Each boot saves ~96% of tokens that would otherwise be spent on raw file reads. The savings compound across every AI session — Claude, Droid, Gemini, and any agent connecting to this brain.</p>
                 </div>
 
                 <div className="overview-grid">
@@ -1241,7 +1238,7 @@ export function App() {
 
         {panel === "visualizer" ? (
           <section className="panel active brain-panel">
-            <BrainWrapper />
+            <BrainVisualizer />
           </section>
         ) : null}
 
