@@ -1,3 +1,5 @@
+<p align="center">
+
 ```
  ██████╗ ██████╗ ██████╗ ████████╗███████╗██╗  ██╗
 ██╔════╝██╔═══██╗██╔══██╗╚══██╔══╝██╔════╝╚██╗██╔╝
@@ -7,19 +9,88 @@
  ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 ```
 
-**A persistent, self-improving brain for AI coding agents.**
+</p>
 
-Cortex is a memory daemon that gives Claude Code, Gemini CLI, Codex, Cursor, and any AI a shared, long-term brain.
-It stores decisions, detects conflicts between agents, compiles token-efficient boot prompts, and compounds intelligence across sessions - so every conversation starts smarter than the last.
-One daemon. One database. Every AI connects. Knowledge compounds.
+<h4 align="center">A persistent, self-improving brain for AI coding agents.</h4>
+
+<p align="center">
+  <a href="https://github.com/AdityaVG13/cortex/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=for-the-badge" alt="Node"></a>
+  <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/deps-1%20(sql.js)-blue?style=for-the-badge" alt="Dependencies"></a>
+  <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge" alt="Platform"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> -
+  <a href="#how-it-works">How It Works</a> -
+  <a href="#features">Features</a> -
+  <a href="#connecting-your-ai">Connect Your AI</a> -
+  <a href="#api">API Reference</a> -
+  <a href="#whats-next">Roadmap</a>
+</p>
+
+<p align="center">
+  Cortex solves the biggest problem with AI coding assistants: they forget everything between sessions.
+  <br>
+  Every time you start a new conversation, your AI re-discovers your toolchain, your conventions, your past decisions - burning tokens and your patience.
+  <br>
+  Cortex gives every AI a shared brain that persists, compresses, and pushes context before being asked.
+</p>
 
 ---
 
-## About
+## Quick Start
 
-Cortex solves the biggest problem with AI coding assistants: they forget everything between sessions.
-Every time you start a new conversation, your AI re-discovers your toolchain, your conventions, your past decisions - burning tokens and your patience.
-Cortex gives every AI a shared brain that persists, compresses, and pushes context before being asked.
+```bash
+git clone https://github.com/AdityaVG13/cortex.git
+cd cortex && npm install
+node src/daemon.js serve
+```
+
+Verify it's running:
+
+```bash
+curl http://localhost:7437/health
+```
+
+Register with Claude Code:
+
+```bash
+claude mcp add cortex -s user -- node /path/to/cortex/src/daemon.js mcp
+```
+
+That's it. The daemon runs on `localhost:7437`. Any AI that can make HTTP requests can use it.
+
+---
+
+## How It Works
+
+<table>
+<tr>
+  <td><b>Capsule Compiler</b></td>
+  <td>When an AI boots, Cortex compiles a minimal prompt from two capsules: <b>Identity</b> (~200 tokens, stable - who you are, platform rules, sharp edges) and <b>Delta</b> (~50-100 tokens, fresh - what changed since this agent last connected). Result: ~300 tokens to fully orient any AI, versus 4,000+ raw.</td>
+</tr>
+<tr>
+  <td><b>Conflict Detection</b></td>
+  <td>When Claude stores "Use Python 3.12" and Gemini stores "Use Python 3.10," Cortex detects the semantic conflict via embedding similarity, marks both as disputed, and surfaces the disagreement in every boot prompt until a human resolves it.</td>
+</tr>
+<tr>
+  <td><b>Predictive Cache</b></td>
+  <td>Co-occurrence matrix tracks which memories are recalled together. When you recall memory A, and memories B and C frequently appear alongside it, Cortex preloads B and C before you ask - reducing round trips and latency.</td>
+</tr>
+<tr>
+  <td><b>Progressive Recall</b></td>
+  <td>Three-step token-efficient retrieval: <b>Peek</b> (one-line summaries, ~10 tokens/result) -> <b>Balanced</b> (key points within budget) -> <b>Full</b> (complete context). Agents pull only the depth they need.</td>
+</tr>
+<tr>
+  <td><b>Mechanical Boot</b></td>
+  <td>A SessionStart hook calls <code>/boot</code> via HTTP and injects the compiled prompt as context - before the AI processes any user message. No AI cooperation needed. The brain loads mechanically, every time.</td>
+</tr>
+<tr>
+  <td><b>Multi-Agent Coordination</b></td>
+  <td>Session bus tracks who's online. File locking prevents conflicting edits. Task board routes work by priority. Inter-agent feed enables cross-AI communication. SSE pushes events in real time.</td>
+</tr>
+</table>
 
 ---
 
@@ -33,7 +104,7 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 - **Dream Compaction** - Nightly deduplication and synthesis via local LLM workers
 
 ### Token Optimization
-- **Cost Ladder** - Three retrieval modes: headlines (minimal) → balanced (default) → full (deep dive)
+- **Cost Ladder** - Three retrieval modes: headlines (minimal) -> balanced (default) -> full (deep dive)
 - **Budget Recall** - Token-aware search that fits results within a caller-specified budget
 - **Context Dedup** - Prevents the same information from appearing in both boot and recall
 - **Savings Analytics** - Real token savings tracking per session and cumulative
@@ -52,66 +123,13 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 - **Analytics Dashboard** - Token savings, boot frequency, agent activity
 
 ### Session Boot
-- **Mechanical Boot Hook** - SessionStart hook calls `/boot` via HTTP, injects context before the AI processes any message - no AI cooperation needed
-- **StatusLine Integration** - Live Cortex/Ollama status in the Claude Code status bar via CCStatusline
+- **Mechanical Boot Hook** - SessionStart hook calls `/boot` via HTTP, injects context automatically
+- **StatusLine Integration** - Live Cortex/Ollama status in the Claude Code status bar
 - **Universal Connectivity** - `brain-status.json` written at boot for any AI to read
 
 ---
 
-## Quick Start
-
-```bash
-# Clone and install
-git clone https://github.com/AdityaVG13/cortex.git
-cd cortex
-npm install
-
-# Start the daemon
-node src/daemon.js serve
-
-# Verify
-curl http://localhost:7437/health
-```
-
-The daemon runs on `localhost:7437`. Any AI that can make HTTP requests can use it.
-
-### Register with Claude Code
-
-```bash
-claude mcp add cortex -s user -- node /path/to/cortex/src/daemon.js mcp
-```
-
-### Launch the Desktop App
-
-```bash
-cd desktop/cortex-control-center
-npm install
-npm run tauri dev
-```
-
----
-
-## How It Works
-
-### The Capsule Compiler
-
-When an AI boots, Cortex compiles a minimal prompt from two capsules:
-
-**Identity capsule** (~200 tokens, stable): Who you are, platform rules, hard constraints, known sharp edges. Doesn't change between sessions.
-
-**Delta capsule** (~50-100 tokens, fresh): What changed since this specific agent last connected. New decisions, new conflicts, state changes. Only the diff.
-
-Result: ~300 tokens to fully orient any AI, versus 4,000+ tokens of raw file reads.
-
-### Conflict Detection
-
-When Claude stores "Use Python 3.12" and Gemini stores "Use Python 3.10," Cortex detects the semantic conflict via embedding similarity, marks both as disputed, and surfaces the disagreement in every subsequent boot prompt until a human resolves it.
-
-### Predictive Cache
-
-Cortex tracks which memories are recalled together via a co-occurrence matrix. When you recall memory A, and memories B and C are frequently accessed alongside it, Cortex preloads B and C before you ask - reducing round trips and latency.
-
-### Multi-AI Architecture
+## Architecture
 
 ```
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
@@ -148,14 +166,10 @@ Cortex tracks which memories are recalled together via a co-occurrence matrix. W
               └─────────────────────┘
 ```
 
----
-
-## Architecture
-
 Cortex runs as a dual-daemon system:
 
-- **Node Daemon** (`src/daemon.js`) - Feature-ahead HTTP + MCP server. Handles memory operations, capsule compilation, conflict detection, session bus, task board, file locking, SSE events, and inter-agent feed.
-- **Rust/Tauri Desktop App** (`desktop/cortex-control-center/`) - Native app wrapping the daemon with a React frontend. Includes the 3D brain visualizer, Jarvis-inspired UI, and system tray integration.
+- **Node Daemon** (`src/daemon.js`) - Feature-ahead HTTP + MCP server. Handles memory, capsule compilation, conflict detection, session bus, task board, file locking, SSE events, and inter-agent feed.
+- **Rust/Tauri Desktop App** (`desktop/cortex-control-center/`) - Native app wrapping the daemon with a React frontend. 3D brain visualizer, Jarvis-inspired UI, and system tray integration.
 
 ```
 src/
@@ -167,20 +181,61 @@ src/
   profiles.js    # Profile loader (full/operational/subagent/index)
   db.js          # SQLite via sql.js, schema, CRUD helpers
   cli.js         # CLI wrapper, auto-start daemon, HTTP client
-
-desktop/cortex-control-center/
-  src/
-    App.jsx              # Main app shell, Jarvis-inspired layout
-    BrainVisualizer.jsx  # 3D memory graph (Three.js)
-  src-tauri/
-    src/                 # Rust backend (daemon lifecycle, system tray)
 ```
 
 **Design constraints:**
-- Node daemon: one npm dependency (`sql.js` - SQLite compiled to WASM)
+- One npm dependency (`sql.js` - SQLite compiled to WASM)
 - No native compilation for the daemon, no build step
 - Works on Windows 10 without WSL
 - Daemon stays alive across sessions, auto-starts on boot
+
+---
+
+## Connecting Your AI
+
+### Claude Code (MCP + HTTP)
+
+```bash
+claude mcp add cortex -s user -- node /path/to/cortex/src/daemon.js mcp
+```
+
+The `brain-boot.js` SessionStart hook calls `/boot` mechanically and injects the boot prompt as context. Add the hook to your Claude Code settings for automatic boot every session.
+
+### Gemini CLI (HTTP)
+
+Add to `~/GEMINI.md`:
+
+```markdown
+## Brain Boot Protocol
+At session start, read ~/.claude/brain-status.json and print the oneliner.
+Use http://localhost:7437 for memory operations.
+```
+
+### Codex CLI (HTTP)
+
+Add to `~/AGENTS.md`:
+
+```markdown
+## Brain Boot Protocol
+At session start, read ~/.claude/brain-status.json and print the oneliner.
+Use http://localhost:7437 for memory operations.
+```
+
+### Any Other AI (HTTP)
+
+```bash
+# Boot
+curl http://localhost:7437/boot?agent=my-agent
+
+# Recall (with token budget)
+curl "http://localhost:7437/recall?q=authentication+patterns&budget=500"
+
+# Store (with auth)
+curl -X POST http://localhost:7437/store \
+  -H "Authorization: Bearer $(cat ~/.cortex/cortex.token)" \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "Use JWT for API auth", "context": "api-design"}'
+```
 
 ---
 
@@ -191,11 +246,11 @@ desktop/cortex-control-center/
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/boot?agent=<id>` | No | Compiled boot prompt (capsule system) |
-| `GET` | `/recall?q=<query>&budget=<tokens>` | No | Hybrid semantic + keyword search with token budgeting |
+| `GET` | `/recall?q=<query>&budget=<tokens>` | No | Hybrid semantic + keyword search |
+| `GET` | `/peek?q=<query>` | No | Headlines-only recall (minimal tokens) |
 | `GET` | `/health` | No | Daemon status, memory counts, Ollama status |
 | `GET` | `/savings` | No | Token savings analytics |
 | `GET` | `/digest` | No | Daily health digest with activity summary |
-| `GET` | `/peek?q=<query>` | No | Headlines-only recall (minimal tokens) |
 | `GET` | `/dump` | Yes | Full memory export |
 | `GET` | `/sessions` | No | Active agent sessions |
 | `GET` | `/locks` | No | Active file locks |
@@ -248,77 +303,29 @@ cortex stop                    # Shutdown daemon
 
 ---
 
-## Connecting Your AI
-
-### Claude Code (MCP + HTTP)
-
-```bash
-claude mcp add cortex -s user -- node /path/to/cortex/src/daemon.js mcp
-```
-
-The `brain-boot.js` SessionStart hook calls `/boot` mechanically and injects the boot prompt as context - the AI receives it before processing any user message. Add the hook to your Claude Code settings for automatic boot.
-
-### Gemini CLI (HTTP)
-
-Add to `~/GEMINI.md`:
-
-```markdown
-## Brain Boot Protocol
-At session start, read ~/.claude/brain-status.json and print the oneliner.
-Use http://localhost:7437 for memory operations.
-```
-
-### Codex CLI (HTTP)
-
-Add to `~/AGENTS.md`:
-
-```markdown
-## Brain Boot Protocol
-At session start, read ~/.claude/brain-status.json and print the oneliner.
-Use http://localhost:7437 for memory operations.
-```
-
-### Any Other AI (HTTP)
-
-```bash
-# Boot
-curl http://localhost:7437/boot?agent=my-agent
-
-# Recall (with token budget)
-curl "http://localhost:7437/recall?q=authentication+patterns&budget=500"
-
-# Store (with auth)
-curl -X POST http://localhost:7437/store \
-  -H "Authorization: Bearer $(cat ~/.cortex/cortex.token)" \
-  -H "Content-Type: application/json" \
-  -d '{"decision": "Use JWT for API auth", "context": "api-design"}'
-```
-
----
-
 ## What's Next
 
 ### Near-term
 
-- [ ] **Production Tauri Build** - `.exe` installer with embedded daemon, system tray, minimize-to-tray
-- [ ] **Ambient Capture** - PostToolUse hook auto-captures decisions to inbox table with confidence gating
-- [ ] **Progressive Memory Aging** - Fresh memories at full fidelity, week-old compressed, month-old as one-liners
-- [ ] **Session-Type Classification** - Detect session intent on boot via local Ollama, bias recall accordingly
-- [ ] **Co-occurrence Matrix v2** - Upgrade from frequency-based to embedding-based prediction
+- [ ] Production Tauri Build - `.exe` installer with embedded daemon, system tray, minimize-to-tray
+- [ ] Ambient Capture - PostToolUse hook auto-captures decisions with confidence gating
+- [ ] Progressive Memory Aging - Fresh memories at full fidelity, week-old compressed, month-old as one-liners
+- [ ] Session-Type Classification - Detect session intent on boot via local Ollama, bias recall accordingly
+- [ ] Timeline Query - Chronological context browsing around a memory or time range
 
 ### Mid-term
 
-- [ ] **Import History** - Ingest ChatGPT, Claude, and Gemini conversation exports into the brain
-- [ ] **Ollama Sidecar Workers** - Python workers poll `/tasks`, run local model review on changed files
-- [ ] **Port Node Features to Rust Daemon** - Smart recall, co-occurrence, budget recall, savings endpoints
-- [ ] **Custom App Icon** - Cortex-branded icon for taskbar/tray/installer
+- [ ] Import History - Ingest ChatGPT, Claude, and Gemini conversation exports into the brain
+- [ ] Ollama Sidecar Workers - Python workers poll `/tasks`, run local model review on changed files
+- [ ] Port Node Features to Rust Daemon - Smart recall, co-occurrence, budget recall, savings
+- [ ] Privacy Tags - Exclude sensitive content from storage via markup
 
 ### Long-term
 
-- [ ] **Full Rust Daemon Rewrite** - Eliminate Node.js dependency. Single binary, zero external deps, <5MB
-- [ ] **Self-Tuning Compiler** - Track which boot content gets referenced, shift budget to what matters
-- [ ] **Decision Provenance DAG** - Trace decision lineage across agents and sessions
-- [ ] **Event-Sourced Brain** - Events table as source of truth, current tables as materialized views
+- [ ] Full Rust Daemon Rewrite - Eliminate Node.js dependency, single binary, zero deps, <5MB
+- [ ] Self-Tuning Compiler - Track which boot content gets referenced, shift budget to what matters
+- [ ] Decision Provenance DAG - Trace decision lineage across agents and sessions
+- [ ] Event-Sourced Brain - Events table as source of truth, current tables as materialized views
 
 ---
 
