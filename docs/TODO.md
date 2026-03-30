@@ -16,19 +16,30 @@ Both AIs read this FIRST before starting work.
 - [x] **Dashboard Task Board + Messages** — Wired Task Board to real /tasks endpoint (pending/claimed/completed). Added Messages tab for inter-agent communication (send/receive). 6 tabs total. (droid, 2026-03-29)
 - [x] **Task Board** — POST /tasks, GET /tasks, /tasks/next, /tasks/claim, /tasks/complete, /tasks/abandon. Priority routing, capability filtering, boot injection. 33/39 tests passing. (claude, 2026-03-29)
 - [x] **MCP stdio transport fix** — Fixed stdout write function capture for Windows. MCP tools now load correctly: cortex_boot, cortex_recall, cortex_store, cortex_health, cortex_digest, cortex_forget, cortex_resolve. (droid, 2026-03-29)
+- [x] **Unified Smart Recall** — Budget-aware recall with token budgeting, cost ladder (headlines → balanced → full), context dedup. Replaces old keyword-only search. (claude, 2026-03-29)
+- [x] **Predictive Cache with Co-occurrence Matrix** — Tracks which memories are recalled together, preloads likely-needed context. co_occurrence table + predictive preloading on recall. (claude, 2026-03-29)
+- [x] **Token Savings Analytics** — /savings endpoint, boot_savings event tracking, cumulative + daily stats surfaced in health and digest. (claude, 2026-03-29)
+- [x] **3D Brain Visualizer** — Interactive Three.js memory graph in Tauri desktop app. Nodes represent memories, edges show co-occurrence relationships. (droid, 2026-03-29)
+- [x] **Jarvis-Inspired Desktop UI** — Tauri + React + Vite app with agent dashboard, task board, messaging, memory explorer, analytics. Dev mode working. (droid, 2026-03-29)
 
 ## In Progress
 
-- [ ] **Tauri Desktop App** — Replace Streamlit dashboard with native desktop app. Features: daemon lifecycle management, system tray icon, agent presence dashboard, task board, inter-agent messaging, memory explorer. Bundle as .exe for Windows. Free & open source (MIT/Apache license). **Owner: TBD**
+- [ ] **Tauri Desktop App** — Native desktop app with Jarvis-inspired UI, 3D brain visualizer, agent dashboard, task board, messaging, memory explorer. Dev mode working (`npm run tauri dev`). Needs production build. **Owner: droid**
 
 ## Up Next (ordered)
 
-1. **CRITICAL: Tauri Production Build** — Single .exe with embedded daemon lifecycle. Phases: (1) Rust setup() spawns node daemon, (2) system tray + minimize, (3) dashboard UI inside native window, (4) `cargo tauri build` → installer, (5) airgap-ready packaging. **Owner: droid**
-2. **Rust Daemon Rewrite** — Port daemon.js to Rust. Eliminates Node.js dependency entirely — single binary, zero external deps. Tauri is already Rust so daemon becomes embedded module, not spawned child process. Target: <5MB binary. **Owner: droid, long-term**
-3. **Phase 3: Keyword Fallback + Decay** — Tokenized OR matching, recency weighting, decay-on-boot scoring, pinned flag. Already spec'd in ROADMAP.md. **Owner: claude (node.js)**
-4. **SSE Event Feed** — `GET /events/stream` for real-time push. Dashboard and agents subscribe. **Owner: claude (node.js)**
-5. **Ambient Capture** — PostToolUse hook auto-captures decisions to inbox table with confidence gating. Promotion pipeline: inbox → episodic → canonical. **Owner: droid (python workers)**
-6. **Ollama Sidecar Workers** — Python workers poll /tasks for completed work, run Qwen/DeepSeek review on changed files, store findings. **Owner: droid (python)**
+1. **Port Unified Recall + Co-occurrence + Budget Recall to Rust Daemon** — Node daemon has smart recall with token budgeting and predictive cache via co-occurrence matrix. Rust daemon needs parity. **Owner: droid**
+2. **Port /savings and /dump Endpoints to Rust Daemon** — Match latest Node daemon API surface in the Tauri backend. **Owner: droid**
+3. **Co-occurrence Matrix v2** — Upgrade from frequency-based to embedding-based prediction. Use vector similarity to predict needed context, not just access patterns. **Owner: claude**
+4. **Progressive Memory Aging** — Fresh memories at full fidelity, week-old compressed to key points, month-old reduced to one-liners. Automatic background process. **Owner: claude**
+5. **Session-Type Classification on Boot** — Detect session intent (coding, research, review, debug) on first few tool calls via local Ollama, then bias recall toward relevant memories. **Owner: claude + ollama**
+6. **Import History** — Ingest ChatGPT, Claude, and Gemini conversation exports. Parse JSON/ZIP exports, extract decisions and learnings, deduplicate against existing brain. **Owner: TBD**
+7. **Production Tauri Build** — `cargo tauri build` → .exe installer. Includes: embedded daemon lifecycle, system tray + minimize-to-tray, airgap-ready packaging. **Owner: droid**
+8. **Custom App Icon Design** — Replace default Tauri icon with Cortex-branded icon for taskbar/tray/installer. **Owner: TBD**
+9. **Rust Daemon Rewrite** — Port daemon.js to Rust. Eliminates Node.js dependency entirely — single binary, zero external deps. Tauri is already Rust so daemon becomes embedded module, not spawned child process. Target: <5MB binary. **Owner: droid, long-term**
+10. **SSE Event Feed** — `GET /events/stream` for real-time push. Dashboard and agents subscribe. **Owner: claude (node.js)**
+11. **Ambient Capture** — PostToolUse hook auto-captures decisions to inbox table with confidence gating. Promotion pipeline: inbox → episodic → canonical. **Owner: droid (python workers)**
+12. **Ollama Sidecar Workers** — Python workers poll /tasks for completed work, run Qwen/DeepSeek review on changed files, store findings. **Owner: droid (python)**
 
 ## Stolen Ideas (from competitive research 2026-03-29, see docs/competitive-intel.md)
 
