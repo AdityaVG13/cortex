@@ -530,7 +530,7 @@ async function store(decision, opts = {}) {
 
   if (conflict.isConflict) {
     // Different agent conflict: insert new as disputed, then mark both via markDisputed
-    const newId = db.insert(
+    const newId = db.insertCritical(
       'INSERT INTO decisions (decision, context, type, source_agent, confidence, status, disputes_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [decision, context, type, source_agent, confidence, 'disputed', conflict.matchedId]
     );
@@ -546,12 +546,12 @@ async function store(decision, opts = {}) {
 
   // 2. Same-agent update: conflict.js detected high similarity from the same agent
   if (conflict.isUpdate && conflict.matchedId) {
-    db.run(
+    db.runCritical(
       "UPDATE decisions SET status = 'superseded', updated_at = datetime('now') WHERE id = ?",
       [conflict.matchedId]
     );
 
-    const newId = db.insert(
+    const newId = db.insertCritical(
       'INSERT INTO decisions (decision, context, type, source_agent, confidence, supersedes_id) VALUES (?, ?, ?, ?, ?, ?)',
       [decision, context, type, source_agent, confidence, conflict.matchedId]
     );
@@ -580,8 +580,8 @@ async function store(decision, opts = {}) {
     return { stored: false, reason: 'duplicate', surprise };
   }
 
-  // 4. Insert new decision
-  const id = db.insert(
+  // 4. Insert new decision — persistNow() to survive crashes
+  const id = db.insertCritical(
     'INSERT INTO decisions (decision, context, type, source_agent, confidence, surprise) VALUES (?, ?, ?, ?, ?, ?)',
     [decision, context, type, source_agent, confidence, parseFloat(surprise.toFixed(4))]
   );

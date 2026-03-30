@@ -139,7 +139,7 @@ function ensureColumn(db, tableName, columnName, columnSql) {
   }
 }
 
-// Persist database to disk (debounced)
+// Persist database to disk
 function persist() {
   if (!_db) return;
   const data = _db.export();
@@ -157,23 +157,58 @@ function persist() {
   }
 }
 
+// Debounced persist for high-frequency reads that touch updated_at etc.
 function markDirty() {
   _dirty = true;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     if (_dirty) persist();
-  }, 1000); // Auto-persist after 1s of inactivity
-  if (typeof _saveTimer.unref === 'function') {
-    _saveTimer.unref();
+  }, 500);
+  // DO NOT unref() — timer must keep process alive until flush completes.
+  // Previous unref() caused data loss on process exit during debounce window.
+}
+
+// Immediate persist for critical writes (store, forget, resolve).
+// Never debounce data the user expects to survive a crash.
+function persistNow() {
+  _dirty = true;
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = null;
+  persist();
+}
+
+// Emergency flush — called from process exit hooks
+function flushSync() {
+  if (_db && _dirty) {
+    try { persist(); } catch { /* best effort on exit */ }
   }
 }
 
-// Execute a write query and auto-persist
+// Install process exit hooks to prevent data loss
+process.on('SIGINT', () => { flushSync(); process.exit(0); });
+process.on('SIGTERM', () => { flushSync(); process.exit(0); });
+process.on('beforeExit', () => { flushSync(); });
+process.on('exit', () => {
+  // exit handler is synchronous-only — persist() uses writeFileSync so it works here
+  if (_db && _dirty) {
+    try { persist(); } catch { /* last resort */ }
+  }
+});
+
+// Execute a write query and auto-persist (debounced)
 function run(sql, params = []) {
   const db = _db;
   if (!db) throw new Error('Database not initialized. Call getDb() first.');
   db.run(sql, params);
   markDirty();
+}
+
+// Execute a write query and persist IMMEDIATELY (for store/forget/resolve)
+function runCritical(sql, params = []) {
+  const db = _db;
+  if (!db) throw new Error('Database not initialized. Call getDb() first.');
+  db.run(sql, params);
+  persistNow();
 }
 
 // Execute a read query
@@ -199,6 +234,13 @@ function get(sql, params = []) {
 // Insert and return last insert ID
 function insert(sql, params = []) {
   run(sql, params);
+  const row = get('SELECT last_insert_rowid() as id');
+  return row ? row.id : null;
+}
+
+// Insert with immediate persist — for decisions, memories, critical data
+function insertCritical(sql, params = []) {
+  runCritical(sql, params);
   const row = get('SELECT last_insert_rowid() as id');
   return row ? row.id : null;
 }
@@ -381,7 +423,7 @@ function archiveEntries(type, ids) {
 
 module.exports = {
   getDb, close, getStats, ensureCortexDir,
-  run, query, get, insert, persist, markDirty,
+  run, runCritical, query, get, insert, insertCritical, persist, persistNow, markDirty,
   searchMemories, searchDecisions, decayPass,
   dumpActive, archiveEntries,
   DB_PATH, CORTEX_DIR
