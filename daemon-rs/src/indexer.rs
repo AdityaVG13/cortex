@@ -353,20 +353,28 @@ fn index_gorci(conn: &Connection, home: &Path) -> usize {
         Err(_) => return 0,
     };
 
+    // Preserve numeric fields by formatting them, not replacing with "?".
+    let pass_str = data["pass"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| data["pass"].as_u64().map(|n| n.to_string()))
+        .or_else(|| data["pass"].as_f64().map(|n| format!("{n:.1}")))
+        .unwrap_or_else(|| "?".to_string());
+    let score_str = data["overallScore"]
+        .as_str()
+        .map(|s| s.to_string())
+        .or_else(|| data["overallScore"].as_f64().map(|n| format!("{n:.2}")))
+        .or_else(|| data["overallScore"].as_u64().map(|n| n.to_string()))
+        .unwrap_or_else(|| "?".to_string());
+
     let text = format!(
         "[GORCI] Skill: {}, Mode: {}, Tier: {}, Cases: {}, Pass: {}, Score: {}. Run: {}",
         data["skill"].as_str().unwrap_or("unknown"),
         data["mode"].as_str().unwrap_or("?"),
         data["tier"].as_str().unwrap_or("?"),
         data["cases"].as_u64().unwrap_or(0),
-        data["pass"]
-            .as_str()
-            .or_else(|| data["pass"].as_u64().map(|_| "?"))
-            .unwrap_or("?"),
-        data["overallScore"]
-            .as_str()
-            .or_else(|| data["overallScore"].as_f64().map(|_| "?"))
-            .unwrap_or("?"),
+        pass_str,
+        score_str,
         data["timestamp"].as_str().unwrap_or("unknown"),
     );
 

@@ -45,11 +45,13 @@ async fn main() {
             }
 
             // ── Background embedding builder ─────────────────────────
+            // IMPORTANT: Don't hold DB lock during ONNX inference.
+            // Read unembedded IDs + text, drop lock, embed in memory,
+            // then re-lock briefly to write each batch.
             if let Some(engine) = state.embedding_engine.clone() {
                 let db = state.db.clone();
                 tokio::spawn(async move {
-                    let conn = db.lock().await;
-                    build_embeddings(&engine, &conn);
+                    build_embeddings_async(&engine, &db).await;
                 });
             } else {
                 // Try downloading model in background for next restart.
@@ -168,32 +170,42 @@ async fn main() {
 }
 
 /// Build embeddings for all un-embedded memories and decisions.
-fn build_embeddings(engine: &embeddings::EmbeddingEngine, conn: &rusqlite::Connection) {
-    // Un-embedded memories.
-    let unembedded_mem: Vec<(i64, String)> = conn
-        .prepare(
-            "SELECT m.id, m.text FROM memories m \
-             WHERE m.status = 'active' \
-               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'memory' AND e.target_id = m.id)",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        })
-        .unwrap_or_default();
+/// IMPORTANT: Does NOT hold the DB lock during ONNX inference.
+/// Reads IDs/text in a short lock, embeds in memory (no lock), then writes in batches.
+async fn build_embeddings_async(
+    engine: &embeddings::EmbeddingEngine,
+    db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+) {
+    // Step 1: Read un-embedded entries (short lock).
+    let (unembedded_mem, unembedded_dec) = {
+        let conn = db.lock().await;
 
-    // Un-embedded decisions.
-    let unembedded_dec: Vec<(i64, String)> = conn
-        .prepare(
-            "SELECT d.id, d.decision FROM decisions d \
-             WHERE d.status = 'active' \
-               AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'decision' AND e.target_id = d.id)",
-        )
-        .and_then(|mut stmt| {
-            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        })
-        .unwrap_or_default();
+        let mem: Vec<(i64, String)> = conn
+            .prepare(
+                "SELECT m.id, m.text FROM memories m \
+                 WHERE m.status = 'active' \
+                   AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'memory' AND e.target_id = m.id)",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            })
+            .unwrap_or_default();
+
+        let dec: Vec<(i64, String)> = conn
+            .prepare(
+                "SELECT d.id, d.decision FROM decisions d \
+                 WHERE d.status = 'active' \
+                   AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'decision' AND e.target_id = d.id)",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            })
+            .unwrap_or_default();
+
+        (mem, dec)
+    }; // DB lock released here.
 
     let total = unembedded_mem.len() + unembedded_dec.len();
     if total == 0 {
@@ -203,27 +215,39 @@ fn build_embeddings(engine: &embeddings::EmbeddingEngine, conn: &rusqlite::Conne
     eprintln!("[embeddings] Building embeddings for {total} entries...");
     let mut computed = 0;
 
+    // Step 2: Embed in memory (no lock held).
+    let mut mem_results: Vec<(i64, Vec<u8>)> = Vec::new();
     for (id, text) in &unembedded_mem {
         if let Some(vec) = engine.embed(text) {
-            let blob = embeddings::vector_to_blob(&vec);
+            mem_results.push((*id, embeddings::vector_to_blob(&vec)));
+            computed += 1;
+        }
+    }
+
+    let mut dec_results: Vec<(i64, Vec<u8>)> = Vec::new();
+    for (id, text) in &unembedded_dec {
+        if let Some(vec) = engine.embed(text) {
+            dec_results.push((*id, embeddings::vector_to_blob(&vec)));
+            computed += 1;
+        }
+    }
+
+    // Step 3: Write results in a single short lock.
+    {
+        let conn = db.lock().await;
+        for (id, blob) in &mem_results {
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
                  VALUES ('memory', ?1, ?2, 'all-MiniLM-L6-v2')",
                 rusqlite::params![id, blob],
             );
-            computed += 1;
         }
-    }
-
-    for (id, text) in &unembedded_dec {
-        if let Some(vec) = engine.embed(text) {
-            let blob = embeddings::vector_to_blob(&vec);
+        for (id, blob) in &dec_results {
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
                  VALUES ('decision', ?1, ?2, 'all-MiniLM-L6-v2')",
                 rusqlite::params![id, blob],
             );
-            computed += 1;
         }
     }
 

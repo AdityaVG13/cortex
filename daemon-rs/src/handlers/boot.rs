@@ -52,13 +52,18 @@ pub async fn handle_boot(
     // Compile the boot prompt using the full capsule compiler
     let result = compiler::compile(&conn, &state.home, &agent, max_tokens);
 
-    // Auto-ack all unread feed for this agent on boot
-    let _ = conn.execute(
-        "INSERT OR IGNORE INTO feed_acks (feed_id, agent, acked_at) \
-         SELECT id, ?1, datetime('now') FROM feed \
-         WHERE id NOT IN (SELECT feed_id FROM feed_acks WHERE agent = ?1)",
-        rusqlite::params![agent],
-    );
+    // Auto-ack feed on boot: advance last_seen_id to the latest feed entry.
+    if let Ok(latest_id) = conn.query_row(
+        "SELECT id FROM feed ORDER BY timestamp DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        let _ = conn.execute(
+            "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, datetime('now')) \
+             ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+            rusqlite::params![agent, latest_id],
+        );
+    }
 
     checkpoint_wal_best_effort(&conn);
 

@@ -11,20 +11,18 @@ use super::{ensure_auth, json_response, truncate_chars};
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
 pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
-    let conn = state.db.lock().await;
+    // Read DB stats in a short lock, then drop it before the network call.
+    let (memories, decisions, embeddings_count, events) = {
+        let conn = state.db.lock().await;
+        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
+        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).unwrap_or(0);
+        let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
+        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
+        (m, d, e, ev)
+    }; // DB lock released here.
 
-    let memories: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
-        .unwrap_or(0);
-    let decisions: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
-        .unwrap_or(0);
-    let embeddings: i64 = conn
-        .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
-        .unwrap_or(0);
-    let events: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
-        .unwrap_or(0);
+    // Ollama probe happens WITHOUT the DB lock held.
+    let ollama = check_ollama_status().await;
 
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -37,9 +35,9 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
             "stats": {
                 "memories": memories,
                 "decisions": decisions,
-                "embeddings": embeddings,
+                "embeddings": embeddings_count,
                 "events": events,
-                "ollama": check_ollama_status().await,
+                "ollama": ollama,
                 "home": home
             }
         }),
@@ -53,7 +51,7 @@ async fn check_ollama_status() -> &'static str {
         .build();
     match client {
         Ok(c) => match c.get("http://localhost:11434/api/tags").send().await {
-            Ok(resp) if resp.status().is_success() => "online",
+            Ok(resp) if resp.status().is_success() => "connected",  // Match Node.js API contract
             _ => "offline",
         },
         Err(_) => "offline",
