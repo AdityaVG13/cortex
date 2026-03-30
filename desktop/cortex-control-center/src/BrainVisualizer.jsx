@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
-import * as THREE from "three";
 
 const CORTEX_BASE = "http://127.0.0.1:7437";
 
@@ -28,6 +27,29 @@ function truncate(str, len) {
   return str.length > len ? str.slice(0, len) + "..." : str;
 }
 
+// Error boundary to catch Three.js/WebGL crashes
+class GraphErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error: error.message };
+  }
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback || (
+        <div className="brain-loading">
+          <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+          <p>3D renderer crashed: {this.state.error}</p>
+          <p style={{ fontSize: 12, color: "#546580", marginTop: 8 }}>Showing 2D fallback instead.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function BrainVisualizer() {
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
@@ -36,19 +58,17 @@ export function BrainVisualizer() {
   const [error, setError] = useState(null);
   const [hoverNode, setHoverNode] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [autoRotate, setAutoRotate] = useState(false); // Start paused — less likely to crash
-  const [stats, setStats] = useState({ nodes: 0, links: 0 });
+  const [autoRotate, setAutoRotate] = useState(false);
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
   });
 
-  // Track window resize
   useEffect(() => {
     function onResize() {
       setDimensions({
-        width: window.innerWidth - 240,
-        height: window.innerHeight,
+        width: Math.max(window.innerWidth - 260, 400),
+        height: Math.max(window.innerHeight - 20, 300),
       });
     }
     window.addEventListener("resize", onResize);
@@ -66,33 +86,26 @@ export function BrainVisualizer() {
     }
 
     let angle = 0;
-
     function rotate() {
       if (!graphRef.current) return;
-      angle += 0.0008; // Slow, gentle rotation
-      const cam = graphRef.current.camera();
-      if (!cam) { rotationRef.current = requestAnimationFrame(rotate); return; }
-      // Rotate at whatever distance the user is currently at
-      const pos = cam.position;
-      const dist = Math.sqrt(pos.x * pos.x + pos.z * pos.z) || 400;
-      graphRef.current.cameraPosition({
-        x: dist * Math.sin(angle),
-        z: dist * Math.cos(angle),
-        y: pos.y, // Preserve vertical position
-      });
+      angle += 0.0008;
+      try {
+        const cam = graphRef.current.camera();
+        if (!cam) { rotationRef.current = requestAnimationFrame(rotate); return; }
+        const pos = cam.position;
+        const dist = Math.sqrt(pos.x * pos.x + pos.z * pos.z) || 400;
+        graphRef.current.cameraPosition({
+          x: dist * Math.sin(angle),
+          z: dist * Math.cos(angle),
+          y: pos.y,
+        });
+      } catch { /* ignore rotation errors */ }
       rotationRef.current = requestAnimationFrame(rotate);
     }
 
     rotationRef.current = requestAnimationFrame(rotate);
-    return () => {
-      if (rotationRef.current) cancelAnimationFrame(rotationRef.current);
-    };
+    return () => { if (rotationRef.current) cancelAnimationFrame(rotationRef.current); };
   }, [autoRotate, graphData]);
-
-  // Stop auto-rotate on user interaction
-  const handleInteraction = useCallback(() => {
-    if (autoRotate) setAutoRotate(false);
-  }, [autoRotate]);
 
   const fetchBrainData = useCallback(async () => {
     try {
@@ -101,6 +114,7 @@ export function BrainVisualizer() {
         .catch(() => null);
 
       if (!dumpRes) {
+        setError("Could not fetch /dump endpoint");
         setLoading(false);
         return;
       }
@@ -109,28 +123,28 @@ export function BrainVisualizer() {
       const links = [];
       const nodeIds = new Set();
       const linkSet = new Set();
-      const MAX_LINKS = 500;
+      const MAX_LINKS = 300;
 
-      const memories = dumpRes.memories || [];
-      for (const mem of memories) {
-        nodeIds.add(`mem-${mem.id}`);
+      for (const mem of (dumpRes.memories || [])) {
+        const id = `mem-${mem.id}`;
+        nodeIds.add(id);
         nodes.push({
-          id: `mem-${mem.id}`,
+          id,
           label: truncate(mem.source || mem.text || `Memory ${mem.id}`, 50),
           fullText: mem.text || "",
           type: mem.type || "memory",
           agent: mem.source_agent || "system",
           score: mem.score || 1,
           group: "memory",
-          size: 3 + Math.min((mem.score || 1) * 2, 6),
+          val: 2 + Math.min((mem.score || 1) * 2, 6),
         });
       }
 
-      const decisions = dumpRes.decisions || [];
-      for (const dec of decisions) {
-        nodeIds.add(`dec-${dec.id}`);
+      for (const dec of (dumpRes.decisions || [])) {
+        const id = `dec-${dec.id}`;
+        nodeIds.add(id);
         nodes.push({
-          id: `dec-${dec.id}`,
+          id,
           label: truncate(dec.decision || `Decision ${dec.id}`, 50),
           fullText: dec.decision || "",
           context: dec.context || "",
@@ -139,24 +153,22 @@ export function BrainVisualizer() {
           score: dec.score || 1,
           group: "decision",
           status: dec.status || "active",
-          size: 4 + Math.min((dec.score || 1) * 2, 6),
+          val: 3 + Math.min((dec.score || 1) * 2, 6),
         });
 
-        if (dec.disputes_id) {
-          links.push({
-            source: `dec-${dec.id}`,
-            target: `dec-${dec.disputes_id}`,
-            type: "conflict",
-            color: "#ff1744",
-          });
+        if (dec.disputes_id && nodeIds.has(`dec-${dec.disputes_id}`)) {
+          links.push({ source: id, target: `dec-${dec.disputes_id}`, type: "conflict" });
         }
       }
 
-      // Keyword-based semantic links
+      // Keyword links (capped)
       const keywordMap = new Map();
       for (const node of nodes) {
-        const text = (node.label + " " + (node.fullText || "")).toLowerCase();
-        const words = [...new Set(text.split(/\W+/).filter(w => w.length > 4))];
+        const words = [...new Set(
+          (node.label + " " + (node.fullText || "")).toLowerCase()
+            .split(/\W+/)
+            .filter(w => w.length > 5)
+        )];
         for (const word of words) {
           if (!keywordMap.has(word)) keywordMap.set(word, []);
           keywordMap.get(word).push(node.id);
@@ -165,123 +177,51 @@ export function BrainVisualizer() {
 
       for (const [, ids] of keywordMap) {
         if (links.length >= MAX_LINKS) break;
-        if (ids.length >= 2 && ids.length <= 5) {
+        if (ids.length >= 2 && ids.length <= 4) {
           for (let i = 0; i < ids.length - 1 && links.length < MAX_LINKS; i++) {
             for (let j = i + 1; j < ids.length && links.length < MAX_LINKS; j++) {
               const key = [ids[i], ids[j]].sort().join("|");
               if (!linkSet.has(key)) {
                 linkSet.add(key);
-                links.push({
-                  source: ids[i],
-                  target: ids[j],
-                  type: "semantic",
-                  color: "rgba(0, 212, 255, 0.06)",
-                });
+                links.push({ source: ids[i], target: ids[j], type: "semantic" });
               }
             }
           }
         }
       }
 
-      // Filter out links that reference non-existent nodes
-      const nodeIdSet = new Set(nodes.map(n => n.id));
-      const validLinks = links.filter(l => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
+      // Final validation — ensure all link targets exist
+      const validLinks = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
 
       setGraphData({ nodes, links: validLinks });
-      setStats({ nodes: nodes.length, links: validLinks.length });
       setLoading(false);
     } catch (err) {
-      console.error("Brain fetch failed:", err);
-      setError(err.message || "Failed to load brain data");
+      setError(err.message);
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    fetchBrainData();
-  }, [fetchBrainData]);
+  useEffect(() => { fetchBrainData(); }, [fetchBrainData]);
 
-  // Scene setup
-  useEffect(() => {
-    if (!graphRef.current) return;
-    const scene = graphRef.current.scene();
-    if (!scene) return;
+  const memoryCt = useMemo(() => graphData.nodes.filter(n => n.group === "memory").length, [graphData]);
+  const decisionCt = useMemo(() => graphData.nodes.filter(n => n.group === "decision").length, [graphData]);
 
-    scene.background = new THREE.Color("#060a12");
-
-    if (!scene.children.some(c => c.isAmbientLight)) {
-      scene.add(new THREE.AmbientLight(0x404040, 0.5));
-      const light = new THREE.PointLight(0x00d4ff, 0.3, 1000);
-      light.position.set(0, 200, 0);
-      scene.add(light);
-    }
-  }, [graphData]);
-
-  const nodeThreeObject = useCallback((node) => {
-    const color = getAgentColor(node.agent);
-    const size = node.size || 4;
-    const isSelected = selectedNode?.id === node.id;
-
-    const geo = new THREE.SphereGeometry(size, 16, 12);
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(color),
-      emissive: new THREE.Color(color),
-      emissiveIntensity: isSelected ? 1.0 : node.group === "decision" ? 0.6 : 0.4,
-      roughness: 0.3,
-      metalness: 0.1,
-      transparent: true,
-      opacity: isSelected ? 1.0 : 0.85,
-    });
-
-    const mesh = new THREE.Mesh(geo, mat);
-
-    if (node.group === "decision") {
-      const ringGeo = new THREE.RingGeometry(size * 1.3, size * 1.5, 24);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(color),
-        transparent: true,
-        opacity: isSelected ? 0.4 : 0.15,
-        side: THREE.DoubleSide,
-      });
-      const ring = new THREE.Mesh(ringGeo, ringMat);
-      ring.lookAt(0, 0, 1);
-      mesh.add(ring);
-    }
-
-    return mesh;
-  }, [selectedNode]);
-
-  function handleNodeClick(node) {
-    if (!node) return;
-    setSelectedNode(prev => prev?.id === node.id ? null : node);
-    setAutoRotate(false);
-
-    if (graphRef.current) {
-      const distance = 60;
-      const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z);
-      graphRef.current.cameraPosition(
-        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
-        node,
-        1200
-      );
-    }
+  // Error / loading states
+  if (error) {
+    return (
+      <div className="brain-loading">
+        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <p>Error: {error}</p>
+        <button className="btn-sm btn-primary" onClick={() => { setError(null); setLoading(true); fetchBrainData(); }} style={{ marginTop: 12 }}>Retry</button>
+      </div>
+    );
   }
 
   if (loading) {
     return (
       <div className="brain-loading">
         <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
-        <p>Loading brain topology...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="brain-loading">
-        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
-        <p>Error: {error}</p>
-        <button className="btn-sm btn-primary" onClick={() => { setError(null); setLoading(true); fetchBrainData(); }}>Retry</button>
+        <p>Loading brain topology... ({graphData.nodes.length} nodes)</p>
       </div>
     );
   }
@@ -290,53 +230,82 @@ export function BrainVisualizer() {
     return (
       <div className="brain-loading">
         <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
-        <p>No data from /dump endpoint.</p>
-        <button className="btn-sm btn-primary" onClick={() => { setLoading(true); fetchBrainData(); }}>Retry</button>
+        <p>No memories found in brain.</p>
       </div>
     );
   }
 
-  const memoryCt = useMemo(() => graphData.nodes.filter(n => n.group === "memory").length, [graphData]);
-  const decisionCt = useMemo(() => graphData.nodes.filter(n => n.group === "decision").length, [graphData]);
+  // 2D fallback — shown if ForceGraph3D is missing (shouldn't happen with static import)
+  if (!ForceGraph3D) {
+    return (
+      <div className="brain-container" style={{ padding: 24, overflowY: "auto" }}>
+        <div className="brain-hud" style={{ position: "relative", marginBottom: 16 }}>
+          <span className="brain-stat"><span className="brain-label">NODES</span> {graphData.nodes.length}</span>
+          <span className="brain-stat"><span className="brain-label">LINKS</span> {graphData.links.length}</span>
+          <span className="brain-stat"><span className="brain-label">MEM</span> {memoryCt}</span>
+          <span className="brain-stat"><span className="brain-label">DEC</span> {decisionCt}</span>
+          <span style={{ color: "#ff9800", fontSize: 11, marginLeft: "auto" }}>2D Fallback — WebGL unavailable</span>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {graphData.nodes.map(node => (
+            <div key={node.id} onClick={() => setSelectedNode(prev => prev?.id === node.id ? null : node)}
+              style={{
+                padding: "8px 12px",
+                background: selectedNode?.id === node.id ? "rgba(0,212,255,0.1)" : "#0f1520",
+                border: `1px solid ${selectedNode?.id === node.id ? "rgba(0,212,255,0.3)" : "#1e2d42"}`,
+                borderRadius: 6,
+                cursor: "pointer",
+                borderLeft: `3px solid ${getAgentColor(node.agent)}`,
+                maxWidth: 280,
+                fontSize: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, color: "#e8edf5" }}>{node.label}</div>
+              <div style={{ color: "#546580", fontSize: 11 }}>{node.group} · {node.agent}</div>
+            </div>
+          ))}
+        </div>
+        {selectedNode && (
+          <div className="brain-detail" style={{ position: "fixed" }}>
+            <button className="brain-detail-close" onClick={() => setSelectedNode(null)}>✕</button>
+            <div className="brain-detail-type">
+              <span className="memory-method">{selectedNode.group}</span>
+              <span className="memory-method">{selectedNode.type}</span>
+            </div>
+            <div className="brain-detail-label">{selectedNode.label}</div>
+            <div className="brain-detail-agent" style={{ color: getAgentColor(selectedNode.agent) }}>{selectedNode.agent}</div>
+            {selectedNode.fullText && <div className="brain-detail-text">{selectedNode.fullText}</div>}
+            {selectedNode.context && <div className="brain-detail-ctx"><span className="brain-detail-ctx-label">CONTEXT</span>{selectedNode.context}</div>}
+          </div>
+        )}
+      </div>
+    );
+  }
 
+  // 3D Graph
   return (
-    <div className="brain-container" onMouseDown={handleInteraction} onWheel={handleInteraction}>
+    <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
       <div className="brain-hud">
-        <span className="brain-stat"><span className="brain-label">NODES</span> {stats.nodes}</span>
-        <span className="brain-stat"><span className="brain-label">LINKS</span> {stats.links}</span>
+        <span className="brain-stat"><span className="brain-label">NODES</span> {graphData.nodes.length}</span>
+        <span className="brain-stat"><span className="brain-label">LINKS</span> {graphData.links.length}</span>
         <span className="brain-stat"><span className="brain-label">MEM</span> {memoryCt}</span>
         <span className="brain-stat"><span className="brain-label">DEC</span> {decisionCt}</span>
-        <button
-          className={`brain-toggle ${autoRotate ? "active" : ""}`}
-          onClick={() => setAutoRotate(r => !r)}
-          title="Toggle auto-rotation"
-        >
+        <button className={`brain-toggle ${autoRotate ? "active" : ""}`} onClick={() => setAutoRotate(r => !r)}>
           {autoRotate ? "⟳ AUTO" : "⊘ MANUAL"}
         </button>
       </div>
 
-      {/* Detail Panel — shows on node click */}
       {selectedNode && (
         <div className="brain-detail">
           <button className="brain-detail-close" onClick={() => setSelectedNode(null)}>✕</button>
           <div className="brain-detail-type">
             <span className="memory-method">{selectedNode.group}</span>
             <span className="memory-method">{selectedNode.type}</span>
-            {selectedNode.status === "disputed" && <span className="memory-method" style={{ background: "var(--red-dim)", color: "var(--red)", borderColor: "rgba(255,23,68,0.2)" }}>DISPUTED</span>}
           </div>
           <div className="brain-detail-label">{selectedNode.label}</div>
-          <div className="brain-detail-agent" style={{ color: getAgentColor(selectedNode.agent) }}>
-            {selectedNode.agent}
-          </div>
-          {selectedNode.fullText && (
-            <div className="brain-detail-text">{selectedNode.fullText}</div>
-          )}
-          {selectedNode.context && (
-            <div className="brain-detail-ctx">
-              <span className="brain-detail-ctx-label">CONTEXT</span>
-              {selectedNode.context}
-            </div>
-          )}
+          <div className="brain-detail-agent" style={{ color: getAgentColor(selectedNode.agent) }}>{selectedNode.agent}</div>
+          {selectedNode.fullText && <div className="brain-detail-text">{selectedNode.fullText}</div>}
+          {selectedNode.context && <div className="brain-detail-ctx"><span className="brain-detail-ctx-label">CONTEXT</span>{selectedNode.context}</div>}
           <div className="brain-detail-meta">
             <span>Score: {selectedNode.score?.toFixed(2)}</span>
             <span>ID: {selectedNode.id}</span>
@@ -344,37 +313,48 @@ export function BrainVisualizer() {
         </div>
       )}
 
-      {/* Hover tooltip (smaller, follows cursor area) */}
       {hoverNode && !selectedNode && (
         <div className="brain-tooltip">
           <div className="brain-tooltip-type">{hoverNode.group} · {hoverNode.type}</div>
           <div className="brain-tooltip-label">{hoverNode.label}</div>
-          <div className="brain-tooltip-agent" style={{ color: getAgentColor(hoverNode.agent) }}>
-            {hoverNode.agent}
-          </div>
+          <div className="brain-tooltip-agent" style={{ color: getAgentColor(hoverNode.agent) }}>{hoverNode.agent}</div>
         </div>
       )}
 
       <ForceGraph3D
         ref={graphRef}
         graphData={graphData}
-        nodeThreeObject={nodeThreeObject}
-        nodeLabel=""
-        linkColor={link => link.color || "rgba(0, 212, 255, 0.06)"}
+        nodeColor={node => getAgentColor(node.agent)}
+        nodeVal={node => node.val || 3}
+        nodeLabel={node => `${node.label} (${node.agent})`}
+        linkColor={link => link.type === "conflict" ? "#ff1744" : "rgba(0, 212, 255, 0.06)"}
         linkWidth={link => link.type === "conflict" ? 1.5 : 0.3}
         linkOpacity={0.15}
-        linkDirectionalParticles={link => link.type === "conflict" ? 4 : 0}
+        linkDirectionalParticles={link => link.type === "conflict" ? 3 : 0}
         linkDirectionalParticleWidth={1.5}
         linkDirectionalParticleColor={() => "#ff1744"}
         backgroundColor="#060a12"
         width={dimensions.width}
         height={dimensions.height}
-        d3AlphaDecay={0.05}
+        d3AlphaDecay={0.06}
         d3VelocityDecay={0.5}
-        warmupTicks={30}
-        cooldownTime={2000}
+        warmupTicks={20}
+        cooldownTime={1500}
         onNodeHover={node => setHoverNode(node || null)}
-        onNodeClick={handleNodeClick}
+        onNodeClick={node => {
+          if (!node) return;
+          setSelectedNode(prev => prev?.id === node.id ? null : node);
+          setAutoRotate(false);
+          if (graphRef.current) {
+            const d = 60;
+            const ratio = 1 + d / Math.hypot(node.x, node.y, node.z);
+            graphRef.current.cameraPosition(
+              { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
+              node,
+              1200
+            );
+          }
+        }}
       />
 
       <div className="brain-legend">
@@ -384,14 +364,6 @@ export function BrainVisualizer() {
             {agent}
           </span>
         ))}
-        <span className="brain-legend-item">
-          <span className="brain-legend-dot" style={{ background: "#546580" }} />
-          ○ memory
-        </span>
-        <span className="brain-legend-item">
-          <span className="brain-legend-dot" style={{ background: "#00d4ff", boxShadow: "0 0 6px #00d4ff" }} />
-          ◇ decision
-        </span>
       </div>
     </div>
   );

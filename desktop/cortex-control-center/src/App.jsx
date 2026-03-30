@@ -1,5 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Component } from "react";
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
+
+class BrainErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
+  static getDerivedStateFromError(err) { return { crashed: true, error: err?.message || "Unknown error" }; }
+  render() {
+    if (this.state.crashed) return (
+      <div className="brain-loading">
+        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <p>Brain visualizer crashed: {this.state.error}</p>
+        <button className="btn-sm btn-primary" onClick={() => this.setState({ crashed: false })} style={{ marginTop: 12 }}>Retry</button>
+      </div>
+    );
+    return this.props.children;
+  }
+}
 
 const CORTEX_BASE = "http://127.0.0.1:7437";
 const FALLBACK_REFRESH_MS = 15000;
@@ -1238,7 +1253,9 @@ export function App() {
 
         {panel === "visualizer" ? (
           <section className="panel active brain-panel">
-            <BrainVisualizer />
+            <BrainErrorBoundary>
+              <BrainVisualizer />
+            </BrainErrorBoundary>
           </section>
         ) : null}
 
