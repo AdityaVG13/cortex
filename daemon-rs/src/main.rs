@@ -1,5 +1,6 @@
 mod auth;
 mod co_occurrence;
+mod conflict;
 mod db;
 mod handlers;
 mod logging;

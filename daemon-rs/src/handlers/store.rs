@@ -6,6 +6,7 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::conflict::detect_conflict;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 use super::{ensure_auth, json_response, log_event, now_iso};
@@ -67,9 +68,16 @@ pub async fn handle_store(
 
 // ─── Core store logic ────────────────────────────────────────────────────────
 
-/// Insert a new decision with Jaccard surprise scoring.
-/// NOTE: The Rust version does NOT have conflict detection — it calls
-/// `store_decision()` directly.  Conflict detection is Task 5.5.
+/// Insert a new decision with Jaccard conflict detection and surprise scoring.
+///
+/// Logic mirrors the Node.js brain.js store() function:
+///   1. Detect conflict via Jaccard similarity (last 50 active decisions).
+///   2. Same-agent + sim > 0.7  => mark old as 'superseded', insert new with
+///      supersedes_id pointing to old.
+///   3. Different-agent + sim > 0.7  => insert new as 'disputed' with
+///      disputes_id, then mark existing entry as 'disputed' too.
+///   4. No conflict: compute surprise = 1 - max_sim; reject if surprise < 0.25
+///      (duplicate suppression). Otherwise insert as 'active'.
 fn store_decision(
     conn: &mut Connection,
     decision: &str,
@@ -78,18 +86,138 @@ fn store_decision(
     source_agent: String,
     confidence: Option<f64>,
 ) -> Result<Value, String> {
+    let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
+    let confidence = confidence.unwrap_or(0.8);
+    let ts = now_iso();
+
+    // ── 1. Conflict detection ────────────────────────────────────────────────
+    let cr = detect_conflict(conn, decision, &source_agent);
+
+    if cr.is_conflict {
+        // Different-agent conflict: insert new entry as 'disputed', then mark
+        // the existing entry as 'disputed' too (they reference each other).
+        let existing_id = cr.matched_id.unwrap();
+        conn.execute(
+            "INSERT INTO decisions \
+             (decision, context, type, source_agent, confidence, status, disputes_id, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?7)",
+            params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, ts],
+        )
+        .map_err(|e| e.to_string())?;
+        let new_id = conn.last_insert_rowid();
+
+        // Mark existing entry as disputed, pointing back to the new one.
+        conn.execute(
+            "UPDATE decisions SET status = 'disputed', disputes_id = ?, updated_at = ? WHERE id = ?",
+            params![new_id, ts, existing_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let _ = log_event(
+            conn,
+            "decision_conflict",
+            json!({
+                "newId": new_id,
+                "existingId": existing_id,
+                "source_agent": source_agent,
+                "matchedAgent": cr.matched_agent,
+            }),
+            "rust-daemon",
+        );
+        checkpoint_wal_best_effort(conn);
+
+        return Ok(json!({
+            "stored": true,
+            "id": new_id,
+            "status": "disputed",
+            "conflictWith": existing_id,
+        }));
+    }
+
+    if cr.is_update {
+        // Same-agent update: supersede the old entry and insert the new one.
+        let old_id = cr.matched_id.unwrap();
+        conn.execute(
+            "UPDATE decisions SET status = 'superseded', updated_at = ? WHERE id = ?",
+            params![ts, old_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO decisions \
+             (decision, context, type, source_agent, confidence, supersedes_id, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![decision, context, entry_type, source_agent.clone(), confidence, old_id, ts],
+        )
+        .map_err(|e| e.to_string())?;
+        let new_id = conn.last_insert_rowid();
+
+        let _ = log_event(
+            conn,
+            "decision_supersede",
+            json!({
+                "newId": new_id,
+                "supersededId": old_id,
+                "source_agent": source_agent,
+            }),
+            "rust-daemon",
+        );
+        checkpoint_wal_best_effort(conn);
+
+        return Ok(json!({
+            "stored": true,
+            "id": new_id,
+            "status": "superseded_old",
+            "supersedes": old_id,
+        }));
+    }
+
+    // ── 2. Duplicate suppression via Jaccard surprise ────────────────────────
+    // Recompute max similarity against active decisions for the surprise score.
+    let existing: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT decision FROM decisions \
+                 WHERE status = 'active' \
+                 ORDER BY created_at DESC LIMIT 50",
+            )
+            .map_err(|e| e.to_string())?;
+        let result: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        result
+    };
+
+    let max_sim: f64 = existing
+        .iter()
+        .map(|t| crate::conflict::jaccard_similarity(decision, t))
+        .fold(0.0_f64, f64::max);
+
+    let surprise = 1.0 - max_sim;
+    if surprise < 0.25 {
+        let _ = log_event(
+            conn,
+            "decision_rejected_duplicate",
+            json!({
+                "decision": &decision[..decision.len().min(100)],
+                "surprise": surprise,
+                "source_agent": source_agent,
+            }),
+            "rust-daemon",
+        );
+        checkpoint_wal_best_effort(conn);
+        return Ok(json!({ "stored": false, "reason": "duplicate", "surprise": surprise }));
+    }
+
+    // ── 3. Normal insert ─────────────────────────────────────────────────────
+    let surprise_rounded = (surprise * 10_000.0).round() / 10_000.0;
     conn.execute(
-        "INSERT INTO decisions (decision, context, type, source_agent, confidence, surprise, status, created_at, updated_at) \
+        "INSERT INTO decisions \
+         (decision, context, type, source_agent, confidence, surprise, status, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)",
-        params![
-            decision,
-            context,
-            entry_type.unwrap_or_else(|| "decision".to_string()),
-            source_agent.clone(),
-            confidence.unwrap_or(0.8),
-            1.0_f64,
-            now_iso()
-        ],
+        params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, ts],
     )
     .map_err(|e| e.to_string())?;
 
@@ -97,10 +225,10 @@ fn store_decision(
     let _ = log_event(
         conn,
         "decision_stored",
-        json!({ "id": id, "source_agent": source_agent }),
+        json!({ "id": id, "source_agent": source_agent, "surprise": surprise_rounded }),
         "rust-daemon",
     );
     checkpoint_wal_best_effort(conn);
 
-    Ok(json!({ "stored": true, "id": id, "status": "active", "surprise": 1.0 }))
+    Ok(json!({ "stored": true, "id": id, "status": "active", "surprise": surprise_rounded }))
 }
