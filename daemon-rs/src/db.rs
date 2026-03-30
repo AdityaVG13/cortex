@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 
 /// Open a SQLite connection at the given path.
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -228,7 +228,7 @@ pub fn archive_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     #[test]
     fn test_open_configure_schema() {
