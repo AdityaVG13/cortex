@@ -99,8 +99,16 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str) ->
     }
 }
 
-/// Embedding-based conflict detection.  Returns a result if cosine > 0.85.
-/// Falls through to `None` when no match or engine unavailable.
+/// Embedding-based conflict detection with semantic dedup.
+///
+/// Three tiers:
+///   - cosine > 0.85: hard conflict/update (existing behavior)
+///   - cosine 0.70-0.85, same agent: semantic merge (NEW -- dedup zone)
+///   - cosine < 0.70: no conflict, proceed to Jaccard fallback
+///
+/// The merge tier prevents near-duplicate memories that waste context budget.
+/// Instead of storing "use uv for python" alongside "always use uv, never pip",
+/// it merges them into a single strengthened entry.
 pub fn detect_conflict_cosine(
     decision: &str,
     source_agent: &str,
@@ -138,13 +146,24 @@ pub fn detect_conflict_cosine(
         }
     }
 
-    const COSINE_THRESHOLD: f32 = 0.85;
+    const HARD_THRESHOLD: f32 = 0.85;
+    const MERGE_THRESHOLD: f32 = 0.70;
 
-    if best_sim > COSINE_THRESHOLD {
+    if best_sim > HARD_THRESHOLD {
+        // Hard conflict/update (existing behavior)
         let is_update = best_agent.as_deref() == Some(source_agent);
         Some(ConflictResult {
             is_conflict: !is_update,
             is_update,
+            matched_id: best_id,
+            matched_agent: best_agent,
+        })
+    } else if best_sim > MERGE_THRESHOLD && best_agent.as_deref() == Some(source_agent) {
+        // Semantic dedup: same agent, similar content → treat as update (supersede old)
+        // The new entry replaces the old, keeping the brain lean
+        Some(ConflictResult {
+            is_conflict: false,
+            is_update: true,
             matched_id: best_id,
             matched_agent: best_agent,
         })

@@ -385,17 +385,50 @@ fn index_gorci(conn: &Connection, home: &Path) -> usize {
     }
 }
 
-// ── Score decay ─────────────────────────────────────────────────────────────
+// ── Ebbinghaus decay ────────────────────────────────────────────────────────
 
-/// Apply 0.95^days score decay to all active entries.
-/// Entries with score already at floor (0.1) are skipped.
+/// Apply Ebbinghaus-style forgetting curve to all active entries.
+///
+/// Formula: score = MAX(floor, score * POWER(decay_rate, days_since_last_touch))
+///
+/// Key improvements over simple 0.95^days:
+///   - Uses last_accessed (recall time) not just updated_at (write time)
+///   - Retrieval count strengthens durability: decay_rate = 0.95 + 0.005 * min(retrievals, 10)
+///     → 0 recalls: 0.950/day (forgets fast)
+///     → 5 recalls: 0.975/day (moderate retention)
+///     → 10+ recalls: 1.000/day (permanent -- fully reinforced)
+///   - Pinned entries are immune to decay
+///   - Floor is 0.05 (not 0.1) to better separate stale from semi-stale
+///
+/// Also decays decisions table with same formula.
 pub fn decay_pass(conn: &Connection) -> usize {
-    let result = conn.execute(
-        "UPDATE memories SET score = MAX(0.1, score * POWER(0.95,
-            CAST((julianday('now') - julianday(COALESCE(updated_at, created_at))) AS REAL)))
-         WHERE status = 'active' AND score > 0.1
-           AND (julianday('now') - julianday(COALESCE(updated_at, created_at))) > 1",
+    let mem_result = conn.execute(
+        "UPDATE memories SET score = MAX(0.05, score * POWER(
+            MIN(1.0, 0.95 + 0.005 * MIN(retrievals, 10)),
+            CAST((julianday('now') - julianday(
+                COALESCE(last_accessed, updated_at, created_at)
+            )) AS REAL)
+         ))
+         WHERE status = 'active' AND score > 0.05 AND pinned = 0
+           AND (julianday('now') - julianday(
+                COALESCE(last_accessed, updated_at, created_at)
+           )) > 1",
         [],
     );
-    result.unwrap_or(0)
+
+    let dec_result = conn.execute(
+        "UPDATE decisions SET score = MAX(0.05, score * POWER(
+            MIN(1.0, 0.95 + 0.005 * MIN(retrievals, 10)),
+            CAST((julianday('now') - julianday(
+                COALESCE(last_accessed, updated_at, created_at)
+            )) AS REAL)
+         ))
+         WHERE status = 'active' AND score > 0.05 AND pinned = 0
+           AND (julianday('now') - julianday(
+                COALESCE(last_accessed, updated_at, created_at)
+           )) > 1",
+        [],
+    );
+
+    mem_result.unwrap_or(0) + dec_result.unwrap_or(0)
 }

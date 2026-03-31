@@ -166,6 +166,15 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_cooccur_a ON co_occurrence(source_a);
         CREATE INDEX IF NOT EXISTS idx_cooccur_b ON co_occurrence(source_b);
+
+        CREATE TABLE IF NOT EXISTS context_cache (
+          cache_key TEXT PRIMARY KEY,
+          content_hash TEXT NOT NULL,
+          compressed TEXT NOT NULL,
+          tokens INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now')),
+          hits INTEGER DEFAULT 0
+        );
         "#,
     )?;
     Ok(())

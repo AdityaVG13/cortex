@@ -32,6 +32,55 @@ fn estimate_tokens(text: &str) -> usize {
     (text.len() as f64 / 3.8).ceil() as usize
 }
 
+// ─── Content-addressed cache ────────────────────────────────────────────────
+
+/// Compute a fast content hash for cache invalidation.
+/// Uses FNV-1a for speed (not crypto-secure, just change detection).
+fn content_hash(data: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Check the context cache for a cached result.
+fn cache_get(conn: &Connection, key: &str, expected_hash: &str) -> Option<(String, usize)> {
+    conn.query_row(
+        "SELECT compressed, tokens, content_hash FROM context_cache WHERE cache_key = ?1",
+        params![key],
+        |row| {
+            let compressed: String = row.get(0)?;
+            let tokens: usize = row.get::<_, i64>(1)? as usize;
+            let stored_hash: String = row.get(2)?;
+            Ok((compressed, tokens, stored_hash))
+        },
+    )
+    .ok()
+    .and_then(|(compressed, tokens, stored_hash)| {
+        if stored_hash == expected_hash {
+            // Cache hit -- bump hit count
+            let _ = conn.execute(
+                "UPDATE context_cache SET hits = hits + 1 WHERE cache_key = ?1",
+                params![key],
+            );
+            Some((compressed, tokens))
+        } else {
+            None // Hash mismatch -- content changed
+        }
+    })
+}
+
+/// Store a compiled result in the cache.
+fn cache_set(conn: &Connection, key: &str, hash: &str, compressed: &str, tokens: usize) {
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO context_cache (cache_key, content_hash, compressed, tokens) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params![key, hash, compressed, tokens as i64],
+    );
+}
+
 // ─── State.md helpers ───────────────────────────────────────────────────────
 
 fn read_state_md(home: &Path) -> String {
@@ -66,7 +115,28 @@ fn extract_section(content: &str, heading: &str, max_lines: usize) -> String {
 
 /// Build the identity capsule — stable across sessions, ~200 tokens.
 /// Contains core user identity, hard constraints, and platform sharp edges.
+/// Uses content-addressed cache: if feedback memories haven't changed, reuse.
 fn build_identity_capsule(conn: &Connection) -> (String, usize) {
+    // Compute hash of the feedback memories that feed this capsule
+    let feedback_hash = {
+        let mut all_feedback = String::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY id",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for text in rows.flatten() {
+                    all_feedback.push_str(&text);
+                    all_feedback.push('\n');
+                }
+            }
+        }
+        content_hash(&all_feedback)
+    };
+
+    // Check cache
+    if let Some((cached, tokens)) = cache_get(conn, "identity_capsule", &feedback_hash) {
+        return (cached, tokens);
+    }
     let mut parts = vec![
         "User: Aditya. Platform: Windows 10. Shell: bash. Python: uv only. Git: conventional commits."
             .to_string(),
@@ -116,6 +186,10 @@ fn build_identity_capsule(conn: &Connection) -> (String, usize) {
 
     let text = parts.join("\n");
     let tokens = estimate_tokens(&text);
+
+    // Cache the result for next boot
+    cache_set(conn, "identity_capsule", &feedback_hash, &text, tokens);
+
     (text, tokens)
 }
 
@@ -649,74 +723,159 @@ fn record_boot(conn: &Connection, agent: &str) {
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
+// ─── Context Item for ranked compilation ───────────────────────────────────
+
+struct ContextItem {
+    name: String,
+    text: String,
+    tokens: usize,
+    /// Base priority: 1.0 = must-have, 0.5 = important, 0.2 = nice-to-have
+    priority: f64,
+    /// Utility score: priority / token_cost (higher = more efficient)
+    utility: f64,
+}
+
+impl ContextItem {
+    fn new(name: &str, text: String, priority: f64) -> Self {
+        let tokens = estimate_tokens(&text);
+        let utility = if tokens > 0 {
+            priority / (tokens as f64)
+        } else {
+            0.0
+        };
+        Self {
+            name: name.to_string(),
+            text,
+            tokens,
+            priority,
+            utility,
+        }
+    }
+}
+
 /// Compile the boot prompt for an agent within a token budget.
 ///
-/// Pipeline:
-///  1. Build identity capsule (stable, ~200 tokens)
-///  2. Build delta capsule (what's changed, ~300 tokens)
-///  3. Record this boot for next session's delta
-///  4. Assemble within budget, truncating delta if needed
-///  5. Return prompt with capsule metadata and savings
+/// Prompt Compiler Pipeline (v2 -- ranked context packing):
+///  1. Gather all context items with priority scores
+///  2. Sort by utility (priority / token_cost) -- best bang-per-token first
+///  3. Greedily pack within budget
+///  4. Record admitted vs rejected for observability
+///  5. Return prompt with compilation metadata and savings
 pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -> BootResult {
-    // 1. Build capsules
-    let (identity_text, identity_tokens) = build_identity_capsule(conn);
-    let (delta_text, delta_tokens, delta_freshness) =
-        build_delta_capsule(conn, home, agent);
+    // ── 1. Gather context items with priorities ─────────────────────────────
 
-    // 2. Record this boot for next session
-    record_boot(conn, agent);
+    let mut items: Vec<ContextItem> = Vec::new();
 
-    // 3. Assemble: identity first, then delta
-    let identity_section = format!("## Identity\n{identity_text}");
-    let delta_section = format!("## Delta\n{delta_text}");
+    // Identity capsule: must-have (priority 1.0)
+    let (identity_text, _) = build_identity_capsule(conn);
+    if !identity_text.is_empty() {
+        items.push(ContextItem::new("identity", format!("## Identity\n{identity_text}"), 1.0));
+    }
 
-    let mut assembled = identity_section;
-    let mut capsules = vec![json!({
-        "name": "identity",
-        "tokens": identity_tokens,
-        "freshness": "stable",
-        "truncated": false
-    })];
+    // Delta capsule: broken into sub-items with individual priorities
+    let (delta_text, _, delta_freshness) = build_delta_capsule(conn, home, agent);
+    if !delta_text.is_empty() {
+        // Split delta into sections, each scored independently
+        let sections: Vec<(&str, f64)> = vec![
+            ("## Pending Messages", 0.95),   // Messages from other agents = urgent
+            ("## Active Agents", 0.60),       // Who's online = coordination
+            ("## Active Locks", 0.70),        // Locks = collision prevention
+            ("## Feed", 0.40),                // Feed = nice context
+            ("## Pending Tasks", 0.75),       // Task board = actionable
+            ("## Your Active Tasks", 0.80),   // Your tasks = high priority
+            ("CONFLICTS:", 0.90),             // Conflicts = must resolve
+            ("Next:", 0.85),                  // Next steps from state.md
+            ("Pending:", 0.65),               // Pending items
+            ("Issues:", 0.70),                // Known issues
+            ("New decisions:", 0.55),         // Recent decisions = orientation
+            ("New knowledge:", 0.45),         // New memories
+            ("Activity since last boot:", 0.30), // Activity summary = low value
+            ("Recent decisions:", 0.50),      // First-boot orientation
+        ];
 
-    let combined = format!("{assembled}\n\n{delta_section}");
-    if estimate_tokens(&combined) <= max_tokens {
-        // Both fit within budget
-        assembled = combined;
-        capsules.push(json!({
-            "name": "delta",
-            "tokens": delta_tokens,
-            "freshness": delta_freshness,
-            "truncated": false
-        }));
-    } else {
-        // Truncate delta to fit budget
-        let remaining = max_tokens
-            .saturating_sub(estimate_tokens(&assembled))
-            .saturating_sub(10); // 10 tokens for header overhead
-        if remaining > 50 && !delta_text.is_empty() {
-            let trunc_chars = (remaining as f64 * 3.8) as usize;
-            let truncated: String = delta_text.chars().take(trunc_chars).collect();
-            assembled = format!("{assembled}\n\n## Delta\n{truncated}...");
-            capsules.push(json!({
-                "name": "delta",
-                "tokens": estimate_tokens(&truncated),
-                "freshness": delta_freshness,
-                "truncated": true
-            }));
+        // Try to split delta into scored sub-sections
+        let mut remaining_delta = delta_text.as_str();
+        let mut matched_any = false;
+
+        for (header, priority) in &sections {
+            if let Some(start) = remaining_delta.find(header) {
+                // Find end: next section header or end of string
+                let content_start = start;
+                let after_header = start + header.len();
+                let end = remaining_delta[after_header..]
+                    .find("\n\n")
+                    .map(|p| after_header + p)
+                    .unwrap_or(remaining_delta.len());
+
+                let section_text = remaining_delta[content_start..end].trim().to_string();
+                if !section_text.is_empty() {
+                    items.push(ContextItem::new(header, section_text, *priority));
+                    matched_any = true;
+                }
+            }
+        }
+
+        // Fallback: if no sections matched, treat delta as one block
+        if !matched_any {
+            items.push(ContextItem::new("delta", format!("## Delta\n{delta_text}"), 0.70));
         }
     }
 
-    // 4. Savings
+    // ── 2. Record boot ──────────────────────────────────────────────────────
+    record_boot(conn, agent);
+
+    // ── 3. Sort by utility (priority / token_cost) descending ───────────────
+    items.sort_by(|a, b| b.utility.partial_cmp(&a.utility).unwrap_or(std::cmp::Ordering::Equal));
+
+    // ── 4. Greedy budget packing ────────────────────────────────────────────
+    let mut budget_remaining = max_tokens;
+    let mut admitted: Vec<Value> = Vec::new();
+    let mut rejected: Vec<Value> = Vec::new();
+    let mut assembled_parts: Vec<String> = Vec::new();
+
+    for item in &items {
+        if item.tokens <= budget_remaining && !item.text.is_empty() {
+            assembled_parts.push(item.text.clone());
+            budget_remaining -= item.tokens;
+            admitted.push(json!({
+                "name": item.name,
+                "tokens": item.tokens,
+                "priority": item.priority,
+                "utility": (item.utility * 10000.0).round() / 10000.0
+            }));
+        } else if !item.text.is_empty() {
+            // Try truncation for high-priority items
+            if item.priority >= 0.7 && budget_remaining > 30 {
+                let trunc_chars = (budget_remaining as f64 * 3.5) as usize;
+                let truncated: String = item.text.chars().take(trunc_chars).collect();
+                let trunc_tokens = estimate_tokens(&truncated);
+                assembled_parts.push(format!("{truncated}..."));
+                budget_remaining = budget_remaining.saturating_sub(trunc_tokens);
+                admitted.push(json!({
+                    "name": item.name,
+                    "tokens": trunc_tokens,
+                    "priority": item.priority,
+                    "truncated": true
+                }));
+            } else {
+                rejected.push(json!({
+                    "name": item.name,
+                    "tokens": item.tokens,
+                    "priority": item.priority,
+                    "reason": "budget_exceeded"
+                }));
+            }
+        }
+    }
+
+    let assembled = assembled_parts.join("\n\n");
     let token_estimate = estimate_tokens(&assembled);
+
+    // ── 5. Savings and observability ────────────────────────────────────────
     let raw_baseline = estimate_raw_baseline(home);
     let saved = raw_baseline.saturating_sub(token_estimate);
-    let percent = if raw_baseline > 0 {
-        (saved * 100) / raw_baseline
-    } else {
-        0
-    };
+    let percent = if raw_baseline > 0 { (saved * 100) / raw_baseline } else { 0 };
 
-    // Log savings event
     let _ = conn.execute(
         "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
         params![
@@ -726,7 +885,9 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
                 "served": token_estimate,
                 "baseline": raw_baseline,
                 "saved": saved,
-                "percent": percent
+                "percent": percent,
+                "admitted": admitted.len(),
+                "rejected": rejected.len()
             }))
             .unwrap_or_default(),
             "rust-daemon"
@@ -742,7 +903,7 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             "saved": saved,
             "percent": percent
         }),
-        capsules,
+        capsules: admitted,
     }
 }
 

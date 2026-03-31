@@ -561,9 +561,10 @@ fn search_memories(
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
-        let score_weight = score.min(5.0) / 5.0;
+        // Ebbinghaus score is 0.0-1.0; heavily decayed memories rank lower
+        let score_weight = score.clamp(0.0, 1.0);
         let ranking =
-            (keyword_weight * 0.5) + (recency_weight * 0.2) + (retrieval_weight * 0.15) + (score_weight * 0.15);
+            (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
 
         ranked.push(SearchCandidate {
             source: source_key,
@@ -665,9 +666,10 @@ fn search_decisions(
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
-        let score_weight = score.min(5.0) / 5.0;
+        // Ebbinghaus score is 0.0-1.0; heavily decayed memories rank lower
+        let score_weight = score.clamp(0.0, 1.0);
         let ranking =
-            (keyword_weight * 0.5) + (recency_weight * 0.2) + (retrieval_weight * 0.15) + (score_weight * 0.15);
+            (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
 
         ranked.push(SearchCandidate {
             source: source_key,
@@ -770,22 +772,50 @@ fn round4(value: f64) -> f64 {
     (value * 10000.0).round() / 10000.0
 }
 
+/// Ebbinghaus-aware retrieval bump.
+///
+/// Each recall:
+///   1. Increments retrieval count
+///   2. Updates last_accessed timestamp
+///   3. Boosts score using spaced-repetition formula:
+///      new_score = min(1.0, current_score + boost)
+///      boost = 0.15 * (1.0 / (1.0 + 0.1 * retrievals))
+///
+///   Early retrievals give big boosts (0.15 → 0.14 → 0.12...),
+///   diminishing as the memory is already well-reinforced.
+///   This counteracts the time-based decay in decay_pass().
 fn bump_retrieval(conn: &Connection, source: &str) {
     let now = now_iso();
+
+    // Boost memories
     let _ = conn.execute(
-        "UPDATE memories SET retrievals = retrievals + 1, last_accessed = ?1 WHERE source = ?2",
+        "UPDATE memories SET \
+           retrievals = retrievals + 1, \
+           last_accessed = ?1, \
+           score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
+         WHERE source = ?2",
         params![now.clone(), source],
     );
+
+    // Boost decisions
     if let Some(id_text) = source.strip_prefix("decision::") {
         if let Ok(id) = id_text.parse::<i64>() {
             let _ = conn.execute(
-                "UPDATE decisions SET retrievals = retrievals + 1, last_accessed = ?1 WHERE id = ?2",
+                "UPDATE decisions SET \
+                   retrievals = retrievals + 1, \
+                   last_accessed = ?1, \
+                   score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
+                 WHERE id = ?2",
                 params![now, id],
             );
         }
     } else {
         let _ = conn.execute(
-            "UPDATE decisions SET retrievals = retrievals + 1, last_accessed = ?1 WHERE context = ?2",
+            "UPDATE decisions SET \
+               retrievals = retrievals + 1, \
+               last_accessed = ?1, \
+               score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
+             WHERE context = ?2",
             params![now, source],
         );
     }
