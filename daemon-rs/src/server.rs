@@ -1,19 +1,30 @@
 use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
 use serde_json::Value;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 use crate::handlers;
 use crate::handlers::mcp::handle_mcp_message;
+use crate::handlers::ensure_auth;
 use crate::state::RuntimeState;
 
 pub fn build_router(state: RuntimeState) -> Router {
+    // SEC-001 fix: restrict CORS to localhost origins only.
+    // Blocks drive-by attacks from arbitrary websites.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin([
+            "http://127.0.0.1:7437".parse::<HeaderValue>().unwrap(),
+            "http://localhost:7437".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
+            "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
 
     Router::new()
         // ── Core endpoints ──────────────────────────────────────────
@@ -105,10 +116,19 @@ pub fn build_router(state: RuntimeState) -> Router {
 }
 
 /// HTTP endpoint for MCP proxy -- accepts JSON-RPC, returns JSON-RPC.
+/// SEC-001 fix: requires Bearer auth like all other POST mutation endpoints.
 async fn handle_mcp_rpc(
     State(state): State<RuntimeState>,
+    headers: HeaderMap,
     Json(msg): Json<Value>,
 ) -> Json<Value> {
+    if let Err(_resp) = ensure_auth(&headers, &state) {
+        return Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": -32600, "message": "Unauthorized" },
+            "id": msg.get("id")
+        }));
+    }
     match handle_mcp_message(&state, &msg).await {
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),

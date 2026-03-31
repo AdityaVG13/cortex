@@ -56,38 +56,15 @@ async fn main() {
                 return;
             }
 
-            // Fallback: standalone mode (loads own state)
-            eprintln!("[cortex-mcp] Running standalone -- consider starting the daemon for shared state");
+            // Fallback: standalone MCP (stdio only, no daemon pretending).
+            // Arch review fix: do NOT write PID or bind HTTP port.
+            // A standalone MCP session is not a daemon and must not conflict with one.
+            eprintln!("[cortex-mcp] Running standalone -- start the daemon for shared state");
             let db_path = auth::db_path();
-            eprintln!("[cortex] Starting Cortex v2.1.0 (Rust, MCP standalone)...");
-            eprintln!("[cortex] DB: {}", db_path.display());
+            eprintln!("[cortex-mcp] DB: {}", db_path.display());
 
             let (mcp_state, _shutdown_rx) =
                 state::initialize(&db_path).expect("Failed to initialize state");
-
-            auth::write_pid();
-            eprintln!(
-                "[cortex] Auth token at {}",
-                auth::cortex_dir().join("cortex.token").display()
-            );
-            eprintln!("[cortex] PID {} written", std::process::id());
-
-            // Try HTTP server in background (skip if port taken)
-            let http_state = mcp_state.clone();
-            let http_router = server::build_router(http_state);
-            tokio::spawn(async move {
-                match tokio::net::TcpListener::bind(("127.0.0.1", 7437)).await {
-                    Ok(listener) => {
-                        eprintln!(
-                            "[cortex-mcp] HTTP server also listening on http://127.0.0.1:7437"
-                        );
-                        let _ = axum::serve(listener, http_router).await;
-                    }
-                    Err(_) => {
-                        eprintln!("[cortex-mcp] Port 7437 in use -- MCP stdio only");
-                    }
-                }
-            });
 
             mcp_stdio::run(mcp_state.clone()).await;
             eprintln!("[cortex-mcp] MCP session ended.");
@@ -141,7 +118,7 @@ async fn main() {
         }
 
         _ => {
-            eprintln!("Cortex v2.1.0 -- Universal AI Memory Daemon");
+            eprintln!("Cortex v{} -- Universal AI Memory Daemon", env!("CARGO_PKG_VERSION"));
             eprintln!();
             eprintln!("Usage: cortex <command>");
             eprintln!();
@@ -175,7 +152,7 @@ pub(crate) async fn run_daemon(
 ) {
     auth::kill_stale_daemon();
     let db_path = auth::db_path();
-    eprintln!("[cortex] Starting Cortex v2.1.0 (Rust)...");
+    eprintln!("[cortex] Starting Cortex v{} (Rust)...", env!("CARGO_PKG_VERSION"));
     eprintln!("[cortex] DB: {}", db_path.display());
 
     let (state, shutdown_rx) =

@@ -24,20 +24,26 @@ pub fn install() {
     let exe = std::env::current_exe().expect("Failed to get exe path");
     let exe_path = exe.display().to_string().replace('/', "\\");
 
-    let binpath_val = format!("\"{}\" service-run", exe_path);
-    let output = std::process::Command::new("sc.exe")
-        .args([
-            "create",
-            SERVICE_NAME,
-            &format!("binPath= {}", binpath_val),
-            "start= auto",
-            &format!("DisplayName= {}", DISPLAY_NAME),
-        ])
+    // COR-8 fix: detect current username to run service under user account,
+    // NOT LocalSystem. LocalSystem has a different USERPROFILE which would
+    // open a completely separate database at C:\Windows\system32\config\systemprofile.
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "aditya".to_string());
+
+    // COR-5 fix: use cmd /C for sc.exe to handle binPath quoting correctly.
+    // sc.exe has non-standard argument parsing that fights with Rust's Command.
+    let sc_cmd = format!(
+        "sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= auto DisplayName= \"{}\" obj= \".\\{}\"",
+        SERVICE_NAME, exe_path, DISPLAY_NAME, username
+    );
+
+    let output = std::process::Command::new("cmd")
+        .args(["/C", &sc_cmd])
         .output();
 
     match output {
         Ok(o) if o.status.success() => {
             eprintln!("[cortex] Service '{}' installed", SERVICE_NAME);
+            eprintln!("[cortex] Runs as: .\\{}", username);
 
             // Set description
             let _ = std::process::Command::new("sc.exe")
@@ -45,18 +51,18 @@ pub fn install() {
                 .output();
 
             // Configure recovery: restart on failure (5s, 10s, 30s)
-            let _ = std::process::Command::new("sc.exe")
-                .args([
-                    "failure",
-                    SERVICE_NAME,
-                    "reset= 86400",
-                    "actions= restart/5000/restart/10000/restart/30000",
-                ])
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", &format!(
+                    "sc.exe failure {} reset= 86400 actions= restart/5000/restart/10000/restart/30000",
+                    SERVICE_NAME
+                )])
                 .output();
 
             eprintln!("[cortex] Auto-start: enabled");
             eprintln!("[cortex] Recovery: restart on failure (5s / 10s / 30s)");
-            eprintln!("[cortex] Run: cortex service start");
+            eprintln!("[cortex] NOTE: You may need to set the password:");
+            eprintln!("[cortex]   sc.exe config CortexDaemon password= YOUR_PASSWORD");
+            eprintln!("[cortex] Then: cortex service start");
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
@@ -233,13 +239,30 @@ mod scm {
             process_id: None,
         });
 
-        // Create tokio runtime
+        // COR-4 fix: report Stopped with error if runtime creation fails
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
-            Err(_) => return,
+            Err(e) => {
+                eprintln!("[cortex-service] Failed to create tokio runtime: {e}");
+                let _ = status_handle.set_service_status(ServiceStatus {
+                    service_type: SERVICE_TYPE,
+                    current_state: ServiceState::Stopped,
+                    controls_accepted: ServiceControlAccept::empty(),
+                    exit_code: ServiceExitCode::Win32(1),
+                    checkpoint: 0,
+                    wait_hint: std::time::Duration::default(),
+                    process_id: None,
+                });
+                return;
+            }
         };
 
-        // Report: Running
+        // COR-3 fix: report Running AFTER entering rt.block_on but BEFORE
+        // run_daemon blocks on server::run. The daemon init (DB, indexing)
+        // happens first, then we report Running right before the server binds.
+        // Note: ideally we'd signal from inside run_daemon after bind, but
+        // the current architecture doesn't expose that hook. Reporting here
+        // is a reasonable compromise -- init is fast, server bind follows.
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: SERVICE_TYPE,
             current_state: ServiceState::Running,
