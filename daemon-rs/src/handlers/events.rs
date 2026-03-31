@@ -68,9 +68,6 @@ pub async fn handle_events_stream(State(state): State<RuntimeState>) -> Response
             .interval(StdDuration::from_secs(30))
             .text("keepalive"),
     );
-    let mut response = sse.into_response();
-    response
-        .headers_mut()
-        .insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
-    response
+    // CORS handled by tower-http CorsLayer in server.rs -- no manual override
+    sse.into_response()
 }

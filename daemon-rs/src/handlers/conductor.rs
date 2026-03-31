@@ -308,26 +308,30 @@ fn fetch_tasks(
     status_filter: &str,
     project: Option<&str>,
 ) -> Result<Vec<Value>, String> {
-    let mut sql = "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary FROM tasks".to_string();
-    let mut clauses = Vec::new();
-    if status_filter != "all" {
-        clauses.push(format!(
-            "status = '{}'",
-            status_filter.replace('\'', "''")
-        ));
-    }
-    if let Some(project) = project {
-        clauses.push(format!("project = '{}'", project.replace('\'', "''")));
-    }
-    if !clauses.is_empty() {
-        sql.push_str(" WHERE ");
-        sql.push_str(&clauses.join(" AND "));
-    }
-    sql.push_str(" ORDER BY created_at ASC");
+    // Build parameterized query -- never interpolate user input into SQL.
+    let base = "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary FROM tasks";
+    let mut conditions = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
+    if status_filter != "all" {
+        params.push(Box::new(status_filter.to_string()));
+        conditions.push(format!("status = ?{}", params.len()));
+    }
+    if let Some(proj) = project {
+        params.push(Box::new(proj.to_string()));
+        conditions.push(format!("project = ?{}", params.len()));
+    }
+
+    let sql = if conditions.is_empty() {
+        format!("{} ORDER BY created_at ASC", base)
+    } else {
+        format!("{} WHERE {} ORDER BY created_at ASC", base, conditions.join(" AND "))
+    };
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(param_refs), |row| {
             Ok(json!({
                 "taskId": row.get::<_, String>(0)?,
                 "title": row.get::<_, String>(1)?,

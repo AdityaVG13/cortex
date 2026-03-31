@@ -12,7 +12,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = FULL;
+        PRAGMA synchronous = NORMAL;
         PRAGMA foreign_keys = ON;
         "#,
     )?;
@@ -166,6 +166,15 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_cooccur_a ON co_occurrence(source_a);
         CREATE INDEX IF NOT EXISTS idx_cooccur_b ON co_occurrence(source_b);
+
+        -- Performance indexes (added 2026-03-31)
+        CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+        CREATE INDEX IF NOT EXISTS idx_memories_source_status ON memories(source, status);
+        CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+        CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_type, target_id);
+        CREATE INDEX IF NOT EXISTS idx_events_type_created ON events(type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient);
+        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 
         CREATE TABLE IF NOT EXISTS context_cache (
           cache_key TEXT PRIMARY KEY,

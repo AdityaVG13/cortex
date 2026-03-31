@@ -38,3 +38,4 @@ windows-service = "0.7"
 opt-level = 3
 lto = true
 strip = true
+codegen-units = 1

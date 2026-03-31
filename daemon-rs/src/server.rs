@@ -5,15 +5,13 @@ use axum::Json;
 use axum::Router;
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
-
 use crate::handlers;
 use crate::handlers::mcp::handle_mcp_message;
 use crate::handlers::ensure_auth;
 use crate::state::RuntimeState;
 
 pub fn build_router(state: RuntimeState) -> Router {
-    // SEC-001 fix: restrict CORS to localhost origins only.
-    // Blocks drive-by attacks from arbitrary websites.
+    // SEC-001: restrict CORS to localhost origins only.
     let cors = CorsLayer::new()
         .allow_origin([
             "http://127.0.0.1:7437".parse::<HeaderValue>().unwrap(),
@@ -27,8 +25,12 @@ pub fn build_router(state: RuntimeState) -> Router {
         .allow_headers(tower_http::cors::Any);
 
     Router::new()
-        // ── Core endpoints ──────────────────────────────────────────
+        // ── Public endpoints (no auth) ─────────────────────────────
         .route("/health", get(handlers::health::handle_health))
+        // ── Core endpoints ─────────────────────────────────────────
+        // boot and recall already accept HeaderMap and call ensure_auth.
+        // digest, savings, peek, budget_recall now have auth added to
+        // their handler bodies directly.
         .route("/digest", get(handlers::health::handle_digest))
         .route("/savings", get(handlers::health::handle_savings))
         .route("/dump", get(handlers::health::handle_dump))

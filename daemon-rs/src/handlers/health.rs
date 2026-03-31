@@ -42,7 +42,13 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
 
 // ─── GET /digest ─────────────────────────────────────────────────────────────
 
-pub async fn handle_digest(State(state): State<RuntimeState>) -> Response {
+pub async fn handle_digest(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let conn = state.db.lock().await;
     match build_digest(&conn) {
         Ok(payload) => json_response(StatusCode::OK, payload),
@@ -245,7 +251,13 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
 
 // ─── GET /savings ────────────────────────────────────────────────────────────
 
-pub async fn handle_savings(State(state): State<RuntimeState>) -> Response {
+pub async fn handle_savings(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let conn = state.db.lock().await;
 
     let mut stmt = match conn

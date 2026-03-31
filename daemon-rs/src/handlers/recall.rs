@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState};
+use super::ensure_auth;
 use super::{estimate_tokens, json_response, now_iso, truncate_chars};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -55,6 +56,9 @@ pub async fn handle_recall(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let q = query.q.unwrap_or_default();
     let k = query.k.unwrap_or(10);
     let budget = query.budget.unwrap_or(200);
@@ -88,8 +92,12 @@ pub async fn handle_recall(
 
 pub async fn handle_budget_recall(
     State(state): State<RuntimeState>,
+    headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let q = match query.q.as_deref() {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => {
@@ -135,8 +143,12 @@ pub async fn handle_budget_recall(
 
 pub async fn handle_peek(
     State(state): State<RuntimeState>,
+    headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let q = match &query.q {
         Some(q) if !q.is_empty() => q.clone(),
         _ => {

@@ -30,18 +30,11 @@ pub fn json_error(status: StatusCode, msg: &str) -> Response {
     json_response(status, serde_json::json!({ "error": msg }))
 }
 
-/// Standard CORS + no-cache headers applied to every JSON response.
+/// Standard cache headers applied to every JSON response.
+/// CORS is handled by tower-http CorsLayer in server.rs -- do NOT set
+/// Access-Control-* headers here or they will override the CORS policy.
 fn apply_json_headers(headers: &mut HeaderMap) {
     headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
-    headers.insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
-    headers.insert(
-        "Access-Control-Allow-Headers",
-        HeaderValue::from_static("Authorization, Content-Type"),
-    );
-    headers.insert(
-        "Access-Control-Allow-Methods",
-        HeaderValue::from_static("GET, POST, OPTIONS"),
-    );
 }
 
 /// Validate the Bearer token on POST endpoints.  Returns `Err(Response)` when

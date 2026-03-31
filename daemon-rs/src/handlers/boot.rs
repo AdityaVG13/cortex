@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::compiler;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
-use super::{json_response, now_iso};
+use super::{ensure_auth, json_response, now_iso};
 
 // ─── Query types ─────────────────────────────────────────────────────────────
 
@@ -25,6 +25,9 @@ pub async fn handle_boot(
     Query(query): Query<BootQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let agent = query
         .agent
         .or_else(|| {

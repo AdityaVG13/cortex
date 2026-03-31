@@ -27,6 +27,15 @@ struct HealthResult {
 
 // ---- HTTP helpers -----------------------------------------------------------
 
+/// Read the auth token from ~/.cortex/cortex.token for authenticated requests.
+fn read_auth_token() -> Option<String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()?;
+    let path = PathBuf::from(home).join(".cortex").join("cortex.token");
+    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
 async fn fetch_boot(agent: &str, budget: u32) -> Option<BootResult> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(7))
@@ -37,7 +46,11 @@ async fn fetch_boot(agent: &str, budget: u32) -> Option<BootResult> {
         "http://127.0.0.1:7437/boot?agent={}&budget={}",
         agent, budget
     );
-    let resp = client.get(&url).send().await.ok()?;
+    let mut req = client.get(&url);
+    if let Some(token) = read_auth_token() {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+    let resp = req.send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
