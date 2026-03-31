@@ -24,11 +24,15 @@ uuid = { version = "1.18.1", features = ["v4", "serde"] }
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 ndarray = "0.16"
 tokenizers = { version = "0.21", default-features = false, features = ["progressbar", "fancy-regex"] }
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
 dirs = "6"
 
 # HTTP middleware
 tower-http = { version = "0.6", features = ["cors"] }
+
+# Windows Service support
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
 
 [profile.release]
 opt-level = 3

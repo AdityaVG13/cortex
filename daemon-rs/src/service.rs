@@ -1,0 +1,290 @@
+//! Windows Service support for Cortex daemon.
+//!
+//! Subcommands:
+//!   `cortex service install`   -- Register as Windows Service (requires Admin)
+//!   `cortex service uninstall` -- Remove Windows Service
+//!   `cortex service start`     -- Start the service
+//!   `cortex service stop`      -- Stop the service
+//!   `cortex service status`    -- Check service status
+//!   `cortex service-run`       -- Internal: SCM entry point
+//!
+//! The service runs the same daemon as `cortex serve` but under the Windows
+//! Service Control Manager with auto-start, auto-restart on failure, and
+//! proper lifecycle management. Every AI (Claude, Gemini, Codex, Cursor,
+//! Qwen, DeepSeek, GLM, Droid) benefits because the daemon is always alive.
+
+const SERVICE_NAME: &str = "CortexDaemon";
+const DISPLAY_NAME: &str = "Cortex Memory Daemon";
+const DESCRIPTION: &str =
+    "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
+
+// ---- CLI commands (work on any platform) ------------------------------------
+
+pub fn install() {
+    let exe = std::env::current_exe().expect("Failed to get exe path");
+    let exe_path = exe.display().to_string().replace('/', "\\");
+
+    let binpath_val = format!("\"{}\" service-run", exe_path);
+    let output = std::process::Command::new("sc.exe")
+        .args([
+            "create",
+            SERVICE_NAME,
+            &format!("binPath= {}", binpath_val),
+            "start= auto",
+            &format!("DisplayName= {}", DISPLAY_NAME),
+        ])
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            eprintln!("[cortex] Service '{}' installed", SERVICE_NAME);
+
+            // Set description
+            let _ = std::process::Command::new("sc.exe")
+                .args(["description", SERVICE_NAME, DESCRIPTION])
+                .output();
+
+            // Configure recovery: restart on failure (5s, 10s, 30s)
+            let _ = std::process::Command::new("sc.exe")
+                .args([
+                    "failure",
+                    SERVICE_NAME,
+                    "reset= 86400",
+                    "actions= restart/5000/restart/10000/restart/30000",
+                ])
+                .output();
+
+            eprintln!("[cortex] Auto-start: enabled");
+            eprintln!("[cortex] Recovery: restart on failure (5s / 10s / 30s)");
+            eprintln!("[cortex] Run: cortex service start");
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("1073") {
+                eprintln!(
+                    "[cortex] Service already exists. Run: cortex service uninstall"
+                );
+            } else {
+                eprintln!("[cortex] Failed to install (run as Administrator)");
+                eprintln!("{}", stderr);
+            }
+        }
+        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+    }
+}
+
+pub fn uninstall() {
+    // Stop first (ignore errors if not running)
+    let _ = std::process::Command::new("sc.exe")
+        .args(["stop", SERVICE_NAME])
+        .output();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    match std::process::Command::new("sc.exe")
+        .args(["delete", SERVICE_NAME])
+        .output()
+    {
+        Ok(o) if o.status.success() => eprintln!("[cortex] Service uninstalled"),
+        Ok(o) => {
+            eprintln!("[cortex] Failed to uninstall");
+            eprintln!("{}", String::from_utf8_lossy(&o.stderr));
+        }
+        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+    }
+}
+
+pub fn start() {
+    match std::process::Command::new("sc.exe")
+        .args(["start", SERVICE_NAME])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            eprintln!("[cortex] Service started");
+            // Wait and verify
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            if let Ok(h) = std::process::Command::new("curl")
+                .args(["-s", "http://127.0.0.1:7437/health"])
+                .output()
+            {
+                if h.status.success() {
+                    eprintln!("[cortex] Daemon is LIVE on :7437");
+                    eprintln!("{}", String::from_utf8_lossy(&h.stdout));
+                } else {
+                    eprintln!("[cortex] Service started but health check pending");
+                }
+            }
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("1056") {
+                eprintln!("[cortex] Service is already running");
+            } else {
+                eprintln!("[cortex] Failed to start service");
+                eprintln!("{}", stderr);
+            }
+        }
+        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+    }
+}
+
+pub fn stop() {
+    match std::process::Command::new("sc.exe")
+        .args(["stop", SERVICE_NAME])
+        .output()
+    {
+        Ok(o) if o.status.success() => eprintln!("[cortex] Service stopped"),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("1062") {
+                eprintln!("[cortex] Service is not running");
+            } else {
+                eprintln!("[cortex] Failed to stop");
+                eprintln!("{}", stderr);
+            }
+        }
+        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+    }
+}
+
+pub fn status() {
+    match std::process::Command::new("sc.exe")
+        .args(["query", SERVICE_NAME])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let state = if stdout.contains("RUNNING") {
+                "RUNNING"
+            } else if stdout.contains("STOPPED") {
+                "STOPPED"
+            } else if stdout.contains("START_PENDING") {
+                "STARTING"
+            } else {
+                "UNKNOWN"
+            };
+            eprintln!("[cortex] Service: {state}");
+
+            // Also check HTTP health
+            if let Ok(h) = std::process::Command::new("curl")
+                .args(["-s", "http://127.0.0.1:7437/health"])
+                .output()
+            {
+                if h.status.success() {
+                    eprintln!("[cortex] HTTP: LIVE");
+                    eprintln!("{}", String::from_utf8_lossy(&h.stdout));
+                } else {
+                    eprintln!("[cortex] HTTP: not responding");
+                }
+            }
+        }
+        Ok(_) => eprintln!("[cortex] Service not installed. Run: cortex service install"),
+        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+    }
+}
+
+// ---- Windows Service entry point (called by SCM) ----------------------------
+
+#[cfg(windows)]
+mod scm {
+    use std::ffi::OsString;
+    use std::sync::mpsc;
+    use windows_service::service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+        ServiceType,
+    };
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+    use windows_service::{define_windows_service, service_dispatcher};
+
+    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+    define_windows_service!(ffi_service_main, cortex_service_main);
+
+    pub fn dispatch() {
+        service_dispatcher::start(super::SERVICE_NAME, ffi_service_main)
+            .expect("[cortex] Failed to start service dispatcher");
+    }
+
+    fn cortex_service_main(_arguments: Vec<OsString>) {
+        let (stop_tx, stop_rx) = mpsc::channel::<()>();
+
+        let event_handler = move |control_event| -> ServiceControlHandlerResult {
+            match control_event {
+                ServiceControl::Stop | ServiceControl::Shutdown => {
+                    stop_tx.send(()).ok();
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                _ => ServiceControlHandlerResult::NotImplemented,
+            }
+        };
+
+        let status_handle =
+            service_control_handler::register(super::SERVICE_NAME, event_handler)
+                .expect("[cortex] Failed to register service control handler");
+
+        // Report: Starting
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::StartPending,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: std::time::Duration::from_secs(15),
+            process_id: None,
+        });
+
+        // Create tokio runtime
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(_) => return,
+        };
+
+        // Report: Running
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: std::time::Duration::default(),
+            process_id: None,
+        });
+
+        // Run the daemon with service shutdown signal
+        rt.block_on(async {
+            crate::run_daemon(async move {
+                // Bridge std::sync::mpsc to async via spawn_blocking
+                tokio::task::spawn_blocking(move || {
+                    stop_rx.recv().ok();
+                })
+                .await
+                .ok();
+                eprintln!("[cortex-service] Stop signal received");
+            })
+            .await;
+        });
+
+        // Report: Stopped
+        let _ = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: std::time::Duration::default(),
+            process_id: None,
+        });
+    }
+}
+
+/// Dispatch to Windows SCM. Called from main.rs `service-run` arm.
+#[cfg(windows)]
+pub fn dispatch_service() {
+    scm::dispatch();
+}
+
+#[cfg(not(windows))]
+pub fn dispatch_service() {
+    eprintln!("[cortex] Windows Service is only available on Windows");
+    std::process::exit(1);
+}

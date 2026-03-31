@@ -278,7 +278,6 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
                     "decisions": decisions,
                     "embeddings": embeddings,
                     "events": events,
-                    "ollama": "offline",
                     "home": home
                 }
             }))

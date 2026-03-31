@@ -21,9 +21,6 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
         (m, d, e, ev)
     }; // DB lock released here.
 
-    // Ollama probe happens WITHOUT the DB lock held.
-    let ollama = check_ollama_status().await;
-
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
@@ -37,25 +34,10 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
                 "decisions": decisions,
                 "embeddings": embeddings_count,
                 "events": events,
-                "ollama": ollama,
                 "home": home
             }
         }),
     )
-}
-
-/// Check if Ollama is running at localhost:11434.
-async fn check_ollama_status() -> &'static str {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build();
-    match client {
-        Ok(c) => match c.get("http://localhost:11434/api/tags").send().await {
-            Ok(resp) if resp.status().is_success() => "connected",  // Match Node.js API contract
-            _ => "offline",
-        },
-        Err(_) => "offline",
-    }
 }
 
 // ─── GET /digest ─────────────────────────────────────────────────────────────

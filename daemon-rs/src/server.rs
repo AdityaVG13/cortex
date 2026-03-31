@@ -1,8 +1,12 @@
+use axum::extract::State;
 use axum::routing::{get, post};
+use axum::Json;
 use axum::Router;
+use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::handlers;
+use crate::handlers::mcp::handle_mcp_message;
 use crate::state::RuntimeState;
 
 pub fn build_router(state: RuntimeState) -> Router {
@@ -91,8 +95,24 @@ pub fn build_router(state: RuntimeState) -> Router {
             "/events/stream",
             get(handlers::events::handle_events_stream),
         )
+        // ── MCP-RPC proxy endpoint ─────────────────────────────────
+        // Accepts raw JSON-RPC messages (same format as MCP stdio).
+        // This lets `cortex mcp` run as a thin proxy -- no separate
+        // ONNX engine, no separate caches, zero duplication.
+        .route("/mcp-rpc", post(handle_mcp_rpc))
         .layer(cors)
         .with_state(state)
+}
+
+/// HTTP endpoint for MCP proxy -- accepts JSON-RPC, returns JSON-RPC.
+async fn handle_mcp_rpc(
+    State(state): State<RuntimeState>,
+    Json(msg): Json<Value>,
+) -> Json<Value> {
+    match handle_mcp_message(&state, &msg).await {
+        Some(resp) => Json(resp),
+        None => Json(serde_json::json!({})),
+    }
 }
 
 pub async fn run(
