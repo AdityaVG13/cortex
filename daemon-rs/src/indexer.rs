@@ -13,7 +13,7 @@ const STATE_SECTIONS: &[&str] = &[
     "## Known Issues",
 ];
 
-/// Run all 6 indexers. Returns total entries indexed.
+/// Run all 8 indexers. Returns total entries indexed.
 pub fn index_all(conn: &Connection, home: &Path) -> usize {
     let mut total = 0;
     total += index_state_file(conn, home);
@@ -22,6 +22,8 @@ pub fn index_all(conn: &Connection, home: &Path) -> usize {
     total += index_goals(conn, home);
     total += index_skill_tracker(conn, home);
     total += index_gorci(conn, home);
+    total += index_crew_playbooks(conn, home);
+    total += index_self_improvement(conn, home);
     total
 }
 
@@ -383,6 +385,83 @@ fn index_gorci(conn: &Connection, home: &Path) -> usize {
     } else {
         0
     }
+}
+
+// ── Source 7: Crew playbooks ───────────────────────────────────────────────
+
+fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
+    let crew_dir = home
+        .join(".claude")
+        .join("self-improvement")
+        .join("crew");
+    if !crew_dir.exists() {
+        return 0;
+    }
+
+    let mut count = 0;
+    let entries = match fs::read_dir(&crew_dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+
+        if let Ok(content) = fs::read_to_string(&path) {
+            let name = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            // Index the full playbook (these are short, <40 lines each)
+            let source = format!("crew::{name}");
+            if upsert_memory(conn, &content, &source, "crew_playbook", "indexer") {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+// ── Source 8: Self-improvement insights ────────────────────────────────────
+
+fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
+    let si_dir = home.join(".claude").join("self-improvement");
+    if !si_dir.exists() {
+        return 0;
+    }
+
+    let mut count = 0;
+    let entries = match fs::read_dir(&si_dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Only index .md files in the root of self-improvement (not subdirs)
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+
+        if let Ok(content) = fs::read_to_string(&path) {
+            let name = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            // Truncate long insights to 1000 chars for index efficiency
+            let text: String = content.chars().take(1000).collect();
+            let source = format!("self-improvement::{name}");
+            if upsert_memory(conn, &text, &source, "insight", "indexer") {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 // ── Ebbinghaus decay ────────────────────────────────────────────────────────
