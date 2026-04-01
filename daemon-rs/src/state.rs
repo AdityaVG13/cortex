@@ -41,8 +41,11 @@ pub struct DaemonEvent {
 /// All fields are cheaply `Clone`able — most are wrapped in `Arc`.
 #[derive(Clone)]
 pub struct RuntimeState {
-    /// SQLite connection behind an async mutex so handlers can safely share it.
+    /// SQLite write connection -- used by store, forget, resolve, diary, indexer.
     pub db: Arc<Mutex<Connection>>,
+    /// SQLite read connection -- used by recall, peek, health, digest, boot.
+    /// Separate from `db` so reads never block on writes (WAL mode).
+    pub db_read: Arc<Mutex<Connection>>,
     /// Auth token written to `~/.cortex/cortex.token` at startup.
     pub token: Arc<String>,
     /// Broadcast channel for SSE events; clone the sender to fan-out.
@@ -119,6 +122,16 @@ pub fn initialize(
         eprintln!("[cortex] WARNING: FTS rebuild failed: {e}");
     }
 
+    // 2b. Open a separate read-only connection for concurrent reads.
+    //     WAL mode allows multiple readers alongside a single writer.
+    let read_conn = crate::db::open(db_path)
+        .map_err(|e| format!("Failed to open read connection: {e}"))?;
+    crate::db::configure(&read_conn)
+        .map_err(|e| format!("Failed to configure read connection: {e}"))?;
+    // Set read connection to query-only mode for safety
+    read_conn.execute_batch("PRAGMA query_only = ON;").map_err(|e| e.to_string())?;
+    eprintln!("[cortex] Read connection opened (WAL concurrent reads enabled)");
+
     // 3. Auth token.
     let token = crate::auth::generate_token();
 
@@ -144,6 +157,7 @@ pub fn initialize(
 
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
+        db_read: Arc::new(Mutex::new(read_conn)),
         token: Arc::new(token),
         events: events_tx,
         mcp_calls: Arc::new(AtomicU64::new(0)),

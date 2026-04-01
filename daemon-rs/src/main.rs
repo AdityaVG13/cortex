@@ -193,6 +193,20 @@ pub(crate) async fn run_daemon(
         });
     }
 
+    // ── Background WAL checkpoint every 60s ───────────────────────────
+    {
+        let db_wal = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                let conn = db_wal.lock().await;
+                db::checkpoint_wal_best_effort(&conn);
+            }
+        });
+    }
+
     let db_for_shutdown = state.db.clone();
     let router = server::build_router(state);
 

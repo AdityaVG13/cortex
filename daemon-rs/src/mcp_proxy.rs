@@ -49,14 +49,8 @@ pub async fn run() -> bool {
         }
     }
 
-    // SEC-001 fix: read auth token so we can authenticate to /mcp-rpc
-    let auth_header = read_auth_token()
-        .map(|t| format!("Bearer {}", t))
-        .unwrap_or_default();
-    if auth_header.is_empty() {
-        eprintln!("[cortex-mcp] Warning: no auth token found at ~/.cortex/cortex.token");
-    }
-
+    // Auth token is re-read on each request cycle because daemon restarts
+    // generate a new token.  The file is tiny so this is negligible overhead.
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
@@ -89,49 +83,76 @@ pub async fn run() -> bool {
 
         let has_id = msg.get("id").is_some();
 
-        // Forward to daemon's /mcp-rpc endpoint with auth token
-        let mut req = client
-            .post(MCP_RPC_URL)
-            .header("content-type", "application/json");
-        if !auth_header.is_empty() {
-            req = req.header("authorization", &auth_header);
-        }
+        // Re-read auth token on every request (daemon restart = new token).
+        let auth_header = read_auth_token()
+            .map(|t| format!("Bearer {}", t))
+            .unwrap_or_default();
 
-        match req.body(trimmed.to_string()).send().await {
-            Ok(resp) => {
-                consecutive_errors = 0;
-                if has_id {
-                    if let Ok(body) = resp.text().await {
-                        let body = body.trim();
-                        if !body.is_empty() {
-                            let _ = stdout
-                                .write_all(format!("{}\n", body).as_bytes())
-                                .await;
-                            let _ = stdout.flush().await;
+        // Forward to daemon's /mcp-rpc endpoint with auth token.
+        // Retry with backoff if daemon is temporarily unreachable (restart).
+        let mut attempt = 0u32;
+        let max_retries = 3;
+        loop {
+            let mut req = client
+                .post(MCP_RPC_URL)
+                .header("content-type", "application/json");
+            if !auth_header.is_empty() {
+                req = req.header("authorization", &auth_header);
+            }
+
+            match req.body(trimmed.to_string()).send().await {
+                Ok(resp) if resp.status().as_u16() == 401 && attempt < max_retries => {
+                    // Token mismatch -- daemon likely restarted. Wait and retry
+                    // with freshly read token on next loop iteration.
+                    attempt += 1;
+                    eprintln!("[cortex-mcp] Auth rejected (daemon restarted?), retry {attempt}/{max_retries}...");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Ok(resp) => {
+                    consecutive_errors = 0;
+                    if has_id {
+                        if let Ok(body) = resp.text().await {
+                            let body = body.trim();
+                            if !body.is_empty() {
+                                let _ = stdout
+                                    .write_all(format!("{}\n", body).as_bytes())
+                                    .await;
+                                let _ = stdout.flush().await;
+                            }
                         }
                     }
+                    break;
                 }
-            }
-            Err(e) => {
-                consecutive_errors += 1;
-                eprintln!("[cortex-mcp] Proxy HTTP error: {e}");
-                if consecutive_errors >= 5 {
-                    eprintln!("[cortex-mcp] ERROR: Daemon appears to have died ({consecutive_errors} consecutive failures)");
-                    eprintln!("[cortex-mcp] Restart daemon: cortex serve  OR  cortex service start");
+                Err(e) if attempt < max_retries => {
+                    attempt += 1;
+                    let backoff = std::time::Duration::from_secs(attempt as u64 * 2);
+                    eprintln!("[cortex-mcp] Daemon unreachable, retry {attempt}/{max_retries} in {}s...", backoff.as_secs());
+                    tokio::time::sleep(backoff).await;
+                    continue;
                 }
-                if has_id {
-                    let err_resp = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "error": {
-                            "code": -32603,
-                            "message": format!("Daemon proxy error: {e}")
-                        },
-                        "id": msg.get("id")
-                    });
-                    let _ = stdout
-                        .write_all(format!("{}\n", err_resp).as_bytes())
-                        .await;
-                    let _ = stdout.flush().await;
+                Err(e) => {
+                    consecutive_errors += 1;
+                    eprintln!("[cortex-mcp] Proxy HTTP error: {e}");
+                    if consecutive_errors >= 5 {
+                        eprintln!("[cortex-mcp] ERROR: Daemon appears to have died ({consecutive_errors} consecutive failures)");
+                        eprintln!("[cortex-mcp] Restart daemon: cortex serve  OR  cortex service start");
+                    }
+                    if has_id {
+                        let err_resp = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "error": {
+                                "code": -32603,
+                                "message": format!("Daemon proxy error: {e}")
+                            },
+                            "id": msg.get("id")
+                        });
+                        let _ = stdout
+                            .write_all(format!("{}\n", err_resp).as_bytes())
+                            .await;
+                        let _ = stdout.flush().await;
+                    }
+                    break;
                 }
             }
         }

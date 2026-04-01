@@ -14,6 +14,8 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
         PRAGMA foreign_keys = ON;
+        PRAGMA mmap_size = 268435456;
+        PRAGMA cache_size = -8000;
         "#,
     )?;
     Ok(())

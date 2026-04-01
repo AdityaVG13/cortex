@@ -13,7 +13,7 @@ use super::{ensure_auth, json_response, truncate_chars};
 pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
     // Read DB stats in a short lock, then drop it before the network call.
     let (memories, decisions, embeddings_count, events) = {
-        let conn = state.db.lock().await;
+        let conn = state.db_read.lock().await;
         let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
         let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).unwrap_or(0);
         let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
@@ -49,7 +49,7 @@ pub async fn handle_digest(
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     match build_digest(&conn) {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(err) => json_response(
@@ -258,7 +258,7 @@ pub async fn handle_savings(
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
 
     let mut stmt = match conn
         .prepare("SELECT data, created_at FROM events WHERE type = 'boot_savings' ORDER BY created_at ASC")
@@ -360,7 +360,7 @@ pub async fn handle_dump(
         return resp;
     }
 
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
 
     let memories: Vec<Value> = conn
         .prepare(
