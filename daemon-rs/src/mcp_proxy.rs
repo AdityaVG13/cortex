@@ -33,7 +33,9 @@ pub async fn run() -> bool {
         Err(_) => return false,
     };
 
-    // Quick health check -- is the daemon alive?
+    // Health check -- is the daemon alive right now?
+    // If not, still start in proxy mode. The daemon may come up later
+    // and the retry loop will connect when it does.
     match client
         .get("http://127.0.0.1:7437/health")
         .send()
@@ -41,21 +43,17 @@ pub async fn run() -> bool {
     {
         Ok(r) if r.status().is_success() => {
             eprintln!("[cortex-mcp] Proxy mode -- forwarding to daemon on :7437");
-            eprintln!("[cortex-mcp] Shared ONNX engine, shared caches, zero duplication");
         }
         _ => {
-            eprintln!("[cortex-mcp] Daemon unreachable -- falling back to standalone mode");
-            return false;
+            eprintln!("[cortex-mcp] Proxy mode -- daemon not yet available, will retry on each request");
         }
     }
 
-    // Auth token is re-read on each request cycle because daemon restarts
-    // generate a new token.  The file is tiny so this is negligible overhead.
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
     let mut stdout = tokio::io::stdout();
-    let mut consecutive_errors: u32 = 0;
+    let mut daemon_was_down = false;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let trimmed = line.trim();
@@ -63,7 +61,6 @@ pub async fn run() -> bool {
             continue;
         }
 
-        // Parse to check if it has an id (request vs notification)
         let msg: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
             Err(e) => {
@@ -83,16 +80,16 @@ pub async fn run() -> bool {
 
         let has_id = msg.get("id").is_some();
 
-        // Re-read auth token on every request (daemon restart = new token).
-        let auth_header = read_auth_token()
-            .map(|t| format!("Bearer {}", t))
-            .unwrap_or_default();
-
-        // Forward to daemon's /mcp-rpc endpoint with auth token.
-        // Retry with backoff if daemon is temporarily unreachable (restart).
+        // Retry indefinitely with exponential backoff capped at 30s.
+        // The proxy NEVER gives up -- daemon restarts, rebuilds, and
+        // temporary outages are all survivable. Re-reads auth token on
+        // each attempt since daemon restart generates a new token.
         let mut attempt = 0u32;
-        let max_retries = 3;
         loop {
+            let auth_header = read_auth_token()
+                .map(|t| format!("Bearer {}", t))
+                .unwrap_or_default();
+
             let mut req = client
                 .post(MCP_RPC_URL)
                 .header("content-type", "application/json");
@@ -101,16 +98,20 @@ pub async fn run() -> bool {
             }
 
             match req.body(trimmed.to_string()).send().await {
-                Ok(resp) if resp.status().as_u16() == 401 && attempt < max_retries => {
-                    // Token mismatch -- daemon likely restarted. Wait and retry
-                    // with freshly read token on next loop iteration.
+                Ok(resp) if resp.status().as_u16() == 401 => {
+                    // Token mismatch -- daemon restarted with new token.
+                    // Re-read token on next iteration (already done above).
                     attempt += 1;
-                    eprintln!("[cortex-mcp] Auth rejected (daemon restarted?), retry {attempt}/{max_retries}...");
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let backoff = backoff_duration(attempt);
+                    eprintln!("[cortex-mcp] Auth rejected (new token?), retry in {}s...", backoff.as_secs());
+                    tokio::time::sleep(backoff).await;
                     continue;
                 }
                 Ok(resp) => {
-                    consecutive_errors = 0;
+                    if daemon_was_down {
+                        eprintln!("[cortex-mcp] Daemon reconnected after {} retries", attempt);
+                        daemon_was_down = false;
+                    }
                     if has_id {
                         if let Ok(body) = resp.text().await {
                             let body = body.trim();
@@ -124,40 +125,33 @@ pub async fn run() -> bool {
                     }
                     break;
                 }
-                Err(e) if attempt < max_retries => {
+                Err(e) => {
                     attempt += 1;
-                    let backoff = std::time::Duration::from_secs(attempt as u64 * 2);
-                    eprintln!("[cortex-mcp] Daemon unreachable, retry {attempt}/{max_retries} in {}s...", backoff.as_secs());
+
+                    if attempt == 1 {
+                        eprintln!("[cortex-mcp] Daemon unreachable: {e}");
+                        daemon_was_down = true;
+                    }
+
+                    // Log periodically, not every retry
+                    if attempt % 10 == 0 {
+                        eprintln!("[cortex-mcp] Still waiting for daemon... ({attempt} retries, {}s backoff)", backoff_duration(attempt).as_secs());
+                    }
+
+                    let backoff = backoff_duration(attempt);
                     tokio::time::sleep(backoff).await;
                     continue;
-                }
-                Err(e) => {
-                    consecutive_errors += 1;
-                    eprintln!("[cortex-mcp] Proxy HTTP error: {e}");
-                    if consecutive_errors >= 5 {
-                        eprintln!("[cortex-mcp] ERROR: Daemon appears to have died ({consecutive_errors} consecutive failures)");
-                        eprintln!("[cortex-mcp] Restart daemon: cortex serve  OR  cortex service start");
-                    }
-                    if has_id {
-                        let err_resp = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "error": {
-                                "code": -32603,
-                                "message": format!("Daemon proxy error: {e}")
-                            },
-                            "id": msg.get("id")
-                        });
-                        let _ = stdout
-                            .write_all(format!("{}\n", err_resp).as_bytes())
-                            .await;
-                        let _ = stdout.flush().await;
-                    }
-                    break;
                 }
             }
         }
     }
 
-    eprintln!("[cortex-mcp] Proxy session ended");
-    consecutive_errors < 5
+    eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
+    true
+}
+
+/// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s...
+fn backoff_duration(attempt: u32) -> std::time::Duration {
+    let secs = (1u64 << attempt.min(5)).min(30);
+    std::time::Duration::from_secs(secs)
 }

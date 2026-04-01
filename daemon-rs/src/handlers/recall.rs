@@ -27,6 +27,28 @@ struct RecallItem {
     excerpt: String,
     method: String,
     tokens: Option<usize>,
+    entropy: Option<f64>,
+}
+
+/// Shannon entropy of text (bits per character).
+/// English prose: ~4.0-4.5, boilerplate: ~2.0-3.0, code/decisions: ~4.5-5.0.
+pub fn shannon_entropy(text: &str) -> f64 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let mut freq = [0u32; 256];
+    let len = text.len() as f64;
+    for &b in text.as_bytes() {
+        freq[b as usize] += 1;
+    }
+    let mut h = 0.0f64;
+    for &count in &freq {
+        if count > 0 {
+            let p = count as f64 / len;
+            h -= p * p.log2();
+        }
+    }
+    h
 }
 
 #[derive(Clone)]
@@ -346,6 +368,7 @@ fn run_recall_with_engine(
                             excerpt: text.chars().take(200).collect(),
                             method: "semantic".to_string(),
                             tokens: None,
+                            entropy: None,
                         });
                     }
                 }
@@ -378,6 +401,7 @@ fn run_recall_with_engine(
                                 excerpt: decision.chars().take(200).collect(),
                                 method: "semantic".to_string(),
                                 tokens: None,
+                                entropy: None,
                             });
                         }
                     }
@@ -402,6 +426,7 @@ fn run_recall_with_engine(
                     excerpt: row.excerpt,
                     method: "keyword".to_string(),
                     tokens: None,
+                    entropy: None,
                 },
             );
         }
@@ -422,12 +447,24 @@ fn run_recall_with_engine(
                     excerpt: row.excerpt,
                     method: "keyword".to_string(),
                     tokens: None,
+                    entropy: None,
                 },
             );
         }
     }
 
-    let mut ranked = merged.into_values().collect::<Vec<_>>();
+    // Compute entropy and apply entropy-weighted re-ranking.
+    // High-entropy (information-dense) results get boosted; low-entropy
+    // (boilerplate) gets penalized. Weight: 15% adjustment around midpoint 3.5.
+    let mut ranked: Vec<RecallItem> = merged
+        .into_values()
+        .map(|mut item| {
+            let h = shannon_entropy(&item.excerpt);
+            item.entropy = Some(round4(h));
+            item.relevance = round4(item.relevance * (1.0 + (h - 3.5) * 0.15));
+            item
+        })
+        .collect();
     ranked.sort_by(|a, b| {
         b.relevance
             .partial_cmp(&a.relevance)
@@ -493,6 +530,7 @@ fn run_budget_recall_with_engine(
             excerpt,
             method: item.method,
             tokens: Some(tokens),
+            entropy: item.entropy,
         });
     }
 
@@ -511,7 +549,7 @@ fn search_memories(
     if tokens.is_empty() {
         let mut stmt = conn
             .prepare(
-                "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at \
+                "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at, compressed_text, age_tier \
                  FROM memories WHERE status = 'active' \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
@@ -519,10 +557,14 @@ fn search_memories(
 
         let rows = stmt
             .query_map([limit as i64], |row| {
+                let text: String = row.get(1)?;
+                let compressed: Option<String> = row.get(8)?;
+                let age_tier: String = row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "fresh".to_string());
+                let display = crate::aging::get_display_text(&text, &compressed, &age_tier);
                 Ok(SearchCandidate {
                     source: row.get::<_, Option<String>>(2)?
                         .unwrap_or_else(|| format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))),
-                    excerpt: truncate_chars(&row.get::<_, String>(1)?, 200),
+                    excerpt: truncate_chars(&display, 200),
                     relevance: round4(0.5 * row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0)),
                     matched_keywords: 0,
                     score: row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0),
@@ -547,7 +589,7 @@ fn search_memories(
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         let mut stmt = conn
             .prepare(
-                "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at \
+                "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier \
                  FROM memories_fts fts \
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
@@ -566,17 +608,20 @@ fn search_memories(
                     row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
 
         let mut ranked = Vec::new();
         for row in rows.flatten() {
-            let (id, text, source, tags, score, retrievals, last_accessed, created_at) = row;
+            let (id, text, source, tags, score, retrievals, last_accessed, created_at, compressed_text, age_tier) = row;
             let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
             let score = score.unwrap_or(1.0).max(0.0);
             let ts_source = last_accessed.clone().or(created_at.clone()).unwrap_or_default();
             let ts = parse_timestamp_ms(&ts_source);
+            let display = crate::aging::get_display_text(&text, &compressed_text, &age_tier.unwrap_or_else(|| "fresh".to_string()));
 
             let haystacks = vec![
                 text.to_lowercase(),
@@ -603,7 +648,7 @@ fn search_memories(
 
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: truncate_chars(&text, 200),
+                excerpt: truncate_chars(&display, 200),
                 relevance: round4(ranking),
                 matched_keywords: matched,
                 score,
@@ -787,7 +832,7 @@ fn search_decisions(
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         let mut stmt = conn
             .prepare(
-                "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at \
+                "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier \
                  FROM decisions_fts fts \
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
@@ -805,17 +850,20 @@ fn search_decisions(
                     row.get::<_, Option<i64>>(4)?,
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
 
         let mut ranked = Vec::new();
         for row in rows.flatten() {
-            let (id, decision, context, score, retrievals, last_accessed, created_at) = row;
+            let (id, decision, context, score, retrievals, last_accessed, created_at, compressed_text, age_tier) = row;
             let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
             let score = score.unwrap_or(1.0).max(0.0);
             let ts_source = last_accessed.clone().or(created_at.clone()).unwrap_or_default();
             let ts = parse_timestamp_ms(&ts_source);
+            let display = crate::aging::get_display_text(&decision, &compressed_text, &age_tier.unwrap_or_else(|| "fresh".to_string()));
 
             let haystacks = vec![
                 decision.to_lowercase(),
@@ -841,7 +889,7 @@ fn search_decisions(
 
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: truncate_chars(&decision, 200),
+                excerpt: truncate_chars(&display, 200),
                 relevance: round4(ranking),
                 matched_keywords: matched,
                 score,
@@ -1102,9 +1150,12 @@ fn recall_to_json(item: RecallItem) -> Value {
         "excerpt": item.excerpt,
         "method": item.method
     });
-    if let Some(tokens) = item.tokens {
-        if let Value::Object(ref mut map) = payload {
+    if let Value::Object(ref mut map) = payload {
+        if let Some(tokens) = item.tokens {
             map.insert("tokens".to_string(), Value::Number((tokens as u64).into()));
+        }
+        if let Some(entropy) = item.entropy {
+            map.insert("entropy".to_string(), json!(entropy));
         }
     }
     payload
@@ -1186,6 +1237,7 @@ async fn get_pre_cached(
                             excerpt: v.get("excerpt")?.as_str()?.to_string(),
                             method: v.get("method")?.as_str()?.to_string(),
                             tokens: v.get("tokens").and_then(|t| t.as_u64()).map(|t| t as usize),
+                            entropy: v.get("entropy").and_then(|e| e.as_f64()),
                         })
                     })
                     .collect();
@@ -1263,4 +1315,136 @@ async fn predict_and_cache(
         },
     );
     Ok(())
+}
+
+// ─── GET /unfold ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct UnfoldQuery {
+    pub sources: Option<String>,
+}
+
+/// Unfold specific items by source string. Returns full text for each requested
+/// source without re-running search. Designed for progressive disclosure:
+/// peek (headlines) → unfold (full text of selected items).
+pub async fn handle_unfold(
+    State(state): State<RuntimeState>,
+    Query(query): Query<UnfoldQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
+    let sources_str = match &query.sources {
+        Some(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "Missing query parameter: sources (comma-separated)"}),
+            )
+        }
+    };
+
+    let requested: Vec<&str> = sources_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if requested.is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "No valid sources provided"}),
+        );
+    }
+
+    let conn = state.db.lock().await;
+    let mut results: Vec<Value> = Vec::new();
+    let mut total_tokens = 0usize;
+
+    for source in &requested {
+        if let Some(item) = unfold_source(&conn, source) {
+            let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
+            total_tokens += tokens;
+            results.push(json!({
+                "source": source,
+                "text": item["text"],
+                "type": item["type"],
+                "tokens": tokens,
+            }));
+        } else {
+            results.push(json!({
+                "source": source,
+                "text": null,
+                "type": "not_found",
+                "tokens": 0,
+            }));
+        }
+    }
+
+    json_response(
+        StatusCode::OK,
+        json!({
+            "results": results,
+            "totalTokens": total_tokens,
+            "count": results.iter().filter(|r| r["type"] != "not_found").count(),
+        }),
+    )
+}
+
+/// Look up the full text of a single source string.
+pub fn unfold_source(conn: &Connection, source: &str) -> Option<Value> {
+    // Try memory by source field
+    if let Ok(text) = conn.query_row(
+        "SELECT text, type FROM memories WHERE source = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+        params![source],
+        |row| Ok(json!({"text": row.get::<_, String>(0)?, "type": row.get::<_, String>(1)?})),
+    ) {
+        return Some(text);
+    }
+
+    // Try decision by ID (source format: "decision::123" or just the context string)
+    if let Some(id_str) = source.strip_prefix("decision::") {
+        if let Ok(id) = id_str.parse::<i64>() {
+            if let Ok(text) = conn.query_row(
+                "SELECT decision, context FROM decisions WHERE id = ?1 AND status = 'active'",
+                params![id],
+                |row| {
+                    let decision: String = row.get(0)?;
+                    let context: Option<String> = row.get(1)?;
+                    let full = match context {
+                        Some(ctx) => format!("{decision}\n\nContext: {ctx}"),
+                        None => decision,
+                    };
+                    Ok(json!({"text": full, "type": "decision"}))
+                },
+            ) {
+                return Some(text);
+            }
+        }
+    }
+
+    // Try decision by context field (some sources use context as the source string)
+    if let Ok(text) = conn.query_row(
+        "SELECT decision, context FROM decisions WHERE context = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+        params![source],
+        |row| {
+            let decision: String = row.get(0)?;
+            let context: Option<String> = row.get(1)?;
+            let full = match context {
+                Some(ctx) => format!("{decision}\n\nContext: {ctx}"),
+                None => decision,
+            };
+            Ok(json!({"text": full, "type": "decision"}))
+        },
+    ) {
+        return Some(text);
+    }
+
+    // Try memory by partial source match (e.g., "memory::project_cortex_plan.md")
+    let stripped = source.strip_prefix("memory::").unwrap_or(source);
+    if let Ok(text) = conn.query_row(
+        "SELECT text, type FROM memories WHERE source LIKE ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+        params![format!("%{stripped}%")],
+        |row| Ok(json!({"text": row.get::<_, String>(0)?, "type": row.get::<_, String>(1)?})),
+    ) {
+        return Some(text);
+    }
+
+    None
 }

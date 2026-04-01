@@ -9,7 +9,7 @@
 //! to produce a compact, high-signal boot prompt.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -81,35 +81,7 @@ fn cache_set(conn: &Connection, key: &str, hash: &str, compressed: &str, tokens:
     );
 }
 
-// ─── State.md helpers ───────────────────────────────────────────────────────
-
-fn read_state_md(home: &Path) -> String {
-    let path = home.join(".claude").join("state.md");
-    std::fs::read_to_string(path).unwrap_or_default()
-}
-
-/// Extract the content under a `## heading` from a Markdown document,
-/// capturing at most `max_lines` lines until the next `## `.
-fn extract_section(content: &str, heading: &str, max_lines: usize) -> String {
-    let mut capturing = false;
-    let mut captured: Vec<&str> = Vec::new();
-
-    for line in content.lines() {
-        if capturing {
-            if line.starts_with("## ") {
-                break;
-            }
-            captured.push(line);
-            if captured.len() >= max_lines {
-                break;
-            }
-        } else if line.trim_start_matches("## ").trim() == heading {
-            capturing = true;
-        }
-    }
-
-    captured.join("\n").trim().to_string()
-}
+// State.md helpers removed — session-auto-restore.js handles state.md injection.
 
 // ─── Identity capsule ───────────────────────────────────────────────────────
 
@@ -387,7 +359,7 @@ fn fetch_claimed_tasks_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
 
 /// Build the delta capsule — what changed since the agent's last boot.
 /// High relevance, changes every session.  Target: ~300 tokens.
-fn build_delta_capsule(conn: &Connection, home: &Path, agent: &str) -> (String, usize, String) {
+fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, String) {
     let last_boot = get_last_boot_time(conn, agent);
     let mut parts: Vec<String> = Vec::new();
 
@@ -536,21 +508,11 @@ fn build_delta_capsule(conn: &Connection, home: &Path, agent: &str) -> (String, 
         }
     }
 
-    // 2. State.md: next session + pending + known issues (always fresh)
-    let state = read_state_md(home);
-    if !state.is_empty() {
-        let next = extract_section(&state, "Next Session", 5);
-        if !next.is_empty() {
-            parts.push(format!("Next: {}", next.replace('\n', " | ")));
-        }
-        let pending = extract_section(&state, "Pending", 3);
-        if !pending.is_empty() {
-            parts.push(format!("Pending: {}", pending.replace('\n', " | ")));
-        }
-        let issues = extract_section(&state, "Known Issues", 3);
-        if !issues.is_empty() {
-            parts.push(format!("Issues: {}", issues.replace('\n', " | ")));
-        }
+    // 2. Active focus session (sawtooth pattern indicator)
+    if let Some(focus) = crate::focus::focus_current(conn, agent) {
+        let label = focus.get("label").and_then(|v| v.as_str()).unwrap_or("?");
+        let entries = focus.get("entries").and_then(|v| v.as_u64()).unwrap_or(0);
+        parts.push(format!("## Active Focus\n- {label} ({entries} entries)"));
     }
 
     // 3. New decisions since last boot
@@ -773,7 +735,7 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     }
 
     // Delta capsule: broken into sub-items with individual priorities
-    let (delta_text, _, delta_freshness) = build_delta_capsule(conn, home, agent);
+    let (delta_text, _, _delta_freshness) = build_delta_capsule(conn, agent);
     if !delta_text.is_empty() {
         // Split delta into sections, each scored independently
         let sections: Vec<(&str, f64)> = vec![
@@ -784,9 +746,7 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             ("## Pending Tasks", 0.75),       // Task board = actionable
             ("## Your Active Tasks", 0.80),   // Your tasks = high priority
             ("CONFLICTS:", 0.90),             // Conflicts = must resolve
-            ("Next:", 0.85),                  // Next steps from state.md
-            ("Pending:", 0.65),               // Pending items
-            ("Issues:", 0.70),                // Known issues
+            ("## Active Focus", 0.85),        // Focus scope = context boundary
             ("New decisions:", 0.55),         // Recent decisions = orientation
             ("New knowledge:", 0.45),         // New memories
             ("Activity since last boot:", 0.30), // Activity summary = low value
@@ -794,7 +754,7 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
         ];
 
         // Try to split delta into scored sub-sections
-        let mut remaining_delta = delta_text.as_str();
+        let remaining_delta = delta_text.as_str();
         let mut matched_any = false;
 
         for (header, priority) in &sections {
@@ -907,72 +867,5 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     }
 }
 
-// ─── Memory directory discovery (used by raw baseline) ──────────────────────
-
-/// Find the memory directory.  Looks for `~/.claude/projects/*/memory/` dirs.
-/// Returns the first found, preferring `C--Users-aditya` on this machine.
-pub fn find_memory_dir(home: &Path) -> Option<PathBuf> {
-    let projects_dir = home.join(".claude").join("projects");
-
-    // Prefer the known path on this machine
-    let preferred = projects_dir.join("C--Users-aditya").join("memory");
-    if preferred.is_dir() {
-        return Some(preferred);
-    }
-
-    // Fallback: scan for any project with a memory dir
-    if let Ok(entries) = std::fs::read_dir(&projects_dir) {
-        for entry in entries.flatten() {
-            let mem = entry.path().join("memory");
-            if mem.is_dir() {
-                return Some(mem);
-            }
-        }
-    }
-
-    None
-}
-
-/// Read all .md files from a memory directory, returning (filename, content) pairs.
-pub fn read_memory_files(dir: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|x| x == "md").unwrap_or(false) {
-                let name = path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    out.push((name, content));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Read lesson files from the self-improvement-engine/lessons directory.
-pub fn read_lessons(dir: &Path) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let ext_ok = path
-                .extension()
-                .map(|x| x == "md" || x == "json")
-                .unwrap_or(false);
-            if ext_ok {
-                let name = path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    out.push((name, content));
-                }
-            }
-        }
-    }
-    out
-}
+// Dead code removed: find_memory_dir, read_memory_files, read_lessons
+// (indexer.rs has its own implementation; these were ported but unused)

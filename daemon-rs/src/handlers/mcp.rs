@@ -131,6 +131,55 @@ pub fn mcp_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "cortex_unfold",
+            "description": "Get full text of specific memory/decision nodes by source string. Use AFTER cortex_peek to drill into selected items. Progressive disclosure: peek (headlines) -> unfold (full text of 2-3 items you need).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sources": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Source strings from cortex_peek results (e.g. [\"memory::project_cortex_plan.md\", \"decision::28\"])"
+                    }
+                },
+                "required": ["sources"]
+            }
+        }),
+        json!({
+            "name": "cortex_focus_start",
+            "description": "Start a focus session (context checkpoint). Entries stored during focus are tracked. Call focus_end to consolidate into a summary. Implements the sawtooth pattern for token reduction.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "description": "Name for this focus block (e.g. 'auth-refactor', 'bug-investigation')" },
+                    "agent": { "type": "string", "description": "Agent ID" }
+                },
+                "required": ["label"]
+            }
+        }),
+        json!({
+            "name": "cortex_focus_end",
+            "description": "End a focus session. Summarizes all entries captured during the session, stores the summary, discards raw traces. Returns token savings.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string", "description": "Label of the focus session to close" },
+                    "agent": { "type": "string", "description": "Agent ID" }
+                },
+                "required": ["label"]
+            }
+        }),
+        json!({
+            "name": "cortex_focus_status",
+            "description": "Check focus session state: current open session (if any) and recent closed sessions with summaries and token savings.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string", "description": "Agent ID (default: mcp)" }
+                }
+            }
+        }),
+        json!({
             "name": "cortex_diary",
             "description": "Write session state to state.md for cross-session continuity.",
             "inputSchema": {
@@ -247,7 +296,11 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             let confidence = args.get("confidence").and_then(|v| v.as_f64());
 
             let mut conn = state.db.lock().await;
-            let (entry, _id) = store_decision(&mut conn, decision, context, entry_type, source_agent, confidence, None)?;
+            let (entry, _id) = store_decision(&mut conn, decision, context, entry_type, source_agent.clone(), confidence, None)?;
+
+            // Auto-append to active focus session (sawtooth pattern)
+            crate::focus::focus_append(&conn, &source_agent, decision);
+
             Ok(entry)
         }
 
@@ -288,6 +341,44 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             build_digest(&conn)
         }
 
+        "cortex_unfold" => {
+            let sources: Vec<String> = match args.get("sources") {
+                Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+                Some(Value::String(s)) => s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+                _ => return Err("Missing required argument: sources (array of source strings)".to_string()),
+            };
+            if sources.is_empty() {
+                return Err("sources array is empty".to_string());
+            }
+            let conn = state.db.lock().await;
+            let mut results: Vec<Value> = Vec::new();
+            let mut total_tokens = 0usize;
+            for source in &sources {
+                if let Some(item) = super::recall::unfold_source(&conn, source) {
+                    let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
+                    total_tokens += tokens;
+                    results.push(json!({
+                        "source": source,
+                        "text": item["text"],
+                        "type": item["type"],
+                        "tokens": tokens,
+                    }));
+                } else {
+                    results.push(json!({
+                        "source": source,
+                        "text": null,
+                        "type": "not_found",
+                        "tokens": 0,
+                    }));
+                }
+            }
+            Ok(json!({
+                "results": results,
+                "totalTokens": total_tokens,
+                "count": results.iter().filter(|r| r["type"] != "not_found").count(),
+            }))
+        }
+
         "cortex_forget" => {
             let keyword = args
                 .get("source")
@@ -311,6 +402,59 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             let mut conn = state.db.lock().await;
             resolve_decision(&mut conn, keep_id, action, superseded_id)?;
             Ok(json!({ "resolved": true }))
+        }
+
+        "cortex_focus_start" => {
+            let label = args.get("label").and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing required argument: label".to_string())?;
+            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let conn = state.db.lock().await;
+            crate::focus::focus_start(&conn, label, agent)
+        }
+
+        "cortex_focus_end" => {
+            let label = args.get("label").and_then(|v| v.as_str())
+                .ok_or_else(|| "Missing required argument: label".to_string())?;
+            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let conn = state.db.lock().await;
+            crate::focus::focus_end(&conn, label, agent)
+        }
+
+        "cortex_focus_status" => {
+            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let conn = state.db.lock().await;
+
+            let current = crate::focus::focus_current(&conn, agent);
+
+            // Recent closed sessions
+            let mut recent: Vec<Value> = Vec::new();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, label, summary, tokens_before, tokens_after, started_at, ended_at \
+                 FROM focus_sessions WHERE agent = ?1 AND status = 'closed' \
+                 ORDER BY ended_at DESC LIMIT 5"
+            ) {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![agent], |row| {
+                    Ok(json!({
+                        "id": row.get::<_, i64>(0)?,
+                        "label": row.get::<_, String>(1)?,
+                        "summary": row.get::<_, Option<String>>(2)?,
+                        "tokensBefore": row.get::<_, Option<i64>>(3)?,
+                        "tokensAfter": row.get::<_, Option<i64>>(4)?,
+                        "startedAt": row.get::<_, String>(5)?,
+                        "endedAt": row.get::<_, Option<String>>(6)?
+                    }))
+                }) {
+                    for row in rows.flatten() {
+                        recent.push(row);
+                    }
+                }
+            }
+
+            Ok(json!({
+                "active": current,
+                "recent": recent,
+                "count": recent.len()
+            }))
         }
 
         "cortex_diary" => {

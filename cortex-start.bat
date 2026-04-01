@@ -36,9 +36,9 @@ if exist "%PID_FILE%" (
     ping -n 2 127.0.0.1 >nul
 )
 
-REM Start daemon detached via wmic (survives terminal close)
+REM Start daemon in background (no extra window, stays in this terminal)
 echo [cortex] Starting daemon...
-start "Cortex Daemon" /MIN cmd /c ""%DAEMON_RS%" serve >"%LOG_OUT%" 2>"%LOG_ERR%""
+start /B "" "%DAEMON_RS%" serve >"%LOG_OUT%" 2>"%LOG_ERR%"
 
 REM Wait for it to come up (max 5s)
 for /L %%i in (1,1,10) do (

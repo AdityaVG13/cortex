@@ -24,10 +24,13 @@ SKILLS_DIR = HOME / ".claude" / "skills"
 
 
 def check_path_exists(path_str: str) -> bool:
-    """Check if a referenced path exists, handling ~ and env vars."""
+    """Check if a referenced path exists, handling ~, env vars, and relative .claude/ paths."""
     expanded = path_str.replace("~", str(HOME))
     expanded = expanded.replace("$HOME", str(HOME))
     expanded = expanded.replace("%USERPROFILE%", str(HOME))
+    # Handle relative .claude/ paths (no leading ~ or drive letter)
+    if expanded.startswith(".claude"):
+        expanded = str(HOME / expanded)
     return Path(expanded).exists()
 
 
