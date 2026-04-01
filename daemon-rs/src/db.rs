@@ -184,6 +184,48 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           created_at TEXT DEFAULT (datetime('now')),
           hits INTEGER DEFAULT 0
         );
+
+        -- FTS5 full-text search indexes (trigram tokenizer for code/identifier matching)
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+          text, source, tags,
+          content=memories,
+          content_rowid=id,
+          tokenize='trigram'
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+          decision, context,
+          content=decisions,
+          content_rowid=id,
+          tokenize='trigram'
+        );
+
+        -- Triggers to keep FTS in sync with base tables
+        CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+          INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) VALUES('delete', old.id, old.text, old.source, old.tags);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) VALUES('delete', old.id, old.text, old.source, old.tags);
+          INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS decisions_fts_ai AFTER INSERT ON decisions BEGIN
+          INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS decisions_fts_ad AFTER DELETE ON decisions BEGIN
+          INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS decisions_fts_au AFTER UPDATE ON decisions BEGIN
+          INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
+          INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
+        END;
         "#,
     )?;
     Ok(())
@@ -198,6 +240,18 @@ pub fn checkpoint_wal(conn: &Connection) -> rusqlite::Result<()> {
 /// Attempt a WAL checkpoint; silently ignore any error.
 pub fn checkpoint_wal_best_effort(conn: &Connection) {
     let _ = checkpoint_wal(conn);
+}
+
+/// Rebuild FTS5 indexes from base table data. Call once after schema migration
+/// on databases that predate FTS5 support.
+pub fn rebuild_fts(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO memories_fts(rowid, text, source, tags)
+         SELECT id, text, source, tags FROM memories WHERE status = 'active';
+         INSERT OR IGNORE INTO decisions_fts(rowid, decision, context)
+         SELECT id, decision, context FROM decisions WHERE status = 'active';",
+    )?;
+    Ok(())
 }
 
 /// Run `PRAGMA integrity_check` and return `true` when the database reports
@@ -305,5 +359,36 @@ mod tests {
         // Should not panic even on an in-memory connection (WAL not applicable)
         let conn = Connection::open_in_memory().unwrap();
         checkpoint_wal_best_effort(&conn);
+    }
+
+    #[test]
+    fn test_fts5_schema_and_search() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        initialize_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO memories (text, source, type) VALUES (?1, ?2, ?3)",
+            params!["Cortex uses Ebbinghaus decay for memory scoring", "test::fts", "memory"],
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'Ebbinghaus'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "FTS5 trigger should auto-index new memories");
+
+        let count2: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'nonexistent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count2, 0);
     }
 }

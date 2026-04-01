@@ -114,6 +114,11 @@ pub fn initialize(
         Err(e) => eprintln!("[cortex] WARNING: integrity check error: {e}"),
     }
 
+    // Rebuild FTS indexes for existing data (idempotent).
+    if let Err(e) = crate::db::rebuild_fts(&conn) {
+        eprintln!("[cortex] WARNING: FTS rebuild failed: {e}");
+    }
+
     // 3. Auth token.
     let token = crate::auth::generate_token();
 

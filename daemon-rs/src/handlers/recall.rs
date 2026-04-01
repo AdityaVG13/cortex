@@ -506,6 +506,139 @@ fn search_memories(
     query_text: &str,
     limit: usize,
 ) -> Result<Vec<SearchCandidate>, String> {
+    let tokens = extract_search_keywords(query_text);
+
+    if tokens.is_empty() {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at \
+                 FROM memories WHERE status = 'active' \
+                 ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([limit as i64], |row| {
+                Ok(SearchCandidate {
+                    source: row.get::<_, Option<String>>(2)?
+                        .unwrap_or_else(|| format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))),
+                    excerpt: truncate_chars(&row.get::<_, String>(1)?, 200),
+                    relevance: round4(0.5 * row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0)),
+                    matched_keywords: 0,
+                    score: row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0),
+                    ts: parse_timestamp_ms(
+                        &row.get::<_, Option<String>>(6)?
+                            .or(row.get::<_, Option<String>>(7)?)
+                            .unwrap_or_default(),
+                    ),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        return Ok(rows.flatten().collect());
+    }
+
+    let fts_query = tokens
+        .iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
+    let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at \
+                 FROM memories_fts fts \
+                 JOIN memories m ON m.id = fts.rowid \
+                 WHERE memories_fts MATCH ?1 AND m.status = 'active' \
+                 LIMIT 100",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([&fts_query], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut ranked = Vec::new();
+        for row in rows.flatten() {
+            let (id, text, source, tags, score, retrievals, last_accessed, created_at) = row;
+            let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
+            let score = score.unwrap_or(1.0).max(0.0);
+            let ts_source = last_accessed.clone().or(created_at.clone()).unwrap_or_default();
+            let ts = parse_timestamp_ms(&ts_source);
+
+            let haystacks = vec![
+                text.to_lowercase(),
+                source.unwrap_or_default().to_lowercase(),
+                tags.unwrap_or_default().to_lowercase(),
+            ];
+            let mut matched = 0_i64;
+            for token in &tokens {
+                if haystacks.iter().any(|h| h.contains(token)) {
+                    matched += 1;
+                }
+            }
+            if matched == 0 {
+                matched = 1;
+            }
+
+            let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
+            let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
+            let keyword_weight = matched as f64 / tokens.len() as f64;
+            let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
+            let score_weight = score.clamp(0.0, 1.0);
+            let ranking =
+                (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
+
+            ranked.push(SearchCandidate {
+                source: source_key,
+                excerpt: truncate_chars(&text, 200),
+                relevance: round4(ranking),
+                matched_keywords: matched,
+                score,
+                ts,
+            });
+        }
+
+        ranked.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.matched_keywords.cmp(&a.matched_keywords))
+                .then(
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(b.ts.cmp(&a.ts))
+        });
+
+        ranked.truncate(limit);
+        Ok(ranked)
+    })();
+
+    match fts_result {
+        Ok(results) if !results.is_empty() => Ok(results),
+        _ => search_memories_fallback(conn, query_text, limit),
+    }
+}
+
+fn search_memories_fallback(
+    conn: &Connection,
+    query_text: &str,
+    limit: usize,
+) -> Result<Vec<SearchCandidate>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at \
@@ -573,7 +706,6 @@ fn search_memories(
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
-        // Ebbinghaus score is 0.0-1.0; heavily decayed memories rank lower
         let score_weight = score.clamp(0.0, 1.0);
         let ranking =
             (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
@@ -610,6 +742,137 @@ fn search_memories(
 }
 
 fn search_decisions(
+    conn: &Connection,
+    query_text: &str,
+    limit: usize,
+) -> Result<Vec<SearchCandidate>, String> {
+    let tokens = extract_search_keywords(query_text);
+
+    if tokens.is_empty() {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, decision, context, score, retrievals, last_accessed, created_at \
+                 FROM decisions WHERE status = 'active' \
+                 ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([limit as i64], |row| {
+                Ok(SearchCandidate {
+                    source: row.get::<_, Option<String>>(2)?
+                        .unwrap_or_else(|| format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))),
+                    excerpt: truncate_chars(&row.get::<_, String>(1)?, 200),
+                    relevance: round4(0.5 * row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0)),
+                    matched_keywords: 0,
+                    score: row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0),
+                    ts: parse_timestamp_ms(
+                        &row.get::<_, Option<String>>(5)?
+                            .or(row.get::<_, Option<String>>(6)?)
+                            .unwrap_or_default(),
+                    ),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        return Ok(rows.flatten().collect());
+    }
+
+    let fts_query = tokens
+        .iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+
+    let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at \
+                 FROM decisions_fts fts \
+                 JOIN decisions d ON d.id = fts.rowid \
+                 WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
+                 LIMIT 100",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([&fts_query], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut ranked = Vec::new();
+        for row in rows.flatten() {
+            let (id, decision, context, score, retrievals, last_accessed, created_at) = row;
+            let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
+            let score = score.unwrap_or(1.0).max(0.0);
+            let ts_source = last_accessed.clone().or(created_at.clone()).unwrap_or_default();
+            let ts = parse_timestamp_ms(&ts_source);
+
+            let haystacks = vec![
+                decision.to_lowercase(),
+                context.unwrap_or_default().to_lowercase(),
+            ];
+            let mut matched = 0_i64;
+            for token in &tokens {
+                if haystacks.iter().any(|h| h.contains(token)) {
+                    matched += 1;
+                }
+            }
+            if matched == 0 {
+                matched = 1;
+            }
+
+            let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
+            let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
+            let keyword_weight = matched as f64 / tokens.len() as f64;
+            let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
+            let score_weight = score.clamp(0.0, 1.0);
+            let ranking =
+                (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
+
+            ranked.push(SearchCandidate {
+                source: source_key,
+                excerpt: truncate_chars(&decision, 200),
+                relevance: round4(ranking),
+                matched_keywords: matched,
+                score,
+                ts,
+            });
+        }
+
+        ranked.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.matched_keywords.cmp(&a.matched_keywords))
+                .then(
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(b.ts.cmp(&a.ts))
+        });
+
+        ranked.truncate(limit);
+        Ok(ranked)
+    })();
+
+    match fts_result {
+        Ok(results) if !results.is_empty() => Ok(results),
+        _ => search_decisions_fallback(conn, query_text, limit),
+    }
+}
+
+fn search_decisions_fallback(
     conn: &Connection,
     query_text: &str,
     limit: usize,
@@ -678,7 +941,6 @@ fn search_decisions(
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
-        // Ebbinghaus score is 0.0-1.0; heavily decayed memories rank lower
         let score_weight = score.clamp(0.0, 1.0);
         let ranking =
             (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
