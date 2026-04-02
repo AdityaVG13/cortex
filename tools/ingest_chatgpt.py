@@ -192,17 +192,160 @@ def extract_messages(conversation: dict) -> list[tuple[str, str, float]]:
     return messages
 
 
-# ─── Filtering ───────────────────────────────────────────────────────────────
+# ─── Multi-Signal User Classification ────────────────────────────────────
+#
+# Score each conversation across multiple dimensions to classify as:
+#   "aditya" (confident), "other" (confident other user), "uncertain" (review)
+#
+# The --triage mode writes a review file for uncertain conversations so the
+# user can manually label them before full ingestion.
 
-def compute_tech_score(messages: list[tuple[str, str, float]]) -> float:
-    """Score how 'technical' a conversation is (0.0 - 1.0)."""
-    user_text = " ".join(text.lower() for role, text, _ in messages if role == "user")
+ADITYA_SIGNALS = {
+    "python", "rust", "javascript", "typescript", "react", "api", "database",
+    "git", "docker", "deploy", "server", "code", "function", "class",
+    "module", "import", "npm", "pip", "uv", "cortex", "claude", "ai",
+    "model", "llm", "embedding", "vector", "neural", "prompt", "algorithm",
+    "backend", "frontend", "sql", "debug", "terminal", "cli", "daemon",
+    "compile", "cargo", "tokio", "axum", "endpoint", "webhook",
+    "linux", "windows", "powershell", "bash", "regex", "refactor",
+    "architecture", "repository", "commit", "branch", "merge",
+    "dockerfile", "yaml", "json", "config", "vps", "nginx", "ssl",
+    "cicd", "pipeline", "automation",
+}
+
+OTHER_SIGNALS = [
+    "law school", "law firm", "legal brief", "attorney", "paralegal",
+    "bar exam", "internship application", "cover letter for",
+    "constitutional", "tort", "litigation", "moot court", "law review",
+    "sorority", "fraternity", "dorm room", "campus life",
+    "finals week", "gpa", "credits this semester",
+]
+
+
+@dataclass
+class ConversationClassification:
+    title: str
+    aditya_score: float
+    other_score: float
+    label: str  # "aditya", "other", "uncertain"
+    reasons: list[str]
+    message_count: int
+    timestamp: float
+
+
+def classify_conversation(
+    conversation: dict,
+    messages: list[tuple[str, str, float]],
+) -> ConversationClassification:
+    title = conversation.get("title", "Untitled")
+    ts = conversation.get("create_time") or 0.0
+
+    user_text = " ".join(
+        text.lower() for role, text, _ in messages if role == "user"
+    )
+    all_text = " ".join(text.lower() for _, text, _ in messages)
     words = user_text.split()
-    if not words:
-        return 0.0
+    reasons: list[str] = []
 
-    tech_hits = sum(1 for w in words if w in TECH_FINGERPRINT)
-    return min(1.0, tech_hits / max(len(words), 1) * 10)
+    # Signal 1: Tech keywords (strong Aditya signal)
+    tech_hits = sum(1 for w in words if w in ADITYA_SIGNALS)
+    tech_density = tech_hits / max(len(words), 1)
+    aditya_score = min(1.0, tech_density * 8)
+    if tech_hits > 5:
+        reasons.append(f"tech={tech_hits}")
+
+    # Signal 2: Other-user keywords
+    other_hits = sum(1 for signal in OTHER_SIGNALS if signal in user_text)
+    other_score = min(1.0, other_hits * 0.3)
+    if other_hits > 0:
+        reasons.append(f"other={other_hits}")
+
+    # Signal 3: Code blocks (strong Aditya signal)
+    code_blocks = all_text.count("```")
+    if code_blocks >= 2:
+        aditya_score = min(1.0, aditya_score + 0.3)
+        reasons.append(f"code_blocks={code_blocks}")
+
+    # Signal 4: Long sessions (Aditya's coding chats tend to be long)
+    if len(messages) > 20:
+        aditya_score = min(1.0, aditya_score + 0.1)
+        reasons.append(f"long={len(messages)}")
+
+    # Signal 5: Tool use (code_interpreter, browser, dalle = Aditya)
+    for node in conversation.get("mapping", {}).values():
+        author = node.get("message", {}).get("author", {})
+        if author.get("name") in ("python", "browser", "dalle", "bio"):
+            aditya_score = min(1.0, aditya_score + 0.2)
+            reasons.append(f"tool={author['name']}")
+            break
+
+    # Classify with a gap between thresholds to catch genuinely unclear ones
+    if aditya_score >= 0.35 and other_score < 0.2:
+        label = "aditya"
+    elif other_score >= 0.2 and aditya_score < 0.2:
+        label = "other"
+    else:
+        label = "uncertain"
+
+    return ConversationClassification(
+        title=title,
+        aditya_score=round(aditya_score, 3),
+        other_score=round(other_score, 3),
+        label=label,
+        reasons=reasons,
+        message_count=len(messages),
+        timestamp=ts,
+    )
+
+
+def triage_conversations(
+    conversations: list[dict],
+) -> tuple[list[dict], list[dict], list[ConversationClassification]]:
+    """Split conversations into (aditya, other, uncertain) buckets."""
+    aditya = []
+    other = []
+    uncertain_meta: list[ConversationClassification] = []
+
+    for conv in conversations:
+        messages = extract_messages(conv)
+        if not messages:
+            continue
+        cls = classify_conversation(conv, messages)
+        if cls.label == "aditya":
+            aditya.append(conv)
+        elif cls.label == "other":
+            other.append(conv)
+        else:
+            uncertain_meta.append(cls)
+
+    return aditya, other, uncertain_meta
+
+
+def write_triage_report(
+    uncertain: list[ConversationClassification],
+    out_path: Path,
+) -> None:
+    """Write a review file for uncertain conversations."""
+    lines = [
+        "# ChatGPT Triage -- Uncertain Conversations",
+        "#",
+        "# These conversations could not be auto-classified.",
+        "# Mark each as 'mine' or 'skip' by editing the label column.",
+        "# Then re-run with: --triage-file <this_file>",
+        "#",
+        f"# Total: {len(uncertain)}",
+        "",
+        "# label | aditya_score | other_score | msgs | date | title | reasons",
+    ]
+    for c in sorted(uncertain, key=lambda x: x.aditya_score, reverse=True):
+        date = time.strftime("%Y-%m-%d", time.gmtime(c.timestamp)) if c.timestamp else "unknown"
+        reasons = ", ".join(c.reasons) if c.reasons else "no_signals"
+        lines.append(
+            f"uncertain | {c.aditya_score:.2f} | {c.other_score:.2f} | "
+            f"{c.message_count} | {date} | {c.title[:60]} | {reasons}"
+        )
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def should_include(conversation: dict, messages: list[tuple[str, str, float]],
@@ -210,17 +353,12 @@ def should_include(conversation: dict, messages: list[tuple[str, str, float]],
     """Decide if this conversation belongs to the target user."""
     if user_filter:
         user_text = " ".join(text.lower() for role, text, _ in messages if role == "user")
-        if user_filter.lower() not in user_text:
-            # Also check conversation title
-            title = conversation.get("title", "").lower()
-            if user_filter.lower() not in title:
-                return False
+        title = conversation.get("title", "").lower()
+        if user_filter.lower() in user_text or user_filter.lower() in title:
+            return True
 
-    # If no filter, include conversations with tech fingerprint > 0.1
-    if not user_filter:
-        return compute_tech_score(messages) > 0.1
-
-    return True
+    cls = classify_conversation(conversation, messages)
+    return cls.label == "aditya"
 
 
 # ─── Extraction ──────────────────────────────────────────────────────────────
@@ -419,12 +557,38 @@ def main():
                         help="Keyword to filter conversations by (e.g. your name, a project)")
     parser.add_argument("--max-store", type=int, default=None,
                         help="Maximum number of memories to store (for testing)")
+    parser.add_argument("--triage", action="store_true",
+                        help="Classify all conversations and write a review file for uncertain ones")
+    parser.add_argument("--triage-file", type=Path, default=None,
+                        help="Path to reviewed triage file (include 'mine' labeled conversations)")
 
     args = parser.parse_args()
 
     if not args.file.exists():
         print(f"[ERROR] File not found: {args.file}", file=sys.stderr)
         sys.exit(1)
+
+    # Triage mode: classify and write review file
+    if args.triage:
+        conversations = parse_conversations(args.file)
+        print(f"Loaded {len(conversations)} conversations. Classifying...")
+        aditya_convs, other_convs, uncertain = triage_conversations(conversations)
+        print(f"\n  Aditya (auto-classified): {len(aditya_convs)}")
+        print(f"  Other user (auto-classified): {len(other_convs)}")
+        print(f"  Uncertain (needs review): {len(uncertain)}")
+
+        if uncertain:
+            review_path = args.file.parent / "triage_review.txt"
+            write_triage_report(uncertain, review_path)
+            print(f"\n  Review file written to: {review_path}")
+            print(f"  Edit the file, change 'uncertain' to 'mine' or 'skip',")
+            print(f"  then re-run with: --triage-file {review_path}")
+        else:
+            print("\n  No uncertain conversations -- all auto-classified!")
+
+        print(f"\n  To ingest the {len(aditya_convs)} auto-classified conversations:")
+        print(f"  uv run python {__file__} {args.file} --dry-run")
+        return
 
     stats = run_ingestion(
         conversations_path=args.file,
@@ -433,7 +597,6 @@ def main():
         max_store=args.max_store,
     )
 
-    # Exit with non-zero if nothing was processed
     if stats.total_conversations == 0:
         sys.exit(1)
 
