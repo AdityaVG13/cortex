@@ -21,7 +21,10 @@ def _get(path: str, params: dict | None = None) -> dict:
     url = f"{BASE_URL}{path}"
     if params:
         url += "?" + urlencode(params)
+    token = _read_token()
     req = Request(url)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -63,7 +66,7 @@ def dump() -> dict:
 
 
 def archive(entry_type: str, ids: list[int]) -> dict:
-    return _post("/archive", {"type": entry_type, "ids": ids})
+    return _post("/archive", {"table": entry_type, "ids": ids})
 
 
 def digest() -> dict:

@@ -138,7 +138,7 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         ids_to_archive = [e["id"] for e in cluster[1:]]
         try:
             result = cortex_client.archive("memories", ids_to_archive)
-            archived += result.get("affected", 0)
+            archived += result.get("archived", 0)
         except Exception as e:
             print(f"  Failed to archive memory cluster: {e}")
 
@@ -147,7 +147,7 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         ids_to_archive = [e["id"] for e in cluster[1:]]
         try:
             result = cortex_client.archive("decisions", ids_to_archive)
-            archived += result.get("affected", 0)
+            archived += result.get("archived", 0)
         except Exception as e:
             print(f"  Failed to archive decision cluster: {e}")
 
