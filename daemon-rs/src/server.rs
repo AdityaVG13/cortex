@@ -37,12 +37,17 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/store", post(handlers::store::handle_store))
         .route("/recall", get(handlers::recall::handle_recall))
         .route("/peek", get(handlers::recall::handle_peek))
+        .route("/unfold", get(handlers::recall::handle_unfold))
         .route("/boot", get(handlers::boot::handle_boot))
         .route("/diary", post(handlers::diary::handle_diary))
         .route("/recall/budget", get(handlers::recall::handle_budget_recall))
+        .route("/feedback", post(handlers::feedback::handle_feedback))
+        .route("/feedback/stats", get(handlers::feedback::handle_feedback_stats))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
         .route("/archive", post(handlers::mutate::handle_archive))
+        .route("/focus/start", post(handle_focus_start))
+        .route("/focus/end", post(handle_focus_end))
         .route("/shutdown", post(handlers::mutate::handle_shutdown))
         // ── Conductor (locks, activity, messages, sessions, tasks) ──
         .route("/lock", post(handlers::conductor::handle_lock))
@@ -134,6 +139,50 @@ async fn handle_mcp_rpc(
     match handle_mcp_message(&state, &msg).await {
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),
+    }
+}
+
+// ─── Focus handlers (thin wrappers around focus.rs) ──────────────────────
+
+#[derive(serde::Deserialize)]
+struct FocusRequest {
+    label: Option<String>,
+    agent: Option<String>,
+}
+
+async fn handle_focus_start(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Json(body): Json<FocusRequest>,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    let label = match &body.label {
+        Some(l) if !l.is_empty() => l.as_str(),
+        _ => return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label"),
+    };
+    let agent = body.agent.as_deref().unwrap_or("http");
+    let conn = state.db.lock().await;
+    match crate::focus::focus_start(&conn, label, agent) {
+        Ok(v) => handlers::json_response(axum::http::StatusCode::OK, v),
+        Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+async fn handle_focus_end(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Json(body): Json<FocusRequest>,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    let label = match &body.label {
+        Some(l) if !l.is_empty() => l.as_str(),
+        _ => return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label"),
+    };
+    let agent = body.agent.as_deref().unwrap_or("http");
+    let conn = state.db.lock().await;
+    match crate::focus::focus_end(&conn, label, agent) {
+        Ok(v) => handlers::json_response(axum::http::StatusCode::OK, v),
+        Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
 

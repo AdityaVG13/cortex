@@ -11,6 +11,7 @@
 //! to avoid depending on an LLM for the background job.
 
 use rusqlite::{params, Connection};
+use crate::handlers::feedback;
 
 /// Age tier boundaries in days.
 const FRESH_DAYS: i64 = 3;
@@ -61,22 +62,28 @@ pub fn run_aging_pass(conn: &Connection) -> (usize, usize) {
 
 fn age_memories_to_recent(conn: &Connection) -> usize {
     let mut count = 0;
-    let rows: Vec<(i64, String)> = conn
+    let rows: Vec<(i64, String, Option<String>)> = conn
         .prepare(
-            "SELECT id, text FROM memories \
+            "SELECT id, text, source FROM memories \
              WHERE status = 'active' AND pinned = 0 \
              AND age_tier = 'fresh' \
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
             })?;
             Ok(mapped.flatten().collect())
         })
         .unwrap_or_default();
 
-    for (id, text) in rows {
+    for (id, text, source) in rows {
+        // Skip aging if this memory has strong retrieval feedback (frequently useful)
+        if let Some(ref src) = source {
+            if feedback::has_retrieval_immunity(conn, src) {
+                continue;
+            }
+        }
         let compressed = compress_to_key_points(&text);
         let _ = conn.execute(
             "UPDATE memories SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",
@@ -89,22 +96,27 @@ fn age_memories_to_recent(conn: &Connection) -> usize {
 
 fn age_memories_to_old(conn: &Connection) -> usize {
     let mut count = 0;
-    let rows: Vec<(i64, String)> = conn
+    let rows: Vec<(i64, String, Option<String>)> = conn
         .prepare(
-            "SELECT id, text FROM memories \
+            "SELECT id, text, source FROM memories \
              WHERE status = 'active' AND pinned = 0 \
              AND age_tier = 'recent' \
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
             })?;
             Ok(mapped.flatten().collect())
         })
         .unwrap_or_default();
 
-    for (id, text) in rows {
+    for (id, text, source) in rows {
+        if let Some(ref src) = source {
+            if feedback::has_retrieval_immunity(conn, src) {
+                continue;
+            }
+        }
         let compressed = compress_to_one_liner(&text);
         let _ = conn.execute(
             "UPDATE memories SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",

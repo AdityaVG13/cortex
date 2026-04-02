@@ -508,6 +508,21 @@ fn run_recall_with_engine(
             item
         })
         .collect();
+
+    // ── Pass 3: Relevance feedback reranking ──────────────────────────────
+    // Boost results that have been useful in past recalls (unfolded),
+    // penalize results that were consistently ignored. Graceful no-op when
+    // no feedback data exists (cold start).
+    let sources: Vec<String> = ranked.iter().map(|r| r.source.clone()).collect();
+    let boosts = super::feedback::compute_boosts(conn, &sources);
+    if !boosts.is_empty() {
+        for item in &mut ranked {
+            if let Some(&boost) = boosts.get(&item.source) {
+                item.relevance = round4(item.relevance * (1.0 + boost));
+            }
+        }
+    }
+
     ranked.sort_by(|a, b| {
         b.relevance
             .partial_cmp(&a.relevance)

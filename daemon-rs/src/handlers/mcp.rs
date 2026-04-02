@@ -350,13 +350,19 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             if sources.is_empty() {
                 return Err("sources array is empty".to_string());
             }
+            let agent = args
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("mcp");
             let conn = state.db.lock().await;
             let mut results: Vec<Value> = Vec::new();
             let mut total_tokens = 0usize;
+            let mut found_sources: Vec<String> = Vec::new();
             for source in &sources {
                 if let Some(item) = super::recall::unfold_source(&conn, source) {
                     let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
                     total_tokens += tokens;
+                    found_sources.push(source.clone());
                     results.push(json!({
                         "source": source,
                         "text": item["text"],
@@ -372,10 +378,23 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
                     }));
                 }
             }
+
+            // Implicit positive feedback: unfolding = "this result was useful"
+            if !found_sources.is_empty() {
+                super::feedback::record_unfold_feedback(
+                    &conn,
+                    &found_sources,
+                    agent,
+                    state.embedding_engine.as_deref(),
+                    None,
+                );
+            }
+
             Ok(json!({
                 "results": results,
                 "totalTokens": total_tokens,
                 "count": results.iter().filter(|r| r["type"] != "not_found").count(),
+                "feedbackRecorded": found_sources.len(),
             }))
         }
 
