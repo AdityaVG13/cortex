@@ -3,6 +3,7 @@ pub mod conductor;
 pub mod diary;
 pub mod events;
 pub mod feed;
+pub mod feedback;
 pub mod health;
 pub mod mcp;
 pub mod mutate;

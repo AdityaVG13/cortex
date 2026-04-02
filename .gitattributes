@@ -1,0 +1,5 @@
+# Tell GitHub this is a Rust project
+*.rs linguist-language=Rust
+*.js linguist-vendored
+*.css linguist-vendored
+*.html linguist-vendored

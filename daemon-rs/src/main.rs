@@ -1,7 +1,11 @@
+mod aging;
 mod auth;
 mod co_occurrence;
+mod compaction;
 mod compiler;
 mod conflict;
+mod crystallize;
+mod focus;
 mod db;
 mod embeddings;
 mod handlers;
@@ -168,6 +172,14 @@ pub(crate) async fn run_daemon(
         pid_path.display()
     );
 
+    // ── Schema migrations (idempotent) ──────────────────────────────
+    {
+        let conn = state.db.lock().await;
+        db::migrate_aging_columns(&conn);
+        db::migrate_focus_table(&conn);
+        crystallize::migrate_crystal_tables(&conn);
+    }
+
     // ── Knowledge indexing + score decay ────────────────────────────
     {
         let conn = state.db.lock().await;
@@ -203,6 +215,64 @@ pub(crate) async fn run_daemon(
                 interval.tick().await;
                 let conn = db_wal.lock().await;
                 db::checkpoint_wal_best_effort(&conn);
+            }
+        });
+    }
+
+    // ── Background aging pass every 6 hours ──────────────────────────
+    {
+        let db_aging = state.db.clone();
+        tokio::spawn(async move {
+            // Run initial aging pass on startup
+            {
+                let conn = db_aging.lock().await;
+                let (compressed, archived) = aging::run_aging_pass(&conn);
+                if compressed > 0 || archived > 0 {
+                    eprintln!("[cortex] Initial aging: {compressed} compressed, {archived} archived");
+                }
+            }
+            // Then run every 6 hours
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let conn = db_aging.lock().await;
+                aging::run_aging_pass(&conn);
+                compaction::run_compaction(&conn);
+            }
+        });
+    }
+
+    // ── Background crystallization pass every 2 hours ─────────────
+    {
+        let db_crystal = state.db.clone();
+        let engine_crystal = state.embedding_engine.clone();
+        tokio::spawn(async move {
+            // Initial pass on startup (after embeddings are built)
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            {
+                let conn = db_crystal.lock().await;
+                let result = crystallize::run_crystallize_pass(
+                    &conn,
+                    engine_crystal.as_deref(),
+                );
+                if result.crystals_created > 0 || result.crystals_updated > 0 {
+                    eprintln!(
+                        "[cortex] Initial crystallization: {} created, {} updated",
+                        result.crystals_created, result.crystals_updated
+                    );
+                }
+            }
+            // Then run every 2 hours
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2 * 3600));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let conn = db_crystal.lock().await;
+                crystallize::run_crystallize_pass(
+                    &conn,
+                    engine_crystal.as_deref(),
+                );
             }
         });
     }

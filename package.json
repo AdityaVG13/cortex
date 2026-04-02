@@ -1,21 +1,25 @@
 {
   "name": "cortex",
   "version": "2.0.0",
-  "description": "Universal AI Brain — multi-transport memory daemon for Claude Code, Gemini CLI, Codex, Cursor, and local LLMs",
-  "main": "src/daemon.js",
+  "description": "Universal AI Brain \u00e2\u20ac\u201d multi-transport memory daemon for Claude Code, Gemini CLI, Codex, Cursor, and local LLMs",
+  "main": "daemon-rs/target/release/cortex.exe",
   "bin": {
     "cortex": "src/cli.js"
   },
   "scripts": {
-    "start": "node src/daemon.js serve",
-    "mcp": "node src/daemon.js mcp",
-    "test": "node test/run-tests.js",
-    "migrate": "node scripts/migrate-v1.js",
+    "build": "cd daemon-rs && cargo build --release",
+    "test": "cd daemon-rs && cargo test",
     "desktop:install": "npm --prefix desktop/cortex-control-center install",
     "desktop:dev": "npm --prefix desktop/cortex-control-center run dev",
     "desktop:build": "npm --prefix desktop/cortex-control-center run build"
   },
-  "keywords": ["ai", "memory", "brain", "mcp", "cortex"],
+  "keywords": [
+    "ai",
+    "memory",
+    "brain",
+    "mcp",
+    "cortex"
+  ],
   "license": "MIT",
   "dependencies": {
     "sql.js": "^1.11.0"

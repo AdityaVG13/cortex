@@ -202,6 +202,22 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           tokenize='trigram'
         );
 
+        -- Relevance feedback: tracks which recalled results were actually useful
+        CREATE TABLE IF NOT EXISTS recall_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          query_text TEXT NOT NULL,
+          query_embedding BLOB,
+          result_source TEXT NOT NULL,
+          result_type TEXT NOT NULL DEFAULT 'unknown',
+          result_id INTEGER,
+          signal REAL NOT NULL DEFAULT 1.0,
+          agent TEXT NOT NULL DEFAULT 'unknown',
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_feedback_result ON recall_feedback(result_source);
+        CREATE INDEX IF NOT EXISTS idx_feedback_created ON recall_feedback(created_at);
+
         -- Triggers to keep FTS in sync with base tables
         CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
           INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
@@ -231,6 +247,46 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         "#,
     )?;
     Ok(())
+}
+
+/// Create focus sessions table for context checkpointing.
+pub fn migrate_focus_table(conn: &Connection) {
+    let sql = r#"
+        CREATE TABLE IF NOT EXISTS focus_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT NOT NULL,
+            agent TEXT NOT NULL DEFAULT 'unknown',
+            status TEXT NOT NULL DEFAULT 'open',
+            raw_entries TEXT NOT NULL DEFAULT '[]',
+            summary TEXT,
+            started_at TEXT DEFAULT (datetime('now')),
+            ended_at TEXT,
+            tokens_before INTEGER DEFAULT 0,
+            tokens_after INTEGER DEFAULT 0
+        )
+    "#;
+    match conn.execute_batch(sql) {
+        Ok(_) => {}
+        Err(e) => eprintln!("[db] Focus table migration: {e}"),
+    }
+}
+
+/// Run schema migrations for progressive aging columns.
+/// Safe to call repeatedly -- ALTER TABLE with IF NOT EXISTS-style error handling.
+pub fn migrate_aging_columns(conn: &Connection) {
+    let migrations = [
+        "ALTER TABLE memories ADD COLUMN compressed_text TEXT",
+        "ALTER TABLE memories ADD COLUMN age_tier TEXT DEFAULT 'fresh'",
+        "ALTER TABLE decisions ADD COLUMN compressed_text TEXT",
+        "ALTER TABLE decisions ADD COLUMN age_tier TEXT DEFAULT 'fresh'",
+    ];
+    for sql in &migrations {
+        match conn.execute(sql, []) {
+            Ok(_) => eprintln!("[db] Migration applied: {sql}"),
+            Err(e) if e.to_string().contains("duplicate column") => {}
+            Err(e) => eprintln!("[db] Migration skipped ({e}): {sql}"),
+        }
+    }
 }
 
 /// Run a WAL checkpoint and truncate the WAL file.

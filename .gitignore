@@ -9,6 +9,10 @@ cortex.db-shm
 logs/
 *.log
 
+# Build outputs
+dist/
+*.bak
+
 # Editor/tool artifacts
 .aider*
 .tmp-*
