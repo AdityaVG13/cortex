@@ -43,6 +43,8 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/recall/budget", get(handlers::recall::handle_budget_recall))
         .route("/feedback", post(handlers::feedback::handle_feedback))
         .route("/feedback/stats", get(handlers::feedback::handle_feedback_stats))
+        .route("/crystals", get(handle_crystals))
+        .route("/crystallize", post(handle_crystallize))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
         .route("/archive", post(handlers::mutate::handle_archive))
@@ -140,6 +142,42 @@ async fn handle_mcp_rpc(
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),
     }
+}
+
+// ─── Crystal handlers ───────────────────────────────────────────────────
+
+async fn handle_crystals(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    let conn = state.db.lock().await;
+    let crystals = crate::crystallize::list_crystals(&conn);
+    handlers::json_response(
+        axum::http::StatusCode::OK,
+        serde_json::json!({ "crystals": crystals, "count": crystals.len() }),
+    )
+}
+
+async fn handle_crystallize(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    let conn = state.db.lock().await;
+    let result = crate::crystallize::run_crystallize_pass(
+        &conn,
+        state.embedding_engine.as_deref(),
+    );
+    handlers::json_response(
+        axum::http::StatusCode::OK,
+        serde_json::json!({
+            "clusters": result.clusters_found,
+            "created": result.crystals_created,
+            "updated": result.crystals_updated,
+            "consolidated": result.entries_consolidated,
+        }),
+    )
 }
 
 // ─── Focus handlers (thin wrappers around focus.rs) ──────────────────────

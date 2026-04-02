@@ -359,6 +359,30 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             let mut total_tokens = 0usize;
             let mut found_sources: Vec<String> = Vec::new();
             for source in &sources {
+                // Crystal unfold: expand to member sources
+                if source.starts_with("crystal::") {
+                    if let Some(id_str) = source.split("::").nth(1) {
+                        if let Ok(crystal_id) = id_str.parse::<i64>() {
+                            let members = crate::crystallize::unfold_crystal(&conn, crystal_id);
+                            let crystal_text = conn.query_row(
+                                "SELECT consolidated_text FROM memory_clusters WHERE id = ?1",
+                                rusqlite::params![crystal_id],
+                                |row| row.get::<_, String>(0),
+                            ).unwrap_or_default();
+                            let tokens = estimate_tokens(&crystal_text);
+                            total_tokens += tokens;
+                            found_sources.push(source.clone());
+                            results.push(json!({
+                                "source": source,
+                                "text": crystal_text,
+                                "type": "crystal",
+                                "tokens": tokens,
+                                "members": members,
+                            }));
+                            continue;
+                        }
+                    }
+                }
                 if let Some(item) = super::recall::unfold_source(&conn, source) {
                     let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
                     total_tokens += tokens;

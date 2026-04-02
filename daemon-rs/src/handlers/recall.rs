@@ -353,6 +353,21 @@ fn run_recall_with_engine(
 
     if let Some(engine) = engine {
         if let Some(query_vec) = engine.embed(query_text) {
+            // ── Pass 0: Crystal search (highest priority) ──────────────────
+            for (crystal_id, label, text, relevance) in
+                crate::crystallize::search_crystals(conn, &query_vec, 3)
+            {
+                let source = format!("crystal::{crystal_id}::{label}");
+                merged.insert(source.clone(), RecallItem {
+                    source,
+                    relevance: scale_sim(relevance as f32),
+                    excerpt: text.chars().take(300).collect(),
+                    method: "crystal".to_string(),
+                    tokens: None,
+                    entropy: None,
+                });
+            }
+
             // Search memory embeddings
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT e.target_id, e.vector, m.text, m.source \
