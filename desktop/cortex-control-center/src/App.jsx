@@ -16,7 +16,7 @@ class BrainErrorBoundary extends Component {
   }
 }
 
-const CORTEX_BASE = "http://127.0.0.1:7437";
+const DEFAULT_CORTEX_BASE = "http://127.0.0.1:7437";
 const FALLBACK_REFRESH_MS = 15000;
 const ANALYTICS_REFRESH_MS = 60000;
 const SSE_REFRESH_THROTTLE_MS = 300;
@@ -339,6 +339,8 @@ export function App() {
   const [conflictPairs, setConflictPairs] = useState([]);
   const [conflictLoading, setConflictLoading] = useState(false);
   const [editorSetup, setEditorSetup] = useState(null);
+  const [cortexBase, setCortexBase] = useState(() => localStorage.getItem("cortex_base") || DEFAULT_CORTEX_BASE);
+  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
 
   const invokeRef = useRef(null);
   const tokenRef = useRef("");
@@ -358,18 +360,18 @@ export function App() {
     }
 
     try {
-      const response = await fetch(`${CORTEX_BASE}${path}`, { headers });
+      const response = await fetch(`${cortexBase}${path}`, { headers });
       if (!response.ok) return null;
       return await response.json();
     } catch {
       return null;
     }
-  }, []);
+  }, [cortexBase]);
 
   const postApi = useCallback(async (path, body = {}) => {
     if (!tokenRef.current) return null;
     try {
-      const response = await fetch(`${CORTEX_BASE}${path}`, {
+      const response = await fetch(`${cortexBase}${path}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -382,7 +384,7 @@ export function App() {
     } catch {
       return null;
     }
-  }, []);
+  }, [cortexBase]);
 
   const call = useCallback(async (command, args = {}) => {
     if (!invokeRef.current) throw new Error("No Tauri IPC available");
@@ -554,6 +556,11 @@ export function App() {
   ]);
 
   useEffect(() => {
+    localStorage.setItem("cortex_base", cortexBase);
+    refreshAllRef.current();
+  }, [cortexBase]);
+
+  useEffect(() => {
     refreshAllRef.current = refreshAll;
   }, [refreshAll]);
 
@@ -666,7 +673,7 @@ export function App() {
 
     const connect = () => {
       if (disposed || stream) return;
-      const nextStream = new EventSource(`${CORTEX_BASE}/events/stream`);
+      const nextStream = new EventSource(`${cortexBase}/events/stream`);
       stream = nextStream;
 
       nextStream.onopen = () => {
@@ -710,7 +717,7 @@ export function App() {
       clearReconnectTimer();
       closeStream();
     };
-  }, []);
+  }, [cortexBase]);
 
   const pendingTasks = useMemo(
     () => tasks.filter((task) => task.status === "pending").sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority)),
@@ -845,11 +852,56 @@ export function App() {
             <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
             <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
             <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {sessions.length}</span>
+            <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
+              <span className="topbar-label">HOST</span>
+              {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
+            </span>
             <span className={`topbar-status ${daemonState.reachable ? "online" : "offline"}`}>
               {daemonState.reachable ? "● ONLINE" : "○ OFFLINE"}
             </span>
           </div>
         </div>
+
+        {showConnectionDialog && (
+          <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
+            <div className="connection-dialog" onClick={e => e.stopPropagation()}>
+              <h2>Connection Settings</h2>
+              <p className="connection-subtitle">Connect to a local or remote Cortex daemon</p>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const host = fd.get("host")?.toString().trim() || "127.0.0.1";
+                const port = fd.get("port")?.toString().trim() || "7437";
+                const token = fd.get("token")?.toString().trim();
+                setCortexBase(`http://${host}:${port}`);
+                if (token) tokenRef.current = token;
+                setShowConnectionDialog(false);
+              }}>
+                <label className="connection-field">
+                  <span>Host</span>
+                  <input name="host" defaultValue={(() => { try { return new URL(cortexBase).hostname; } catch { return "127.0.0.1"; } })()} placeholder="127.0.0.1" />
+                </label>
+                <label className="connection-field">
+                  <span>Port</span>
+                  <input name="port" defaultValue={(() => { try { return new URL(cortexBase).port || "7437"; } catch { return "7437"; } })()} placeholder="7437" />
+                </label>
+                <label className="connection-field">
+                  <span>Auth Token</span>
+                  <input name="token" type="password" placeholder="Leave blank for local (auto-read)" />
+                </label>
+                <div className="connection-actions">
+                  <button type="button" className="btn-sm" onClick={() => {
+                    setCortexBase(DEFAULT_CORTEX_BASE);
+                    tokenRef.current = "";
+                    setShowConnectionDialog(false);
+                    readAuthToken();
+                  }}>Reset to Local</button>
+                  <button type="submit" className="btn-sm btn-primary">Connect</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {panel === "overview" ? (
           <section className="panel active">

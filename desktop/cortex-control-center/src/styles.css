@@ -1841,6 +1841,99 @@ body {
   top: 20px;
 }
 
+/* ─── Connection Dialog ────────────────────────────────────────────────── */
+
+.topbar-connection {
+  cursor: pointer;
+  border-radius: var(--radius);
+  padding: 2px 6px;
+  transition: background 0.15s;
+}
+
+.topbar-connection:hover {
+  background: var(--bg-3);
+}
+
+.connection-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fade-in 0.15s ease-out;
+}
+
+.connection-dialog {
+  background: var(--bg-2);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  width: 380px;
+  max-width: 90vw;
+}
+
+.connection-dialog h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 4px 0;
+  color: var(--text);
+}
+
+.connection-subtitle {
+  font-size: 12px;
+  color: var(--text-3);
+  margin: 0 0 20px 0;
+}
+
+.connection-field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.connection-field span {
+  display: block;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 5px;
+}
+
+.connection-field input {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.connection-field input:focus {
+  border-color: var(--cyan);
+}
+
+.connection-field input::placeholder {
+  color: var(--text-3);
+}
+
+.connection-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
 /* ─── MCP Setup Button ─────────────────────────────────────────────────── */
 
 .sys-item-action {
