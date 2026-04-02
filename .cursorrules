@@ -1,20 +1,12 @@
-# Cortex v2 — Universal AI Brain
-
-Multi-transport memory daemon. SQLite + Ollama embeddings + per-agent profiles.
-
-## Structure
-- src/daemon.js — HTTP :7437 + MCP stdio server
-- src/brain.js — Core logic (index, recall, store, forget)
-- src/embeddings.js — Ollama nomic-embed-text vectors
-- src/compiler.js — Boot prompt compiler with token budgets
-- src/conflict.js — Cross-agent conflict detection and resolution
-- src/db.js — SQLite via sql.js (WASM)
-- src/cli.js — CLI wrapper (talks to daemon over HTTP)
-
-## Conventions
-- Node.js 24+, zero deps except sql.js
-- Manual arg parsing (no commander)
-- All Windows paths via process.env.USERPROFILE
-- Port 7437 for HTTP, 11434 for Ollama
-- Auth token at ~/.cortex/cortex.token for POST endpoints
-- Conflict check before surprise filter on store path
+# Cortex local hard constraints
+- Backend target is `daemon-rs` (Rust).
+- Keep daemon endpoints localhost-only.
+- Preserve zero runtime dependencies outside the binary.
+- Keep embeddings in-process ONNX (`all-MiniLM-L6-v2`, 384-dim); do not add Ollama/runtime embedding services.
+- Keep conflict detection dual-path (cosine + Jaccard fallback).
+- Keep SQLite as source of truth with parameterized queries; retain WAL setup in DB init flow.
+- Preserve auth token + PID file behavior compatibility.
+- Avoid `unwrap()` in handlers; return errors instead.
+- Avoid `unsafe` unless explicitly required and documented.
+- Do not add new crates unless clearly necessary.
+- For `daemon-rs` changes, run: `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`.

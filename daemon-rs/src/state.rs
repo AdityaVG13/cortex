@@ -102,6 +102,7 @@ impl RuntimeState {
 /// endpoint fires.
 pub fn initialize(
     db_path: &std::path::Path,
+    allow_token_rotation: bool,
 ) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
     // 1. Open and configure the database.
     let conn = crate::db::open(db_path)
@@ -136,7 +137,11 @@ pub fn initialize(
     eprintln!("[cortex] Read connection opened (WAL concurrent reads enabled)");
 
     // 3. Auth token.
-    let token = crate::auth::generate_token();
+    let token = if allow_token_rotation {
+        crate::auth::generate_token()
+    } else {
+        crate::auth::read_token().unwrap_or_else(crate::auth::generate_ephemeral_token)
+    };
 
     // 4. Channels.
     let (events_tx, _) = broadcast::channel::<DaemonEvent>(256);

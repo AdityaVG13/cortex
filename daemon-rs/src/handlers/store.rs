@@ -86,6 +86,8 @@ pub async fn handle_store(
                     }
                 });
             }
+            // Track store activity in open focus sessions for HTTP path too.
+            crate::focus::focus_append(&conn, &source_agent, decision.trim());
             json_response(StatusCode::OK, json!({ "stored": true, "entry": entry }))
         }
         Err(err) => json_response(
@@ -122,30 +124,34 @@ pub fn store_decision(
     let ts = now_iso();
 
     // ── 1. Conflict detection (cosine first, then Jaccard fallback) ──────────
-    let cr = cosine_conflict.unwrap_or_else(|| detect_conflict(conn, decision, &source_agent));
+    let cr = match cosine_conflict {
+        Some(c) => c,
+        None => detect_conflict(conn, decision, &source_agent)?,
+    };
 
     if cr.is_conflict {
         // Different-agent conflict: insert new entry as 'disputed', then mark
         // the existing entry as 'disputed' too (they reference each other).
         let existing_id = cr.matched_id.unwrap();
-        conn.execute(
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
             "INSERT INTO decisions \
              (decision, context, type, source_agent, confidence, status, disputes_id, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?7)",
             params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, ts],
         )
         .map_err(|e| e.to_string())?;
-        let new_id = conn.last_insert_rowid();
+        let new_id = tx.last_insert_rowid();
 
         // Mark existing entry as disputed, pointing back to the new one.
-        conn.execute(
+        tx.execute(
             "UPDATE decisions SET status = 'disputed', disputes_id = ?, updated_at = ? WHERE id = ?",
             params![new_id, ts, existing_id],
         )
         .map_err(|e| e.to_string())?;
 
         let _ = log_event(
-            conn,
+            &tx,
             "decision_conflict",
             json!({
                 "newId": new_id,
@@ -155,6 +161,7 @@ pub fn store_decision(
             }),
             "rust-daemon",
         );
+        tx.commit().map_err(|e| e.to_string())?;
         checkpoint_wal_best_effort(conn);
 
         return Ok((json!({
@@ -168,23 +175,24 @@ pub fn store_decision(
     if cr.is_update {
         // Same-agent update: supersede the old entry and insert the new one.
         let old_id = cr.matched_id.unwrap();
-        conn.execute(
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute(
             "UPDATE decisions SET status = 'superseded', updated_at = ? WHERE id = ?",
             params![ts, old_id],
         )
         .map_err(|e| e.to_string())?;
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO decisions \
              (decision, context, type, source_agent, confidence, supersedes_id, created_at, updated_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
             params![decision, context, entry_type, source_agent.clone(), confidence, old_id, ts],
         )
         .map_err(|e| e.to_string())?;
-        let new_id = conn.last_insert_rowid();
+        let new_id = tx.last_insert_rowid();
 
         let _ = log_event(
-            conn,
+            &tx,
             "decision_supersede",
             json!({
                 "newId": new_id,
@@ -193,6 +201,7 @@ pub fn store_decision(
             }),
             "rust-daemon",
         );
+        tx.commit().map_err(|e| e.to_string())?;
         checkpoint_wal_best_effort(conn);
 
         return Ok((json!({

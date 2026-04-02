@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 /// Return `~/.cortex/cortex-daemon.log`.
 fn log_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")
@@ -10,6 +11,7 @@ fn log_path() -> PathBuf {
     PathBuf::from(home).join(".cortex").join("cortex-daemon.log")
 }
 
+#[allow(dead_code)]
 /// Append a timestamped line to the daemon log file.
 /// Silently ignores write errors so logging never blocks the daemon.
 pub fn log_line(message: &str) {

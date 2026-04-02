@@ -22,21 +22,24 @@ pub fn generate_token() -> String {
     token
 }
 
+/// Read existing shared token from `~/.cortex/cortex.token`.
+pub fn read_token() -> Option<String> {
+    fs::read_to_string(cortex_dir().join("cortex.token"))
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Generate an in-memory token without mutating shared auth files.
+pub fn generate_ephemeral_token() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
 /// Write the current process PID to `~/.cortex/cortex.pid`.
 pub fn write_pid() {
     let dir = cortex_dir();
     fs::create_dir_all(&dir).ok();
     fs::write(dir.join("cortex.pid"), std::process::id().to_string()).ok();
-}
-
-/// Return `true` when the `Authorization` header carries a valid Bearer token
-/// matching `expected_token`.
-pub fn validate_auth(headers: &axum::http::HeaderMap, expected_token: &str) -> bool {
-    headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.strip_prefix("Bearer ").unwrap_or(v) == expected_token)
-        .unwrap_or(false)
 }
 
 /// Kill a stale daemon process if PID file exists and process is still alive.
@@ -56,6 +59,10 @@ pub fn kill_stale_daemon() {
             #[cfg(windows)]
             {
                 use std::process::Command;
+                if !pid_looks_like_cortex(pid) {
+                    let _ = fs::remove_file(&pid_path);
+                    return;
+                }
                 let _ = Command::new("taskkill")
                     .args(["/PID", &pid.to_string(), "/F"])
                     .output();
@@ -63,6 +70,10 @@ pub fn kill_stale_daemon() {
 
             #[cfg(unix)]
             {
+                if !pid_looks_like_cortex(pid) {
+                    let _ = fs::remove_file(&pid_path);
+                    return;
+                }
                 unsafe {
                     libc::kill(pid as i32, libc::SIGTERM);
                 }
@@ -75,6 +86,36 @@ pub fn kill_stale_daemon() {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
     }
+}
+
+#[cfg(windows)]
+fn pid_looks_like_cortex(pid: u32) -> bool {
+    use std::process::Command;
+
+    let query = format!(
+        "(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine"
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &query])
+        .output();
+    let Ok(out) = output else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let cmd = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    cmd.contains("cortex")
+}
+
+#[cfg(unix)]
+fn pid_looks_like_cortex(pid: u32) -> bool {
+    let path = format!("/proc/{pid}/cmdline");
+    let Ok(raw) = fs::read(path) else {
+        return false;
+    };
+    let cmd = String::from_utf8_lossy(&raw).to_lowercase();
+    cmd.contains("cortex")
 }
 
 /// Returns the default database path: `~/cortex/cortex.db`.

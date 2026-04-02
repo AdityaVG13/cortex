@@ -2,7 +2,6 @@ use std::convert::Infallible;
 use std::time::Duration as StdDuration;
 
 use axum::extract::State;
-use axum::http::HeaderValue;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::{self, StreamExt};

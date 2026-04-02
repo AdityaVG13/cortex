@@ -39,9 +39,13 @@ pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
 }
 
 /// Detect conflicts by checking the last 50 active decisions.
-/// Same agent + sim > 0.7  => update (supersede old)
-/// Different agent + sim > 0.7 => conflict (disputed)
-pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str) -> ConflictResult {
+/// Same agent + sim > 0.6  => update (supersede old)
+/// Different agent + sim > 0.6 => conflict (disputed)
+pub fn detect_conflict(
+    conn: &Connection,
+    decision: &str,
+    source_agent: &str,
+) -> Result<ConflictResult, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, decision, source_agent \
@@ -50,11 +54,11 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str) ->
              ORDER BY id DESC \
              LIMIT 50",
         )
-        .unwrap_or_else(|_| panic!("Failed to prepare conflict query"));
+        .map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
 
     let rows: Vec<(i64, String, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .unwrap_or_else(|_| panic!("Failed to query decisions"))
+        .map_err(|e| format!("Failed to query decisions: {e}"))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -74,28 +78,28 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str) ->
     if best_sim > 0.6 {  // Threshold 0.6 matches Node.js
         if best_agent.as_deref() == Some(source_agent) {
             // Same agent, high similarity => update (supersede)
-            ConflictResult {
+            Ok(ConflictResult {
                 is_conflict: false,
                 is_update: true,
                 matched_id: best_id,
                 matched_agent: best_agent,
-            }
+            })
         } else {
             // Different agent, high similarity => conflict
-            ConflictResult {
+            Ok(ConflictResult {
                 is_conflict: true,
                 is_update: false,
                 matched_id: best_id,
                 matched_agent: best_agent,
-            }
+            })
         }
     } else {
-        ConflictResult {
+        Ok(ConflictResult {
             is_conflict: false,
             is_update: false,
             matched_id: None,
             matched_agent: None,
-        }
+        })
     }
 }
 
@@ -221,17 +225,18 @@ mod tests {
         .unwrap();
 
         // Same content, same agent => update
-        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "claude");
+        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "claude").unwrap();
         assert!(result.is_update);
         assert!(!result.is_conflict);
 
         // Same content, different agent => conflict
-        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "droid");
+        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "droid").unwrap();
         assert!(result.is_conflict);
         assert!(!result.is_update);
 
         // Different content => no conflict
-        let result = detect_conflict(&conn, "Something totally different and new", "claude");
+        let result =
+            detect_conflict(&conn, "Something totally different and new", "claude").unwrap();
         assert!(!result.is_conflict);
         assert!(!result.is_update);
     }

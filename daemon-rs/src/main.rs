@@ -68,7 +68,7 @@ async fn main() {
             eprintln!("[cortex-mcp] DB: {}", db_path.display());
 
             let (mcp_state, _shutdown_rx) =
-                state::initialize(&db_path).expect("Failed to initialize state");
+                state::initialize(&db_path, false).expect("Failed to initialize state");
 
             mcp_stdio::run(mcp_state.clone()).await;
             eprintln!("[cortex-mcp] MCP session ended.");
@@ -160,7 +160,7 @@ pub(crate) async fn run_daemon(
     eprintln!("[cortex] DB: {}", db_path.display());
 
     let (state, shutdown_rx) =
-        state::initialize(&db_path).expect("Failed to initialize state");
+        state::initialize(&db_path, true).expect("Failed to initialize state");
 
     auth::write_pid();
     let token_path = auth::cortex_dir().join("cortex.token");
