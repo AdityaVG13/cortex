@@ -342,6 +342,14 @@ fn run_recall_with_engine(
     let mut merged: HashMap<String, RecallItem> = HashMap::new();
 
     // ── Pass 1: Semantic search via embeddings (if available) ────────────────
+    // Cosine sims land in ~[0.3, 0.8] while keyword scores are ~[0.5, 1.0].
+    // Rescale so semantic results compete fairly: 0.3 → 0.55, 1.0 → 1.0.
+    const SIM_FLOOR: f64 = 0.3;
+    const SCALE_BASE: f64 = 0.55;
+    let scale_sim = |sim: f32| -> f64 {
+        SCALE_BASE + (sim as f64 - SIM_FLOOR) * ((1.0 - SCALE_BASE) / (1.0 - SIM_FLOOR))
+    };
+
     if let Some(engine) = engine {
         if let Some(query_vec) = engine.embed(query_text) {
             // Search memory embeddings
@@ -361,10 +369,10 @@ fn run_recall_with_engine(
                 for (blob, text, source) in rows {
                     let existing_vec = crate::embeddings::blob_to_vector(&blob);
                     let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
-                    if sim > 0.3 {
+                    if sim > SIM_FLOOR as f32 {
                         merged.insert(source.clone(), RecallItem {
                             source,
-                            relevance: sim as f64,
+                            relevance: scale_sim(sim),
                             excerpt: text.chars().take(200).collect(),
                             method: "semantic".to_string(),
                             tokens: None,
@@ -391,13 +399,14 @@ fn run_recall_with_engine(
                 for (blob, decision, context) in rows {
                     let existing_vec = crate::embeddings::blob_to_vector(&blob);
                     let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
-                    if sim > 0.3 {
+                    if sim > SIM_FLOOR as f32 {
                         let source = context.unwrap_or_else(|| format!("decision::{}", decision.chars().take(40).collect::<String>()));
+                        let scaled = scale_sim(sim);
                         let existing = merged.get(&source);
-                        if existing.is_none() || sim as f64 > existing.unwrap().relevance {
+                        if existing.is_none() || scaled > existing.unwrap().relevance {
                             merged.insert(source.clone(), RecallItem {
                                 source,
-                                relevance: sim as f64,
+                                relevance: scaled,
                                 excerpt: decision.chars().take(200).collect(),
                                 method: "semantic".to_string(),
                                 tokens: None,
@@ -411,8 +420,26 @@ fn run_recall_with_engine(
     }
 
     // ── Pass 2: Keyword search ──────────────────────────────────────────────
+    // When an entry was already found by semantic search, fuse scores:
+    //   hybrid_score = max(semantic, keyword) + 0.15 * min(semantic, keyword)
+    // This boosts entries confirmed by both methods without over-inflating.
     for row in search_memories(conn, &keyword_query, 20)? {
         let key = row.source.clone();
+        if let Some(existing) = merged.get(&key) {
+            if existing.method == "semantic" {
+                let fused = existing.relevance.max(row.relevance)
+                    + 0.15 * existing.relevance.min(row.relevance);
+                merged.insert(key, RecallItem {
+                    source: row.source,
+                    relevance: fused,
+                    excerpt: row.excerpt,
+                    method: "hybrid".to_string(),
+                    tokens: None,
+                    entropy: None,
+                });
+                continue;
+            }
+        }
         let should_replace = merged
             .get(&key)
             .map(|existing| row.relevance > existing.relevance)
@@ -434,6 +461,21 @@ fn run_recall_with_engine(
 
     for row in search_decisions(conn, &keyword_query, 20)? {
         let key = row.source.clone();
+        if let Some(existing) = merged.get(&key) {
+            if existing.method == "semantic" {
+                let fused = existing.relevance.max(row.relevance)
+                    + 0.15 * existing.relevance.min(row.relevance);
+                merged.insert(key, RecallItem {
+                    source: row.source,
+                    relevance: fused,
+                    excerpt: row.excerpt,
+                    method: "hybrid".to_string(),
+                    tokens: None,
+                    entropy: None,
+                });
+                continue;
+            }
+        }
         let should_replace = merged
             .get(&key)
             .map(|existing| row.relevance > existing.relevance)
@@ -1172,6 +1214,10 @@ fn hash_content(content: &str) -> u32 {
     hash
 }
 
+/// Content served within this window is suppressed to avoid echo in rapid
+/// successive recalls. After this TTL, the same content can be re-served.
+const SERVED_TTL_MS: i64 = 60_000; // 60 seconds
+
 async fn dedup_and_mark_served(
     state: &RuntimeState,
     agent: &str,
@@ -1181,18 +1227,22 @@ async fn dedup_and_mark_served(
         return results;
     }
 
+    let now = Utc::now().timestamp_millis();
     let mut served = state.served_content.lock().await;
-    let set = served
+    let map = served
         .entry(agent.to_string())
-        .or_insert_with(HashSet::<u32>::new);
+        .or_insert_with(HashMap::<u32, i64>::new);
+
+    // Evict expired entries
+    map.retain(|_, ts| now - *ts < SERVED_TTL_MS);
 
     let mut filtered = Vec::new();
     for result in results {
         let hash = hash_content(&result.excerpt);
-        if set.contains(&hash) {
+        if map.contains_key(&hash) {
             continue;
         }
-        set.insert(hash);
+        map.insert(hash, now);
         filtered.push(result);
     }
 

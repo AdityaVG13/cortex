@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -53,20 +53,23 @@ pub struct RuntimeState {
     /// Monotonic counter for MCP call IDs.
     pub mcp_calls: Arc<AtomicU64>,
     /// Active MCP sessions: session-id → last-heartbeat (Unix seconds).
+    #[allow(dead_code)]
     pub mcp_sessions: Arc<Mutex<HashMap<String, i64>>>,
     /// Per-agent recall history, capped at MAX_RECALL_HISTORY entries.
     pub recall_history: Arc<Mutex<HashMap<String, Vec<RecallHistoryEntry>>>>,
     /// Short-lived pre-warmed recall cache.
     pub pre_cache: Arc<Mutex<HashMap<String, PreCacheEntry>>>,
-    /// Tracks which content IDs have already been served to each agent so
-    /// duplicate entries are suppressed.
-    pub served_content: Arc<Mutex<HashMap<String, HashSet<u32>>>>,
+    /// Tracks which content hashes have been served to each agent recently.
+    /// Maps hash → Unix-ms timestamp. Entries older than SERVED_TTL_MS are
+    /// evicted, so content can be re-served after the cooldown.
+    pub served_content: Arc<Mutex<HashMap<String, HashMap<u32, i64>>>>,
     /// Sending half of the graceful-shutdown oneshot.  The `/shutdown` endpoint
     /// takes this and fires it; the Axum server listens on the receiving half.
     pub shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     /// The user's home directory (used when constructing runtime paths).
     pub home: std::path::PathBuf,
     /// Absolute path of the SQLite database file.
+    #[allow(dead_code)]
     pub db_path: std::path::PathBuf,
     /// In-process ONNX embedding engine (None if model not downloaded yet).
     pub embedding_engine: Option<Arc<crate::embeddings::EmbeddingEngine>>,
@@ -164,7 +167,7 @@ pub fn initialize(
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         recall_history: Arc::new(Mutex::new(HashMap::new())),
         pre_cache: Arc::new(Mutex::new(HashMap::new())),
-        served_content: Arc::new(Mutex::new(HashMap::new())),
+        served_content: Arc::new(Mutex::new(HashMap::<String, HashMap<u32, i64>>::new())),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         home,
         db_path: db_path.to_path_buf(),
