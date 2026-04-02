@@ -49,6 +49,7 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/storage", get(handle_storage))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
+        .route("/conflicts", get(handlers::mutate::handle_conflicts))
         .route("/archive", post(handlers::mutate::handle_archive))
         .route("/focus/start", post(handle_focus_start))
         .route("/focus/end", post(handle_focus_end))

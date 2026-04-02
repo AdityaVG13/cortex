@@ -167,7 +167,22 @@ pub fn resolve_decision(
                 .map_err(|e| e.to_string())?;
             }
         }
-        _ => return Err("Invalid action. Expected keep or merge.".to_string()),
+        "archive" => {
+            let ts = now_iso();
+            conn.execute(
+                "UPDATE decisions SET status = 'archived', disputes_id = NULL, updated_at = ?2 WHERE id = ?1",
+                params![keep_id, ts],
+            )
+            .map_err(|e| e.to_string())?;
+            if let Some(other) = superseded_id {
+                conn.execute(
+                    "UPDATE decisions SET status = 'archived', disputes_id = NULL, updated_at = ?2 WHERE id = ?1",
+                    params![other, ts],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        _ => return Err("Invalid action. Expected keep, merge, or archive.".to_string()),
     }
     let _ = log_event(
         conn,
@@ -177,6 +192,62 @@ pub fn resolve_decision(
     );
     checkpoint_wal_best_effort(conn);
     Ok(())
+}
+
+// ─── GET /conflicts ──────────────────────────────────────────────────────────
+
+pub async fn handle_conflicts(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
+
+    let conn = state.db.lock().await;
+    let mut stmt = match conn.prepare(
+        "SELECT d1.id, d1.decision, d1.context, d1.source_agent, d1.confidence, d1.created_at,
+                d2.id, d2.decision, d2.context, d2.source_agent, d2.confidence, d2.created_at
+         FROM decisions d1
+         JOIN decisions d2 ON d1.disputes_id = d2.id
+         WHERE d1.status = 'disputed' AND d1.id > d2.id
+         ORDER BY d1.created_at DESC",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": format!("Query failed: {e}") }),
+            )
+        }
+    };
+
+    let pairs: Vec<serde_json::Value> = match stmt.query_map([], |row| {
+        Ok(json!({
+            "left": {
+                "id": row.get::<_, i64>(0)?,
+                "decision": row.get::<_, String>(1)?,
+                "context": row.get::<_, Option<String>>(2)?,
+                "source_agent": row.get::<_, Option<String>>(3)?,
+                "confidence": row.get::<_, Option<f64>>(4)?,
+                "created_at": row.get::<_, Option<String>>(5)?,
+            },
+            "right": {
+                "id": row.get::<_, i64>(6)?,
+                "decision": row.get::<_, String>(7)?,
+                "context": row.get::<_, Option<String>>(8)?,
+                "source_agent": row.get::<_, Option<String>>(9)?,
+                "confidence": row.get::<_, Option<f64>>(10)?,
+                "created_at": row.get::<_, Option<String>>(11)?,
+            },
+        }))
+    }) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => vec![],
+    };
+
+    let count = pairs.len();
+    json_response(StatusCode::OK, json!({ "pairs": pairs, "count": count }))
 }
 
 // ─── POST /archive ───────────────────────────────────────────────────────────
