@@ -338,6 +338,7 @@ export function App() {
   const [feedbackMessage, setFeedbackMessage] = useState("Checking daemon...");
   const [conflictPairs, setConflictPairs] = useState([]);
   const [conflictLoading, setConflictLoading] = useState(false);
+  const [editorSetup, setEditorSetup] = useState(null);
 
   const invokeRef = useRef(null);
   const tokenRef = useRef("");
@@ -515,6 +516,17 @@ export function App() {
     await refreshConflicts();
     setConflictLoading(false);
   }, [postApi, refreshConflicts]);
+
+  const handleSetupEditors = useCallback(async () => {
+    try {
+      const result = await call("setup_editors");
+      setEditorSetup(result);
+      const registered = result.filter(e => e.registered).length;
+      setFeedbackMessage(`Registered Cortex MCP in ${registered} editor(s)`);
+    } catch (err) {
+      setFeedbackMessage(`Editor setup: ${String(err)}`);
+    }
+  }, [call]);
 
   const refreshAll = useCallback(async () => {
     invokeRef.current = readTauriInvoke();
@@ -895,6 +907,10 @@ export function App() {
               <div className="sys-item">
                 <span className="sys-label">TASKS</span>
                 <span className="sys-value">{pendingTasks.length} PENDING</span>
+              </div>
+              <div className="sys-item sys-item-action" onClick={handleSetupEditors} title="Auto-register Cortex MCP in detected editors">
+                <span className="sys-label">MCP</span>
+                <span className="sys-value">{editorSetup ? `${editorSetup.filter(e => e.registered).length} EDITORS` : "SETUP"}</span>
               </div>
             </div>
 

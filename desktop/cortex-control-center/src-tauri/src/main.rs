@@ -269,6 +269,212 @@ fn read_auth_token() -> Result<String, String> {
   Ok(token.trim().to_string())
 }
 
+// ─── MCP Auto-Registration ──────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct EditorDetection {
+  name: String,
+  detected: bool,
+  registered: bool,
+  message: String,
+}
+
+fn cortex_exe_path() -> Option<PathBuf> {
+  let home = cortex_home().ok()?;
+  let path = home
+    .join("cortex")
+    .join("daemon-rs")
+    .join("target")
+    .join("release")
+    .join("cortex.exe");
+  if path.exists() {
+    Some(path)
+  } else {
+    None
+  }
+}
+
+fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
+  let home = cortex_home().map_err(|e| e.to_string())?;
+  let cursor_dir = home.join(".cursor");
+  if !cursor_dir.exists() {
+    return Ok(EditorDetection {
+      name: "Cursor".into(),
+      detected: false,
+      registered: false,
+      message: "Cursor not detected (~/.cursor/ not found)".into(),
+    });
+  }
+
+  let mcp_path = cursor_dir.join("mcp.json");
+  let mut config: serde_json::Value = if mcp_path.exists() {
+    let content = fs::read_to_string(&mcp_path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+  } else {
+    serde_json::json!({})
+  };
+
+  let servers = config
+    .as_object_mut()
+    .ok_or("Invalid mcp.json format")?
+    .entry("mcpServers")
+    .or_insert_with(|| serde_json::json!({}));
+
+  if servers.get("cortex").is_some() {
+    return Ok(EditorDetection {
+      name: "Cursor".into(),
+      detected: true,
+      registered: true,
+      message: "Already registered".into(),
+    });
+  }
+
+  servers
+    .as_object_mut()
+    .ok_or("Invalid mcpServers format")?
+    .insert(
+      "cortex".into(),
+      serde_json::json!({
+        "command": cortex_exe,
+        "args": ["mcp"]
+      }),
+    );
+
+  let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+  fs::write(&mcp_path, out).map_err(|e| e.to_string())?;
+
+  Ok(EditorDetection {
+    name: "Cursor".into(),
+    detected: true,
+    registered: true,
+    message: format!("Registered in {}", mcp_path.display()),
+  })
+}
+
+fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
+  let home = cortex_home().map_err(|e| e.to_string())?;
+  let claude_dir = home.join(".claude");
+  if !claude_dir.exists() {
+    return Ok(EditorDetection {
+      name: "Claude Code".into(),
+      detected: false,
+      registered: false,
+      message: "Claude Code not detected (~/.claude/ not found)".into(),
+    });
+  }
+
+  let settings_path = claude_dir.join("settings.json");
+  let mut config: serde_json::Value = if settings_path.exists() {
+    let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+  } else {
+    serde_json::json!({})
+  };
+
+  let servers = config
+    .as_object_mut()
+    .ok_or("Invalid settings.json format")?
+    .entry("mcpServers")
+    .or_insert_with(|| serde_json::json!({}));
+
+  if servers.get("cortex").is_some() {
+    return Ok(EditorDetection {
+      name: "Claude Code".into(),
+      detected: true,
+      registered: true,
+      message: "Already registered".into(),
+    });
+  }
+
+  servers
+    .as_object_mut()
+    .ok_or("Invalid mcpServers format")?
+    .insert(
+      "cortex".into(),
+      serde_json::json!({
+        "command": cortex_exe,
+        "args": ["mcp"]
+      }),
+    );
+
+  let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+  fs::write(&settings_path, out).map_err(|e| e.to_string())?;
+
+  Ok(EditorDetection {
+    name: "Claude Code".into(),
+    detected: true,
+    registered: true,
+    message: format!("Registered in {}", settings_path.display()),
+  })
+}
+
+#[tauri::command]
+fn setup_editors() -> Result<Vec<EditorDetection>, String> {
+  let cortex_exe = cortex_exe_path()
+    .ok_or("Could not find cortex.exe at ~/cortex/daemon-rs/target/release/")?;
+  let exe_str = cortex_exe.to_string_lossy().replace('/', "\\");
+
+  let mut results = vec![];
+  match register_claude_code_mcp(&exe_str) {
+    Ok(r) => results.push(r),
+    Err(e) => results.push(EditorDetection {
+      name: "Claude Code".into(),
+      detected: true,
+      registered: false,
+      message: format!("Registration failed: {e}"),
+    }),
+  }
+  match register_cursor_mcp(&exe_str) {
+    Ok(r) => results.push(r),
+    Err(e) => results.push(EditorDetection {
+      name: "Cursor".into(),
+      detected: true,
+      registered: false,
+      message: format!("Registration failed: {e}"),
+    }),
+  }
+  Ok(results)
+}
+
+#[tauri::command]
+fn detect_editors() -> Result<Vec<EditorDetection>, String> {
+  let home = cortex_home()?;
+  let has_exe = cortex_exe_path().is_some();
+  let mut results = vec![];
+
+  let claude_detected = home.join(".claude").exists();
+  results.push(EditorDetection {
+    name: "Claude Code".into(),
+    detected: claude_detected,
+    registered: false,
+    message: if claude_detected {
+      "Detected".into()
+    } else {
+      "Not installed".into()
+    },
+  });
+
+  let cursor_detected = home.join(".cursor").exists();
+  results.push(EditorDetection {
+    name: "Cursor".into(),
+    detected: cursor_detected,
+    registered: false,
+    message: if cursor_detected {
+      "Detected".into()
+    } else {
+      "Not installed".into()
+    },
+  });
+
+  if !has_exe {
+    for r in &mut results {
+      r.message = "cortex.exe not found -- build daemon first".into();
+    }
+  }
+
+  Ok(results)
+}
+
 fn main() {
   let app = tauri::Builder::default()
     .manage(DaemonState::default())
@@ -294,7 +500,9 @@ fn main() {
       daemon_status,
       start_daemon,
       stop_daemon,
-      read_auth_token
+      read_auth_token,
+      setup_editors,
+      detect_editors
     ])
     .build(tauri::generate_context!())
     .expect("error while building cortex control center");

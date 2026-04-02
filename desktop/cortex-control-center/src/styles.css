@@ -1841,6 +1841,19 @@ body {
   top: 20px;
 }
 
+/* ─── MCP Setup Button ─────────────────────────────────────────────────── */
+
+.sys-item-action {
+  cursor: pointer;
+  transition: background 0.15s;
+  border-radius: var(--radius);
+  padding: 4px 8px;
+}
+
+.sys-item-action:hover {
+  background: var(--bg-3);
+}
+
 /* ─── Conflict Resolution Panel ────────────────────────────────────────── */
 
 .conflict-pair {
