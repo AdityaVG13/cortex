@@ -134,7 +134,8 @@ pub async fn handle_budget_recall(
     let k = query.k.unwrap_or(10);
 
     let mut conn = state.db.lock().await;
-    match run_budget_recall(&mut conn, &q, budget, k) {
+    let engine = state.embedding_engine.as_deref();
+    match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine) {
         Ok(results) => {
             let spent: usize = results
                 .iter()
@@ -1497,4 +1498,79 @@ pub fn unfold_source(conn: &Connection, source: &str) -> Option<Value> {
     }
 
     None
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shannon_entropy_empty() {
+        assert_eq!(shannon_entropy(""), 0.0);
+    }
+
+    #[test]
+    fn test_shannon_entropy_single_char() {
+        assert_eq!(shannon_entropy("aaaa"), 0.0);
+    }
+
+    #[test]
+    fn test_shannon_entropy_two_equal_chars() {
+        let h = shannon_entropy("ab");
+        assert!((h - 1.0).abs() < 0.001, "expected ~1.0, got {h}");
+    }
+
+    #[test]
+    fn test_shannon_entropy_english_prose_range() {
+        let prose = "The quick brown fox jumps over the lazy dog near the riverbank";
+        let h = shannon_entropy(prose);
+        assert!(h > 3.5 && h < 5.0, "english prose entropy {h} outside expected 3.5-5.0");
+    }
+
+    #[test]
+    fn test_shannon_entropy_boilerplate_lower() {
+        let boilerplate = "aaabbbccc aaabbbccc aaabbbccc";
+        let prose = "The zephyr-cache module uses LRU eviction with a 512-entry cap";
+        assert!(shannon_entropy(boilerplate) < shannon_entropy(prose));
+    }
+
+    #[test]
+    fn test_hash_content_deterministic() {
+        assert_eq!(hash_content("test content"), hash_content("test content"));
+    }
+
+    #[test]
+    fn test_hash_content_different() {
+        assert_ne!(hash_content("content a"), hash_content("content b"));
+    }
+
+    #[test]
+    fn test_extract_keywords_filters_stopwords() {
+        let kw = extract_keywords("the quick brown fox jumps over a lazy dog");
+        assert!(kw.contains(&"quick".to_string()));
+        assert!(kw.contains(&"brown".to_string()));
+        assert!(!kw.contains(&"the".to_string()));
+        assert!(!kw.contains(&"an".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_filters_short() {
+        let kw = extract_keywords("go to db");
+        assert!(kw.is_empty());
+    }
+
+    #[test]
+    fn test_extract_search_keywords_keeps_short() {
+        let kw = extract_search_keywords("go to db");
+        assert!(kw.contains(&"go".to_string()));
+        assert!(kw.contains(&"db".to_string()));
+    }
+
+    #[test]
+    fn test_round4() {
+        assert_eq!(round4(0.12345), 0.1235);
+        assert_eq!(round4(1.0), 1.0);
+    }
 }
