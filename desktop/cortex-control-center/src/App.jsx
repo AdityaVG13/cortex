@@ -336,6 +336,8 @@ export function App() {
   const [messageAgent, setMessageAgent] = useState("");
   const [activitySince, setActivitySince] = useState("1h");
   const [feedbackMessage, setFeedbackMessage] = useState("Checking daemon...");
+  const [conflictPairs, setConflictPairs] = useState([]);
+  const [conflictLoading, setConflictLoading] = useState(false);
 
   const invokeRef = useRef(null);
   const tokenRef = useRef("");
@@ -356,6 +358,24 @@ export function App() {
 
     try {
       const response = await fetch(`${CORTEX_BASE}${path}`, { headers });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const postApi = useCallback(async (path, body = {}) => {
+    if (!tokenRef.current) return null;
+    try {
+      const response = await fetch(`${CORTEX_BASE}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokenRef.current}`,
+        },
+        body: JSON.stringify(body),
+      });
       if (!response.ok) return null;
       return await response.json();
     } catch {
@@ -484,6 +504,18 @@ export function App() {
     if (result) setSavings(result);
   }, [api]);
 
+  const refreshConflicts = useCallback(async () => {
+    const result = await api("/conflicts", true);
+    setConflictPairs(Array.isArray(result?.pairs) ? result.pairs : []);
+  }, [api]);
+
+  const handleResolveConflict = useCallback(async (keepId, action, supersededId) => {
+    setConflictLoading(true);
+    await postApi("/resolve", { keepId, action, supersededId });
+    await refreshConflicts();
+    setConflictLoading(false);
+  }, [postApi, refreshConflicts]);
+
   const refreshAll = useCallback(async () => {
     invokeRef.current = readTauriInvoke();
     await readAuthToken();
@@ -495,6 +527,7 @@ export function App() {
       refreshMessages(),
       refreshActivity(),
       refreshSavings(),
+      refreshConflicts(),
     ]);
   }, [
     readAuthToken,
@@ -505,6 +538,7 @@ export function App() {
     refreshMessages,
     refreshActivity,
     refreshSavings,
+    refreshConflicts,
   ]);
 
   useEffect(() => {
@@ -1270,10 +1304,78 @@ export function App() {
         ) : null}
 
         {panel === "conflicts" ? (
-          <ComingSoon
-            title="Conflict Resolution"
-            description="View and resolve contradictions between memories stored by different AI agents. Side-by-side comparison with resolution actions: keep, supersede, merge, or archive."
-          />
+          <section className="panel active">
+            <div className="panel-header">
+              <h1>Conflict Resolution</h1>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span className="badge">{conflictPairs.length} dispute{conflictPairs.length !== 1 ? "s" : ""}</span>
+                <button type="button" className="btn-sm" onClick={refreshConflicts}>Refresh</button>
+              </div>
+            </div>
+            {conflictPairs.length === 0 ? (
+              <div className="card full">
+                <ul><EmptyItem text="No active conflicts -- all decisions are in harmony" /></ul>
+              </div>
+            ) : (
+              conflictPairs.map((pair) => (
+                <div key={`${pair.left.id}-${pair.right.id}`} className="conflict-pair">
+                  <div className="conflict-cards">
+                    <div className="card conflict-card">
+                      <div className="conflict-card-header">
+                        <span className="conflict-id">#{pair.left.id}</span>
+                        <span className="agent-indicator" style={{
+                          background: agentColor(pair.left.source_agent),
+                          boxShadow: `0 0 8px ${agentColor(pair.left.source_agent)}`,
+                        }} />
+                        <span className="item-name">{pair.left.source_agent || "unknown"}</span>
+                        <span className="muted-inline">{timeAgo(pair.left.created_at)}</span>
+                      </div>
+                      <p className="conflict-text">{pair.left.decision}</p>
+                      {pair.left.context && <p className="conflict-context">{pair.left.context}</p>}
+                      <div className="conflict-meta">
+                        <span>Confidence: {((pair.left.confidence || 0.8) * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+                    <div className="conflict-vs">VS</div>
+                    <div className="card conflict-card">
+                      <div className="conflict-card-header">
+                        <span className="conflict-id">#{pair.right.id}</span>
+                        <span className="agent-indicator" style={{
+                          background: agentColor(pair.right.source_agent),
+                          boxShadow: `0 0 8px ${agentColor(pair.right.source_agent)}`,
+                        }} />
+                        <span className="item-name">{pair.right.source_agent || "unknown"}</span>
+                        <span className="muted-inline">{timeAgo(pair.right.created_at)}</span>
+                      </div>
+                      <p className="conflict-text">{pair.right.decision}</p>
+                      {pair.right.context && <p className="conflict-context">{pair.right.context}</p>}
+                      <div className="conflict-meta">
+                        <span>Confidence: {((pair.right.confidence || 0.8) * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="conflict-actions">
+                    <button className="btn-sm btn-primary" disabled={conflictLoading}
+                      onClick={() => handleResolveConflict(pair.left.id, "keep", pair.right.id)}>
+                      Keep Left
+                    </button>
+                    <button className="btn-sm btn-primary" disabled={conflictLoading}
+                      onClick={() => handleResolveConflict(pair.right.id, "keep", pair.left.id)}>
+                      Keep Right
+                    </button>
+                    <button className="btn-sm" disabled={conflictLoading}
+                      onClick={() => handleResolveConflict(pair.left.id, "merge", pair.right.id)}>
+                      Merge Both
+                    </button>
+                    <button className="btn-sm btn-danger" disabled={conflictLoading}
+                      onClick={() => handleResolveConflict(pair.left.id, "archive", pair.right.id)}>
+                      Archive Both
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </section>
         ) : null}
       </main>
     </div>
