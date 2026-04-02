@@ -45,6 +45,8 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/feedback/stats", get(handlers::feedback::handle_feedback_stats))
         .route("/crystals", get(handle_crystals))
         .route("/crystallize", post(handle_crystallize))
+        .route("/compact", post(handle_compact))
+        .route("/storage", get(handle_storage))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
         .route("/archive", post(handlers::mutate::handle_archive))
@@ -142,6 +144,56 @@ async fn handle_mcp_rpc(
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),
     }
+}
+
+// ─── Compaction handlers ────────────────────────────────────────────────
+
+async fn handle_compact(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    let conn = state.db.lock().await;
+    let result = crate::compaction::run_compaction(&conn);
+    handlers::json_response(
+        axum::http::StatusCode::OK,
+        serde_json::json!({
+            "eventsPruned": result.events_pruned,
+            "archivedTextStripped": result.archived_text_stripped,
+            "crystalEmbeddingsPruned": result.crystal_embeddings_pruned,
+            "feedbackAggregated": result.feedback_aggregated,
+            "bytesBefore": result.bytes_before,
+            "bytesAfter": result.bytes_after,
+            "savedKB": (result.bytes_before - result.bytes_after) / 1024,
+        }),
+    )
+}
+
+async fn handle_storage(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    let conn = state.db.lock().await;
+    let breakdown = crate::compaction::storage_breakdown(&conn);
+    let total_bytes: i64 = conn
+        .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+        * conn.query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0)).unwrap_or(4096);
+
+    let tables: Vec<serde_json::Value> = breakdown
+        .iter()
+        .map(|(name, count)| serde_json::json!({"table": name, "rows": count}))
+        .collect();
+
+    handlers::json_response(
+        axum::http::StatusCode::OK,
+        serde_json::json!({
+            "totalBytes": total_bytes,
+            "totalMB": format!("{:.1}", total_bytes as f64 / 1_048_576.0),
+            "tables": tables,
+        }),
+    )
 }
 
 // ─── Crystal handlers ───────────────────────────────────────────────────

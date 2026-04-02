@@ -1,6 +1,7 @@
 mod aging;
 mod auth;
 mod co_occurrence;
+mod compaction;
 mod compiler;
 mod conflict;
 mod crystallize;
@@ -237,6 +238,7 @@ pub(crate) async fn run_daemon(
                 interval.tick().await;
                 let conn = db_aging.lock().await;
                 aging::run_aging_pass(&conn);
+                compaction::run_compaction(&conn);
             }
         });
     }
