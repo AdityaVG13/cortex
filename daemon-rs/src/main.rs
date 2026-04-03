@@ -16,6 +16,7 @@ mod mcp_proxy;
 mod mcp_stdio;
 mod server;
 mod service;
+mod setup;
 mod state;
 
 #[tokio::main]
@@ -121,10 +122,18 @@ async fn main() {
             service::dispatch_service();
         }
 
+        // ── Setup: detect AI tools, configure, verify ──────────────
+        "setup" => {
+            setup::run_setup().await;
+        }
+
         _ => {
             eprintln!("Cortex v{} -- Universal AI Memory Daemon", env!("CARGO_PKG_VERSION"));
             eprintln!();
             eprintln!("Usage: cortex <command>");
+            eprintln!();
+            eprintln!("Setup:");
+            eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
             eprintln!();
             eprintln!("Daemon:");
             eprintln!("  serve              HTTP daemon on :7437");
