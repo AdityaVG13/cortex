@@ -13,6 +13,9 @@ logs/
 dist/
 *.bak
 
+# Internal design docs (not for public repo)
+docs/
+
 # Editor/tool artifacts
 .aider*
 .tmp-*
