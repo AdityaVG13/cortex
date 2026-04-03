@@ -1,6 +1,6 @@
 {
   "name": "cortex",
-  "version": "2.0.0",
+  "version": "0.1.0",
   "description": "Universal AI Brain \u00e2\u20ac\u201d multi-transport memory daemon for Claude Code, Gemini CLI, Codex, Cursor, and local LLMs",
   "main": "daemon-rs/target/release/cortex.exe",
   "bin": {

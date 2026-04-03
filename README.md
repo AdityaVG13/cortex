@@ -15,6 +15,7 @@
 <h4 align="center">Single Rust binary. Zero runtime dependencies. In-process ONNX embeddings.</h4>
 
 <p align="center">
+  <a href="https://github.com/AdityaVG13/cortex/releases/latest"><img src="https://img.shields.io/github/v/release/AdityaVG13/cortex?style=for-the-badge&color=blue" alt="Release"></a>
   <a href="https://github.com/AdityaVG13/cortex/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/Rust-1.78+-orange?style=for-the-badge" alt="Rust"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/ONNX-embedded-blueviolet?style=for-the-badge" alt="ONNX"></a>
@@ -22,6 +23,7 @@
 </p>
 
 <p align="center">
+  <a href="#installation">Installation</a> --
   <a href="#quick-start">Quick Start</a> --
   <a href="#desktop-app">Desktop App</a> --
   <a href="#how-it-works">How It Works</a> --
@@ -47,13 +49,37 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 
 ---
 
-## Quick Start
+## Installation
+
+### Download (recommended)
+
+Grab the latest release from [GitHub Releases](https://github.com/AdityaVG13/cortex/releases/latest):
+
+| Platform | Download |
+|----------|----------|
+| **Windows** | [`cortex-v0.1.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.1.0/cortex-v0.1.0-windows-x86_64.zip) |
+| **macOS** | Coming soon |
+| **Linux** | Coming soon |
+
+Extract the archive and place `cortex.exe` somewhere on your PATH (e.g. `C:\Users\<you>\.local\bin\`).
+
+### Build from source
+
+Requires [Rust 1.78+](https://rustup.rs/):
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
 cd cortex/daemon-rs
 cargo build --release
-./target/release/cortex serve
+# Binary at target/release/cortex(.exe)
+```
+
+---
+
+## Quick Start
+
+```bash
+cortex serve
 ```
 
 Verify:
@@ -67,7 +93,7 @@ Register with your editor:
 
 ```bash
 # Claude Code
-claude mcp add cortex -s user -- /path/to/cortex/daemon-rs/target/release/cortex mcp
+claude mcp add cortex -s user -- /path/to/cortex mcp
 
 # Cursor -- add to ~/.cursor/mcp.json:
 # { "mcpServers": { "cortex": { "command": "/path/to/cortex.exe", "args": ["mcp"] } } }

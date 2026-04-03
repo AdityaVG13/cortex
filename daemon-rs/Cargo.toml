@@ -1,6 +1,6 @@
 [package]
 name = "cortex-daemon"
-version = "2.1.0"
+version = "0.1.0"
 edition = "2021"
 description = "Cortex memory daemon — standalone Rust binary"
 
