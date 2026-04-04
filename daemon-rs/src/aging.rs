@@ -10,8 +10,8 @@
 //! Compression uses extractive summarization (first sentence + key phrases)
 //! to avoid depending on an LLM for the background job.
 
-use rusqlite::{params, Connection};
 use crate::handlers::feedback;
+use rusqlite::{params, Connection};
 
 /// Age tier boundaries in days.
 const FRESH_DAYS: i64 = 3;
@@ -71,7 +71,11 @@ fn age_memories_to_recent(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -105,7 +109,11 @@ fn age_memories_to_old(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -151,7 +159,11 @@ fn age_decisions_to_recent(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -183,7 +195,11 @@ fn age_decisions_to_old(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -221,7 +237,7 @@ fn archive_ancient_decisions(conn: &Connection) -> usize {
 
 fn compress_to_key_points(text: &str) -> String {
     let sentences: Vec<&str> = text
-        .split(|c: char| c == '.' || c == '\n')
+        .split(['.', '\n'])
         .map(|s| s.trim())
         .filter(|s| s.len() > 5)
         .collect();
@@ -231,9 +247,23 @@ fn compress_to_key_points(text: &str) -> String {
     }
 
     let high_signal = [
-        "must", "never", "always", "critical", "important", "decision",
-        "fixed", "bug", "error", "confirmed", "approved", "rejected",
-        "architecture", "design", "migration", "breaking", "security",
+        "must",
+        "never",
+        "always",
+        "critical",
+        "important",
+        "decision",
+        "fixed",
+        "bug",
+        "error",
+        "confirmed",
+        "approved",
+        "rejected",
+        "architecture",
+        "design",
+        "migration",
+        "breaking",
+        "security",
     ];
 
     let mut kept: Vec<&str> = Vec::new();
@@ -256,7 +286,7 @@ fn compress_to_key_points(text: &str) -> String {
 
 fn compress_to_one_liner(text: &str) -> String {
     let first_sentence = text
-        .split(|c: char| c == '.' || c == '\n')
+        .split(['.', '\n'])
         .map(|s| s.trim())
         .find(|s| s.len() > 5)
         .unwrap_or(text);

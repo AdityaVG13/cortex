@@ -5,19 +5,22 @@ mod compaction;
 mod compiler;
 mod conflict;
 mod crystallize;
-mod focus;
 mod db;
 mod embeddings;
+mod focus;
 mod handlers;
 mod hook_boot;
 mod indexer;
 mod logging;
 mod mcp_proxy;
 mod mcp_stdio;
+mod prompt_inject;
+mod rate_limit;
 mod server;
 mod service;
 mod setup;
 mod state;
+mod tls;
 
 #[tokio::main]
 async fn main() {
@@ -75,8 +78,7 @@ async fn main() {
             eprintln!("[cortex-mcp] MCP session ended.");
 
             let conn = mcp_state.db.lock().await;
-            if let Err(e) =
-                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
+            if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
             {
                 eprintln!("[cortex-mcp] Warning: WAL checkpoint failed: {e}");
             }
@@ -122,13 +124,22 @@ async fn main() {
             service::dispatch_service();
         }
 
+        // ── System prompt injector CLI ──────────────────────────────
+        "prompt-inject" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            prompt_inject::run(&remaining).await;
+        }
+
         // ── Setup: detect AI tools, configure, verify ──────────────
         "setup" => {
             setup::run_setup().await;
         }
 
         _ => {
-            eprintln!("Cortex v{} -- Universal AI Memory Daemon", env!("CARGO_PKG_VERSION"));
+            eprintln!(
+                "Cortex v{} -- Universal AI Memory Daemon",
+                env!("CARGO_PKG_VERSION")
+            );
             eprintln!();
             eprintln!("Usage: cortex <command>");
             eprintln!();
@@ -142,6 +153,9 @@ async fn main() {
             eprintln!("Hooks:");
             eprintln!("  hook-boot [AGENT]  SessionStart hook (default: claude-opus)");
             eprintln!("  hook-status        Statusline one-liner");
+            eprintln!();
+            eprintln!("Tools:");
+            eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
             eprintln!();
             eprintln!("Service:");
             eprintln!("  service install    Register as Windows Service (auto-start)");
@@ -165,7 +179,10 @@ pub(crate) async fn run_daemon(
 ) {
     auth::kill_stale_daemon();
     let db_path = auth::db_path();
-    eprintln!("[cortex] Starting Cortex v{} (Rust)...", env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "[cortex] Starting Cortex v{} (Rust)...",
+        env!("CARGO_PKG_VERSION")
+    );
     eprintln!("[cortex] DB: {}", db_path.display());
 
     let (state, shutdown_rx) =
@@ -237,7 +254,9 @@ pub(crate) async fn run_daemon(
                 let conn = db_aging.lock().await;
                 let (compressed, archived) = aging::run_aging_pass(&conn);
                 if compressed > 0 || archived > 0 {
-                    eprintln!("[cortex] Initial aging: {compressed} compressed, {archived} archived");
+                    eprintln!(
+                        "[cortex] Initial aging: {compressed} compressed, {archived} archived"
+                    );
                 }
             }
             // Then run every 6 hours
@@ -261,10 +280,7 @@ pub(crate) async fn run_daemon(
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             {
                 let conn = db_crystal.lock().await;
-                let result = crystallize::run_crystallize_pass(
-                    &conn,
-                    engine_crystal.as_deref(),
-                );
+                let result = crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref());
                 if result.crystals_created > 0 || result.crystals_updated > 0 {
                     eprintln!(
                         "[cortex] Initial crystallization: {} created, {} updated",
@@ -278,10 +294,20 @@ pub(crate) async fn run_daemon(
             loop {
                 interval.tick().await;
                 let conn = db_crystal.lock().await;
-                crystallize::run_crystallize_pass(
-                    &conn,
-                    engine_crystal.as_deref(),
-                );
+                crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref());
+            }
+        });
+    }
+
+    // ── Background rate limiter cleanup every 5 minutes ────────────
+    {
+        let rl = state.rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                rl.cleanup().await;
             }
         });
     }
@@ -305,9 +331,7 @@ pub(crate) async fn run_daemon(
     eprintln!("[cortex] Flushing database...");
     {
         let conn = db_for_shutdown.lock().await;
-        if let Err(e) =
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
-        {
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;") {
             eprintln!("[cortex] Warning: WAL checkpoint failed: {e}");
         }
     }

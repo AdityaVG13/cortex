@@ -164,10 +164,10 @@ fn parse_frontmatter(raw: &str) -> (HashMap<String, String>, String) {
     let mut fm = HashMap::new();
     let body;
 
-    if raw.starts_with("---") {
-        if let Some(end) = raw[3..].find("---") {
-            let yaml_block = &raw[3..3 + end];
-            body = raw[3 + end + 3..].trim().to_string();
+    if let Some(rest) = raw.strip_prefix("---") {
+        if let Some(end) = rest.find("---") {
+            let yaml_block = &rest[..end];
+            body = rest[end + 3..].trim().to_string();
 
             for line in yaml_block.lines() {
                 if let Some(colon) = line.find(':') {
@@ -293,16 +293,11 @@ fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
 
     for line in content.lines().filter(|l| !l.is_empty()) {
         if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            let skill = entry["skill"]
-                .as_str()
-                .unwrap_or("unknown")
-                .to_string();
+            let skill = entry["skill"].as_str().unwrap_or("unknown").to_string();
             let outcome = entry["outcome"].as_str().unwrap_or("");
             let ts = entry["timestamp"].as_str().unwrap_or("").to_string();
 
-            let stats = by_skill
-                .entry(skill)
-                .or_insert((0, 0, 0, 0, String::new()));
+            let stats = by_skill.entry(skill).or_insert((0, 0, 0, 0, String::new()));
             stats.0 += 1; // total
             match outcome {
                 "success" => stats.1 += 1,
@@ -390,10 +385,7 @@ fn index_gorci(conn: &Connection, home: &Path) -> usize {
 // ── Source 7: Crew playbooks ───────────────────────────────────────────────
 
 fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
-    let crew_dir = home
-        .join(".claude")
-        .join("self-improvement")
-        .join("crew");
+    let crew_dir = home.join(".claude").join("self-improvement").join("crew");
     if !crew_dir.exists() {
         return 0;
     }

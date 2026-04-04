@@ -84,7 +84,8 @@ pub fn focus_end(conn: &Connection, label: &str, agent: &str) -> Result<Value, S
         )
         .ok();
 
-    let (id, raw_json) = session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
+    let (id, raw_json) =
+        session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
     let entries: Vec<String> = serde_json::from_str(&raw_json).unwrap_or_default();
 
     if entries.is_empty() {
@@ -170,9 +171,22 @@ fn summarize_entries(entries: &[String]) -> String {
     }
 
     let high_signal = [
-        "decision", "fixed", "built", "created", "removed", "changed",
-        "bug", "error", "confirmed", "architecture", "migration",
-        "breaking", "security", "important", "must", "never",
+        "decision",
+        "fixed",
+        "built",
+        "created",
+        "removed",
+        "changed",
+        "bug",
+        "error",
+        "confirmed",
+        "architecture",
+        "migration",
+        "breaking",
+        "security",
+        "important",
+        "must",
+        "never",
     ];
 
     let mut kept: Vec<&str> = Vec::new();

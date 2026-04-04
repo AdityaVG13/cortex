@@ -61,6 +61,17 @@ Even when editing Cortex code, connect to the running daemon:
 2. Before changes: `cortex_recall("topic")` to check prior context
 3. After changes: `cortex_store(decision, context)` and confirm: "Stored to Cortex: [summary]"
 
+<!-- SECURITY-RULES:START (auto-synced from docs/SECURITY-RULES.md -- do not edit here) -->
+## Windows Defender -- NEVER TRIGGER
+This runs on Windows. These patterns cause ML-based AV false positives (Bearfoos, SuspExec, ClickFix):
+- **Never** spawn a detached process that then kills other processes via taskkill
+- **Never** read a token/credential file and immediately POST it over HTTP in the same script
+- **Never** use `execSync('taskkill /IM ...')` patterns in test or production code
+- **Never** write PowerShell that reads secrets then pipes to curl in a single command
+- Instead: use Rust's native process management, pass auth via environment variables, keep token reads and HTTP calls in separate logical steps with clear application context
+- Test scripts must avoid spawn-sleep-kill-read-token-POST chains -- break into discrete steps with named functions
+<!-- SECURITY-RULES:END -->
+
 ## MCP Registration
 ```bash
 claude mcp add cortex -s user -- C:\Users\aditya\cortex\daemon-rs\target\release\cortex.exe mcp

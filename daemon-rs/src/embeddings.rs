@@ -26,16 +26,21 @@ const TOKENIZER_URL: &str =
 // Engine
 // ---------------------------------------------------------------------------
 
-/// Shared embedding engine.  `None` when the model has not been downloaded yet
-/// or failed to load.  The session needs interior mutability for `run()`.
+const POOL_SIZE: usize = 4;
+
+/// Shared embedding engine with a pool of ONNX sessions for concurrent access.
+/// Each `embed()` call acquires an available session from the pool, runs
+/// inference, then returns it. This prevents contention when multiple agents
+/// or background tasks embed simultaneously.
 pub struct EmbeddingEngine {
-    session: std::sync::Mutex<Session>,
+    sessions: Vec<std::sync::Mutex<Session>>,
+    next: std::sync::atomic::AtomicUsize,
     tokenizer: Tokenizer,
 }
 
 impl EmbeddingEngine {
     /// Try to load from cached model files.  Returns `None` when files are
-    /// missing or corrupt.
+    /// missing or corrupt.  Opens `POOL_SIZE` independent ONNX sessions.
     pub fn load(models_dir: &Path) -> Option<Self> {
         let model_path = models_dir.join(MODEL_FILE);
         let tok_path = models_dir.join(TOKENIZER_FILE);
@@ -44,24 +49,29 @@ impl EmbeddingEngine {
             return None;
         }
 
-        let session = Session::builder()
-            .ok()?
-            .with_intra_threads(2)
-            .ok()?
-            .commit_from_file(&model_path)
-            .ok()?;
+        let mut sessions = Vec::with_capacity(POOL_SIZE);
+        for _ in 0..POOL_SIZE {
+            let session = Session::builder()
+                .ok()?
+                .with_intra_threads(2)
+                .ok()?
+                .commit_from_file(&model_path)
+                .ok()?;
+            sessions.push(std::sync::Mutex::new(session));
+        }
 
         let tokenizer = Tokenizer::from_file(&tok_path).ok()?;
 
+        eprintln!("[embeddings] Session pool: {POOL_SIZE} sessions loaded");
         Some(Self {
-            session: std::sync::Mutex::new(session),
+            sessions,
+            next: std::sync::atomic::AtomicUsize::new(0),
             tokenizer,
         })
     }
 
     /// Generate a 384-dim embedding for `text`.
     pub fn embed(&self, text: &str) -> Option<Vec<f32>> {
-        // Truncate long texts to keep inference fast.
         let truncated = if text.len() > 2000 {
             &text[..2000]
         } else {
@@ -79,7 +89,6 @@ impl EmbeddingEngine {
         let attention = &attention[..len];
         let type_ids = &type_ids[..len];
 
-        // Build input tensors — shape [1, seq_len].
         let shape = vec![1i64, len as i64];
         let ids_vec: Vec<i64> = ids.iter().map(|&x| x as i64).collect();
         let mask_vec: Vec<i64> = attention.iter().map(|&x| x as i64).collect();
@@ -89,7 +98,10 @@ impl EmbeddingEngine {
         let mask_tensor = Tensor::from_array((shape.clone(), mask_vec)).ok()?;
         let type_tensor = Tensor::from_array((shape, type_vec)).ok()?;
 
-        let mut session = self.session.lock().ok()?;
+        // Round-robin session selection -- low contention with 4 sessions.
+        let idx =
+            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.sessions.len();
+        let mut session = self.sessions[idx].lock().ok()?;
         let outputs = session
             .run(ort::inputs![
                 "input_ids" => ids_tensor,
@@ -98,8 +110,6 @@ impl EmbeddingEngine {
             ])
             .ok()?;
 
-        // Output: (Shape, &[f32]).  Shape is [1, seq_len, 384].
-        // Mean-pool over the sequence axis using the attention mask.
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().ok()?;
         let dims: Vec<i64> = shape.iter().copied().collect();
 
@@ -127,7 +137,6 @@ impl EmbeddingEngine {
             }
         }
 
-        // L2-normalise so cosine_similarity can use a simple dot product.
         let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {
             for v in &mut pooled {

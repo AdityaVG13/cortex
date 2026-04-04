@@ -5,8 +5,8 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-use crate::state::RuntimeState;
 use super::{ensure_auth, json_response, truncate_chars};
+use crate::state::RuntimeState;
 
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
@@ -14,10 +14,18 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
     // Read DB stats in a short lock, then drop it before the network call.
     let (memories, decisions, embeddings_count, events) = {
         let conn = state.db_read.lock().await;
-        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
-        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).unwrap_or(0);
-        let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
-        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
+        let m: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap_or(0);
+        let d: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0))
+            .unwrap_or(0);
+        let e: i64 = conn
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .unwrap_or(0);
+        let ev: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap_or(0);
         (m, d, e, ev)
     }; // DB lock released here.
 
@@ -42,10 +50,7 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
 
 // ─── GET /digest ─────────────────────────────────────────────────────────────
 
-pub async fn handle_digest(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_digest(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
@@ -251,18 +256,15 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
 
 // ─── GET /savings ────────────────────────────────────────────────────────────
 
-pub async fn handle_savings(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
     let conn = state.db_read.lock().await;
 
-    let mut stmt = match conn
-        .prepare("SELECT data, created_at FROM events WHERE type = 'boot_savings' ORDER BY created_at ASC")
-    {
+    let mut stmt = match conn.prepare(
+        "SELECT data, created_at FROM events WHERE type = 'boot_savings' ORDER BY created_at ASC",
+    ) {
         Ok(s) => s,
         Err(e) => {
             return json_response(
@@ -296,8 +298,14 @@ pub async fn handle_savings(
         })
         .collect();
 
-    let total_saved: i64 = points.iter().map(|p| p["saved"].as_i64().unwrap_or(0)).sum();
-    let total_served: i64 = points.iter().map(|p| p["served"].as_i64().unwrap_or(0)).sum();
+    let total_saved: i64 = points
+        .iter()
+        .map(|p| p["saved"].as_i64().unwrap_or(0))
+        .sum();
+    let total_served: i64 = points
+        .iter()
+        .map(|p| p["served"].as_i64().unwrap_or(0))
+        .sum();
     let total_baseline: i64 = points
         .iter()
         .map(|p| p["baseline"].as_i64().unwrap_or(0))
@@ -352,10 +360,7 @@ pub async fn handle_savings(
 
 // ─── GET /dump ───────────────────────────────────────────────────────────────
 
-pub async fn handle_dump(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }

@@ -7,7 +7,6 @@
 //!   4. Daemon: start the daemon, verify health
 //!   5. Verify: store a test memory, recall it, confirm round-trip
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,6 +30,7 @@ pub enum ConfigMethod {
     /// Run a CLI command (e.g., `claude mcp add`)
     CliCommand(String),
     /// Show manual instructions to the user
+    #[allow(dead_code)]
     Manual(String),
 }
 
@@ -73,19 +73,28 @@ pub async fn run_setup() {
 
     // Step 2: Detect
     let detected = step_detect();
-    print_step(2, "Detect AI tools", &if detected.is_empty() {
-        StepResult::Warn("No AI tools detected. You can configure them manually later.".into())
-    } else {
-        let names: Vec<&str> = detected.iter().map(|t| t.name).collect();
-        StepResult::Ok(format!("Found: {}", names.join(", ")))
-    });
+    print_step(
+        2,
+        "Detect AI tools",
+        &if detected.is_empty() {
+            StepResult::Warn("No AI tools detected. You can configure them manually later.".into())
+        } else {
+            let names: Vec<&str> = detected.iter().map(|t| t.name).collect();
+            StepResult::Ok(format!("Found: {}", names.join(", ")))
+        },
+    );
 
     // Step 3: Configure
     let config_results = step_configure(&detected, &cortex_exe);
     print_step(3, "Configure AI tools", &summarize_configs(&config_results));
 
     for (tool_name, result) in &config_results {
-        eprintln!("       {} {}: {}", result.icon(), tool_name, result.message());
+        eprintln!(
+            "       {} {}: {}",
+            result.icon(),
+            tool_name,
+            result.message()
+        );
     }
 
     // Step 4: Start daemon
@@ -100,7 +109,10 @@ pub async fn run_setup() {
     eprintln!();
     let token = auth::read_token().unwrap_or_else(|| "???".into());
     let token_preview = if token.len() > 8 { &token[..8] } else { &token };
-    eprintln!("  Your API token: {}... (full token in ~/.cortex/cortex.token)", token_preview);
+    eprintln!(
+        "  Your API token: {}... (full token in ~/.cortex/cortex.token)",
+        token_preview
+    );
     eprintln!("  Daemon:         http://localhost:7437");
     eprintln!("  Health check:   curl http://localhost:7437/health");
     eprintln!();
@@ -109,7 +121,13 @@ pub async fn run_setup() {
 }
 
 fn print_step(num: usize, name: &str, result: &StepResult) {
-    eprintln!("  {} Step {}: {} -- {}", result.icon(), num, name, result.message());
+    eprintln!(
+        "  {} Step {}: {} -- {}",
+        result.icon(),
+        num,
+        name,
+        result.message()
+    );
 }
 
 fn current_exe_path() -> String {
@@ -149,7 +167,9 @@ async fn step_init() -> StepResult {
         eprintln!("       Downloading embedding model (~23 MB)...");
         match embeddings::ensure_model_downloaded().await {
             Some(_) => notes.push("Embedding model: downloaded".into()),
-            None => notes.push("Embedding model: download failed (will retry on daemon start)".into()),
+            None => {
+                notes.push("Embedding model: download failed (will retry on daemon start)".into())
+            }
         }
     }
 
@@ -175,9 +195,7 @@ fn step_detect() -> Vec<DetectedTool> {
         found.push(DetectedTool {
             name: "Claude Code",
             config_path: None,
-            config_method: ConfigMethod::CliCommand(
-                "claude mcp add cortex -s user".into(),
-            ),
+            config_method: ConfigMethod::CliCommand("claude mcp add cortex -s user".into()),
         });
     }
 
@@ -204,13 +222,9 @@ fn step_detect() -> Vec<DetectedTool> {
 
 fn find_claude_desktop_config() -> Option<PathBuf> {
     let candidates = claude_desktop_config_paths();
-    for path in candidates {
-        // Config file exists, or parent directory exists (app installed but no config yet)
-        if path.exists() || path.parent().map_or(false, |p| p.exists()) {
-            return Some(path);
-        }
-    }
-    None
+    candidates
+        .into_iter()
+        .find(|path| path.exists() || path.parent().is_some_and(|p| p.exists()))
 }
 
 fn claude_desktop_config_paths() -> Vec<PathBuf> {
@@ -219,7 +233,11 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            paths.push(PathBuf::from(appdata).join("Claude").join("claude_desktop_config.json"));
+            paths.push(
+                PathBuf::from(appdata)
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            );
         }
     }
 
@@ -238,7 +256,11 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
-            paths.push(PathBuf::from(config).join("Claude").join("claude_desktop_config.json"));
+            paths.push(
+                PathBuf::from(config)
+                    .join("Claude")
+                    .join("claude_desktop_config.json"),
+            );
         } else if let Some(home) = dirs::home_dir() {
             paths.push(
                 home.join(".config")
@@ -254,7 +276,7 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
 fn find_cursor_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let path = home.join(".cursor").join("mcp.json");
-    if path.exists() || path.parent().map_or(false, |p| p.exists()) {
+    if path.exists() || path.parent().is_some_and(|p| p.exists()) {
         Some(path)
     } else {
         None
@@ -264,7 +286,7 @@ fn find_cursor_config() -> Option<PathBuf> {
 fn find_windsurf_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let path = home.join(".windsurf").join("mcp.json");
-    if path.exists() || path.parent().map_or(false, |p| p.exists()) {
+    if path.exists() || path.parent().is_some_and(|p| p.exists()) {
         Some(path)
     } else {
         None
@@ -293,10 +315,7 @@ fn command_exists(cmd: &str) -> bool {
 
 // ─── Step 3: Configure ──────────────────────────────────────────────────────
 
-fn step_configure(
-    tools: &[DetectedTool],
-    cortex_exe: &str,
-) -> Vec<(&'static str, StepResult)> {
+fn step_configure(tools: &[DetectedTool], cortex_exe: &str) -> Vec<(&'static str, StepResult)> {
     let mut results = Vec::new();
 
     for tool in tools {
@@ -318,12 +337,12 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
                 Err(e) => StepResult::Warn(format!("Auto-config failed: {e}. Configure manually.")),
             }
         }
-        ConfigMethod::CliCommand(base_cmd) => {
-            match run_claude_mcp_add(base_cmd, cortex_exe) {
-                Ok(()) => StepResult::Ok("Registered via CLI".into()),
-                Err(e) => StepResult::Warn(format!("CLI failed: {e}. Run manually: {base_cmd} -- {cortex_exe} mcp")),
-            }
-        }
+        ConfigMethod::CliCommand(base_cmd) => match run_claude_mcp_add(base_cmd, cortex_exe) {
+            Ok(()) => StepResult::Ok("Registered via CLI".into()),
+            Err(e) => StepResult::Warn(format!(
+                "CLI failed: {e}. Run manually: {base_cmd} -- {cortex_exe} mcp"
+            )),
+        },
         ConfigMethod::Manual(instructions) => {
             StepResult::Ok(format!("Manual setup needed: {instructions}"))
         }
@@ -377,17 +396,19 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
         );
 
     // Write back with pretty formatting
-    let output = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("JSON serialize failed: {e}"))?;
+    let output =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("JSON serialize failed: {e}"))?;
     fs::write(config_path, output)
         .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
 
     Ok(format!("Configured at {}", config_path.display()))
 }
 
-fn run_claude_mcp_add(base_cmd: &str, cortex_exe: &str) -> Result<(), String> {
+fn run_claude_mcp_add(_base_cmd: &str, cortex_exe: &str) -> Result<(), String> {
     let output = Command::new("claude")
-        .args(["mcp", "add", "cortex", "-s", "user", "--", cortex_exe, "mcp"])
+        .args([
+            "mcp", "add", "cortex", "-s", "user", "--", cortex_exe, "mcp",
+        ])
         .output()
         .map_err(|e| format!("Failed to run claude CLI: {e}"))?;
 
@@ -408,14 +429,27 @@ fn summarize_configs(results: &[(&str, StepResult)]) -> StepResult {
     if results.is_empty() {
         return StepResult::Warn("No tools to configure".into());
     }
-    let ok_count = results.iter().filter(|(_, r)| matches!(r, StepResult::Ok(_))).count();
-    let warn_count = results.iter().filter(|(_, r)| matches!(r, StepResult::Warn(_))).count();
-    let fail_count = results.iter().filter(|(_, r)| matches!(r, StepResult::Fail(_))).count();
+    let ok_count = results
+        .iter()
+        .filter(|(_, r)| matches!(r, StepResult::Ok(_)))
+        .count();
+    let warn_count = results
+        .iter()
+        .filter(|(_, r)| matches!(r, StepResult::Warn(_)))
+        .count();
+    let fail_count = results
+        .iter()
+        .filter(|(_, r)| matches!(r, StepResult::Fail(_)))
+        .count();
 
     if fail_count > 0 {
-        StepResult::Warn(format!("{ok_count} configured, {warn_count} warnings, {fail_count} failed"))
+        StepResult::Warn(format!(
+            "{ok_count} configured, {warn_count} warnings, {fail_count} failed"
+        ))
     } else if warn_count > 0 {
-        StepResult::Warn(format!("{ok_count} configured, {warn_count} need manual setup"))
+        StepResult::Warn(format!(
+            "{ok_count} configured, {warn_count} need manual setup"
+        ))
     } else {
         StepResult::Ok(format!("{ok_count}/{} tools configured", results.len()))
     }
@@ -446,7 +480,9 @@ async fn step_daemon(cortex_exe: &str) -> StepResult {
                     return StepResult::Ok(format!("Started on :7437 (took ~{}s)", (i + 1) / 2));
                 }
             }
-            StepResult::Warn("Daemon started but health check timed out. It may still be initializing.".into())
+            StepResult::Warn(
+                "Daemon started but health check timed out. It may still be initializing.".into(),
+            )
         }
         Err(e) => StepResult::Fail(format!("Cannot start daemon: {e}")),
     }
@@ -505,9 +541,7 @@ async fn step_verify() -> StepResult {
                 r.status()
             ))
         }
-        Err(e) => {
-            return StepResult::Fail(format!("Cannot reach daemon: {e}"))
-        }
+        Err(e) => return StepResult::Fail(format!("Cannot reach daemon: {e}")),
     }
 
     // Recall it back
@@ -522,7 +556,10 @@ async fn step_verify() -> StepResult {
         Ok(r) if r.status().is_success() => {
             StepResult::Ok("Store + recall round-trip verified".into())
         }
-        Ok(r) => StepResult::Warn(format!("Recall returned {}: store worked but recall did not", r.status())),
+        Ok(r) => StepResult::Warn(format!(
+            "Recall returned {}: store worked but recall did not",
+            r.status()
+        )),
         Err(e) => StepResult::Warn(format!("Recall failed: {e}. Store succeeded.")),
     }
 }

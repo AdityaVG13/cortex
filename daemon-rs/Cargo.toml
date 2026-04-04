@@ -30,6 +30,15 @@ dirs = "6"
 # HTTP middleware
 tower-http = { version = "0.6", features = ["cors"] }
 
+# TLS (optional, for team/non-loopback deployments)
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+
+# Required for TLS connection serving (hyper-util is a transitive dep of axum)
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
+tower = "0.5"
+
 # Windows Service support
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

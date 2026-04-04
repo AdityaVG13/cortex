@@ -1,0 +1,16 @@
+{
+  "name": "@cortex-memory/client",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the Cortex AI Memory daemon",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "files": ["dist"],
+  "devDependencies": {
+    "typescript": "^5.4"
+  }
+}

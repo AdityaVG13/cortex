@@ -39,8 +39,10 @@ pub struct CompactionResult {
 
 /// Run one compaction pass. Safe to call repeatedly.
 pub fn run_compaction(conn: &Connection) -> CompactionResult {
-    let mut result = CompactionResult::default();
-    result.bytes_before = db_size_bytes(conn);
+    let mut result = CompactionResult {
+        bytes_before: db_size_bytes(conn),
+        ..CompactionResult::default()
+    };
 
     // 1. Event log rotation
     result.events_pruned = prune_old_events(conn);
@@ -167,7 +169,11 @@ fn aggregate_old_feedback(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let rows = stmt.query_map(params![FEEDBACK_AGGREGATION_DAYS], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             })?;
             Ok(rows.flatten().collect())
         })
@@ -178,7 +184,7 @@ fn aggregate_old_feedback(conn: &Connection) -> usize {
     }
 
     let mut aggregated = 0usize;
-    for (source, net_signal, count) in &sources {
+    for (source, net_signal, _count) in &sources {
         // Delete old individual rows
         let deleted = conn
             .execute(
@@ -218,16 +224,25 @@ fn db_size_bytes(conn: &Connection) -> i64 {
 /// Get storage breakdown by table (for diagnostics).
 pub fn storage_breakdown(conn: &Connection) -> Vec<(String, i64)> {
     let tables = [
-        "memories", "decisions", "embeddings", "events",
-        "recall_feedback", "co_occurrence", "memory_clusters",
-        "cluster_members", "context_cache", "feed",
+        "memories",
+        "decisions",
+        "embeddings",
+        "events",
+        "recall_feedback",
+        "co_occurrence",
+        "memory_clusters",
+        "cluster_members",
+        "context_cache",
+        "feed",
     ];
 
     let mut breakdown = Vec::new();
     for table in &tables {
         // Approximate row size * count
         let count: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0);
         breakdown.push((table.to_string(), count));
     }
@@ -257,17 +272,21 @@ mod tests {
             "INSERT INTO events (type, data, source_agent, created_at) \
              VALUES ('test', '{}', 'test', datetime('now', '-60 days'))",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // Insert a recent event
         conn.execute(
             "INSERT INTO events (type, data, source_agent) VALUES ('test', '{}', 'test')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let pruned = prune_old_events(&conn);
         assert_eq!(pruned, 1, "Should prune only the old event");
 
-        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(remaining, 1);
     }
 
@@ -278,14 +297,17 @@ mod tests {
             "INSERT INTO memories (text, source, status, updated_at) \
              VALUES ('important data', 'test', 'archived', datetime('now', '-120 days'))",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let stripped = strip_archived_text(&conn);
         assert_eq!(stripped, 1);
 
-        let text: String = conn.query_row(
-            "SELECT text FROM memories WHERE source = 'test'", [], |r| r.get(0),
-        ).unwrap();
+        let text: String = conn
+            .query_row("SELECT text FROM memories WHERE source = 'test'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(text, "[compacted]");
     }
 

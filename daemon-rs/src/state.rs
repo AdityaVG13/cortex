@@ -73,6 +73,8 @@ pub struct RuntimeState {
     pub db_path: std::path::PathBuf,
     /// In-process ONNX embedding engine (None if model not downloaded yet).
     pub embedding_engine: Option<Arc<crate::embeddings::EmbeddingEngine>>,
+    /// Per-IP sliding-window rate limiter.
+    pub rate_limiter: crate::rate_limit::RateLimiter,
 }
 
 impl RuntimeState {
@@ -108,59 +110,102 @@ pub fn initialize(
     let conn = crate::db::open(db_path)
         .map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
 
-    crate::db::configure(&conn)
-        .map_err(|e| format!("Failed to configure database: {e}"))?;
+    crate::db::configure(&conn).map_err(|e| format!("Failed to configure database: {e}"))?;
 
-    crate::db::initialize_schema(&conn)
-        .map_err(|e| format!("Failed to initialise schema: {e}"))?;
+    crate::db::initialize_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
-    // 2. Integrity check — non-fatal; log a warning and continue.
+    // 2. Integrity check — attempt .bak recovery if corruption detected.
     match crate::db::verify_integrity(&conn) {
         Ok(true) => {}
-        Ok(false) => eprintln!("[cortex] WARNING: database integrity check failed"),
-        Err(e) => eprintln!("[cortex] WARNING: integrity check error: {e}"),
+        Ok(false) | Err(_) => {
+            eprintln!("[cortex] WARNING: database integrity check failed -- attempting recovery");
+            let bak_path = db_path.with_extension("db.bak");
+            if bak_path.exists() {
+                eprintln!(
+                    "[cortex] Found backup at {}, restoring...",
+                    bak_path.display()
+                );
+                drop(conn);
+                if let Err(e) = std::fs::copy(&bak_path, db_path) {
+                    eprintln!("[cortex] ERROR: backup restore failed: {e}");
+                    return Err(format!("Database corrupt and backup restore failed: {e}"));
+                }
+                let conn = crate::db::open(db_path)
+                    .map_err(|e| format!("Failed to reopen after restore: {e}"))?;
+                crate::db::configure(&conn)
+                    .map_err(|e| format!("Failed to configure restored DB: {e}"))?;
+                crate::db::initialize_schema(&conn)
+                    .map_err(|e| format!("Failed to init schema on restored DB: {e}"))?;
+                match crate::db::verify_integrity(&conn) {
+                    Ok(true) => eprintln!("[cortex] Recovery successful -- restored from backup"),
+                    _ => {
+                        return Err(
+                            "Database corrupt: backup also failed integrity check".to_string()
+                        );
+                    }
+                }
+                // Proceed with the restored connection -- reassign below
+                return initialize_with_conn(conn, db_path, allow_token_rotation);
+            } else {
+                eprintln!(
+                    "[cortex] No backup found at {} -- continuing with degraded database",
+                    bak_path.display()
+                );
+            }
+        }
     }
 
+    initialize_with_conn(conn, db_path, allow_token_rotation)
+}
+
+fn initialize_with_conn(
+    conn: Connection,
+    db_path: &std::path::Path,
+    allow_token_rotation: bool,
+) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
     // Rebuild FTS indexes for existing data (idempotent).
     if let Err(e) = crate::db::rebuild_fts(&conn) {
         eprintln!("[cortex] WARNING: FTS rebuild failed: {e}");
     }
 
-    // 2b. Open a separate read-only connection for concurrent reads.
-    //     WAL mode allows multiple readers alongside a single writer.
-    let read_conn = crate::db::open(db_path)
-        .map_err(|e| format!("Failed to open read connection: {e}"))?;
+    // Open a separate read-only connection for concurrent reads.
+    let read_conn =
+        crate::db::open(db_path).map_err(|e| format!("Failed to open read connection: {e}"))?;
     crate::db::configure(&read_conn)
         .map_err(|e| format!("Failed to configure read connection: {e}"))?;
-    // Set read connection to query-only mode for safety
-    read_conn.execute_batch("PRAGMA query_only = ON;").map_err(|e| e.to_string())?;
+    read_conn
+        .execute_batch("PRAGMA query_only = ON;")
+        .map_err(|e| e.to_string())?;
     eprintln!("[cortex] Read connection opened (WAL concurrent reads enabled)");
 
-    // 3. Auth token.
+    // Auth token.
     let token = if allow_token_rotation {
         crate::auth::generate_token()
     } else {
         crate::auth::read_token().unwrap_or_else(crate::auth::generate_ephemeral_token)
     };
 
-    // 4. Channels.
+    // Channels.
     let (events_tx, _) = broadcast::channel::<DaemonEvent>(256);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-    // 5. Derive home directory from db_path parent (or env fallback).
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    // Load embedding engine (non-blocking -- model may not be downloaded yet).
     let models_dir = crate::auth::cortex_dir().join("models");
     let embedding_engine = crate::embeddings::EmbeddingEngine::load(&models_dir).map(Arc::new);
 
     if embedding_engine.is_some() {
-        eprintln!("[cortex] Embedding engine loaded ({}-dim, in-process ONNX)", crate::embeddings::DIMENSION);
+        eprintln!(
+            "[cortex] Embedding engine loaded ({}-dim, in-process ONNX)",
+            crate::embeddings::DIMENSION
+        );
     } else {
-        eprintln!("[cortex] Embedding engine not available -- keyword search only until model downloaded");
+        eprintln!(
+            "[cortex] Embedding engine not available -- keyword search only until model downloaded"
+        );
     }
 
     let state = RuntimeState {
@@ -177,6 +222,7 @@ pub fn initialize(
         home,
         db_path: db_path.to_path_buf(),
         embedding_engine,
+        rate_limiter: crate::rate_limit::RateLimiter::new(),
     };
 
     Ok((state, shutdown_rx))

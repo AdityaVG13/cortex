@@ -19,7 +19,9 @@ const MCP_RPC_URL: &str = "http://127.0.0.1:7437/mcp-rpc";
 /// Read the auth token from ~/.cortex/cortex.token.
 fn read_auth_token() -> Option<String> {
     let token_path = crate::auth::cortex_dir().join("cortex.token");
-    std::fs::read_to_string(token_path).ok().map(|t| t.trim().to_string())
+    std::fs::read_to_string(token_path)
+        .ok()
+        .map(|t| t.trim().to_string())
 }
 
 /// Try to run in proxy mode. Returns `true` if proxy connected and ran,
@@ -36,16 +38,14 @@ pub async fn run() -> bool {
     // Health check -- is the daemon alive right now?
     // If not, still start in proxy mode. The daemon may come up later
     // and the retry loop will connect when it does.
-    match client
-        .get("http://127.0.0.1:7437/health")
-        .send()
-        .await
-    {
+    match client.get("http://127.0.0.1:7437/health").send().await {
         Ok(r) if r.status().is_success() => {
             eprintln!("[cortex-mcp] Proxy mode -- forwarding to daemon on :7437");
         }
         _ => {
-            eprintln!("[cortex-mcp] Proxy mode -- daemon not yet available, will retry on each request");
+            eprintln!(
+                "[cortex-mcp] Proxy mode -- daemon not yet available, will retry on each request"
+            );
         }
     }
 
@@ -70,9 +70,7 @@ pub async fn run() -> bool {
                     "error": { "code": -32700, "message": "Parse error" },
                     "id": null
                 });
-                let _ = stdout
-                    .write_all(format!("{}\n", err).as_bytes())
-                    .await;
+                let _ = stdout.write_all(format!("{}\n", err).as_bytes()).await;
                 let _ = stdout.flush().await;
                 continue;
             }
@@ -92,7 +90,8 @@ pub async fn run() -> bool {
 
             let mut req = client
                 .post(MCP_RPC_URL)
-                .header("content-type", "application/json");
+                .header("content-type", "application/json")
+                .header("x-cortex-request", "true");
             if !auth_header.is_empty() {
                 req = req.header("authorization", &auth_header);
             }
@@ -103,7 +102,10 @@ pub async fn run() -> bool {
                     // Re-read token on next iteration (already done above).
                     attempt += 1;
                     let backoff = backoff_duration(attempt);
-                    eprintln!("[cortex-mcp] Auth rejected (new token?), retry in {}s...", backoff.as_secs());
+                    eprintln!(
+                        "[cortex-mcp] Auth rejected (new token?), retry in {}s...",
+                        backoff.as_secs()
+                    );
                     tokio::time::sleep(backoff).await;
                     continue;
                 }
@@ -116,9 +118,7 @@ pub async fn run() -> bool {
                         if let Ok(body) = resp.text().await {
                             let body = body.trim();
                             if !body.is_empty() {
-                                let _ = stdout
-                                    .write_all(format!("{}\n", body).as_bytes())
-                                    .await;
+                                let _ = stdout.write_all(format!("{}\n", body).as_bytes()).await;
                                 let _ = stdout.flush().await;
                             }
                         }
@@ -134,7 +134,7 @@ pub async fn run() -> bool {
                     }
 
                     // Log periodically, not every retry
-                    if attempt % 10 == 0 {
+                    if attempt.is_multiple_of(10) {
                         eprintln!("[cortex-mcp] Still waiting for daemon... ({attempt} retries, {}s backoff)", backoff_duration(attempt).as_secs());
                     }
 

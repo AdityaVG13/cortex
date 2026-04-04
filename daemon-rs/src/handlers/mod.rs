@@ -2,6 +2,7 @@ pub mod boot;
 pub mod conductor;
 pub mod diary;
 pub mod events;
+pub mod export;
 pub mod feed;
 pub mod feedback;
 pub mod health;
@@ -16,6 +17,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::Value;
+use std::net::IpAddr;
 
 use crate::state::RuntimeState;
 
@@ -38,9 +40,32 @@ fn apply_json_headers(headers: &mut HeaderMap) {
     headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
 }
 
-/// Validate the Bearer token on POST endpoints.  Returns `Err(Response)` when
-/// the caller should short-circuit with a 401.
+#[allow(clippy::result_large_err)]
+/// Reject requests missing the `X-Cortex-Request: true` header.
+/// Prevents SSRF attacks where a malicious website tricks the browser into
+/// calling localhost:7437 -- browsers cannot add custom headers without CORS
+/// preflight, and our CORS policy rejects non-localhost origins.
+/// `/health` is exempt (unauthenticated monitoring endpoint).
+pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
+    match headers
+        .get("x-cortex-request")
+        .and_then(|v| v.to_str().ok())
+    {
+        Some("true") => Ok(()),
+        _ => Err(json_response(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({ "error": "Missing X-Cortex-Request header" }),
+        )),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+/// Validate the Bearer token on protected endpoints.  Returns `Err(Response)`
+/// when the caller should short-circuit with a 401.
+/// Also enforces SSRF protection (X-Cortex-Request header).
 pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
+    ensure_ssrf_protection(headers)?;
+
     let header = headers
         .get("authorization")
         .and_then(|h| h.to_str().ok())
@@ -59,10 +84,72 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
     }
 }
 
+#[allow(dead_code)]
+/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or default to loopback.
+pub fn client_ip(headers: &HeaderMap) -> IpAddr {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse().ok())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse().ok())
+        })
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+}
+
+#[allow(dead_code)]
+/// Rate-limited auth check. Returns Err(Response) on auth failure, rate limit
+/// exceeded, or missing SSRF header. Handles both request-volume and
+/// auth-failure buckets.
+pub async fn ensure_auth_rated(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
+    let ip = client_ip(headers);
+
+    // Check auth-failure block first
+    if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
+        return Err(rate_limit_response(retry_after, 0));
+    }
+
+    // Check request volume
+    match state.rate_limiter.check_request(ip).await {
+        Err(retry_after) => return Err(rate_limit_response(retry_after, 0)),
+        Ok(_remaining) => {}
+    }
+
+    // Run normal auth (SSRF + Bearer)
+    match ensure_auth(headers, state) {
+        Ok(()) => Ok(()),
+        Err(resp) => {
+            let _ = state.rate_limiter.record_auth_failure(ip).await;
+            Err(resp)
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn rate_limit_response(retry_after: u64, remaining: usize) -> Response {
+    let body = serde_json::json!({
+        "error": "Too Many Requests",
+        "retry_after": retry_after,
+    });
+    let mut resp = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+    let headers = resp.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
+        headers.insert("Retry-After", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&remaining.to_string()) {
+        headers.insert("X-RateLimit-Remaining", v);
+    }
+    headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
+    resp
+}
+
 /// Current UTC time in ISO-8601 with millisecond precision.
 pub fn now_iso() -> String {
-    chrono::Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// Insert an event row into the `events` table.

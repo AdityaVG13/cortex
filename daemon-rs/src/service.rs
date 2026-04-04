@@ -67,9 +67,7 @@ pub fn install() {
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             if stderr.contains("1073") {
-                eprintln!(
-                    "[cortex] Service already exists. Run: cortex service uninstall"
-                );
+                eprintln!("[cortex] Service already exists. Run: cortex service uninstall");
             } else {
                 eprintln!("[cortex] Failed to install (run as Administrator)");
                 eprintln!("{}", stderr);
@@ -224,9 +222,8 @@ mod scm {
             }
         };
 
-        let status_handle =
-            service_control_handler::register(super::SERVICE_NAME, event_handler)
-                .expect("[cortex] Failed to register service control handler");
+        let status_handle = service_control_handler::register(super::SERVICE_NAME, event_handler)
+            .expect("[cortex] Failed to register service control handler");
 
         // Report: Starting
         let _ = status_handle.set_service_status(ServiceStatus {

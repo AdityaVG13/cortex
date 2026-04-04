@@ -6,9 +6,9 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::json;
 
+use super::{ensure_auth, json_response, log_event, now_iso};
 use crate::db::{archive_entries, checkpoint_wal_best_effort};
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, log_event, now_iso};
 
 // ─── Request types ───────────────────────────────────────────────────────────
 
@@ -196,10 +196,7 @@ pub fn resolve_decision(
 
 // ─── GET /conflicts ──────────────────────────────────────────────────────────
 
-pub async fn handle_conflicts(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_conflicts(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
@@ -283,10 +280,7 @@ pub async fn handle_archive(
 
 // ─── POST /shutdown ──────────────────────────────────────────────────────────
 
-pub async fn handle_shutdown(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_shutdown(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
