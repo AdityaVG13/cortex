@@ -153,20 +153,61 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Local models handle any fu
 
 ---
 
+## Open-Source Release Tasks (v0.3.0-public)
+
+### Claude Code (Opus) -- 3 new tasks
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 83 | Fix /unfold visibility bypass (root cause) | CRITICAL | Thread RecallContext through unfold handler. Zero access control currently. |
+| 84 | Fix is_visible NULL owner_id policy (root cause) | CRITICAL | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
+| 85 | Fix MCP per-caller identity (root cause) | HIGH | API key or caller_id per JSON-RPC request. from_state is a workaround, not a fix. |
+
+### Cursor -- 4 new tasks
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 86 | Version bump to v0.3.0 + git tag + GitHub release | HIGH | Cargo.toml, CHANGELOG.md, build release binary, attach to GH release. |
+| 87 | Desktop app build instructions + version sync to 0.3.0 | HIGH | desktop/cortex-control-center version, build docs, verify first-run UX. |
+| 88 | App icon: replace default with adityasmile.png | MEDIUM | In desktop/cortex-control-center/src-tauri/icons/: remove all old icons, rename adityasmile.png to icon.png, generate required sizes (icon.ico for Windows, icon.icns for macOS, 32x32, 128x128, 128x128@2x). Use a single source image, script the resize. Tauri needs specific filenames -- check tauri.conf.json for required icon entries. |
+| 89 | README rewrite: release badge, download link, "What's New in v0.3.0" | MEDIUM | Top badge box currently empty. Add release link, version badge, feature highlights. |
+
+### Gemini CLI -- 3 new tasks
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 90 | README rewrite for public audience | HIGH | 1M context read of entire repo. Rewrite for external developers, not internal team. Remove personal references. |
+| 91 | Recall quality baseline analysis | MEDIUM | Distribution of surprise scores across 220+ decisions. Define thresholds for meaningful/noise. |
+| 92 | Review architecture docs: classify as public/internal/remove | MEDIUM | docs/architecture/, docs/compatibility/, docs/schema/, docs/archive/ -- what stays, what goes. |
+
+### Codex CLI -- 2 new tasks
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 93 | ROADMAP.md for contributors | HIGH | Process all architecture docs (Codex + Gemini longterm considerations) into public roadmap with clear contribution areas. |
+| 94 | CONTRIBUTING.md + SECURITY.md | HIGH | Dev setup, build instructions, PR guidelines, vulnerability disclosure policy. |
+
+### Droid (GLM 4.7) -- 2 new tasks
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 95 | Repo cleanup: delete personal files, update .gitignore | HIGH | Delete: CLAUDE.md, AGENTS.md, GEMINI.md, .cursor/, .aider*, .planning/, PLAN.md, RECON.md, cortex-profiles.json, personal scripts, docs.zip, cortex_corrupt.db, debug-*.log. Add 20+ patterns to .gitignore. |
+| 96 | Remove legacy Node.js src/ or add deprecation notice | LOW | Rust daemon is the product. Legacy code confuses contributors. |
+
+---
+
 ## Summary
 
-| Tool | Tasks | % of Work |
-|------|-------|-----------|
-| Claude Code (Opus) | 7 | 9% |
-| Cursor (Sonnet/GLM 5) | 20 | 24% |
-| Codex CLI | 10 | 12% |
-| Gemini CLI | 5 | 6% |
-| Droid (GLM 5) | 12 | 15% |
-| Droid (GLM 4.7) | 19 | 23% |
-| Local / Done | 9 | 11% |
-| **Total** | **82** | |
-
-Opus handles 9% of the work. 77% goes to cheaper models. That's the budget play.
+| Tool | Original | New | Total |
+|------|----------|-----|-------|
+| Claude Code (Opus) | 7 | 3 | 10 |
+| Cursor (Sonnet/GLM 5) | 20 | 4 | 24 |
+| Codex CLI | 10 | 2 | 12 |
+| Gemini CLI | 5 | 3 | 8 |
+| Droid (GLM 5) | 12 | 0 | 12 |
+| Droid (GLM 4.7) | 19 | 2 | 21 |
+| Local / Done | 9 | 0 | 9 |
+| **Total** | **82** | **14** | **96** |
 
 ---
 
@@ -175,12 +216,11 @@ Opus handles 9% of the work. 77% goes to cheaper models. That's the budget play.
 ### Opus tasks shipped (5/7)
 Commits 4fb00ea..f889d80 on master. 8 commits total (5 features + 2 critic fixes + 1 line endings).
 
+### Open-source readiness: 85%
+All 36 critical-path features shipped. Blocking items: 3 security root causes (#83-85), repo cleanup (#95), missing docs (#93-94). Desktop app functional (11 panels) but needs version sync and icon update (#87-88).
+
 ### Blockers before Chrome extension (#9, #40)
 - Need a **team-mode test environment** with 2+ users to validate visibility filtering end-to-end
-- Cursor patched symptoms for 3 security findings but root causes remain:
-  1. `is_visible` treats NULL owner_id as visible in team mode -- should fail closed. Migration must guarantee zero NULLs.
-  2. `/unfold` endpoint has no visibility filtering at all -- returns full text by source match with zero access control. Highest priority fix.
-  3. MCP JSON-RPC has no per-caller identity -- `from_state` assumes default owner for all MCP callers. Needs API key per JSON-RPC request.
 
-### Recall quality analysis (Gemini CLI task #81)
+### Recall quality analysis (Gemini CLI task #91)
 Surprise metric from cortex_store has no baseline. Need distribution analysis across all 220+ decisions to know what the scores actually mean. Without this, surprise is a number, not a signal.
