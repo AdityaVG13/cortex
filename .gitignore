@@ -16,7 +16,37 @@ dist/
 # Internal design docs (not for public repo)
 docs/
 
+# Build artifacts at repo root
+cortex-app.exe
+*.exe
+
+# Database artifacts
+cortex.db.bak
+cortex_corrupt.db
+debug-*.log
+docs.zip
+
+# Personal config (users create their own)
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.cursorrules
+.cursor/
+.planning/
+PLAN.md
+RECON.md
+cortex-profiles.json
+
+# Personal scripts
+cortex-start.ps1
+cortex-start.bat
+cortex-dashboard.bat
+cortex-app.bat
+cortex-mcp.cmd
+Cortex?Ingester?Instructions.txt
+
 # Editor/tool artifacts
 .aider*
 .tmp-*
 __pycache__/
+.npmrc
