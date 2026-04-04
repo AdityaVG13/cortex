@@ -50,6 +50,7 @@ pub fn record(conn: &Connection, sources: &[String]) -> Result<(), String> {
 /// Return up to `limit` sources that frequently co-occur with
 /// `recalled_sources` but are not already in that set.
 /// Each result is a JSON object `{ "source": "...", "coScore": <i64> }`.
+#[allow(dead_code)]
 pub fn predict(
     conn: &Connection,
     recalled_sources: &[String],
@@ -139,8 +140,7 @@ mod tests {
         record(&conn, &sources).unwrap();
         record(&conn, &sources).unwrap(); // Second call increases counts
 
-        let predictions =
-            predict(&conn, &["source_a".to_string()], 5).unwrap();
+        let predictions = predict(&conn, &["source_a".to_string()], 5).unwrap();
         assert!(!predictions.is_empty());
 
         // Every prediction should have a coScore > 0
@@ -153,15 +153,11 @@ mod tests {
     fn test_predict_excludes_known_sources() {
         let conn = setup();
 
-        let sources = vec![
-            "source_a".to_string(),
-            "source_b".to_string(),
-        ];
+        let sources = vec!["source_a".to_string(), "source_b".to_string()];
         record(&conn, &sources).unwrap();
 
         // Predicting with both sources — neither should appear in results
-        let predictions =
-            predict(&conn, &sources, 5).unwrap();
+        let predictions = predict(&conn, &sources, 5).unwrap();
         for p in &predictions {
             let s = p["source"].as_str().unwrap();
             assert_ne!(s, "source_a");

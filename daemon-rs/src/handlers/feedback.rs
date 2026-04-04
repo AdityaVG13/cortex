@@ -18,9 +18,9 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::{ensure_auth, json_error, json_response};
 use crate::embeddings;
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, json_error};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -89,11 +89,14 @@ pub async fn handle_feedback(
         }
     }
 
-    json_response(StatusCode::OK, json!({
-        "stored": stored,
-        "signal": signal,
-        "sources": body.sources,
-    }))
+    json_response(
+        StatusCode::OK,
+        json!({
+            "stored": stored,
+            "signal": signal,
+            "sources": body.sources,
+        }),
+    )
 }
 
 // ─── Feedback recording (called internally by unfold) ───────────────────────
@@ -151,10 +154,8 @@ pub fn compute_boost(conn: &Connection, result_source: &str) -> f64 {
                 Ok(signal * (-decay_lambda * age_days).exp())
             })?;
             let mut total = 0.0f64;
-            for row in rows {
-                if let Ok(v) = row {
-                    total += v;
-                }
+            for v in rows.flatten() {
+                total += v;
             }
             Ok(total)
         })
@@ -165,7 +166,10 @@ pub fn compute_boost(conn: &Connection, result_source: &str) -> f64 {
 
 /// Batch compute boosts for multiple sources at once (avoids N queries).
 /// Returns a map of source → boost value.
-pub fn compute_boosts(conn: &Connection, sources: &[String]) -> std::collections::HashMap<String, f64> {
+pub fn compute_boosts(
+    conn: &Connection,
+    sources: &[String],
+) -> std::collections::HashMap<String, f64> {
     let mut boosts = std::collections::HashMap::new();
     if sources.is_empty() {
         return boosts;
@@ -256,13 +260,25 @@ pub async fn handle_feedback_stats(
         .query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0))
         .unwrap_or(0);
     let positive: i64 = conn
-        .query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal > 0", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM recall_feedback WHERE signal > 0",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     let negative: i64 = conn
-        .query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal < 0", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM recall_feedback WHERE signal < 0",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     let unique_sources: i64 = conn
-        .query_row("SELECT COUNT(DISTINCT result_source) FROM recall_feedback", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(DISTINCT result_source) FROM recall_feedback",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
 
     // Top boosted sources
@@ -285,13 +301,16 @@ pub async fn handle_feedback_stats(
         })
         .unwrap_or_default();
 
-    json_response(StatusCode::OK, json!({
-        "total": total,
-        "positive": positive,
-        "negative": negative,
-        "uniqueSources": unique_sources,
-        "topBoosted": top,
-    }))
+    json_response(
+        StatusCode::OK,
+        json!({
+            "total": total,
+            "positive": positive,
+            "negative": negative,
+            "uniqueSources": unique_sources,
+            "topBoosted": top,
+        }),
+    )
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -322,7 +341,8 @@ mod tests {
             "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent) \
              VALUES ('test', 'memory::foo', 'memory', 1.0, 'test')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let boost = compute_boost(&conn, "memory::foo");
         assert!(boost > 0.0, "Positive signal should produce positive boost");
         assert!(boost <= MAX_BOOST, "Boost should be capped at MAX_BOOST");
@@ -335,7 +355,8 @@ mod tests {
             "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent) \
              VALUES ('test', 'memory::bar', 'memory', -1.0, 'test')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let boost = compute_boost(&conn, "memory::bar");
         assert!(boost < 0.0, "Negative signal should produce negative boost");
         assert!(boost >= MIN_BOOST, "Boost should be capped at MIN_BOOST");
@@ -348,14 +369,20 @@ mod tests {
             "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent) \
              VALUES ('test', 'memory::a', 'memory', 1.0, 'test')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent) \
              VALUES ('test', 'memory::b', 'memory', -0.5, 'test')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        let sources = vec!["memory::a".to_string(), "memory::b".to_string(), "memory::c".to_string()];
+        let sources = vec![
+            "memory::a".to_string(),
+            "memory::b".to_string(),
+            "memory::c".to_string(),
+        ];
         let boosts = compute_boosts(&conn, &sources);
         assert!(boosts["memory::a"] > 0.0);
         assert!(boosts["memory::b"] < 0.0);
@@ -364,7 +391,10 @@ mod tests {
 
     #[test]
     fn test_parse_source() {
-        assert_eq!(parse_source("decision::42"), ("decision".to_string(), Some(42)));
+        assert_eq!(
+            parse_source("decision::42"),
+            ("decision".to_string(), Some(42))
+        );
         assert_eq!(parse_source("memory::foo.md"), ("memory".to_string(), None));
         assert_eq!(parse_source("other"), ("unknown".to_string(), None));
     }

@@ -4,10 +4,10 @@ use axum::response::Response;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::{ensure_auth, json_response, now_iso};
 use crate::compiler;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, now_iso};
 
 // ─── Query types ─────────────────────────────────────────────────────────────
 

@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 
+use super::{ensure_auth, json_error, json_response};
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, json_error};
 
 // ─── Request type ─────────────────────────────────────────────────────────────
 
@@ -62,10 +62,7 @@ pub async fn handle_diary(
     // Today's date
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-    let mut lines: Vec<String> = vec![
-        format!("# Session State — {today}"),
-        String::new(),
-    ];
+    let mut lines: Vec<String> = vec![format!("# Session State — {today}"), String::new()];
 
     // Write permanent sections first
     if !permanent.is_empty() {
@@ -168,7 +165,11 @@ fn extract_section(content: &str, header: &str) -> Option<String> {
     let rest = &content[start..];
     let end = rest.find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
     let text = rest[..end].trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 /// Escape any user-provided `##` headers to prevent document structure breakage.

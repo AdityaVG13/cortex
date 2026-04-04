@@ -8,7 +8,9 @@ fn log_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".cortex").join("cortex-daemon.log")
+    PathBuf::from(home)
+        .join(".cortex")
+        .join("cortex-daemon.log")
 }
 
 #[allow(dead_code)]

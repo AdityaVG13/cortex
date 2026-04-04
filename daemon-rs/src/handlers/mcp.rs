@@ -1,11 +1,11 @@
 use serde_json::{json, Value};
 
-use crate::state::RuntimeState;
-use super::{now_iso, estimate_tokens};
-use super::store::store_decision;
-use super::recall::execute_unified_recall;
-use super::mutate::{forget_keyword, resolve_decision};
 use super::health::build_digest;
+use super::mutate::{forget_keyword, resolve_decision};
+use super::recall::execute_unified_recall;
+use super::store::store_decision;
+use super::{estimate_tokens, now_iso};
+use crate::state::RuntimeState;
 
 // ─── JSON-RPC helpers ─────────────────────────────────────────────────────────
 
@@ -211,10 +211,17 @@ pub fn mcp_tools() -> Vec<Value> {
 
 // ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Result<Value, String> {
+async fn mcp_dispatch(
+    state: &RuntimeState,
+    tool_name: &str,
+    args: &Value,
+) -> Result<Value, String> {
     match tool_name {
         "cortex_boot" => {
-            let profile = args.get("profile").and_then(|v| v.as_str()).map(str::to_string);
+            let profile = args
+                .get("profile")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             let agent = args
                 .get("agent")
                 .and_then(|v| v.as_str())
@@ -299,8 +306,14 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
                 .get("decision")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: decision".to_string())?;
-            let context = args.get("context").and_then(|v| v.as_str()).map(str::to_string);
-            let entry_type = args.get("type").and_then(|v| v.as_str()).map(str::to_string);
+            let context = args
+                .get("context")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let entry_type = args
+                .get("type")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             let source_agent = args
                 .get("source_agent")
                 .and_then(|v| v.as_str())
@@ -309,7 +322,15 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             let confidence = args.get("confidence").and_then(|v| v.as_f64());
 
             let mut conn = state.db.lock().await;
-            let (entry, _id) = store_decision(&mut conn, decision, context, entry_type, source_agent.clone(), confidence, None)?;
+            let (entry, _id) = store_decision(
+                &mut conn,
+                decision,
+                context,
+                entry_type,
+                source_agent.clone(),
+                confidence,
+                None,
+            )?;
 
             // Auto-append to active focus session (sawtooth pattern)
             crate::focus::focus_append(&conn, &source_agent, decision);
@@ -356,17 +377,25 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
 
         "cortex_unfold" => {
             let sources: Vec<String> = match args.get("sources") {
-                Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-                Some(Value::String(s)) => s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-                _ => return Err("Missing required argument: sources (array of source strings)".to_string()),
+                Some(Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect(),
+                Some(Value::String(s)) => s
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+                _ => {
+                    return Err(
+                        "Missing required argument: sources (array of source strings)".to_string(),
+                    )
+                }
             };
             if sources.is_empty() {
                 return Err("sources array is empty".to_string());
             }
-            let agent = args
-                .get("agent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("mcp");
+            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
             let conn = state.db.lock().await;
             let mut results: Vec<Value> = Vec::new();
             let mut total_tokens = 0usize;
@@ -377,11 +406,13 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
                     if let Some(id_str) = source.split("::").nth(1) {
                         if let Ok(crystal_id) = id_str.parse::<i64>() {
                             let members = crate::crystallize::unfold_crystal(&conn, crystal_id);
-                            let crystal_text = conn.query_row(
-                                "SELECT consolidated_text FROM memory_clusters WHERE id = ?1",
-                                rusqlite::params![crystal_id],
-                                |row| row.get::<_, String>(0),
-                            ).unwrap_or_default();
+                            let crystal_text = conn
+                                .query_row(
+                                    "SELECT consolidated_text FROM memory_clusters WHERE id = ?1",
+                                    rusqlite::params![crystal_id],
+                                    |row| row.get::<_, String>(0),
+                                )
+                                .unwrap_or_default();
                             let tokens = estimate_tokens(&crystal_text);
                             total_tokens += tokens;
                             found_sources.push(source.clone());
@@ -461,7 +492,9 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
         }
 
         "cortex_focus_start" => {
-            let label = args.get("label").and_then(|v| v.as_str())
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
             let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
             let conn = state.db.lock().await;
@@ -469,7 +502,9 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
         }
 
         "cortex_focus_end" => {
-            let label = args.get("label").and_then(|v| v.as_str())
+            let label = args
+                .get("label")
+                .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
             let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
             let conn = state.db.lock().await;
@@ -487,7 +522,7 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             if let Ok(mut stmt) = conn.prepare(
                 "SELECT id, label, summary, tokens_before, tokens_after, started_at, ended_at \
                  FROM focus_sessions WHERE agent = ?1 AND status = 'closed' \
-                 ORDER BY ended_at DESC LIMIT 5"
+                 ORDER BY ended_at DESC LIMIT 5",
             ) {
                 if let Ok(rows) = stmt.query_map(rusqlite::params![agent], |row| {
                     Ok(json!({
@@ -527,10 +562,7 @@ async fn mcp_dispatch(state: &RuntimeState, tool_name: &str, args: &Value) -> Re
             let permanent = extract_permanent_sections(&existing);
             let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-            let mut lines: Vec<String> = vec![
-                format!("# Session State — {today}"),
-                String::new(),
-            ];
+            let mut lines: Vec<String> = vec![format!("# Session State — {today}"), String::new()];
 
             if !permanent.is_empty() {
                 lines.push("## DO NOT REMOVE".to_string());
@@ -720,7 +752,11 @@ fn extract_section(content: &str, header: &str) -> Option<String> {
     let rest = &content[start..];
     let end = rest.find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
     let text = rest[..end].trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 fn sanitize_markdown(input: &str) -> String {

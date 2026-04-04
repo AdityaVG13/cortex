@@ -136,9 +136,7 @@ fn build_identity_capsule(conn: &Connection) -> (String, usize) {
     }
 
     // Platform sharp edges (Windows-specific gotchas)
-    if let Ok(edge_re) =
-        Regex::new(r"(?i)\b(windows|win32|encoding|cp1252|bash\.exe|CRLF)\b")
-    {
+    if let Ok(edge_re) = Regex::new(r"(?i)\b(windows|win32|encoding|cp1252|bash\.exe|CRLF)\b") {
         if let Ok(mut stmt) = conn.prepare(
             "SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20",
         ) {
@@ -187,9 +185,9 @@ fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
 
 fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT sender, message FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC",
-    ) {
+    if let Ok(mut stmt) = conn
+        .prepare("SELECT sender, message FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC")
+    {
         if let Ok(rows) = stmt.query_map(params![agent], |r| {
             Ok(json!({
                 "from": r.get::<_, String>(0)?,
@@ -209,8 +207,7 @@ fn fetch_sessions(conn: &Connection) -> Vec<Value> {
     if let Ok(mut stmt) = conn.prepare(
         "SELECT agent, project, description, files_json FROM sessions WHERE expires_at > ?1",
     ) {
-        let now = chrono::Utc::now()
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         if let Ok(rows) = stmt.query_map(params![now], |r| {
             let files_json: String = r.get(3)?;
             Ok(json!({
@@ -230,11 +227,10 @@ fn fetch_sessions(conn: &Connection) -> Vec<Value> {
 
 fn fetch_locks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
-    let now = chrono::Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT path, agent, expires_at FROM locks WHERE expires_at > ?1",
-    ) {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT path, agent, expires_at FROM locks WHERE expires_at > ?1")
+    {
         if let Ok(rows) = stmt.query_map(params![now], |r| {
             Ok(json!({
                 "path": r.get::<_, String>(0)?,
@@ -262,9 +258,9 @@ fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
         .flatten();
 
     let mut all: Vec<(String, String, String, String)> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, agent, kind, summary FROM feed ORDER BY timestamp ASC",
-    ) {
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT id, agent, kind, summary FROM feed ORDER BY timestamp ASC")
+    {
         if let Ok(rows) = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -633,12 +629,7 @@ fn estimate_raw_baseline(home: &Path) -> usize {
         .join("memory");
     if let Ok(entries) = std::fs::read_dir(&mem_dir) {
         for entry in entries.flatten() {
-            if entry
-                .path()
-                .extension()
-                .map(|x| x == "md")
-                .unwrap_or(false)
-            {
+            if entry.path().extension().map(|x| x == "md").unwrap_or(false) {
                 if let Ok(meta) = entry.metadata() {
                     total_chars += meta.len() as usize;
                 }
@@ -670,8 +661,7 @@ fn estimate_raw_baseline(home: &Path) -> usize {
 
 /// Record this boot so the next session's delta knows when we last connected.
 fn record_boot(conn: &Connection, agent: &str) {
-    let now = chrono::Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let _ = conn.execute(
         "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
         params![
@@ -731,7 +721,11 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     // Identity capsule: must-have (priority 1.0)
     let (identity_text, _) = build_identity_capsule(conn);
     if !identity_text.is_empty() {
-        items.push(ContextItem::new("identity", format!("## Identity\n{identity_text}"), 1.0));
+        items.push(ContextItem::new(
+            "identity",
+            format!("## Identity\n{identity_text}"),
+            1.0,
+        ));
     }
 
     // Delta capsule: broken into sub-items with individual priorities
@@ -739,18 +733,18 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     if !delta_text.is_empty() {
         // Split delta into sections, each scored independently
         let sections: Vec<(&str, f64)> = vec![
-            ("## Pending Messages", 0.95),   // Messages from other agents = urgent
-            ("## Active Agents", 0.60),       // Who's online = coordination
-            ("## Active Locks", 0.70),        // Locks = collision prevention
-            ("## Feed", 0.40),                // Feed = nice context
-            ("## Pending Tasks", 0.75),       // Task board = actionable
-            ("## Your Active Tasks", 0.80),   // Your tasks = high priority
-            ("CONFLICTS:", 0.90),             // Conflicts = must resolve
-            ("## Active Focus", 0.85),        // Focus scope = context boundary
-            ("New decisions:", 0.55),         // Recent decisions = orientation
-            ("New knowledge:", 0.45),         // New memories
+            ("## Pending Messages", 0.95),  // Messages from other agents = urgent
+            ("## Active Agents", 0.60),     // Who's online = coordination
+            ("## Active Locks", 0.70),      // Locks = collision prevention
+            ("## Feed", 0.40),              // Feed = nice context
+            ("## Pending Tasks", 0.75),     // Task board = actionable
+            ("## Your Active Tasks", 0.80), // Your tasks = high priority
+            ("CONFLICTS:", 0.90),           // Conflicts = must resolve
+            ("## Active Focus", 0.85),      // Focus scope = context boundary
+            ("New decisions:", 0.55),       // Recent decisions = orientation
+            ("New knowledge:", 0.45),       // New memories
             ("Activity since last boot:", 0.30), // Activity summary = low value
-            ("Recent decisions:", 0.50),      // First-boot orientation
+            ("Recent decisions:", 0.50),    // First-boot orientation
         ];
 
         // Try to split delta into scored sub-sections
@@ -777,7 +771,11 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
 
         // Fallback: if no sections matched, treat delta as one block
         if !matched_any {
-            items.push(ContextItem::new("delta", format!("## Delta\n{delta_text}"), 0.70));
+            items.push(ContextItem::new(
+                "delta",
+                format!("## Delta\n{delta_text}"),
+                0.70,
+            ));
         }
     }
 
@@ -785,7 +783,11 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     record_boot(conn, agent);
 
     // ── 3. Sort by utility (priority / token_cost) descending ───────────────
-    items.sort_by(|a, b| b.utility.partial_cmp(&a.utility).unwrap_or(std::cmp::Ordering::Equal));
+    items.sort_by(|a, b| {
+        b.utility
+            .partial_cmp(&a.utility)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // ── 4. Greedy budget packing ────────────────────────────────────────────
     let mut budget_remaining = max_tokens;
@@ -834,7 +836,11 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     // ── 5. Savings and observability ────────────────────────────────────────
     let raw_baseline = estimate_raw_baseline(home);
     let saved = raw_baseline.saturating_sub(token_estimate);
-    let percent = if raw_baseline > 0 { (saved * 100) / raw_baseline } else { 0 };
+    let percent = if raw_baseline > 0 {
+        (saved * 100) / raw_baseline
+    } else {
+        0
+    };
 
     let _ = conn.execute(
         "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",

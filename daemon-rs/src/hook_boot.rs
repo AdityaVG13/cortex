@@ -33,7 +33,9 @@ fn read_auth_token() -> Option<String> {
         .or_else(|_| std::env::var("HOME"))
         .ok()?;
     let path = PathBuf::from(home).join(".cortex").join("cortex.token");
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 async fn fetch_boot(agent: &str, budget: u32) -> Option<BootResult> {
@@ -46,7 +48,7 @@ async fn fetch_boot(agent: &str, budget: u32) -> Option<BootResult> {
         "http://127.0.0.1:7437/boot?agent={}&budget={}",
         agent, budget
     );
-    let mut req = client.get(&url);
+    let mut req = client.get(&url).header("x-cortex-request", "true");
     if let Some(token) = read_auth_token() {
         req = req.header("Authorization", format!("Bearer {}", token));
     }
@@ -110,7 +112,11 @@ pub async fn run_boot(agent: &str) {
 
     let cortex_connected = boot.is_some() || health.is_some();
     let cortex_booted = boot.is_some();
-    let overall = if cortex_connected { "ONLINE" } else { "DEGRADED" };
+    let overall = if cortex_connected {
+        "ONLINE"
+    } else {
+        "DEGRADED"
+    };
 
     let cortex_part = if cortex_booted {
         format!(

@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use rusqlite::Connection;
+use std::collections::HashSet;
 
 pub struct ConflictResult {
     pub is_conflict: bool,
@@ -75,7 +75,8 @@ pub fn detect_conflict(
         }
     }
 
-    if best_sim > 0.6 {  // Threshold 0.6 matches Node.js
+    if best_sim > 0.6 {
+        // Threshold 0.6 matches Node.js
         if best_agent.as_deref() == Some(source_agent) {
             // Same agent, high similarity => update (supersede)
             Ok(ConflictResult {
@@ -194,9 +195,7 @@ mod tests {
 
     #[test]
     fn test_jaccard_different() {
-        assert!(
-            jaccard_similarity("completely different text", "nothing alike here at all") < 0.1
-        );
+        assert!(jaccard_similarity("completely different text", "nothing alike here at all") < 0.1);
     }
 
     #[test]

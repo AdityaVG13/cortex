@@ -6,10 +6,10 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::{ensure_auth, json_response, log_event, now_iso};
 use crate::conflict::detect_conflict;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, log_event, now_iso};
 
 // ─── Request types ───────────────────────────────────────────────────────────
 
@@ -109,6 +109,7 @@ pub async fn handle_store(
 ///      disputes_id, then mark existing entry as 'disputed' too.
 ///   4. No conflict: compute surprise = 1 - max_sim; reject if surprise < 0.25
 ///      (duplicate suppression). Otherwise insert as 'active'.
+///
 /// Returns `(json_entry, Option<new_id>)`.
 pub fn store_decision(
     conn: &mut Connection,
@@ -164,12 +165,15 @@ pub fn store_decision(
         tx.commit().map_err(|e| e.to_string())?;
         checkpoint_wal_best_effort(conn);
 
-        return Ok((json!({
-            "stored": true,
-            "id": new_id,
-            "status": "disputed",
-            "conflictWith": existing_id,
-        }), Some(new_id)));
+        return Ok((
+            json!({
+                "stored": true,
+                "id": new_id,
+                "status": "disputed",
+                "conflictWith": existing_id,
+            }),
+            Some(new_id),
+        ));
     }
 
     if cr.is_update {
@@ -204,12 +208,15 @@ pub fn store_decision(
         tx.commit().map_err(|e| e.to_string())?;
         checkpoint_wal_best_effort(conn);
 
-        return Ok((json!({
-            "stored": true,
-            "id": new_id,
-            "status": "superseded_old",
-            "supersedes": old_id,
-        }), Some(new_id)));
+        return Ok((
+            json!({
+                "stored": true,
+                "id": new_id,
+                "status": "superseded_old",
+                "supersedes": old_id,
+            }),
+            Some(new_id),
+        ));
     }
 
     // ── 2. Duplicate suppression via Jaccard surprise ────────────────────────
@@ -248,7 +255,10 @@ pub fn store_decision(
             "rust-daemon",
         );
         checkpoint_wal_best_effort(conn);
-        return Ok((json!({ "stored": false, "reason": "duplicate", "surprise": surprise }), None));
+        return Ok((
+            json!({ "stored": false, "reason": "duplicate", "surprise": surprise }),
+            None,
+        ));
     }
 
     // ── 3. Normal insert ─────────────────────────────────────────────────────
@@ -270,5 +280,8 @@ pub fn store_decision(
     );
     checkpoint_wal_best_effort(conn);
 
-    Ok((json!({ "stored": true, "id": id, "status": "active", "surprise": surprise_rounded }), Some(id)))
+    Ok((
+        json!({ "stored": true, "id": id, "status": "active", "surprise": surprise_rounded }),
+        Some(id),
+    ))
 }

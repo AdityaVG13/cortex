@@ -9,9 +9,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::{ensure_auth, json_response, now_iso};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, now_iso};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -175,7 +175,10 @@ fn redact_secrets(text: &str) -> String {
 // ─── Cleanup helpers ────────────────────────────────────────────────────────
 
 fn clean_expired_locks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM locks WHERE expires_at < ?1", params![now_iso()])?;
+    conn.execute(
+        "DELETE FROM locks WHERE expires_at < ?1",
+        params![now_iso()],
+    )?;
     Ok(())
 }
 
@@ -325,7 +328,11 @@ fn fetch_tasks(
     let sql = if conditions.is_empty() {
         format!("{} ORDER BY created_at ASC", base)
     } else {
-        format!("{} WHERE {} ORDER BY created_at ASC", base, conditions.join(" AND "))
+        format!(
+            "{} WHERE {} ORDER BY created_at ASC",
+            base,
+            conditions.join(" AND ")
+        )
     };
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
@@ -510,12 +517,7 @@ pub async fn handle_unlock(
 
     let holder = match holder {
         Some(v) => v,
-        None => {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                json!({ "error": "no_lock_found" }),
-            )
-        }
+        None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "no_lock_found" })),
     };
 
     if holder != agent {
@@ -536,10 +538,7 @@ pub async fn handle_unlock(
 
 // ─── GET /locks ─────────────────────────────────────────────────────────────
 
-pub async fn handle_locks(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
@@ -780,8 +779,8 @@ pub async fn handle_session_start(
     let session_id = Uuid::new_v4().to_string();
     let started_at = now.to_rfc3339();
     let expires_at = (now + Duration::seconds(ttl)).to_rfc3339();
-    let files_json = serde_json::to_string(&body.files.unwrap_or_default())
-        .unwrap_or_else(|_| "[]".to_string());
+    let files_json =
+        serde_json::to_string(&body.files.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
 
     let conn = state.db.lock().await;
     match conn.execute(
@@ -948,10 +947,7 @@ pub async fn handle_session_end(
 
 // ─── GET /sessions ──────────────────────────────────────────────────────────
 
-pub async fn handle_sessions(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_sessions(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
@@ -991,8 +987,8 @@ pub async fn handle_create_task(
     let task_id = Uuid::new_v4().to_string();
     let conn = state.db.lock().await;
     let _ = clean_old_tasks(&conn);
-    let files_json = serde_json::to_string(&body.files.unwrap_or_default())
-        .unwrap_or_else(|_| "[]".to_string());
+    let files_json =
+        serde_json::to_string(&body.files.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
     match conn.execute(
         "INSERT INTO tasks (task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, NULL, NULL, NULL)",
@@ -1095,12 +1091,7 @@ pub async fn handle_claim_task(
         .flatten();
     let (status, claimed_by, title) = match row {
         Some(v) => v,
-        None => {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                json!({ "error": "task_not_found" }),
-            )
-        }
+        None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
     };
     if status == "claimed" {
         return json_response(
@@ -1184,12 +1175,7 @@ pub async fn handle_complete_task(
         .flatten();
     let (claimed_by, title, files_json) = match row {
         Some(v) => v,
-        None => {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                json!({ "error": "task_not_found" }),
-            )
-        }
+        None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
     };
     if claimed_by.as_deref() != Some(agent.as_str()) {
         return json_response(
@@ -1299,12 +1285,7 @@ pub async fn handle_abandon_task(
         .flatten();
     let (claimed_by, title) = match row {
         Some(v) => v,
-        None => {
-            return json_response(
-                StatusCode::NOT_FOUND,
-                json!({ "error": "task_not_found" }),
-            )
-        }
+        None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
     };
     if claimed_by.as_deref() != Some(agent.as_str()) {
         return json_response(

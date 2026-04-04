@@ -48,6 +48,7 @@ struct EmbeddedEntry {
     target_type: String,
     target_id: i64,
     vector: Vec<f32>,
+    #[allow(dead_code)]
     source: String,
     text: String,
 }
@@ -91,10 +92,8 @@ pub fn run_crystallize_pass(
 
     // 3. For each cluster, synthesize and store
     for cluster in &clusters {
-        let member_entries: Vec<&EmbeddedEntry> = cluster
-            .iter()
-            .map(|&idx| &entries[idx])
-            .collect();
+        let member_entries: Vec<&EmbeddedEntry> =
+            cluster.iter().map(|&idx| &entries[idx]).collect();
 
         result.entries_consolidated += member_entries.len();
 
@@ -106,7 +105,10 @@ pub fn run_crystallize_pass(
 
         // Compute centroid embedding
         let centroid = compute_centroid(
-            &member_entries.iter().map(|e| e.vector.as_slice()).collect::<Vec<_>>(),
+            &member_entries
+                .iter()
+                .map(|e| e.vector.as_slice())
+                .collect::<Vec<_>>(),
         );
         let centroid_blob = embeddings::vector_to_blob(&centroid);
 
@@ -119,7 +121,12 @@ pub fn run_crystallize_pass(
                 let _ = conn.execute(
                     "UPDATE memory_clusters SET consolidated_text = ?1, centroid = ?2, \
                      member_count = ?3, updated_at = datetime('now') WHERE id = ?4",
-                    params![consolidated_text, centroid_blob, member_entries.len() as i64, crystal_id],
+                    params![
+                        consolidated_text,
+                        centroid_blob,
+                        member_entries.len() as i64,
+                        crystal_id
+                    ],
                 );
                 update_cluster_members(conn, crystal_id, &member_entries);
                 result.crystals_updated += 1;
@@ -289,10 +296,30 @@ fn compute_centroid(vectors: &[&[f32]]) -> Vec<f32> {
 
 /// High-signal keywords that indicate important content.
 const SIGNAL_WORDS: &[&str] = &[
-    "must", "never", "always", "critical", "important", "decision", "fixed",
-    "bug", "error", "confirmed", "approved", "rejected", "architecture",
-    "design", "migration", "breaking", "security", "performance", "prefer",
-    "avoid", "use", "requires", "deprecated", "instead",
+    "must",
+    "never",
+    "always",
+    "critical",
+    "important",
+    "decision",
+    "fixed",
+    "bug",
+    "error",
+    "confirmed",
+    "approved",
+    "rejected",
+    "architecture",
+    "design",
+    "migration",
+    "breaking",
+    "security",
+    "performance",
+    "prefer",
+    "avoid",
+    "use",
+    "requires",
+    "deprecated",
+    "instead",
 ];
 
 /// Synthesize a crystal summary from cluster members using extractive methods.
@@ -303,7 +330,7 @@ fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
     for entry in members {
         let sentences: Vec<&str> = entry
             .text
-            .split(|c: char| c == '.' || c == '\n')
+            .split(['.', '\n'])
             .map(|s| s.trim())
             .filter(|s| s.len() > 10)
             .collect();
@@ -326,7 +353,12 @@ fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
                 .iter()
                 .filter(|kw| lower.contains(**kw))
                 .count() as f64;
-            let score = signal_count / word_count + if sentence == sentences.first().unwrap() { 0.1 } else { 0.0 };
+            let score = signal_count / word_count
+                + if sentence == sentences.first().unwrap() {
+                    0.1
+                } else {
+                    0.0
+                };
 
             if score > best_score {
                 best_score = score;
@@ -346,9 +378,9 @@ fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
             break;
         }
         // Dedup: skip if too similar to an already-kept sentence
-        let dominated = kept.iter().any(|existing| {
-            jaccard_words(existing, sentence) > DEDUP_JACCARD
-        });
+        let dominated = kept
+            .iter()
+            .any(|existing| jaccard_words(existing, sentence) > DEDUP_JACCARD);
         if !dominated {
             kept.push(sentence.clone());
         }
@@ -366,11 +398,23 @@ fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
 
 /// Word-level Jaccard similarity between two strings.
 fn jaccard_words(a: &str, b: &str) -> f64 {
-    let set_a: HashSet<&str> = a.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric())).filter(|w| w.len() > 2).collect();
-    let set_b: HashSet<&str> = b.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric())).filter(|w| w.len() > 2).collect();
+    let set_a: HashSet<&str> = a
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.len() > 2)
+        .collect();
+    let set_b: HashSet<&str> = b
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.len() > 2)
+        .collect();
     let intersection = set_a.intersection(&set_b).count() as f64;
     let union = set_a.union(&set_b).count() as f64;
-    if union == 0.0 { 0.0 } else { intersection / union }
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
 }
 
 // ─── Label generation ───────────────────────────────────────────────────────
@@ -379,24 +423,29 @@ fn jaccard_words(a: &str, b: &str) -> f64 {
 /// Uses TF-IDF-like scoring: words frequent in the cluster but not universal.
 fn generate_cluster_label(members: &[&EmbeddedEntry]) -> String {
     let stop_words: HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "to", "of", "in", "for",
-        "on", "with", "at", "by", "from", "as", "into", "about", "like",
-        "through", "after", "over", "between", "out", "up", "and", "but",
-        "or", "not", "no", "if", "then", "than", "that", "this", "it",
-        "its", "all", "each", "every", "both", "few", "more", "most",
-        "other", "some", "such", "only", "own", "same", "so", "too",
-        "very", "just", "because", "when", "where", "how", "what", "which",
-        "who", "whom", "why", "use", "using", "used",
-    ].iter().cloned().collect();
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about", "like",
+        "through", "after", "over", "between", "out", "up", "and", "but", "or", "not", "no", "if",
+        "then", "than", "that", "this", "it", "its", "all", "each", "every", "both", "few", "more",
+        "most", "other", "some", "such", "only", "own", "same", "so", "too", "very", "just",
+        "because", "when", "where", "how", "what", "which", "who", "whom", "why", "use", "using",
+        "used",
+    ]
+    .iter()
+    .cloned()
+    .collect();
 
     let mut word_freq: HashMap<String, usize> = HashMap::new();
     let mut doc_freq: HashMap<String, usize> = HashMap::new();
 
     for entry in members {
         let mut seen_in_doc: HashSet<String> = HashSet::new();
-        for word in entry.text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+        for word in entry
+            .text
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+        {
             let w = word.trim();
             if w.len() < 3 || stop_words.contains(w) {
                 continue;
@@ -519,9 +568,7 @@ pub fn unfold_crystal(conn: &Connection, crystal_id: i64) -> Vec<String> {
          WHERE cm.cluster_id = ?1",
     )
     .and_then(|mut stmt| {
-        let rows = stmt.query_map(params![crystal_id], |row| {
-            row.get::<_, String>(2)
-        })?;
+        let rows = stmt.query_map(params![crystal_id], |row| row.get::<_, String>(2))?;
         Ok(rows.flatten().collect())
     })
     .unwrap_or_default()
@@ -598,7 +645,8 @@ mod tests {
             target_id: 1,
             vector: vec![],
             source: "test1".to_string(),
-            text: "Always use uv for Python package management. Never use pip directly.".to_string(),
+            text: "Always use uv for Python package management. Never use pip directly."
+                .to_string(),
         };
         let e2 = EmbeddedEntry {
             target_type: "memory".to_string(),
@@ -618,7 +666,10 @@ mod tests {
         let result = synthesize_crystal(&members);
         // Should not have two near-identical uv/pip sentences
         let period_count = result.matches('.').count();
-        assert!(period_count <= 3, "Should deduplicate similar sentences, got: {result}");
+        assert!(
+            period_count <= 3,
+            "Should deduplicate similar sentences, got: {result}"
+        );
     }
 
     #[test]
@@ -666,7 +717,8 @@ mod tests {
             conn.execute(
                 "INSERT INTO embeddings (target_type, target_id, vector) VALUES ('memory', ?1, ?2)",
                 params![i, blob],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let result = run_crystallize_pass(&conn, None);

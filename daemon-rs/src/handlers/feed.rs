@@ -9,9 +9,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::{ensure_auth, json_response, now_iso};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
-use super::{ensure_auth, json_response, now_iso};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -151,10 +151,7 @@ fn clean_old_feed(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 // ─── Fetch helpers ──────────────────────────────────────────────────────────
 
-fn fetch_feed_since(
-    conn: &rusqlite::Connection,
-    cutoff: &str,
-) -> Result<Vec<FeedEntry>, String> {
+fn fetch_feed_since(conn: &rusqlite::Connection, cutoff: &str) -> Result<Vec<FeedEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
@@ -185,10 +182,7 @@ fn fetch_feed_since(
     Ok(out)
 }
 
-fn get_unread_feed(
-    conn: &rusqlite::Connection,
-    for_agent: &str,
-) -> Result<Vec<FeedEntry>, String> {
+fn get_unread_feed(conn: &rusqlite::Connection, for_agent: &str) -> Result<Vec<FeedEntry>, String> {
     let ack = conn
         .query_row(
             "SELECT last_seen_id FROM feed_acks WHERE agent = ?1",
@@ -248,10 +242,7 @@ fn get_unread_feed(
     Ok(unread)
 }
 
-fn insert_feed_entry(
-    conn: &rusqlite::Connection,
-    entry: &FeedEntry,
-) -> Result<(), String> {
+fn insert_feed_entry(conn: &rusqlite::Connection, entry: &FeedEntry) -> Result<(), String> {
     conn.execute(
         "INSERT INTO feed (id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -317,8 +308,7 @@ pub async fn handle_post_feed(
         kind: kind.clone(),
         summary: redact_secrets(&summary),
         content: body.content.map(|c| redact_secrets(&c)),
-        files: serde_json::to_value(body.files.unwrap_or_default())
-            .unwrap_or_else(|_| json!([])),
+        files: serde_json::to_value(body.files.unwrap_or_default()).unwrap_or_else(|_| json!([])),
         task_id: body.task_id,
         trace_id: body.trace_id,
         priority: body.priority.unwrap_or_else(|| "normal".to_string()),

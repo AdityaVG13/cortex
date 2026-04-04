@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 const CORTEX_DIR_NAME: &str = ".cortex";
@@ -92,9 +92,8 @@ pub fn kill_stale_daemon() {
 fn pid_looks_like_cortex(pid: u32) -> bool {
     use std::process::Command;
 
-    let query = format!(
-        "(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine"
-    );
+    let query =
+        format!("(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine");
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", &query])
         .output();

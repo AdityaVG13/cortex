@@ -7,11 +7,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
+use super::ensure_auth;
+use super::{estimate_tokens, json_response, now_iso, truncate_chars};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState};
-use super::ensure_auth;
-use super::{estimate_tokens, json_response, now_iso, truncate_chars};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -140,8 +140,9 @@ pub async fn handle_budget_recall(
             let spent: usize = results
                 .iter()
                 .map(|item| {
-                    item.tokens
-                        .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+                    item.tokens.unwrap_or_else(|| {
+                        estimate_tokens(&format!("{}{}", item.source, item.excerpt))
+                    })
                 })
                 .sum();
             let saved = budget as i64 - spent as i64;
@@ -342,14 +343,17 @@ fn run_recall_with_engine(
                 crate::crystallize::search_crystals(conn, &query_vec, 3)
             {
                 let source = format!("crystal::{crystal_id}::{label}");
-                merged.insert(source.clone(), RecallItem {
-                    source,
-                    relevance: scale_sim(relevance as f32),
-                    excerpt: text.chars().take(300).collect(),
-                    method: "crystal".to_string(),
-                    tokens: None,
-                    entropy: None,
-                });
+                merged.insert(
+                    source.clone(),
+                    RecallItem {
+                        source,
+                        relevance: scale_sim(relevance as f32),
+                        excerpt: text.chars().take(300).collect(),
+                        method: "crystal".to_string(),
+                        tokens: None,
+                        entropy: None,
+                    },
+                );
             }
 
             // Search memory embeddings
@@ -429,14 +433,17 @@ fn run_recall_with_engine(
             if existing.method == "semantic" {
                 let fused = existing.relevance.max(row.relevance)
                     + 0.15 * existing.relevance.min(row.relevance);
-                merged.insert(key, RecallItem {
-                    source: row.source,
-                    relevance: fused,
-                    excerpt: row.excerpt,
-                    method: "hybrid".to_string(),
-                    tokens: None,
-                    entropy: None,
-                });
+                merged.insert(
+                    key,
+                    RecallItem {
+                        source: row.source,
+                        relevance: fused,
+                        excerpt: row.excerpt,
+                        method: "hybrid".to_string(),
+                        tokens: None,
+                        entropy: None,
+                    },
+                );
                 continue;
             }
         }
@@ -465,14 +472,17 @@ fn run_recall_with_engine(
             if existing.method == "semantic" {
                 let fused = existing.relevance.max(row.relevance)
                     + 0.15 * existing.relevance.min(row.relevance);
-                merged.insert(key, RecallItem {
-                    source: row.source,
-                    relevance: fused,
-                    excerpt: row.excerpt,
-                    method: "hybrid".to_string(),
-                    tokens: None,
-                    entropy: None,
-                });
+                merged.insert(
+                    key,
+                    RecallItem {
+                        source: row.source,
+                        relevance: fused,
+                        excerpt: row.excerpt,
+                        method: "hybrid".to_string(),
+                        tokens: None,
+                        entropy: None,
+                    },
+                );
                 continue;
             }
         }
@@ -616,11 +626,14 @@ fn search_memories(
             .query_map([limit as i64], |row| {
                 let text: String = row.get(1)?;
                 let compressed: Option<String> = row.get(8)?;
-                let age_tier: String = row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "fresh".to_string());
+                let age_tier: String = row
+                    .get::<_, Option<String>>(9)?
+                    .unwrap_or_else(|| "fresh".to_string());
                 let display = crate::aging::get_display_text(&text, &compressed, &age_tier);
                 Ok(SearchCandidate {
-                    source: row.get::<_, Option<String>>(2)?
-                        .unwrap_or_else(|| format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))),
+                    source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
+                        format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))
+                    }),
                     excerpt: truncate_chars(&display, 200),
                     relevance: round4(0.5 * row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0)),
                     matched_keywords: 0,
@@ -673,14 +686,32 @@ fn search_memories(
 
         let mut ranked = Vec::new();
         for row in rows.flatten() {
-            let (id, text, source, tags, score, retrievals, last_accessed, created_at, compressed_text, age_tier) = row;
+            let (
+                id,
+                text,
+                source,
+                tags,
+                score,
+                retrievals,
+                last_accessed,
+                created_at,
+                compressed_text,
+                age_tier,
+            ) = row;
             let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
             let score = score.unwrap_or(1.0).max(0.0);
-            let ts_source = last_accessed.clone().or(created_at.clone()).unwrap_or_default();
+            let ts_source = last_accessed
+                .clone()
+                .or(created_at.clone())
+                .unwrap_or_default();
             let ts = parse_timestamp_ms(&ts_source);
-            let display = crate::aging::get_display_text(&text, &compressed_text, &age_tier.unwrap_or_else(|| "fresh".to_string()));
+            let display = crate::aging::get_display_text(
+                &text,
+                &compressed_text,
+                &age_tier.unwrap_or_else(|| "fresh".to_string()),
+            );
 
-            let haystacks = vec![
+            let haystacks = [
                 text.to_lowercase(),
                 source.unwrap_or_default().to_lowercase(),
                 tags.unwrap_or_default().to_lowercase(),
@@ -698,10 +729,12 @@ fn search_memories(
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
             let keyword_weight = matched as f64 / tokens.len() as f64;
-            let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
+            let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
             let score_weight = score.clamp(0.0, 1.0);
-            let ranking =
-                (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
+            let ranking = (keyword_weight * 0.40)
+                + (score_weight * 0.25)
+                + (recency_weight * 0.20)
+                + (retrieval_weight * 0.15);
 
             ranked.push(SearchCandidate {
                 source: source_key,
@@ -788,7 +821,7 @@ fn search_memories_fallback(
             continue;
         }
 
-        let haystacks = vec![
+        let haystacks = [
             text.to_lowercase(),
             source.unwrap_or_default().to_lowercase(),
             tags.unwrap_or_default().to_lowercase(),
@@ -807,10 +840,12 @@ fn search_memories_fallback(
         let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
-        let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
+        let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
         let score_weight = score.clamp(0.0, 1.0);
-        let ranking =
-            (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
+        let ranking = (keyword_weight * 0.40)
+            + (score_weight * 0.25)
+            + (recency_weight * 0.20)
+            + (retrieval_weight * 0.15);
 
         ranked.push(SearchCandidate {
             source: source_key,
@@ -862,8 +897,9 @@ fn search_decisions(
         let rows = stmt
             .query_map([limit as i64], |row| {
                 Ok(SearchCandidate {
-                    source: row.get::<_, Option<String>>(2)?
-                        .unwrap_or_else(|| format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))),
+                    source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
+                        format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))
+                    }),
                     excerpt: truncate_chars(&row.get::<_, String>(1)?, 200),
                     relevance: round4(0.5 * row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0)),
                     matched_keywords: 0,
@@ -915,14 +951,31 @@ fn search_decisions(
 
         let mut ranked = Vec::new();
         for row in rows.flatten() {
-            let (id, decision, context, score, retrievals, last_accessed, created_at, compressed_text, age_tier) = row;
+            let (
+                id,
+                decision,
+                context,
+                score,
+                retrievals,
+                last_accessed,
+                created_at,
+                compressed_text,
+                age_tier,
+            ) = row;
             let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
             let score = score.unwrap_or(1.0).max(0.0);
-            let ts_source = last_accessed.clone().or(created_at.clone()).unwrap_or_default();
+            let ts_source = last_accessed
+                .clone()
+                .or(created_at.clone())
+                .unwrap_or_default();
             let ts = parse_timestamp_ms(&ts_source);
-            let display = crate::aging::get_display_text(&decision, &compressed_text, &age_tier.unwrap_or_else(|| "fresh".to_string()));
+            let display = crate::aging::get_display_text(
+                &decision,
+                &compressed_text,
+                &age_tier.unwrap_or_else(|| "fresh".to_string()),
+            );
 
-            let haystacks = vec![
+            let haystacks = [
                 decision.to_lowercase(),
                 context.unwrap_or_default().to_lowercase(),
             ];
@@ -939,10 +992,12 @@ fn search_decisions(
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
             let keyword_weight = matched as f64 / tokens.len() as f64;
-            let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
+            let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
             let score_weight = score.clamp(0.0, 1.0);
-            let ranking =
-                (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
+            let ranking = (keyword_weight * 0.40)
+                + (score_weight * 0.25)
+                + (recency_weight * 0.20)
+                + (retrieval_weight * 0.15);
 
             ranked.push(SearchCandidate {
                 source: source_key,
@@ -1028,7 +1083,7 @@ fn search_decisions_fallback(
             continue;
         }
 
-        let haystacks = vec![
+        let haystacks = [
             decision.to_lowercase(),
             context.unwrap_or_default().to_lowercase(),
         ];
@@ -1045,10 +1100,12 @@ fn search_decisions_fallback(
         let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
-        let retrieval_weight = (retrievals.unwrap_or(0).max(0).min(20) as f64) / 20.0;
+        let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
         let score_weight = score.clamp(0.0, 1.0);
-        let ranking =
-            (keyword_weight * 0.40) + (score_weight * 0.25) + (recency_weight * 0.20) + (retrieval_weight * 0.15);
+        let ranking = (keyword_weight * 0.40)
+            + (score_weight * 0.25)
+            + (recency_weight * 0.20)
+            + (retrieval_weight * 0.15);
 
         ranked.push(SearchCandidate {
             source: source_key,
@@ -1144,7 +1201,7 @@ fn recency_days(value: Option<&str>) -> i64 {
     if ts == 0 {
         return 3650;
     }
-    ((Utc::now().timestamp_millis() - ts).max(0) / (24 * 60 * 60 * 1000)) as i64
+    (Utc::now().timestamp_millis() - ts).max(0) / (24 * 60 * 60 * 1000)
 }
 
 fn round4(value: f64) -> f64 {
@@ -1278,11 +1335,7 @@ async fn record_recall_pattern(state: &RuntimeState, agent: &str, query: &str) {
     }
 }
 
-async fn get_pre_cached(
-    state: &RuntimeState,
-    agent: &str,
-    query: &str,
-) -> Option<Vec<RecallItem>> {
+async fn get_pre_cached(state: &RuntimeState, agent: &str, query: &str) -> Option<Vec<RecallItem>> {
     let mut cache = state.pre_cache.lock().await;
     let now = Utc::now().timestamp_millis();
 
@@ -1407,7 +1460,11 @@ pub async fn handle_unfold(
         }
     };
 
-    let requested: Vec<&str> = sources_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let requested: Vec<&str> = sources_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     if requested.is_empty() {
         return json_response(
             StatusCode::BAD_REQUEST,
@@ -1537,7 +1594,10 @@ mod tests {
     fn test_shannon_entropy_english_prose_range() {
         let prose = "The quick brown fox jumps over the lazy dog near the riverbank";
         let h = shannon_entropy(prose);
-        assert!(h > 3.5 && h < 5.0, "english prose entropy {h} outside expected 3.5-5.0");
+        assert!(
+            h > 3.5 && h < 5.0,
+            "english prose entropy {h} outside expected 3.5-5.0"
+        );
     }
 
     #[test]

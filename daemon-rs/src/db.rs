@@ -315,19 +315,14 @@ pub fn rebuild_fts(conn: &Connection) -> rusqlite::Result<()> {
 /// Run `PRAGMA integrity_check` and return `true` when the database reports
 /// `ok`.
 pub fn verify_integrity(conn: &Connection) -> rusqlite::Result<bool> {
-    let result: String =
-        conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    let result: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     Ok(result.trim().eq_ignore_ascii_case("ok"))
 }
 
 /// Set `status = 'archived'` for all rows in `table` whose `id` is in `ids`.
 /// Only `memories` and `decisions` are supported; other table names return an
 /// error.  Returns the number of rows actually updated.
-pub fn archive_entries(
-    conn: &Connection,
-    table: &str,
-    ids: &[i64],
-) -> rusqlite::Result<usize> {
+pub fn archive_entries(conn: &Connection, table: &str, ids: &[i64]) -> rusqlite::Result<usize> {
     if table != "memories" && table != "decisions" {
         return Err(rusqlite::Error::InvalidParameterName(format!(
             "archive_entries: unsupported table '{table}'"
@@ -344,9 +339,7 @@ pub fn archive_entries(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let sql = format!(
-        "UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})"
-    );
+    let sql = format!("UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})");
 
     let mut stmt = conn.prepare(&sql)?;
     let affected = stmt.execute(rusqlite::params_from_iter(ids.iter()))?;
@@ -385,11 +378,9 @@ mod tests {
         assert_eq!(affected, 1);
 
         let status: String = conn
-            .query_row(
-                "SELECT status FROM decisions WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT status FROM decisions WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(status, "archived");
     }
@@ -427,7 +418,11 @@ mod tests {
 
         conn.execute(
             "INSERT INTO memories (text, source, type) VALUES (?1, ?2, ?3)",
-            params!["Cortex uses Ebbinghaus decay for memory scoring", "test::fts", "memory"],
+            params![
+                "Cortex uses Ebbinghaus decay for memory scoring",
+                "test::fts",
+                "memory"
+            ],
         )
         .unwrap();
 

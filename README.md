@@ -325,6 +325,83 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   -d '{"decision": "Use JWT for API auth", "context": "api-design", "source_agent": "my-agent"}'
 ```
 
+### Teaching Your AI to Use Cortex
+
+Registering the MCP server makes the tools *available*. To make your AI actually *use* them, add instructions to your editor's AI config file. Below are copy-paste snippets for each editor.
+
+#### Claude Code (`CLAUDE.md` or `~/.claude/CLAUDE.md`)
+
+```markdown
+## Memory (Cortex)
+
+Cortex is your persistent brain. It runs on localhost:7437 and is registered as an MCP server.
+
+### Boot
+- At session start, call `cortex_boot()` to load compressed context from prior sessions.
+- Print the returned status line as your first output.
+
+### Before Work
+- Before investigating any bug, implementing a feature, or making a decision, call `cortex_recall("topic")` to check for prior context.
+- Use progressive recall to save tokens: `cortex_peek(query)` first (one-line summaries), then `cortex_unfold(sources)` for items you need full text on.
+
+### After Work
+- After making a decision or learning something non-obvious, store it: `cortex_store(decision, context)`.
+- Confirm stores visibly: "Stored to Cortex: [summary]".
+
+### Session End
+- Before ending a session, call `cortex_diary(accomplished, nextSteps)` to persist state for the next session.
+```
+
+#### Cursor (`~/.cursor/rules/cortex.mdc`)
+
+```markdown
+---
+description: Persistent AI memory via Cortex daemon
+globs: **/*
+alwaysApply: true
+---
+
+Cortex MCP is registered and provides persistent memory across sessions.
+
+- Start every session by calling `cortex_boot` to load prior context.
+- Before investigating bugs or making decisions, call `cortex_peek` to check for existing knowledge.
+- After decisions, call `cortex_store` with the decision and context.
+- At session end, call `cortex_diary` with what was accomplished and next steps.
+```
+
+#### Gemini CLI / Codex CLI / Other (system prompt or `AGENTS.md`)
+
+```markdown
+## Persistent Memory
+
+A memory daemon is running at http://localhost:7437. Auth token is at ~/.cortex/cortex.token.
+
+On session start:
+  GET /boot?agent=<your-id> -- returns compressed context from prior sessions.
+
+Before investigating or deciding:
+  GET /peek?q=<topic>&limit=5 -- check for prior knowledge (minimal tokens).
+  GET /unfold?sources=<id1>,<id2> -- expand items you need full text on.
+
+After making decisions:
+  POST /store {"decision": "...", "context": "...", "source_agent": "<your-id>"}
+
+On session end:
+  POST /diary {"accomplished": "...", "next_steps": "...", "agent": "<your-id>"}
+```
+
+#### Optional: SessionStart Hook (Claude Code)
+
+For automatic boot injection, add a SessionStart hook that calls Cortex before the AI processes any message. This eliminates the need for the AI to call `cortex_boot()` manually:
+
+```bash
+# Register the hook (assumes cortex.exe is on PATH)
+# In ~/.claude/settings.json, add under "hooks.SessionStart":
+# { "type": "command", "command": "cortex hook-boot --agent claude" }
+```
+
+The hook calls `/boot`, formats the compiled prompt, and injects it as context -- so the AI starts every session already oriented.
+
 ### Windows Service
 
 ```bash

@@ -1,3 +1,7 @@
+use crate::handlers;
+use crate::handlers::ensure_auth;
+use crate::handlers::mcp::handle_mcp_message;
+use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::routing::{get, post};
@@ -5,10 +9,6 @@ use axum::Json;
 use axum::Router;
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
-use crate::handlers;
-use crate::handlers::mcp::handle_mcp_message;
-use crate::handlers::ensure_auth;
-use crate::state::RuntimeState;
 
 pub fn build_router(state: RuntimeState) -> Router {
     // SEC-001: restrict CORS to localhost origins only.
@@ -40,9 +40,15 @@ pub fn build_router(state: RuntimeState) -> Router {
         .route("/unfold", get(handlers::recall::handle_unfold))
         .route("/boot", get(handlers::boot::handle_boot))
         .route("/diary", post(handlers::diary::handle_diary))
-        .route("/recall/budget", get(handlers::recall::handle_budget_recall))
+        .route(
+            "/recall/budget",
+            get(handlers::recall::handle_budget_recall),
+        )
         .route("/feedback", post(handlers::feedback::handle_feedback))
-        .route("/feedback/stats", get(handlers::feedback::handle_feedback_stats))
+        .route(
+            "/feedback/stats",
+            get(handlers::feedback::handle_feedback_stats),
+        )
         .route("/crystals", get(handle_crystals))
         .route("/crystallize", post(handle_crystallize))
         .route("/compact", post(handle_compact))
@@ -64,10 +70,7 @@ pub fn build_router(state: RuntimeState) -> Router {
                 .get(handlers::conductor::handle_get_activity),
         )
         .route("/message", post(handlers::conductor::handle_post_message))
-        .route(
-            "/messages",
-            get(handlers::conductor::handle_get_messages),
-        )
+        .route("/messages", get(handlers::conductor::handle_get_messages))
         .route(
             "/session/start",
             post(handlers::conductor::handle_session_start),
@@ -86,14 +89,8 @@ pub fn build_router(state: RuntimeState) -> Router {
             post(handlers::conductor::handle_create_task)
                 .get(handlers::conductor::handle_get_tasks),
         )
-        .route(
-            "/tasks/next",
-            get(handlers::conductor::handle_next_task),
-        )
-        .route(
-            "/tasks/claim",
-            post(handlers::conductor::handle_claim_task),
-        )
+        .route("/tasks/next", get(handlers::conductor::handle_next_task))
+        .route("/tasks/claim", post(handlers::conductor::handle_claim_task))
         .route(
             "/tasks/complete",
             post(handlers::conductor::handle_complete_task),
@@ -105,14 +102,13 @@ pub fn build_router(state: RuntimeState) -> Router {
         // ── Feed ────────────────────────────────────────────────────
         .route(
             "/feed",
-            post(handlers::feed::handle_post_feed)
-                .get(handlers::feed::handle_get_feed),
+            post(handlers::feed::handle_post_feed).get(handlers::feed::handle_get_feed),
         )
         .route("/feed/ack", post(handlers::feed::handle_feed_ack))
-        .route(
-            "/feed/{id}",
-            get(handlers::feed::handle_get_feed_by_id),
-        )
+        .route("/feed/{id}", get(handlers::feed::handle_get_feed_by_id))
+        // ── Export / Import ────────────────────────────────────────
+        .route("/export", get(handlers::export::handle_export))
+        .route("/import", post(handlers::export::handle_import))
         // ── SSE events ──────────────────────────────────────────────
         .route(
             "/events/stream",
@@ -153,7 +149,9 @@ async fn handle_compact(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let conn = state.db.lock().await;
     let result = crate::compaction::run_compaction(&conn);
     handlers::json_response(
@@ -174,13 +172,17 @@ async fn handle_storage(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let conn = state.db.lock().await;
     let breakdown = crate::compaction::storage_breakdown(&conn);
     let total_bytes: i64 = conn
         .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
         .unwrap_or(0)
-        * conn.query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0)).unwrap_or(4096);
+        * conn
+            .query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(4096);
 
     let tables: Vec<serde_json::Value> = breakdown
         .iter()
@@ -203,7 +205,9 @@ async fn handle_crystals(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let conn = state.db.lock().await;
     let crystals = crate::crystallize::list_crystals(&conn);
     handlers::json_response(
@@ -216,12 +220,11 @@ async fn handle_crystallize(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let conn = state.db.lock().await;
-    let result = crate::crystallize::run_crystallize_pass(
-        &conn,
-        state.embedding_engine.as_deref(),
-    );
+    let result = crate::crystallize::run_crystallize_pass(&conn, state.embedding_engine.as_deref());
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({
@@ -246,10 +249,17 @@ async fn handle_focus_start(
     headers: HeaderMap,
     Json(body): Json<FocusRequest>,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let label = match &body.label {
         Some(l) if !l.is_empty() => l.as_str(),
-        _ => return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label"),
+        _ => {
+            return handlers::json_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                "Missing field: label",
+            )
+        }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
     let conn = state.db.lock().await;
@@ -264,10 +274,17 @@ async fn handle_focus_end(
     headers: HeaderMap,
     Json(body): Json<FocusRequest>,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) { return resp; }
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
     let label = match &body.label {
         Some(l) if !l.is_empty() => l.as_str(),
-        _ => return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label"),
+        _ => {
+            return handlers::json_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                "Missing field: label",
+            )
+        }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
     let conn = state.db.lock().await;
@@ -282,12 +299,89 @@ pub async fn run(
     port: u16,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+    let bind_addr = std::env::var("CORTEX_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    match crate::tls::try_load_tls() {
+        Ok(Some(acceptor)) => {
+            run_tls(router, &bind_addr, port, acceptor, shutdown).await;
+        }
+        Ok(None) => {
+            run_plain(router, &bind_addr, port, shutdown).await;
+        }
+        Err(e) => {
+            eprintln!("[cortex] TLS configuration error: {e}");
+            eprintln!("[cortex] Refusing to start with broken TLS -- fix certs or remove them for plain HTTP");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_plain(
+    router: Router,
+    bind_addr: &str,
+    port: u16,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let listener = tokio::net::TcpListener::bind((bind_addr, port))
         .await
         .unwrap();
-    eprintln!("[cortex] Listening on http://127.0.0.1:{port}");
+    eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
         .await
         .ok();
+}
+
+async fn run_tls(
+    router: Router,
+    bind_addr: &str,
+    port: u16,
+    acceptor: tokio_rustls::TlsAcceptor,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind((bind_addr, port)).await.unwrap();
+    eprintln!("[cortex] Listening on https://{bind_addr}:{port} (TLS via rustls)");
+
+    let mut make_svc = router.into_make_service();
+
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                eprintln!("[cortex] TLS server shutting down");
+                break;
+            }
+            accept = listener.accept() => {
+                match accept {
+                    Ok((stream, _addr)) => {
+                        let acceptor = acceptor.clone();
+                        let svc = tower::MakeService::<&std::net::SocketAddr, axum::http::Request<axum::body::Body>>::make_service(&mut make_svc, &_addr);
+                        tokio::spawn(async move {
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    let Ok(tower_svc) = svc.await;
+                                    let hyper_svc = hyper_util::service::TowerToHyperService::new(tower_svc);
+                                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                    let _ = hyper_util::server::conn::auto::Builder::new(
+                                        hyper_util::rt::TokioExecutor::new(),
+                                    )
+                                    .serve_connection(io, hyper_svc)
+                                    .await;
+                                }
+                                Err(e) => {
+                                    eprintln!("[cortex] TLS handshake failed: {e}");
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[cortex] TCP accept error: {e}");
+                    }
+                }
+            }
+        }
+    }
 }
