@@ -545,18 +545,23 @@ Cortex holds sensitive data -- your decisions, project context, and AI memory. S
 
 ## What's Next
 
-### In Progress
-- [ ] Remote connection support (team mode -- connect desktop app to non-localhost daemon)
-- [ ] Merge `feat/rust-daemon` to `main`
-- [ ] CI/CD pipeline with GitHub Actions (build + release artifacts)
+### Shipped (v0.3.0)
+- Team-mode admin HTTP surface, CLI (`cortex user` / `team` / `admin`), visibility-filtered recall, solo-to-team migration polish, graceful degradation paths, TLS-capable daemon for non-loopback deployments
+- Release binaries via GitHub Actions on every `v*` tag ([workflow](.github/workflows/release.yml), [releases](https://github.com/AdityaVG13/cortex/releases))
+
+### In progress / near term
+- [ ] **Control Center + remote daemon** -- first-class UX to aim the desktop app at a non-localhost daemon (TLS, team keys, discovery)
+- [ ] **MCP identity** -- per-caller owner/API key on JSON-RPC (today MCP uses default owner; see changelog Known Issues)
+- [ ] **Team-mode E2E tests** -- automated coverage for multi-user visibility and admin flows
 
 ### Planned
-- [ ] Connection pooling / RwLock for concurrent read access
-- [ ] Query embedding LRU cache
-- [ ] Rate limiting middleware
-- [ ] PII detection and scrubbing on store
-- [ ] Cross-machine brain sync (export/import with conflict-aware merge)
-- [ ] Auto-update mechanism for desktop app (tauri-plugin-updater)
+- [ ] Finer-grained SQLite concurrency (connection pooling / read-write split) without hurting WAL behavior
+- [ ] Query embedding LRU cache (reuse vectors for repeated queries in one session)
+- [ ] PII detection and optional scrubbing on `store`
+- [ ] Cross-machine brain sync beyond today’s `export` / `import` (conflict-aware merge)
+- [ ] Desktop app auto-update (`tauri-plugin-updater`)
+
+**Note:** IP-based sliding-window rate limiting (auth failures + request volume) is already in the HTTP stack; broader policies (per-route budgets, user-scoped limits) remain future work.
 
 ---
 
