@@ -17,7 +17,20 @@ pub fn mcp_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-fn wrap_mcp_tool_result(state: &RuntimeState, data: Value) -> Value {
+fn wrap_mcp_tool_result(_state: &RuntimeState, data: Value) -> Value {
+    let text = match &data {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }]
+    })
+}
+
+fn wrap_mcp_tool_result_verbose(state: &RuntimeState, data: Value) -> Value {
     let calls = state.next_mcp_call();
     let decorated = match data {
         Value::Object(mut map) => {
@@ -660,18 +673,20 @@ pub async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Option<Val
                 .unwrap_or_else(|| json!({}));
 
             match mcp_dispatch(state, tool_name, &args).await {
-                Ok(result) => Some(mcp_success(id, wrap_mcp_tool_result(state, result))),
+                Ok(result) => {
+                    let wrapped = if tool_name == "cortex_health" || tool_name == "cortex_digest" {
+                        wrap_mcp_tool_result_verbose(state, result)
+                    } else {
+                        wrap_mcp_tool_result(state, result)
+                    };
+                    Some(mcp_success(id, wrapped))
+                }
                 Err(err) => Some(mcp_success(
                     id,
                     json!({
                         "content": [{
                             "type": "text",
-                            "text": json!({
-                                "error": err,
-                                "_liveness": true,
-                                "_ts": now_iso(),
-                                "_calls": state.next_mcp_call()
-                            }).to_string()
+                            "text": json!({"error": err}).to_string()
                         }],
                         "isError": true
                     }),

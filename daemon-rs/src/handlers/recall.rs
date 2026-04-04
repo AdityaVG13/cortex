@@ -236,25 +236,15 @@ pub async fn execute_unified_recall(
         run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine)?
     };
 
-    // Co-occurrence tracking + prediction
+    // Co-occurrence tracking (recording only -- predictions excluded from response)
     let sources: Vec<String> = results.iter().map(|item| item.source.clone()).collect();
-    let predictions = if sources.len() >= 2 {
+    if sources.len() >= 2 {
         if co_occurrence::record(&conn, &sources).is_ok() {
             checkpoint_wal_best_effort(&conn);
         } else {
             let _ = co_occurrence::reset(&conn);
         }
-
-        match co_occurrence::predict(&conn, &sources, 3) {
-            Ok(preds) => preds,
-            Err(_) => {
-                let _ = co_occurrence::reset(&conn);
-                vec![]
-            }
-        }
-    } else {
-        vec![]
-    };
+    }
     drop(conn);
 
     // Record recall pattern for prediction
@@ -300,19 +290,13 @@ pub async fn execute_unified_recall(
         .sum();
     let saved = budget as i64 - spent as i64;
 
-    let mut payload = json!({
+    let payload = json!({
         "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
         "budget": budget,
         "spent": spent,
         "saved": saved,
         "mode": if budget >= 500 { "full" } else { "balanced" }
     });
-
-    if let Value::Object(ref mut map) = payload {
-        if !predictions.is_empty() {
-            map.insert("predictions".to_string(), Value::Array(predictions));
-        }
-    }
 
     Ok(payload)
 }
@@ -1226,9 +1210,6 @@ fn recall_to_json(item: RecallItem) -> Value {
     if let Value::Object(ref mut map) = payload {
         if let Some(tokens) = item.tokens {
             map.insert("tokens".to_string(), Value::Number((tokens as u64).into()));
-        }
-        if let Some(entropy) = item.entropy {
-            map.insert("entropy".to_string(), json!(entropy));
         }
     }
     payload
