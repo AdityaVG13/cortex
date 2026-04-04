@@ -288,7 +288,7 @@ async fn mcp_dispatch(
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-            let ctx = RecallContext::solo();
+            let ctx = RecallContext::from_state(state);
             let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx).await?;
             Ok(results)
         }
@@ -309,7 +309,7 @@ async fn mcp_dispatch(
                 .or_else(|| args.get("agent").and_then(|v| v.as_str()))
                 .unwrap_or("mcp");
 
-            let ctx = RecallContext::solo();
+            let ctx = RecallContext::from_state(state);
             execute_unified_recall(state, query, budget, 10, agent, &ctx).await
         }
 

@@ -84,8 +84,49 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
     }
 }
 
+/// Auth + caller identity in one pass. Returns Ok(Some(user_id)) in team mode,
+/// Ok(None) in solo mode. Err(Response) if unauthorized. Avoids double argon2.
+#[allow(clippy::result_large_err)]
+pub fn ensure_auth_with_caller(
+    headers: &HeaderMap,
+    state: &RuntimeState,
+) -> Result<Option<i64>, Response> {
+    ensure_ssrf_protection(headers)?;
+    let header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let token = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "));
+    match token {
+        Some(candidate) => {
+            if candidate == state.token.as_str() {
+                return Ok(None);
+            }
+            if state.team_mode && candidate.starts_with("ctx_") {
+                for (user_id, hash) in state.team_api_key_hashes.iter() {
+                    if crate::auth::verify_api_key_argon2id(candidate, hash) {
+                        return Ok(Some(*user_id));
+                    }
+                }
+            }
+            Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                serde_json::json!({ "error": "Unauthorized" }),
+            ))
+        }
+        _ => Err(json_response(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({ "error": "Unauthorized" }),
+        )),
+    }
+}
+
 /// Resolve which user is making this request. In solo mode returns None.
 /// In team mode, iterates team API key hashes and returns the matching user_id.
+/// Prefer ensure_auth_with_caller when you need both auth + caller in one pass.
+#[allow(dead_code)]
 pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i64> {
     if !state.team_mode {
         return None;

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-use super::{ensure_auth, resolve_caller_id};
+use super::{ensure_auth, ensure_auth_with_caller};
 use super::{estimate_tokens, json_response, now_iso, truncate_chars};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
@@ -73,10 +73,18 @@ pub struct RecallContext {
 }
 
 impl RecallContext {
-    /// Build from request headers + runtime state.
-    pub fn from_request(headers: &HeaderMap, state: &RuntimeState) -> Self {
+    /// Build from already-resolved caller_id (avoids double argon2).
+    pub fn from_caller(caller_id: Option<i64>, state: &RuntimeState) -> Self {
         Self {
-            caller_id: resolve_caller_id(headers, state),
+            caller_id,
+            team_mode: state.team_mode,
+        }
+    }
+
+    /// Build from runtime state (for MCP/non-HTTP callers). Uses default_owner_id.
+    pub fn from_state(state: &RuntimeState) -> Self {
+        Self {
+            caller_id: state.default_owner_id,
             team_mode: state.team_mode,
         }
     }
@@ -93,8 +101,12 @@ impl RecallContext {
 /// Check whether a record is visible to the current caller.
 /// Solo mode: everything visible (no filtering).
 /// Team mode: owner sees own; shared/team visible to all; private hidden from non-owners.
+/// Unowned data (owner_id=None, e.g. pre-migration rows or fallback paths) is visible to all.
 fn is_visible(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode || ctx.caller_id.is_none() {
+        return true;
+    }
+    if owner_id.is_none() {
         return true;
     }
     let caller = ctx.caller_id.unwrap();
@@ -121,9 +133,10 @@ pub async fn handle_recall(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let q = query.q.unwrap_or_default();
     let k = query.k.unwrap_or(10);
     let budget = query.budget.unwrap_or(200);
@@ -144,7 +157,7 @@ pub async fn handle_recall(
         );
     }
 
-    let ctx = RecallContext::from_request(&headers, &state);
+    let ctx = RecallContext::from_caller(caller_id, &state);
     match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(err) => json_response(
@@ -161,9 +174,10 @@ pub async fn handle_budget_recall(
     headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let q = match query.q.as_deref() {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => {
@@ -177,7 +191,7 @@ pub async fn handle_budget_recall(
     let budget = query.budget.unwrap_or(300);
     let k = query.k.unwrap_or(10);
 
-    let ctx = RecallContext::from_request(&headers, &state);
+    let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
     match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine, &ctx) {
@@ -215,9 +229,10 @@ pub async fn handle_peek(
     headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let q = match &query.q {
         Some(q) if !q.is_empty() => q.clone(),
         _ => {
@@ -228,7 +243,7 @@ pub async fn handle_peek(
         }
     };
     let k = query.k.unwrap_or(10);
-    let ctx = RecallContext::from_request(&headers, &state);
+    let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
     match run_recall(&mut conn, &q, k, &ctx) {
         Ok(results) => {
@@ -532,7 +547,7 @@ fn run_recall_with_engine(
         }
     }
 
-    for row in search_decisions(conn, &keyword_query, 20)?
+    for row in search_decisions(conn, &keyword_query, fts_limit)?
         .into_iter()
         .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
     {
