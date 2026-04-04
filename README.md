@@ -15,12 +15,14 @@
 <h4 align="center">Single Rust binary. Zero runtime dependencies. In-process ONNX embeddings.</h4>
 
 <p align="center">
-  <a href="https://github.com/AdityaVG13/cortex/releases/latest"><img src="https://img.shields.io/github/v/release/AdityaVG13/cortex?style=for-the-badge&color=blue" alt="Release"></a>
+  <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/release-v0.3.0-blue?style=for-the-badge" alt="Release v0.3.0"></a>
   <a href="https://github.com/AdityaVG13/cortex/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/Rust-1.78+-orange?style=for-the-badge" alt="Rust"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/ONNX-embedded-blueviolet?style=for-the-badge" alt="ONNX"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge" alt="Platform"></a>
 </p>
+
+<p align="center"><strong>Current release:</strong> <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0">v0.3.0</a> (download below)</p>
 
 <p align="center">
   <a href="#installation">Installation</a> --
@@ -52,15 +54,15 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 
 ### Download (recommended)
 
-Grab the latest release from [GitHub Releases](https://github.com/AdityaVG13/cortex/releases/latest):
+Grab the latest release from [GitHub Releases](https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0):
 
 | Platform | Download |
 |----------|----------|
-| **Windows (x86_64)** | [`cortex-v0.2.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-windows-x86_64.zip) |
-| **macOS (arm64)** | [`cortex-v0.2.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-macos-aarch64.tar.gz) |
-| **Linux (x86_64)** | [`cortex-v0.2.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-linux-x86_64.tar.gz) |
+| **Windows (x86_64)** | [`cortex-v0.3.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.3.0/cortex-v0.3.0-windows-x86_64.zip) |
+| **macOS (arm64)** | [`cortex-v0.3.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.3.0/cortex-v0.3.0-macos-aarch64.tar.gz) |
+| **Linux (x86_64)** | [`cortex-v0.3.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.3.0/cortex-v0.3.0-linux-x86_64.tar.gz) |
 
-Intel macOS (`x86_64`) artifacts are temporarily unavailable in `v0.2.0`.
+Intel macOS (`x86_64`) artifacts are temporarily unavailable in `v0.3.0`.
 
 Extract the archive and place the binary on your PATH:
 - Windows: `cortex.exe`
@@ -245,6 +247,12 @@ desktop/cortex-control-center/
 ---
 
 ## Features
+
+### What's New in v0.3.0
+- **Team-mode admin API** -- HTTP endpoints for users, teams, and stats under `/admin/*` with role-based access
+- **CLI management** -- `cortex user`, `cortex team`, and `cortex admin` subcommands for keys, membership, and housekeeping
+- **Graceful degradation** -- ONNX fallback, team-mode MCP fail-closed, write-ahead buffer for offline stores, TLS behavior by deployment mode
+- **Visibility-filtered recall** -- Over-fetch then filter with owner-aware visibility across semantic, keyword, crystal, and budget paths
 
 ### Core Memory
 - **Capsule Compiler** -- Identity + delta capsules compile ~300-token boot prompts (97% compression)

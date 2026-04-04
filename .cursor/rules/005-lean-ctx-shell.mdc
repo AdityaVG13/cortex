@@ -1,0 +1,12 @@
+---
+description: "Cortex repo: lean-ctx MCP + RTK for shell (matches global lean-ctx/000-rtk intent)"
+alwaysApply: true
+---
+
+# Cortex -- lean-ctx + RTK (repo-local)
+
+For clones without the author’s global Cursor rules: use lean-ctx MCP tools instead of native **Read** / **Shell** / **Grep** / directory listing where the MCP server is available (`ctx_read`, `ctx_shell`, `ctx_search`, `ctx_tree`). Use **Write** / **StrReplace** / **Delete** / **Glob** as normal.
+
+**Shell:** Run routine commands via **`ctx_shell(cmd)`**, not Cursor’s native Shell. Put **`rtk`** on every supported subcommand inside `cmd` (MCP path skips the RTK `preToolUse` hook). Examples: `ctx_shell("rtk cargo test")`, `ctx_shell("cd daemon-rs && rtk cargo clippy -- -D warnings")`, `rtk git`, `rtk gh`, `rtk curl`.
+
+**Exceptions:** Pipes, heredocs, or commands RTK cannot wrap -- run raw and note why in one line. See global **`000-rtk`** for the full command table.

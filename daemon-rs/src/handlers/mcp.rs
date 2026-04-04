@@ -2,10 +2,33 @@ use serde_json::{json, Value};
 
 use super::health::build_digest;
 use super::mutate::{forget_keyword, resolve_decision};
-use super::recall::{execute_unified_recall, RecallContext};
+use super::recall::{execute_unified_recall, unfold_source, RecallContext};
 use super::store::store_decision;
 use super::{estimate_tokens, now_iso};
 use crate::state::RuntimeState;
+
+const DEBUG_LOG_PATH: &str = "debug-055619.log";
+
+fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: Value) {
+    let payload = json!({
+        "sessionId": "055619",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    });
+    let _ = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(DEBUG_LOG_PATH)?;
+        writeln!(file, "{}", payload)?;
+        Ok(())
+    })();
+}
 
 // ─── JSON-RPC helpers ─────────────────────────────────────────────────────────
 
@@ -213,6 +236,7 @@ pub fn mcp_tools() -> Vec<Value> {
 
 async fn mcp_dispatch(
     state: &RuntimeState,
+    caller_id: Option<i64>,
     tool_name: &str,
     args: &Value,
 ) -> Result<Value, String> {
@@ -288,7 +312,20 @@ async fn mcp_dispatch(
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-            let ctx = RecallContext::from_state(state);
+            let ctx = RecallContext::from_caller(caller_id, state);
+            // #region agent log
+            debug_log(
+                "H3",
+                "handlers/mcp.rs:cortex_peek:ctx",
+                "MCP peek using state-derived recall context",
+                json!({
+                    "teamMode": ctx.team_mode,
+                    "ctxCallerId": ctx.caller_id,
+                    "defaultOwnerId": state.default_owner_id,
+                    "limit": limit,
+                }),
+            );
+            // #endregion
             let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx).await?;
             Ok(results)
         }
@@ -309,7 +346,21 @@ async fn mcp_dispatch(
                 .or_else(|| args.get("agent").and_then(|v| v.as_str()))
                 .unwrap_or("mcp");
 
-            let ctx = RecallContext::from_state(state);
+            let ctx = RecallContext::from_caller(caller_id, state);
+            // #region agent log
+            debug_log(
+                "H3",
+                "handlers/mcp.rs:cortex_recall:ctx",
+                "MCP recall using state-derived recall context",
+                json!({
+                    "teamMode": ctx.team_mode,
+                    "ctxCallerId": ctx.caller_id,
+                    "defaultOwnerId": state.default_owner_id,
+                    "budget": budget,
+                    "agent": agent,
+                }),
+            );
+            // #endregion
             execute_unified_recall(state, query, budget, 10, agent, &ctx).await
         }
 
@@ -408,6 +459,7 @@ async fn mcp_dispatch(
                 return Err("sources array is empty".to_string());
             }
             let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let ctx = RecallContext::from_caller(caller_id, state);
             let conn = state.db.lock().await;
             let mut results: Vec<Value> = Vec::new();
             let mut total_tokens = 0usize;
@@ -439,7 +491,7 @@ async fn mcp_dispatch(
                         }
                     }
                 }
-                if let Some(item) = super::recall::unfold_source(&conn, source) {
+                if let Some(item) = unfold_source(&conn, source, &ctx) {
                     let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
                     total_tokens += tokens;
                     found_sources.push(source.clone());
@@ -660,6 +712,14 @@ async fn mcp_dispatch(
 // ─── Main MCP message handler ─────────────────────────────────────────────────
 
 pub async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Option<Value> {
+    handle_mcp_message_with_caller(state, msg, None).await
+}
+
+pub async fn handle_mcp_message_with_caller(
+    state: &RuntimeState,
+    msg: &Value,
+    caller_id: Option<i64>,
+) -> Option<Value> {
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
     let method = msg
         .get("method")
@@ -682,7 +742,7 @@ pub async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Option<Val
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": { "listChanged": true } },
-                "serverInfo": { "name": "cortex", "version": "0.2.0" }
+                "serverInfo": { "name": "cortex", "version": env!("CARGO_PKG_VERSION") }
             }),
         )),
 
@@ -716,7 +776,7 @@ pub async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Option<Val
                 .cloned()
                 .unwrap_or_else(|| json!({}));
 
-            match mcp_dispatch(state, tool_name, &args).await {
+            match mcp_dispatch(state, caller_id, tool_name, &args).await {
                 Ok(result) => {
                     let wrapped = if tool_name == "cortex_health" || tool_name == "cortex_digest" {
                         wrap_mcp_tool_result_verbose(state, result)
