@@ -323,10 +323,30 @@ pub async fn run(
             run_plain(router, &bind_addr, port, shutdown).await;
         }
         Err(e) => {
-            eprintln!("[cortex] TLS configuration error: {e}");
-            eprintln!("[cortex] Refusing to start with broken TLS -- fix certs or remove them for plain HTTP");
-            std::process::exit(1);
+            // Team mode: refuse to start with broken TLS (auth integrity requires it)
+            // Solo mode: warn and fall back to plain HTTP
+            let team_mode = detect_team_mode_for_tls();
+            if team_mode {
+                eprintln!("[cortex] TLS configuration error: {e}");
+                eprintln!("[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY");
+                std::process::exit(1);
+            } else {
+                eprintln!("[cortex] TLS certificate error: {e}");
+                eprintln!("[cortex] Starting without TLS (solo mode -- localhost only)");
+                run_plain(router, &bind_addr, port, shutdown).await;
+            }
         }
+    }
+}
+
+/// Lightweight team-mode detection for TLS decisions (before full state init).
+/// Opens the DB briefly to read the config table.
+fn detect_team_mode_for_tls() -> bool {
+    let db_path = crate::auth::db_path();
+    if let Ok(conn) = crate::db::open(&db_path) {
+        crate::db::is_team_mode(&conn)
+    } else {
+        false
     }
 }
 

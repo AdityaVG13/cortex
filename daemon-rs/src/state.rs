@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
 use rusqlite::Connection;
@@ -82,6 +82,12 @@ pub struct RuntimeState {
     /// Team-mode API key hashes loaded from `users` for Argon2 verification.
     /// Wrapped in RwLock so admin endpoints can add/remove keys at runtime.
     pub team_api_key_hashes: Arc<std::sync::RwLock<Vec<(i64, String)>>>,
+    /// Set to true when ONNX embedding fails at runtime (graceful degradation).
+    pub degraded_mode: Arc<AtomicBool>,
+    /// Path for buffering writes when daemon is unreachable in proxy mode.
+    /// Used by mcp_proxy via cortex_dir() directly; kept here for discoverability.
+    #[allow(dead_code)]
+    pub write_buffer_path: std::path::PathBuf,
 }
 
 impl RuntimeState {
@@ -255,6 +261,9 @@ fn initialize_with_conn(
         );
     }
 
+    let cortex_dir = crate::auth::cortex_dir();
+    let write_buffer_path = cortex_dir.join("write_buffer.jsonl");
+
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
         db_read: Arc::new(Mutex::new(read_conn)),
@@ -273,6 +282,8 @@ fn initialize_with_conn(
         team_mode,
         default_owner_id,
         team_api_key_hashes,
+        degraded_mode: Arc::new(AtomicBool::new(false)),
+        write_buffer_path,
     };
 
     Ok((state, shutdown_rx))

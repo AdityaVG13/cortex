@@ -33,10 +33,25 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
 
+    let degraded = state
+        .degraded_mode
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    let embedding_status = if degraded {
+        "degraded"
+    } else if state.embedding_engine.is_some() {
+        "available"
+    } else {
+        "unavailable"
+    };
+
     json_response(
         StatusCode::OK,
         json!({
             "status": "ok",
+            "degraded": degraded,
+            "embedding_status": embedding_status,
+            "team_mode": state.team_mode,
             "stats": {
                 "memories": memories,
                 "decisions": decisions,

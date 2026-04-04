@@ -30,8 +30,9 @@ fn key_path() -> PathBuf {
 }
 
 /// Try to build a TLS acceptor from cert/key files.
-/// Returns `None` if no TLS files are found (solo mode -- plain HTTP).
-/// Returns `Err` if files exist but are invalid (team mode config error).
+/// Returns `Ok(None)` if no TLS files are found (solo mode -- plain HTTP).
+/// Returns `Err` if files exist but are invalid.
+/// Caller decides whether to refuse startup (team) or fall back (solo).
 pub fn try_load_tls() -> Result<Option<TlsAcceptor>, String> {
     let cert = cert_path();
     let key = key_path();

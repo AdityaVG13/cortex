@@ -194,7 +194,7 @@ pub async fn handle_budget_recall(
     let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
-    match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine, &ctx) {
+    match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine, &ctx, Some(&state.degraded_mode)) {
         Ok(results) => {
             let spent: usize = results
                 .iter()
@@ -293,10 +293,11 @@ pub async fn execute_unified_recall(
 
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
+    let dflag = Some(&state.degraded_mode);
     let results = if budget == 0 {
-        run_recall_with_engine(&mut conn, query_text, k, engine, ctx)?
+        run_recall_with_engine(&mut conn, query_text, k, engine, ctx, dflag)?
     } else {
-        run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine, ctx)?
+        run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine, ctx, dflag)?
     };
 
     // Co-occurrence tracking (recording only -- predictions excluded from response)
@@ -372,7 +373,7 @@ fn run_recall(
     k: usize,
     ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
-    run_recall_with_engine(conn, query_text, k, None, ctx)
+    run_recall_with_engine(conn, query_text, k, None, ctx, None)
 }
 
 fn run_recall_with_engine(
@@ -381,6 +382,7 @@ fn run_recall_with_engine(
     k: usize,
     engine: Option<&crate::embeddings::EmbeddingEngine>,
     ctx: &RecallContext,
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
     let extracted = extract_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
@@ -488,6 +490,24 @@ fn run_recall_with_engine(
                             });
                         }
                     }
+                }
+            }
+        } else {
+            // engine.embed() returned None -- ONNX inference failed at runtime
+            if let Some(flag) = degraded_flag {
+                // compare_exchange: only log on first transition false→true
+                if flag
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::Relaxed,
+                        std::sync::atomic::Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    eprintln!(
+                        "[recall] Semantic search unavailable, using keyword fallback"
+                    );
                 }
             }
         }
@@ -646,7 +666,7 @@ fn run_budget_recall(
     k: usize,
     ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
-    run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx)
+    run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx, None)
 }
 
 fn run_budget_recall_with_engine(
@@ -656,8 +676,9 @@ fn run_budget_recall_with_engine(
     k: usize,
     engine: Option<&crate::embeddings::EmbeddingEngine>,
     ctx: &RecallContext,
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
-    let raw = run_recall_with_engine(conn, query_text, k, engine, ctx)?;
+    let raw = run_recall_with_engine(conn, query_text, k, engine, ctx, degraded_flag)?;
     if raw.is_empty() {
         return Ok(vec![]);
     }
