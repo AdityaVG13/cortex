@@ -262,6 +262,49 @@ pub fn current_mode(conn: &Connection) -> String {
     .unwrap_or_else(|_| "solo".to_string())
 }
 
+/// Check whether the database is in team mode.
+pub fn is_team_mode(conn: &Connection) -> bool {
+    current_mode(conn) == "team"
+}
+
+/// Per-table row counts for owner-aware tables after migration.
+///
+/// Returns `(table_name, count)` pairs. If a table lacks `owner_id` (solo mode),
+/// its count is 0 rather than erroring.
+pub fn migration_counts(conn: &Connection) -> Vec<(String, i64)> {
+    const TABLES: &[&str] = &[
+        "memories",
+        "decisions",
+        "memory_clusters",
+        "recall_feedback",
+        "sessions",
+        "locks",
+        "tasks",
+        "messages",
+        "feed",
+        "feed_acks",
+        "activities",
+        "focus_sessions",
+    ];
+
+    TABLES
+        .iter()
+        .map(|&table| {
+            let count = if table_has_column(conn, table, "owner_id") {
+                conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE owner_id IS NOT NULL"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+            } else {
+                0
+            };
+            (table.to_string(), count)
+        })
+        .collect()
+}
+
 /// Create the base team-mode tables (`config`, `users`, `teams`, `team_members`).
 pub fn create_team_mode_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(

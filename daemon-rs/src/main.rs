@@ -135,10 +135,18 @@ async fn main() {
         "setup" => {
             let remaining: Vec<String> = args[2..].to_vec();
             if remaining.iter().any(|a| a == "--team") {
-                setup::run_setup_team(&remaining).await;
+                let dry_run = remaining.iter().any(|a| a == "--dry-run");
+                setup::run_setup_team(&remaining, dry_run).await;
             } else {
                 setup::run_setup().await;
             }
+        }
+
+        // ── Migrate: alias for setup --team with dry-run support ───
+        "migrate" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            let dry_run = remaining.iter().any(|a| a == "--dry-run");
+            setup::run_setup_team(&remaining, dry_run).await;
         }
 
         // ── Data export/import CLI ──────────────────────────────────
@@ -601,6 +609,8 @@ async fn main() {
             eprintln!("Setup:");
             eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
             eprintln!("  setup --team       Team-mode setup + schema migration + owner API key");
+            eprintln!("  migrate            Alias for setup --team (solo -> team migration)");
+            eprintln!("  migrate --dry-run  Preview migration without modifying the database");
             eprintln!();
             eprintln!("Daemon:");
             eprintln!("  serve              HTTP daemon on :7437");
