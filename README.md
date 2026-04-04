@@ -56,11 +56,14 @@ Grab the latest release from [GitHub Releases](https://github.com/AdityaVG13/cor
 
 | Platform | Download |
 |----------|----------|
-| **Windows** | [`cortex-v0.1.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.1.0/cortex-v0.1.0-windows-x86_64.zip) |
-| **macOS** | Coming soon |
-| **Linux** | Coming soon |
+| **Windows (x86_64)** | [`cortex-v0.2.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-windows-x86_64.zip) |
+| **macOS (arm64)** | [`cortex-v0.2.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-macos-aarch64.tar.gz) |
+| **macOS (x86_64)** | [`cortex-v0.2.0-macos-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-macos-x86_64.tar.gz) |
+| **Linux (x86_64)** | [`cortex-v0.2.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-linux-x86_64.tar.gz) |
 
-Extract the archive and place `cortex.exe` somewhere on your PATH (e.g. `C:\Users\<you>\.local\bin\`).
+Extract the archive and place the binary on your PATH:
+- Windows: `cortex.exe`
+- macOS/Linux: `cortex`
 
 ### Build from source
 
@@ -99,6 +102,11 @@ claude mcp add cortex -s user -- /path/to/cortex mcp
 ```
 
 Or use the [Desktop App](#desktop-app) which handles daemon lifecycle and MCP registration automatically.
+
+Reference artifacts in this repo:
+- OpenAPI spec for custom actions: [`specs/cortex-openapi.yaml`](specs/cortex-openapi.yaml)
+- Gemini CLI example: [`examples/gemini-cli`](examples/gemini-cli)
+- Local OpenAI-compatible LLM example: [`examples/local-llm`](examples/local-llm)
 
 ---
 

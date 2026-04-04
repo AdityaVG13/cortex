@@ -76,12 +76,28 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
         .or_else(|| header.strip_prefix("bearer "));
 
     match token {
-        Some(candidate) if candidate == state.token.as_str() => Ok(()),
+        Some(candidate) if token_matches_state(candidate, state) => Ok(()),
         _ => Err(json_response(
             StatusCode::UNAUTHORIZED,
             serde_json::json!({ "error": "Unauthorized" }),
         )),
     }
+}
+
+fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
+    if candidate == state.token.as_str() {
+        return true;
+    }
+    if !state.team_mode {
+        return false;
+    }
+    if !candidate.starts_with("ctx_") {
+        return false;
+    }
+    state
+        .team_api_key_hashes
+        .iter()
+        .any(|(_, hash)| crate::auth::verify_api_key_argon2id(candidate, hash))
 }
 
 #[allow(dead_code)]

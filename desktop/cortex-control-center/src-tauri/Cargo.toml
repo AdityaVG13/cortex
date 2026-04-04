@@ -1,6 +1,6 @@
 [package]
 name = "cortex-control-center"
-version = "0.1.0"
+version = "0.2.0"
 description = "Native desktop control center for Cortex"
 edition = "2021"
 

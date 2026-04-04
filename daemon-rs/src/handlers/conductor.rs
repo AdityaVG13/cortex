@@ -121,6 +121,14 @@ pub struct NextTaskQuery {
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
+fn owner_id_from_state(state: &RuntimeState) -> Option<i64> {
+    if state.team_mode {
+        state.default_owner_id
+    } else {
+        None
+    }
+}
+
 fn parse_duration_to_seconds(raw: &str) -> i64 {
     if raw.is_empty() {
         return 60 * 60;
@@ -174,11 +182,18 @@ fn redact_secrets(text: &str) -> String {
 
 // ─── Cleanup helpers ────────────────────────────────────────────────────────
 
-fn clean_expired_locks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "DELETE FROM locks WHERE expires_at < ?1",
-        params![now_iso()],
-    )?;
+fn clean_expired_locks(conn: &rusqlite::Connection, owner_id: Option<i64>) -> rusqlite::Result<()> {
+    if let Some(owner_id) = owner_id {
+        conn.execute(
+            "DELETE FROM locks WHERE owner_id = ?1 AND expires_at < ?2",
+            params![owner_id, now_iso()],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM locks WHERE expires_at < ?1",
+            params![now_iso()],
+        )?;
+    }
     Ok(())
 }
 
@@ -208,11 +223,21 @@ fn clean_old_messages(conn: &rusqlite::Connection, recipient: &str) -> rusqlite:
     Ok(())
 }
 
-fn clean_expired_sessions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "DELETE FROM sessions WHERE expires_at < ?1",
-        params![now_iso()],
-    )?;
+fn clean_expired_sessions(
+    conn: &rusqlite::Connection,
+    owner_id: Option<i64>,
+) -> rusqlite::Result<()> {
+    if let Some(owner_id) = owner_id {
+        conn.execute(
+            "DELETE FROM sessions WHERE owner_id = ?1 AND expires_at < ?2",
+            params![owner_id, now_iso()],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM sessions WHERE expires_at < ?1",
+            params![now_iso()],
+        )?;
+    }
     Ok(())
 }
 
@@ -229,12 +254,25 @@ fn clean_old_tasks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 // ─── Fetch helpers ──────────────────────────────────────────────────────────
 
-fn fetch_locks(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
-    let mut stmt = conn
-        .prepare("SELECT id, path, agent, locked_at, expires_at FROM locks ORDER BY locked_at ASC")
-        .map_err(|e| e.to_string())?;
+fn fetch_locks(conn: &rusqlite::Connection, owner_id: Option<i64>) -> Result<Vec<Value>, String> {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
+        owner_id
+    {
+        (
+            "SELECT id, path, agent, locked_at, expires_at FROM locks WHERE owner_id = ?1 ORDER BY locked_at ASC",
+            vec![Box::new(owner_id)],
+        )
+    } else {
+        (
+            "SELECT id, path, agent, locked_at, expires_at FROM locks ORDER BY locked_at ASC",
+            vec![],
+        )
+    };
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(param_refs), |row| {
             Ok(json!({
                 "id": row.get::<_, String>(0)?,
                 "path": row.get::<_, String>(1)?,
@@ -254,14 +292,26 @@ fn fetch_locks(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
 fn fetch_messages_for_agent(
     conn: &rusqlite::Connection,
     agent: &str,
+    owner_id: Option<i64>,
 ) -> Result<Vec<Value>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, sender, recipient, message, timestamp FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC",
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
+        owner_id
+    {
+        (
+            "SELECT id, sender, recipient, message, timestamp FROM messages WHERE owner_id = ?1 AND recipient = ?2 ORDER BY timestamp ASC",
+            vec![Box::new(owner_id), Box::new(agent.to_string())],
         )
-        .map_err(|e| e.to_string())?;
+    } else {
+        (
+            "SELECT id, sender, recipient, message, timestamp FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC",
+            vec![Box::new(agent.to_string())],
+        )
+    };
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![agent], |row| {
+        .query_map(rusqlite::params_from_iter(param_refs), |row| {
             Ok(json!({
                 "id": row.get::<_, String>(0)?,
                 "from": row.get::<_, String>(1)?,
@@ -278,15 +328,30 @@ fn fetch_messages_for_agent(
     Ok(out)
 }
 
-fn fetch_sessions(conn: &rusqlite::Connection) -> Result<Vec<Value>, String> {
-    let mut stmt = conn
-        .prepare(
+fn fetch_sessions(
+    conn: &rusqlite::Connection,
+    owner_id: Option<i64>,
+) -> Result<Vec<Value>, String> {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
+        owner_id
+    {
+        (
+            "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
+             FROM sessions WHERE owner_id = ?1 ORDER BY started_at ASC",
+            vec![Box::new(owner_id)],
+        )
+    } else {
+        (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
              FROM sessions ORDER BY started_at ASC",
+            vec![],
         )
-        .map_err(|e| e.to_string())?;
+    };
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(param_refs), |row| {
             Ok(json!({
                 "sessionId": row.get::<_, String>(0)?,
                 "agent": row.get::<_, String>(1)?,
@@ -310,6 +375,7 @@ fn fetch_tasks(
     conn: &rusqlite::Connection,
     status_filter: &str,
     project: Option<&str>,
+    owner_id: Option<i64>,
 ) -> Result<Vec<Value>, String> {
     // Build parameterized query -- never interpolate user input into SQL.
     let base = "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary FROM tasks";
@@ -319,6 +385,10 @@ fn fetch_tasks(
     if status_filter != "all" {
         params.push(Box::new(status_filter.to_string()));
         conditions.push(format!("status = ?{}", params.len()));
+    }
+    if let Some(owner_id) = owner_id {
+        params.push(Box::new(owner_id));
+        conditions.push(format!("owner_id = ?{}", params.len()));
     }
     if let Some(proj) = project {
         params.push(Box::new(proj.to_string()));
@@ -394,11 +464,27 @@ pub async fn handle_lock(
     };
 
     let ttl = body.ttl.unwrap_or(300).max(1);
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let _ = clean_expired_locks(&conn);
+    let _ = clean_expired_locks(&conn, owner_id);
 
-    let existing = conn
-        .query_row(
+    let existing = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT id, agent, expires_at FROM locks WHERE owner_id = ?1 AND path = ?2",
+            params![owner_id, path.clone()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
             "SELECT id, agent, expires_at FROM locks WHERE path = ?1",
             params![path.clone()],
             |row| {
@@ -411,7 +497,8 @@ pub async fn handle_lock(
         )
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    };
 
     let now = Utc::now();
     let expires_at = (now + Duration::seconds(ttl)).to_rfc3339();
@@ -445,16 +532,31 @@ pub async fn handle_lock(
     }
 
     let lock_id = Uuid::new_v4().to_string();
-    match conn.execute(
-        "INSERT INTO locks (id, path, agent, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            lock_id.clone(),
-            path.clone(),
-            agent.clone(),
-            now_iso(),
-            expires_at.clone()
-        ],
-    ) {
+    let insert = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO locks (id, path, agent, owner_id, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                lock_id.clone(),
+                path.clone(),
+                agent.clone(),
+                owner_id,
+                now_iso(),
+                expires_at.clone()
+            ],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO locks (id, path, agent, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                lock_id.clone(),
+                path.clone(),
+                agent.clone(),
+                now_iso(),
+                expires_at.clone()
+            ],
+        )
+    };
+    match insert {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             state.emit(
@@ -503,17 +605,28 @@ pub async fn handle_unlock(
         }
     };
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let _ = clean_expired_locks(&conn);
-    let holder = conn
-        .query_row(
+    let _ = clean_expired_locks(&conn, owner_id);
+    let holder = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT agent FROM locks WHERE owner_id = ?1 AND path = ?2",
+            params![owner_id, path.clone()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
             "SELECT agent FROM locks WHERE path = ?1",
             params![path.clone()],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    };
 
     let holder = match holder {
         Some(v) => v,
@@ -527,7 +640,14 @@ pub async fn handle_unlock(
         );
     }
 
-    let _ = conn.execute("DELETE FROM locks WHERE path = ?1", params![path.clone()]);
+    if let Some(owner_id) = owner_id {
+        let _ = conn.execute(
+            "DELETE FROM locks WHERE owner_id = ?1 AND path = ?2",
+            params![owner_id, path.clone()],
+        );
+    } else {
+        let _ = conn.execute("DELETE FROM locks WHERE path = ?1", params![path.clone()]);
+    }
     checkpoint_wal_best_effort(&conn);
     state.emit(
         "lock",
@@ -543,9 +663,10 @@ pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap)
         return resp;
     }
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let _ = clean_expired_locks(&conn);
-    match fetch_locks(&conn) {
+    let _ = clean_expired_locks(&conn, owner_id);
+    match fetch_locks(&conn, owner_id) {
         Ok(locks) => json_response(StatusCode::OK, json!({ "locks": locks })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -588,16 +709,32 @@ pub async fn handle_post_activity(
     let id = Uuid::new_v4().to_string();
     let conn = state.db.lock().await;
     let _ = clean_old_activities(&conn);
-    match conn.execute(
-        "INSERT INTO activities (id, agent, description, files_json, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            id.clone(),
-            agent,
-            description,
-            serde_json::to_string(&files).unwrap_or_else(|_| "[]".to_string()),
-            now_iso()
-        ],
-    ) {
+    let owner_id = owner_id_from_state(&state);
+    let insert = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO activities (id, agent, description, files_json, timestamp, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id.clone(),
+                agent,
+                description,
+                serde_json::to_string(&files).unwrap_or_else(|_| "[]".to_string()),
+                now_iso(),
+                owner_id
+            ],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO activities (id, agent, description, files_json, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id.clone(),
+                agent,
+                description,
+                serde_json::to_string(&files).unwrap_or_else(|_| "[]".to_string()),
+                now_iso()
+            ],
+        )
+    };
+    match insert {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             json_response(
@@ -625,11 +762,24 @@ pub async fn handle_get_activity(
 
     let since_secs = parse_duration_to_seconds(query.since.as_deref().unwrap_or("1h"));
     let cutoff = (Utc::now() - Duration::seconds(since_secs)).to_rfc3339();
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
 
-    let mut stmt = match conn.prepare(
-        "SELECT id, agent, description, files_json, timestamp FROM activities WHERE timestamp >= ?1 ORDER BY timestamp ASC",
-    ) {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
+        owner_id
+    {
+        (
+            "SELECT id, agent, description, files_json, timestamp FROM activities WHERE owner_id = ?1 AND timestamp >= ?2 ORDER BY timestamp ASC",
+            vec![Box::new(owner_id), Box::new(cutoff.clone())],
+        )
+    } else {
+        (
+            "SELECT id, agent, description, files_json, timestamp FROM activities WHERE timestamp >= ?1 ORDER BY timestamp ASC",
+            vec![Box::new(cutoff.clone())],
+        )
+    };
+
+    let mut stmt = match conn.prepare(sql) {
         Ok(stmt) => stmt,
         Err(err) => {
             return json_response(
@@ -638,8 +788,9 @@ pub async fn handle_get_activity(
             )
         }
     };
-
-    let rows = stmt.query_map(params![cutoff], |row| {
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(rusqlite::params_from_iter(param_refs), |row| {
         let files: String = row.get(3)?;
         Ok(json!({
             "id": row.get::<_, String>(0)?,
@@ -707,10 +858,19 @@ pub async fn handle_post_message(
     let id = Uuid::new_v4().to_string();
     let conn = state.db.lock().await;
     let _ = clean_old_messages(&conn, &to);
-    match conn.execute(
-        "INSERT INTO messages (id, sender, recipient, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![id.clone(), from, to, message, now_iso()],
-    ) {
+    let owner_id = owner_id_from_state(&state);
+    let insert = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO messages (id, sender, recipient, message, timestamp, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id.clone(), from, to, message, now_iso(), owner_id],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO messages (id, sender, recipient, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id.clone(), from, to, message, now_iso()],
+        )
+    };
+    match insert {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             json_response(StatusCode::OK, json!({ "sent": true, "messageId": id }))
@@ -743,8 +903,9 @@ pub async fn handle_get_messages(
         }
     };
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    match fetch_messages_for_agent(&conn, &agent) {
+    match fetch_messages_for_agent(&conn, &agent, owner_id) {
         Ok(messages) => json_response(StatusCode::OK, json!({ "messages": messages })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -775,6 +936,7 @@ pub async fn handle_session_start(
     };
 
     let ttl = body.ttl.unwrap_or(SESSION_TTL_SECONDS).max(1);
+    let owner_id = owner_id_from_state(&state);
     let now = Utc::now();
     let session_id = Uuid::new_v4().to_string();
     let started_at = now.to_rfc3339();
@@ -783,27 +945,53 @@ pub async fn handle_session_start(
         serde_json::to_string(&body.files.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
 
     let conn = state.db.lock().await;
-    match conn.execute(
-        "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
-         ON CONFLICT(agent) DO UPDATE SET
-           session_id = excluded.session_id,
-           project = excluded.project,
-           files_json = excluded.files_json,
-           description = excluded.description,
-           started_at = excluded.started_at,
-           last_heartbeat = excluded.last_heartbeat,
-           expires_at = excluded.expires_at",
-        params![
-            agent.clone(),
-            session_id.clone(),
-            body.project.clone(),
-            files_json,
-            body.description.clone(),
-            started_at,
-            expires_at
-        ],
-    ) {
+    let write = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)
+             ON CONFLICT(owner_id, agent) DO UPDATE SET
+               session_id = excluded.session_id,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               description = excluded.description,
+               started_at = excluded.started_at,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            params![
+                agent.clone(),
+                owner_id,
+                session_id.clone(),
+                body.project.clone(),
+                files_json,
+                body.description.clone(),
+                started_at,
+                expires_at
+            ],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)
+             ON CONFLICT(agent) DO UPDATE SET
+               session_id = excluded.session_id,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               description = excluded.description,
+               started_at = excluded.started_at,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            params![
+                agent.clone(),
+                session_id.clone(),
+                body.project.clone(),
+                files_json,
+                body.description.clone(),
+                started_at,
+                expires_at
+            ],
+        )
+    };
+    match write {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             state.emit(
@@ -854,17 +1042,28 @@ pub async fn handle_session_heartbeat(
         );
     }
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let _ = clean_expired_sessions(&conn);
-    let exists = conn
-        .query_row(
+    let _ = clean_expired_sessions(&conn, owner_id);
+    let exists = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT session_id FROM sessions WHERE owner_id = ?1 AND agent = ?2",
+            params![owner_id, agent.clone()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
             "SELECT session_id FROM sessions WHERE agent = ?1",
             params![agent.clone()],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    };
     if exists.is_none() {
         return json_response(
             StatusCode::NOT_FOUND,
@@ -878,21 +1077,41 @@ pub async fn handle_session_heartbeat(
         .files
         .as_ref()
         .map(|f| serde_json::to_string(f).unwrap_or_else(|_| "[]".to_string()));
-    match conn.execute(
-        "UPDATE sessions SET
-           last_heartbeat = ?1,
-           expires_at = ?2,
-           files_json = CASE WHEN ?3 IS NULL THEN files_json ELSE ?3 END,
-           description = CASE WHEN ?4 IS NULL THEN description ELSE ?4 END
-         WHERE agent = ?5",
-        params![
-            now.to_rfc3339(),
-            expires_at.clone(),
-            files_json,
-            body.description,
-            agent
-        ],
-    ) {
+    let update = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "UPDATE sessions SET
+               last_heartbeat = ?1,
+               expires_at = ?2,
+               files_json = CASE WHEN ?3 IS NULL THEN files_json ELSE ?3 END,
+               description = CASE WHEN ?4 IS NULL THEN description ELSE ?4 END
+             WHERE owner_id = ?5 AND agent = ?6",
+            params![
+                now.to_rfc3339(),
+                expires_at.clone(),
+                files_json,
+                body.description,
+                owner_id,
+                agent
+            ],
+        )
+    } else {
+        conn.execute(
+            "UPDATE sessions SET
+               last_heartbeat = ?1,
+               expires_at = ?2,
+               files_json = CASE WHEN ?3 IS NULL THEN files_json ELSE ?3 END,
+               description = CASE WHEN ?4 IS NULL THEN description ELSE ?4 END
+             WHERE agent = ?5",
+            params![
+                now.to_rfc3339(),
+                expires_at.clone(),
+                files_json,
+                body.description,
+                agent
+            ],
+        )
+    };
+    match update {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             json_response(
@@ -928,11 +1147,20 @@ pub async fn handle_session_end(
         }
     };
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    match conn.execute(
-        "DELETE FROM sessions WHERE agent = ?1",
-        params![agent.clone()],
-    ) {
+    let deleted = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "DELETE FROM sessions WHERE owner_id = ?1 AND agent = ?2",
+            params![owner_id, agent.clone()],
+        )
+    } else {
+        conn.execute(
+            "DELETE FROM sessions WHERE agent = ?1",
+            params![agent.clone()],
+        )
+    };
+    match deleted {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             state.emit("session", json!({ "action": "ended", "agent": agent }));
@@ -952,9 +1180,10 @@ pub async fn handle_sessions(State(state): State<RuntimeState>, headers: HeaderM
         return resp;
     }
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let _ = clean_expired_sessions(&conn);
-    match fetch_sessions(&conn) {
+    let _ = clean_expired_sessions(&conn, owner_id);
+    match fetch_sessions(&conn, owner_id) {
         Ok(sessions) => json_response(StatusCode::OK, json!({ "sessions": sessions })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -989,21 +1218,42 @@ pub async fn handle_create_task(
     let _ = clean_old_tasks(&conn);
     let files_json =
         serde_json::to_string(&body.files.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
-    match conn.execute(
-        "INSERT INTO tasks (task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, NULL, NULL, NULL)",
-        params![
-            task_id.clone(),
-            title.clone(),
-            body.description,
-            body.project,
-            files_json,
-            body.priority.unwrap_or_else(|| "medium".to_string()),
-            body.required_capability
-                .unwrap_or_else(|| "any".to_string()),
-            now_iso()
-        ],
-    ) {
+    let owner_id = owner_id_from_state(&state);
+    let insert = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO tasks (task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary, owner_id, visibility)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, NULL, NULL, NULL, ?9, 'private')",
+            params![
+                task_id.clone(),
+                title.clone(),
+                body.description,
+                body.project,
+                files_json,
+                body.priority.unwrap_or_else(|| "medium".to_string()),
+                body.required_capability
+                    .unwrap_or_else(|| "any".to_string()),
+                now_iso(),
+                owner_id
+            ],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO tasks (task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, NULL, NULL, NULL)",
+            params![
+                task_id.clone(),
+                title.clone(),
+                body.description,
+                body.project,
+                files_json,
+                body.priority.unwrap_or_else(|| "medium".to_string()),
+                body.required_capability
+                    .unwrap_or_else(|| "any".to_string()),
+                now_iso()
+            ],
+        )
+    };
+    match insert {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             state.emit(
@@ -1034,8 +1284,9 @@ pub async fn handle_get_tasks(
     }
     let status_filter = query.status.unwrap_or_else(|| "pending".to_string());
     let project_filter = query.project;
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    match fetch_tasks(&conn, &status_filter, project_filter.as_deref()) {
+    match fetch_tasks(&conn, &status_filter, project_filter.as_deref(), owner_id) {
         Ok(tasks) => json_response(StatusCode::OK, json!({ "tasks": tasks })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1073,9 +1324,25 @@ pub async fn handle_claim_task(
         }
     };
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let row = conn
-        .query_row(
+    let row = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT status, claimed_by, title FROM tasks WHERE owner_id = ?1 AND task_id = ?2",
+            params![owner_id, task_id.clone()],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
             "SELECT status, claimed_by, title FROM tasks WHERE task_id = ?1",
             params![task_id.clone()],
             |r| {
@@ -1088,7 +1355,8 @@ pub async fn handle_claim_task(
         )
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    };
     let (status, claimed_by, title) = match row {
         Some(v) => v,
         None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
@@ -1106,10 +1374,18 @@ pub async fn handle_claim_task(
         );
     }
 
-    match conn.execute(
-        "UPDATE tasks SET status = 'claimed', claimed_by = ?1, claimed_at = ?2 WHERE task_id = ?3",
-        params![agent.clone(), now_iso(), task_id.clone()],
-    ) {
+    let claim = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "UPDATE tasks SET status = 'claimed', claimed_by = ?1, claimed_at = ?2 WHERE owner_id = ?3 AND task_id = ?4",
+            params![agent.clone(), now_iso(), owner_id, task_id.clone()],
+        )
+    } else {
+        conn.execute(
+            "UPDATE tasks SET status = 'claimed', claimed_by = ?1, claimed_at = ?2 WHERE task_id = ?3",
+            params![agent.clone(), now_iso(), task_id.clone()],
+        )
+    };
+    match claim {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             state.emit(
@@ -1157,9 +1433,25 @@ pub async fn handle_complete_task(
         }
     };
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let row = conn
-        .query_row(
+    let row = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT claimed_by, title, files_json FROM tasks WHERE owner_id = ?1 AND task_id = ?2",
+            params![owner_id, task_id.clone()],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
             "SELECT claimed_by, title, files_json FROM tasks WHERE task_id = ?1",
             params![task_id.clone()],
             |r| {
@@ -1172,7 +1464,8 @@ pub async fn handle_complete_task(
         )
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    };
     let (claimed_by, title, files_json) = match row {
         Some(v) => v,
         None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
@@ -1184,10 +1477,18 @@ pub async fn handle_complete_task(
         );
     }
 
-    match conn.execute(
-        "UPDATE tasks SET status = 'completed', completed_at = ?1, summary = ?2 WHERE task_id = ?3",
-        params![now_iso(), body.summary.clone(), task_id.clone()],
-    ) {
+    let complete = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "UPDATE tasks SET status = 'completed', completed_at = ?1, summary = ?2 WHERE owner_id = ?3 AND task_id = ?4",
+            params![now_iso(), body.summary.clone(), owner_id, task_id.clone()],
+        )
+    } else {
+        conn.execute(
+            "UPDATE tasks SET status = 'completed', completed_at = ?1, summary = ?2 WHERE task_id = ?3",
+            params![now_iso(), body.summary.clone(), task_id.clone()],
+        )
+    };
+    match complete {
         Ok(_) => {
             state.emit(
                 "task",
@@ -1195,13 +1496,21 @@ pub async fn handle_complete_task(
             );
 
             // Auto-post feed entry for task completion
-            let posted: i64 = conn
-                .query_row(
+            let posted: i64 = if let Some(owner_id) = owner_id {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM feed WHERE owner_id = ?1 AND task_id = ?2 AND kind = 'task_complete'",
+                    params![owner_id, task_id.clone()],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0)
+            } else {
+                conn.query_row(
                     "SELECT COUNT(*) FROM feed WHERE task_id = ?1 AND kind = 'task_complete'",
                     params![task_id.clone()],
                     |r| r.get(0),
                 )
-                .unwrap_or(0);
+                .unwrap_or(0)
+            };
             if posted == 0 {
                 let feed_id = Uuid::new_v4().to_string();
                 let summary_text = redact_secrets(&format!("Completed: {title}"));
@@ -1209,23 +1518,44 @@ pub async fn handle_complete_task(
                 let files = parse_json_array(&files_json);
                 let tokens = ((title.len() as f64) / 4.0).ceil() as i64;
                 let ts = now_iso();
-                let _ = conn.execute(
-                    "INSERT INTO feed (id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![
-                        feed_id.clone(),
-                        agent.clone(),
-                        "task_complete",
-                        summary_text.clone(),
-                        content_text,
-                        files.to_string(),
-                        task_id.clone(),
-                        Option::<String>::None,
-                        "normal",
-                        ts,
-                        tokens
-                    ],
-                );
+                if let Some(owner_id) = owner_id {
+                    let _ = conn.execute(
+                        "INSERT INTO feed (id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens, owner_id, visibility)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'team')",
+                        params![
+                            feed_id.clone(),
+                            agent.clone(),
+                            "task_complete",
+                            summary_text.clone(),
+                            content_text.clone(),
+                            files.to_string(),
+                            task_id.clone(),
+                            Option::<String>::None,
+                            "normal",
+                            ts,
+                            tokens,
+                            owner_id
+                        ],
+                    );
+                } else {
+                    let _ = conn.execute(
+                        "INSERT INTO feed (id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                        params![
+                            feed_id.clone(),
+                            agent.clone(),
+                            "task_complete",
+                            summary_text.clone(),
+                            content_text.clone(),
+                            files.to_string(),
+                            task_id.clone(),
+                            Option::<String>::None,
+                            "normal",
+                            ts,
+                            tokens
+                        ],
+                    );
+                }
                 state.emit(
                     "feed",
                     json!({ "feedId": feed_id, "agent": agent, "kind": "task_complete", "summary": summary_text }),
@@ -1273,16 +1603,27 @@ pub async fn handle_abandon_task(
         }
     };
 
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
-    let row = conn
-        .query_row(
+    let row = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT claimed_by, title FROM tasks WHERE owner_id = ?1 AND task_id = ?2",
+            params![owner_id, task_id.clone()],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
             "SELECT claimed_by, title FROM tasks WHERE task_id = ?1",
             params![task_id.clone()],
             |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
         )
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    };
     let (claimed_by, title) = match row {
         Some(v) => v,
         None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
@@ -1294,10 +1635,18 @@ pub async fn handle_abandon_task(
         );
     }
 
-    match conn.execute(
-        "UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE task_id = ?1",
-        params![task_id.clone()],
-    ) {
+    let abandon = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE owner_id = ?1 AND task_id = ?2",
+            params![owner_id, task_id.clone()],
+        )
+    } else {
+        conn.execute(
+            "UPDATE tasks SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE task_id = ?1",
+            params![task_id.clone()],
+        )
+    };
+    match abandon {
         Ok(_) => {
             checkpoint_wal_best_effort(&conn);
             state.emit(
@@ -1337,9 +1686,26 @@ pub async fn handle_next_task(
         }
     };
     let capability = query.capability.unwrap_or_else(|| "any".to_string());
+    let owner_id = owner_id_from_state(&state);
     let conn = state.db.lock().await;
 
-    let mut stmt = match conn.prepare(
+    let sql = if owner_id.is_some() {
+        "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary
+         FROM tasks
+         WHERE owner_id = ?2
+           AND status = 'pending'
+           AND (?1 = 'any' OR required_capability = 'any' OR required_capability = ?1)
+         ORDER BY
+           CASE priority
+             WHEN 'critical' THEN 4
+             WHEN 'high' THEN 3
+             WHEN 'medium' THEN 2
+             WHEN 'low' THEN 1
+             ELSE 0
+           END DESC,
+           created_at ASC
+         LIMIT 1"
+    } else {
         "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary
          FROM tasks
          WHERE status = 'pending'
@@ -1353,8 +1719,9 @@ pub async fn handle_next_task(
              ELSE 0
            END DESC,
            created_at ASC
-         LIMIT 1",
-    ) {
+         LIMIT 1"
+    };
+    let mut stmt = match conn.prepare(sql) {
         Ok(stmt) => stmt,
         Err(err) => {
             return json_response(
@@ -1364,8 +1731,8 @@ pub async fn handle_next_task(
         }
     };
 
-    let task = stmt
-        .query_row(params![capability], |row| {
+    let task = if let Some(owner_id) = owner_id {
+        stmt.query_row(params![capability, owner_id], |row| {
             Ok(json!({
                 "taskId": row.get::<_, String>(0)?,
                 "title": row.get::<_, String>(1)?,
@@ -1384,7 +1751,29 @@ pub async fn handle_next_task(
         })
         .optional()
         .ok()
-        .flatten();
+        .flatten()
+    } else {
+        stmt.query_row(params![capability], |row| {
+            Ok(json!({
+                "taskId": row.get::<_, String>(0)?,
+                "title": row.get::<_, String>(1)?,
+                "description": row.get::<_, Option<String>>(2)?,
+                "project": row.get::<_, Option<String>>(3)?,
+                "files": parse_json_array(&row.get::<_, String>(4)?),
+                "priority": row.get::<_, String>(5)?,
+                "requiredCapability": row.get::<_, String>(6)?,
+                "status": row.get::<_, String>(7)?,
+                "claimedBy": row.get::<_, Option<String>>(8)?,
+                "createdAt": row.get::<_, String>(9)?,
+                "claimedAt": row.get::<_, Option<String>>(10)?,
+                "completedAt": row.get::<_, Option<String>>(11)?,
+                "summary": row.get::<_, Option<String>>(12)?
+            }))
+        })
+        .optional()
+        .ok()
+        .flatten()
+    };
 
     json_response(StatusCode::OK, json!({ "task": task }))
 }
