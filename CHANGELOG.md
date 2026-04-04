@@ -23,6 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Table name allowlists prevent SQL injection in dynamic admin queries
 
 ### Fixes
+- `unfold_source` / GET `/unfold` now take `RecallContext` and filter by `owner_id` / `visibility` (fixes MCP `unfold_source` 3-arg mismatch and release CI build)
 - Decision search in retry loop used hardcoded limit instead of `fts_limit`
 - Fallback recall paths returned NULL `owner_id` causing visibility issues
 - MCP handlers bypassed visibility by hardcoding solo context
@@ -30,7 +31,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Removed `tasks` from archive/visibility allowlists (uses `task_id` TEXT, not `id`)
 
 ### Known Issues
-- `/unfold` endpoint has no visibility filtering (root cause fix pending)
 - MCP JSON-RPC lacks per-caller identity (uses default owner for all callers)
 - `is_visible` treats NULL `owner_id` as visible in team mode (should fail closed after migration)
 - Team-mode test environment needed to validate end-to-end

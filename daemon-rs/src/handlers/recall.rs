@@ -1588,9 +1588,11 @@ pub async fn handle_unfold(
     Query(query): Query<UnfoldQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let ctx = RecallContext::from_caller(caller_id, &state);
     let sources_str = match &query.sources {
         Some(s) if !s.trim().is_empty() => s.trim().to_string(),
         _ => {
@@ -1618,7 +1620,7 @@ pub async fn handle_unfold(
     let mut total_tokens = 0usize;
 
     for source in &requested {
-        if let Some(item) = unfold_source(&conn, source) {
+        if let Some(item) = unfold_source(&conn, source, &ctx) {
             let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
             total_tokens += tokens;
             results.push(json!({
@@ -1647,63 +1649,87 @@ pub async fn handle_unfold(
     )
 }
 
-/// Look up the full text of a single source string.
-pub fn unfold_source(conn: &Connection, source: &str) -> Option<Value> {
-    // Try memory by source field
-    if let Ok(text) = conn.query_row(
-        "SELECT text, type FROM memories WHERE source = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+/// Look up the full text of a single source string (team visibility applied when `ctx.team_mode`).
+pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Option<Value> {
+    if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
+        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
         params![source],
-        |row| Ok(json!({"text": row.get::<_, String>(0)?, "type": row.get::<_, String>(1)?})),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
     ) {
-        return Some(text);
+        if is_visible(owner_id, visibility.as_deref(), ctx) {
+            return Some(json!({"text": text, "type": ty}));
+        }
     }
 
-    // Try decision by ID (source format: "decision::123" or just the context string)
     if let Some(id_str) = source.strip_prefix("decision::") {
         if let Ok(id) = id_str.parse::<i64>() {
-            if let Ok(text) = conn.query_row(
-                "SELECT decision, context FROM decisions WHERE id = ?1 AND status = 'active'",
+            if let Ok((decision, context, owner_id, visibility)) = conn.query_row(
+                "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 AND status = 'active'",
                 params![id],
                 |row| {
-                    let decision: String = row.get(0)?;
-                    let context: Option<String> = row.get(1)?;
-                    let full = match context {
-                        Some(ctx) => format!("{decision}\n\nContext: {ctx}"),
-                        None => decision,
-                    };
-                    Ok(json!({"text": full, "type": "decision"}))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
                 },
             ) {
-                return Some(text);
+                if is_visible(owner_id, visibility.as_deref(), ctx) {
+                    let full = match context {
+                        Some(c) => format!("{decision}\n\nContext: {c}"),
+                        None => decision,
+                    };
+                    return Some(json!({"text": full, "type": "decision"}));
+                }
             }
         }
     }
 
-    // Try decision by context field (some sources use context as the source string)
-    if let Ok(text) = conn.query_row(
-        "SELECT decision, context FROM decisions WHERE context = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+    if let Ok((decision, context, owner_id, visibility)) = conn.query_row(
+        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
         params![source],
         |row| {
-            let decision: String = row.get(0)?;
-            let context: Option<String> = row.get(1)?;
-            let full = match context {
-                Some(ctx) => format!("{decision}\n\nContext: {ctx}"),
-                None => decision,
-            };
-            Ok(json!({"text": full, "type": "decision"}))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
         },
     ) {
-        return Some(text);
+        if is_visible(owner_id, visibility.as_deref(), ctx) {
+            let full = match context {
+                Some(c) => format!("{decision}\n\nContext: {c}"),
+                None => decision,
+            };
+            return Some(json!({"text": full, "type": "decision"}));
+        }
     }
 
-    // Try memory by partial source match (e.g., "memory::project_cortex_plan.md")
     let stripped = source.strip_prefix("memory::").unwrap_or(source);
-    if let Ok(text) = conn.query_row(
-        "SELECT text, type FROM memories WHERE source LIKE ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+    if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
+        "SELECT text, type, owner_id, visibility FROM memories WHERE source LIKE ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
         params![format!("%{stripped}%")],
-        |row| Ok(json!({"text": row.get::<_, String>(0)?, "type": row.get::<_, String>(1)?})),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
     ) {
-        return Some(text);
+        if is_visible(owner_id, visibility.as_deref(), ctx) {
+            return Some(json!({"text": text, "type": ty}));
+        }
     }
 
     None
