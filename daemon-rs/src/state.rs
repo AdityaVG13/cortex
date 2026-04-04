@@ -80,7 +80,8 @@ pub struct RuntimeState {
     /// Default owner used for owner-scoped conductor rows.
     pub default_owner_id: Option<i64>,
     /// Team-mode API key hashes loaded from `users` for Argon2 verification.
-    pub team_api_key_hashes: Arc<Vec<(i64, String)>>,
+    /// Wrapped in RwLock so admin endpoints can add/remove keys at runtime.
+    pub team_api_key_hashes: Arc<std::sync::RwLock<Vec<(i64, String)>>>,
 }
 
 impl RuntimeState {
@@ -217,9 +218,9 @@ fn initialize_with_conn(
                 }
             }
         }
-        Arc::new(hashes)
+        Arc::new(std::sync::RwLock::new(hashes))
     } else {
-        Arc::new(Vec::new())
+        Arc::new(std::sync::RwLock::new(Vec::new()))
     };
 
     // Auth token.

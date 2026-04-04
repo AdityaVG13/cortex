@@ -109,6 +109,20 @@ pub fn build_router(state: RuntimeState) -> Router {
         // ── Export / Import ────────────────────────────────────────
         .route("/export", get(handlers::export::handle_export))
         .route("/import", post(handlers::export::handle_import))
+        // ── Admin (team-mode only, owner/admin role required) ──
+        .route("/admin/user/add", post(handlers::admin::handle_user_add))
+        .route("/admin/user/rotate-key", post(handlers::admin::handle_user_rotate_key))
+        .route("/admin/user/remove", post(handlers::admin::handle_user_remove))
+        .route("/admin/users", get(handlers::admin::handle_user_list))
+        .route("/admin/team/create", post(handlers::admin::handle_team_create))
+        .route("/admin/team/add-member", post(handlers::admin::handle_team_add_member))
+        .route("/admin/team/remove-member", post(handlers::admin::handle_team_remove_member))
+        .route("/admin/teams", get(handlers::admin::handle_team_list))
+        .route("/admin/unowned", get(handlers::admin::handle_unowned))
+        .route("/admin/assign-owner", post(handlers::admin::handle_assign_owner))
+        .route("/admin/set-visibility", post(handlers::admin::handle_set_visibility))
+        .route("/admin/archive", post(handlers::admin::handle_archive))
+        .route("/admin/stats", get(handlers::admin::handle_stats))
         // ── SSE events ──────────────────────────────────────────────
         .route(
             "/events/stream",

@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod boot;
 pub mod conductor;
 pub mod diary;
@@ -105,7 +106,8 @@ pub fn ensure_auth_with_caller(
                 return Ok(None);
             }
             if state.team_mode && candidate.starts_with("ctx_") {
-                for (user_id, hash) in state.team_api_key_hashes.iter() {
+                let hashes = state.team_api_key_hashes.read().unwrap();
+                for (user_id, hash) in hashes.iter() {
                     if crate::auth::verify_api_key_argon2id(candidate, hash) {
                         return Ok(Some(*user_id));
                     }
@@ -121,6 +123,40 @@ pub fn ensure_auth_with_caller(
             serde_json::json!({ "error": "Unauthorized" }),
         )),
     }
+}
+
+/// Require team-mode admin/owner role. Caller must lock `state.db` first and
+/// pass the connection. Returns Ok(user_id) for authorized admins, Err(Response) otherwise.
+#[allow(clippy::result_large_err)]
+pub fn ensure_admin(
+    headers: &HeaderMap,
+    state: &RuntimeState,
+    conn: &rusqlite::Connection,
+) -> Result<i64, Response> {
+    let caller = ensure_auth_with_caller(headers, state)?;
+    let user_id = match caller {
+        Some(id) => id,
+        None => {
+            return Err(json_response(
+                StatusCode::FORBIDDEN,
+                serde_json::json!({ "error": "Admin endpoints require team mode" }),
+            ))
+        }
+    };
+    let role: String = conn
+        .query_row(
+            "SELECT role FROM users WHERE id = ?1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    if role != "owner" && role != "admin" {
+        return Err(json_response(
+            StatusCode::FORBIDDEN,
+            serde_json::json!({ "error": "Insufficient permissions" }),
+        ));
+    }
+    Ok(user_id)
 }
 
 /// Resolve which user is making this request. In solo mode returns None.
@@ -141,8 +177,8 @@ pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
     if !token.starts_with("ctx_") {
         return None;
     }
-    state
-        .team_api_key_hashes
+    let hashes = state.team_api_key_hashes.read().unwrap();
+    hashes
         .iter()
         .find(|(_, hash)| crate::auth::verify_api_key_argon2id(token, hash))
         .map(|(user_id, _)| *user_id)
@@ -158,8 +194,8 @@ fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
     if !candidate.starts_with("ctx_") {
         return false;
     }
-    state
-        .team_api_key_hashes
+    let hashes = state.team_api_key_hashes.read().unwrap();
+    hashes
         .iter()
         .any(|(_, hash)| crate::auth::verify_api_key_argon2id(candidate, hash))
 }
