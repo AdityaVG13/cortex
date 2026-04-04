@@ -168,7 +168,7 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 | # | Task | Priority | Details |
 |---|------|----------|---------|
 | 86 | Version bump to v0.3.0 + git tag + GitHub release | HIGH | Cargo.toml, CHANGELOG.md, build release binary, attach to GH release. |
-| 87 | Desktop app build instructions + version sync to 0.3.0 | HIGH | desktop/cortex-control-center version, build docs, verify first-run UX. |
+| 87 | Desktop app: kill embedded daemon, sidecar the real binary | HIGH | Delete embedded_daemon.rs (3000+ lines of duplicated, drifted code). Tauri app launches cortex.exe as a sidecar process. One download = one installer that bundles both binaries. User double-clicks, daemon starts, dashboard opens, /health confirms green. Version sync to 0.3.0. |
 | 88 | App icon: replace default with adityasmile.png | MEDIUM | In desktop/cortex-control-center/src-tauri/icons/: remove all old icons, rename adityasmile.png to icon.png, generate required sizes (icon.ico for Windows, icon.icns for macOS, 32x32, 128x128, 128x128@2x). Use a single source image, script the resize. Tauri needs specific filenames -- check tauri.conf.json for required icon entries. |
 | 89 | README rewrite: release badge, download link, "What's New in v0.3.0" | MEDIUM | Top badge box currently empty. Add release link, version badge, feature highlights. |
 
