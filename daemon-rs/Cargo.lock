@@ -335,6 +335,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "hyper-util",
+ "libc",
  "ndarray 0.16.1",
  "ort",
  "regex",

@@ -44,6 +44,9 @@ tower = "0.5"
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 opt-level = 3
 lto = true
