@@ -31,7 +31,6 @@ const VISIBILITY_TABLES: &[&str] = &[
     "memories",
     "decisions",
     "memory_clusters",
-    "tasks",
     "feed",
 ];
 
@@ -135,13 +134,7 @@ pub async fn handle_user_add(
         }
     }
 
-    let user_id: i64 = conn
-        .query_row(
-            "SELECT id FROM users WHERE username = ?1",
-            params![username],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let user_id: i64 = conn.last_insert_rowid();
 
     // Update in-memory key cache
     {
@@ -608,7 +601,7 @@ pub async fn handle_archive(
     }
 
     // Only tables with a status column make sense for archiving
-    const ARCHIVABLE: &[&str] = &["memories", "decisions", "tasks"];
+    const ARCHIVABLE: &[&str] = &["memories", "decisions"];
 
     if !is_allowed_table(&body.table, ARCHIVABLE) {
         return json_error(StatusCode::BAD_REQUEST, "table not archivable");
