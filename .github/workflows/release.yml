@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (for example: v0.2.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -22,28 +27,44 @@ jobs:
             archive_name: linux-x86_64
             archive_ext: tar.gz
             binary_name: cortex
+            rust_target: x86_64-unknown-linux-gnu
           - os_name: windows-x86_64
             runner: windows-latest
             archive_name: windows-x86_64
             archive_ext: zip
             binary_name: cortex.exe
+            rust_target: x86_64-pc-windows-msvc
           - os_name: macos-x86_64
-            runner: macos-13
+            runner: macos-14
             archive_name: macos-x86_64
             archive_ext: tar.gz
             binary_name: cortex
+            rust_target: x86_64-apple-darwin
           - os_name: macos-aarch64
             runner: macos-14
             archive_name: macos-aarch64
             archive_ext: tar.gz
             binary_name: cortex
+            rust_target: aarch64-apple-darwin
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve release tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.release_tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Restore Cargo cache
         uses: Swatinem/rust-cache@v2
@@ -52,23 +73,23 @@ jobs:
 
       - name: Build release binary
         working-directory: daemon-rs
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.rust_target }}
 
       - name: Package Unix archive
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="cortex-${GITHUB_REF_NAME}-${{ matrix.archive_name }}.${{ matrix.archive_ext }}"
-          tar -czf "${ARCHIVE}" -C daemon-rs/target/release "${{ matrix.binary_name }}"
+          ARCHIVE="cortex-${RELEASE_TAG}-${{ matrix.archive_name }}.${{ matrix.archive_ext }}"
+          tar -czf "${ARCHIVE}" -C "daemon-rs/target/${{ matrix.rust_target }}/release" "${{ matrix.binary_name }}"
           echo "ARCHIVE=${ARCHIVE}" >> "${GITHUB_ENV}"
 
       - name: Package Windows archive
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $archive = "cortex-$env:GITHUB_REF_NAME-${{ matrix.archive_name }}.${{ matrix.archive_ext }}"
-          Compress-Archive -Path "daemon-rs/target/release/${{ matrix.binary_name }}" -DestinationPath $archive -Force
+          $archive = "cortex-$env:RELEASE_TAG-${{ matrix.archive_name }}.${{ matrix.archive_ext }}"
+          Compress-Archive -Path "daemon-rs/target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}" -DestinationPath $archive -Force
           "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload archive artifact
@@ -83,6 +104,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      - name: Resolve release tag
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.release_tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -92,9 +123,11 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
-            dist/cortex-${{ github.ref_name }}-windows-x86_64.zip
-            dist/cortex-${{ github.ref_name }}-macos-aarch64.tar.gz
-            dist/cortex-${{ github.ref_name }}-macos-x86_64.tar.gz
-            dist/cortex-${{ github.ref_name }}-linux-x86_64.tar.gz
+            dist/cortex-${{ env.RELEASE_TAG }}-windows-x86_64.zip
+            dist/cortex-${{ env.RELEASE_TAG }}-macos-aarch64.tar.gz
+            dist/cortex-${{ env.RELEASE_TAG }}-macos-x86_64.tar.gz
+            dist/cortex-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
           generate_release_notes: true
+          fail_on_unmatched_files: true
