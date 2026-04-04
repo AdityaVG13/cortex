@@ -514,14 +514,17 @@ fn update_cluster_members(conn: &Connection, crystal_id: i64, members: &[&Embedd
 
 /// Search crystal nodes by semantic similarity. Returns (crystal_id, label,
 /// consolidated_text, similarity) sorted by relevance.
-pub fn search_crystals(
+/// Crystal search with optional visibility filtering for team mode.
+pub fn search_crystals_filtered(
     conn: &Connection,
     query_vec: &[f32],
     limit: usize,
+    caller_id: Option<i64>,
+    team_mode: bool,
 ) -> Vec<(i64, String, String, f64)> {
-    let rows: Vec<(i64, Vec<u8>, String, String)> = conn
+    let rows: Vec<(i64, Vec<u8>, String, String, Option<i64>, Option<String>)> = conn
         .prepare(
-            "SELECT mc.id, e.vector, mc.label, mc.consolidated_text \
+            "SELECT mc.id, e.vector, mc.label, mc.consolidated_text, mc.owner_id, mc.visibility \
              FROM embeddings e \
              JOIN memory_clusters mc ON e.target_type = 'crystal' AND e.target_id = mc.id",
         )
@@ -532,6 +535,8 @@ pub fn search_crystals(
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             })?;
             Ok(mapped.flatten().collect())
@@ -540,7 +545,17 @@ pub fn search_crystals(
 
     let mut results: Vec<(i64, String, String, f64)> = rows
         .into_iter()
-        .filter_map(|(id, blob, label, text)| {
+        .filter_map(|(id, blob, label, text, owner_id, visibility)| {
+            // Visibility check: solo mode sees everything, team mode respects ownership
+            if team_mode {
+                if let Some(caller) = caller_id {
+                    if owner_id != Some(caller)
+                        && !matches!(visibility.as_deref(), Some("shared") | Some("team"))
+                    {
+                        return None;
+                    }
+                }
+            }
             let vec = embeddings::blob_to_vector(&blob);
             let sim = embeddings::cosine_similarity(query_vec, &vec) as f64;
             if sim > 0.3 {

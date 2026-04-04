@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-use super::ensure_auth;
+use super::{ensure_auth, resolve_caller_id};
 use super::{estimate_tokens, json_response, now_iso, truncate_chars};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
@@ -59,6 +59,49 @@ struct SearchCandidate {
     matched_keywords: i64,
     score: f64,
     ts: i64,
+    owner_id: Option<i64>,
+    visibility: Option<String>,
+}
+
+// ─── Visibility context ─────────────────────────────────────────────────────
+
+/// Caller identity + team mode flag, threaded through the recall pipeline
+/// so visibility filtering can gate results without changing SQL queries.
+pub struct RecallContext {
+    pub caller_id: Option<i64>,
+    pub team_mode: bool,
+}
+
+impl RecallContext {
+    /// Build from request headers + runtime state.
+    pub fn from_request(headers: &HeaderMap, state: &RuntimeState) -> Self {
+        Self {
+            caller_id: resolve_caller_id(headers, state),
+            team_mode: state.team_mode,
+        }
+    }
+
+    /// Solo-mode context where everything is visible (no filtering).
+    pub fn solo() -> Self {
+        Self {
+            caller_id: None,
+            team_mode: false,
+        }
+    }
+}
+
+/// Check whether a record is visible to the current caller.
+/// Solo mode: everything visible (no filtering).
+/// Team mode: owner sees own; shared/team visible to all; private hidden from non-owners.
+fn is_visible(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
+    if !ctx.team_mode || ctx.caller_id.is_none() {
+        return true;
+    }
+    let caller = ctx.caller_id.unwrap();
+    if owner_id == Some(caller) {
+        return true;
+    }
+    matches!(visibility, Some("shared") | Some("team"))
 }
 
 // ─── Query types ─────────────────────────────────────────────────────────────
@@ -101,7 +144,8 @@ pub async fn handle_recall(
         );
     }
 
-    match execute_unified_recall(&state, q.trim(), budget, k, &agent).await {
+    let ctx = RecallContext::from_request(&headers, &state);
+    match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -133,9 +177,10 @@ pub async fn handle_budget_recall(
     let budget = query.budget.unwrap_or(300);
     let k = query.k.unwrap_or(10);
 
+    let ctx = RecallContext::from_request(&headers, &state);
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
-    match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine) {
+    match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine, &ctx) {
         Ok(results) => {
             let spent: usize = results
                 .iter()
@@ -183,8 +228,9 @@ pub async fn handle_peek(
         }
     };
     let k = query.k.unwrap_or(10);
+    let ctx = RecallContext::from_request(&headers, &state);
     let mut conn = state.db.lock().await;
-    match run_recall(&mut conn, &q, k) {
+    match run_recall(&mut conn, &q, k, &ctx) {
         Ok(results) => {
             let matches: Vec<Value> = results
                 .iter()
@@ -213,6 +259,7 @@ pub async fn execute_unified_recall(
     budget: usize,
     k: usize,
     agent: &str,
+    ctx: &RecallContext,
 ) -> Result<Value, String> {
     // Check pre-cache
     if budget > 0 {
@@ -232,9 +279,9 @@ pub async fn execute_unified_recall(
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
     let results = if budget == 0 {
-        run_recall_with_engine(&mut conn, query_text, k, engine)?
+        run_recall_with_engine(&mut conn, query_text, k, engine, ctx)?
     } else {
-        run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine)?
+        run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine, ctx)?
     };
 
     // Co-occurrence tracking (recording only -- predictions excluded from response)
@@ -308,8 +355,9 @@ fn run_recall(
     conn: &mut Connection,
     query_text: &str,
     k: usize,
+    ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
-    run_recall_with_engine(conn, query_text, k, None)
+    run_recall_with_engine(conn, query_text, k, None, ctx)
 }
 
 fn run_recall_with_engine(
@@ -317,6 +365,7 @@ fn run_recall_with_engine(
     query_text: &str,
     k: usize,
     engine: Option<&crate::embeddings::EmbeddingEngine>,
+    ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
     let extracted = extract_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
@@ -338,9 +387,9 @@ fn run_recall_with_engine(
 
     if let Some(engine) = engine {
         if let Some(query_vec) = engine.embed(query_text) {
-            // ── Pass 0: Crystal search (highest priority) ──────────────────
+            // ── Pass 0: Crystal search (highest priority, visibility-aware) ─
             for (crystal_id, label, text, relevance) in
-                crate::crystallize::search_crystals(conn, &query_vec, 3)
+                crate::crystallize::search_crystals_filtered(conn, &query_vec, 3, ctx.caller_id, ctx.team_mode)
             {
                 let source = format!("crystal::{crystal_id}::{label}");
                 merged.insert(
@@ -356,21 +405,24 @@ fn run_recall_with_engine(
                 );
             }
 
-            // Search memory embeddings
+            // Search memory embeddings (includes owner_id + visibility for team filtering)
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.target_id, e.vector, m.text, m.source \
+                "SELECT e.target_id, e.vector, m.text, m.source, m.owner_id, m.visibility \
                  FROM embeddings e \
                  JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active'"
             ) {
-                let rows: Vec<(Vec<u8>, String, String)> = stmt
-                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?)))
+                let rows: Vec<(Vec<u8>, String, String, Option<i64>, Option<String>)> = stmt
+                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
                     .ok()
                     .into_iter()
                     .flatten()
                     .filter_map(|r| r.ok())
                     .collect();
 
-                for (blob, text, source) in rows {
+                for (blob, text, source, owner_id, visibility) in rows {
+                    if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                        continue;
+                    }
                     let existing_vec = crate::embeddings::blob_to_vector(&blob);
                     let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
                     if sim > SIM_FLOOR as f32 {
@@ -386,21 +438,24 @@ fn run_recall_with_engine(
                 }
             }
 
-            // Search decision embeddings
+            // Search decision embeddings (includes owner_id + visibility for team filtering)
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.target_id, e.vector, d.decision, d.context \
+                "SELECT e.target_id, e.vector, d.decision, d.context, d.owner_id, d.visibility \
                  FROM embeddings e \
                  JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active'"
             ) {
-                let rows: Vec<(Vec<u8>, String, Option<String>)> = stmt
-                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?)))
+                let rows: Vec<(Vec<u8>, String, Option<String>, Option<i64>, Option<String>)> = stmt
+                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
                     .ok()
                     .into_iter()
                     .flatten()
                     .filter_map(|r| r.ok())
                     .collect();
 
-                for (blob, decision, context) in rows {
+                for (blob, decision, context, owner_id, visibility) in rows {
+                    if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                        continue;
+                    }
                     let existing_vec = crate::embeddings::blob_to_vector(&blob);
                     let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
                     if sim > SIM_FLOOR as f32 {
@@ -423,11 +478,22 @@ fn run_recall_with_engine(
         }
     }
 
-    // ── Pass 2: Keyword search ──────────────────────────────────────────────
+    // ── Pass 2: Keyword search (over-fetch for visibility filtering) ──────
     // When an entry was already found by semantic search, fuse scores:
     //   hybrid_score = max(semantic, keyword) + 0.15 * min(semantic, keyword)
     // This boosts entries confirmed by both methods without over-inflating.
-    for row in search_memories(conn, &keyword_query, 20)? {
+    //
+    // Over-fetch: in team mode, fetch raw_k candidates so that after visibility
+    // filtering we still have enough results. Retry with doubled limit up to
+    // 2 times if too many get filtered out.
+    let raw_k = if ctx.team_mode { k.max(10) * 5 } else { 20 };
+    let mut fts_limit = raw_k.max(20);
+    let mut retry = 0;
+    loop {
+    for row in search_memories(conn, &keyword_query, fts_limit)?
+        .into_iter()
+        .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
+    {
         let key = row.source.clone();
         if let Some(existing) = merged.get(&key) {
             if existing.method == "semantic" {
@@ -466,7 +532,10 @@ fn run_recall_with_engine(
         }
     }
 
-    for row in search_decisions(conn, &keyword_query, 20)? {
+    for row in search_decisions(conn, &keyword_query, 20)?
+        .into_iter()
+        .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
+    {
         let key = row.source.clone();
         if let Some(existing) = merged.get(&key) {
             if existing.method == "semantic" {
@@ -504,6 +573,15 @@ fn run_recall_with_engine(
             );
         }
     }
+
+    // Over-fetch retry: if team mode filtered out too many, widen the FTS net
+    if ctx.team_mode && merged.len() < k && retry < 2 {
+        fts_limit *= 2;
+        retry += 1;
+        continue;
+    }
+    break;
+    } // end over-fetch retry loop
 
     // Compute entropy and apply entropy-weighted re-ranking.
     // High-entropy (information-dense) results get boosted; low-entropy
@@ -551,8 +629,9 @@ fn run_budget_recall(
     query_text: &str,
     token_budget: usize,
     k: usize,
+    ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
-    run_budget_recall_with_engine(conn, query_text, token_budget, k, None)
+    run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx)
 }
 
 fn run_budget_recall_with_engine(
@@ -561,8 +640,9 @@ fn run_budget_recall_with_engine(
     token_budget: usize,
     k: usize,
     engine: Option<&crate::embeddings::EmbeddingEngine>,
+    ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
-    let raw = run_recall_with_engine(conn, query_text, k, engine)?;
+    let raw = run_recall_with_engine(conn, query_text, k, engine, ctx)?;
     if raw.is_empty() {
         return Ok(vec![]);
     }
@@ -643,6 +723,8 @@ fn search_memories(
                             .or(row.get::<_, Option<String>>(7)?)
                             .unwrap_or_default(),
                     ),
+                    owner_id: None,
+                    visibility: None,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -659,7 +741,7 @@ fn search_memories(
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         let mut stmt = conn
             .prepare(
-                "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier \
+                "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility \
                  FROM memories_fts fts \
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
@@ -680,6 +762,8 @@ fn search_memories(
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -697,6 +781,8 @@ fn search_memories(
                 created_at,
                 compressed_text,
                 age_tier,
+                row_owner_id,
+                row_visibility,
             ) = row;
             let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
             let score = score.unwrap_or(1.0).max(0.0);
@@ -743,6 +829,8 @@ fn search_memories(
                 matched_keywords: matched,
                 score,
                 ts,
+                owner_id: row_owner_id,
+                visibility: row_visibility,
             });
         }
 
@@ -817,6 +905,8 @@ fn search_memories_fallback(
                 matched_keywords: 0,
                 score,
                 ts,
+                owner_id: None,
+                visibility: None,
             });
             continue;
         }
@@ -854,6 +944,8 @@ fn search_memories_fallback(
             matched_keywords: matched,
             score,
             ts,
+            owner_id: None,
+            visibility: None,
         });
     }
 
@@ -909,6 +1001,8 @@ fn search_decisions(
                             .or(row.get::<_, Option<String>>(6)?)
                             .unwrap_or_default(),
                     ),
+                    owner_id: None,
+                    visibility: None,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -925,7 +1019,7 @@ fn search_decisions(
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         let mut stmt = conn
             .prepare(
-                "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier \
+                "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility \
                  FROM decisions_fts fts \
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
@@ -945,6 +1039,8 @@ fn search_decisions(
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -961,6 +1057,8 @@ fn search_decisions(
                 created_at,
                 compressed_text,
                 age_tier,
+                row_owner_id,
+                row_visibility,
             ) = row;
             let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
             let score = score.unwrap_or(1.0).max(0.0);
@@ -1006,6 +1104,8 @@ fn search_decisions(
                 matched_keywords: matched,
                 score,
                 ts,
+                owner_id: row_owner_id,
+                visibility: row_visibility,
             });
         }
 
@@ -1079,6 +1179,8 @@ fn search_decisions_fallback(
                 matched_keywords: 0,
                 score,
                 ts,
+                owner_id: None,
+                visibility: None,
             });
             continue;
         }
@@ -1114,6 +1216,8 @@ fn search_decisions_fallback(
             matched_keywords: matched,
             score,
             ts,
+            owner_id: None,
+            visibility: None,
         });
     }
 
@@ -1410,8 +1514,9 @@ async fn predict_and_cache(
         _ => return Ok(()),
     };
 
+    let predict_ctx = RecallContext::solo();
     let mut conn = state.db.lock().await;
-    let results = run_budget_recall(&mut conn, &predicted_query, 200, 5)?;
+    let results = run_budget_recall(&mut conn, &predicted_query, 200, 5, &predict_ctx)?;
     drop(conn);
     if results.is_empty() {
         return Ok(());

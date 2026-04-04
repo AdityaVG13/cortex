@@ -84,6 +84,29 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
     }
 }
 
+/// Resolve which user is making this request. In solo mode returns None.
+/// In team mode, iterates team API key hashes and returns the matching user_id.
+pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i64> {
+    if !state.team_mode {
+        return None;
+    }
+    let header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let token = header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))?;
+    if !token.starts_with("ctx_") {
+        return None;
+    }
+    state
+        .team_api_key_hashes
+        .iter()
+        .find(|(_, hash)| crate::auth::verify_api_key_argon2id(token, hash))
+        .map(|(user_id, _)| *user_id)
+}
+
 fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
     if candidate == state.token.as_str() {
         return true;

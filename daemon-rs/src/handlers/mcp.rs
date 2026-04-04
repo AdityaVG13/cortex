@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::health::build_digest;
 use super::mutate::{forget_keyword, resolve_decision};
-use super::recall::execute_unified_recall;
+use super::recall::{execute_unified_recall, RecallContext};
 use super::store::store_decision;
 use super::{estimate_tokens, now_iso};
 use crate::state::RuntimeState;
@@ -288,7 +288,8 @@ async fn mcp_dispatch(
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
-            let results = execute_unified_recall(state, query, 0, limit, "mcp").await?;
+            let ctx = RecallContext::solo();
+            let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx).await?;
             Ok(results)
         }
 
@@ -308,7 +309,8 @@ async fn mcp_dispatch(
                 .or_else(|| args.get("agent").and_then(|v| v.as_str()))
                 .unwrap_or("mcp");
 
-            execute_unified_recall(state, query, budget, 10, agent).await
+            let ctx = RecallContext::solo();
+            execute_unified_recall(state, query, budget, 10, agent, &ctx).await
         }
 
         "cortex_store" => {
