@@ -42,6 +42,7 @@ const PANELS = [
   { key: "locks", label: "Locks", icon: "◎" },
   { key: "visualizer", label: "Brain", icon: "◬" },
   { key: "conflicts", label: "Conflicts", icon: "⚡" },
+  { key: "about", label: "About", icon: "ℹ" },
 ];
 
 const EMPTY_DAEMON = {
@@ -314,7 +315,6 @@ export function App() {
     memories: "--",
     decisions: "--",
     events: "--",
-    ollama: "--",
   });
   const [sessions, setSessions] = useState([]);
   const [tasks, setTasks] = useState([]);
@@ -442,7 +442,6 @@ export function App() {
         memories: "--",
         decisions: "--",
         events: "--",
-        ollama: "--",
       });
       return;
     }
@@ -452,7 +451,6 @@ export function App() {
       memories: next.memories ?? 0,
       decisions: next.decisions ?? 0,
       events: next.events ?? 0,
-      ollama: next.ollama === "offline" ? "Off" : next.ollama ?? "--",
     });
   }, [api]);
 
@@ -928,11 +926,6 @@ export function App() {
                 <span className="metric-label">Events</span>
                 <span className="metric-icon">◍</span>
               </div>
-              <div className="metric" data-accent={stats.ollama === "Off" ? "red" : "green"}>
-                <span className="metric-value">{stats.ollama}</span>
-                <span className="metric-label">Ollama</span>
-                <span className="metric-icon">◎</span>
-              </div>
             </div>
 
             <div className="system-strip">
@@ -944,8 +937,8 @@ export function App() {
               </div>
               <div className="sys-item">
                 <span className="sys-label">EMBEDDINGS</span>
-                <span className={`sys-value ${stats.ollama === "Off" ? "sys-err" : "sys-ok"}`}>
-                  {stats.ollama === "Off" ? "DISABLED" : "ACTIVE"}
+                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
+                  {daemonState.reachable ? "ONNX ACTIVE" : "OFFLINE"}
                 </span>
               </div>
               <div className="sys-item">
@@ -1443,6 +1436,94 @@ export function App() {
                 </div>
               ))
             )}
+          </section>
+        ) : null}
+
+        {panel === "about" ? (
+          <section className="panel active">
+            <div className="panel-header">
+              <h1>About</h1>
+            </div>
+            <div className="card full">
+              <div style={{ padding: "2rem", maxWidth: 640 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
+                  <div style={{
+                    width: 64, height: 64, borderRadius: 16,
+                    background: "linear-gradient(135deg, var(--accent-cyan), var(--accent-blue))",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: "2rem", flexShrink: 0,
+                  }}>◈</div>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Version 0.3.0</p>
+                  </div>
+                </div>
+
+                <p style={{ color: "var(--text-secondary)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
+                  A persistent, self-improving brain for AI coding agents. Single Rust binary,
+                  zero runtime dependencies, in-process ONNX embeddings.
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "2rem" }}>
+                  {[
+                    ["Daemon", "Rust + Axum"],
+                    ["Embeddings", "ONNX (all-MiniLM-L6-v2)"],
+                    ["Storage", "SQLite (WAL)"],
+                    ["Transport", "HTTP + MCP stdio"],
+                    ["Port", "7437"],
+                    ["License", "MIT"],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{
+                      background: "var(--card-bg)", border: "1px solid var(--border)",
+                      borderRadius: 8, padding: "0.75rem 1rem",
+                    }}>
+                      <span style={{ color: "var(--muted)", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
+                      <div style={{ marginTop: 4, fontWeight: 500 }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginBottom: "2rem" }}>
+                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--muted)", marginBottom: "0.75rem" }}>Contributors</h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {[
+                      { handle: "AdityaVG13", role: "Creator & maintainer" },
+                    ].map(({ handle, role }) => (
+                      <div key={handle} style={{
+                        display: "flex", alignItems: "center", gap: "0.75rem",
+                        background: "var(--card-bg)", border: "1px solid var(--border)",
+                        borderRadius: 8, padding: "0.625rem 1rem",
+                      }}>
+                        <span className="agent-indicator" style={{ background: "var(--accent-cyan)", boxShadow: "0 0 8px var(--accent-cyan)" }} />
+                        <span style={{ fontWeight: 500 }}>@{handle}</span>
+                        <span style={{ color: "var(--muted)", fontSize: "0.875rem", marginLeft: "auto" }}>{role}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <a
+                    href="https://github.com/AdityaVG13/cortex"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-sm"
+                    style={{ textDecoration: "none" }}
+                  >
+                    GitHub
+                  </a>
+                  <a
+                    href="https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-sm"
+                    style={{ textDecoration: "none" }}
+                  >
+                    Release Notes
+                  </a>
+                </div>
+              </div>
+            </div>
           </section>
         ) : null}
       </main>

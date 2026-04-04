@@ -9,6 +9,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [0.3.0] - 2026-04-04
 
+### Desktop (Control Center)
+- Replaced embedded daemon with sidecar process manager (`sidecar.rs`) -- Control Center now launches the real `cortex.exe` binary
+- Version-synced all desktop artifacts (`package.json`, `src-tauri/Cargo.toml`, `tauri.conf.json`) to `0.3.0`
+- New app icons generated from `adityasmile.png` source image
+- Removed Ollama metric card and stat from Overview panel; EMBEDDINGS strip now shows ONNX status based on daemon reachability
+- Added About panel (12th nav entry) with version, stack info, contributors, and links
+
 ### Features
 - Over-fetch-then-filter recall with visibility filtering (`raw_k=max(k*5,50)`, max 2 retries)
 - 13 admin endpoints for user/team/data management (`/admin/user/*`, `/admin/team/*`, `/admin/stats`, etc.)

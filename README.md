@@ -253,6 +253,7 @@ desktop/cortex-control-center/
 - **CLI management** -- `cortex user`, `cortex team`, and `cortex admin` subcommands for keys, membership, and housekeeping
 - **Graceful degradation** -- ONNX fallback, team-mode MCP fail-closed, write-ahead buffer for offline stores, TLS behavior by deployment mode
 - **Visibility-filtered recall** -- Over-fetch then filter with owner-aware visibility across semantic, keyword, crystal, and budget paths
+- **Control Center v0.3.0** -- Version-synced desktop app with About panel, ONNX embeddings status, and Ollama dependency removed
 
 ### Core Memory
 - **Capsule Compiler** -- Identity + delta capsules compile ~300-token boot prompts (97% compression)
