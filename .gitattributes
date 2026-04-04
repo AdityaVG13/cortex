@@ -1,3 +1,6 @@
+# Enforce LF line endings in repo
+* text=auto eol=lf
+
 # Tell GitHub this is a Rust project
 *.rs linguist-language=Rust
 *.js linguist-vendored
