@@ -58,8 +58,9 @@ Grab the latest release from [GitHub Releases](https://github.com/AdityaVG13/cor
 |----------|----------|
 | **Windows (x86_64)** | [`cortex-v0.2.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-windows-x86_64.zip) |
 | **macOS (arm64)** | [`cortex-v0.2.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-macos-aarch64.tar.gz) |
-| **macOS (x86_64)** | [`cortex-v0.2.0-macos-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-macos-x86_64.tar.gz) |
 | **Linux (x86_64)** | [`cortex-v0.2.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.2.0/cortex-v0.2.0-linux-x86_64.tar.gz) |
+
+Intel macOS (`x86_64`) artifacts are temporarily unavailable in `v0.2.0`.
 
 Extract the archive and place the binary on your PATH:
 - Windows: `cortex.exe`

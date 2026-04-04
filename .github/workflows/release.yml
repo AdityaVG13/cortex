@@ -34,12 +34,6 @@ jobs:
             archive_ext: zip
             binary_name: cortex.exe
             rust_target: x86_64-pc-windows-msvc
-          - os_name: macos-x86_64
-            runner: macos-14
-            archive_name: macos-x86_64
-            archive_ext: tar.gz
-            binary_name: cortex
-            rust_target: x86_64-apple-darwin
           - os_name: macos-aarch64
             runner: macos-14
             archive_name: macos-aarch64
@@ -127,7 +121,6 @@ jobs:
           files: |
             dist/cortex-${{ env.RELEASE_TAG }}-windows-x86_64.zip
             dist/cortex-${{ env.RELEASE_TAG }}-macos-aarch64.tar.gz
-            dist/cortex-${{ env.RELEASE_TAG }}-macos-x86_64.tar.gz
             dist/cortex-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
           generate_release_notes: true
           fail_on_unmatched_files: true
