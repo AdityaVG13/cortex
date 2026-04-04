@@ -12,7 +12,7 @@
 | Gemini CLI | 2.5 Pro | $ | 1M context analysis, research, docs |
 | Droid | GLM 5 (0.4x) | $ | Medium features, API endpoints |
 | Droid | GLM 4.7 (0.25x) | ¢ | Config, schema DDL, boilerplate |
-| Local | Qwen/DeepSeek | Free | Formatting, drafts, lookups |
+| Gemini Flash | 2.5 Flash | ¢ | Formatting, drafts, lookups, light code tasks |
 
 ---
 
@@ -147,9 +147,9 @@ Cheapest. Schema DDL, config, docs, boilerplate.
 
 ---
 
-## Local (Qwen/DeepSeek) -- 9 tasks (already done)
+## Gemini Flash -- 9 tasks (already done)
 
-Schema tasks 45-53 are DONE (solo mode tables exist). Local models handle any future formatting, comment cleanup, or draft generation on these files.
+Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles formatting, comment cleanup, draft generation, and light code tasks.
 
 ---
 
@@ -206,7 +206,7 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Local models handle any fu
 | Gemini CLI | 5 | 3 | 8 |
 | Droid (GLM 5) | 12 | 0 | 12 |
 | Droid (GLM 4.7) | 19 | 2 | 21 |
-| Local / Done | 9 | 0 | 9 |
+| Gemini Flash | 9 | 0 | 9 |
 | **Total** | **82** | **14** | **96** |
 
 ---
