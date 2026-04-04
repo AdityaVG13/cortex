@@ -7,6 +7,7 @@ mod conflict;
 mod crystallize;
 mod db;
 mod embeddings;
+mod export_data;
 mod focus;
 mod handlers;
 mod hook_boot;
@@ -132,7 +133,22 @@ async fn main() {
 
         // ── Setup: detect AI tools, configure, verify ──────────────
         "setup" => {
-            setup::run_setup().await;
+            let remaining: Vec<String> = args[2..].to_vec();
+            if remaining.iter().any(|a| a == "--team") {
+                setup::run_setup_team(&remaining).await;
+            } else {
+                setup::run_setup().await;
+            }
+        }
+
+        // ── Data export/import CLI ──────────────────────────────────
+        "export" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            run_export_cli(&remaining);
+        }
+        "import" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            run_import_cli(&remaining);
         }
 
         _ => {
@@ -145,6 +161,7 @@ async fn main() {
             eprintln!();
             eprintln!("Setup:");
             eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
+            eprintln!("  setup --team       Team-mode setup + schema migration + owner API key");
             eprintln!();
             eprintln!("Daemon:");
             eprintln!("  serve              HTTP daemon on :7437");
@@ -156,6 +173,10 @@ async fn main() {
             eprintln!();
             eprintln!("Tools:");
             eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
+            eprintln!("  export             Export data (--format json|sql, --out <file>)");
+            eprintln!(
+                "  import             Import JSON data (--file <path>, optional --user <username>)"
+            );
             eprintln!();
             eprintln!("Service:");
             eprintln!("  service install    Register as Windows Service (auto-start)");
@@ -166,6 +187,200 @@ async fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn run_export_cli(args: &[String]) {
+    let mut format = "json".to_string();
+    let mut out_path: Option<String> = None;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                if let Some(v) = args.get(i + 1) {
+                    format = v.to_string();
+                    i += 1;
+                }
+            }
+            "--out" => {
+                if let Some(v) = args.get(i + 1) {
+                    out_path = Some(v.to_string());
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(export_format) = export_data::ExportFormat::parse(&format) else {
+        eprintln!("Usage: cortex export --format json|sql [--out <path>]");
+        std::process::exit(1);
+    };
+
+    let db_path = auth::db_path();
+    let conn = match db::open(&db_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to open database at {}: {e}", db_path.display());
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = db::configure(&conn) {
+        eprintln!("Failed to configure database: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = db::initialize_schema(&conn) {
+        eprintln!("Failed to initialize schema: {e}");
+        std::process::exit(1);
+    }
+    crystallize::migrate_crystal_tables(&conn);
+
+    let output = match export_format {
+        export_data::ExportFormat::Json => {
+            let value = export_data::export_json_value(&conn);
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+        }
+        export_data::ExportFormat::Sql => export_data::export_sql_text(&conn),
+    };
+
+    if let Some(path) = out_path {
+        if let Err(e) = std::fs::write(&path, output) {
+            eprintln!("Failed to write export file {path}: {e}");
+            std::process::exit(1);
+        }
+        eprintln!("Exported to {path}");
+    } else {
+        println!("{output}");
+    }
+}
+
+fn run_import_cli(args: &[String]) {
+    let mut file_path: Option<String> = None;
+    let mut username: Option<String> = None;
+    let mut visibility = "private".to_string();
+
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--file" => {
+                if let Some(v) = args.get(i + 1) {
+                    file_path = Some(v.to_string());
+                    i += 1;
+                }
+            }
+            "--user" => {
+                if let Some(v) = args.get(i + 1) {
+                    username = Some(v.to_string());
+                    i += 1;
+                }
+            }
+            "--visibility" => {
+                if let Some(v) = args.get(i + 1) {
+                    visibility = v.to_string();
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let Some(file_path) = file_path else {
+        eprintln!("Usage: cortex import --file <path> [--user <username>] [--visibility private|team|shared]");
+        std::process::exit(1);
+    };
+    if !matches!(visibility.as_str(), "private" | "team" | "shared") {
+        eprintln!("Invalid --visibility value '{visibility}'. Use private|team|shared.");
+        std::process::exit(1);
+    }
+
+    let raw = match std::fs::read_to_string(&file_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Cannot read import file {file_path}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let payload: export_data::ImportPayload = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Import file is not valid JSON: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let db_path = auth::db_path();
+    let conn = match db::open(&db_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Failed to open database at {}: {e}", db_path.display());
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = db::configure(&conn) {
+        eprintln!("Failed to configure database: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = db::initialize_schema(&conn) {
+        eprintln!("Failed to initialize schema: {e}");
+        std::process::exit(1);
+    }
+    crystallize::migrate_crystal_tables(&conn);
+
+    let team_mode = db::current_mode(&conn) == "team";
+    if username.is_some() && !team_mode {
+        eprintln!("--user import requires team mode. Run: cortex setup --team");
+        std::process::exit(1);
+    }
+    let owner_id = if team_mode {
+        if let Some(user) = username {
+            match conn.query_row(
+                "SELECT id FROM users WHERE username = ?1",
+                rusqlite::params![user.clone()],
+                |row| row.get::<_, i64>(0),
+            ) {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    eprintln!("Unknown user '{user}'. Create the user before import.");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            conn.query_row(
+                "SELECT value FROM config WHERE key = 'owner_user_id' LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .or_else(|| {
+                conn.query_row(
+                    "SELECT id FROM users ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id ASC LIMIT 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .ok()
+            })
+        }
+    } else {
+        None
+    };
+    if team_mode && owner_id.is_none() {
+        eprintln!("Team mode import requires a target owner. Run `cortex setup --team` first.");
+        std::process::exit(1);
+    }
+
+    let options = export_data::ImportOptions {
+        owner_id,
+        visibility: if team_mode { Some(visibility) } else { None },
+        source_agent_fallback: "import-cli".to_string(),
+    };
+    let counts = export_data::import_payload(&conn, &payload, &options);
+    println!(
+        "{{\"imported\":{{\"memories\":{},\"decisions\":{}}}}}",
+        counts.memories, counts.decisions
+    );
 }
 
 // ── Shared daemon logic (used by `serve` and `service-run`) ─────────────────

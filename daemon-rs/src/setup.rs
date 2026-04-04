@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::auth;
+use crate::db;
 use crate::embeddings;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -120,6 +121,98 @@ pub async fn run_setup() {
     eprintln!();
 }
 
+/// Team-mode setup:
+/// - creates team tables
+/// - creates/updates owner user
+/// - migrates schema to owner-aware shape
+/// - writes owner API key to ~/.cortex/cortex.token for compatibility
+pub async fn run_setup_team(args: &[String]) {
+    let owner = arg_value(args, "--owner").unwrap_or_else(|| {
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "owner".to_string())
+    });
+    let display_name = arg_value(args, "--display-name").unwrap_or_else(|| owner.clone());
+
+    eprintln!();
+    eprintln!("  Cortex Team Setup");
+    eprintln!("  =================");
+    eprintln!();
+    eprintln!("  Owner username: {owner}");
+
+    let db_path = auth::db_path();
+    if let Some(parent) = db_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let conn = match db::open(&db_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("  [FAIL] Cannot open {}: {e}", db_path.display());
+            return;
+        }
+    };
+    if let Err(e) = db::configure(&conn) {
+        eprintln!("  [FAIL] Cannot configure DB: {e}");
+        return;
+    }
+    if let Err(e) = db::initialize_schema(&conn) {
+        eprintln!("  [FAIL] Cannot initialize schema: {e}");
+        return;
+    }
+    db::migrate_focus_table(&conn);
+    crate::crystallize::migrate_crystal_tables(&conn);
+
+    let owner_key = auth::generate_ctx_api_key();
+    let owner_hash = match auth::hash_api_key_argon2id(&owner_key) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("  [FAIL] Failed to hash owner API key: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = db::create_team_mode_tables(&conn) {
+        eprintln!("  [FAIL] Failed to create team tables: {e}");
+        return;
+    }
+    let owner_id = match db::upsert_owner_user(&conn, &owner, Some(&display_name), &owner_hash) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("  [FAIL] Failed to create owner user: {e}");
+            return;
+        }
+    };
+    if let Err(e) = db::migrate_to_team_mode(&conn, owner_id) {
+        eprintln!("  [FAIL] Failed to run team migration: {e}");
+        return;
+    }
+    let default_team_id = match db::ensure_default_team_membership(&conn, owner_id) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("  [FAIL] Failed to create default team membership: {e}");
+            return;
+        }
+    };
+
+    // Keep the existing auth path compatible with current handlers/MCP proxy.
+    let cortex_dir = auth::cortex_dir();
+    let _ = fs::create_dir_all(&cortex_dir);
+    if let Err(e) = fs::write(cortex_dir.join("cortex.token"), &owner_key) {
+        eprintln!("  [WARN] Team schema migrated, but token write failed: {e}");
+    }
+
+    let key_preview: String = owner_key.chars().take(18).collect();
+    eprintln!("  [OK] Team schema migration complete.");
+    eprintln!("  [OK] Mode set to team.");
+    eprintln!("  [OK] Owner user id: {owner_id}");
+    eprintln!("  [OK] Default team id: {default_team_id}");
+    eprintln!(
+        "  [OK] Owner API key: {key_preview}... (full key written to ~/.cortex/cortex.token)"
+    );
+    eprintln!();
+}
+
 fn print_step(num: usize, name: &str, result: &StepResult) {
     eprintln!(
         "  {} Step {}: {} -- {}",
@@ -134,6 +227,15 @@ fn current_exe_path() -> String {
     std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "cortex".to_string())
+}
+
+fn arg_value(args: &[String], key: &str) -> Option<String> {
+    for (idx, arg) in args.iter().enumerate() {
+        if arg == key {
+            return args.get(idx + 1).cloned();
+        }
+    }
+    None
 }
 
 // ─── Step 1: Init ───────────────────────────────────────────────────────────

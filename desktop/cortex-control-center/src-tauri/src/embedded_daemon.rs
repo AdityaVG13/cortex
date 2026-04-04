@@ -2647,7 +2647,7 @@ async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Result<Option<
       json!({
         "protocolVersion": "2024-11-05",
         "capabilities": { "tools": { "listChanged": true } },
-        "serverInfo": { "name": "cortex", "version": "2.0.0" }
+        "serverInfo": { "name": "cortex", "version": "0.2.0" }
       }),
     ))),
     "notifications/initialized" => Ok(None),

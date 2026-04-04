@@ -385,3 +385,124 @@ async fn run_tls(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn build_state(team_mode: bool) -> RuntimeState {
+        let mut db_path = std::env::temp_dir();
+        let suffix = if team_mode { "team" } else { "solo" };
+        db_path.push(format!(
+            "cortex-api-parity-{suffix}-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        crate::db::migrate_focus_table(&conn);
+        crate::crystallize::migrate_crystal_tables(&conn);
+        if team_mode {
+            crate::db::create_team_mode_tables(&conn).unwrap();
+            let owner_id =
+                crate::db::upsert_owner_user(&conn, "owner", Some("Owner"), "argon2id-placeholder")
+                    .unwrap();
+            crate::db::migrate_to_team_mode(&conn, owner_id).unwrap();
+        }
+        drop(conn);
+
+        let (state, _shutdown_rx) = crate::state::initialize(&db_path, false).unwrap();
+        let _ = std::fs::remove_file(db_path);
+        state
+    }
+
+    async fn route_status(
+        router: &Router,
+        method: Method,
+        path: &str,
+        body: Option<&str>,
+    ) -> StatusCode {
+        let mut req = Request::builder().method(method).uri(path);
+        if body.is_some() {
+            req = req.header("content-type", "application/json");
+        }
+        let req = req
+            .body(Body::from(body.unwrap_or_default().to_string()))
+            .unwrap();
+        router.clone().oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn test_non_admin_routes_preserved_across_team_migration() {
+        let solo_router = build_router(build_state(false).await);
+        let team_router = build_router(build_state(true).await);
+
+        let cases: Vec<(Method, &str, Option<&str>)> = vec![
+            (Method::GET, "/health", None),
+            (Method::GET, "/digest", None),
+            (Method::GET, "/savings", None),
+            (Method::GET, "/dump", None),
+            (Method::POST, "/store", Some("{}")),
+            (Method::GET, "/recall", None),
+            (Method::GET, "/peek", None),
+            (Method::GET, "/unfold", None),
+            (Method::GET, "/boot", None),
+            (Method::POST, "/diary", Some("{}")),
+            (Method::GET, "/recall/budget", None),
+            (Method::POST, "/feedback", Some("{}")),
+            (Method::GET, "/feedback/stats", None),
+            (Method::GET, "/crystals", None),
+            (Method::POST, "/crystallize", Some("{}")),
+            (Method::POST, "/compact", Some("{}")),
+            (Method::GET, "/storage", None),
+            (Method::POST, "/forget", Some("{}")),
+            (Method::POST, "/resolve", Some("{}")),
+            (Method::GET, "/conflicts", None),
+            (Method::POST, "/archive", Some("{}")),
+            (Method::POST, "/focus/start", Some("{}")),
+            (Method::POST, "/focus/end", Some("{}")),
+            (Method::POST, "/shutdown", Some("{}")),
+            (Method::POST, "/lock", Some("{}")),
+            (Method::POST, "/unlock", Some("{}")),
+            (Method::GET, "/locks", None),
+            (Method::POST, "/activity", Some("{}")),
+            (Method::GET, "/activity", None),
+            (Method::POST, "/message", Some("{}")),
+            (Method::GET, "/messages", None),
+            (Method::POST, "/session/start", Some("{}")),
+            (Method::POST, "/session/heartbeat", Some("{}")),
+            (Method::POST, "/session/end", Some("{}")),
+            (Method::GET, "/sessions", None),
+            (Method::POST, "/tasks", Some("{}")),
+            (Method::GET, "/tasks", None),
+            (Method::GET, "/tasks/next", None),
+            (Method::POST, "/tasks/claim", Some("{}")),
+            (Method::POST, "/tasks/complete", Some("{}")),
+            (Method::POST, "/tasks/abandon", Some("{}")),
+            (Method::POST, "/feed", Some("{}")),
+            (Method::GET, "/feed", None),
+            (Method::POST, "/feed/ack", Some("{}")),
+            (Method::GET, "/feed/demo", None),
+            (Method::GET, "/export", None),
+            (Method::POST, "/import", Some("{}")),
+            (Method::GET, "/events/stream", None),
+            (Method::POST, "/mcp-rpc", Some("{}")),
+        ];
+
+        for (method, path, body) in cases {
+            let solo_status = route_status(&solo_router, method.clone(), path, body).await;
+            let team_status = route_status(&team_router, method, path, body).await;
+
+            assert_ne!(solo_status, StatusCode::NOT_FOUND, "solo missing {path}");
+            assert_ne!(team_status, StatusCode::NOT_FOUND, "team missing {path}");
+            assert_eq!(
+                solo_status, team_status,
+                "status drift for route {path}: solo={solo_status} team={team_status}"
+            );
+        }
+    }
+}

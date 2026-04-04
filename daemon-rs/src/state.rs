@@ -75,6 +75,12 @@ pub struct RuntimeState {
     pub embedding_engine: Option<Arc<crate::embeddings::EmbeddingEngine>>,
     /// Per-IP sliding-window rate limiter.
     pub rate_limiter: crate::rate_limit::RateLimiter,
+    /// True when running with team-mode schema enabled.
+    pub team_mode: bool,
+    /// Default owner used for owner-scoped conductor rows.
+    pub default_owner_id: Option<i64>,
+    /// Team-mode API key hashes loaded from `users` for Argon2 verification.
+    pub team_api_key_hashes: Arc<Vec<(i64, String)>>,
 }
 
 impl RuntimeState {
@@ -178,8 +184,48 @@ fn initialize_with_conn(
         .map_err(|e| e.to_string())?;
     eprintln!("[cortex] Read connection opened (WAL concurrent reads enabled)");
 
+    let mode = crate::db::current_mode(&conn);
+    let team_mode = mode == "team";
+    let default_owner_id = if team_mode {
+        let from_config = conn
+            .query_row(
+                "SELECT value FROM config WHERE key = 'owner_user_id' LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok());
+        from_config.or_else(|| {
+            conn.query_row(
+                "SELECT id FROM users ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id ASC LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+        })
+    } else {
+        None
+    };
+    let team_api_key_hashes = if team_mode {
+        let mut hashes: Vec<(i64, String)> = Vec::new();
+        if let Ok(mut stmt) = conn.prepare("SELECT id, api_key_hash FROM users") {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            }) {
+                for row in rows.flatten() {
+                    hashes.push(row);
+                }
+            }
+        }
+        Arc::new(hashes)
+    } else {
+        Arc::new(Vec::new())
+    };
+
     // Auth token.
-    let token = if allow_token_rotation {
+    let token = if team_mode {
+        crate::auth::read_token().unwrap_or_else(crate::auth::generate_ephemeral_token)
+    } else if allow_token_rotation {
         crate::auth::generate_token()
     } else {
         crate::auth::read_token().unwrap_or_else(crate::auth::generate_ephemeral_token)
@@ -223,6 +269,9 @@ fn initialize_with_conn(
         db_path: db_path.to_path_buf(),
         embedding_engine,
         rate_limiter: crate::rate_limit::RateLimiter::new(),
+        team_mode,
+        default_owner_id,
+        team_api_key_hashes,
     };
 
     Ok((state, shutdown_rx))

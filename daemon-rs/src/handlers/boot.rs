@@ -61,11 +61,19 @@ pub async fn handle_boot(
         [],
         |row| row.get::<_, String>(0),
     ) {
-        let _ = conn.execute(
-            "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, datetime('now')) \
-             ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
-            rusqlite::params![agent, latest_id],
-        );
+        if let Some(owner_id) = current_owner_id(&conn) {
+            let _ = conn.execute(
+                "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, datetime('now')) \
+                 ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+                rusqlite::params![owner_id, agent, latest_id],
+            );
+        } else {
+            let _ = conn.execute(
+                "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, datetime('now')) \
+                 ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+                rusqlite::params![agent, latest_id],
+            );
+        }
     }
 
     checkpoint_wal_best_effort(&conn);
@@ -90,17 +98,41 @@ pub async fn handle_boot(
 // ─── Cleanup helpers (shared with conductor but needed before compile) ──────
 
 fn clean_expired_locks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "DELETE FROM locks WHERE expires_at < ?1",
-        rusqlite::params![now_iso()],
-    )?;
+    if let Some(owner_id) = current_owner_id(conn) {
+        conn.execute(
+            "DELETE FROM locks WHERE owner_id = ?1 AND expires_at < ?2",
+            rusqlite::params![owner_id, now_iso()],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM locks WHERE expires_at < ?1",
+            rusqlite::params![now_iso()],
+        )?;
+    }
     Ok(())
 }
 
 fn clean_expired_sessions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "DELETE FROM sessions WHERE expires_at < ?1",
-        rusqlite::params![now_iso()],
-    )?;
+    if let Some(owner_id) = current_owner_id(conn) {
+        conn.execute(
+            "DELETE FROM sessions WHERE owner_id = ?1 AND expires_at < ?2",
+            rusqlite::params![owner_id, now_iso()],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM sessions WHERE expires_at < ?1",
+            rusqlite::params![now_iso()],
+        )?;
+    }
     Ok(())
+}
+
+fn current_owner_id(conn: &rusqlite::Connection) -> Option<i64> {
+    conn.query_row(
+        "SELECT value FROM config WHERE key = 'owner_user_id' LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| v.parse::<i64>().ok())
 }

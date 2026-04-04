@@ -248,11 +248,21 @@ async fn mcp_dispatch(
                 [],
                 |row| row.get::<_, String>(0),
             ) {
-                let _ = conn.execute(
-                    "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, datetime('now')) \
-                     ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
-                    rusqlite::params![agent, latest_id],
-                );
+                if state.team_mode {
+                    if let Some(owner_id) = state.default_owner_id {
+                        let _ = conn.execute(
+                            "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, datetime('now')) \
+                             ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+                            rusqlite::params![owner_id, agent, latest_id],
+                        );
+                    }
+                } else {
+                    let _ = conn.execute(
+                        "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, datetime('now')) \
+                         ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+                        rusqlite::params![agent, latest_id],
+                    );
+                }
             }
 
             crate::db::checkpoint_wal_best_effort(&conn);
@@ -670,7 +680,7 @@ pub async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Option<Val
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": { "listChanged": true } },
-                "serverInfo": { "name": "cortex", "version": "0.1.0" }
+                "serverInfo": { "name": "cortex", "version": "0.2.0" }
             }),
         )),
 
