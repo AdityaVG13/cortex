@@ -168,9 +168,13 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 | # | Task | Priority | Details |
 |---|------|----------|---------|
 | 86 | Version bump to v0.3.0 + git tag + GitHub release | HIGH | Cargo.toml, CHANGELOG.md, build release binary, attach to GH release. |
-| 87 | Desktop app: kill embedded daemon, sidecar the real binary, fix all UI | CRITICAL | Delete embedded_daemon.rs (3000+ lines of duplicated, drifted code). Tauri app launches cortex.exe as a sidecar process. One download = one installer that bundles both binaries. User double-clicks, daemon starts, dashboard opens, /health confirms green. Version sync to 0.3.0. **UI fixes**: Start/Stop buttons must actually launch/kill the daemon (currently do nothing). Every button and field in all 11 panels must be functional -- audit each one. Remove the Ollama status box (not used, confuses users). If a feature isn't wired up, remove the UI element rather than ship dead buttons. **New "About" tab**: Panel #12. Shows creator photo (adityasmile.png/icon.png) and "Created by Aditya". Lists contributors section that updates with new versions as people contribute (pull from GitHub contributors API or maintain manually). Include app version number. **Auto-update**: Add tauri-plugin-updater for in-app update checks. Button or notification when new version available. Document update process in README for users who download manually. |
-| 88 | App icon: replace default with adityasmile.png | MEDIUM | In desktop/cortex-control-center/src-tauri/icons/: remove all old icons, rename adityasmile.png to icon.png, generate required sizes (icon.ico for Windows, icon.icns for macOS, 32x32, 128x128, 128x128@2x). Use a single source image, script the resize. Tauri needs specific filenames -- check tauri.conf.json for required icon entries. |
+| 87 | Desktop app: sidecar the real daemon binary | CRITICAL | Delete embedded_daemon.rs (3000+ lines of duplicated, drifted code). Tauri app launches cortex.exe as a sidecar process. One download = one installer that bundles both. User double-clicks, daemon starts, dashboard opens, /health confirms green. |
+| 88 | App icon: replace default with adityasmile.png | MEDIUM | In desktop/cortex-control-center/src-tauri/icons/: remove all old icons, rename adityasmile.png to icon.png, generate required sizes (icon.ico, icon.icns, 32x32, 128x128, 128x128@2x). Single source image, script the resize. Check tauri.conf.json for required entries. |
 | 89 | README rewrite: release badge, download link, "What's New in v0.3.0" | MEDIUM | Top badge box currently empty. Add release link, version badge, feature highlights. |
+| 97 | Desktop app: fix all dead UI, remove Ollama box | HIGH | Start/Stop buttons must actually launch/kill the daemon (currently do nothing). Audit every button and field across all 11 panels. Remove the Ollama status box. If a feature isn't wired up, remove the UI element -- don't ship dead buttons. |
+| 98 | Desktop app: add About tab (panel #12) | MEDIUM | Shows creator photo (icon.png) and "Created by Aditya". Contributors section that updates as people contribute (GitHub contributors API or manual list). Display app version number. |
+| 99 | Desktop app: auto-update via tauri-plugin-updater | MEDIUM | In-app update check -- button or notification when new version is available. Document manual update process in README for users who download directly. |
+| 100 | Desktop app: version sync to 0.3.0 | HIGH | Tauri app version, Cargo.toml version, package.json version all must match daemon v0.3.0. |
 
 ### Gemini CLI -- 3 new tasks
 
@@ -201,13 +205,13 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 | Tool | Original | New | Total |
 |------|----------|-----|-------|
 | Claude Code (Opus) | 7 | 3 | 10 |
-| Cursor (Sonnet/GLM 5) | 20 | 4 | 24 |
+| Cursor (Sonnet/GLM 5) | 20 | 8 | 28 |
 | Codex CLI | 10 | 2 | 12 |
 | Gemini CLI | 5 | 3 | 8 |
 | Droid (GLM 5) | 12 | 0 | 12 |
 | Droid (GLM 4.7) | 19 | 2 | 21 |
 | Gemini Flash | 9 | 0 | 9 |
-| **Total** | **82** | **14** | **96** |
+| **Total** | **82** | **18** | **100** |
 
 ---
 
