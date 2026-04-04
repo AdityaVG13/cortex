@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-use super::{ensure_auth, ensure_auth_with_caller};
+use super::ensure_auth_with_caller;
 use super::{estimate_tokens, json_response, now_iso, truncate_chars};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
