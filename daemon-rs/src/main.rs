@@ -151,6 +151,445 @@ async fn main() {
             run_import_cli(&remaining);
         }
 
+        // ── User management CLI ────────────────────────────────────
+        "user" => {
+            let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            match subcmd {
+                "add" => {
+                    let username = match args.get(3) {
+                        Some(u) => u.clone(),
+                        None => {
+                            eprintln!("Usage: cortex user add <username> [--role member|admin] [--display-name \"...\"]");
+                            std::process::exit(1);
+                        }
+                    };
+                    let mut role = "member".to_string();
+                    let mut display_name: Option<String> = None;
+                    let mut i = 4usize;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--role" => {
+                                if let Some(v) = args.get(i + 1) {
+                                    role = v.clone();
+                                    i += 1;
+                                }
+                            }
+                            "--display-name" => {
+                                if let Some(v) = args.get(i + 1) {
+                                    display_name = Some(v.clone());
+                                    i += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    let mut body = serde_json::json!({
+                        "username": username,
+                        "role": role,
+                    });
+                    if let Some(dn) = display_name {
+                        body["display_name"] = serde_json::json!(dn);
+                    }
+                    match admin_request("POST", "/admin/user/add", Some(body)).await {
+                        Ok(json) => {
+                            println!("User created:");
+                            println!("  Username:  {}", json_str(&json, "username"));
+                            println!("  User ID:   {}", json_field(&json, "user_id"));
+                            println!("  Role:      {}", json_str(&json, "role"));
+                            println!("  API Key:   {}", json_str(&json, "api_key"));
+                            println!();
+                            println!("Save the API key -- it cannot be retrieved later.");
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "rotate-key" => {
+                    let username = match args.get(3) {
+                        Some(u) => u.clone(),
+                        None => {
+                            eprintln!("Usage: cortex user rotate-key <username>");
+                            std::process::exit(1);
+                        }
+                    };
+                    let body = serde_json::json!({ "username": username });
+                    match admin_request("POST", "/admin/user/rotate-key", Some(body)).await {
+                        Ok(json) => {
+                            println!("API key rotated for '{}':", json_str(&json, "username"));
+                            println!("  New API Key: {}", json_str(&json, "api_key"));
+                            println!();
+                            println!("Save the API key -- it cannot be retrieved later.");
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "remove" => {
+                    let username = match args.get(3) {
+                        Some(u) => u.clone(),
+                        None => {
+                            eprintln!("Usage: cortex user remove <username>");
+                            std::process::exit(1);
+                        }
+                    };
+                    if !confirm_action(&format!("Remove user '{username}'?")) {
+                        eprintln!("Cancelled.");
+                        std::process::exit(0);
+                    }
+                    let body = serde_json::json!({ "username": username });
+                    match admin_request("POST", "/admin/user/remove", Some(body)).await {
+                        Ok(json) => {
+                            println!("Removed user '{}'", json_str(&json, "removed"));
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "list" => {
+                    match admin_request("GET", "/admin/users", None).await {
+                        Ok(json) => {
+                            let users = json["users"].as_array();
+                            match users {
+                                Some(arr) if !arr.is_empty() => {
+                                    println!(
+                                        "{:<6} {:<20} {:<20} {:<10} {}",
+                                        "ID", "USERNAME", "DISPLAY NAME", "ROLE", "CREATED"
+                                    );
+                                    println!("{}", "-".repeat(80));
+                                    for u in arr {
+                                        println!(
+                                            "{:<6} {:<20} {:<20} {:<10} {}",
+                                            json_field(u, "id"),
+                                            json_str(u, "username"),
+                                            json_str_or(u, "display_name", "-"),
+                                            json_str(u, "role"),
+                                            json_str_or(u, "created_at", "-"),
+                                        );
+                                    }
+                                    println!();
+                                    println!("{} user(s)", arr.len());
+                                }
+                                _ => println!("No users found."),
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Usage: cortex user <add|rotate-key|remove|list>");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        // ── Team management CLI ────────────────────────────────────
+        "team" => {
+            let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            match subcmd {
+                "create" => {
+                    let name = match args.get(3) {
+                        Some(n) => n.clone(),
+                        None => {
+                            eprintln!("Usage: cortex team create <name>");
+                            std::process::exit(1);
+                        }
+                    };
+                    let body = serde_json::json!({ "name": name });
+                    match admin_request("POST", "/admin/team/create", Some(body)).await {
+                        Ok(json) => {
+                            println!("Team created:");
+                            println!("  Name:    {}", json_str(&json, "name"));
+                            println!("  Team ID: {}", json_field(&json, "team_id"));
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "add" => {
+                    let team_name = match args.get(3) {
+                        Some(t) => t.clone(),
+                        None => {
+                            eprintln!("Usage: cortex team add <team> <username> [--role member|admin]");
+                            std::process::exit(1);
+                        }
+                    };
+                    let username = match args.get(4) {
+                        Some(u) => u.clone(),
+                        None => {
+                            eprintln!("Usage: cortex team add <team> <username> [--role member|admin]");
+                            std::process::exit(1);
+                        }
+                    };
+                    let mut role = "member".to_string();
+                    let mut i = 5usize;
+                    while i < args.len() {
+                        if args[i] == "--role" {
+                            if let Some(v) = args.get(i + 1) {
+                                role = v.clone();
+                                i += 1;
+                            }
+                        }
+                        i += 1;
+                    }
+                    let body = serde_json::json!({
+                        "team_name": team_name,
+                        "username": username,
+                        "role": role,
+                    });
+                    match admin_request("POST", "/admin/team/add-member", Some(body)).await {
+                        Ok(json) => {
+                            println!(
+                                "Added '{}' to team '{}' as {}",
+                                json_str(&json, "username"),
+                                json_str(&json, "team"),
+                                json_str(&json, "role"),
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "remove" => {
+                    let team_name = match args.get(3) {
+                        Some(t) => t.clone(),
+                        None => {
+                            eprintln!("Usage: cortex team remove <team> <username>");
+                            std::process::exit(1);
+                        }
+                    };
+                    let username = match args.get(4) {
+                        Some(u) => u.clone(),
+                        None => {
+                            eprintln!("Usage: cortex team remove <team> <username>");
+                            std::process::exit(1);
+                        }
+                    };
+                    if !confirm_action(&format!("Remove '{username}' from team '{team_name}'?")) {
+                        eprintln!("Cancelled.");
+                        std::process::exit(0);
+                    }
+                    let body = serde_json::json!({
+                        "team_name": team_name,
+                        "username": username,
+                    });
+                    match admin_request("POST", "/admin/team/remove-member", Some(body)).await {
+                        Ok(json) => {
+                            let removed = &json["removed"];
+                            println!(
+                                "Removed '{}' from team '{}'",
+                                json_str(removed, "username"),
+                                json_str(removed, "team"),
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "list" => {
+                    match admin_request("GET", "/admin/teams", None).await {
+                        Ok(json) => {
+                            let teams = json["teams"].as_array();
+                            match teams {
+                                Some(arr) if !arr.is_empty() => {
+                                    println!(
+                                        "{:<6} {:<30} {:<10} {}",
+                                        "ID", "NAME", "MEMBERS", "CREATED"
+                                    );
+                                    println!("{}", "-".repeat(70));
+                                    for t in arr {
+                                        println!(
+                                            "{:<6} {:<30} {:<10} {}",
+                                            json_field(t, "id"),
+                                            json_str(t, "name"),
+                                            json_field(t, "member_count"),
+                                            json_str_or(t, "created_at", "-"),
+                                        );
+                                    }
+                                    println!();
+                                    println!("{} team(s)", arr.len());
+                                }
+                                _ => println!("No teams found."),
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Usage: cortex team <create|add|remove|list>");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        // ── Admin management CLI ───────────────────────────────────
+        "admin" => {
+            let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            match subcmd {
+                "list-unowned" => {
+                    match admin_request("GET", "/admin/unowned", None).await {
+                        Ok(json) => {
+                            let unowned = json["unowned"].as_object();
+                            match unowned {
+                                Some(map) if !map.is_empty() => {
+                                    println!("{:<25} {}", "TABLE", "UNOWNED ROWS");
+                                    println!("{}", "-".repeat(40));
+                                    let mut total: i64 = 0;
+                                    for (table, count) in map {
+                                        let n = count.as_i64().unwrap_or(0);
+                                        total += n;
+                                        println!("{:<25} {}", table, n);
+                                    }
+                                    println!("{}", "-".repeat(40));
+                                    println!("{:<25} {}", "TOTAL", total);
+                                }
+                                _ => println!("No unowned data found."),
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "assign-owner" => {
+                    let mut from_user: Option<String> = None;
+                    let mut to_user: Option<String> = None;
+                    let mut table: Option<String> = None;
+                    let mut i = 3usize;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--from" => {
+                                if let Some(v) = args.get(i + 1) {
+                                    from_user = Some(v.clone());
+                                    i += 1;
+                                }
+                            }
+                            "--to" => {
+                                if let Some(v) = args.get(i + 1) {
+                                    to_user = Some(v.clone());
+                                    i += 1;
+                                }
+                            }
+                            "--table" => {
+                                if let Some(v) = args.get(i + 1) {
+                                    table = Some(v.clone());
+                                    i += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    let Some(to) = to_user else {
+                        eprintln!("Usage: cortex admin assign-owner [--from <user>] --to <user> [--table <table>]");
+                        std::process::exit(1);
+                    };
+                    let mut body = serde_json::json!({ "to_user": to });
+                    if let Some(from) = from_user {
+                        body["from_user"] = serde_json::json!(from);
+                    }
+                    if let Some(t) = table {
+                        body["table"] = serde_json::json!(t);
+                    }
+                    match admin_request("POST", "/admin/assign-owner", Some(body)).await {
+                        Ok(json) => {
+                            let assigned = json["assigned"].as_object();
+                            match assigned {
+                                Some(map) if !map.is_empty() => {
+                                    println!("{:<25} {}", "TABLE", "ROWS ASSIGNED");
+                                    println!("{}", "-".repeat(40));
+                                    let mut total: i64 = 0;
+                                    for (tbl, count) in map {
+                                        let n = count.as_i64().unwrap_or(0);
+                                        total += n;
+                                        println!("{:<25} {}", tbl, n);
+                                    }
+                                    println!("{}", "-".repeat(40));
+                                    println!("{:<25} {}", "TOTAL", total);
+                                }
+                                _ => println!("No rows assigned."),
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "stats" => {
+                    match admin_request("GET", "/admin/stats", None).await {
+                        Ok(json) => {
+                            println!("Cortex Admin Stats");
+                            println!("{}", "=".repeat(50));
+                            println!();
+                            println!("Users: {}    Teams: {}    DB Size: {}",
+                                json_field(&json, "user_count"),
+                                json_field(&json, "team_count"),
+                                json_str_or(&json, "db_size_mb", "?"),
+                            );
+                            println!();
+
+                            if let Some(tables) = json["tables"].as_object() {
+                                println!("{:<25} {}", "TABLE", "ROWS");
+                                println!("{}", "-".repeat(40));
+                                for (tbl, count) in tables {
+                                    println!("{:<25} {}", tbl, count);
+                                }
+                            }
+
+                            if let Some(per_user) = json["per_user"].as_array() {
+                                if !per_user.is_empty() {
+                                    println!();
+                                    println!("Per-User Breakdown:");
+                                    println!(
+                                        "  {:<20} {:<10} {:<10} {}",
+                                        "USERNAME", "MEMORIES", "DECISIONS", "CRYSTALS"
+                                    );
+                                    println!("  {}", "-".repeat(55));
+                                    for u in per_user {
+                                        println!(
+                                            "  {:<20} {:<10} {:<10} {}",
+                                            json_str(u, "username"),
+                                            json_field(u, "memories"),
+                                            json_field(u, "decisions"),
+                                            json_field(u, "crystals"),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Usage: cortex admin <list-unowned|assign-owner|stats>");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         _ => {
             eprintln!(
                 "Cortex v{} -- Universal AI Memory Daemon",
@@ -177,6 +616,23 @@ async fn main() {
             eprintln!(
                 "  import             Import JSON data (--file <path>, optional --user <username>)"
             );
+            eprintln!();
+            eprintln!("User Management (team mode):");
+            eprintln!("  user add <name>    Add user [--role member|admin] [--display-name \"...\"]");
+            eprintln!("  user rotate-key <name>  Rotate a user's API key");
+            eprintln!("  user remove <name> Remove user (with confirmation)");
+            eprintln!("  user list          List all users");
+            eprintln!();
+            eprintln!("Team Management (team mode):");
+            eprintln!("  team create <name> Create a team");
+            eprintln!("  team add <team> <user>  Add member [--role member|admin]");
+            eprintln!("  team remove <team> <user>  Remove member (with confirmation)");
+            eprintln!("  team list          List all teams");
+            eprintln!();
+            eprintln!("Admin (team mode):");
+            eprintln!("  admin list-unowned List rows without an owner");
+            eprintln!("  admin assign-owner [--from <user>] --to <user> [--table <t>]");
+            eprintln!("  admin stats        Database and per-user statistics");
             eprintln!();
             eprintln!("Service:");
             eprintln!("  service install    Register as Windows Service (auto-start)");
@@ -381,6 +837,109 @@ fn run_import_cli(args: &[String]) {
         "{{\"imported\":{{\"memories\":{},\"decisions\":{}}}}}",
         counts.memories, counts.decisions
     );
+}
+
+// ── Admin CLI helpers ───────────────────────────────────────────────────────
+
+fn read_auth_token() -> Result<String, String> {
+    let token_path = auth::cortex_dir().join("cortex.token");
+    std::fs::read_to_string(&token_path)
+        .map(|v| v.trim().to_string())
+        .map_err(|_| {
+            format!(
+                "Cannot read auth token at {}. Is the daemon running?",
+                token_path.display()
+            )
+        })
+}
+
+async fn admin_request(
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let token = read_auth_token()?;
+    let client = reqwest::Client::new();
+    let url = format!("http://localhost:7437{path}");
+    let req = match method {
+        "GET" => client.get(&url),
+        "POST" => client.post(&url),
+        _ => return Err("Invalid method".into()),
+    };
+    let req = req
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Cortex-Request", "true");
+    let req = if let Some(b) = body {
+        req.json(&b)
+    } else {
+        req
+    };
+    let resp = req.send().await.map_err(|e| {
+        if e.is_connect() {
+            "Cortex daemon not running. Start with: cortex serve".to_string()
+        } else {
+            format!("Request failed: {e}")
+        }
+    })?;
+    let status = resp.status();
+    let body_text = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {e}"))?;
+    if status.as_u16() == 403 {
+        return Err(
+            "Admin commands require team mode. Run: cortex setup --team".to_string(),
+        );
+    }
+    if status.as_u16() == 404 {
+        return Err("Endpoint not found. Is the daemon up to date?".to_string());
+    }
+    let json: serde_json::Value = serde_json::from_str(&body_text).map_err(|_| {
+        if body_text.is_empty() {
+            format!("Empty response from daemon (HTTP {status})")
+        } else {
+            format!("Unexpected response (HTTP {status}): {body_text}")
+        }
+    })?;
+    if !status.is_success() {
+        let msg = json
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+        return Err(msg.to_string());
+    }
+    Ok(json)
+}
+
+fn confirm_action(prompt: &str) -> bool {
+    eprint!("{prompt} [y/N] ");
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+fn json_str(val: &serde_json::Value, key: &str) -> String {
+    val.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn json_str_or(val: &serde_json::Value, key: &str, default: &str) -> String {
+    val.get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn json_field(val: &serde_json::Value, key: &str) -> String {
+    match val.get(key) {
+        Some(v) if v.is_string() => v.as_str().unwrap_or("").to_string(),
+        Some(v) => v.to_string(),
+        None => "-".to_string(),
+    }
 }
 
 // ── Shared daemon logic (used by `serve` and `service-run`) ─────────────────
