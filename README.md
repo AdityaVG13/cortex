@@ -42,7 +42,6 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 
 **By the numbers:**
 - 97% token compression on boot (19K raw -> ~500 tokens served)
-- 390+ embeddings indexed across 230+ memories and 170+ decisions
 - Sub-100ms recall with hybrid semantic + keyword search
 - Bearer auth on all sensitive endpoints, CORS-locked to localhost
 - 13 MCP tools, 35+ HTTP endpoints, SSE real-time stream
