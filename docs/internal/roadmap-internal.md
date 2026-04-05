@@ -102,21 +102,44 @@ A new product surface: import, separate, analyze, and index data from external A
 
 Carried forward from model_delineation.md. Not yet assigned to a milestone.
 
-| # | Task | Owner | Details |
-|---|------|-------|---------|
-| 6 | OpenAI function adapter spec + handler | D5 | compatibility/02 |
-| 19 | Key rotation with 72h grace period | D5 | compatibility/03 |
-| 21 | SQLCipher encryption at rest | D5 | compatibility/03 |
-| 22-25 | MCP/OpenAI adapter protocol work (4 tasks) | D5 | compatibility/04 |
-| 58-59 | Owner_id + visibility on remaining tables | D5 | schema/03 |
-| 64-65 | Solo/team mode recall scoping | D5 | schema/04 |
-| 67-70 | Conductor ownership + visibility API (4 tasks) | D5 | schema/04-05 |
-| 73 | Fresh install defaults to solo mode | D5 | schema/05 |
-| 76 | Role enforcement with CHECK constraints | D5 | schema/06 |
-| 78 | Row-level NULL owner_id prevention | D5 | schema/06 |
-| 77 | Validate visibility enforcement at query level | GC | schema/06 |
-| 81 | Database size monitoring + growth trajectory | GC | schema/06 |
-| 82 | Document deferred features | GC | schema/06 |
+### Completed (verified 2026-04-05)
+
+| # | Task | Owner | Status | Evidence |
+|---|------|-------|--------|----------|
+| ✓58-59 | Owner_id + visibility on remaining tables | D5 | **DONE** | `db.rs:379-580` - All 12 tables have owner_id/visibility columns |
+| ✓64-65 | Solo/team mode recall scoping | D5 | **DONE** | `recall.rs:110-126` - `is_visible()` + over-fetch strategy at line 534 |
+| ✓67-70 | Conductor ownership + visibility API (4 tasks) | D5 | **DONE** | `conductor.rs` - All endpoints filter by owner_id; tasks/feed have visibility |
+| ✓73 | Fresh install defaults to solo mode | D5 | **DONE** | `db.rs:346` - `INSERT ... VALUES ('mode', 'solo')` |
+| ✓76 | Role enforcement with CHECK constraints | D5 | **DONE** | `db.rs:322-323, 338-339` - CHECK constraints on role/visibility |
+| ✓78 | Row-level NULL owner_id prevention | D5 | **DONE** | `recall.rs:118-120` - `is_visible()` returns false for NULL; migration assigns all rows |
+
+### Remaining (needs implementation)
+
+| # | Task | Owner | Priority | Details |
+|---|------|-------|----------|---------|
+| 6 | OpenAI function adapter spec + handler | D5 | **HIGH** | No code exists. Need: REST endpoint for function definitions JSON, tool_call handler |
+| 19 | Key rotation with 72h grace period | D5 | MEDIUM | No `prev_key_hash`/`prev_key_expires` columns. Need schema migration + auth dual-key check |
+| 21 | SQLCipher encryption at rest | D5 | LOW (OPT) | **Optional per spec** - "RECOMMENDED for team mode, not required". Documentation task |
+| 22-25 | MCP/OpenAI adapter protocol work (4 tasks) | D5 | PARTIAL | MCP ✅ done. OpenAI ❌ missing (same as #6) |
+| 77 | Validate visibility enforcement at query level | GC | LOW | Add integration tests for visibility edge cases |
+| 81 | Database size monitoring + growth trajectory | GC | LOW | Metrics endpoint + dashboard |
+| 82 | Document deferred features | GC | LOW | Update docs/schema/06 with what's intentionally excluded |
+
+### Day-1 Release Assessment (2026-04-05)
+
+**Security model: COMPLETE**
+- All visibility enforcement ✅
+- Owner scoping on all tables ✅
+- NULL owner_id prevention ✅
+- CHECK constraints on enums ✅
+- Solo mode default on fresh install ✅
+
+**Not blockers for open-source release:**
+- #6 (OpenAI adapter) - Enhancement, users can use Python/TS SDKs
+- #19 (Key rotation) - Enhancement, basic auth works
+- #21 (SQLCipher) - Optional feature, documentation-only
+
+**Recommendation:** Ship v0.4.0 now, add #6 and #19 in v0.5.0.
 
 ---
 

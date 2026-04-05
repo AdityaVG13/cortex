@@ -89,18 +89,18 @@
 
 ### Droid (GLM 5)
 
-| # | Task | Details |
-|---|------|---------|
-| 6 | OpenAI function adapter spec and handler | compatibility/02 |
-| 19 | Key rotation with 72h grace period | compatibility/03 |
-| 21 | SQLCipher encryption at rest | compatibility/03 |
-| 22-25 | MCP/OpenAI adapter protocol work (4 tasks) | compatibility/04 |
-| 58-59 | Owner_id + visibility on remaining tables (2 tasks) | schema/03 |
-| 64-65 | Solo/team mode recall scoping (2 tasks) | schema/04 |
-| 67-70 | Conductor ownership + visibility API (4 tasks) | schema/04-05 |
-| 73 | Fresh install defaults to solo mode | schema/05 |
-| 76 | Role enforcement with CHECK constraints | schema/06 |
-| 78 | Row-level NULL owner_id prevention | schema/06 |
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 6 | | | OpenAI function adapter spec and handler (compatibility/02) -- NOT YET IMPLEMENTED |
+| 19 | | | Key rotation with 72h grace period (compatibility/03) -- NOT YET IMPLEMENTED |
+| 21 | | | SQLCipher encryption at rest (compatibility/03) -- OPTIONAL per spec, documentation task |
+| 22-25 | | | MCP/OpenAI adapter protocol work (4 tasks) -- MCP ✅ done, OpenAI ❌ missing |
+| ✓58-59 | ✓ | `db.rs:379-580` | Owner_id + visibility on all 12 tables (memories, decisions, memory_clusters, recall_feedback, tasks, messages, feed, feed_acks, activities, focus_sessions, sessions, locks) |
+| ✓64-65 | ✓ | `recall.rs:110-126` | Solo/team mode recall scoping via `is_visible()` + over-fetch strategy |
+| ✓67-70 | ✓ | `conductor.rs` | Conductor ownership + visibility API -- all endpoints filter by owner_id |
+| ✓73 | ✓ | `db.rs:346` | Fresh install defaults to solo mode via `INSERT ... VALUES ('mode', 'solo')` |
+| ✓76 | ✓ | `db.rs:322-339` | Role enforcement with CHECK constraints on role/visibility enums |
+| ✓78 | ✓ | `recall.rs:118-120` | Row-level NULL owner_id prevention -- `is_visible()` returns false, migration assigns all rows |
 
 ### Droid (GLM 4.7)
 
