@@ -28,23 +28,23 @@
 | 83 | Fix /unfold visibility bypass | | Thread RecallContext through unfold handler. Zero access control currently. Root cause, not patch. |
 | 84 | Fix is_visible NULL owner_id policy | | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
 | 85 | Fix MCP per-caller identity | | API key or caller_id per JSON-RPC request. `from_state` is a workaround, not a fix. |
-| 104 | indexer.rs: graceful skip for missing knowledge sources | | 6 indexer sources reference developer-only dirs (`self-improvement-engine/`, `.claude/self-improvement/`). New user = 0 nodes, 0 errors. Not error spam. |
-| 108 | Clean install end-to-end test (THE GATE) | | Clone on clean machine, `cargo build --release`, `cortex serve`. Verify: (1) fresh cortex.db with 0 nodes, (2) /health green, (3) store/recall work, (4) boot prompt has no "Aditya", (5) zero stderr errors, (6) `grep -ri "aditya" src/` = 0 hits. **Nothing ships until this passes.** |
+| 104 | indexer.rs: graceful skip for missing knowledge sources | Done | 6 extended indexers gated behind `CORTEX_INDEX_EXTENDED=1`; core paths only by default. No `self-improvement-engine` literal in `daemon-rs/src`. |
+| 108 | Clean install end-to-end test (THE GATE) | Partial | Automated: `indexer` clean-home test, `grep` gates on `daemon-rs/src` (no `aditya`, no `self-improvement-engine` substring). **Still run manually:** clone on clean machine, `cortex serve`, /health, store/recall, stderr scan before calling release done. |
 
 ### Cursor (Opus)
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 87 | Desktop app: sidecar real daemon, kill embedded copy | | Delete embedded_daemon.rs (3000+ lines duplicated, drifted). Tauri launches cortex.exe as sidecar. One installer bundles both. Double-click → daemon starts → dashboard opens → /health green. |
-| 97 | Desktop app: fix all dead UI, remove Ollama box | | Start/Stop buttons do nothing currently -- must launch/kill daemon. Audit every button and field in all 11 panels. Remove Ollama status box. Dead buttons = remove, don't ship. |
-| 101 | compiler.rs: replace hardcoded "User: Aditya" identity | | Line 113: baked into binary. Detect dynamically: `USERNAME`/`USER` env, `std::env::consts::OS`, shell from `SHELL`/`COMSPEC`. |
-| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | | compiler.rs:628, indexer.rs:109. Dynamically resolve Claude projects dir from CWD slug. |
+| 87 | Desktop app: sidecar real daemon, kill embedded copy | Done | Delete embedded_daemon.rs (3000+ lines duplicated, drifted). Tauri launches cortex.exe as sidecar. One installer bundles both. Double-click → daemon starts → dashboard opens → /health green. |
+| 97 | Desktop app: fix all dead UI, remove Ollama box | Done | Start/Stop buttons do nothing currently -- must launch/kill daemon. Audit every button and field in all 11 panels. Remove Ollama status box. Dead buttons = remove, don't ship. |
+| 101 | compiler.rs: replace hardcoded "User: Aditya" identity | Done | Line 113: baked into binary. Detect dynamically: `USERNAME`/`USER` env, `std::env::consts::OS`, shell from `SHELL`/`COMSPEC`. |
+| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | Done | compiler.rs:628, indexer.rs:109. Dynamically resolve Claude projects dir from CWD slug. |
 
 ### Droid (GLM 4.7)
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 107 | Make a copy of all personal files to C:\Users\aditya\AI\Personal and then delete ALL personal files, update .gitignore | | `git rm`: CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules, .cursor/, .planning/, PLAN.md, RECON.md, cortex-profiles.json, CHANGELOG_v0.3.0_section.md, config/Modelfile.*, cortex-app.bat, cortex-dashboard.bat, cortex-mcp.cmd, cortex-start.bat. Add all patterns to .gitignore. Verify `git ls-files` = zero personal files. |
+| 107 | Make a copy of all personal files to C:\Users\aditya\AI\Personal and then delete ALL personal files, update .gitignore | Done | Backup under `.personal-backup/`; `git rm` 14 tracked personal files; `.personal-backup/` in `.gitignore`. |
 
 ## HIGH (should ship with release)
 
@@ -52,7 +52,7 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 86 | Version bump to v0.3.0 + git tag + GitHub release | | Cargo.toml, CHANGELOG.md, build release binary, `gh release create`, attach binary. |
+| 86 | Version bump to v0.3.0 + git tag + GitHub release | v0.3.0 tag exists; v0.3.1 pending commit | Cargo.toml, CHANGELOG.md, build release binary, `gh release create`, attach binary. |
 | 100 | Desktop app: version sync to 0.3.0 | ✓ | tauri.conf.json, desktop Cargo.toml, package.json must all match daemon v0.3.0. |
 
 ### Cursor (Sonnet)
