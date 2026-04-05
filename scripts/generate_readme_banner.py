@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Iterable
 
@@ -9,7 +10,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 WIDTH = 1200
 HEIGHT = 240
 TEXT_SHIFT_X = 0
-TEXT_SHIFT_Y = -20
+TEXT_SHIFT_Y = -19
 FONT_PATH = Path("C:/Windows/Fonts/consolab.ttf")
 OUTPUT = Path(__file__).resolve().parent.parent / "assets" / "cortex-header.gif"
 
@@ -87,6 +88,8 @@ UNDERLAY = (94, 53, 145, 116)
 PURPLE_TOP = (151, 111, 214, 255)
 PURPLE_BOTTOM = (85, 37, 131, 255)
 SWEEP = (220, 196, 255, 235)
+BORDER_GLOW = (133, 86, 203, 150)
+BORDER_CORE = (178, 134, 236, 220)
 
 
 def make_font() -> ImageFont.FreeTypeFont:
@@ -132,6 +135,58 @@ def vertical_gradient(size: tuple[int, int], top: tuple[int, int, int, int], bot
     return image
 
 
+def rounded_rect_points(
+    left: int, top: int, right: int, bottom: int, radius: int, steps: int = 12
+) -> list[tuple[float, float]]:
+    pts: list[tuple[float, float]] = []
+
+    def add_line(x1: float, y1: float, x2: float, y2: float, count: int) -> None:
+        for i in range(count):
+            t = i / max(1, count - 1)
+            pts.append((x1 + (x2 - x1) * t, y1 + (y2 - y1) * t))
+
+    def add_arc(cx: float, cy: float, start_deg: float, end_deg: float, count: int) -> None:
+        for i in range(count):
+            t = i / max(1, count - 1)
+            angle = math.radians(start_deg + (end_deg - start_deg) * t)
+            pts.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle)))
+
+    add_line(left + radius, top, right - radius, top, 60)
+    add_arc(right - radius, top + radius, -90, 0, steps)
+    add_line(right, top + radius, right, bottom - radius, 28)
+    add_arc(right - radius, bottom - radius, 0, 90, steps)
+    add_line(right - radius, bottom, left + radius, bottom, 60)
+    add_arc(left + radius, bottom - radius, 90, 180, steps)
+    add_line(left, bottom - radius, left, top + radius, 28)
+    add_arc(left + radius, top + radius, 180, 270, steps)
+    return pts
+
+
+def draw_border_runner(image: Image.Image, frame_index: int, frame_count: int) -> None:
+    left, top, right, bottom, radius = 20, 20, WIDTH - 20, HEIGHT - 20, 16
+    points = rounded_rect_points(left, top, right, bottom, radius)
+    total = len(points)
+    segment = 64
+    start = int((frame_index / max(1, frame_count)) * total)
+
+    glow = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    core = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
+    core_draw = ImageDraw.Draw(core)
+
+    for i in range(segment - 1):
+        a = points[(start + i) % total]
+        b = points[(start + i + 1) % total]
+        strength = 1.0 - (i / max(1, segment - 1))
+        glow_alpha = int(BORDER_GLOW[3] * (strength**1.35))
+        core_alpha = int(BORDER_CORE[3] * (strength**1.55))
+        glow_draw.line((a, b), fill=(BORDER_GLOW[0], BORDER_GLOW[1], BORDER_GLOW[2], glow_alpha), width=6)
+        core_draw.line((a, b), fill=(BORDER_CORE[0], BORDER_CORE[1], BORDER_CORE[2], core_alpha), width=2)
+
+    image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(3)))
+    image.alpha_composite(core)
+
+
 def make_background(frame_index: int, frame_count: int) -> Image.Image:
     image = Image.new("RGBA", (WIDTH, HEIGHT), BG)
     draw = ImageDraw.Draw(image)
@@ -139,9 +194,7 @@ def make_background(frame_index: int, frame_count: int) -> Image.Image:
     draw.rounded_rectangle((18, 18, WIDTH - 18, HEIGHT - 18), radius=16, outline=PANEL_EDGE, width=1)
     draw.line((34, 44, WIDTH - 34, 44), fill=PANEL_ACCENT, width=1)
     draw.line((34, HEIGHT - 42, WIDTH - 34, HEIGHT - 42), fill=(32, 34, 39, 255), width=1)
-
-    sweep_x = 120 + int((WIDTH - 240) * (frame_index / max(1, frame_count - 1)))
-    draw.rounded_rectangle((sweep_x - 110, 28, sweep_x + 60, 36), radius=4, fill=(96, 75, 126, 64))
+    draw_border_runner(image, frame_index, frame_count)
 
     return image
 
