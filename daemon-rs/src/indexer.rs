@@ -516,3 +516,21 @@ pub fn decay_pass(conn: &Connection) -> usize {
 
     mem_result.unwrap_or(0) + dec_result.unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn index_all_empty_home_without_extended_indexes_nothing() {
+        let tmp = std::env::temp_dir().join(format!("cortex_ix_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        let n = index_all(&conn, tmp.as_path());
+        assert_eq!(n, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
