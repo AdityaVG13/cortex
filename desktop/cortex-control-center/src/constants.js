@@ -1,5 +1,3 @@
-export const CORTEX_BASE = "http://127.0.0.1:7437";
-
 export const AGENT_COLORS = {
   claude: "#4a9eff",
   droid: "#ff9800",

@@ -1389,7 +1389,7 @@ export function App() {
         {panel === "visualizer" ? (
           <section className="panel active brain-panel">
             <BrainErrorBoundary>
-              <BrainVisualizer />
+              <BrainVisualizer cortexBase={cortexBase} authToken={tokenRef.current} />
             </BrainErrorBoundary>
           </section>
         ) : null}
@@ -1485,17 +1485,17 @@ export function App() {
                   />
                   <div style={{
                     width: 64, height: 64, borderRadius: "50%",
-                    background: "linear-gradient(135deg, var(--accent-cyan), var(--accent-blue))",
+                    background: "linear-gradient(135deg, var(--cyan), var(--blue))",
                     display: "none", alignItems: "center", justifyContent: "center",
                     fontSize: "2rem", flexShrink: 0,
                   }}>◈</div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Created by @AdityaVG13 -- Version 0.4.0</p>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version 0.4.0</p>
                   </div>
                 </div>
 
-                <p style={{ color: "var(--text-secondary)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
+                <p style={{ color: "var(--text-2)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
                   A persistent, self-improving brain for AI coding agents. Single Rust binary,
                   zero runtime dependencies, in-process ONNX embeddings.
                 </p>
@@ -1510,29 +1510,29 @@ export function App() {
                     ["License", "AGPL-3.0"],
                   ].map(([label, value]) => (
                     <div key={label} style={{
-                      background: "var(--card-bg)", border: "1px solid var(--border)",
+                      background: "var(--surface)", border: "1px solid var(--border)",
                       borderRadius: 8, padding: "0.75rem 1rem",
                     }}>
-                      <span style={{ color: "var(--muted)", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
+                      <span style={{ color: "var(--text-3)", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
                       <div style={{ marginTop: 4, fontWeight: 500 }}>{value}</div>
                     </div>
                   ))}
                 </div>
 
                 <div style={{ marginBottom: "2rem" }}>
-                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--muted)", marginBottom: "0.75rem" }}>Contributors</h3>
+                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>Contributors</h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                     {[
                       { handle: "AdityaVG13", role: "Creator & maintainer" },
                     ].map(({ handle, role }) => (
                       <div key={handle} style={{
                         display: "flex", alignItems: "center", gap: "0.75rem",
-                        background: "var(--card-bg)", border: "1px solid var(--border)",
+                        background: "var(--surface)", border: "1px solid var(--border)",
                         borderRadius: 8, padding: "0.625rem 1rem",
                       }}>
-                        <span className="agent-indicator" style={{ background: "var(--accent-cyan)", boxShadow: "0 0 8px var(--accent-cyan)" }} />
+                        <span className="agent-indicator" style={{ background: "var(--cyan)", boxShadow: "0 0 8px var(--cyan)" }} />
                         <span style={{ fontWeight: 500 }}>@{handle}</span>
-                        <span style={{ color: "var(--muted)", fontSize: "0.875rem", marginLeft: "auto" }}>{role}</span>
+                        <span style={{ color: "var(--text-3)", fontSize: "0.875rem", marginLeft: "auto" }}>{role}</span>
                       </div>
                     ))}
                   </div>

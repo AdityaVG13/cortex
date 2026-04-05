@@ -1,31 +1,7 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import * as THREE from "three";
-
-const CORTEX_BASE = "http://127.0.0.1:7437";
-
-const AGENT_COLORS = {
-  claude: "#4a9eff",
-  droid: "#ff9800",
-  "factory-droid": "#ff9800",
-  gemini: "#a855f7",
-  mcp: "#00d4ff",
-  system: "#546580",
-};
-
-function getAgentColor(agent) {
-  if (!agent) return "#00d4ff";
-  const key = agent.toLowerCase();
-  for (const [k, v] of Object.entries(AGENT_COLORS)) {
-    if (key.includes(k)) return v;
-  }
-  return "#00d4ff";
-}
-
-function truncate(str, len) {
-  if (!str) return "";
-  return str.length > len ? str.slice(0, len) + "..." : str;
-}
+import { AGENT_COLORS, getAgentColor, truncate } from "./constants.js";
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -50,7 +26,7 @@ class GraphErrorBoundary extends Component {
   }
 }
 
-export function BrainVisualizer() {
+export function BrainVisualizer({ cortexBase = "http://127.0.0.1:7437", authToken = "" }) {
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -109,14 +85,10 @@ export function BrainVisualizer() {
 
   const fetchBrainData = useCallback(async () => {
     try {
-      const invoke = window.__TAURI__?.core?.invoke || null;
-      const token = invoke
-        ? await invoke("read_auth_token").catch(() => "")
-        : "";
       const headers = { "X-Cortex-Request": "true" };
-      if (token) headers.Authorization = `Bearer ${token}`;
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
 
-      const dumpRes = await fetch(`${CORTEX_BASE}/dump`, { headers })
+      const dumpRes = await fetch(`${cortexBase}/dump`, { headers })
         .then(r => r.ok ? r.json() : null)
         .catch(() => null);
 
@@ -206,7 +178,7 @@ export function BrainVisualizer() {
       setError(err.message);
       setLoading(false);
     }
-  }, []);
+  }, [cortexBase, authToken]);
 
   useEffect(() => { fetchBrainData(); }, [fetchBrainData]);
 

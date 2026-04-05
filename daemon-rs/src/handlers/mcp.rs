@@ -22,29 +22,6 @@ use super::store::store_decision;
 use super::{estimate_tokens, now_iso};
 use crate::state::RuntimeState;
 
-const DEBUG_LOG_PATH: &str = "debug-055619.log";
-
-fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: Value) {
-    let payload = json!({
-        "sessionId": "055619",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    });
-    let _ = (|| -> std::io::Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(DEBUG_LOG_PATH)?;
-        writeln!(file, "{}", payload)?;
-        Ok(())
-    })();
-}
-
 // ─── JSON-RPC helpers ─────────────────────────────────────────────────────────
 
 pub fn mcp_success(id: Value, result: Value) -> Value {
@@ -328,19 +305,6 @@ async fn mcp_dispatch(
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            // #region agent log
-            debug_log(
-                "H3",
-                "handlers/mcp.rs:cortex_peek:ctx",
-                "MCP peek using state-derived recall context",
-                json!({
-                    "teamMode": ctx.team_mode,
-                    "ctxCallerId": ctx.caller_id,
-                    "defaultOwnerId": state.default_owner_id,
-                    "limit": limit,
-                }),
-            );
-            // #endregion
             let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx).await?;
             Ok(results)
         }
@@ -362,20 +326,6 @@ async fn mcp_dispatch(
                 .unwrap_or("mcp");
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            // #region agent log
-            debug_log(
-                "H3",
-                "handlers/mcp.rs:cortex_recall:ctx",
-                "MCP recall using state-derived recall context",
-                json!({
-                    "teamMode": ctx.team_mode,
-                    "ctxCallerId": ctx.caller_id,
-                    "defaultOwnerId": state.default_owner_id,
-                    "budget": budget,
-                    "agent": agent,
-                }),
-            );
-            // #endregion
             execute_unified_recall(state, query, budget, 10, agent, &ctx).await
         }
 
