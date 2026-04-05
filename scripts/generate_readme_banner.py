@@ -10,7 +10,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 WIDTH = 1200
 HEIGHT = 240
 TEXT_SHIFT_X = 0
-TEXT_SHIFT_Y = -19
+TEXT_SHIFT_Y = -17
 FONT_PATH = Path("C:/Windows/Fonts/consolab.ttf")
 OUTPUT = Path(__file__).resolve().parent.parent / "assets" / "cortex-header.gif"
 
@@ -166,7 +166,7 @@ def draw_border_runner(image: Image.Image, frame_index: int, frame_count: int) -
     left, top, right, bottom, radius = 20, 20, WIDTH - 20, HEIGHT - 20, 16
     points = rounded_rect_points(left, top, right, bottom, radius)
     total = len(points)
-    segment = 64
+    segment = 40
     start = int((frame_index / max(1, frame_count)) * total)
 
     glow = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -221,7 +221,7 @@ def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Imag
 
 
 def frame_sequence() -> Iterable[Image.Image]:
-    frame_count = 18
+    frame_count = 24
     text_mask = draw_text_mask((WIDTH, HEIGHT))
     fill_mask = text_mask.filter(ImageFilter.MaxFilter(7))
     shadow_mask = draw_text_mask((WIDTH, HEIGHT), offset=(8, 8)).filter(ImageFilter.GaussianBlur(2.5))
@@ -259,7 +259,7 @@ def main() -> None:
         OUTPUT,
         save_all=True,
         append_images=frames[1:],
-        duration=90,
+        duration=100,
         loop=0,
         optimize=False,
         disposal=2,
