@@ -1,3 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Cortex.
+//
+// Cortex is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 //! MCP thin proxy -- forwards JSON-RPC from stdin to the HTTP daemon.
 //!
 //! Instead of loading its own RuntimeState (DB, ONNX engine, caches), this
@@ -324,7 +339,7 @@ pub async fn run() -> bool {
                     }
 
                     // Log periodically, not every retry
-                    if attempt % 10 == 0 {
+                    if attempt.is_multiple_of(10) {
                         eprintln!("[cortex-mcp] Still waiting for daemon... ({attempt} retries, {}s backoff)", backoff_duration(attempt).as_secs());
                     }
 
@@ -345,3 +360,4 @@ fn backoff_duration(attempt: u32) -> std::time::Duration {
     let secs = (1u64 << attempt.min(5)).min(30);
     std::time::Duration::from_secs(secs)
 }
+

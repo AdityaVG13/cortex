@@ -1,10 +1,25 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Cortex Control Center.
+//
+// Cortex Control Center is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod embedded_daemon;
+mod sidecar;
 
-use embedded_daemon::{EmbeddedDaemon, EmbeddedDaemonStatus};
 use rusqlite::Connection;
 use serde::Serialize;
+use sidecar::SidecarDaemon;
 use std::env;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
@@ -22,40 +37,59 @@ const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
 
-#[derive(Default)]
 struct DaemonState {
-  daemon: Mutex<EmbeddedDaemon>,
+  daemon: Mutex<SidecarDaemon>,
 }
 
 impl DaemonState {
-  fn status(&self) -> Result<EmbeddedDaemonStatus, String> {
-    let daemon = self
-      .daemon
-      .lock()
-      .map_err(|_| "Failed to lock embedded daemon state".to_string())?;
-    Ok(daemon.status())
+  fn new(exe_path: Option<PathBuf>) -> Self {
+    let daemon = match exe_path {
+      Some(path) => SidecarDaemon::with_exe_path(path),
+      None => SidecarDaemon::default(),
+    };
+    Self {
+      daemon: Mutex::new(daemon),
+    }
   }
 
-  fn start(&self) -> Result<EmbeddedDaemonStatus, String> {
+  fn status(&self) -> Result<(bool, Option<u32>), String> {
     let mut daemon = self
       .daemon
       .lock()
-      .map_err(|_| "Failed to lock embedded daemon state".to_string())?;
-    daemon.start()
+      .map_err(|_| "Failed to lock daemon state".to_string())?;
+    let s = daemon.status();
+    Ok((s.running, s.pid))
   }
 
-  fn stop(&self) -> Result<EmbeddedDaemonStatus, String> {
+  fn start(&self) -> Result<(bool, Option<u32>), String> {
     let mut daemon = self
       .daemon
       .lock()
-      .map_err(|_| "Failed to lock embedded daemon state".to_string())?;
-    daemon.stop()
+      .map_err(|_| "Failed to lock daemon state".to_string())?;
+    let s = daemon.start()?;
+    Ok((s.running, s.pid))
+  }
+
+  fn stop(&self) -> Result<(), String> {
+    let mut daemon = self
+      .daemon
+      .lock()
+      .map_err(|_| "Failed to lock daemon state".to_string())?;
+    daemon.stop()?;
+    Ok(())
   }
 }
 
-#[derive(Default)]
 struct LifecycleState {
   explicit_quit: AtomicBool,
+}
+
+impl Default for LifecycleState {
+  fn default() -> Self {
+    Self {
+      explicit_quit: AtomicBool::new(false),
+    }
+  }
 }
 
 impl LifecycleState {
@@ -96,6 +130,31 @@ fn is_cortex_reachable() -> bool {
   TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
+fn find_cortex_binary() -> Option<PathBuf> {
+  if let Ok(exe) = env::current_exe() {
+    if let Some(dir) = exe.parent() {
+      let sidecar = dir.join("cortex.exe");
+      if sidecar.exists() {
+        return Some(sidecar);
+      }
+    }
+  }
+
+  if let Ok(home) = cortex_home() {
+    let dev_path = home
+      .join("cortex")
+      .join("daemon-rs")
+      .join("target")
+      .join("release")
+      .join("cortex.exe");
+    if dev_path.exists() {
+      return Some(dev_path);
+    }
+  }
+
+  None
+}
+
 fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
   if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
     let _ = window.unminimize();
@@ -117,7 +176,7 @@ fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
   app.exit(0);
 }
 
-fn shutdown_embedded_daemon<R: Runtime>(app: &tauri::AppHandle<R>) {
+fn shutdown_daemon<R: Runtime>(app: &tauri::AppHandle<R>) {
   let daemon_state = app.state::<DaemonState>();
   let _ = daemon_state.stop();
   let _ = flush_cortex_db_on_shutdown();
@@ -131,14 +190,15 @@ fn flush_cortex_db_on_shutdown() -> Result<(), String> {
 
   let conn = Connection::open(&db_path)
     .map_err(|err| format!("Failed to open DB for shutdown flush {}: {err}", db_path.display()))?;
-  conn.execute_batch(
-    r#"
+  conn
+    .execute_batch(
+      r#"
     PRAGMA journal_mode = WAL;
     PRAGMA wal_checkpoint(TRUNCATE);
     PRAGMA optimize;
     "#,
-  )
-  .map_err(|err| format!("Failed to flush WAL on shutdown {}: {err}", db_path.display()))?;
+    )
+    .map_err(|err| format!("Failed to flush WAL on shutdown {}: {err}", db_path.display()))?;
   conn
     .close()
     .map_err(|(_, err)| format!("Failed to close DB after shutdown flush: {err}"))?;
@@ -185,19 +245,24 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 }
 
 #[tauri::command]
+fn quit_app(app: tauri::AppHandle, daemon_state: State<DaemonState>) -> Result<(), String> {
+  let _ = daemon_state.stop();
+  let _ = flush_cortex_db_on_shutdown();
+  let lifecycle = app.state::<LifecycleState>();
+  lifecycle.request_quit();
+  app.exit(0);
+  Ok(())
+}
+
+#[tauri::command]
 fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
-  let embedded = state.status()?;
-  let running = embedded.running;
-  let pid = embedded.pid;
+  let (running, pid) = state.status()?;
   let reachable = is_cortex_reachable();
   let message = if running && reachable {
-    format!(
-      "Embedded Cortex daemon running (pid {}).",
-      pid.unwrap_or_default()
-    )
+    format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
   } else if running {
     format!(
-      "Embedded Cortex daemon running (pid {}) but not reachable on :7437 yet.",
+      "Cortex daemon running (pid {}) but not reachable on :7437 yet.",
       pid.unwrap_or_default()
     )
   } else if reachable {
@@ -216,18 +281,13 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 
 #[tauri::command]
 fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
-  let embedded = state.start()?;
-  let running = embedded.running;
-  let pid = embedded.pid;
+  let (running, pid) = state.start()?;
   let reachable = is_cortex_reachable();
   let message = if reachable {
-    format!(
-      "Embedded Cortex daemon running (pid {}).",
-      pid.unwrap_or_default()
-    )
+    format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
   } else {
     format!(
-      "Embedded Cortex daemon started (pid {}) but :7437 is not reachable yet.",
+      "Cortex daemon started (pid {}) but :7437 is not reachable yet.",
       pid.unwrap_or_default()
     )
   };
@@ -242,15 +302,15 @@ fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String
 
 #[tauri::command]
 fn stop_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
-  let was_running = state.status()?.running;
-  let _ = state.stop()?;
+  let (was_running, _) = state.status()?;
+  let _ = state.stop();
   let reachable = is_cortex_reachable();
   let message = if was_running {
-    "Stopped embedded Cortex daemon.".to_string()
+    "Stopped Cortex daemon.".to_string()
   } else if reachable {
-    "Embedded daemon is not running (external daemon is still reachable).".to_string()
+    "Sidecar not running (external daemon is still reachable).".to_string()
   } else {
-    "Embedded daemon is already stopped.".to_string()
+    "Daemon is already stopped.".to_string()
   };
 
   Ok(DaemonCommandResult {
@@ -476,8 +536,11 @@ fn detect_editors() -> Result<Vec<EditorDetection>, String> {
 }
 
 fn main() {
+  let exe_path = find_cortex_binary();
+
   let app = tauri::Builder::default()
-    .manage(DaemonState::default())
+    .plugin(tauri_plugin_updater::Builder::new().build())
+    .manage(DaemonState::new(exe_path))
     .manage(LifecycleState::default())
     .setup(|app| {
       setup_tray(app)?;
@@ -500,6 +563,7 @@ fn main() {
       daemon_status,
       start_daemon,
       stop_daemon,
+      quit_app,
       read_auth_token,
       setup_editors,
       detect_editors
@@ -514,12 +578,13 @@ fn main() {
         api.prevent_exit();
         hide_main_window(app_handle);
       } else {
-        shutdown_embedded_daemon(app_handle);
+        shutdown_daemon(app_handle);
       }
     }
     tauri::RunEvent::Exit => {
-      shutdown_embedded_daemon(app_handle);
+      shutdown_daemon(app_handle);
     }
     _ => {}
   });
 }
+

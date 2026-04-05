@@ -1,3 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// This file is part of Cortex.
+//
+// Cortex is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
 //! Boot prompt compiler — capsule-based system.
 //!
 //! Ported from `src/compiler.js` (707 lines).  Builds an identity capsule
@@ -913,3 +928,4 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
 
 // Dead code removed: find_memory_dir, read_memory_files, read_lessons
 // (indexer.rs has its own implementation; these were ported but unused)
+
