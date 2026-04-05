@@ -1,28 +1,31 @@
 <svg width="1200" height="240" viewBox="0 0 1200 240" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="cortex-main" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#8B5FC7" />
+      <stop offset="0%" stop-color="#9E76D4" />
       <stop offset="55%" stop-color="#552583" />
-      <stop offset="100%" stop-color="#34154E" />
+      <stop offset="100%" stop-color="#3E1B60" />
     </linearGradient>
+    <linearGradient id="cortex-glow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#CBB4EB" stop-opacity="0" />
+      <stop offset="50%" stop-color="#E9DBFF" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#B98FEA" stop-opacity="0" />
+    </linearGradient>
+    <clipPath id="glow-sweep">
+      <rect x="-280" y="0" width="280" height="240">
+        <animate attributeName="x" values="-280;1220" dur="3.8s" repeatCount="indefinite" />
+      </rect>
+    </clipPath>
   </defs>
-  <rect width="1200" height="240" rx="12" fill="#141414" />
+  <rect width="1200" height="240" rx="12" fill="#F3ECFF" />
+  <rect x="18" y="18" width="1164" height="204" rx="10" fill="#ECE1FF" />
   <g font-family="'Courier New', Consolas, monospace" font-size="25" font-weight="700" xml:space="preserve">
-    <text x="67" y="51" fill="#231036" opacity="0.92">
-      <tspan x="67" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
-      <tspan x="67" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
-      <tspan x="67" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
-      <tspan x="67" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
-      <tspan x="67" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
-      <tspan x="67" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
-    </text>
-    <text x="57" y="45" fill="#A79EB5" opacity="0.95">
-      <tspan x="57" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
-      <tspan x="57" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
-      <tspan x="57" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
-      <tspan x="57" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
-      <tspan x="57" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
-      <tspan x="57" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
+    <text x="63" y="51" fill="#2D1247" opacity="0.23">
+      <tspan x="63" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
+      <tspan x="63" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
+      <tspan x="63" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
+      <tspan x="63" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
+      <tspan x="63" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
+      <tspan x="63" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
     </text>
     <text x="47" y="39" fill="url(#cortex-main)">
       <tspan x="47" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
@@ -32,5 +35,15 @@
       <tspan x="47" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
       <tspan x="47" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
     </text>
+    <g clip-path="url(#glow-sweep)">
+      <text x="47" y="39" fill="url(#cortex-glow)">
+        <tspan x="47" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
+        <tspan x="47" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
+        <tspan x="47" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
+        <tspan x="47" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
+        <tspan x="47" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
+        <tspan x="47" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
+      </text>
+    </g>
   </g>
 </svg>
