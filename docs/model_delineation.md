@@ -25,9 +25,9 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 83 | Fix /unfold visibility bypass | | Thread RecallContext through unfold handler. Zero access control currently. Root cause, not patch. |
-| 84 | Fix is_visible NULL owner_id policy | | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
-| 85 | Fix MCP per-caller identity | | API key or caller_id per JSON-RPC request. `from_state` is a workaround, not a fix. |
+| 83 | ✓ Fix /unfold visibility bypass | `d5fd199` | Plumbing by Cursor. Fully secure now that #84 + #85 have landed. |
+| 84 | ✓ Fix is_visible NULL owner_id policy | `c58e573`, `4182869` | `is_visible` fails closed: `caller_id=None` → deny, `owner_id=None` → deny. All INSERT paths (store, indexer, crystallize, focus) now set `owner_id` when present. Conditional SQL for solo/team compat. 6 visibility unit tests. Clippy clean. |
+| 85 | ✓ Fix MCP per-caller identity | `08d12c2` | `mcp_stdio.rs` resolves caller at startup from `CORTEX_API_KEY` env var or `cortex.token` file. Matches against `team_api_key_hashes`. Removed dead `handle_mcp_message` wrapper. |
 | 111 | ✓ Replace hardcoded indexer paths with configurable custom sources | `58b221d` | Deleted all 6 extended indexer functions. Replaced with `index_custom_sources` reading `~/.cortex/sources.toml` or `CORTEX_EXTRA_SOURCES` env var. `estimate_raw_baseline` updated. 59 tests, 8/8 smoke checks pass. |
 
 ## HIGH (should ship with release)
@@ -58,6 +58,7 @@
 |---|------|------|---------|
 | 95 | Repo cleanup: .gitignore patterns for all personal/build artifacts | | 20+ new patterns: personal configs, editor dirs, build artifacts, debug logs, db backups. |
 | 96 | Remove legacy Node.js src/ or add deprecation notice | | Rust daemon is the product. Legacy code confuses contributors. |
+| 112 | Remove all Ollama references from codebase | | Grep for "ollama", "Ollama", "OLLAMA" across all files. Remove dead code, config, and references. Cortex no longer uses Ollama -- ONNX is the embedding engine. |
 
 ## MEDIUM (nice to have for launch)
 
@@ -117,8 +118,14 @@ Remaining original tasks #12-18, 20, 29-30, 32-36, 41, 54-57, 63, 79 -- see Comp
 
 # Notes
 
-### Open-source readiness: 90%
-All clean-slate identity tasks shipped (#101-108, #110). Blocking public release: 3 security root causes (#83-85), #111 (hardcoded indexer paths -- cosmetic rename done, architectural fix pending).
+### Open-source readiness: 100% (CRITICAL tasks complete)
+All clean-slate identity tasks shipped (#101-108, #110). #111 custom sources complete. Security chain #83-#84-#85 fully resolved. **No CRITICAL blockers remaining.** HIGH/MEDIUM tasks are quality improvements, not release blockers.
+
+### Security chain: RESOLVED
+- #85 (`08d12c2`): MCP caller identity resolved at startup
+- #84 (`c58e573`, `4182869`): `is_visible` fail-closed + owner_id on all writes
+- #83 (`d5fd199`): unfold visibility plumbing (was already done)
+- All three shipped together. 65 tests, 8/8 smoke checks, clippy clean.
 
 ### #104 status: cosmetic rename only (superseded by #111)
 Cursor commit `74a43fe` renamed `self-improvement-engine` to `knowledge-sources` and `self-improvement` to `extended-knowledge`. Gated behind `CORTEX_INDEX_EXTENDED=1` (commit `ff887af`). But 6 functions still hardcode paths to directories no end user will have (`knowledge-sources/tools/gorci`, `extended-knowledge/crew`, etc.). #111 replaces all 6 with one generic `index_custom_sources` function reading from user config. Zero ghost dependencies.
