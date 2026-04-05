@@ -18,7 +18,21 @@ from pathlib import Path
 
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
-MEMORY_DIR = HOME / ".claude" / "projects" / "C--Users-aditya" / "memory"
+
+
+def _home_slug() -> str:
+    """Compute the ~/.claude/projects/ dir slug for the current home directory.
+
+    Claude Code slugifies the absolute path: drive colon+separator → "--",
+    remaining separators → "-". E.g. "C:\\Users\\alice" → "C--Users-alice".
+    """
+    s = str(HOME)
+    # Drive colon followed by separator → "--"
+    s = re.sub(r"[:\\/]{1,2}", lambda m: "--" if ":" in m.group() else "-", s)
+    return s.strip("-")
+
+
+MEMORY_DIR = CLAUDE_DIR / "projects" / _home_slug() / "memory"
 RULES_DIR = HOME / ".claude" / "rules"
 SKILLS_DIR = HOME / ".claude" / "skills"
 

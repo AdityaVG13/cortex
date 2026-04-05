@@ -37,6 +37,10 @@ PLAN.md
 RECON.md
 cortex-profiles.json
 
+# Personal LM Studio / Ollama configs
+config/Modelfile.*
+config/*.env
+
 # Personal scripts
 cortex-start.ps1
 cortex-start.bat

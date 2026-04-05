@@ -44,7 +44,7 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 107 | Delete ALL personal files, update .gitignore | | `git rm`: CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules, .cursor/, .planning/, PLAN.md, RECON.md, cortex-profiles.json, CHANGELOG_v0.3.0_section.md, config/Modelfile.*, cortex-app.bat, cortex-dashboard.bat, cortex-mcp.cmd, cortex-start.bat. Add all patterns to .gitignore. Verify `git ls-files` = zero personal files. |
+| 107 | Make a copy of all personal files to C:\Users\aditya\AI\Personal and then delete ALL personal files, update .gitignore | | `git rm`: CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules, .cursor/, .planning/, PLAN.md, RECON.md, cortex-profiles.json, CHANGELOG_v0.3.0_section.md, config/Modelfile.*, cortex-app.bat, cortex-dashboard.bat, cortex-mcp.cmd, cortex-start.bat. Add all patterns to .gitignore. Verify `git ls-files` = zero personal files. |
 
 ## HIGH (should ship with release)
 
@@ -53,15 +53,15 @@
 | # | Task | Done | Details |
 |---|------|------|---------|
 | 86 | Version bump to v0.3.0 + git tag + GitHub release | | Cargo.toml, CHANGELOG.md, build release binary, `gh release create`, attach binary. |
-| 100 | Desktop app: version sync to 0.3.0 | | tauri.conf.json, desktop Cargo.toml, package.json must all match daemon v0.3.0. |
+| 100 | Desktop app: version sync to 0.3.0 | ✓ | tauri.conf.json, desktop Cargo.toml, package.json must all match daemon v0.3.0. |
 
 ### Cursor (Sonnet)
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 103 | service.rs: replace `"aditya"` fallback username | | Line 30: change to `"cortex-user"`. One-line fix. |
-| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` | | Line 21: derive dynamically from CWD, same pattern as #102. |
-| 110 | config/Modelfile.glm: delete personal LLM configs | | Delete config/Modelfile.glm and config/Modelfile.deepseek. Hardcoded `C:/Users/aditya/.lmstudio/` path. Add `config/` to .gitignore. |
+| 103 | service.rs: replace `"aditya"` fallback username | ✓ | Line 30: change to `"cortex-user"`. One-line fix. |
+| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` | ✓ | Line 21: derive dynamically from CWD, same pattern as #102. |
+| 110 | config/Modelfile.glm: delete personal LLM configs | ✓ | Delete config/Modelfile.glm and config/Modelfile.deepseek. Hardcoded `C:/Users/aditya/.lmstudio/` path. Add `config/` to .gitignore. |
 
 ### Codex CLI
 
@@ -90,11 +90,11 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 88 | App icon: replace with adityasmile.png | | Remove all old icons. Rename adityasmile.png → icon.png. Generate required Tauri sizes (icon.ico, icon.icns, 32x32, 128x128, 128x128@2x). Update generate-icon.py reference. |
-| 89 | README: release badge, download link, "What's New" | | Top badge box currently empty. Add release link, version badge, feature highlights. |
-| 98 | Desktop app: add About tab (panel #12) | | Creator photo + "Created by Aditya". Contributors section (GitHub API or manual). App version number. |
-| 99 | Desktop app: auto-update via tauri-plugin-updater | | In-app update check, notification when new version available. Document in README. |
-| 106 | tools/ingest_chatgpt.py: remove or generalize | | 30+ "aditya" refs as classification label. Either make configurable or remove from public repo. |
+| 88 | App icon: replace with adityasmile.png | ✓ | Remove all old icons. Rename adityasmile.png → icon.png. Generate required Tauri sizes (icon.ico, icon.icns, 32x32, 128x128, 128x128@2x). Update generate-icon.py reference. |
+| 89 | README: release badge, download link, "What's New" | ✓ | Top badge box currently empty. Add release link, version badge, feature highlights. |
+| 98 | Desktop app: add About tab (panel #12) | ✓ | Creator photo + "Created by Aditya". Contributors section (GitHub API or manual). App version number. |
+| 99 | Desktop app: auto-update via tauri-plugin-updater | ✓ | In-app update check, notification when new version available. Document in README. |
+| 106 | tools/ingest_chatgpt.py: remove or generalize | ✓ | 30+ "aditya" refs as classification label. Either make configurable or remove from public repo. |
 
 ### Gemini CLI
 

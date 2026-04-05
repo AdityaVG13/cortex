@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Component } from "react";
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
+import { checkForUpdates, installUpdate } from "./updater.js";
 
 class BrainErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
@@ -341,6 +342,8 @@ export function App() {
   const [editorSetup, setEditorSetup] = useState(null);
   const [cortexBase, setCortexBase] = useState(() => localStorage.getItem("cortex_base") || DEFAULT_CORTEX_BASE);
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState(null);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
 
   const invokeRef = useRef(null);
   const tokenRef = useRef("");
@@ -568,6 +571,12 @@ export function App() {
       refreshAllRef.current();
     }, FALLBACK_REFRESH_MS);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    checkForUpdates().then((update) => {
+      if (update) setAvailableUpdate(update);
+    });
   }, []);
 
   useEffect(() => {
@@ -831,6 +840,28 @@ export function App() {
               }
             }}>Exit</button>
           </div>
+          {availableUpdate && (
+            <div className="update-banner">
+              <span>v{availableUpdate.version} available</span>
+              <button
+                type="button"
+                className="btn-sm btn-primary"
+                disabled={updateInstalling}
+                onClick={async () => {
+                  setUpdateInstalling(true);
+                  setFeedbackMessage("Downloading update...");
+                  try {
+                    await installUpdate(availableUpdate);
+                  } catch (err) {
+                    setFeedbackMessage(`Update failed: ${String(err)}`);
+                    setUpdateInstalling(false);
+                  }
+                }}
+              >
+                {updateInstalling ? "Installing..." : "Update"}
+              </button>
+            </div>
+          )}
           <p className="sidebar-status">{feedbackMessage}</p>
           <button type="button" className="btn-sidebar-collapse" onClick={() => setSidebarCollapsed(c => !c)}>
             {sidebarCollapsed ? "▶" : "◀"}
@@ -1447,15 +1478,21 @@ export function App() {
             <div className="card full">
               <div style={{ padding: "2rem", maxWidth: 640 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
+                  <img
+                    src="/icons/adityasmile.png"
+                    alt="Aditya"
+                    style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                    onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }}
+                  />
                   <div style={{
-                    width: 64, height: 64, borderRadius: 16,
+                    width: 64, height: 64, borderRadius: "50%",
                     background: "linear-gradient(135deg, var(--accent-cyan), var(--accent-blue))",
-                    display: "flex", alignItems: "center", justifyContent: "center",
+                    display: "none", alignItems: "center", justifyContent: "center",
                     fontSize: "2rem", flexShrink: 0,
                   }}>◈</div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Version 0.3.0</p>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Created by Aditya &mdash; Version 0.3.0</p>
                   </div>
                 </div>
 
