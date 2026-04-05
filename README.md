@@ -41,9 +41,19 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 - 13 MCP tools, 35+ HTTP endpoints, SSE real-time stream
 - Zero external runtime dependencies -- no Ollama or Python required
 
+| You want to... | Cortex gives you... |
+|---|---|
+| Stop repeating setup and project context to every agent | Capsule-compiled boot prompts with durable identity + recent delta |
+| Share decisions across Claude Code, Cursor, Codex, Gemini, and others | A single local brain with HTTP and MCP access |
+| Keep memory local and fast | Rust daemon, SQLite persistence, and in-process ONNX embeddings |
+| Avoid silent contradictions between agents | Conflict detection and human-resolvable disputed decisions |
+| Manage the system visually | A desktop control center for graph exploration, activity, tasks, and conflicts |
+
 ---
 
 ## Features
+
+Built for local-first AI workflows where multiple coding agents need shared memory without shared confusion.
 
 - **Persistent shared memory for multiple AIs:** Claude Code, Cursor, Codex, Gemini, and any HTTP/MCP-capable tool can read and write the same brain.
 - **Token-aware context delivery:** Capsule boot, peek, unfold, and recall flows minimize startup/context costs without losing key history.
@@ -54,6 +64,8 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 ---
 
 ## Installation
+
+Choose the release binary if you want the fastest path to a working daemon. Build from source if you are developing Cortex itself or need to inspect internals.
 
 ### Download (recommended)
 
@@ -81,6 +93,8 @@ cargo build --release
 ---
 
 ## Quick Start
+
+This is the shortest path from zero to a running local brain.
 
 1. **Start the daemon:**
    ```bash
@@ -117,6 +131,8 @@ Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspi
 
 ## Connecting Your AI
 
+Every integration reduces to the same pattern: boot for context, recall when needed, and store durable decisions back into the brain.
+
 - **Claude Code:** `claude mcp add cortex -s user -- /path/to/cortex mcp`
 - **Cursor:** Add Cortex to `~/.cursor/mcp.json` as an MCP server.
 - **Any CLI/agent:** Call `/boot?agent=YOUR_NAME` with the bearer token from `~/.cortex/cortex.token`.
@@ -125,6 +141,8 @@ Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspi
 ---
 
 ## How It Works
+
+The system is designed to compress context aggressively without losing the pieces that matter across sessions.
 
 | Component | Description |
 |-----------|-------------|
@@ -137,6 +155,8 @@ Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspi
 ---
 
 ## API Reference
+
+The full API surface is larger than the summary below. Use the tables here for orientation, then go to the OpenAPI spec or connection guide when wiring tools up.
 
 ### MCP Tools
 
@@ -174,6 +194,8 @@ Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspi
 
 ## Security
 
+Cortex is built for local use first. The defaults assume the daemon is running on your machine and should not be exposed broadly without deliberate hardening.
+
 - **Bearer Authentication:** Sensitive endpoints require the token found in `~/.cortex/cortex.token`.
 - **CORS Protection:** Restricted to localhost origins by default to prevent SSRF and unauthorized access.
 - **Data Integrity:** SQLite with WAL mode and prepared statements; zero string interpolation in SQL.
@@ -183,12 +205,16 @@ Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspi
 
 ## Community
 
+If you are evaluating the project for adoption, these are the root docs that matter most after the README.
+
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Roadmap
+
+The roadmap tracks hardening, governance, and multi-tenant work beyond the current release.
 
 See [ROADMAP.md](ROADMAP.md) for detailed milestone tracking.
 
