@@ -73,10 +73,15 @@ Privacy, fairness, and agent identity for team deployments.
 
 ## v0.8.0 -- Advanced Agent Support
 
-Branch awareness, provenance, deadlock detection for autonomous agent swarms.
+Branch awareness, provenance, deadlock detection, and task dispatch for autonomous agent swarms.
 
 | # | Task | Source | Owner | Details |
 |---|------|--------|-------|---------|
+| TD1 | Task dispatch UI in Control Center | -- | CC | Create tasks in Pending tab with full prompt text, assign to a connected agent from dropdown |
+| TD2 | Agent task pull on boot | -- | CC | Cortex boot/MCP injects assigned pending tasks; agent auto-claims and starts working |
+| TD3 | Multi-agent coordination protocol | -- | CC | Agents use /message for coordination, /lock for file exclusivity, status updates via /feed |
+| TD4 | Task dependency graph | -- | D5 | Tasks can block/depend on other tasks; UI shows DAG; agents respect ordering |
+| TD5 | Live task progress in Control Center | -- | CC | Real-time status updates via SSE; show which agent is working on what, files touched, progress |
 | G10 | Branch-aware filtering (`git_ref` on store/recall) | Gemini #10 | CC | Prioritize memories from current branch + ancestors |
 | G11 | Reasoning provenance (RICR) | Gemini #11 | CC | Provenance links to source commit/session/parent decision |
 | G6 | Multi-agent deadlock detection | Gemini #6 | D5 | Dependency graph on tasks, cycle detection, lock-breaking |

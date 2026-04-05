@@ -361,68 +361,68 @@ export function App() {
   }, [sessions, messageAgent]);
 
   const api = useCallback(async (path, withAuth = false) => {
-    if (withAuth && !tokenRef.current) return null;
+    if (withAuth && !tokenRef.current) {
+      throw new Error(`${path}: no auth token (Tauri IPC ${invokeRef.current ? "available" : "missing"})`);
+    }
 
     // In Tauri: proxy through Rust IPC to bypass WebView2 mixed-content restrictions
     if (invokeRef.current) {
-      try {
-        const response = await invokeRef.current("fetch_cortex", {
-          path,
-          authToken: withAuth ? tokenRef.current : "",
-        });
-        if (!response || typeof response.status !== "number" || typeof response.body !== "string") return null;
-        if (response.status < 200 || response.status >= 300) return null;
-        return JSON.parse(response.body);
-      } catch {
-        return null;
+      const response = await invokeRef.current("fetch_cortex", {
+        path,
+        authToken: withAuth ? tokenRef.current : "",
+      });
+      if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
+        throw new Error(`${path}: invalid IPC response`);
       }
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`${path}: HTTP ${response.status}`);
+      }
+      return JSON.parse(response.body);
     }
 
     // Browser fallback: direct fetch
     const headers = { "X-Cortex-Request": "true" };
     if (withAuth) headers.Authorization = `Bearer ${tokenRef.current}`;
-    try {
-      const response = await fetch(`${cortexBase}${path}`, { headers });
-      if (!response.ok) return null;
-      return await response.json();
-    } catch {
-      return null;
+    const response = await fetch(`${cortexBase}${path}`, { headers });
+    if (!response.ok) {
+      throw new Error(`${path}: HTTP ${response.status}`);
     }
+    return await response.json();
   }, [cortexBase]);
 
   const postApi = useCallback(async (path, body = {}) => {
-    if (!tokenRef.current) return null;
+    if (!tokenRef.current) {
+      throw new Error(`POST ${path}: no auth token`);
+    }
 
     if (invokeRef.current) {
-      try {
-        const response = await invokeRef.current("post_cortex", {
-          path,
-          authToken: tokenRef.current,
-          body: JSON.stringify(body),
-        });
-        if (!response || typeof response.status !== "number" || typeof response.body !== "string") return null;
-        if (response.status < 200 || response.status >= 300) return null;
-        return JSON.parse(response.body);
-      } catch {
-        return null;
-      }
-    }
-
-    try {
-      const response = await fetch(`${cortexBase}${path}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Cortex-Request": "true",
-          Authorization: `Bearer ${tokenRef.current}`,
-        },
+      const response = await invokeRef.current("post_cortex", {
+        path,
+        authToken: tokenRef.current,
         body: JSON.stringify(body),
       });
-      if (!response.ok) return null;
-      return await response.json();
-    } catch {
-      return null;
+      if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
+        throw new Error(`POST ${path}: invalid IPC response`);
+      }
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`POST ${path}: HTTP ${response.status}`);
+      }
+      return JSON.parse(response.body);
     }
+
+    const response = await fetch(`${cortexBase}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Cortex-Request": "true",
+        Authorization: `Bearer ${tokenRef.current}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      throw new Error(`POST ${path}: HTTP ${response.status}`);
+    }
+    return await response.json();
   }, [cortexBase]);
 
   const call = useCallback(async (command, args = {}) => {
@@ -436,8 +436,9 @@ export function App() {
         const token = await call("read_auth_token");
         tokenRef.current = token || "";
         return;
-      } catch {
+      } catch (err) {
         tokenRef.current = "";
+        setFeedbackMessage(`Auth token read failed: ${err.message || err}`);
       }
     }
   }, [call]);
@@ -454,13 +455,18 @@ export function App() {
       }
     }
 
-    const health = await api("/health");
+    let health;
+    try {
+      health = await api("/health");
+    } catch {
+      // daemon unreachable is an expected state, not an error
+    }
     if (health?.status === "ok") {
       const nextState = {
         running: true,
         reachable: true,
         pid: null,
-        message: `Connected — ${health.stats?.memories ?? 0} memories`,
+        message: `Connected -- ${health.stats?.memories ?? 0} memories`,
       };
       setDaemonState(nextState);
       setFeedbackMessage(nextState.message);
@@ -477,7 +483,12 @@ export function App() {
   }, [api, call]);
 
   const refreshHealth = useCallback(async () => {
-    const health = await api("/health");
+    let health;
+    try {
+      health = await api("/health");
+    } catch {
+      // daemon unreachable -- show dashes
+    }
     if (!health?.stats) {
       setStats({
         memories: "--",
@@ -496,15 +507,22 @@ export function App() {
   }, [api]);
 
   const refreshCoreData = useCallback(async () => {
-    const [sessionsResult, locksResult, tasksResult] = await Promise.all([
+    const [sessionsResult, locksResult, tasksResult] = await Promise.allSettled([
       api("/sessions", true),
       api("/locks", true),
       api("/tasks?status=all", true),
     ]);
 
-    setSessions(Array.isArray(sessionsResult?.sessions) ? sessionsResult.sessions : []);
-    setLocks(Array.isArray(locksResult?.locks) ? locksResult.locks : []);
-    setTasks(Array.isArray(tasksResult?.tasks) ? tasksResult.tasks : []);
+    const unwrap = (r) => r.status === "fulfilled" ? r.value : null;
+    setSessions(Array.isArray(unwrap(sessionsResult)?.sessions) ? unwrap(sessionsResult).sessions : []);
+    setLocks(Array.isArray(unwrap(locksResult)?.locks) ? unwrap(locksResult).locks : []);
+    setTasks(Array.isArray(unwrap(tasksResult)?.tasks) ? unwrap(tasksResult).tasks : []);
+
+    const failed = [sessionsResult, locksResult, tasksResult].filter(r => r.status === "rejected");
+    if (failed.length) {
+      const reasons = failed.map(f => f.reason?.message || String(f.reason));
+      throw new Error(reasons.join("; "));
+    }
   }, [api]);
 
   const refreshFeed = useCallback(async () => {
@@ -553,9 +571,14 @@ export function App() {
 
   const handleResolveConflict = useCallback(async (keepId, action, supersededId) => {
     setConflictLoading(true);
-    await postApi("/resolve", { keepId, action, supersededId });
-    await refreshConflicts();
-    setConflictLoading(false);
+    try {
+      await postApi("/resolve", { keepId, action, supersededId });
+      await refreshConflicts();
+    } catch (err) {
+      setFeedbackMessage(`Resolve failed: ${err.message || err}`);
+    } finally {
+      setConflictLoading(false);
+    }
   }, [postApi, refreshConflicts]);
 
   const handleSetupEditors = useCallback(async () => {
@@ -570,9 +593,13 @@ export function App() {
   }, [call]);
 
   const refreshAll = useCallback(async () => {
-    invokeRef.current = await readTauriInvoke();
+    try {
+      invokeRef.current = await readTauriInvoke();
+    } catch {
+      invokeRef.current = null;
+    }
     await readAuthToken();
-    await Promise.all([
+    const results = await Promise.allSettled([
       refreshDaemonState(),
       refreshHealth(),
       refreshCoreData(),
@@ -582,6 +609,12 @@ export function App() {
       refreshSavings(),
       refreshConflicts(),
     ]);
+    const failures = results.filter(r => r.status === "rejected");
+    if (failures.length) {
+      const reasons = failures.map(f => f.reason?.message || String(f.reason));
+      const unique = [...new Set(reasons)];
+      setFeedbackMessage(unique.join("; "));
+    }
   }, [
     readAuthToken,
     refreshDaemonState,
@@ -604,12 +637,14 @@ export function App() {
   }, [refreshAll]);
 
   useEffect(() => {
-    refreshAllRef.current();
+    // Call refreshAll directly on mount -- refreshAllRef.current isn't assigned
+    // yet when this effect fires (ref-assignment effect hasn't run).
+    refreshAll();
     const interval = setInterval(() => {
       refreshAllRef.current();
     }, FALLBACK_REFRESH_MS);
     return () => clearInterval(interval);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     checkForUpdates().then((update) => {
@@ -624,18 +659,18 @@ export function App() {
   }, [sessions, messageAgent]);
 
   useEffect(() => {
-    refreshMessages();
+    refreshMessages().catch(err => setFeedbackMessage(`Messages: ${err.message || err}`));
   }, [refreshMessages]);
 
   useEffect(() => {
-    refreshActivity();
+    refreshActivity().catch(err => setFeedbackMessage(`Activity: ${err.message || err}`));
   }, [refreshActivity]);
 
   useEffect(() => {
     if (panel !== "analytics") return;
-    refreshSavings();
+    refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`));
     const timer = setInterval(() => {
-      refreshSavings();
+      refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`));
     }, ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
   }, [panel, refreshSavings]);
@@ -678,7 +713,6 @@ export function App() {
 
         refreshInFlight = true;
         Promise.resolve(refreshAllRef.current())
-          .catch(() => {})
           .finally(() => {
             lastRefreshAt = Date.now();
             refreshInFlight = false;
@@ -787,12 +821,16 @@ export function App() {
   }
 
   async function handleMemoryExpand(source) {
-    const recallResult = await api(`/recall?q=${encodeURIComponent(source)}&k=3`);
-    const match = recallResult?.results?.find(r => r.source === source);
-    if (match) {
-      setMemoryResults(prev => prev.map(m =>
-        m.source === source ? { ...m, excerpt: match.excerpt, expanded: true } : m
-      ));
+    try {
+      const recallResult = await api(`/recall?q=${encodeURIComponent(source)}&k=3`);
+      const match = recallResult?.results?.find(r => r.source === source);
+      if (match) {
+        setMemoryResults(prev => prev.map(m =>
+          m.source === source ? { ...m, excerpt: match.excerpt, expanded: true } : m
+        ));
+      }
+    } catch (err) {
+      setFeedbackMessage(`Memory expand failed: ${err.message || err}`);
     }
   }
 
@@ -801,13 +839,13 @@ export function App() {
     try {
       const result = await call("start_daemon");
       setFeedbackMessage(result.message || "Daemon start requested.");
+      // Daemon needs a moment to write the token file on first start
+      await new Promise(r => setTimeout(r, 2000));
+      await readAuthToken();
+      await refreshAll();
     } catch (error) {
-      setFeedbackMessage(`Start failed: ${String(error)}`);
+      setFeedbackMessage(`Start failed: ${error.message || error}`);
     }
-    // Daemon needs a moment to write the token file on first start
-    await new Promise(r => setTimeout(r, 2000));
-    await readAuthToken();
-    await refreshAll();
   }
 
   async function handleStopDaemon() {
@@ -815,10 +853,10 @@ export function App() {
     try {
       const result = await call("stop_daemon");
       setFeedbackMessage(result.message || "Daemon stop requested.");
+      await refreshAll();
     } catch (error) {
-      setFeedbackMessage(`Stop failed: ${String(error)}`);
+      setFeedbackMessage(`Stop failed: ${error.message || error}`);
     }
-    await refreshAll();
   }
 
   // Keyboard nav
@@ -1102,11 +1140,16 @@ export function App() {
                         type="button"
                         className="btn-sm"
                         onClick={async () => {
-                          for (const task of completedTasks) {
-                            if (!task?.taskId) continue;
-                            await postApi("/tasks/delete", { taskId: task.taskId });
+                          try {
+                            const results = await Promise.allSettled(
+                              completedTasks.filter(t => t?.taskId).map(t => postApi("/tasks/delete", { taskId: t.taskId }))
+                            );
+                            const failed = results.filter(r => r.status === "rejected");
+                            if (failed.length) setFeedbackMessage(`${failed.length} task delete(s) failed: ${failed[0].reason}`);
+                            await refreshAll();
+                          } catch (err) {
+                            setFeedbackMessage(`Clear tasks failed: ${err.message || err}`);
                           }
-                          await refreshAll();
                         }}
                       >
                         Clear
@@ -1181,7 +1224,7 @@ export function App() {
                 </label>
                 <div className="feed-actions">
                   <span className="badge">{feedEntries.length}</span>
-                  <button type="button" className="btn-sm" onClick={refreshFeed}>
+                  <button type="button" className="btn-sm" onClick={() => refreshFeed().catch(err => setFeedbackMessage(`Feed: ${err.message || err}`))}>
                     Refresh Feed
                   </button>
                 </div>
@@ -1217,7 +1260,7 @@ export function App() {
                 </label>
                 <div className="surface-actions">
                   <span className="badge">{messageEntries.length}</span>
-                  <button type="button" className="btn-sm" onClick={refreshMessages}>
+                  <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(err => setFeedbackMessage(`Messages: ${err.message || err}`))}>
                     Refresh Messages
                   </button>
                 </div>
@@ -1256,7 +1299,7 @@ export function App() {
                 </label>
                 <div className="surface-actions">
                   <span className="badge">{activityEntries.length}</span>
-                  <button type="button" className="btn-sm" onClick={refreshActivity}>
+                  <button type="button" className="btn-sm" onClick={() => refreshActivity().catch(err => setFeedbackMessage(`Activity: ${err.message || err}`))}>
                     Refresh Activity
                   </button>
                 </div>
@@ -1321,7 +1364,7 @@ export function App() {
               <h1>Analytics</h1>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span className="panel-subtitle">Token savings & brain health</span>
-                <button type="button" className="btn-sm" onClick={refreshSavings}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={() => refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`))}>Refresh</button>
               </div>
             </div>
             {savings ? (
@@ -1457,7 +1500,7 @@ export function App() {
               <h1>Conflict Resolution</h1>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span className="badge">{conflictPairs.length} dispute{conflictPairs.length !== 1 ? "s" : ""}</span>
-                <button type="button" className="btn-sm" onClick={refreshConflicts}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(err => setFeedbackMessage(`Conflicts: ${err.message || err}`))}>Refresh</button>
               </div>
             </div>
             {conflictPairs.length === 0 ? (
