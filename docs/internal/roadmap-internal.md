@@ -19,7 +19,10 @@ All CRITICAL security and OSS-readiness tasks are complete. These remaining item
 | 94 | CONTRIBUTING.md + SECURITY.md | CX | |
 | 91 | Recall quality baseline (surprise score analysis) | GC | |
 | 109 | Auto-generate CHANGELOG on version tags (git-cliff) | D4 | |
-| 113 | Verify desktop app (Control Center) is wired end-to-end | CC | |
+| 113 | Verify desktop app (Control Center) is wired end-to-end | CC | In progress -- CORS + auth header fixes done |
+| 114 | Wire Agents panel: show connected MCP sessions, active agents, team user presence | D5 | Daemon has `/sessions` endpoint. Need real-time presence via SSE events + user online/offline status for team mode. |
+| 115 | Desktop app: fix About icon, update License field, version bump to v0.4.0 | D4 | Icon now in public/icons/. License set to AGPL-3.0. |
+| 116 | Version bump ALL files to v0.4.0 + AGPL-3.0 license sweep | D4 | Bump version in: daemon-rs/Cargo.toml, desktop/cortex-control-center/package.json, desktop/.../src-tauri/Cargo.toml, desktop/.../src-tauri/tauri.conf.json. Add AGPL-3.0 header/notice to all .rs source files. Verify LICENSE file is referenced in README. Add `license = "AGPL-3.0-only"` to both Cargo.toml files. Update package.json `"license"` field. Check sdks/python and sdks/typescript for license fields. |
 
 ---
 

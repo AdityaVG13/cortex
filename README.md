@@ -15,14 +15,14 @@
 <h4 align="center">Single Rust binary. Zero runtime dependencies. In-process ONNX embeddings.</h4>
 
 <p align="center">
-  <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0"><img src="https://img.shields.io/badge/release-v0.3.0-blue?style=for-the-badge" alt="Release v0.3.0"></a>
-  <a href="https://github.com/AdityaVG13/cortex/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.4.0"><img src="https://img.shields.io/badge/release-v0.4.0-blue?style=for-the-badge" alt="Release v0.4.0"></a>
+  <a href="https://github.com/AdityaVG13/cortex/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0--only-blue?style=for-the-badge" alt="License: AGPL-3.0-only"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/Rust-1.78+-orange?style=for-the-badge" alt="Rust"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/ONNX-embedded-blueviolet?style=for-the-badge" alt="ONNX"></a>
   <a href="https://github.com/AdityaVG13/cortex"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=for-the-badge" alt="Platform"></a>
 </p>
 
-<p align="center"><strong>Current release:</strong> <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0">v0.3.0</a> (download below)</p>
+<p align="center"><strong>Current release:</strong> <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.4.0">v0.4.0</a> (download below)</p>
 
 <p align="center">
   <a href="#installation">Installation</a> --
@@ -583,4 +583,6 @@ Cortex holds sensitive data -- your decisions, project context, and AI memory. S
 
 ## License
 
-MIT
+AGPL-3.0-only - This is a copyleft license. If you modify and run Cortex as a network service (including on localhost), you must share your modifications with downstream users. See [LICENSE](LICENSE) for the full text.
+
+This ensures that the persistent AI memory infrastructure remains open-source and collaboratively maintainable.

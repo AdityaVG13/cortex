@@ -1478,8 +1478,8 @@ export function App() {
               <div style={{ padding: "2rem", maxWidth: 640 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
                   <img
-                    src="/icons/icon.png"
-                    alt="Creator"
+                    src={`${import.meta.env.BASE_URL}icons/icon.png`}
+                    alt="Cortex"
                     style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
                     onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }}
                   />
