@@ -1,3 +1,6 @@
+
+# Local backup of personal files (never commit)
+.personal-backup/
 node_modules/
 target/
 cortex.db
