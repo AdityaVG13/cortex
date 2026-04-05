@@ -24,6 +24,7 @@
   <a href="#connecting-your-ai">Connect Your AI</a> --
   <a href="#api-reference">API Reference</a> --
   <a href="#security">Security</a> --
+  <a href="#community">Community</a> --
   <a href="#roadmap">Roadmap</a>
 </p>
 
@@ -39,6 +40,16 @@ Cortex gives every AI a shared brain that persists, compresses, and pushes conte
 - Bearer auth on all sensitive endpoints, CORS-locked to localhost
 - 13 MCP tools, 35+ HTTP endpoints, SSE real-time stream
 - Zero external runtime dependencies -- no Ollama or Python required
+
+---
+
+## Features
+
+- **Persistent shared memory for multiple AIs:** Claude Code, Cursor, Codex, Gemini, and any HTTP/MCP-capable tool can read and write the same brain.
+- **Token-aware context delivery:** Capsule boot, peek, unfold, and recall flows minimize startup/context costs without losing key history.
+- **Local-first architecture:** Rust daemon, SQLite persistence, and in-process ONNX embeddings keep the core stack self-contained.
+- **Conflict-aware knowledge model:** Contradictory decisions are surfaced instead of silently overwritten.
+- **Desktop control plane:** A Tauri app provides graph exploration, task coordination, live agent activity, and conflict resolution.
 
 ---
 
@@ -82,9 +93,9 @@ cargo build --release
    # {"status":"ok","stats":{"memories":0,"decisions":0,"embeddings":0}}
    ```
 
-3. **Connect your AI:**
-   - **Claude Code:** `claude mcp add cortex -s user -- /path/to/cortex mcp`
-   - **Cursor:** Add to `~/.cursor/mcp.json`: `{ "mcpServers": { "cortex": { "command": "/path/to/cortex", "args": ["mcp"] } } }`
+3. **Read the connection guide:**
+   - Start with [docs/CONNECTING.md](docs/CONNECTING.md) for auth, `/boot`, and platform-specific setup.
+   - `/health` is public; most useful endpoints require the bearer token in `~/.cortex/cortex.token`.
 
 For the best experience, use the [Desktop App](#desktop-app).
 
@@ -94,13 +105,22 @@ For the best experience, use the [Desktop App](#desktop-app).
 
 Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspired UI for managing your AI brain.
 
-### Features
+### Control Center Features
 - **Visual Memory Graph:** 3D force-directed visualization of semantic relationships.
 - **Agent Coordination:** Live monitoring of active agent sessions and heartbeats.
 - **Task & Feed Management:** Shared Kanban board and inter-agent message feed.
 - **Conflict Resolution:** Side-by-side dispute resolution UI for contradictory AI memories.
 - **Auto-Updater:** Built-in update management for Windows users via `tauri-plugin-updater`.
 - **System Tray:** Runs silently in the background with quick access to logs and status.
+
+---
+
+## Connecting Your AI
+
+- **Claude Code:** `claude mcp add cortex -s user -- /path/to/cortex mcp`
+- **Cursor:** Add Cortex to `~/.cursor/mcp.json` as an MCP server.
+- **Any CLI/agent:** Call `/boot?agent=YOUR_NAME` with the bearer token from `~/.cortex/cortex.token`.
+- **Full setup guide:** See [docs/CONNECTING.md](docs/CONNECTING.md) for curl examples, auth, and supported workflows.
 
 ---
 
@@ -160,6 +180,13 @@ Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspi
 - **Process Isolation:** Stale daemon detection validates process identity before termination.
 
 ---
+
+## Community
+
+- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Roadmap
 
