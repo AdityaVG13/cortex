@@ -1,6 +1,6 @@
 use crate::handlers;
 use crate::handlers::ensure_auth;
-use crate::handlers::mcp::handle_mcp_message;
+use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue};
@@ -9,6 +9,29 @@ use axum::Json;
 use axum::Router;
 use serde_json::Value;
 use tower_http::cors::CorsLayer;
+
+const DEBUG_LOG_PATH: &str = "debug-055619.log";
+
+fn debug_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+    let payload = serde_json::json!({
+        "sessionId": "055619",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": chrono::Utc::now().timestamp_millis(),
+    });
+    let _ = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(DEBUG_LOG_PATH)?;
+        writeln!(file, "{}", payload)?;
+        Ok(())
+    })();
+}
 
 pub fn build_router(state: RuntimeState) -> Router {
     // SEC-001: restrict CORS to localhost origins only.
@@ -151,7 +174,37 @@ async fn handle_mcp_rpc(
             "id": msg.get("id")
         }));
     }
-    match handle_mcp_message(&state, &msg).await {
+
+    let caller_id = handlers::ensure_auth_with_caller(&headers, &state)
+        .ok()
+        .flatten();
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let auth_kind = if auth_header.starts_with("Bearer ctx_") || auth_header.starts_with("bearer ctx_")
+    {
+        "ctx_key"
+    } else if auth_header.starts_with("Bearer ") || auth_header.starts_with("bearer ") {
+        "bearer_non_ctx"
+    } else {
+        "missing_or_invalid"
+    };
+    // #region agent log
+    debug_log(
+        "H3",
+        "server.rs:handle_mcp_rpc:auth_context",
+        "MCP-RPC accepted request and resolved caller snapshot",
+        serde_json::json!({
+            "teamMode": state.team_mode,
+            "callerId": caller_id,
+            "defaultOwnerId": state.default_owner_id,
+            "authKind": auth_kind,
+        }),
+    );
+    // #endregion
+
+    match handle_mcp_message_with_caller(&state, &msg, caller_id).await {
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),
     }
@@ -238,7 +291,7 @@ async fn handle_crystallize(
         return resp;
     }
     let conn = state.db.lock().await;
-    let result = crate::crystallize::run_crystallize_pass(&conn, state.embedding_engine.as_deref());
+    let result = crate::crystallize::run_crystallize_pass(&conn, state.embedding_engine.as_deref(), state.default_owner_id);
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({
@@ -302,7 +355,7 @@ async fn handle_focus_end(
     };
     let agent = body.agent.as_deref().unwrap_or("http");
     let conn = state.db.lock().await;
-    match crate::focus::focus_end(&conn, label, agent) {
+    match crate::focus::focus_end(&conn, label, agent, state.default_owner_id) {
         Ok(v) => handlers::json_response(axum::http::StatusCode::OK, v),
         Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
     }

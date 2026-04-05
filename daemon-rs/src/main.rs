@@ -267,8 +267,8 @@ async fn main() {
                             match users {
                                 Some(arr) if !arr.is_empty() => {
                                     println!(
-                                        "{:<6} {:<20} {:<20} {:<10} {}",
-                                        "ID", "USERNAME", "DISPLAY NAME", "ROLE", "CREATED"
+                                        "{:<6} {:<20} {:<20} {:<10} CREATED",
+                                        "ID", "USERNAME", "DISPLAY NAME", "ROLE"
                                     );
                                     println!("{}", "-".repeat(80));
                                     for u in arr {
@@ -416,8 +416,8 @@ async fn main() {
                             match teams {
                                 Some(arr) if !arr.is_empty() => {
                                     println!(
-                                        "{:<6} {:<30} {:<10} {}",
-                                        "ID", "NAME", "MEMBERS", "CREATED"
+                                        "{:<6} {:<30} {:<10} CREATED",
+                                        "ID", "NAME", "MEMBERS"
                                     );
                                     println!("{}", "-".repeat(70));
                                     for t in arr {
@@ -458,7 +458,7 @@ async fn main() {
                             let unowned = json["unowned"].as_object();
                             match unowned {
                                 Some(map) if !map.is_empty() => {
-                                    println!("{:<25} {}", "TABLE", "UNOWNED ROWS");
+                                    println!("{:<25} UNOWNED ROWS", "TABLE");
                                     println!("{}", "-".repeat(40));
                                     let mut total: i64 = 0;
                                     for (table, count) in map {
@@ -523,7 +523,7 @@ async fn main() {
                             let assigned = json["assigned"].as_object();
                             match assigned {
                                 Some(map) if !map.is_empty() => {
-                                    println!("{:<25} {}", "TABLE", "ROWS ASSIGNED");
+                                    println!("{:<25} ROWS ASSIGNED", "TABLE");
                                     println!("{}", "-".repeat(40));
                                     let mut total: i64 = 0;
                                     for (tbl, count) in map {
@@ -557,7 +557,7 @@ async fn main() {
                             println!();
 
                             if let Some(tables) = json["tables"].as_object() {
-                                println!("{:<25} {}", "TABLE", "ROWS");
+                                println!("{:<25} ROWS", "TABLE");
                                 println!("{}", "-".repeat(40));
                                 for (tbl, count) in tables {
                                     println!("{:<25} {}", tbl, count);
@@ -569,8 +569,8 @@ async fn main() {
                                     println!();
                                     println!("Per-User Breakdown:");
                                     println!(
-                                        "  {:<20} {:<10} {:<10} {}",
-                                        "USERNAME", "MEMORIES", "DECISIONS", "CRYSTALS"
+                                        "  {:<20} {:<10} {:<10} CRYSTALS",
+                                        "USERNAME", "MEMORIES", "DECISIONS"
                                     );
                                     println!("  {}", "-".repeat(55));
                                     for u in per_user {
@@ -993,7 +993,7 @@ pub(crate) async fn run_daemon(
     // ── Knowledge indexing + score decay ────────────────────────────
     {
         let conn = state.db.lock().await;
-        let indexed = indexer::index_all(&conn, &state.home);
+        let indexed = indexer::index_all(&conn, &state.home, state.default_owner_id);
         let decayed = indexer::decay_pass(&conn);
         eprintln!("[cortex] Indexed {indexed} entries, decayed {decayed} scores");
     }
@@ -1059,12 +1059,13 @@ pub(crate) async fn run_daemon(
     {
         let db_crystal = state.db.clone();
         let engine_crystal = state.embedding_engine.clone();
+        let crystal_owner_id = state.default_owner_id;
         tokio::spawn(async move {
             // Initial pass on startup (after embeddings are built)
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             {
                 let conn = db_crystal.lock().await;
-                let result = crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref());
+                let result = crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref(), crystal_owner_id);
                 if result.crystals_created > 0 || result.crystals_updated > 0 {
                     eprintln!(
                         "[cortex] Initial crystallization: {} created, {} updated",
@@ -1078,7 +1079,7 @@ pub(crate) async fn run_daemon(
             loop {
                 interval.tick().await;
                 let conn = db_crystal.lock().await;
-                crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref());
+                crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref(), crystal_owner_id);
             }
         });
     }

@@ -18,7 +18,7 @@ fn resolve_mcp_caller(state: &RuntimeState) -> Option<i64> {
 
     let key = std::env::var("CORTEX_API_KEY")
         .ok()
-        .or_else(|| auth::read_token());
+        .or_else(auth::read_token);
 
     let key = match key {
         Some(k) if k.starts_with("ctx_") => k,

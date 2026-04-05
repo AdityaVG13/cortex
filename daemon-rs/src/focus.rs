@@ -75,7 +75,7 @@ pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
 }
 
 /// End a focus session. Summarizes raw traces, stores the summary, returns stats.
-pub fn focus_end(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
+pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i64>) -> Result<Value, String> {
     let session: Option<(i64, String)> = conn
         .query_row(
             "SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'",
@@ -112,10 +112,17 @@ pub fn focus_end(conn: &Connection, label: &str, agent: &str) -> Result<Value, S
     let tokens_after = estimate_tokens(&summary);
 
     // Store the summary as a memory
-    conn.execute(
-        "INSERT INTO memories (text, source, type, source_agent, confidence) VALUES (?1, ?2, 'focus_summary', ?3, 0.9)",
-        params![summary, format!("focus::{label}"), agent],
-    )
+    if let Some(oid) = owner_id {
+        conn.execute(
+            "INSERT INTO memories (text, source, type, source_agent, confidence, owner_id) VALUES (?1, ?2, 'focus_summary', ?3, 0.9, ?4)",
+            params![summary, format!("focus::{label}"), agent, oid],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO memories (text, source, type, source_agent, confidence) VALUES (?1, ?2, 'focus_summary', ?3, 0.9)",
+            params![summary, format!("focus::{label}"), agent],
+        )
+    }
     .map_err(|e| format!("Failed to store focus summary: {e}"))?;
 
     // Close the session

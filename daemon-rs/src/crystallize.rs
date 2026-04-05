@@ -68,6 +68,7 @@ pub struct CrystallizeResult {
 pub fn run_crystallize_pass(
     conn: &Connection,
     engine: Option<&EmbeddingEngine>,
+    owner_id: Option<i64>,
 ) -> CrystallizeResult {
     let mut result = CrystallizeResult {
         clusters_found: 0,
@@ -133,11 +134,19 @@ pub fn run_crystallize_pass(
             }
             None => {
                 // Create new crystal
-                let _ = conn.execute(
-                    "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
-                    params![label, centroid_blob, consolidated_text, member_entries.len() as i64],
-                );
+                if let Some(oid) = owner_id {
+                    let _ = conn.execute(
+                        "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, owner_id, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
+                        params![label, centroid_blob, consolidated_text, member_entries.len() as i64, oid],
+                    );
+                } else {
+                    let _ = conn.execute(
+                        "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+                        params![label, centroid_blob, consolidated_text, member_entries.len() as i64],
+                    );
+                }
                 let crystal_id = conn.last_insert_rowid();
                 update_cluster_members(conn, crystal_id, &member_entries);
 
@@ -743,7 +752,7 @@ mod tests {
             .unwrap();
         }
 
-        let result = run_crystallize_pass(&conn, None);
+        let result = run_crystallize_pass(&conn, None, None);
         assert_eq!(result.clusters_found, 1);
         assert_eq!(result.crystals_created, 1);
         assert_eq!(result.entries_consolidated, 4);

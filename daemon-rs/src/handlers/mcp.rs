@@ -393,6 +393,7 @@ async fn mcp_dispatch(
                 source_agent.clone(),
                 confidence,
                 None,
+                caller_id,
             )?;
 
             // Auto-append to active focus session (sawtooth pattern)
@@ -572,7 +573,7 @@ async fn mcp_dispatch(
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
             let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
             let conn = state.db.lock().await;
-            crate::focus::focus_end(&conn, label, agent)
+            crate::focus::focus_end(&conn, label, agent, caller_id)
         }
 
         "cortex_focus_status" => {

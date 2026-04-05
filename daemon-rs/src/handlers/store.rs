@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ensure_auth, json_response, log_event, now_iso};
+use super::{ensure_auth_with_caller, json_response, log_event, now_iso};
 use crate::conflict::detect_conflict;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
@@ -30,9 +30,10 @@ pub async fn handle_store(
     headers: HeaderMap,
     Json(body): Json<StoreRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
 
     let decision = body.decision.unwrap_or_default();
     if decision.trim().is_empty() {
@@ -66,6 +67,7 @@ pub async fn handle_store(
         source_agent.clone(),
         body.confidence,
         cosine_conflict,
+        caller_id,
     );
 
     match result {
@@ -111,6 +113,7 @@ pub async fn handle_store(
 ///      (duplicate suppression). Otherwise insert as 'active'.
 ///
 /// Returns `(json_entry, Option<new_id>)`.
+#[allow(clippy::too_many_arguments)]
 pub fn store_decision(
     conn: &mut Connection,
     decision: &str,
@@ -119,6 +122,7 @@ pub fn store_decision(
     source_agent: String,
     confidence: Option<f64>,
     cosine_conflict: Option<crate::conflict::ConflictResult>,
+    owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let confidence = confidence.unwrap_or(0.8);
@@ -135,12 +139,21 @@ pub fn store_decision(
         // the existing entry as 'disputed' too (they reference each other).
         let existing_id = cr.matched_id.unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute(
-            "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, status, disputes_id, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?7)",
-            params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, ts],
-        )
+        if let Some(oid) = owner_id {
+            tx.execute(
+                "INSERT INTO decisions \
+                 (decision, context, type, source_agent, confidence, status, disputes_id, owner_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?8)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, oid, ts],
+            )
+        } else {
+            tx.execute(
+                "INSERT INTO decisions \
+                 (decision, context, type, source_agent, confidence, status, disputes_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?7)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, ts],
+            )
+        }
         .map_err(|e| e.to_string())?;
         let new_id = tx.last_insert_rowid();
 
@@ -186,12 +199,21 @@ pub fn store_decision(
         )
         .map_err(|e| e.to_string())?;
 
-        tx.execute(
-            "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, supersedes_id, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-            params![decision, context, entry_type, source_agent.clone(), confidence, old_id, ts],
-        )
+        if let Some(oid) = owner_id {
+            tx.execute(
+                "INSERT INTO decisions \
+                 (decision, context, type, source_agent, confidence, supersedes_id, owner_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, old_id, oid, ts],
+            )
+        } else {
+            tx.execute(
+                "INSERT INTO decisions \
+                 (decision, context, type, source_agent, confidence, supersedes_id, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, old_id, ts],
+            )
+        }
         .map_err(|e| e.to_string())?;
         let new_id = tx.last_insert_rowid();
 
@@ -263,12 +285,21 @@ pub fn store_decision(
 
     // ── 3. Normal insert ─────────────────────────────────────────────────────
     let surprise_rounded = (surprise * 10_000.0).round() / 10_000.0;
-    conn.execute(
-        "INSERT INTO decisions \
-         (decision, context, type, source_agent, confidence, surprise, status, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)",
-        params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, ts],
-    )
+    if let Some(oid) = owner_id {
+        conn.execute(
+            "INSERT INTO decisions \
+             (decision, context, type, source_agent, confidence, surprise, status, owner_id, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
+            params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, oid, ts],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO decisions \
+             (decision, context, type, source_agent, confidence, surprise, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)",
+            params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, ts],
+        )
+    }
     .map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();

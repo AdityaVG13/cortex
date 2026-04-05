@@ -21,16 +21,16 @@ const STATE_SECTIONS: &[&str] = &[
 ];
 
 /// Run core indexers always; custom sources from config if present.
-pub fn index_all(conn: &Connection, home: &Path) -> usize {
+pub fn index_all(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize {
     let mut total = 0;
-    total += index_state_file(conn, home);
-    total += index_memory_files(conn, home);
-    total += index_custom_sources(conn, home);
+    total += index_state_file(conn, home, owner_id);
+    total += index_memory_files(conn, home, owner_id);
+    total += index_custom_sources(conn, home, owner_id);
     total
 }
 
 /// Upsert a memory by source. If source exists, update text. Otherwise insert.
-fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, agent: &str) -> bool {
+fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, agent: &str, owner_id: Option<i64>) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return false;
@@ -49,10 +49,14 @@ fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, ag
             "UPDATE memories SET text = ?, updated_at = datetime('now') WHERE id = ?",
             rusqlite::params![text, id],
         );
-        // Invalidate stale embedding so background builder re-computes it.
         let _ = conn.execute(
             "DELETE FROM embeddings WHERE target_type = 'memory' AND target_id = ?",
             [id],
+        );
+    } else if let Some(oid) = owner_id {
+        let _ = conn.execute(
+            "INSERT INTO memories (text, source, type, source_agent, owner_id) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![text, source, mem_type, agent, oid],
         );
     } else {
         let _ = conn.execute(
@@ -66,7 +70,7 @@ fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, ag
 
 // ── Source 1: state.md ──────────────────────────────────────────────────────
 
-fn index_state_file(conn: &Connection, home: &Path) -> usize {
+fn index_state_file(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize {
     let state_path = home.join(".claude").join("state.md");
     if !state_path.exists() {
         return 0;
@@ -81,7 +85,7 @@ fn index_state_file(conn: &Connection, home: &Path) -> usize {
     for section in STATE_SECTIONS {
         if let Some(text) = extract_section(&content, section) {
             let source = format!("state.md::{}", section.trim_start_matches("## "));
-            if upsert_memory(conn, &text, &source, "state", "indexer") {
+            if upsert_memory(conn, &text, &source, "state", "indexer", owner_id) {
                 count += 1;
             }
         }
@@ -104,7 +108,7 @@ fn extract_section(markdown: &str, header: &str) -> Option<String> {
 
 // ── Source 2: Memory files ──────────────────────────────────────────────────
 
-fn index_memory_files(conn: &Connection, home: &Path) -> usize {
+fn index_memory_files(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize {
     let slug = match claude_project_slug() {
         Some(s) => s,
         None => return 0,
@@ -158,7 +162,7 @@ fn index_memory_files(conn: &Connection, home: &Path) -> usize {
                 "memory::{}",
                 path.file_name().unwrap_or_default().to_string_lossy()
             );
-            if upsert_memory(conn, &text, &source, &mem_type, "indexer") {
+            if upsert_memory(conn, &text, &source, &mem_type, "indexer", owner_id) {
                 count += 1;
             }
         }
@@ -265,7 +269,7 @@ fn load_custom_sources(home: &Path) -> Vec<CustomSource> {
 }
 
 /// Index all user-configured custom sources.
-fn index_custom_sources(conn: &Connection, home: &Path) -> usize {
+fn index_custom_sources(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize {
     let sources = load_custom_sources(home);
     let mut total = 0;
 
@@ -276,16 +280,16 @@ fn index_custom_sources(conn: &Connection, home: &Path) -> usize {
         }
 
         if resolved.is_dir() {
-            total += index_directory(conn, &resolved, src);
+            total += index_directory(conn, &resolved, src, owner_id);
         } else if resolved.is_file() {
-            total += index_single_file(conn, &resolved, src);
+            total += index_single_file(conn, &resolved, src, owner_id);
         }
     }
     total
 }
 
 /// Index all matching files in a directory.
-fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource) -> usize {
+fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource, owner_id: Option<i64>) -> usize {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return 0,
@@ -297,7 +301,7 @@ fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource) -> usize {
 
         if path.is_dir() {
             if src.recursive {
-                count += index_directory(conn, &path, src);
+                count += index_directory(conn, &path, src, owner_id);
             }
             continue;
         }
@@ -306,13 +310,13 @@ fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource) -> usize {
             continue;
         }
 
-        count += index_single_file(conn, &path, src);
+        count += index_single_file(conn, &path, src, owner_id);
     }
     count
 }
 
 /// Index a single file's content as a memory entry.
-fn index_single_file(conn: &Connection, path: &Path, src: &CustomSource) -> usize {
+fn index_single_file(conn: &Connection, path: &Path, src: &CustomSource, owner_id: Option<i64>) -> usize {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return 0,
@@ -331,7 +335,7 @@ fn index_single_file(conn: &Connection, path: &Path, src: &CustomSource) -> usiz
     };
 
     let source = format!("{}::{}", src.name, file_stem);
-    if upsert_memory(conn, &text, &source, &src.mem_type, "indexer") {
+    if upsert_memory(conn, &text, &source, &src.mem_type, "indexer", owner_id) {
         1
     } else {
         0
@@ -422,7 +426,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         let conn = Connection::open_in_memory().unwrap();
         crate::db::initialize_schema(&conn).unwrap();
-        let n = index_all(&conn, tmp.as_path());
+        let n = index_all(&conn, tmp.as_path(), None);
         assert_eq!(n, 0);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -481,7 +485,7 @@ mem_type = "config"
         let conn = Connection::open_in_memory().unwrap();
         crate::db::initialize_schema(&conn).unwrap();
 
-        let n = super::index_custom_sources(&conn, &tmp);
+        let n = super::index_custom_sources(&conn, &tmp, None);
         // 2 .md files + 1 single json = 3
         assert_eq!(n, 3, "expected 3 indexed entries (2 md + 1 json)");
 
@@ -533,7 +537,7 @@ truncate = 100
         let conn = Connection::open_in_memory().unwrap();
         crate::db::initialize_schema(&conn).unwrap();
 
-        let n = super::index_custom_sources(&conn, &tmp);
+        let n = super::index_custom_sources(&conn, &tmp, None);
         assert_eq!(n, 1);
 
         let text: String = conn
