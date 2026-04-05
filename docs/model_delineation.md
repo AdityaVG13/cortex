@@ -1,256 +1,221 @@
 # Model Delineation -- Cortex Work Assignments
 
-82 tasks from docs/compatibility and docs/schema, assigned by tool and model.
+<!-- When you finish a task, put a ✓ in the Done column. -->
 
 ## Tool Reference
 
 | Tool | Model | Cost | Use For |
 |------|-------|------|---------|
-| Claude Code | Opus 4.6 | $$$$$ | Multi-file Rust, architecture, complex reasoning |
-| Cursor | Sonnet / GLM 5 | $-$$ | Single-file edits, inline refactors |
-| Codex CLI | GPT-5.3 | $$ | Batch tasks, tests, overnight autonomous |
-| Gemini CLI | 2.5 Pro | $ | 1M context analysis, research, docs |
-| Droid | GLM 5 (0.4x) | $ | Medium features, API endpoints |
-| Droid | GLM 4.7 (0.25x) | ¢ | Config, schema DDL, boilerplate |
+| Claude Code | Opus 4.6 | $$$$$ | Multi-file Rust, architecture, security, complex reasoning |
+| Cursor (Opus) | Opus 4.6 | $$$$ | Complex single-codebase work needing deep understanding |
+| Cursor (Sonnet) | Sonnet 4.6 | $$ | Single-file edits, straightforward refactors |
+| Codex CLI | GPT-5.3 | $$ | Batch tasks, overnight autonomous, docs generation |
+| Gemini CLI | 2.5 Pro | $ | 1M context analysis, research, full-repo documentation |
+| Droid (GLM 5) | GLM 5 (0.4x) | $ | Medium features, API endpoints, adapters |
+| Droid (GLM 4.7) | GLM 4.7 (0.25x) | ¢ | Config, schema DDL, boilerplate, mechanical cleanup |
 | Gemini Flash | 2.5 Flash | ¢ | Formatting, drafts, lookups, light code tasks |
 
 ---
 
-## Claude Code (Opus) -- 7 tasks
+# Open-Source Release Tasklist
 
-Architecture, multi-file coordination, complex algorithms.
+## CRITICAL (blocks public release)
 
-| # | Task | Source | Done |
-|---|------|--------|------|
-| 4 | Graceful degradation across all system layers | compatibility/01 | ✓ |
-| 9 | Chrome extension with content scripts for claude.ai, chatgpt.com, gemini.com | compatibility/02 | |
-| 66 | Over-fetch-then-filter embedding recall strategy (raw_k=max(k*5,50), retry) | schema/04 | ✓ |
-| 71 | Admin endpoints: /admin/user/*, /admin/team/*, /admin/assign-owner, /admin/stats | schema/05 | ✓ |
-| 72 | CLI commands: cortex user add/rotate-key/remove, cortex team create/add/remove | schema/05 | ✓ |
-| 74 | Solo-to-team migration (cortex setup --team, assign legacy rows to owner) | schema/05 | ✓ |
-| 40 | Test Chrome extension workflow across 3 platforms | compatibility/06 | |
+### Claude Code (Opus)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 83 | Fix /unfold visibility bypass | | Thread RecallContext through unfold handler. Zero access control currently. Root cause, not patch. |
+| 84 | Fix is_visible NULL owner_id policy | | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
+| 85 | Fix MCP per-caller identity | | API key or caller_id per JSON-RPC request. `from_state` is a workaround, not a fix. |
+| 104 | indexer.rs: graceful skip for missing knowledge sources | | 6 indexer sources reference developer-only dirs (`self-improvement-engine/`, `.claude/self-improvement/`). New user = 0 nodes, 0 errors. Not error spam. |
+| 108 | Clean install end-to-end test (THE GATE) | | Clone on clean machine, `cargo build --release`, `cortex serve`. Verify: (1) fresh cortex.db with 0 nodes, (2) /health green, (3) store/recall work, (4) boot prompt has no "Aditya", (5) zero stderr errors, (6) `grep -ri "aditya" src/` = 0 hits. **Nothing ships until this passes.** |
+
+### Cursor (Opus)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 87 | Desktop app: sidecar real daemon, kill embedded copy | | Delete embedded_daemon.rs (3000+ lines duplicated, drifted). Tauri launches cortex.exe as sidecar. One installer bundles both. Double-click → daemon starts → dashboard opens → /health green. |
+| 97 | Desktop app: fix all dead UI, remove Ollama box | | Start/Stop buttons do nothing currently -- must launch/kill daemon. Audit every button and field in all 11 panels. Remove Ollama status box. Dead buttons = remove, don't ship. |
+| 101 | compiler.rs: replace hardcoded "User: Aditya" identity | | Line 113: baked into binary. Detect dynamically: `USERNAME`/`USER` env, `std::env::consts::OS`, shell from `SHELL`/`COMSPEC`. |
+| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | | compiler.rs:628, indexer.rs:109. Dynamically resolve Claude projects dir from CWD slug. |
+
+### Droid (GLM 4.7)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 107 | Delete ALL personal files, update .gitignore | | `git rm`: CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules, .cursor/, .planning/, PLAN.md, RECON.md, cortex-profiles.json, CHANGELOG_v0.3.0_section.md, config/Modelfile.*, cortex-app.bat, cortex-dashboard.bat, cortex-mcp.cmd, cortex-start.bat. Add all patterns to .gitignore. Verify `git ls-files` = zero personal files. |
+
+## HIGH (should ship with release)
+
+### Cursor (Opus)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 86 | Version bump to v0.3.0 + git tag + GitHub release | | Cargo.toml, CHANGELOG.md, build release binary, `gh release create`, attach binary. |
+| 100 | Desktop app: version sync to 0.3.0 | | tauri.conf.json, desktop Cargo.toml, package.json must all match daemon v0.3.0. |
+
+### Cursor (Sonnet)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 103 | service.rs: replace `"aditya"` fallback username | | Line 30: change to `"cortex-user"`. One-line fix. |
+| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` | | Line 21: derive dynamically from CWD, same pattern as #102. |
+| 110 | config/Modelfile.glm: delete personal LLM configs | | Delete config/Modelfile.glm and config/Modelfile.deepseek. Hardcoded `C:/Users/aditya/.lmstudio/` path. Add `config/` to .gitignore. |
+
+### Codex CLI
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 93 | ROADMAP.md for contributors | | Process all architecture docs (Codex + Gemini longterm considerations) into public roadmap with contribution areas. |
+| 94 | CONTRIBUTING.md + SECURITY.md | | Dev setup, build instructions, PR guidelines, vulnerability disclosure policy. |
+
+### Gemini CLI
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 90 | README rewrite for public audience | | 1M context read of entire repo. Rewrite for external devs, not internal team. Remove personal references. Keep AdityaVG13 as repo owner (that's correct). |
+| 92 | Review architecture docs: public vs internal vs remove | | docs/architecture/, docs/compatibility/, docs/schema/, docs/archive/ -- classify each. |
+
+### Droid (GLM 4.7)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 95 | Repo cleanup: .gitignore patterns for all personal/build artifacts | | 20+ new patterns: personal configs, editor dirs, build artifacts, debug logs, db backups. |
+| 96 | Remove legacy Node.js src/ or add deprecation notice | | Rust daemon is the product. Legacy code confuses contributors. |
+
+## MEDIUM (nice to have for launch)
+
+### Cursor (Sonnet)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 88 | App icon: replace with adityasmile.png | | Remove all old icons. Rename adityasmile.png → icon.png. Generate required Tauri sizes (icon.ico, icon.icns, 32x32, 128x128, 128x128@2x). Update generate-icon.py reference. |
+| 89 | README: release badge, download link, "What's New" | | Top badge box currently empty. Add release link, version badge, feature highlights. |
+| 98 | Desktop app: add About tab (panel #12) | | Creator photo + "Created by Aditya". Contributors section (GitHub API or manual). App version number. |
+| 99 | Desktop app: auto-update via tauri-plugin-updater | | In-app update check, notification when new version available. Document in README. |
+| 106 | tools/ingest_chatgpt.py: remove or generalize | | 30+ "aditya" refs as classification label. Either make configurable or remove from public repo. |
+
+### Gemini CLI
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 91 | Recall quality baseline analysis | | Surprise score distribution across 220+ decisions. Define meaningful thresholds. |
+
+## LOW (post-launch)
+
+### Droid (GLM 4.7)
+
+| # | Task | Done | Details |
+|---|------|------|---------|
+| 109 | Auto-generate CHANGELOG on version tags | | GitHub Actions on `v*` tag. `git-cliff` or conventional-changelog. Document in CONTRIBUTING.md. |
 
 ---
 
-## Cursor (Sonnet/GLM 5) -- 20 tasks
+# Future Roadmap (not blocking release)
 
-Single-file edits with clear patterns. Tab completion and inline refactors.
+### Claude Code (Opus)
 
-| # | Task | Source | Done |
-|---|------|--------|------|
-| 1 | HTTP REST API as core transport layer | compatibility/01 | ✓ |
-| 2 | Unified auth layer validating adapter requests | compatibility/01 | ✓ |
-| 3 | TLS via rustls with configurable modes | compatibility/01 | ✓ |
-| 5 | MCP adapter: stdio-to-HTTP bridge proxying tool calls | compatibility/02 | ✓ |
-| 7 | Python SDK (cortex-memory on PyPI) -- httpx wrapper | compatibility/02 | ✓ |
-| 8 | TypeScript SDK (@cortex-memory/client) -- fetch wrapper | compatibility/02 | ✓ |
-| 10 | System prompt injector CLI with file-based context auto-refresh | compatibility/02 | ✓ |
-| 11 | Standalone fallback mode for solo MCP | compatibility/02 | ✓ |
-| 15 | Rate limiting: 10 failed auth/min, 100 req/min per user | compatibility/03 | ✓ |
-| 19 | Key rotation with 72h grace period (dual-active keys) | compatibility/03 | ⏳ Droid |
-| 21 | SQLCipher encryption at rest (AES-256) for team mode | compatibility/03 | ⏳ Droid |
-| 26 | ONNX embedding fallback to FTS5 keyword search | compatibility/05 | ✓ |
-| 27 | Daemon crash detection in MCP adapter with retry | compatibility/05 | ✓ |
-| 28 | SQLite integrity check on startup with recovery | compatibility/05 | ✓ |
-| 31 | Export/import (JSON and SQL formats) | compatibility/05 | ✓ |
-| 58 | Add owner_id + visibility to memories, decisions, crystals | schema/03 | ⏳ Droid |
-| 59 | Add owner_id + visibility to conductor tables | schema/03 | ⏳ Droid |
-| 65 | Team mode recall with visibility filtering | schema/04 | ⏳ Droid |
-| 67 | Conductor queries with ownership scoping | schema/04 | ⏳ Droid |
-| 80 | ONNX embedding session pooling (2-4 sessions) | schema/06 | ✓ |
+| # | Task | Details |
+|---|------|---------|
+| 9 | Chrome extension for claude.ai, chatgpt.com, gemini.com | Manifest V3, content scripts, background worker. Blocked on team-mode test env. |
+| 40 | Test Chrome extension across 3 platforms | Windows, macOS, Linux. Depends on #9. |
 
----
+### Droid (GLM 5)
 
-## Codex CLI -- 10 tasks
-
-Batch autonomous work. Fire-and-forget, review next morning.
-
-| # | Task | Source | Done |
-|---|------|--------|------|
-| 37 | OpenAPI spec for Custom GPT Actions (Cloudflare tunnel) | compatibility/06 | ✓ |
-| 38 | Gemini CLI integration via system prompt injection | compatibility/06 | ✓ |
-| 39 | Local LLM integration (llama.cpp, Ollama, LM Studio) | compatibility/06 | ✓ |
-| 42 | Validate solo mode schema unchanged | schema/01 | ✓ |
-| 43 | Team mode schema with multi-tenancy tables | schema/01 | ✓ |
-| 44 | Validate API surface identical in both modes | schema/01 | ✓ |
-| 60 | Recreate sessions table with UNIQUE(owner_id, agent) | schema/03 | ✓ |
-| 61 | Recreate locks table with UNIQUE(owner_id, path) | schema/03 | ✓ |
-| 62 | Recreate feed_acks with PRIMARY KEY(owner_id, agent) | schema/03 | ✓ |
-| 75 | Export/import path for user data migration | schema/05 | ✓ |
-
-**Shipped artifacts (v0.2.0, not in table above):** `specs/cortex-openapi.yaml`, `examples/gemini-cli/`, `examples/local-llm/`, GitHub Actions release workflow + `CHANGELOG.md`, version bump `0.2.0`, `cortex export` / `cortex import` CLI, `setup --team` + Argon2id `ctx_` keys (overlaps Droid DDL items 54–57 in implementation).
-
----
-
-## Gemini CLI -- 5 tasks
-
-1M context analysis, research, documentation.
-
-| # | Task | Source |
-|---|------|--------|
-| 77 | Validate visibility enforcement at query level (no bypasses) | schema/06 |
-| 81 | Database size monitoring and growth trajectory analysis | schema/06 |
-| 82 | Document deferred features (org hierarchy, OAuth, Postgres, HNSW) | schema/06 |
-| -- | Review entire compatibility/ and schema/ docs for contradictions | meta |
-| -- | Analyze recall quality across sample queries after entropy changes | meta |
-
----
-
-## Droid (GLM 5, 0.4x) -- 12 tasks
-
-Medium complexity, clear patterns, single-module scope.
-
-| # | Task | Source |
-|---|------|--------|
-| 6 | OpenAI function adapter spec and handler code | compatibility/02 |
-| 22 | MCP tool-to-REST endpoint mapping | compatibility/04 |
-| 23 | MCP error code translation (HTTP to JSON-RPC) | compatibility/04 |
-| 24 | OpenAI function adapter schema definitions | compatibility/04 |
-| 25 | Response format translation (REST JSON to LLM-compatible) | compatibility/04 |
-| 64 | Solo mode recall (unchanged, no owner filter) | schema/04 |
-| 68 | Solo mode API unchanged (POST /store, GET /recall) | schema/05 |
-| 69 | Add optional visibility field to POST /store | schema/05 |
-| 70 | Add store_response.visibility_confirmed field | schema/05 |
-| 73 | Fresh install (solo mode by default) | schema/05 |
+| # | Task | Details |
+|---|------|---------|
+| 6 | OpenAI function adapter spec and handler | compatibility/02 |
+| 19 | Key rotation with 72h grace period | compatibility/03 |
+| 21 | SQLCipher encryption at rest | compatibility/03 |
+| 22-25 | MCP/OpenAI adapter protocol work (4 tasks) | compatibility/04 |
+| 58-59 | Owner_id + visibility on remaining tables (2 tasks) | schema/03 |
+| 64-65 | Solo/team mode recall scoping (2 tasks) | schema/04 |
+| 67-70 | Conductor ownership + visibility API (4 tasks) | schema/04-05 |
+| 73 | Fresh install defaults to solo mode | schema/05 |
 | 76 | Role enforcement with CHECK constraints | schema/06 |
-| 78 | Row-level NULL owner_id prevention in store handler | schema/06 |
+| 78 | Row-level NULL owner_id prevention | schema/06 |
+
+### Droid (GLM 4.7)
+
+Remaining original tasks #12-18, 20, 29-30, 32-36, 41, 54-57, 63, 79 -- see Completed section for reference.
+
+### Gemini CLI
+
+| # | Task | Details |
+|---|------|---------|
+| 77 | Validate visibility enforcement at query level | schema/06 |
+| 81 | Database size monitoring and growth trajectory | schema/06 |
+| 82 | Document deferred features | schema/06 |
 
 ---
 
-## Droid (GLM 4.7, 0.25x) -- 19 tasks
-
-Cheapest. Schema DDL, config, docs, boilerplate.
-
-| # | Task | Source |
-|---|------|--------|
-| 12 | API key generation: ctx_ prefix, base62, FNV-1a checksum | compatibility/03 |
-| 13 | Argon2id password hashing config (64MB, 3 iter, 4 parallel) | compatibility/03 |
-| 14 | SSRF protection via X-Cortex-Request header | compatibility/03 |
-| 16 | Audit logging for mutations (store, archive, delete) | compatibility/03 |
-| 17 | TLS auto-generated self-signed cert or user-provided | compatibility/03 |
-| 18 | CORS rejection of non-localhost in solo mode | compatibility/03 |
-| 20 | Secret redaction in logs (ctx_ pattern scanning) | compatibility/03 |
-| 29 | WAL mode with 60s periodic checkpoint | compatibility/05 |
-| 30 | Pre-migration backup (cp cortex.db cortex.db.bak) | compatibility/05 |
-| 32 | /health endpoint (unauthenticated) | compatibility/05 |
-| 33 | /digest endpoint (detailed system status) | compatibility/05 |
-| 34 | Document Claude Code setup flow | compatibility/06 |
-| 35 | Document Claude Desktop config setup | compatibility/06 |
-| 36 | Document Cursor setup (.cursor/mcp.json) | compatibility/06 |
-| 41 | Document direct HTTP REST API + curl examples | compatibility/06 |
-| 54 | Add config table (mode: solo vs team) | schema/03 |
-| 55 | Add users table with Argon2id api_key_hash | schema/03 |
-| 56 | Add teams table with reserved parent_team_id | schema/03 |
-| 57 | Add team_members join table with role enforcement | schema/03 |
-| 63 | Create partial indexes for visibility-filtered queries | schema/03 |
-| 79 | Per-user rate limiting config (100 req/min default) | schema/06 |
-
----
-
-## Gemini Flash -- 9 tasks (already done)
-
-Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles formatting, comment cleanup, draft generation, and light code tasks.
-
----
-
-## Open-Source Release Tasks (v0.3.0-public)
-
-### Claude Code (Opus) -- 3 new tasks
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 83 | Fix /unfold visibility bypass (root cause) | CRITICAL | Thread RecallContext through unfold handler. Zero access control currently. |
-| 84 | Fix is_visible NULL owner_id policy (root cause) | CRITICAL | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
-| 85 | Fix MCP per-caller identity (root cause) | HIGH | API key or caller_id per JSON-RPC request. from_state is a workaround, not a fix. |
-**Assigned to Cursor (single-file, clear fixes):**
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 101 | compiler.rs: replace hardcoded "User: Aditya" identity | CRITICAL | Line 113: baked into binary. Detect dynamically: `USERNAME`/`USER` env var, `std::env::consts::OS`, shell from `SHELL`/`COMSPEC`. First boot with no prior state = generic identity. |
-| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | CRITICAL | compiler.rs:628, indexer.rs:109. Dynamically resolve Claude projects dir: `~/.claude/projects/{project-slug}/memory/` where slug is derived from CWD. |
-| 103 | service.rs: replace `"aditya"` fallback username | LOW | Line 30: change to `"cortex-user"` or `"unknown"`. |
-| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` | MEDIUM | Line 21: derive dynamically, same pattern as #102. |
-| 106 | tools/ingest_chatgpt.py: remove or generalize | MEDIUM | 30+ "aditya" refs. Either make username configurable or remove from public repo entirely. |
-| 110 | config/Modelfile.glm: hardcoded path to Aditya's LM Studio model | MEDIUM | `C:/Users/aditya/.lmstudio/models/...` on line 1. Delete both Modelfiles (config/Modelfile.glm, config/Modelfile.deepseek) -- they're personal local LLM configs. Add `config/` to .gitignore. |
-
-**Assigned to Claude Code (Opus) (multi-file, architectural):**
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 104 | indexer.rs: self-improvement-engine paths are developer-specific | HIGH | 4 functions index from `home/self-improvement-engine/` (lines 193, 233, 278, 336) -- Aditya's private repo. Also `.claude/self-improvement/crew/` (line 388) and `.claude/self-improvement/` (line 424). Indexer must gracefully return 0 for ALL missing sources with zero errors/warnings in stderr. New user = blank brain, not error spam. |
-| 108 | Clean install end-to-end test | CRITICAL | The open-source gate. On a CLEAN machine: clone, `cargo build --release`, `cortex serve`. Verify: (1) cortex.db created fresh with 0 memories/decisions, (2) /health green, (3) cortex_store works, (4) cortex_recall returns empty, (5) boot prompt has NO "Aditya" anywhere, (6) zero errors in stderr, (7) MCP registration works, (8) `grep -ri "aditya" src/` returns 0 hits. Nothing ships until this passes. |
-
-**Assigned to Droid GLM 4.7 (mechanical cleanup):**
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 107 | Delete all personal files before public push | CRITICAL | `git rm`: RECON.md, .aider.chat.history.md, .aider.input.history, .aider.conf.yml, "Cortex Ingester Instructions.txt", cortex-profiles.json, config/Modelfile.*, all personal .bat/.ps1/.cmd scripts. Add config/ to .gitignore. Verify `git ls-files` shows zero personal files tracked. |
-| 109 | Auto-generate CHANGELOG on version tags | LOW | GitHub Actions: on `v*` tag, generate changelog from conventional commits. Or `git-cliff`. Document in CONTRIBUTING.md. |
-
-### Cursor -- 8 new tasks
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 86 | Version bump to v0.3.0 + git tag + GitHub release | HIGH | Cargo.toml, CHANGELOG.md, build release binary, attach to GH release. |
-| 87 | Desktop app: sidecar the real daemon binary | CRITICAL | Delete embedded_daemon.rs (3000+ lines of duplicated, drifted code). Tauri app launches cortex.exe as a sidecar process. One download = one installer that bundles both. User double-clicks, daemon starts, dashboard opens, /health confirms green. |
-| 88 | App icon: replace default with adityasmile.png | MEDIUM | In desktop/cortex-control-center/src-tauri/icons/: remove all old icons, rename adityasmile.png to icon.png, generate required sizes (icon.ico, icon.icns, 32x32, 128x128, 128x128@2x). Single source image, script the resize. Check tauri.conf.json for required entries. |
-| 89 | README rewrite: release badge, download link, "What's New in v0.3.0" | MEDIUM | Top badge box currently empty. Add release link, version badge, feature highlights. |
-| 97 | Desktop app: fix all dead UI, remove Ollama box | HIGH | Start/Stop buttons must actually launch/kill the daemon (currently do nothing). Audit every button and field across all 11 panels. Remove the Ollama status box. If a feature isn't wired up, remove the UI element -- don't ship dead buttons. |
-| 98 | Desktop app: add About tab (panel #12) | MEDIUM | Shows creator photo (icon.png) and "Created by Aditya". Contributors section that updates as people contribute (GitHub contributors API or manual list). Display app version number. |
-| 99 | Desktop app: auto-update via tauri-plugin-updater | MEDIUM | In-app update check -- button or notification when new version is available. Document manual update process in README for users who download directly. |
-| 100 | Desktop app: version sync to 0.3.0 | HIGH | Tauri app version, Cargo.toml version, package.json version all must match daemon v0.3.0. |
-
-### Gemini CLI -- 3 new tasks
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 90 | README rewrite for public audience | HIGH | 1M context read of entire repo. Rewrite for external developers, not internal team. Remove personal references. |
-| 91 | Recall quality baseline analysis | MEDIUM | Distribution of surprise scores across 220+ decisions. Define thresholds for meaningful/noise. |
-| 92 | Review architecture docs: classify as public/internal/remove | MEDIUM | docs/architecture/, docs/compatibility/, docs/schema/, docs/archive/ -- what stays, what goes. |
-
-### Codex CLI -- 2 new tasks
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 93 | ROADMAP.md for contributors | HIGH | Process all architecture docs (Codex + Gemini longterm considerations) into public roadmap with clear contribution areas. |
-| 94 | CONTRIBUTING.md + SECURITY.md | HIGH | Dev setup, build instructions, PR guidelines, vulnerability disclosure policy. |
-
-### Droid (GLM 4.7) -- 2 new tasks
-
-| # | Task | Priority | Details |
-|---|------|----------|---------|
-| 95 | Repo cleanup: delete personal files, update .gitignore | HIGH | Delete: CLAUDE.md, AGENTS.md, GEMINI.md, .cursor/, .aider*, .planning/, PLAN.md, RECON.md, cortex-profiles.json, personal scripts, docs.zip, cortex_corrupt.db, debug-*.log. Add 20+ patterns to .gitignore. |
-| 96 | Remove legacy Node.js src/ or add deprecation notice | LOW | Rust daemon is the product. Legacy code confuses contributors. |
-
----
-
-## Summary
-
-| Tool | Original | New | Total |
-|------|----------|-----|-------|
-| Tool | Original | New | Total |
-|------|----------|-----|-------|
-| Claude Code (Opus) | 7 | 5 | 12 |
-| Cursor (Sonnet/GLM 5) | 20 | 14 | 34 |
-| Codex CLI | 10 | 2 | 12 |
-| Gemini CLI | 5 | 3 | 8 |
-| Droid (GLM 5) | 12 | 0 | 12 |
-| Droid (GLM 4.7) | 19 | 2 | 21 |
-| Gemini Flash | 9 | 0 | 9 |
-| **Total** | **82** | **28** | **110** |
-
----
-
-## Notes (2026-04-04)
-
-### Opus tasks shipped (5/7)
-Commits 4fb00ea..f889d80 on master. 8 commits total (5 features + 2 critic fixes + 1 line endings).
+# Notes
 
 ### Open-source readiness: 85%
-All 36 critical-path features shipped. Blocking items: 3 security root causes (#83-85), repo cleanup (#95), missing docs (#93-94). Desktop app functional (11 panels) but needs version sync and icon update (#87-88).
+All 36 critical-path features shipped. Blocking: 3 security root causes (#83-85), personal file cleanup (#107), clean install test (#108).
 
-### Blockers before Chrome extension (#9, #40)
-- Need a **team-mode test environment** with 2+ users to validate visibility filtering end-to-end
+### Team-mode test environment needed
+Required for: Chrome extension (#9, #40), visibility E2E validation, MCP identity testing.
 
-### Recall quality analysis (Gemini CLI task #91)
-Surprise metric from cortex_store has no baseline. Need distribution analysis across all 220+ decisions to know what the scores actually mean. Without this, surprise is a number, not a signal.
+### Recall quality (Gemini CLI #91)
+Surprise metric has no baseline. Distribution analysis needed before the score means anything.
+
+### Builder prompt lesson
+Critic catches cost 2-3x what prevention costs. Every builder prompt must include a `## Known Pitfalls` section with schema quirks, naming inconsistencies, and auth patterns.
+
+---
+
+# Completed Tasks
+
+### Claude Code (Opus) -- 5/7 done
+
+| # | Task | Source |
+|---|------|--------|
+| 4 | ✓ Graceful degradation across all system layers | compatibility/01 |
+| 66 | ✓ Over-fetch-then-filter embedding recall (raw_k=max(k*5,50)) | schema/04 |
+| 71 | ✓ Admin endpoints: /admin/user/*, /admin/team/*, /admin/stats | schema/05 |
+| 72 | ✓ CLI commands: cortex user/team/admin management | schema/05 |
+| 74 | ✓ Solo-to-team migration (setup --team, backup, counts, dry-run) | schema/05 |
+
+### Cursor (Sonnet/GLM 5) -- 14/20 done
+
+| # | Task | Source |
+|---|------|--------|
+| 1 | ✓ HTTP REST API as core transport | compatibility/01 |
+| 2 | ✓ Unified auth layer | compatibility/01 |
+| 3 | ✓ TLS via rustls | compatibility/01 |
+| 5 | ✓ MCP adapter: stdio-to-HTTP bridge | compatibility/02 |
+| 7 | ✓ Python SDK (cortex-memory on PyPI) | compatibility/02 |
+| 8 | ✓ TypeScript SDK (@cortex-memory/client) | compatibility/02 |
+| 10 | ✓ System prompt injector CLI | compatibility/02 |
+| 11 | ✓ Standalone fallback mode for solo MCP | compatibility/02 |
+| 15 | ✓ Rate limiting | compatibility/03 |
+| 26 | ✓ ONNX embedding fallback to FTS5 | compatibility/05 |
+| 27 | ✓ Daemon crash detection in MCP adapter | compatibility/05 |
+| 28 | ✓ SQLite integrity check on startup | compatibility/05 |
+| 31 | ✓ Export/import (JSON and SQL) | compatibility/05 |
+| 80 | ✓ ONNX embedding session pooling | schema/06 |
+
+### Codex CLI -- 10/10 done
+
+| # | Task | Source |
+|---|------|--------|
+| 37 | ✓ OpenAPI spec for Custom GPT Actions | compatibility/06 |
+| 38 | ✓ Gemini CLI integration | compatibility/06 |
+| 39 | ✓ Local LLM integration | compatibility/06 |
+| 42 | ✓ Validate solo mode schema | schema/01 |
+| 43 | ✓ Team mode schema with multi-tenancy | schema/01 |
+| 44 | ✓ Validate API surface identical in both modes | schema/01 |
+| 60 | ✓ Recreate sessions table | schema/03 |
+| 61 | ✓ Recreate locks table | schema/03 |
+| 62 | ✓ Recreate feed_acks | schema/03 |
+| 75 | ✓ Export/import path for user data migration | schema/05 |
+
+### Gemini Flash -- 9/9 done
+
+Schema tasks 45-53 (solo mode tables). All complete.
+
+### Shipped Artifacts (v0.2.0)
+
+`specs/cortex-openapi.yaml`, `examples/gemini-cli/`, `examples/local-llm/`, GitHub Actions release workflow, `CHANGELOG.md`, `cortex export`/`cortex import` CLI, `setup --team` + Argon2id `ctx_` keys.
