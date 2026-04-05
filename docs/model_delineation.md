@@ -162,10 +162,15 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 | 83 | Fix /unfold visibility bypass (root cause) | CRITICAL | Thread RecallContext through unfold handler. Zero access control currently. |
 | 84 | Fix is_visible NULL owner_id policy (root cause) | CRITICAL | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
 | 85 | Fix MCP per-caller identity (root cause) | HIGH | API key or caller_id per JSON-RPC request. from_state is a workaround, not a fix. |
-| 101 | compiler.rs: replace hardcoded "User: Aditya" identity capsule | CRITICAL | Line 113: `"User: Aditya. Platform: Windows 10. Shell: bash."` is baked into the binary. Must detect platform, shell, username dynamically at runtime. Use `whoami`/`USERNAME` env var, `std::env::consts::OS`, detect shell from `SHELL`/`COMSPEC`. |
-| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` path | CRITICAL | compiler.rs:628 and indexer.rs:109 both hardcode `.join("C--Users-aditya")` to find claude memory files. Must dynamically resolve the Claude projects directory -- it's `~/.claude/projects/{project-slug}/memory/` where the slug is derived from CWD. |
-| 103 | service.rs: replace `"aditya"` fallback username | LOW | Line 30: `unwrap_or_else(\|_\| "aditya".to_string())`. Change fallback to `"cortex-user"` or `"unknown"`. |
-| 104 | Clean install audit: first `cortex serve` on empty system must produce blank brain | HIGH | Verify: no cortex.db shipped, no pre-baked memories/decisions, indexer gracefully handles missing sources (state.md, memory files, self-improvement/), boot prompt works with zero knowledge nodes, /health returns clean state. Test by deleting cortex.db and ~/.cortex/ and running fresh. |
+| 101 | compiler.rs: replace hardcoded "User: Aditya" identity capsule | CRITICAL | Line 113: `"User: Aditya. Platform: Windows 10. Shell: bash."` baked into binary. Must detect dynamically: `USERNAME`/`USER` env var, `std::env::consts::OS`, detect shell from `SHELL`/`COMSPEC`. First boot with no prior state should produce a generic identity or prompt the user. |
+| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` path | CRITICAL | compiler.rs:628 and indexer.rs:109 hardcode `.join("C--Users-aditya")`. Must dynamically resolve Claude projects dir: `~/.claude/projects/{project-slug}/memory/` where slug is derived from CWD. |
+| 103 | service.rs: replace `"aditya"` fallback username | LOW | Line 30: fallback to `"cortex-user"` or `"unknown"`. |
+| 104 | indexer.rs: self-improvement-engine paths are developer-specific | HIGH | Lines 193, 233, 278, 336: 4 functions index from `home/self-improvement-engine/` -- this is Aditya's private repo, does NOT exist for other users. Indexer must gracefully skip ALL missing sources with zero errors/warnings. Currently also reads `.claude/self-improvement/crew/` (line 388) and `.claude/self-improvement/` (line 424) -- these are Aditya-specific too. For new users, indexer should find nothing and produce zero nodes cleanly. |
+| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` path | MEDIUM | Line 21: `MEMORY_DIR = HOME / ".claude" / "projects" / "C--Users-aditya" / "memory"`. Same fix as #102 -- derive dynamically. |
+| 106 | tools/ingest_chatgpt.py: hardcoded "aditya" classification logic | MEDIUM | 30+ references to "aditya" as a classification label for conversation triage. This is a personal tool -- either generalize it (replace "aditya" with configurable username) or move to a separate personal-tools repo and remove from the public release. |
+| 107 | Delete all personal files before public push | CRITICAL | Must `git rm`: RECON.md, .aider.chat.history.md, .aider.input.history, .aider.conf.yml, Cortex Ingester Instructions.txt, cortex-profiles.json, all personal .bat/.ps1/.cmd scripts. These are tracked in git history -- need `git rm` not just .gitignore. Verify with `git ls-files` that zero personal files remain tracked. |
+| 108 | Clean install end-to-end test | CRITICAL | On a CLEAN machine (or fresh user profile): clone repo, `cargo build --release`, `cortex serve`, verify: (1) cortex.db created fresh with zero memories/decisions, (2) /health returns green, (3) cortex_store works, (4) cortex_recall returns empty results, (5) boot prompt is generic (no "Aditya"), (6) no errors in stderr, (7) MCP registration works. This is the acceptance test for open source. |
+| 109 | Auto-generate CHANGELOG on version tags | LOW | GitHub Actions workflow: on `v*` tag push, generate changelog from conventional commits since last tag. Or use `git-cliff`/`cargo-changelog`. Document the release process in CONTRIBUTING.md. |
 
 ### Cursor -- 8 new tasks
 
@@ -208,14 +213,16 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 
 | Tool | Original | New | Total |
 |------|----------|-----|-------|
-| Claude Code (Opus) | 7 | 7 | 14 |
+| Tool | Original | New | Total |
+|------|----------|-----|-------|
+| Claude Code (Opus) | 7 | 12 | 19 |
 | Cursor (Sonnet/GLM 5) | 20 | 8 | 28 |
 | Codex CLI | 10 | 2 | 12 |
 | Gemini CLI | 5 | 3 | 8 |
 | Droid (GLM 5) | 12 | 0 | 12 |
 | Droid (GLM 4.7) | 19 | 2 | 21 |
 | Gemini Flash | 9 | 0 | 9 |
-| **Total** | **82** | **22** | **104** |
+| **Total** | **82** | **27** | **109** |
 
 ---
 
