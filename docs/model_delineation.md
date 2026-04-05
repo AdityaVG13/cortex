@@ -28,23 +28,7 @@
 | 83 | Fix /unfold visibility bypass | | Thread RecallContext through unfold handler. Zero access control currently. Root cause, not patch. |
 | 84 | Fix is_visible NULL owner_id policy | | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
 | 85 | Fix MCP per-caller identity | | API key or caller_id per JSON-RPC request. `from_state` is a workaround, not a fix. |
-| 104 | indexer.rs: graceful skip for missing knowledge sources | Done | 6 extended indexers gated behind `CORTEX_INDEX_EXTENDED=1`; core paths only by default. No `self-improvement-engine` literal in `daemon-rs/src`. |
-| 108 | Clean install end-to-end test (THE GATE) | Done | Automated: `indexer` clean-home test, `grep` gates, `scripts/clean_install_smoke.sh` covers build + source grep + personal-file + README verification. Manual: clone on clean machine, `cortex serve`, /health, store/recall before release tag. |
-
-### Cursor (Opus)
-
-| # | Task | Done | Details |
-|---|------|------|---------|
-| 87 | Desktop app: sidecar real daemon, kill embedded copy | Done | Delete embedded_daemon.rs (3000+ lines duplicated, drifted). Tauri launches cortex.exe as sidecar. One installer bundles both. Double-click → daemon starts → dashboard opens → /health green. |
-| 97 | Desktop app: fix all dead UI, remove Ollama box | Done | Start/Stop buttons do nothing currently -- must launch/kill daemon. Audit every button and field in all 11 panels. Remove Ollama status box. Dead buttons = remove, don't ship. |
-| 101 | compiler.rs: replace hardcoded "User: Aditya" identity | Done | Line 113: baked into binary. Detect dynamically: `USERNAME`/`USER` env, `std::env::consts::OS`, shell from `SHELL`/`COMSPEC`. |
-| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | Done | compiler.rs:628, indexer.rs:109. Dynamically resolve Claude projects dir from CWD slug. |
-
-### Droid (GLM 4.7)
-
-| # | Task | Done | Details |
-|---|------|------|---------|
-| 107 | Make a copy of all personal files to C:\Users\aditya\AI\Personal and then delete ALL personal files, update .gitignore | Done | Backup under `.personal-backup/`; `git rm` 14 tracked personal files; `.personal-backup/` in `.gitignore`. |
+| 111 | ✓ Replace hardcoded indexer paths with configurable custom sources | `58b221d` | Deleted all 6 extended indexer functions. Replaced with `index_custom_sources` reading `~/.cortex/sources.toml` or `CORTEX_EXTRA_SOURCES` env var. `estimate_raw_baseline` updated. 59 tests, 8/8 smoke checks pass. |
 
 ## HIGH (should ship with release)
 
@@ -52,29 +36,20 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 86 | Version bump to v0.3.0 + git tag + GitHub release | v0.3.0 tag exists; v0.3.1 pending commit | Cargo.toml, CHANGELOG.md, build release binary, `gh release create`, attach binary. |
-| 100 | Desktop app: version sync to 0.3.0 | ✓ | tauri.conf.json, desktop Cargo.toml, package.json must all match daemon v0.3.0. |
-
-### Cursor (Sonnet)
-
-| # | Task | Done | Details |
-|---|------|------|---------|
-| 103 | service.rs: replace `"aditya"` fallback username | ✓ | Line 30: change to `"cortex-user"`. One-line fix. |
-| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` | ✓ | Line 21: derive dynamically from CWD, same pattern as #102. |
-| 110 | config/Modelfile.glm: delete personal LLM configs | ✓ | Delete config/Modelfile.glm and config/Modelfile.deepseek. Hardcoded `C:/Users/aditya/.lmstudio/` path. Add `config/` to .gitignore. |
+| 86 | Version bump to v0.3.1 + GitHub release | | v0.3.0 tag exists. Needs: Cargo.toml bump, CHANGELOG.md entry, build release binary, `gh release create`, attach bundled desktop installer. |
 
 ### Codex CLI
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 93 | ROADMAP.md for contributors | | Process all architecture docs (Codex + Gemini longterm considerations) into public roadmap with contribution areas. |
+| 93 | ROADMAP.md for contributors | | Process all architecture docs into public roadmap with contribution areas. |
 | 94 | CONTRIBUTING.md + SECURITY.md | | Dev setup, build instructions, PR guidelines, vulnerability disclosure policy. |
 
 ### Gemini CLI
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 90 | README rewrite for public audience | | 1M context read of entire repo. Rewrite for external devs, not internal team. Remove personal references. Keep AdityaVG13 as repo owner (that's correct). |
+| 90 | README rewrite for public audience | | 1M context read of entire repo. Rewrite for external devs, not internal team. Keep AdityaVG13 as repo owner. |
 | 92 | Review architecture docs: public vs internal vs remove | | docs/architecture/, docs/compatibility/, docs/schema/, docs/archive/ -- classify each. |
 
 ### Droid (GLM 4.7)
@@ -85,16 +60,6 @@
 | 96 | Remove legacy Node.js src/ or add deprecation notice | | Rust daemon is the product. Legacy code confuses contributors. |
 
 ## MEDIUM (nice to have for launch)
-
-### Cursor (Sonnet)
-
-| # | Task | Done | Details |
-|---|------|------|---------|
-| 88 | App icon: replace with adityasmile.png | ✓ | Remove all old icons. Rename adityasmile.png → icon.png. Generate required Tauri sizes (icon.ico, icon.icns, 32x32, 128x128, 128x128@2x). Update generate-icon.py reference. |
-| 89 | README: release badge, download link, "What's New" | ✓ | Top badge box currently empty. Add release link, version badge, feature highlights. |
-| 98 | Desktop app: add About tab (panel #12) | ✓ | Creator photo + "Created by Aditya". Contributors section (GitHub API or manual). App version number. |
-| 99 | Desktop app: auto-update via tauri-plugin-updater | ✓ | In-app update check, notification when new version available. Document in README. |
-| 106 | tools/ingest_chatgpt.py: remove or generalize | ✓ | 30+ "aditya" refs as classification label. Either make configurable or remove from public repo. |
 
 ### Gemini CLI
 
@@ -108,7 +73,7 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 109 | Auto-generate CHANGELOG on version tags | | GitHub Actions on `v*` tag. `git-cliff` or conventional-changelog. Document in CONTRIBUTING.md. |
+| 109 | Auto-generate CHANGELOG on version tags | | GitHub Actions on `v*` tag. `git-cliff` or conventional-changelog. |
 
 ---
 
@@ -152,8 +117,11 @@ Remaining original tasks #12-18, 20, 29-30, 32-36, 41, 54-57, 63, 79 -- see Comp
 
 # Notes
 
-### Open-source readiness: 85%
-All 36 critical-path features shipped. Blocking: 3 security root causes (#83-85), personal file cleanup (#107), clean install test (#108).
+### Open-source readiness: 90%
+All clean-slate identity tasks shipped (#101-108, #110). Blocking public release: 3 security root causes (#83-85), #111 (hardcoded indexer paths -- cosmetic rename done, architectural fix pending).
+
+### #104 status: cosmetic rename only (superseded by #111)
+Cursor commit `74a43fe` renamed `self-improvement-engine` to `knowledge-sources` and `self-improvement` to `extended-knowledge`. Gated behind `CORTEX_INDEX_EXTENDED=1` (commit `ff887af`). But 6 functions still hardcode paths to directories no end user will have (`knowledge-sources/tools/gorci`, `extended-knowledge/crew`, etc.). #111 replaces all 6 with one generic `index_custom_sources` function reading from user config. Zero ghost dependencies.
 
 ### Team-mode test environment needed
 Required for: Chrome extension (#9, #40), visibility E2E validation, MCP identity testing.
@@ -166,19 +134,45 @@ Critic catches cost 2-3x what prevention costs. Every builder prompt must includ
 
 ---
 
-# Completed Tasks
+# Completed Tasks (v0.3.0 release cycle)
 
-### Claude Code (Opus) -- 5/7 done
+### Clean-Slate OSS Gate
+
+| # | Task | Commit | Details |
+|---|------|--------|---------|
+| 101 | ✓ compiler.rs: replace hardcoded "User: Aditya" identity | `33fa438` | Dynamic detection via `USERNAME`/`USER` env + OS detection. |
+| 102 | ✓ compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | `33fa438` | Dynamic Claude projects dir from CWD slug. |
+| 103 | ✓ service.rs: replace `"aditya"` fallback username | `33fa438` | Changed to `"cortex-user"`. |
+| 104 | ✓ indexer.rs: gate extended indexers behind env var | `ff887af` | `CORTEX_INDEX_EXTENDED=1` gates 6 functions. Cosmetic rename in `74a43fe`. **Superseded by #111.** |
+| 105 | ✓ workers/drift_detector.py: hardcoded path | `33fa438` | Dynamic CWD derivation. |
+| 106 | ✓ tools/ingest_chatgpt.py: remove personal refs | `6b2739c` | 30+ classification labels generalized. |
+| 107 | ✓ Backup + remove personal files from git | `d5c390a`, `9c12a91` | 14 files backed up to `.personal-backup/`, `git rm`'d, `.gitignore` updated. |
+| 108 | ✓ Clean install end-to-end test (THE GATE) | `86cdc15`, `cdaca43` | Unit tests + `scripts/clean_install_smoke.sh`. Grep gates pass. |
+| 110 | ✓ Delete personal LLM configs | `33fa438` | Modelfile.glm, Modelfile.deepseek removed. |
+
+### Desktop App
+
+| # | Task | Details |
+|---|------|---------|
+| 87 | ✓ Sidecar real daemon, kill embedded copy | Tauri launches cortex.exe as sidecar. embedded_daemon.rs deleted. |
+| 88 | ✓ App icon | All Tauri icon sizes generated. |
+| 89 | ✓ README: release badge, download link | Badge box populated. |
+| 97 | ✓ Fix all dead UI, remove Ollama box | All 11 panels audited. Dead buttons removed. |
+| 98 | ✓ About tab (panel #12) | Creator attribution + contributors section. |
+| 99 | ✓ Auto-update via tauri-plugin-updater | In-app update check functional. |
+| 100 | ✓ Version sync to 0.3.0 | tauri.conf.json, desktop Cargo.toml, package.json all match. |
+
+### Claude Code (Opus) -- earlier cycle
 
 | # | Task | Source |
 |---|------|--------|
 | 4 | ✓ Graceful degradation across all system layers | compatibility/01 |
-| 66 | ✓ Over-fetch-then-filter embedding recall (raw_k=max(k*5,50)) | schema/04 |
-| 71 | ✓ Admin endpoints: /admin/user/*, /admin/team/*, /admin/stats | schema/05 |
+| 66 | ✓ Over-fetch-then-filter embedding recall | schema/04 |
+| 71 | ✓ Admin endpoints | schema/05 |
 | 72 | ✓ CLI commands: cortex user/team/admin management | schema/05 |
-| 74 | ✓ Solo-to-team migration (setup --team, backup, counts, dry-run) | schema/05 |
+| 74 | ✓ Solo-to-team migration | schema/05 |
 
-### Cursor (Sonnet/GLM 5) -- 14/20 done
+### Cursor (Sonnet/GLM 5) -- earlier cycle
 
 | # | Task | Source |
 |---|------|--------|
