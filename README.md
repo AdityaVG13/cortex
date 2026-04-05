@@ -79,6 +79,8 @@ cargo build --release
 # Binary at target/release/cortex(.exe)
 ```
 
+**Optional knowledge sources:** Set environment variable CORTEX_INDEX_EXTENDED=1 before cortex serve if you index extra on-disk lesson, goal, and playbook trees beyond the default Claude Code paths. Fresh installs omit this.
+
 ---
 
 ## Quick Start
@@ -151,10 +153,17 @@ Preserves existing editor settings. Idempotent -- safe to run multiple times.
 ### Desktop Features
 
 - System tray with minimize-to-tray (close button hides, tray quit exits)
-- Embedded daemon management (start/stop/status)
+- Sidecar daemon management -- launches `cortex.exe` as a child process (start/stop/status)
+- In-app update notifications via `tauri-plugin-updater` (checks GitHub releases)
 - Real-time SSE event streaming across all panels
 - Bearer token auth handled automatically
 - WAL checkpoint and optimize on graceful shutdown
+
+### Updating
+
+**In-app:** When a new release is available, an update banner appears in the sidebar. Click **Update** to download and install automatically.
+
+**Manual:** Download the latest installer from the [Releases page](https://github.com/AdityaVG13/cortex/releases) and run it. The installer overwrites the previous version in place.
 
 ---
 
@@ -560,7 +569,7 @@ Cortex holds sensitive data -- your decisions, project context, and AI memory. S
 - [ ] Query embedding LRU cache (reuse vectors for repeated queries in one session)
 - [ ] PII detection and optional scrubbing on `store`
 - [ ] Cross-machine brain sync beyond today’s `export` / `import` (conflict-aware merge)
-- [ ] Desktop app auto-update (`tauri-plugin-updater`)
+- [x] Desktop app auto-update (`tauri-plugin-updater`)
 
 **Note:** IP-based sliding-window rate limiting (auth failures + request volume) is already in the HTTP stack; broader policies (per-route budgets, user-scoped limits) remain future work.
 
