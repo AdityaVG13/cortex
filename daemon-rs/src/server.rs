@@ -39,10 +39,13 @@ pub fn build_router(state: RuntimeState) -> Router {
         .allow_origin([
             "http://127.0.0.1:7437".parse::<HeaderValue>().unwrap(),
             "http://localhost:7437".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:1420".parse::<HeaderValue>().unwrap(),
+            "http://localhost:1420".parse::<HeaderValue>().unwrap(),
             "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
             "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
             "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+            "tauri://localhost".parse::<HeaderValue>().unwrap(),
         ])
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
