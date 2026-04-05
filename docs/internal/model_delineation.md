@@ -36,21 +36,21 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 86 | Version bump to v0.3.1 + GitHub release | | v0.3.0 tag exists. Needs: Cargo.toml bump, CHANGELOG.md entry, build release binary, `gh release create`, attach bundled desktop installer. |
+| 86 | Version bump to v0.4.0 + GitHub release | v0.4.0 | v0.4.0 released (supersedes v0.3.1). Includes Cargo.toml bump, CHANGELOG.md entry, release binaries, desktop installer. |
 
 ### Codex CLI
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 93 | ROADMAP.md for contributors | | Process all architecture docs into public roadmap with contribution areas. |
-| 94 | CONTRIBUTING.md + SECURITY.md | | Dev setup, build instructions, PR guidelines, vulnerability disclosure policy. |
+| 93 | ✓ ROADMAP.md for contributors | v0.4.0 | Public ROADMAP.md created with milestones v0.4.0 through v1.0.0. |
+| 94 | ✓ CONTRIBUTING.md + SECURITY.md | v0.4.0 | CONTRIBUTING.md with dev setup and PR guidelines. SECURITY.md with vulnerability disclosure policy. |
 
 ### Gemini CLI
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 90 | README rewrite for public audience | | 1M context read of entire repo. Rewrite for external devs, not internal team. Keep AdityaVG13 as repo owner. |
-| 92 | Review architecture docs: public vs internal vs remove | | docs/architecture/, docs/compatibility/, docs/schema/, docs/archive/ -- classify each. |
+| 90 | ✓ README rewrite for public audience | v0.4.0 | Public-facing README with installation, quick start, features, and API reference. AdityaVG13 as repo owner. |
+| 92 | ✓ Review architecture docs: public vs internal vs remove | v0.4.0 | docs/architecture/ (public), docs/compatibility/ (public), docs/schema/ (internal), docs/archive/ (historical). Classification complete. |
 
 ### Droid (GLM 4.7)
 
@@ -215,8 +215,8 @@ Remaining original tasks #12-18, 20, 29-30, 32-36, 41, 54-57, 63, 79 -- see Comp
 
 # Notes
 
-### Open-source readiness: 100% (CRITICAL tasks complete)
-All clean-slate identity tasks shipped (#101-108, #110). #111 custom sources complete. Security chain #83-#84-#85 fully resolved. **No CRITICAL blockers remaining.** HIGH/MEDIUM tasks are quality improvements, not release blockers.
+### Open-source readiness: 100% (CRITICAL tasks complete, v0.4.0 shipped)
+All clean-slate identity tasks shipped (#101-108, #110). #111 custom sources complete. Security chain #83-#84-#85 fully resolved. Public docs complete (#90, #92-94). **No CRITICAL blockers remaining.** Current release: v0.4.0.
 
 ### Security chain: RESOLVED
 - #85 (`08d12c2`): MCP caller identity resolved at startup
