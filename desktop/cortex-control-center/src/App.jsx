@@ -431,20 +431,15 @@ export function App() {
   }, []);
 
   const readAuthToken = useCallback(async () => {
-    // Tauri IPC: read from token file via Rust backend
     if (invokeRef.current) {
       try {
         const token = await call("read_auth_token");
         tokenRef.current = token || "";
-        if (token) localStorage.setItem("cortex_token", token);
         return;
       } catch {
         tokenRef.current = "";
       }
     }
-    // Browser fallback: use token from localStorage (set via connection dialog)
-    const saved = localStorage.getItem("cortex_token");
-    if (saved) tokenRef.current = saved;
   }, [call]);
 
   const refreshDaemonState = useCallback(async () => {
@@ -947,10 +942,7 @@ export function App() {
                 const port = fd.get("port")?.toString().trim() || "7437";
                 const token = fd.get("token")?.toString().trim();
                 setCortexBase(`http://${host}:${port}`);
-                if (token) {
-                  tokenRef.current = token;
-                  localStorage.setItem("cortex_token", token);
-                }
+                if (token) tokenRef.current = token;
                 setShowConnectionDialog(false);
               }}>
                 <label className="connection-field">
