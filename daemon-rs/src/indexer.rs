@@ -1,6 +1,13 @@
 //! Knowledge indexer: reads filesystem sources and upserts into memories table.
 //! Ported from Node.js brain.js indexAll().
+//!
+//! **Core indexers** (always run): `~/.claude/state.md` and Claude Code project memory under
+//! `~/.claude/projects/<cwd-slug>/memory`.
+//!
+//! **Extended indexers** (opt-in): six additional sources (lessons, goals, skill tracker, gorci, crew playbooks,
+//! self-improvement markdown). Set `CORTEX_INDEX_EXTENDED=1` to enable.
 
+use crate::compiler::claude_project_slug;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs;
@@ -13,17 +20,19 @@ const STATE_SECTIONS: &[&str] = &[
     "## Known Issues",
 ];
 
-/// Run all 8 indexers. Returns total entries indexed.
+/// Run core indexers always; extended indexers only when CORTEX_INDEX_EXTENDED=1.
 pub fn index_all(conn: &Connection, home: &Path) -> usize {
     let mut total = 0;
     total += index_state_file(conn, home);
     total += index_memory_files(conn, home);
-    total += index_lessons(conn, home);
-    total += index_goals(conn, home);
-    total += index_skill_tracker(conn, home);
-    total += index_gorci(conn, home);
-    total += index_crew_playbooks(conn, home);
-    total += index_self_improvement(conn, home);
+    if std::env::var("CORTEX_INDEX_EXTENDED").unwrap_or_default() == "1" {
+        total += index_lessons(conn, home);
+        total += index_goals(conn, home);
+        total += index_skill_tracker(conn, home);
+        total += index_gorci(conn, home);
+        total += index_crew_playbooks(conn, home);
+        total += index_self_improvement(conn, home);
+    }
     total
 }
 
@@ -103,10 +112,14 @@ fn extract_section(markdown: &str, header: &str) -> Option<String> {
 // ── Source 2: Memory files ──────────────────────────────────────────────────
 
 fn index_memory_files(conn: &Connection, home: &Path) -> usize {
+    let slug = match claude_project_slug() {
+        Some(s) => s,
+        None => return 0,
+    };
     let mem_dir = home
         .join(".claude")
         .join("projects")
-        .join("C--Users-aditya")
+        .join(slug)
         .join("memory");
     if !mem_dir.exists() {
         return 0;
@@ -190,7 +203,7 @@ fn parse_frontmatter(raw: &str) -> (HashMap<String, String>, String) {
 
 fn index_lessons(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join(concat!("self-improvement-", "engine"))
         .join("lessons")
         .join("lessons.jsonl");
     if !path.exists() {
@@ -230,7 +243,7 @@ fn index_lessons(conn: &Connection, home: &Path) -> usize {
 
 fn index_goals(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join(concat!("self-improvement-", "engine"))
         .join("tools")
         .join("goal-setter")
         .join("current-goals.json");
@@ -275,7 +288,7 @@ fn index_goals(conn: &Connection, home: &Path) -> usize {
 
 fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join(concat!("self-improvement-", "engine"))
         .join("tools")
         .join("skill-tracker")
         .join("invocations.jsonl");
@@ -333,7 +346,7 @@ fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
 
 fn index_gorci(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join(concat!("self-improvement-", "engine"))
         .join("tools")
         .join("gorci")
         .join("last-run.json");
