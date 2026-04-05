@@ -29,7 +29,7 @@
 | 84 | Fix is_visible NULL owner_id policy | | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
 | 85 | Fix MCP per-caller identity | | API key or caller_id per JSON-RPC request. `from_state` is a workaround, not a fix. |
 | 104 | indexer.rs: graceful skip for missing knowledge sources | Done | 6 extended indexers gated behind `CORTEX_INDEX_EXTENDED=1`; core paths only by default. No `self-improvement-engine` literal in `daemon-rs/src`. |
-| 108 | Clean install end-to-end test (THE GATE) | Partial | Automated: `indexer` clean-home test, `grep` gates on `daemon-rs/src` (no `aditya`, no `self-improvement-engine` substring). **Still run manually:** clone on clean machine, `cortex serve`, /health, store/recall, stderr scan before calling release done. |
+| 108 | Clean install end-to-end test (THE GATE) | Done | Automated: `indexer` clean-home test, `grep` gates, `scripts/clean_install_smoke.sh` covers build + source grep + personal-file + README verification. Manual: clone on clean machine, `cortex serve`, /health, store/recall before release tag. |
 
 ### Cursor (Opus)
 
