@@ -162,15 +162,30 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 | 83 | Fix /unfold visibility bypass (root cause) | CRITICAL | Thread RecallContext through unfold handler. Zero access control currently. |
 | 84 | Fix is_visible NULL owner_id policy (root cause) | CRITICAL | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
 | 85 | Fix MCP per-caller identity (root cause) | HIGH | API key or caller_id per JSON-RPC request. from_state is a workaround, not a fix. |
-| 101 | compiler.rs: replace hardcoded "User: Aditya" identity capsule | CRITICAL | Line 113: `"User: Aditya. Platform: Windows 10. Shell: bash."` baked into binary. Must detect dynamically: `USERNAME`/`USER` env var, `std::env::consts::OS`, detect shell from `SHELL`/`COMSPEC`. First boot with no prior state should produce a generic identity or prompt the user. |
-| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` path | CRITICAL | compiler.rs:628 and indexer.rs:109 hardcode `.join("C--Users-aditya")`. Must dynamically resolve Claude projects dir: `~/.claude/projects/{project-slug}/memory/` where slug is derived from CWD. |
-| 103 | service.rs: replace `"aditya"` fallback username | LOW | Line 30: fallback to `"cortex-user"` or `"unknown"`. |
-| 104 | indexer.rs: self-improvement-engine paths are developer-specific | HIGH | Lines 193, 233, 278, 336: 4 functions index from `home/self-improvement-engine/` -- this is Aditya's private repo, does NOT exist for other users. Indexer must gracefully skip ALL missing sources with zero errors/warnings. Currently also reads `.claude/self-improvement/crew/` (line 388) and `.claude/self-improvement/` (line 424) -- these are Aditya-specific too. For new users, indexer should find nothing and produce zero nodes cleanly. |
-| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` path | MEDIUM | Line 21: `MEMORY_DIR = HOME / ".claude" / "projects" / "C--Users-aditya" / "memory"`. Same fix as #102 -- derive dynamically. |
-| 106 | tools/ingest_chatgpt.py: hardcoded "aditya" classification logic | MEDIUM | 30+ references to "aditya" as a classification label for conversation triage. This is a personal tool -- either generalize it (replace "aditya" with configurable username) or move to a separate personal-tools repo and remove from the public release. |
-| 107 | Delete all personal files before public push | CRITICAL | Must `git rm`: RECON.md, .aider.chat.history.md, .aider.input.history, .aider.conf.yml, Cortex Ingester Instructions.txt, cortex-profiles.json, all personal .bat/.ps1/.cmd scripts. These are tracked in git history -- need `git rm` not just .gitignore. Verify with `git ls-files` that zero personal files remain tracked. |
-| 108 | Clean install end-to-end test | CRITICAL | On a CLEAN machine (or fresh user profile): clone repo, `cargo build --release`, `cortex serve`, verify: (1) cortex.db created fresh with zero memories/decisions, (2) /health returns green, (3) cortex_store works, (4) cortex_recall returns empty results, (5) boot prompt is generic (no "Aditya"), (6) no errors in stderr, (7) MCP registration works. This is the acceptance test for open source. |
-| 109 | Auto-generate CHANGELOG on version tags | LOW | GitHub Actions workflow: on `v*` tag push, generate changelog from conventional commits since last tag. Or use `git-cliff`/`cargo-changelog`. Document the release process in CONTRIBUTING.md. |
+**Assigned to Cursor (single-file, clear fixes):**
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 101 | compiler.rs: replace hardcoded "User: Aditya" identity | CRITICAL | Line 113: baked into binary. Detect dynamically: `USERNAME`/`USER` env var, `std::env::consts::OS`, shell from `SHELL`/`COMSPEC`. First boot with no prior state = generic identity. |
+| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` | CRITICAL | compiler.rs:628, indexer.rs:109. Dynamically resolve Claude projects dir: `~/.claude/projects/{project-slug}/memory/` where slug is derived from CWD. |
+| 103 | service.rs: replace `"aditya"` fallback username | LOW | Line 30: change to `"cortex-user"` or `"unknown"`. |
+| 105 | workers/drift_detector.py: hardcoded `C--Users-aditya` | MEDIUM | Line 21: derive dynamically, same pattern as #102. |
+| 106 | tools/ingest_chatgpt.py: remove or generalize | MEDIUM | 30+ "aditya" refs. Either make username configurable or remove from public repo entirely. |
+| 110 | config/Modelfile.glm: hardcoded path to Aditya's LM Studio model | MEDIUM | `C:/Users/aditya/.lmstudio/models/...` on line 1. Delete both Modelfiles (config/Modelfile.glm, config/Modelfile.deepseek) -- they're personal local LLM configs. Add `config/` to .gitignore. |
+
+**Assigned to Claude Code (Opus) (multi-file, architectural):**
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 104 | indexer.rs: self-improvement-engine paths are developer-specific | HIGH | 4 functions index from `home/self-improvement-engine/` (lines 193, 233, 278, 336) -- Aditya's private repo. Also `.claude/self-improvement/crew/` (line 388) and `.claude/self-improvement/` (line 424). Indexer must gracefully return 0 for ALL missing sources with zero errors/warnings in stderr. New user = blank brain, not error spam. |
+| 108 | Clean install end-to-end test | CRITICAL | The open-source gate. On a CLEAN machine: clone, `cargo build --release`, `cortex serve`. Verify: (1) cortex.db created fresh with 0 memories/decisions, (2) /health green, (3) cortex_store works, (4) cortex_recall returns empty, (5) boot prompt has NO "Aditya" anywhere, (6) zero errors in stderr, (7) MCP registration works, (8) `grep -ri "aditya" src/` returns 0 hits. Nothing ships until this passes. |
+
+**Assigned to Droid GLM 4.7 (mechanical cleanup):**
+
+| # | Task | Priority | Details |
+|---|------|----------|---------|
+| 107 | Delete all personal files before public push | CRITICAL | `git rm`: RECON.md, .aider.chat.history.md, .aider.input.history, .aider.conf.yml, "Cortex Ingester Instructions.txt", cortex-profiles.json, config/Modelfile.*, all personal .bat/.ps1/.cmd scripts. Add config/ to .gitignore. Verify `git ls-files` shows zero personal files tracked. |
+| 109 | Auto-generate CHANGELOG on version tags | LOW | GitHub Actions: on `v*` tag, generate changelog from conventional commits. Or `git-cliff`. Document in CONTRIBUTING.md. |
 
 ### Cursor -- 8 new tasks
 
@@ -215,14 +230,14 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 |------|----------|-----|-------|
 | Tool | Original | New | Total |
 |------|----------|-----|-------|
-| Claude Code (Opus) | 7 | 12 | 19 |
-| Cursor (Sonnet/GLM 5) | 20 | 8 | 28 |
+| Claude Code (Opus) | 7 | 5 | 12 |
+| Cursor (Sonnet/GLM 5) | 20 | 14 | 34 |
 | Codex CLI | 10 | 2 | 12 |
 | Gemini CLI | 5 | 3 | 8 |
 | Droid (GLM 5) | 12 | 0 | 12 |
 | Droid (GLM 4.7) | 19 | 2 | 21 |
 | Gemini Flash | 9 | 0 | 9 |
-| **Total** | **82** | **27** | **109** |
+| **Total** | **82** | **28** | **110** |
 
 ---
 
