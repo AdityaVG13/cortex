@@ -1,17 +1,17 @@
 //! Knowledge indexer: reads filesystem sources and upserts into memories table.
-//! Ported from Node.js brain.js indexAll().
 //!
 //! **Core indexers** (always run): `~/.claude/state.md` and Claude Code project memory under
 //! `~/.claude/projects/<cwd-slug>/memory`.
 //!
-//! **Extended indexers** (opt-in): six additional sources (lessons, goals, skill tracker, gorci, crew playbooks,
-//! extended-knowledge markdown). Set `CORTEX_INDEX_EXTENDED=1` to enable.
+//! **Custom sources** (opt-in): user-defined paths via `~/.cortex/sources.toml` or
+//! `CORTEX_EXTRA_SOURCES` env var. See `config/sources.toml.example`.
 
 use crate::compiler::claude_project_slug;
 use rusqlite::Connection;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const STATE_SECTIONS: &[&str] = &[
     "## What Was Done",
@@ -20,19 +20,12 @@ const STATE_SECTIONS: &[&str] = &[
     "## Known Issues",
 ];
 
-/// Run core indexers always; extended indexers only when CORTEX_INDEX_EXTENDED=1.
+/// Run core indexers always; custom sources from config if present.
 pub fn index_all(conn: &Connection, home: &Path) -> usize {
     let mut total = 0;
     total += index_state_file(conn, home);
     total += index_memory_files(conn, home);
-    if std::env::var("CORTEX_INDEX_EXTENDED").unwrap_or_default() == "1" {
-        total += index_lessons(conn, home);
-        total += index_goals(conn, home);
-        total += index_skill_tracker(conn, home);
-        total += index_gorci(conn, home);
-        total += index_crew_playbooks(conn, home);
-        total += index_self_improvement(conn, home);
-    }
+    total += index_custom_sources(conn, home);
     total
 }
 
@@ -199,274 +192,174 @@ fn parse_frontmatter(raw: &str) -> (HashMap<String, String>, String) {
     (fm, body)
 }
 
-// ── Source 3: Lessons ───────────────────────────────────────────────────────
+// ── Custom sources from config ─────────────────────────────────────────────
 
-fn index_lessons(conn: &Connection, home: &Path) -> usize {
-    let path = home
-        .join("knowledge-sources")
-        .join("lessons")
-        .join("lessons.jsonl");
-    if !path.exists() {
-        return 0;
+#[derive(Debug, Deserialize)]
+struct SourcesConfig {
+    #[serde(default)]
+    source: Vec<CustomSource>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CustomSource {
+    name: String,
+    path: String,
+    #[serde(default = "default_mem_type")]
+    mem_type: String,
+    #[serde(default = "default_glob")]
+    glob: String,
+    #[serde(default)]
+    truncate: usize,
+    #[serde(default)]
+    recursive: bool,
+}
+
+fn default_mem_type() -> String { "custom".to_string() }
+fn default_glob() -> String { "*.md".to_string() }
+
+/// Resolve `~` to the user's home directory.
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// Load custom source definitions from `~/.cortex/sources.toml`, falling back
+/// to `CORTEX_EXTRA_SOURCES` env var (semicolon-separated directory paths).
+fn load_custom_sources(home: &Path) -> Vec<CustomSource> {
+    // Try sources.toml first
+    let config_path = home.join(".cortex").join("sources.toml");
+    if config_path.exists() {
+        if let Ok(content) = fs::read_to_string(&config_path) {
+            if let Ok(cfg) = toml::from_str::<SourcesConfig>(&content) {
+                return cfg.source;
+            }
+            eprintln!("[indexer] failed to parse {}", config_path.display());
+        }
     }
 
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
+    // Fallback: CORTEX_EXTRA_SOURCES env var (semicolon-separated paths)
+    if let Ok(val) = std::env::var("CORTEX_EXTRA_SOURCES") {
+        return val
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|p| CustomSource {
+                name: Path::new(p)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
+                path: p.to_string(),
+                mem_type: "custom".to_string(),
+                glob: "*".to_string(),
+                truncate: 0,
+                recursive: false,
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+/// Index all user-configured custom sources.
+fn index_custom_sources(conn: &Connection, home: &Path) -> usize {
+    let sources = load_custom_sources(home);
+    let mut total = 0;
+
+    for src in &sources {
+        let resolved = expand_tilde(&src.path);
+        if !resolved.exists() {
+            continue;
+        }
+
+        if resolved.is_dir() {
+            total += index_directory(conn, &resolved, src);
+        } else if resolved.is_file() {
+            total += index_single_file(conn, &resolved, src);
+        }
+    }
+    total
+}
+
+/// Index all matching files in a directory.
+fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource) -> usize {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
         Err(_) => return 0,
     };
 
     let mut count = 0;
-    for line in content.lines().filter(|l| !l.is_empty()) {
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            let lesson_type = entry["type"].as_str().unwrap_or("lesson");
-            let lesson = entry["lesson"].as_str().unwrap_or("");
-            let evidence = entry["evidence"].as_str().unwrap_or("");
-            let skill = entry["skill"].as_str().unwrap_or("general");
-            let ts = entry["timestamp"].as_str().unwrap_or("unknown");
+    for entry in entries.flatten() {
+        let path = entry.path();
 
-            let text = if !evidence.is_empty() {
-                format!("[{lesson_type}] {lesson} -- Evidence: {evidence}")
-            } else {
-                format!("[{lesson_type}] {lesson}")
-            };
-
-            let source = format!("lessons::{skill}::{ts}");
-            if upsert_memory(conn, &text, &source, "lesson", "indexer") {
-                count += 1;
+        if path.is_dir() {
+            if src.recursive {
+                count += index_directory(conn, &path, src);
             }
+            continue;
         }
+
+        if !matches_glob(&path, &src.glob) {
+            continue;
+        }
+
+        count += index_single_file(conn, &path, src);
     }
     count
 }
 
-// ── Source 4: Goals ─────────────────────────────────────────────────────────
-
-fn index_goals(conn: &Connection, home: &Path) -> usize {
-    let path = home
-        .join("knowledge-sources")
-        .join("tools")
-        .join("goal-setter")
-        .join("current-goals.json");
-    if !path.exists() {
-        return 0;
-    }
-
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let data: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(d) => d,
-        Err(_) => return 0,
-    };
-
-    let mut count = 0;
-    if let Some(goals) = data["goals"].as_array() {
-        for goal in goals {
-            let rank = goal["rank"].as_u64().unwrap_or(0);
-            let text_val = goal["goal"].as_str().unwrap_or("");
-            let cat = goal["category"].as_str().unwrap_or("unknown");
-            let priority = goal["priority"]
-                .as_f64()
-                .map(|p| format!("{p:.2}"))
-                .unwrap_or_else(|| "?".to_string());
-            let effort = goal["effort"].as_str().unwrap_or("?");
-
-            let text = format!(
-                "[Goal #{rank}] {text_val} (category: {cat}, priority: {priority}, effort: {effort})"
-            );
-            let source = format!("goals::rank{rank}");
-            if upsert_memory(conn, &text, &source, "goal", "indexer") {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
-// ── Source 5: Skill tracker ─────────────────────────────────────────────────
-
-fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
-    let path = home
-        .join("knowledge-sources")
-        .join("tools")
-        .join("skill-tracker")
-        .join("invocations.jsonl");
-    if !path.exists() {
-        return 0;
-    }
-
-    let content = match fs::read_to_string(&path) {
+/// Index a single file's content as a memory entry.
+fn index_single_file(conn: &Connection, path: &Path, src: &CustomSource) -> usize {
+    let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return 0,
     };
 
-    // Aggregate by skill.
-    let mut by_skill: HashMap<String, (u32, u32, u32, u32, String)> = HashMap::new();
+    let file_stem = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
-    for line in content.lines().filter(|l| !l.is_empty()) {
-        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
-            let skill = entry["skill"].as_str().unwrap_or("unknown").to_string();
-            let outcome = entry["outcome"].as_str().unwrap_or("");
-            let ts = entry["timestamp"].as_str().unwrap_or("").to_string();
-
-            let stats = by_skill.entry(skill).or_insert((0, 0, 0, 0, String::new()));
-            stats.0 += 1; // total
-            match outcome {
-                "success" => stats.1 += 1,
-                "correction" => stats.2 += 1,
-                "retry" => stats.3 += 1,
-                _ => {}
-            }
-            if ts > stats.4 {
-                stats.4 = ts;
-            }
-        }
-    }
-
-    let mut count = 0;
-    for (skill, (total, success, correction, retry, last)) in &by_skill {
-        let rate = if *total > 0 {
-            (*success as f64 / *total as f64 * 100.0) as u32
-        } else {
-            0
-        };
-        let text = format!(
-            "[Skill: {skill}] {total} invocations, {rate}% success ({correction} corrections, {retry} retries). Last: {last}"
-        );
-        let source = format!("skills::{skill}");
-        if upsert_memory(conn, &text, &source, "skill_stats", "indexer") {
-            count += 1;
-        }
-    }
-    count
-}
-
-// ── Source 6: GORCI ─────────────────────────────────────────────────────────
-
-fn index_gorci(conn: &Connection, home: &Path) -> usize {
-    let path = home
-        .join("knowledge-sources")
-        .join("tools")
-        .join("gorci")
-        .join("last-run.json");
-    if !path.exists() {
-        return 0;
-    }
-
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let data: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(d) => d,
-        Err(_) => return 0,
+    let text = if src.truncate > 0 {
+        content.chars().take(src.truncate).collect()
+    } else {
+        content
     };
 
-    // Preserve numeric fields by formatting them, not replacing with "?".
-    let pass_str = data["pass"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| data["pass"].as_u64().map(|n| n.to_string()))
-        .or_else(|| data["pass"].as_f64().map(|n| format!("{n:.1}")))
-        .unwrap_or_else(|| "?".to_string());
-    let score_str = data["overallScore"]
-        .as_str()
-        .map(|s| s.to_string())
-        .or_else(|| data["overallScore"].as_f64().map(|n| format!("{n:.2}")))
-        .or_else(|| data["overallScore"].as_u64().map(|n| n.to_string()))
-        .unwrap_or_else(|| "?".to_string());
-
-    let text = format!(
-        "[GORCI] Skill: {}, Mode: {}, Tier: {}, Cases: {}, Pass: {}, Score: {}. Run: {}",
-        data["skill"].as_str().unwrap_or("unknown"),
-        data["mode"].as_str().unwrap_or("?"),
-        data["tier"].as_str().unwrap_or("?"),
-        data["cases"].as_u64().unwrap_or(0),
-        pass_str,
-        score_str,
-        data["timestamp"].as_str().unwrap_or("unknown"),
-    );
-
-    if upsert_memory(conn, &text, "gorci::last-run", "gorci", "indexer") {
+    let source = format!("{}::{}", src.name, file_stem);
+    if upsert_memory(conn, &text, &source, &src.mem_type, "indexer") {
         1
     } else {
         0
     }
 }
 
-// ── Source 7: Crew playbooks ───────────────────────────────────────────────
-
-fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
-    let crew_dir = home.join(".claude").join("extended-knowledge").join("crew");
-    if !crew_dir.exists() {
-        return 0;
+/// Simple glob matching: supports `*` (any filename) and `*.ext` patterns.
+fn matches_glob(path: &Path, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
     }
-
-    let mut count = 0;
-    let entries = match fs::read_dir(&crew_dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
+    let name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
     };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        if let Ok(content) = fs::read_to_string(&path) {
-            let name = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            // Index the full playbook (these are short, <40 lines each)
-            let source = format!("crew::{name}");
-            if upsert_memory(conn, &content, &source, "crew_playbook", "indexer") {
-                count += 1;
-            }
-        }
+    if let Some(ext_pattern) = pattern.strip_prefix("*.") {
+        return name.ends_with(&format!(".{ext_pattern}"));
     }
-    count
+    name == pattern
 }
 
-// ── Source 8: Extended-knowledge insights ───────────────────────────────────
-
-fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
-    let si_dir = home.join(".claude").join("extended-knowledge");
-    if !si_dir.exists() {
-        return 0;
-    }
-
-    let mut count = 0;
-    let entries = match fs::read_dir(&si_dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // Only index .md files in the root of extended-knowledge (not subdirs)
-        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
-
-        if let Ok(content) = fs::read_to_string(&path) {
-            let name = path
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            // Truncate long insights to 1000 chars for index efficiency
-            let text: String = content.chars().take(1000).collect();
-            let source = format!("extended::{name}");
-            if upsert_memory(conn, &text, &source, "insight", "indexer") {
-                count += 1;
-            }
-        }
-    }
-    count
+/// Collect resolved paths from custom sources config (used by compiler baseline).
+pub fn custom_source_paths(home: &Path) -> Vec<PathBuf> {
+    load_custom_sources(home)
+        .iter()
+        .map(|s| expand_tilde(&s.path))
+        .filter(|p| p.exists())
+        .collect()
 }
 
 // ── Ebbinghaus decay ────────────────────────────────────────────────────────
@@ -523,7 +416,7 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn index_all_empty_home_without_extended_indexes_nothing() {
+    fn index_all_empty_home_indexes_nothing() {
         let tmp = std::env::temp_dir().join(format!("cortex_ix_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -533,4 +426,122 @@ mod tests {
         assert_eq!(n, 0);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn matches_glob_works() {
+        assert!(super::matches_glob(Path::new("foo.md"), "*.md"));
+        assert!(!super::matches_glob(Path::new("foo.rs"), "*.md"));
+        assert!(super::matches_glob(Path::new("anything"), "*"));
+        assert!(super::matches_glob(Path::new("data.jsonl"), "*.jsonl"));
+    }
+
+    #[test]
+    fn expand_tilde_resolves_home() {
+        let p = super::expand_tilde("~/test/path");
+        assert!(p.components().count() > 2);
+        assert!(!p.to_string_lossy().contains('~'));
+    }
+
+    #[test]
+    fn index_custom_sources_from_toml() {
+        let tmp = std::env::temp_dir().join(format!("cortex_cs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        // Set up: ~/.cortex/sources.toml pointing to a test directory
+        let cortex_dir = tmp.join(".cortex");
+        std::fs::create_dir_all(&cortex_dir).unwrap();
+
+        let notes_dir = tmp.join("test-notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        std::fs::write(notes_dir.join("alpha.md"), "Alpha note content").unwrap();
+        std::fs::write(notes_dir.join("beta.md"), "Beta note content").unwrap();
+        std::fs::write(notes_dir.join("ignore.txt"), "Should be skipped").unwrap();
+
+        let single_file = tmp.join("single.json");
+        std::fs::write(&single_file, r#"{"key": "value"}"#).unwrap();
+
+        let toml_content = format!(
+            r#"
+[[source]]
+name = "notes"
+path = "{}"
+mem_type = "note"
+glob = "*.md"
+
+[[source]]
+name = "config"
+path = "{}"
+mem_type = "config"
+"#,
+            notes_dir.to_string_lossy().replace('\\', "/"),
+            single_file.to_string_lossy().replace('\\', "/"),
+        );
+        std::fs::write(cortex_dir.join("sources.toml"), &toml_content).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+
+        let n = super::index_custom_sources(&conn, &tmp);
+        // 2 .md files + 1 single json = 3
+        assert_eq!(n, 3, "expected 3 indexed entries (2 md + 1 json)");
+
+        // Verify sources are stored correctly
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'notes::%'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "expected 2 note memories");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'config::%'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "expected 1 config memory");
+
+        // Verify mem_type is set correctly
+        let mem_type: String = conn
+            .query_row("SELECT type FROM memories WHERE source LIKE 'notes::%' LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mem_type, "note");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn index_custom_sources_truncate() {
+        let tmp = std::env::temp_dir().join(format!("cortex_tr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let cortex_dir = tmp.join(".cortex");
+        std::fs::create_dir_all(&cortex_dir).unwrap();
+
+        let docs_dir = tmp.join("docs");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        std::fs::write(docs_dir.join("long.md"), "A".repeat(5000)).unwrap();
+
+        let toml_content = format!(
+            r#"
+[[source]]
+name = "docs"
+path = "{}"
+mem_type = "doc"
+glob = "*.md"
+truncate = 100
+"#,
+            docs_dir.to_string_lossy().replace('\\', "/"),
+        );
+        std::fs::write(cortex_dir.join("sources.toml"), &toml_content).unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+
+        let n = super::index_custom_sources(&conn, &tmp);
+        assert_eq!(n, 1);
+
+        let text: String = conn
+            .query_row("SELECT text FROM memories WHERE source = 'docs::long'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(text.len(), 100, "text should be truncated to 100 chars");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
 }

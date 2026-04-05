@@ -57,25 +57,31 @@ else
   report fail "cargo test failed"
 fi
 
-# ── 4. Fresh-start behavior (no CORTEX_INDEX_EXTENDED) ──────────────────────
+# ── 4. No hardcoded knowledge paths in source ──────────────────────────────
 echo ""
-echo "[4/5] Extended indexer gating"
+echo "[4/5] No hardcoded source paths"
 
-if grep -q 'CORTEX_INDEX_EXTENDED' daemon-rs/src/indexer.rs && \
-   grep -q 'CORTEX_INDEX_EXTENDED' daemon-rs/src/compiler.rs; then
-  report ok "CORTEX_INDEX_EXTENDED gate present in indexer.rs and compiler.rs"
+if grep -rni 'knowledge-sources\|extended-knowledge' daemon-rs/src/ 2>/dev/null; then
+  report fail "daemon-rs/src still contains hardcoded knowledge paths"
 else
-  report fail "Missing CORTEX_INDEX_EXTENDED gate"
+  report ok "Zero hardcoded knowledge paths in daemon-rs/src"
 fi
 
-# ── 5. README documents the env var ──────────────────────────────────────────
+if grep -q 'index_custom_sources' daemon-rs/src/indexer.rs && \
+   grep -q 'sources.toml' daemon-rs/src/indexer.rs; then
+  report ok "Custom sources config system present in indexer.rs"
+else
+  report fail "Missing custom sources config in indexer.rs"
+fi
+
+# ── 5. README documents custom sources ──────────────────────────────────────
 echo ""
 echo "[5/5] README documentation"
 
-if grep -q 'CORTEX_INDEX_EXTENDED' README.md; then
-  report ok "CORTEX_INDEX_EXTENDED documented in README.md"
+if grep -q 'sources.toml\|CORTEX_EXTRA_SOURCES' README.md; then
+  report ok "Custom sources documented in README.md"
 else
-  report fail "CORTEX_INDEX_EXTENDED missing from README.md"
+  report fail "Custom sources missing from README.md"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

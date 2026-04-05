@@ -1,0 +1,40 @@
+# Cortex Custom Sources Configuration
+#
+# Define additional knowledge sources for Cortex to index.
+# Copy this file to ~/.cortex/sources.toml and edit to match your setup.
+#
+# Alternatively, set CORTEX_EXTRA_SOURCES as a semicolon-separated list of
+# directory paths (less configurable but quick to use):
+#   export CORTEX_EXTRA_SOURCES="/path/to/notes;/path/to/docs"
+
+# Each [[source]] block defines one source to index.
+#
+# Fields:
+#   name      (required) - Human-readable name, used as source prefix in memories
+#   path      (required) - File or directory path. Supports ~/
+#   mem_type  (optional) - Memory type string (default: "custom")
+#   glob      (optional) - File pattern for directories (default: "*.md")
+#   truncate  (optional) - Max chars per entry, 0 = no limit (default: 0)
+#   recursive (optional) - Descend into subdirectories (default: false)
+
+# Example: index markdown notes
+# [[source]]
+# name = "notes"
+# path = "~/Documents/notes"
+# mem_type = "note"
+# glob = "*.md"
+
+# Example: index a single JSON file
+# [[source]]
+# name = "config"
+# path = "~/my-tool/config.json"
+# mem_type = "config"
+
+# Example: index all files in a directory, truncated
+# [[source]]
+# name = "research"
+# path = "~/research/papers"
+# mem_type = "insight"
+# glob = "*"
+# truncate = 1000
+# recursive = true

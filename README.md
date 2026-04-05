@@ -79,16 +79,13 @@ cargo build --release
 # Binary at target/release/cortex(.exe)
 ```
 
-**Optional knowledge sources:** Set environment variable `CORTEX_INDEX_EXTENDED=1` before `cortex serve` if you use the extended indexers below. Fresh installs omit this.
+**Custom knowledge sources:** Cortex can index additional files and directories you define. Create `~/.cortex/sources.toml` (see `config/sources.toml.example`) or set `CORTEX_EXTRA_SOURCES` as a semicolon-separated list of directory paths:
 
-When extended indexing is enabled, Cortex looks under your home directory for:
+```bash
+export CORTEX_EXTRA_SOURCES="/path/to/notes;/path/to/docs"
+```
 
-- `~/knowledge-sources/lessons/` (e.g. `lessons.jsonl`)
-- `~/knowledge-sources/tools/goal-setter/` (`current-goals.json`)
-- `~/knowledge-sources/tools/skill-tracker/` (`invocations.jsonl`)
-- `~/knowledge-sources/tools/gorci/` (`last-run.json`)
-- `~/.claude/extended-knowledge/` (root `*.md` insights)
-- `~/.claude/extended-knowledge/crew/` (`*.md` playbooks)
+Each source entry in `sources.toml` supports: `name`, `path` (with `~/`), `mem_type`, `glob` pattern, `truncate` limit, and `recursive` flag. Fresh installs have no custom sources configured.
 
 ---
 

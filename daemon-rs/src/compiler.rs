@@ -16,6 +16,8 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+use crate::indexer::custom_source_paths;
+
 fn detect_identity() -> String {
     let user = env::var("USERNAME")
         .or_else(|_| env::var("USER"))
@@ -647,7 +649,7 @@ fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, String
 // ─── Raw baseline estimation ────────────────────────────────────────────────
 
 /// Estimate what raw file reads would cost — the baseline Cortex replaces.
-/// Counts chars in state.md + all memory files + lessons.
+/// Counts chars in state.md + memory files + any user-configured custom sources.
 fn estimate_raw_baseline(home: &Path) -> usize {
     let mut total_chars: usize = 0;
 
@@ -673,16 +675,15 @@ fn estimate_raw_baseline(home: &Path) -> usize {
         }
     }
 
-    if env::var("CORTEX_INDEX_EXTENDED").unwrap_or_default() == "1" {
-        let lessons_dir = home.join("knowledge-sources").join("lessons");
-        if let Ok(entries) = std::fs::read_dir(&lessons_dir) {
-            for entry in entries.flatten() {
-                if entry
-                    .path()
-                    .extension()
-                    .map(|x| x == "md" || x == "json")
-                    .unwrap_or(false)
-                {
+    // Custom sources from ~/.cortex/sources.toml or CORTEX_EXTRA_SOURCES
+    for path in custom_source_paths(home) {
+        if path.is_file() {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                total_chars += meta.len() as usize;
+            }
+        } else if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                for entry in entries.flatten() {
                     if let Ok(meta) = entry.metadata() {
                         total_chars += meta.len() as usize;
                     }
