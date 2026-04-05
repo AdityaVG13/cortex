@@ -162,7 +162,10 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 | 83 | Fix /unfold visibility bypass (root cause) | CRITICAL | Thread RecallContext through unfold handler. Zero access control currently. |
 | 84 | Fix is_visible NULL owner_id policy (root cause) | CRITICAL | Fail closed in team mode. Migration must guarantee zero NULLs. Add CHECK constraint. |
 | 85 | Fix MCP per-caller identity (root cause) | HIGH | API key or caller_id per JSON-RPC request. from_state is a workaround, not a fix. |
-| 101 | First-run identity: cortex_store must use the new user's identity, not the developer's | CRITICAL | When a new user downloads and runs Cortex, cortex_store/recall/boot must reflect THEIR identity -- not "Aditya" or any hardcoded developer state. Audit every MCP tool handler and HTTP endpoint for hardcoded identity, default agent names, or user-specific data baked into the binary. The capsule compiler, boot prompt, indexer, and knowledge sources all need to initialize fresh for a new user. First `cortex serve` on a clean install must produce a blank brain with the new user's context, not the developer's. |
+| 101 | compiler.rs: replace hardcoded "User: Aditya" identity capsule | CRITICAL | Line 113: `"User: Aditya. Platform: Windows 10. Shell: bash."` is baked into the binary. Must detect platform, shell, username dynamically at runtime. Use `whoami`/`USERNAME` env var, `std::env::consts::OS`, detect shell from `SHELL`/`COMSPEC`. |
+| 102 | compiler.rs + indexer.rs: replace hardcoded `C--Users-aditya` path | CRITICAL | compiler.rs:628 and indexer.rs:109 both hardcode `.join("C--Users-aditya")` to find claude memory files. Must dynamically resolve the Claude projects directory -- it's `~/.claude/projects/{project-slug}/memory/` where the slug is derived from CWD. |
+| 103 | service.rs: replace `"aditya"` fallback username | LOW | Line 30: `unwrap_or_else(\|_\| "aditya".to_string())`. Change fallback to `"cortex-user"` or `"unknown"`. |
+| 104 | Clean install audit: first `cortex serve` on empty system must produce blank brain | HIGH | Verify: no cortex.db shipped, no pre-baked memories/decisions, indexer gracefully handles missing sources (state.md, memory files, self-improvement/), boot prompt works with zero knowledge nodes, /health returns clean state. Test by deleting cortex.db and ~/.cortex/ and running fresh. |
 
 ### Cursor -- 8 new tasks
 
@@ -205,14 +208,14 @@ Schema tasks 45-53 are DONE (solo mode tables exist). Gemini Flash handles forma
 
 | Tool | Original | New | Total |
 |------|----------|-----|-------|
-| Claude Code (Opus) | 7 | 3 | 10 |
+| Claude Code (Opus) | 7 | 7 | 14 |
 | Cursor (Sonnet/GLM 5) | 20 | 8 | 28 |
 | Codex CLI | 10 | 2 | 12 |
 | Gemini CLI | 5 | 3 | 8 |
 | Droid (GLM 5) | 12 | 0 | 12 |
 | Droid (GLM 4.7) | 19 | 2 | 21 |
 | Gemini Flash | 9 | 0 | 9 |
-| **Total** | **82** | **18** | **100** |
+| **Total** | **82** | **22** | **104** |
 
 ---
 
