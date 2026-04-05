@@ -51,11 +51,8 @@ curl -X POST http://localhost:7437/store \
   -d '{"decision": "What you learned", "context": "Why it matters"}'
 ```
 
-### Gemini CLI
-Reads `~/GEMINI.md` at startup which instructs it to call `/boot`.
-
-### Codex CLI
-Reads `~/AGENTS.md` at startup with the same protocol.
+### Generic AI Agents
+Most agents can be configured to read a file or call a URL at startup. Point your agent to the `/boot` endpoint to receive its persistent context.
 
 ### Cline / Cursor (MCP)
 Register the MCP sidecar:
@@ -69,7 +66,7 @@ Run before starting work:
 ```bash
 curl -s "http://localhost:7437/boot?agent=aider" | python -c "import json,sys; print(json.load(sys.stdin)['bootPrompt'])"
 ```
-Use `--read` flag to pass the output as context.
+Use the output as context for your session.
 
 ### Any new AI tool
 If it can make HTTP requests or run shell commands, it can connect. The protocol is:

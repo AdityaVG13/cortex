@@ -13,8 +13,8 @@ All CRITICAL security and OSS-readiness tasks are complete. These remaining item
 | # | Task | Owner | Status |
 |---|------|-------|--------|
 | 86 | Version bump to v0.4.0 + GitHub release | CU | |
-| 90 | README rewrite for public audience | GC | |
-| 92 | Review architecture docs: public vs internal vs remove | GC | |
+| âœ“90 | README rewrite for public audience | GC | **DONE** |
+| âœ“92 | Review architecture docs: public vs internal vs remove | GC | **DONE** |
 | 93 | ~~ROADMAP.md for contributors~~ | -- | Done (this file) |
 | 94 | CONTRIBUTING.md + SECURITY.md | CX | |
 | 91 | Recall quality baseline (surprise score analysis) | GC | |
