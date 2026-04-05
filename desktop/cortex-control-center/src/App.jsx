@@ -1479,8 +1479,8 @@ export function App() {
               <div style={{ padding: "2rem", maxWidth: 640 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
                   <img
-                    src="/icons/adityasmile.png"
-                    alt="Aditya"
+                    src="/icons/icon.png"
+                    alt="Creator"
                     style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
                     onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }}
                   />
@@ -1492,7 +1492,7 @@ export function App() {
                   }}>◈</div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Created by Aditya &mdash; Version 0.3.0</p>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Created by @AdityaVG13 &mdash; Version 0.3.0</p>
                   </div>
                 </div>
 
