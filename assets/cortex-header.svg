@@ -1,0 +1,36 @@
+<svg width="1200" height="240" viewBox="0 0 1200 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cortex-main" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8B5FC7" />
+      <stop offset="55%" stop-color="#552583" />
+      <stop offset="100%" stop-color="#34154E" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="240" rx="12" fill="#141414" />
+  <g font-family="'Courier New', Consolas, monospace" font-size="25" font-weight="700" xml:space="preserve">
+    <text x="71" y="55" fill="#241036" opacity="0.9">
+      <tspan x="71" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
+      <tspan x="71" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
+      <tspan x="71" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
+      <tspan x="71" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
+      <tspan x="71" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
+      <tspan x="71" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
+    </text>
+    <text x="59" y="47" fill="#3B185A" opacity="0.95">
+      <tspan x="59" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
+      <tspan x="59" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
+      <tspan x="59" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
+      <tspan x="59" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
+      <tspan x="59" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
+      <tspan x="59" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
+    </text>
+    <text x="47" y="39" fill="url(#cortex-main)">
+      <tspan x="47" dy="0">  ______   ____   _____   _______   ______   __   __</tspan>
+      <tspan x="47" dy="31"> / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /</tspan>
+      <tspan x="47" dy="31">| |     | |  | || |__) |   | |    | |__      \ V /</tspan>
+      <tspan x="47" dy="31">| |     | |  | ||  _  /    | |    |  __|      &gt; &lt;</tspan>
+      <tspan x="47" dy="31">| |____ | |__| || | \ \    | |    | |____    / . \</tspan>
+      <tspan x="47" dy="31"> \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\</tspan>
+    </text>
+  </g>
+</svg>

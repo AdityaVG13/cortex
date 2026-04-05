@@ -1,14 +1,5 @@
 <p align="center">
-
-```
-  ______   ____   _____   _______   ______   __   __
- / ____| / __ \ |  __ \ |__   __| |  ____|  \ \ / /
-| |     | |  | || |__) |   | |    | |__      \ V /
-| |     | |  | ||  _  /    | |    |  __|      > <
-| |____ | |__| || | \ \    | |    | |____    / . \
- \_____| \____/ |_|  \_\   |_|    |______|  /_/ \_\
-```
-
+  <img src="assets/cortex-header.svg" alt="CORTEX" width="100%">
 </p>
 
 <h3 align="center">A persistent, self-improving brain for AI coding agents.</h3>
