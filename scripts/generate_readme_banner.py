@@ -8,8 +8,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 WIDTH = 1200
 HEIGHT = 240
-PADDING_X = 56
-PADDING_Y = 34
+TEXT_SHIFT_X = 0
+TEXT_SHIFT_Y = -20
 FONT_PATH = Path("C:/Windows/Fonts/consolab.ttf")
 OUTPUT = Path(__file__).resolve().parent.parent / "assets" / "cortex-header.gif"
 
@@ -22,11 +22,12 @@ ASCII_LINES = [
     " \\_____| \\____/ |_|  \\_\\   |_|    |______|  /_/ \\_\\",
 ]
 
-BG = (44, 46, 54, 255)
-PANEL = (54, 57, 66, 255)
-GRID = (84, 88, 98, 16)
-SHADOW = (40, 15, 58, 92)
-UNDERLAY = (94, 53, 145, 108)
+BG = (45, 47, 54, 255)
+PANEL = (57, 60, 68, 255)
+PANEL_ACCENT = (73, 76, 86, 255)
+PANEL_EDGE = (255, 255, 255, 16)
+SHADOW = (29, 12, 45, 96)
+UNDERLAY = (94, 53, 145, 116)
 PURPLE_TOP = (151, 111, 214, 255)
 PURPLE_BOTTOM = (85, 37, 131, 255)
 SWEEP = (220, 196, 255, 235)
@@ -43,13 +44,21 @@ def text_metrics(font: ImageFont.FreeTypeFont) -> tuple[int, int]:
     return int(max_width), line_height
 
 
+def text_origin(offset: tuple[int, int] = (0, 0)) -> tuple[int, int]:
+    font = make_font()
+    text_width, line_height = text_metrics(font)
+    text_height = line_height * len(ASCII_LINES)
+    x = int((WIDTH - text_width) / 2) + TEXT_SHIFT_X + offset[0]
+    y = int((HEIGHT - text_height) / 2) + TEXT_SHIFT_Y + offset[1]
+    return x, y
+
+
 def draw_text_mask(size: tuple[int, int], offset: tuple[int, int] = (0, 0)) -> Image.Image:
     font = make_font()
     _, line_height = text_metrics(font)
     mask = Image.new("L", size, 0)
     draw = ImageDraw.Draw(mask)
-    x = PADDING_X + offset[0]
-    y = PADDING_Y + offset[1]
+    x, y = text_origin(offset)
     for index, line in enumerate(ASCII_LINES):
         draw.text((x, y + index * line_height), line, fill=255, font=font)
     return mask
@@ -70,12 +79,13 @@ def vertical_gradient(size: tuple[int, int], top: tuple[int, int, int, int], bot
 def make_background(frame_index: int, frame_count: int) -> Image.Image:
     image = Image.new("RGBA", (WIDTH, HEIGHT), BG)
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((16, 16, WIDTH - 16, HEIGHT - 16), radius=12, fill=PANEL)
+    draw.rounded_rectangle((18, 18, WIDTH - 18, HEIGHT - 18), radius=16, fill=PANEL)
+    draw.rounded_rectangle((18, 18, WIDTH - 18, HEIGHT - 18), radius=16, outline=PANEL_EDGE, width=1)
+    draw.line((34, 44, WIDTH - 34, 44), fill=PANEL_ACCENT, width=1)
+    draw.line((34, HEIGHT - 42, WIDTH - 34, HEIGHT - 42), fill=(32, 34, 39, 255), width=1)
 
-    shift = (frame_index * 8) % 24
-    for y in range(0, HEIGHT, 6):
-        alpha = 12 if ((y + shift) // 6) % 2 == 0 else 4
-        draw.rectangle((0, y, WIDTH, y + 1), fill=(GRID[0], GRID[1], GRID[2], alpha))
+    sweep_x = 120 + int((WIDTH - 240) * (frame_index / max(1, frame_count - 1)))
+    draw.rounded_rectangle((sweep_x - 110, 28, sweep_x + 60, 36), radius=4, fill=(96, 75, 126, 64))
 
     return image
 
@@ -83,11 +93,11 @@ def make_background(frame_index: int, frame_count: int) -> Image.Image:
 def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Image.Image:
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     pixels = overlay.load()
-    center = -240 + (WIDTH + 480) * (frame_index / frame_count)
-    half_band = 120.0
+    center = -220 + (WIDTH + 440) * (frame_index / frame_count)
+    half_band = 110.0
 
     for y in range(HEIGHT):
-        skew = y * 0.68
+        skew = y * 0.54
         for x in range(WIDTH):
             distance = abs((x - skew) - center)
             if distance > half_band:
@@ -104,9 +114,9 @@ def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Imag
 def frame_sequence() -> Iterable[Image.Image]:
     frame_count = 18
     text_mask = draw_text_mask((WIDTH, HEIGHT))
-    fill_mask = text_mask.filter(ImageFilter.MaxFilter(5))
+    fill_mask = text_mask.filter(ImageFilter.MaxFilter(7))
     shadow_mask = draw_text_mask((WIDTH, HEIGHT), offset=(8, 8)).filter(ImageFilter.GaussianBlur(2.5))
-    glow_mask = text_mask.filter(ImageFilter.GaussianBlur(5))
+    glow_mask = text_mask.filter(ImageFilter.GaussianBlur(4))
     base_text = vertical_gradient((WIDTH, HEIGHT), PURPLE_TOP, PURPLE_BOTTOM)
 
     for frame_index in range(frame_count):
@@ -119,7 +129,7 @@ def frame_sequence() -> Iterable[Image.Image]:
         underlay = Image.new("RGBA", (WIDTH, HEIGHT), UNDERLAY)
         frame.paste(underlay, mask=fill_mask)
 
-        glow_strength = 34 + (8 if frame_index in {0, 9} else 0)
+        glow_strength = 28 + (8 if frame_index in {0, 9} else 0)
         glow = Image.new("RGBA", (WIDTH, HEIGHT), (121, 68, 190, glow_strength))
         frame.paste(glow, mask=glow_mask)
 
@@ -130,7 +140,7 @@ def frame_sequence() -> Iterable[Image.Image]:
         highlight = sweep_overlay(text_mask, frame_index, frame_count)
         frame = ImageChops.screen(frame, highlight)
 
-        yield frame.convert("P", palette=Image.Palette.ADAPTIVE)
+        yield frame.convert("P", palette=Image.Palette.ADAPTIVE, dither=Image.Dither.NONE)
 
 
 def main() -> None:
