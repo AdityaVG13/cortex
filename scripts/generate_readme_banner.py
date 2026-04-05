@@ -79,15 +79,14 @@ def build_ascii_word(word: str, gap: str = "  ") -> list[str]:
 ASCII_LINES = build_ascii_word("CORTEX")
 
 BG = (45, 47, 54, 255)
-PANEL = (57, 60, 68, 255)
-PANEL_ACCENT = (73, 76, 86, 255)
+PANEL = (50, 53, 60, 255)
+PANEL_ACCENT = (64, 67, 76, 255)
 PANEL_EDGE = (255, 255, 255, 16)
 SHADOW = (29, 12, 45, 96)
 UNDERLAY = (94, 53, 145, 116)
 PURPLE_TOP = (151, 111, 214, 255)
 PURPLE_BOTTOM = (85, 37, 131, 255)
 SWEEP = (220, 196, 255, 235)
-CURSOR = (199, 168, 244, 235)
 
 
 def make_font() -> ImageFont.FreeTypeFont:
@@ -121,18 +120,6 @@ def draw_text_mask(size: tuple[int, int], offset: tuple[int, int] = (0, 0)) -> I
     return mask
 
 
-def draw_cursor_mask(size: tuple[int, int]) -> Image.Image:
-    font = make_font()
-    text_width, line_height = text_metrics(font)
-    text_height = line_height * len(ASCII_LINES)
-    x = int((WIDTH - text_width) / 2) + TEXT_SHIFT_X + text_width + 18
-    y = int((HEIGHT - text_height) / 2) + TEXT_SHIFT_Y + 14
-    mask = Image.new("L", size, 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle((x, y, x + 12, y + text_height - 28), radius=2, fill=255)
-    return mask
-
-
 def vertical_gradient(size: tuple[int, int], top: tuple[int, int, int, int], bottom: tuple[int, int, int, int]) -> Image.Image:
     width, height = size
     image = Image.new("RGBA", size)
@@ -162,17 +149,17 @@ def make_background(frame_index: int, frame_count: int) -> Image.Image:
 def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Image.Image:
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     pixels = overlay.load()
-    center = -220 + (WIDTH + 440) * (frame_index / frame_count)
-    half_band = 110.0
+    center = -180 + (WIDTH + 360) * (frame_index / frame_count)
+    half_band = 72.0
 
     for y in range(HEIGHT):
-        skew = y * 0.54
+        skew = y * 0.42
         for x in range(WIDTH):
             distance = abs((x - skew) - center)
             if distance > half_band:
                 continue
             strength = 1.0 - (distance / half_band)
-            alpha = int(SWEEP[3] * (strength**1.6))
+            alpha = int(SWEEP[3] * (strength**2.25))
             pixels[x, y] = (SWEEP[0], SWEEP[1], SWEEP[2], alpha)
 
     clipped = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -186,7 +173,6 @@ def frame_sequence() -> Iterable[Image.Image]:
     fill_mask = text_mask.filter(ImageFilter.MaxFilter(7))
     shadow_mask = draw_text_mask((WIDTH, HEIGHT), offset=(8, 8)).filter(ImageFilter.GaussianBlur(2.5))
     glow_mask = text_mask.filter(ImageFilter.GaussianBlur(4))
-    cursor_mask = draw_cursor_mask((WIDTH, HEIGHT))
     base_text = vertical_gradient((WIDTH, HEIGHT), PURPLE_TOP, PURPLE_BOTTOM)
 
     for frame_index in range(frame_count):
@@ -209,10 +195,6 @@ def frame_sequence() -> Iterable[Image.Image]:
 
         highlight = sweep_overlay(text_mask, frame_index, frame_count)
         frame = ImageChops.screen(frame, highlight)
-
-        if frame_index % 9 in {0, 1, 2, 6}:
-            cursor = Image.new("RGBA", (WIDTH, HEIGHT), CURSOR)
-            frame.paste(cursor, mask=cursor_mask)
 
         yield frame.convert("P", palette=Image.Palette.ADAPTIVE, dither=Image.Dither.NONE)
 
