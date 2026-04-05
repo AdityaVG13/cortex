@@ -113,7 +113,8 @@ export function BrainVisualizer() {
       const token = invoke
         ? await invoke("read_auth_token").catch(() => "")
         : "";
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers = { "X-Cortex-Request": "true" };
+      if (token) headers.Authorization = `Bearer ${token}`;
 
       const dumpRes = await fetch(`${CORTEX_BASE}/dump`, { headers })
         .then(r => r.ok ? r.json() : null)

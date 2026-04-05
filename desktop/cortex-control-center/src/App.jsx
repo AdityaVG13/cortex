@@ -356,7 +356,7 @@ export function App() {
   }, [sessions, messageAgent]);
 
   const api = useCallback(async (path, withAuth = false) => {
-    const headers = {};
+    const headers = { "X-Cortex-Request": "true" };
     if (withAuth) {
       if (!tokenRef.current) return null;
       headers.Authorization = `Bearer ${tokenRef.current}`;
@@ -378,6 +378,7 @@ export function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Cortex-Request": "true",
           Authorization: `Bearer ${tokenRef.current}`,
         },
         body: JSON.stringify(body),
@@ -504,7 +505,7 @@ export function App() {
   }, [api, activitySince]);
 
   const refreshSavings = useCallback(async () => {
-    const result = await api("/savings");
+    const result = await api("/savings", true);
     if (result) setSavings(result);
   }, [api]);
 
@@ -1490,7 +1491,7 @@ export function App() {
                   }}>◈</div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Created by @AdityaVG13 &mdash; Version 0.3.0</p>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--muted)" }}>Created by @AdityaVG13 -- Version 0.4.0</p>
                   </div>
                 </div>
 
@@ -1506,7 +1507,7 @@ export function App() {
                     ["Storage", "SQLite (WAL)"],
                     ["Transport", "HTTP + MCP stdio"],
                     ["Port", "7437"],
-                    ["License", "MIT"],
+                    ["License", "AGPL-3.0"],
                   ].map(([label, value]) => (
                     <div key={label} style={{
                       background: "var(--card-bg)", border: "1px solid var(--border)",
