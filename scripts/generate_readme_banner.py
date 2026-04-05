@@ -13,6 +13,8 @@ TEXT_SHIFT_X = 0
 TEXT_SHIFT_Y = -17
 FONT_PATH = Path("C:/Windows/Fonts/consolab.ttf")
 OUTPUT = Path(__file__).resolve().parent.parent / "assets" / "cortex-header.gif"
+WORD = "CORTEX"
+LETTER_GAP = "  "
 
 LETTER_FORMS = {
     "C": [
@@ -77,7 +79,19 @@ def build_ascii_word(word: str, gap: str = "  ") -> list[str]:
     return rows
 
 
-ASCII_LINES = build_ascii_word("CORTEX")
+def build_letter_layout(word: str, gap: str = "  ") -> list[tuple[str, int]]:
+    layout: list[tuple[str, int]] = []
+    cursor = 0
+    for index, letter in enumerate(word):
+        if index:
+            cursor += len(gap)
+        layout.append((letter, cursor))
+        cursor += max(len(row) for row in LETTER_FORMS[letter])
+    return layout
+
+
+ASCII_LINES = build_ascii_word(WORD, LETTER_GAP)
+LETTER_LAYOUT = build_letter_layout(WORD, LETTER_GAP)
 
 BG = (45, 47, 54, 255)
 PANEL = (50, 53, 60, 255)
@@ -90,6 +104,7 @@ PURPLE_BOTTOM = (108, 48, 130, 255)
 SWEEP = (244, 230, 255, 245)
 BORDER_GLOW = (118, 72, 170, 82)
 BORDER_CORE = (151, 110, 196, 126)
+WAKE_FLASH = (246, 233, 255, 230)
 
 
 def make_font() -> ImageFont.FreeTypeFont:
@@ -121,6 +136,24 @@ def draw_text_mask(size: tuple[int, int], offset: tuple[int, int] = (0, 0)) -> I
     for index, line in enumerate(ASCII_LINES):
         draw.text((x, y + index * line_height), line, fill=255, font=font)
     return mask
+
+
+def draw_letter_masks(size: tuple[int, int]) -> list[Image.Image]:
+    font = make_font()
+    _, line_height = text_metrics(font)
+    char_width = font.getlength("M")
+    base_x, base_y = text_origin()
+    masks: list[Image.Image] = []
+
+    for letter, start_col in LETTER_LAYOUT:
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        x = int(base_x + start_col * char_width)
+        for row_index, line in enumerate(LETTER_FORMS[letter]):
+            draw.text((x, base_y + row_index * line_height), line, fill=255, font=font)
+        masks.append(mask)
+
+    return masks
 
 
 def vertical_gradient(size: tuple[int, int], top: tuple[int, int, int, int], bottom: tuple[int, int, int, int]) -> Image.Image:
@@ -188,6 +221,44 @@ def draw_border_runner(image: Image.Image, frame_index: int, frame_count: int) -
     image.alpha_composite(core)
 
 
+def offset_mask(mask: Image.Image, dx: int, dy: int, blur_radius: float = 0) -> Image.Image:
+    shifted = Image.new("L", mask.size, 0)
+    shifted.paste(mask, (dx, dy))
+    if blur_radius:
+        shifted = shifted.filter(ImageFilter.GaussianBlur(blur_radius))
+    return shifted
+
+
+def wake_masks(letter_masks: list[Image.Image], frame_index: int) -> tuple[Image.Image, Image.Image]:
+    base = Image.new("L", (WIDTH, HEIGHT), 0)
+    flash = Image.new("L", (WIDTH, HEIGHT), 0)
+
+    for index, letter_mask in enumerate(letter_masks):
+        phase = frame_index - index * 2
+        if phase < 0:
+            base_alpha = 0
+            flash_alpha = 0
+        elif phase == 0:
+            base_alpha = 46
+            flash_alpha = 120
+        elif phase == 1:
+            base_alpha = 188
+            flash_alpha = 255
+        elif phase == 2:
+            base_alpha = 112
+            flash_alpha = 72
+        else:
+            base_alpha = 255
+            flash_alpha = 0
+
+        if base_alpha:
+            base.paste(base_alpha, mask=letter_mask)
+        if flash_alpha:
+            flash.paste(flash_alpha, mask=letter_mask)
+
+    return base, flash
+
+
 def make_background(frame_index: int, frame_count: int) -> Image.Image:
     image = Image.new("RGBA", (WIDTH, HEIGHT), BG)
     draw = ImageDraw.Draw(image)
@@ -224,31 +295,51 @@ def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Imag
 def frame_sequence() -> Iterable[Image.Image]:
     frame_count = 32
     text_mask = draw_text_mask((WIDTH, HEIGHT))
+    letter_masks = draw_letter_masks((WIDTH, HEIGHT))
     fill_mask = text_mask.filter(ImageFilter.MaxFilter(7))
     shadow_mask = draw_text_mask((WIDTH, HEIGHT), offset=(8, 8)).filter(ImageFilter.GaussianBlur(2.5))
     glow_mask = text_mask.filter(ImageFilter.GaussianBlur(4))
     base_text = vertical_gradient((WIDTH, HEIGHT), PURPLE_TOP, PURPLE_BOTTOM)
+    startup_frames = len(letter_masks) * 2 + 4
+    shimmer_start = startup_frames - 1
 
     for frame_index in range(frame_count):
         frame = make_background(frame_index, frame_count)
 
+        current_text_mask = text_mask
+        current_fill_mask = fill_mask
+        current_shadow_mask = shadow_mask
+        current_glow_mask = glow_mask
+        flash_mask = None
+
+        if frame_index < startup_frames:
+            current_text_mask, flash_mask = wake_masks(letter_masks, frame_index)
+            current_fill_mask = current_text_mask.filter(ImageFilter.MaxFilter(7))
+            current_shadow_mask = offset_mask(current_text_mask, 8, 8, blur_radius=2.5)
+            current_glow_mask = current_text_mask.filter(ImageFilter.GaussianBlur(4))
+
         shadow = Image.new("RGBA", (WIDTH, HEIGHT), SHADOW)
         frame.alpha_composite(Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0)))
-        frame.paste(shadow, mask=shadow_mask)
+        frame.paste(shadow, mask=current_shadow_mask)
 
         underlay = Image.new("RGBA", (WIDTH, HEIGHT), UNDERLAY)
-        frame.paste(underlay, mask=fill_mask)
+        frame.paste(underlay, mask=current_fill_mask)
 
         glow_strength = 24 + (10 if frame_index in {0, 15} else 0)
         glow = Image.new("RGBA", (WIDTH, HEIGHT), (132, 78, 206, glow_strength))
-        frame.paste(glow, mask=glow_mask)
+        frame.paste(glow, mask=current_glow_mask)
 
         text_layer = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
-        text_layer.paste(base_text, mask=text_mask)
+        text_layer.paste(base_text, mask=current_text_mask)
         frame.alpha_composite(text_layer)
 
-        highlight = sweep_overlay(text_mask, frame_index, frame_count)
-        frame = ImageChops.screen(frame, highlight)
+        if flash_mask is not None:
+            flash_overlay = Image.new("RGBA", (WIDTH, HEIGHT), WAKE_FLASH)
+            frame = ImageChops.screen(frame, Image.composite(flash_overlay, Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0)), flash_mask))
+
+        if frame_index >= shimmer_start:
+            highlight = sweep_overlay(text_mask, frame_index - shimmer_start, frame_count - shimmer_start + 1)
+            frame = ImageChops.screen(frame, highlight)
 
         yield frame.convert("P", palette=Image.Palette.ADAPTIVE, dither=Image.Dither.NONE)
 
