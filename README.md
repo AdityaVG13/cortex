@@ -79,7 +79,7 @@ cargo build --release
 # Binary at target/release/cortex(.exe)
 ```
 
-**Optional knowledge sources:** Set environment variable CORTEX_INDEX_EXTENDED=1 before cortex serve if you index extra on-disk lesson, goal, and playbook trees beyond the default Claude Code paths. Fresh installs omit this.
+**Optional knowledge sources:** Set environment variable `CORTEX_INDEX_EXTENDED=1` before `cortex serve` if you index extra on-disk lesson, goal, and playbook trees beyond the default Claude Code paths. Fresh installs omit this.
 
 ---
 
