@@ -176,7 +176,7 @@ function agentColor(name) {
   if (n.includes("claude")) return "var(--agent-claude)";
   if (n.includes("droid") || n.includes("factory")) return "var(--agent-droid)";
   if (n.includes("gemini")) return "var(--agent-gemini)";
-  if (n.includes("ollama") || n.includes("qwen") || n.includes("deepseek")) return "var(--agent-ollama)";
+  if (n.includes("qwen") || n.includes("deepseek")) return "#22c55e";
   return "var(--cyan)";
 }
 
@@ -833,10 +833,8 @@ export function App() {
             <button type="button" className="btn-ctrl btn-primary" onClick={handleStartDaemon}>Start</button>
             <button type="button" className="btn-ctrl" onClick={handleStopDaemon}>Stop</button>
             <button type="button" className="btn-ctrl btn-danger" onClick={async () => {
-              await handleStopDaemon();
-              if (window.__TAURI__?.core?.invoke) {
-                window.__TAURI__.core.invoke("stop_daemon");
-                window.__TAURI__.process?.exit?.(0);
+              if (invokeRef.current) {
+                try { await call("quit_app"); } catch { /* app is exiting */ }
               }
             }}>Exit</button>
           </div>

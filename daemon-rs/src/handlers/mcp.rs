@@ -136,7 +136,7 @@ pub fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "cortex_health",
-            "description": "Check Cortex system health: DB stats, Ollama status, memory counts.",
+            "description": "Check Cortex system health: DB stats, memory counts.",
             "inputSchema": { "type": "object", "properties": {} }
         }),
         json!({

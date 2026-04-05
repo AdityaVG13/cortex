@@ -1,7 +1,7 @@
 //! In-process ONNX embedding engine.
 //!
 //! Uses all-MiniLM-L6-v2 (23MB, 384-dim) downloaded on first run.
-//! No Ollama dependency -- embeddings work the moment Cortex starts.
+//! Embeddings work the moment Cortex starts.
 
 use ort::session::Session;
 use ort::value::Tensor;

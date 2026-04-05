@@ -5,7 +5,6 @@ export const AGENT_COLORS = {
   droid: "#ff9800",
   "factory-droid": "#ff9800",
   gemini: "#a855f7",
-  ollama: "#22c55e",
   mcp: "#00d4ff",
   system: "#546580",
 };

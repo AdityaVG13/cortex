@@ -31,9 +31,8 @@
 
   /* Agent colors */
   --agent-claude: #4a9eff;
-  --agent-droid: #ff9800;
+  --agent-droid: "#ff9800";
   --agent-gemini: #a855f7;
-  --agent-ollama: #22c55e;
 
   /* Status */
   --green: #00e676;
@@ -325,6 +324,27 @@ body {
   color: var(--cyan);
   border-color: var(--border);
   background: var(--surface-2);
+}
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 200, 150, 0.1);
+  border: 1px solid rgba(0, 200, 150, 0.3);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--cyan);
+}
+
+.update-banner .btn-sm {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 2px 8px;
 }
 
 .sidebar-status {
@@ -1827,7 +1847,8 @@ body {
 }
 
 .sidebar.collapsed .sidebar-footer .daemon-controls-grid,
-.sidebar.collapsed .sidebar-footer .sidebar-status {
+.sidebar.collapsed .sidebar-footer .sidebar-status,
+.sidebar.collapsed .sidebar-footer .update-banner {
   display: none;
 }
 

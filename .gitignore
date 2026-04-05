@@ -17,7 +17,10 @@ dist/
 *.bak
 
 # Internal design docs (not for public repo)
-docs/
+docs/architecture/
+docs/compatibility/
+docs/schema/
+docs/archive/
 
 # Build artifacts at repo root
 cortex-app.exe
@@ -26,8 +29,23 @@ cortex-app.exe
 # Database artifacts
 cortex.db.bak
 cortex_corrupt.db
+*.db-journal
 debug-*.log
 docs.zip
+
+# Rust build outputs
+daemon-rs/target/
+
+# Desktop app build outputs
+desktop/cortex-control-center/dist/
+
+# TLS certs and private keys
+*.pem
+*.key
+
+# Environment files
+.env
+.env.*
 
 # Personal config (users create their own)
 CLAUDE.md
@@ -40,7 +58,7 @@ PLAN.md
 RECON.md
 cortex-profiles.json
 
-# Personal LM Studio / Ollama configs
+# Personal configs
 config/Modelfile.*
 config/*.env
 
@@ -51,6 +69,14 @@ cortex-dashboard.bat
 cortex-app.bat
 cortex-mcp.cmd
 Cortex?Ingester?Instructions.txt
+
+# TLS certs and private keys
+*.pem
+*.key
+
+# Environment files
+.env
+.env.*
 
 # Editor/tool artifacts
 .aider*

@@ -31,7 +31,7 @@ Then open: `http://localhost:3333`
 
 ### 📊 Dashboard
 - Cortex health metrics
-- Ollama connectivity status
+- ONNX embedding status
 - Token savings summary
 - Task board (pending until Task Board endpoints exist)
 
@@ -60,7 +60,7 @@ All data comes from the Cortex daemon at `http://localhost:7437`:
 
 | Endpoint | Used For | Auth |
 |----------|----------|------|
-| `/health` | Stats, Ollama status | No |
+| `/health` | Stats | No |
 | `/sessions` | Active agent sessions | Yes |
 | `/locks` | Active file locks | Yes |
 | `/activity` | Recent activity feed | Yes |

@@ -56,9 +56,9 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 95 | Repo cleanup: .gitignore patterns for all personal/build artifacts | | 20+ new patterns: personal configs, editor dirs, build artifacts, debug logs, db backups. |
-| 96 | Remove legacy Node.js src/ or add deprecation notice | | Rust daemon is the product. Legacy code confuses contributors. |
-| 112 | Remove all Ollama references from codebase | | Grep for "ollama", "Ollama", "OLLAMA" across all files. Remove dead code, config, and references. Cortex no longer uses Ollama -- ONNX is the embedding engine. |
+| 95 | ✓ Fix .gitignore patterns for OSS release | [COMMIT_HASH] | Updated docs/ to ignore specific subdirs only, comment update, added *.db-journal, .env.*, *.pem, *.key, daemon-rs/target/, desktop paths |
+| 96 | ✓ Verify no legacy Node.js src directory exists | [N/A] | No src/ directory found -- all Node.js code already migrated to daemon-rs Rust or removed |
+| 112 | ✓ Remove all Ollama references | [COMMIT_HASH] | Removed from embeddings.rs, mcp.rs, App.jsx, constants.js, BrainVisualizer.jsx, styles.css, workers/*.md, workers/*.py, README.md, .gitignore |
 
 ## MEDIUM (nice to have for launch)
 

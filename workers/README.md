@@ -17,7 +17,7 @@ All workers talk to Cortex via HTTP at `localhost:7437`.
 ```bash
 cd workers
 uv init
-uv add httpx ollama streamlit
+uv add httpx streamlit
 ```
 
 ## Architecture

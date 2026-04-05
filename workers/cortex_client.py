@@ -273,7 +273,6 @@ if __name__ == "__main__":
         print(f"  Memories:   {s.get('memories', '?')}")
         print(f"  Decisions:  {s.get('decisions', '?')}")
         print(f"  Embeddings: {s.get('embeddings', '?')}")
-        print(f"  Ollama:     {s.get('ollama', '?')}")
 
         d = digest()
         ts = d.get("tokenSavings", {}).get("allTime", {})

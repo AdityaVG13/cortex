@@ -80,7 +80,6 @@ class CortexStats:
     decisions: int
     embeddings: int
     events: int
-    ollama: str
 
 
 def get_cortex_stats() -> CortexStats | None:
@@ -94,39 +93,25 @@ def get_cortex_stats() -> CortexStats | None:
             decisions=s.get("decisions", 0),
             embeddings=s.get("embeddings", 0),
             events=s.get("events", 0),
-            ollama=s.get("ollama", "unknown"),
         )
     except Exception as e:
         st.error(f"Failed to fetch stats: {e}")
         return None
 
 
-def ollama_status_badge(ollama: str) -> str:
-    """Return emoji badge for Ollama status."""
-    if ollama == "connected":
-        return "🟢"
-    elif ollama.startswith("error_"):
-        return "🟡"
-    else:
-        return "🔴"
-
-
 def render_health_card(stats: CortexStats):
     """Render the Cortex health card."""
     with st.expander("📊 Cortex Health", expanded=True):
-        col1, col2, col3, col4 = st.columns(4)
-        
+        col1, col2, col3 = st.columns(3)
+
         with col1:
             st.metric("Memories", f"{stats.memories:,}")
-        
+
         with col2:
             st.metric("Decisions", f"{stats.decisions:,}")
-        
+
         with col3:
             st.metric("Embeddings", f"{stats.embeddings:,}")
-        
-        with col4:
-            st.metric("Ollama", f"{ollama_status_badge(stats.ollama)} {stats.ollama}")
         
         # Show token savings if available
         try:
