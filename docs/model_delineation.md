@@ -56,8 +56,8 @@
 
 | # | Task | Done | Details |
 |---|------|------|---------|
-| 95 | Fix .gitignore patterns for OSS release | | 22+ new patterns: personal configs, editor dirs, build artifacts, debug logs, db backups, TLS certs, env files |
-| 96 | Verify no legacy Node.js src directory exists | | No src/ directory found -- all Node.js code already migrated to daemon-rs Rust or removed |
+| 95 | ✓ Fix .gitignore patterns for OSS release | `042138d` | Updated docs/ to ignore specific subdirs only, added 22+ patterns: *.db-journal, .env.*, *.pem, *.key, daemon-rs/target/, desktop paths |
+| 96 | ✓ Verify no legacy Node.js src directory exists | `042138d` | No src/ directory found -- all Node.js code already migrated to daemon-rs Rust or removed |
 | 112 | ✓ Remove all Ollama references | `042138d` | Removed from embeddings.rs, mcp.rs, App.jsx, constants.js, BrainVisualizer.jsx, styles.css, workers/*.md, workers/*.py, README.md, .gitignore |
 
 ## MEDIUM (nice to have for launch)
