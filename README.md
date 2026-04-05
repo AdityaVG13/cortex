@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/cortex-header.svg" alt="CORTEX" width="100%">
+  <img src="assets/cortex-header.gif" alt="CORTEX" width="100%">
 </p>
 
 <h3 align="center">A persistent, self-improving brain for AI coding agents.</h3>
