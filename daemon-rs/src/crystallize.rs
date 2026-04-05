@@ -515,6 +515,7 @@ fn update_cluster_members(conn: &Connection, crystal_id: i64, members: &[&Embedd
 /// Search crystal nodes by semantic similarity. Returns (crystal_id, label,
 /// consolidated_text, similarity) sorted by relevance.
 /// Crystal search with optional visibility filtering for team mode.
+#[allow(clippy::type_complexity)]
 pub fn search_crystals_filtered(
     conn: &Connection,
     query_vec: &[f32],
@@ -546,14 +547,20 @@ pub fn search_crystals_filtered(
     let mut results: Vec<(i64, String, String, f64)> = rows
         .into_iter()
         .filter_map(|(id, blob, label, text, owner_id, visibility)| {
-            // Visibility check: solo mode sees everything, team mode respects ownership
+            // Visibility: solo mode sees everything; team mode fails closed
             if team_mode {
-                if let Some(caller) = caller_id {
-                    if owner_id != Some(caller)
-                        && !matches!(visibility.as_deref(), Some("shared") | Some("team"))
-                    {
-                        return None;
-                    }
+                let caller = match caller_id {
+                    Some(c) => c,
+                    None => return None, // fail closed: unidentified caller
+                };
+                let owner = match owner_id {
+                    Some(o) => o,
+                    None => return None, // fail closed: unowned data
+                };
+                if owner != caller
+                    && !matches!(visibility.as_deref(), Some("shared") | Some("team"))
+                {
+                    return None;
                 }
             }
             let vec = embeddings::blob_to_vector(&blob);

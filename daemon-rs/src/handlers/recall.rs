@@ -82,6 +82,7 @@ impl RecallContext {
     }
 
     /// Build from runtime state (for MCP/non-HTTP callers). Uses default_owner_id.
+    #[allow(dead_code)]
     pub fn from_state(state: &RuntimeState) -> Self {
         Self {
             caller_id: state.default_owner_id,
@@ -100,17 +101,25 @@ impl RecallContext {
 
 /// Check whether a record is visible to the current caller.
 /// Solo mode: everything visible (no filtering).
-/// Team mode: owner sees own; shared/team visible to all; private hidden from non-owners.
-/// Unowned data (owner_id=None, e.g. pre-migration rows or fallback paths) is visible to all.
+/// Team mode (fail closed):
+///   - caller_id=None → deny (unidentified caller sees nothing)
+///   - owner_id=None → deny (unowned data hidden until backfilled)
+///   - owner == caller → allow
+///   - visibility shared/team → allow
+///   - otherwise → deny
 fn is_visible(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
-    if !ctx.team_mode || ctx.caller_id.is_none() {
+    if !ctx.team_mode {
         return true;
     }
-    if owner_id.is_none() {
-        return true;
-    }
-    let caller = ctx.caller_id.unwrap();
-    if owner_id == Some(caller) {
+    let caller = match ctx.caller_id {
+        Some(c) => c,
+        None => return false,
+    };
+    let owner = match owner_id {
+        Some(o) => o,
+        None => return false,
+    };
+    if owner == caller {
         return true;
     }
     matches!(visibility, Some("shared") | Some("team"))
@@ -376,6 +385,7 @@ fn run_recall(
     run_recall_with_engine(conn, query_text, k, None, ctx, None)
 }
 
+#[allow(clippy::type_complexity)]
 fn run_recall_with_engine(
     conn: &mut Connection,
     query_text: &str,
@@ -1740,6 +1750,64 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── is_visible tests ───────────────────────────────────────────
+
+    fn solo_ctx() -> RecallContext {
+        RecallContext { caller_id: None, team_mode: false }
+    }
+    fn team_ctx(caller: i64) -> RecallContext {
+        RecallContext { caller_id: Some(caller), team_mode: true }
+    }
+    fn team_ctx_no_caller() -> RecallContext {
+        RecallContext { caller_id: None, team_mode: true }
+    }
+
+    #[test]
+    fn is_visible_solo_mode_always_true() {
+        let ctx = solo_ctx();
+        assert!(is_visible(None, None, &ctx));
+        assert!(is_visible(Some(1), Some("private"), &ctx));
+        assert!(is_visible(Some(1), None, &ctx));
+    }
+
+    #[test]
+    fn is_visible_team_owner_sees_own() {
+        let ctx = team_ctx(1);
+        assert!(is_visible(Some(1), Some("private"), &ctx));
+        assert!(is_visible(Some(1), None, &ctx));
+    }
+
+    #[test]
+    fn is_visible_team_shared_visible_to_other() {
+        let ctx = team_ctx(2);
+        assert!(is_visible(Some(1), Some("shared"), &ctx));
+        assert!(is_visible(Some(1), Some("team"), &ctx));
+    }
+
+    #[test]
+    fn is_visible_team_private_hidden_from_other() {
+        let ctx = team_ctx(2);
+        assert!(!is_visible(Some(1), Some("private"), &ctx));
+        assert!(!is_visible(Some(1), None, &ctx));
+    }
+
+    #[test]
+    fn is_visible_team_none_caller_denied() {
+        let ctx = team_ctx_no_caller();
+        assert!(!is_visible(Some(1), Some("private"), &ctx));
+        assert!(!is_visible(Some(1), Some("shared"), &ctx));
+        assert!(!is_visible(None, None, &ctx));
+    }
+
+    #[test]
+    fn is_visible_team_none_owner_denied() {
+        let ctx = team_ctx(1);
+        assert!(!is_visible(None, Some("shared"), &ctx));
+        assert!(!is_visible(None, None, &ctx));
+    }
+
+    // ── existing tests ─────────────────────────────────────────────
 
     #[test]
     fn test_shannon_entropy_empty() {
