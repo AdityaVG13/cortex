@@ -20,6 +20,7 @@ dist/
 docs/architecture/
 docs/compatibility/
 docs/schema/
+docs/internal/
 docs/archive/
 
 # Build artifacts at repo root
