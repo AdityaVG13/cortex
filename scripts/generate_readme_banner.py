@@ -13,14 +13,70 @@ TEXT_SHIFT_Y = -20
 FONT_PATH = Path("C:/Windows/Fonts/consolab.ttf")
 OUTPUT = Path(__file__).resolve().parent.parent / "assets" / "cortex-header.gif"
 
-ASCII_LINES = [
-    "  ______   ____   _____   _______   ______   __   __",
-    " / ____| / __ \\ |  __ \\ |__   __| |  ____|  \\ \\ / /",
-    "| |     | |  | || |__) |   | |    | |__      \\ V /",
-    "| |     | |  | ||  _  /    | |    |  __|      > <",
-    "| |____ | |__| || | \\ \\    | |    | |____    / . \\",
-    " \\_____| \\____/ |_|  \\_\\   |_|    |______|  /_/ \\_\\",
-]
+LETTER_FORMS = {
+    "C": [
+        "  _____ ",
+        " / ____|",
+        "| |     ",
+        "| |     ",
+        "| |____ ",
+        " \\_____|",
+    ],
+    "O": [
+        "  ____  ",
+        " / __ \\ ",
+        "| |  | |",
+        "| |  | |",
+        "| |__| |",
+        " \\____/ ",
+    ],
+    "R": [
+        " _____  ",
+        "|  __ \\ ",
+        "| |__) |",
+        "|  _  / ",
+        "| | \\ \\ ",
+        "|_|  \\_\\",
+    ],
+    "T": [
+        " _______ ",
+        "|__   __|",
+        "   | |   ",
+        "   | |   ",
+        "   | |   ",
+        "   |_|   ",
+    ],
+    "E": [
+        " ______ ",
+        "|  ____|",
+        "| |__   ",
+        "|  __|  ",
+        "| |____ ",
+        "|______|",
+    ],
+    "X": [
+        "__   __",
+        "\\ \\ / /",
+        " \\ V / ",
+        "  > <  ",
+        " / . \\ ",
+        "/_/ \\_\\",
+    ],
+}
+
+
+def build_ascii_word(word: str, gap: str = "  ") -> list[str]:
+    rows = [""] * 6
+    for index, letter in enumerate(word):
+        glyph = LETTER_FORMS[letter]
+        for row_index in range(6):
+            if index:
+                rows[row_index] += gap
+            rows[row_index] += glyph[row_index]
+    return rows
+
+
+ASCII_LINES = build_ascii_word("CORTEX")
 
 BG = (45, 47, 54, 255)
 PANEL = (57, 60, 68, 255)
@@ -31,6 +87,7 @@ UNDERLAY = (94, 53, 145, 116)
 PURPLE_TOP = (151, 111, 214, 255)
 PURPLE_BOTTOM = (85, 37, 131, 255)
 SWEEP = (220, 196, 255, 235)
+CURSOR = (199, 168, 244, 235)
 
 
 def make_font() -> ImageFont.FreeTypeFont:
@@ -61,6 +118,18 @@ def draw_text_mask(size: tuple[int, int], offset: tuple[int, int] = (0, 0)) -> I
     x, y = text_origin(offset)
     for index, line in enumerate(ASCII_LINES):
         draw.text((x, y + index * line_height), line, fill=255, font=font)
+    return mask
+
+
+def draw_cursor_mask(size: tuple[int, int]) -> Image.Image:
+    font = make_font()
+    text_width, line_height = text_metrics(font)
+    text_height = line_height * len(ASCII_LINES)
+    x = int((WIDTH - text_width) / 2) + TEXT_SHIFT_X + text_width + 18
+    y = int((HEIGHT - text_height) / 2) + TEXT_SHIFT_Y + 14
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle((x, y, x + 12, y + text_height - 28), radius=2, fill=255)
     return mask
 
 
@@ -117,6 +186,7 @@ def frame_sequence() -> Iterable[Image.Image]:
     fill_mask = text_mask.filter(ImageFilter.MaxFilter(7))
     shadow_mask = draw_text_mask((WIDTH, HEIGHT), offset=(8, 8)).filter(ImageFilter.GaussianBlur(2.5))
     glow_mask = text_mask.filter(ImageFilter.GaussianBlur(4))
+    cursor_mask = draw_cursor_mask((WIDTH, HEIGHT))
     base_text = vertical_gradient((WIDTH, HEIGHT), PURPLE_TOP, PURPLE_BOTTOM)
 
     for frame_index in range(frame_count):
@@ -139,6 +209,10 @@ def frame_sequence() -> Iterable[Image.Image]:
 
         highlight = sweep_overlay(text_mask, frame_index, frame_count)
         frame = ImageChops.screen(frame, highlight)
+
+        if frame_index % 9 in {0, 1, 2, 6}:
+            cursor = Image.new("RGBA", (WIDTH, HEIGHT), CURSOR)
+            frame.paste(cursor, mask=cursor_mask)
 
         yield frame.convert("P", palette=Image.Palette.ADAPTIVE, dither=Image.Dither.NONE)
 
