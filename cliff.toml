@@ -1,0 +1,70 @@
+# git-cliff configuration
+# See: https://github.com/orhun/git-cliff
+
+[changelog]
+# changelog header
+header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+"""
+# template for the changelog body
+# https://keats.github.io/tera/#
+body = """
+{% if version %}\
+  ## [{{ version }}]
+{% else %}\
+  ## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+  ### {{ group | upper_first }}
+  {% for commit in commits %}
+    - {{ commit.message | split(pat="\n") | first }}\
+  {% endfor %}
+{% endfor %}
+
+"""
+# remove the empty lines between sections
+trim = true
+
+[git]
+# parse the commits based on https://www.conventionalcommits.org
+conventional_commits = true
+# filter out the commits that are not conventional
+filter_unconventional = true
+# process each line of a commit as an individual commit
+split_commits = false
+# regex for parsing the group (conventional commit type or scope)
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Fixes" },
+  { message = "^refactor", group = "Refactor" },
+  { message = "^perf", group = "Performance" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^chore", group = "Chore", skip = true },
+  { message = "^test", group = "Tests", default_scope = "ci", skip = true },
+  { message = "^build", group = "Build", default_scope = "ci", skip = true },
+  { message = "^ci", group = "CI", skip = true },
+  { message = "^style", group = "Style", skip = true },
+]
+# protect against breaking changes from being interpreted as conventional commits
+protect_breaking_commits = true
+# filter out commits that are not matched by commit parsers
+filter_commits = true
+# map the commit scope to group
+# glob pattern for matching git tags
+tag_pattern = "v[0-9]*"
+# regex for skipping tags
+skip_tags = ""
+# regex for ignoring tags
+ignore_tags = ""
+# sort the tags topologically
+topo_order = false
+# sort the commits inside sections by oldest/newest order
+sort_commits = "oldest"
+# limit the number of commits included in the changelog
+limit_commits = 0
