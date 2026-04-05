@@ -38,6 +38,7 @@ pub fn build_router(state: RuntimeState) -> Router {
             "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
             "http://localhost:5173".parse::<HeaderValue>().unwrap(),
             "tauri://localhost".parse::<HeaderValue>().unwrap(),
+            "https://tauri.localhost".parse::<HeaderValue>().unwrap(),
         ])
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
@@ -117,6 +118,7 @@ pub fn build_router(state: RuntimeState) -> Router {
             "/tasks/abandon",
             post(handlers::conductor::handle_abandon_task),
         )
+        .route("/tasks/delete", post(handlers::conductor::handle_delete_task))
         // ── Feed ────────────────────────────────────────────────────
         .route(
             "/feed",
@@ -539,6 +541,7 @@ mod tests {
             (Method::POST, "/tasks/claim", Some("{}")),
             (Method::POST, "/tasks/complete", Some("{}")),
             (Method::POST, "/tasks/abandon", Some("{}")),
+            (Method::POST, "/tasks/delete", Some("{}")),
             (Method::POST, "/feed", Some("{}")),
             (Method::GET, "/feed", None),
             (Method::POST, "/feed/ack", Some("{}")),

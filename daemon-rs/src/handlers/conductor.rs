@@ -129,6 +129,12 @@ pub struct TaskAbandonRequest {
 }
 
 #[derive(Deserialize, Default)]
+pub struct TaskDeleteRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
 pub struct NextTaskQuery {
     pub agent: Option<String>,
     pub capability: Option<String>,
@@ -1585,6 +1591,83 @@ pub async fn handle_complete_task(
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Complete task failed: {err}") }),
+        ),
+    }
+}
+
+// ─── POST /tasks/delete ─────────────────────────────────────────────────────
+
+pub async fn handle_delete_task(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Json(body): Json<TaskDeleteRequest>,
+) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
+
+    let task_id = match body.task_id {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Missing required field: taskId" }),
+            )
+        }
+    };
+
+    let owner_id = owner_id_from_state(&state);
+    let conn = state.db.lock().await;
+
+    let title = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT title FROM tasks WHERE owner_id = ?1 AND task_id = ?2",
+            params![owner_id, task_id.clone()],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    } else {
+        conn.query_row(
+            "SELECT title FROM tasks WHERE task_id = ?1",
+            params![task_id.clone()],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+
+    let title = match title {
+        Some(v) => v,
+        None => return json_response(StatusCode::NOT_FOUND, json!({ "error": "task_not_found" })),
+    };
+
+    let delete = if let Some(owner_id) = owner_id {
+        conn.execute(
+            "DELETE FROM tasks WHERE owner_id = ?1 AND task_id = ?2",
+            params![owner_id, task_id.clone()],
+        )
+    } else {
+        conn.execute(
+            "DELETE FROM tasks WHERE task_id = ?1",
+            params![task_id.clone()],
+        )
+    };
+
+    match delete {
+        Ok(_) => {
+            checkpoint_wal_best_effort(&conn);
+            state.emit(
+                "task",
+                json!({ "action": "deleted", "taskId": task_id, "title": title }),
+            );
+            json_response(StatusCode::OK, json!({ "deleted": true, "taskId": task_id }))
+        }
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Delete task failed: {err}") }),
         ),
     }
 }

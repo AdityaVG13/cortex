@@ -329,6 +329,163 @@ fn read_auth_token() -> Result<String, String> {
   Ok(token.trim().to_string())
 }
 
+// ─── HTTP Proxy (bypasses WebView2 mixed-content restrictions) ──────────────
+
+#[tauri::command]
+fn fetch_cortex(path: String, auth_token: String) -> Result<FetchCortexResponse, String> {
+  send_cortex_request("GET", &path, &auth_token, None)
+}
+
+#[tauri::command]
+fn post_cortex(path: String, auth_token: String, body: String) -> Result<FetchCortexResponse, String> {
+  send_cortex_request("POST", &path, &auth_token, Some(&body))
+}
+
+fn send_cortex_request(
+  method: &str,
+  path: &str,
+  auth_token: &str,
+  body: Option<&str>,
+) -> Result<FetchCortexResponse, String> {
+  use std::io::{Read, Write};
+  use std::net::TcpStream;
+
+  if path.contains('\r') || path.contains('\n') {
+    return Err("Invalid request path".to_string());
+  }
+
+  let mut stream = TcpStream::connect_timeout(
+    &SocketAddr::from(([127, 0, 0, 1], 7437)),
+    Duration::from_millis(2000),
+  )
+  .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
+  stream
+    .set_read_timeout(Some(Duration::from_millis(5000)))
+    .map_err(|e| format!("Cannot set read timeout: {e}"))?;
+  stream
+    .set_write_timeout(Some(Duration::from_millis(2000)))
+    .map_err(|e| format!("Cannot set write timeout: {e}"))?;
+
+  let mut request = format!(
+    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:7437\r\nX-Cortex-Request: true\r\n"
+  );
+  if !auth_token.is_empty() {
+    request.push_str(&format!("Authorization: Bearer {auth_token}\r\n"));
+  }
+  if let Some(payload) = body {
+    request.push_str("Content-Type: application/json\r\n");
+    request.push_str(&format!("Content-Length: {}\r\n", payload.len()));
+  }
+  request.push_str("Connection: close\r\n\r\n");
+  if let Some(payload) = body {
+    request.push_str(payload);
+  }
+
+  stream
+    .write_all(request.as_bytes())
+    .map_err(|e| format!("Write failed: {e}"))?;
+
+  let mut response = Vec::new();
+  stream
+    .read_to_end(&mut response)
+    .map_err(|e| format!("Read failed: {e}"))?;
+
+  // Split headers from body
+  if let Some(pos) = find_bytes(&response, b"\r\n\r\n") {
+    let headers = &response[..pos];
+    let body = &response[pos + 4..];
+    let headers_text = String::from_utf8_lossy(headers);
+    let status = parse_status_code(&headers_text)?;
+    let chunked = headers_text.lines().any(|line| {
+      let lower = line.to_ascii_lowercase();
+      lower.starts_with("transfer-encoding:") && lower.contains("chunked")
+    });
+
+    // Check for chunked transfer encoding
+    let body_bytes = if chunked {
+      decode_chunked_bytes(body)?
+    } else {
+      body.to_vec()
+    };
+    let body_text = String::from_utf8(body_bytes)
+      .map_err(|e| format!("Response body is not valid UTF-8: {e}"))?;
+    Ok(FetchCortexResponse {
+      status,
+      body: body_text,
+    })
+  } else {
+    Err("Invalid HTTP response".to_string())
+  }
+}
+
+#[derive(Serialize)]
+struct FetchCortexResponse {
+  status: u16,
+  body: String,
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+  if needle.is_empty() || haystack.len() < needle.len() {
+    return None;
+  }
+  haystack
+    .windows(needle.len())
+    .position(|window| window == needle)
+}
+
+fn parse_status_code(headers: &str) -> Result<u16, String> {
+  let status_line = headers
+    .lines()
+    .next()
+    .ok_or_else(|| "Missing HTTP status line".to_string())?;
+  let code = status_line
+    .split_whitespace()
+    .nth(1)
+    .ok_or_else(|| format!("Invalid HTTP status line: {status_line}"))?;
+  code
+    .parse::<u16>()
+    .map_err(|e| format!("Invalid HTTP status code '{code}': {e}"))
+}
+
+fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
+  let mut result = Vec::new();
+  let mut remaining = body;
+
+  loop {
+    let line_end = find_bytes(remaining, b"\r\n")
+      .ok_or_else(|| "Invalid chunked encoding: missing chunk size line ending".to_string())?;
+    let size_line = std::str::from_utf8(&remaining[..line_end])
+      .map_err(|e| format!("Invalid chunk size line UTF-8: {e}"))?;
+    let size_hex = size_line.split(';').next().unwrap_or("").trim();
+    let size = usize::from_str_radix(size_hex, 16)
+      .map_err(|e| format!("Invalid chunk size '{size_hex}': {e}"))?;
+
+    let data_start = line_end + 2;
+    if data_start > remaining.len() {
+      return Err("Invalid chunked encoding: malformed chunk header".to_string());
+    }
+    remaining = &remaining[data_start..];
+
+    if size == 0 {
+      break;
+    }
+
+    if remaining.len() < size + 2 {
+      return Err("Invalid chunked encoding: chunk truncated".to_string());
+    }
+
+    result.extend_from_slice(&remaining[..size]);
+    remaining = &remaining[size..];
+
+    if !remaining.starts_with(b"\r\n") {
+      return Err("Invalid chunked encoding: missing CRLF after chunk".to_string());
+    }
+    remaining = &remaining[2..];
+  }
+
+  Ok(result)
+}
+
 // ─── MCP Auto-Registration ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -565,6 +722,8 @@ fn main() {
       stop_daemon,
       quit_app,
       read_auth_token,
+      fetch_cortex,
+      post_cortex,
       setup_editors,
       detect_editors
     ])

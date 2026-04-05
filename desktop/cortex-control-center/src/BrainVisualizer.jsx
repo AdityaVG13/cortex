@@ -26,7 +26,7 @@ class GraphErrorBoundary extends Component {
   }
 }
 
-export function BrainVisualizer({ cortexBase = "http://127.0.0.1:7437", authToken = "" }) {
+export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "" }) {
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -85,12 +85,13 @@ export function BrainVisualizer({ cortexBase = "http://127.0.0.1:7437", authToke
 
   const fetchBrainData = useCallback(async () => {
     try {
-      const headers = { "X-Cortex-Request": "true" };
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      if (typeof api !== "function") {
+        setError(`API bridge unavailable for ${cortexBase}`);
+        setLoading(false);
+        return;
+      }
 
-      const dumpRes = await fetch(`${cortexBase}/dump`, { headers })
-        .then(r => r.ok ? r.json() : null)
-        .catch(() => null);
+      const dumpRes = await api("/dump", true);
 
       if (!dumpRes) {
         setError("Could not fetch /dump endpoint");
@@ -178,7 +179,7 @@ export function BrainVisualizer({ cortexBase = "http://127.0.0.1:7437", authToke
       setError(err.message);
       setLoading(false);
     }
-  }, [cortexBase, authToken]);
+  }, [api, cortexBase, authToken]);
 
   useEffect(() => { fetchBrainData(); }, [fetchBrainData]);
 

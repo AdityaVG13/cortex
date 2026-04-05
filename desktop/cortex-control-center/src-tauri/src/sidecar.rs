@@ -16,6 +16,8 @@
 use serde::Serialize;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SidecarStatus {
@@ -60,11 +62,17 @@ impl SidecarDaemon {
             return Err(format!("Cortex binary not found at {}", exe.display()));
         }
 
-        let child = Command::new(exe)
+        let mut command = Command::new(exe);
+        command
             .arg("serve")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let child = command
             .spawn()
             .map_err(|e| format!("Failed to start cortex daemon: {e}"))?;
 

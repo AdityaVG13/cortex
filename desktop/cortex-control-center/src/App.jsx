@@ -67,8 +67,13 @@ function priorityRank(priority) {
   return map[priority] || 0;
 }
 
-function readTauriInvoke() {
-  return window.__TAURI__?.core?.invoke || null;
+async function readTauriInvoke() {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke;
+  } catch {
+    return null;
+  }
 }
 
 function statusPill(daemonState) {
@@ -356,12 +361,26 @@ export function App() {
   }, [sessions, messageAgent]);
 
   const api = useCallback(async (path, withAuth = false) => {
-    const headers = { "X-Cortex-Request": "true" };
-    if (withAuth) {
-      if (!tokenRef.current) return null;
-      headers.Authorization = `Bearer ${tokenRef.current}`;
+    if (withAuth && !tokenRef.current) return null;
+
+    // In Tauri: proxy through Rust IPC to bypass WebView2 mixed-content restrictions
+    if (invokeRef.current) {
+      try {
+        const response = await invokeRef.current("fetch_cortex", {
+          path,
+          authToken: withAuth ? tokenRef.current : "",
+        });
+        if (!response || typeof response.status !== "number" || typeof response.body !== "string") return null;
+        if (response.status < 200 || response.status >= 300) return null;
+        return JSON.parse(response.body);
+      } catch {
+        return null;
+      }
     }
 
+    // Browser fallback: direct fetch
+    const headers = { "X-Cortex-Request": "true" };
+    if (withAuth) headers.Authorization = `Bearer ${tokenRef.current}`;
     try {
       const response = await fetch(`${cortexBase}${path}`, { headers });
       if (!response.ok) return null;
@@ -373,6 +392,22 @@ export function App() {
 
   const postApi = useCallback(async (path, body = {}) => {
     if (!tokenRef.current) return null;
+
+    if (invokeRef.current) {
+      try {
+        const response = await invokeRef.current("post_cortex", {
+          path,
+          authToken: tokenRef.current,
+          body: JSON.stringify(body),
+        });
+        if (!response || typeof response.status !== "number" || typeof response.body !== "string") return null;
+        if (response.status < 200 || response.status >= 300) return null;
+        return JSON.parse(response.body);
+      } catch {
+        return null;
+      }
+    }
+
     try {
       const response = await fetch(`${cortexBase}${path}`, {
         method: "POST",
@@ -396,13 +431,20 @@ export function App() {
   }, []);
 
   const readAuthToken = useCallback(async () => {
-    if (!invokeRef.current) return;
-    try {
-      const token = await call("read_auth_token");
-      tokenRef.current = token || "";
-    } catch {
-      tokenRef.current = "";
+    // Tauri IPC: read from token file via Rust backend
+    if (invokeRef.current) {
+      try {
+        const token = await call("read_auth_token");
+        tokenRef.current = token || "";
+        if (token) localStorage.setItem("cortex_token", token);
+        return;
+      } catch {
+        tokenRef.current = "";
+      }
     }
+    // Browser fallback: use token from localStorage (set via connection dialog)
+    const saved = localStorage.getItem("cortex_token");
+    if (saved) tokenRef.current = saved;
   }, [call]);
 
   const refreshDaemonState = useCallback(async () => {
@@ -533,7 +575,7 @@ export function App() {
   }, [call]);
 
   const refreshAll = useCallback(async () => {
-    invokeRef.current = readTauriInvoke();
+    invokeRef.current = await readTauriInvoke();
     await readAuthToken();
     await Promise.all([
       refreshDaemonState(),
@@ -767,6 +809,9 @@ export function App() {
     } catch (error) {
       setFeedbackMessage(`Start failed: ${String(error)}`);
     }
+    // Daemon needs a moment to write the token file on first start
+    await new Promise(r => setTimeout(r, 2000));
+    await readAuthToken();
     await refreshAll();
   }
 
@@ -902,7 +947,10 @@ export function App() {
                 const port = fd.get("port")?.toString().trim() || "7437";
                 const token = fd.get("token")?.toString().trim();
                 setCortexBase(`http://${host}:${port}`);
-                if (token) tokenRef.current = token;
+                if (token) {
+                  tokenRef.current = token;
+                  localStorage.setItem("cortex_token", token);
+                }
                 setShowConnectionDialog(false);
               }}>
                 <label className="connection-field">
@@ -1055,7 +1103,24 @@ export function App() {
               <div className="card">
                 <div className="card-header">
                   <h2>Done</h2>
-                  <span className="badge">{completedTasks.length}</span>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span className="badge">{completedTasks.length}</span>
+                    {completedTasks.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        onClick={async () => {
+                          for (const task of completedTasks) {
+                            if (!task?.taskId) continue;
+                            await postApi("/tasks/delete", { taskId: task.taskId });
+                          }
+                          await refreshAll();
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <ul className="item-list">
                   {completedTasks.length ? completedTasks.slice(0, 10).map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="No completed tasks" />}
@@ -1389,7 +1454,7 @@ export function App() {
         {panel === "visualizer" ? (
           <section className="panel active brain-panel">
             <BrainErrorBoundary>
-              <BrainVisualizer cortexBase={cortexBase} authToken={tokenRef.current} />
+              <BrainVisualizer api={api} cortexBase={cortexBase} authToken={tokenRef.current} />
             </BrainErrorBoundary>
           </section>
         ) : null}

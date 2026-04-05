@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.os_name }})
+    name: Build daemon (${{ matrix.os_name }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -93,10 +93,67 @@ jobs:
           path: ${{ env.ARCHIVE }}
           if-no-files-found: error
 
+  build-desktop:
+    name: Build desktop app (${{ matrix.os_name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: windows-x86_64
+            runner: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            daemon-rs -> daemon-rs/target
+            desktop/cortex-control-center/src-tauri -> desktop/cortex-control-center/src-tauri/target
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend deps
+        working-directory: desktop/cortex-control-center
+        run: npm ci
+
+      - name: Build daemon binary (for sidecar)
+        working-directory: daemon-rs
+        run: cargo build --release
+
+      - name: Build desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop/cortex-control-center
+          tauriScript: npx tauri
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-x86_64
+          path: |
+            desktop/cortex-control-center/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/cortex-control-center/src-tauri/target/release/bundle/nsis/*.nsis.zip
+            desktop/cortex-control-center/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+          if-no-files-found: warn
+
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, build-desktop]
     steps:
       - name: Resolve release tag
         shell: pwsh
@@ -114,6 +171,9 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: List artifacts
+        run: find dist -type f | head -30
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -122,5 +182,8 @@ jobs:
             dist/cortex-${{ env.RELEASE_TAG }}-windows-x86_64.zip
             dist/cortex-${{ env.RELEASE_TAG }}-macos-aarch64.tar.gz
             dist/cortex-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
+            dist/*.exe
+            dist/*.nsis.zip
+            dist/*.nsis.zip.sig
           generate_release_notes: true
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false

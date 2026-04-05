@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for Cortex Control Center",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default"]
 }
