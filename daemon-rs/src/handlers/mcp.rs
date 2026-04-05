@@ -711,10 +711,6 @@ async fn mcp_dispatch(
 
 // ─── Main MCP message handler ─────────────────────────────────────────────────
 
-pub async fn handle_mcp_message(state: &RuntimeState, msg: &Value) -> Option<Value> {
-    handle_mcp_message_with_caller(state, msg, None).await
-}
-
 pub async fn handle_mcp_message_with_caller(
     state: &RuntimeState,
     msg: &Value,

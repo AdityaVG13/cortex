@@ -1,8 +1,44 @@
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::handlers::mcp::handle_mcp_message;
+use crate::auth;
+use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
+
+/// Resolve MCP caller identity at startup.
+///
+/// In team mode, reads an API key from `CORTEX_API_KEY` env var (preferred) or
+/// `~/.cortex/cortex.token` (fallback), then matches it against the team's
+/// user hashes to resolve a user ID. Returns `None` in solo mode or if no
+/// matching key is found (fail-closed via `is_visible`).
+fn resolve_mcp_caller(state: &RuntimeState) -> Option<i64> {
+    if !state.team_mode {
+        return None;
+    }
+
+    let key = std::env::var("CORTEX_API_KEY")
+        .ok()
+        .or_else(|| auth::read_token());
+
+    let key = match key {
+        Some(k) if k.starts_with("ctx_") => k,
+        _ => {
+            eprintln!("[cortex-mcp] team mode: no ctx_ API key found, MCP caller unidentified");
+            return None;
+        }
+    };
+
+    let hashes = state.team_api_key_hashes.read().unwrap();
+    for (user_id, hash) in hashes.iter() {
+        if auth::verify_api_key_argon2id(&key, hash) {
+            eprintln!("[cortex-mcp] team mode: authenticated as user {user_id}");
+            return Some(*user_id);
+        }
+    }
+
+    eprintln!("[cortex-mcp] team mode: API key did not match any user");
+    None
+}
 
 /// Run the MCP stdio transport.
 ///
@@ -10,9 +46,16 @@ use crate::state::RuntimeState;
 /// to the MCP handler, and writes responses to stdout.  All logging goes to
 /// stderr so the stdout channel is never contaminated with non-JSON-RPC data.
 ///
+/// In team mode, caller identity is resolved once at startup from the API key
+/// and passed to every dispatched request.
+///
 /// This function blocks until stdin is closed (i.e. the Claude Code session ends).
 pub async fn run(state: RuntimeState) {
-    eprintln!("[cortex-mcp] MCP stdio transport started");
+    let caller_id = resolve_mcp_caller(&state);
+    eprintln!(
+        "[cortex-mcp] MCP stdio transport started (caller_id: {})",
+        caller_id.map(|id| id.to_string()).unwrap_or_else(|| "none".to_string())
+    );
 
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);
@@ -39,21 +82,17 @@ pub async fn run(state: RuntimeState) {
                     }
                 };
 
-                // Only respond if the message has an id (requests, not notifications)
                 let has_id = msg.get("id").is_some();
 
-                let response = handle_mcp_message(&state, &msg).await;
+                let response = handle_mcp_message_with_caller(&state, &msg, caller_id).await;
 
                 if has_id {
                     if let Some(resp) = response {
                         write_stdout(&resp);
                     }
                 }
-                // Notifications (no id) get no response — we still dispatch them
-                // for side-effects (e.g. notifications/initialized) but send nothing.
             }
             Ok(None) => {
-                // stdin closed — Claude Code session ended
                 eprintln!("[cortex-mcp] stdin closed, exiting");
                 break;
             }
