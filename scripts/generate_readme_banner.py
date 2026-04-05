@@ -83,13 +83,13 @@ BG = (45, 47, 54, 255)
 PANEL = (50, 53, 60, 255)
 PANEL_ACCENT = (64, 67, 76, 255)
 PANEL_EDGE = (255, 255, 255, 16)
-SHADOW = (29, 12, 45, 96)
-UNDERLAY = (94, 53, 145, 116)
-PURPLE_TOP = (151, 111, 214, 255)
-PURPLE_BOTTOM = (85, 37, 131, 255)
-SWEEP = (220, 196, 255, 235)
-BORDER_GLOW = (133, 86, 203, 150)
-BORDER_CORE = (178, 134, 236, 220)
+SHADOW = (24, 9, 38, 102)
+UNDERLAY = (78, 40, 122, 122)
+PURPLE_TOP = (126, 78, 188, 255)
+PURPLE_BOTTOM = (63, 24, 104, 255)
+SWEEP = (244, 230, 255, 245)
+BORDER_GLOW = (125, 76, 196, 124)
+BORDER_CORE = (171, 126, 235, 188)
 
 
 def make_font() -> ImageFont.FreeTypeFont:
@@ -136,7 +136,7 @@ def vertical_gradient(size: tuple[int, int], top: tuple[int, int, int, int], bot
 
 
 def rounded_rect_points(
-    left: int, top: int, right: int, bottom: int, radius: int, steps: int = 12
+    left: int, top: int, right: int, bottom: int, radius: int, steps: int = 18
 ) -> list[tuple[float, float]]:
     pts: list[tuple[float, float]] = []
 
@@ -166,7 +166,7 @@ def draw_border_runner(image: Image.Image, frame_index: int, frame_count: int) -
     left, top, right, bottom, radius = 20, 20, WIDTH - 20, HEIGHT - 20, 16
     points = rounded_rect_points(left, top, right, bottom, radius)
     total = len(points)
-    segment = 40
+    segment = 34
     start = int((frame_index / max(1, frame_count)) * total)
 
     glow = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -177,13 +177,14 @@ def draw_border_runner(image: Image.Image, frame_index: int, frame_count: int) -
     for i in range(segment - 1):
         a = points[(start + i) % total]
         b = points[(start + i + 1) % total]
-        strength = 1.0 - (i / max(1, segment - 1))
-        glow_alpha = int(BORDER_GLOW[3] * (strength**1.35))
-        core_alpha = int(BORDER_CORE[3] * (strength**1.55))
+        t = i / max(1, segment - 1)
+        strength = ((math.cos(t * math.pi) + 1.0) / 2.0) ** 1.15
+        glow_alpha = int(BORDER_GLOW[3] * strength)
+        core_alpha = int(BORDER_CORE[3] * (strength**1.2))
         glow_draw.line((a, b), fill=(BORDER_GLOW[0], BORDER_GLOW[1], BORDER_GLOW[2], glow_alpha), width=6)
         core_draw.line((a, b), fill=(BORDER_CORE[0], BORDER_CORE[1], BORDER_CORE[2], core_alpha), width=2)
 
-    image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(3)))
+    image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(4)))
     image.alpha_composite(core)
 
 
@@ -203,7 +204,7 @@ def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Imag
     overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     pixels = overlay.load()
     center = -180 + (WIDTH + 360) * (frame_index / frame_count)
-    half_band = 72.0
+    half_band = 64.0
 
     for y in range(HEIGHT):
         skew = y * 0.42
@@ -212,7 +213,7 @@ def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Imag
             if distance > half_band:
                 continue
             strength = 1.0 - (distance / half_band)
-            alpha = int(SWEEP[3] * (strength**2.25))
+            alpha = int(SWEEP[3] * (strength**2.6))
             pixels[x, y] = (SWEEP[0], SWEEP[1], SWEEP[2], alpha)
 
     clipped = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -221,7 +222,7 @@ def sweep_overlay(mask: Image.Image, frame_index: int, frame_count: int) -> Imag
 
 
 def frame_sequence() -> Iterable[Image.Image]:
-    frame_count = 24
+    frame_count = 32
     text_mask = draw_text_mask((WIDTH, HEIGHT))
     fill_mask = text_mask.filter(ImageFilter.MaxFilter(7))
     shadow_mask = draw_text_mask((WIDTH, HEIGHT), offset=(8, 8)).filter(ImageFilter.GaussianBlur(2.5))
@@ -238,8 +239,8 @@ def frame_sequence() -> Iterable[Image.Image]:
         underlay = Image.new("RGBA", (WIDTH, HEIGHT), UNDERLAY)
         frame.paste(underlay, mask=fill_mask)
 
-        glow_strength = 28 + (8 if frame_index in {0, 9} else 0)
-        glow = Image.new("RGBA", (WIDTH, HEIGHT), (121, 68, 190, glow_strength))
+        glow_strength = 24 + (10 if frame_index in {0, 15} else 0)
+        glow = Image.new("RGBA", (WIDTH, HEIGHT), (132, 78, 206, glow_strength))
         frame.paste(glow, mask=glow_mask)
 
         text_layer = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
@@ -259,7 +260,7 @@ def main() -> None:
         OUTPUT,
         save_all=True,
         append_images=frames[1:],
-        duration=100,
+        duration=115,
         loop=0,
         optimize=False,
         disposal=2,
