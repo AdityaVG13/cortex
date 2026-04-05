@@ -1,6 +1,13 @@
 //! Knowledge indexer: reads filesystem sources and upserts into memories table.
 //! Ported from Node.js brain.js indexAll().
+//!
+//! **Core indexers** (always run): `~/.claude/state.md` and Claude Code project memory under
+//! `~/.claude/projects/<cwd-slug>/memory`.
+//!
+//! **Extended indexers** (opt-in): six additional sources (lessons, goals, skill tracker, gorci, crew playbooks,
+//! extended-knowledge markdown). Set `CORTEX_INDEX_EXTENDED=1` to enable.
 
+use crate::compiler::claude_project_slug;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs;
@@ -13,17 +20,19 @@ const STATE_SECTIONS: &[&str] = &[
     "## Known Issues",
 ];
 
-/// Run all 8 indexers. Returns total entries indexed.
+/// Run core indexers always; extended indexers only when CORTEX_INDEX_EXTENDED=1.
 pub fn index_all(conn: &Connection, home: &Path) -> usize {
     let mut total = 0;
     total += index_state_file(conn, home);
     total += index_memory_files(conn, home);
-    total += index_lessons(conn, home);
-    total += index_goals(conn, home);
-    total += index_skill_tracker(conn, home);
-    total += index_gorci(conn, home);
-    total += index_crew_playbooks(conn, home);
-    total += index_self_improvement(conn, home);
+    if std::env::var("CORTEX_INDEX_EXTENDED").unwrap_or_default() == "1" {
+        total += index_lessons(conn, home);
+        total += index_goals(conn, home);
+        total += index_skill_tracker(conn, home);
+        total += index_gorci(conn, home);
+        total += index_crew_playbooks(conn, home);
+        total += index_self_improvement(conn, home);
+    }
     total
 }
 
@@ -103,10 +112,14 @@ fn extract_section(markdown: &str, header: &str) -> Option<String> {
 // ── Source 2: Memory files ──────────────────────────────────────────────────
 
 fn index_memory_files(conn: &Connection, home: &Path) -> usize {
+    let slug = match claude_project_slug() {
+        Some(s) => s,
+        None => return 0,
+    };
     let mem_dir = home
         .join(".claude")
         .join("projects")
-        .join("C--Users-aditya")
+        .join(slug)
         .join("memory");
     if !mem_dir.exists() {
         return 0;
@@ -190,7 +203,7 @@ fn parse_frontmatter(raw: &str) -> (HashMap<String, String>, String) {
 
 fn index_lessons(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join("knowledge-sources")
         .join("lessons")
         .join("lessons.jsonl");
     if !path.exists() {
@@ -230,7 +243,7 @@ fn index_lessons(conn: &Connection, home: &Path) -> usize {
 
 fn index_goals(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join("knowledge-sources")
         .join("tools")
         .join("goal-setter")
         .join("current-goals.json");
@@ -275,7 +288,7 @@ fn index_goals(conn: &Connection, home: &Path) -> usize {
 
 fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join("knowledge-sources")
         .join("tools")
         .join("skill-tracker")
         .join("invocations.jsonl");
@@ -333,7 +346,7 @@ fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
 
 fn index_gorci(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join("self-improvement-engine")
+        .join("knowledge-sources")
         .join("tools")
         .join("gorci")
         .join("last-run.json");
@@ -385,7 +398,7 @@ fn index_gorci(conn: &Connection, home: &Path) -> usize {
 // ── Source 7: Crew playbooks ───────────────────────────────────────────────
 
 fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
-    let crew_dir = home.join(".claude").join("self-improvement").join("crew");
+    let crew_dir = home.join(".claude").join("extended-knowledge").join("crew");
     if !crew_dir.exists() {
         return 0;
     }
@@ -418,10 +431,10 @@ fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
     count
 }
 
-// ── Source 8: Self-improvement insights ────────────────────────────────────
+// ── Source 8: Extended-knowledge insights ───────────────────────────────────
 
 fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
-    let si_dir = home.join(".claude").join("self-improvement");
+    let si_dir = home.join(".claude").join("extended-knowledge");
     if !si_dir.exists() {
         return 0;
     }
@@ -434,7 +447,7 @@ fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        // Only index .md files in the root of self-improvement (not subdirs)
+        // Only index .md files in the root of extended-knowledge (not subdirs)
         if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
@@ -447,7 +460,7 @@ fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
                 .to_string();
             // Truncate long insights to 1000 chars for index efficiency
             let text: String = content.chars().take(1000).collect();
-            let source = format!("self-improvement::{name}");
+            let source = format!("extended::{name}");
             if upsert_memory(conn, &text, &source, "insight", "indexer") {
                 count += 1;
             }
@@ -502,4 +515,22 @@ pub fn decay_pass(conn: &Connection) -> usize {
     );
 
     mem_result.unwrap_or(0) + dec_result.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn index_all_empty_home_without_extended_indexes_nothing() {
+        let tmp = std::env::temp_dir().join(format!("cortex_ix_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        let n = index_all(&conn, tmp.as_path());
+        assert_eq!(n, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

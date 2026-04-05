@@ -230,7 +230,7 @@ def draw_cortex_icon(size: int) -> Image.Image:
 
 
 icons_dir = os.path.join(os.path.dirname(__file__), "src-tauri", "icons")
-smile_path = os.path.join(icons_dir, "adityasmile.png")
+    smile_path = os.path.join(icons_dir, "icon_source.png")
 master = Image.open(smile_path).convert("RGBA").resize((512, 512), Image.LANCZOS)
 
 sizes = {

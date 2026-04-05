@@ -27,7 +27,7 @@ pub fn install() {
     // COR-8 fix: detect current username to run service under user account,
     // NOT LocalSystem. LocalSystem has a different USERPROFILE which would
     // open a completely separate database at C:\Windows\system32\config\systemprofile.
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "aditya".to_string());
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "cortex-user".to_string());
 
     // COR-5 fix: use cmd /C for sc.exe to handle binPath quoting correctly.
     // sc.exe has non-standard argument parsing that fights with Rust's Command.

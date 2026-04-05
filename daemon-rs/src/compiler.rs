@@ -9,11 +9,50 @@
 //! to produce a compact, high-signal boot prompt.
 
 use std::collections::HashSet;
+use std::env;
 use std::path::Path;
 
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+
+fn detect_identity() -> String {
+    let user = env::var("USERNAME")
+        .or_else(|_| env::var("USER"))
+        .unwrap_or_else(|_| "cortex-user".to_string());
+
+    let platform = match env::consts::OS {
+        "windows" => "Windows",
+        "macos" => "macOS",
+        "linux" => "Linux",
+        other => other,
+    };
+
+    let shell = env::var("SHELL")
+        .or_else(|_| env::var("COMSPEC"))
+        .map(|s| {
+            s.rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(&s)
+                .to_string()
+        })
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    format!("User: {user}. Platform: {platform}. Shell: {shell}.")
+}
+
+/// Derive the Claude Code project folder slug from the current working directory.
+/// Claude encodes paths as e.g. `C--Users-jane-cortex` for `C:\Users\jane\cortex`.
+pub(crate) fn claude_project_slug() -> Option<String> {
+    let cwd = env::current_dir().ok()?;
+    let canonical = cwd.to_string_lossy().to_string();
+    let slug = canonical.replace(['\\', ':'], "-");
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug)
+    }
+}
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -109,10 +148,7 @@ fn build_identity_capsule(conn: &Connection) -> (String, usize) {
     if let Some((cached, tokens)) = cache_get(conn, "identity_capsule", &feedback_hash) {
         return (cached, tokens);
     }
-    let mut parts = vec![
-        "User: Aditya. Platform: Windows 10. Shell: bash. Python: uv only. Git: conventional commits."
-            .to_string(),
-    ];
+    let mut parts = vec![detect_identity()];
 
     // Hard constraints (never/always/must rules)
     if let Ok(constraint_re) =
@@ -622,33 +658,34 @@ fn estimate_raw_baseline(home: &Path) -> usize {
     }
 
     // Memory files
-    let mem_dir = home
-        .join(".claude")
-        .join("projects")
-        .join("C--Users-aditya")
-        .join("memory");
-    if let Ok(entries) = std::fs::read_dir(&mem_dir) {
-        for entry in entries.flatten() {
-            if entry.path().extension().map(|x| x == "md").unwrap_or(false) {
-                if let Ok(meta) = entry.metadata() {
-                    total_chars += meta.len() as usize;
+    let mem_dir = claude_project_slug().map(|slug| {
+        home.join(".claude").join("projects").join(slug).join("memory")
+    });
+    if let Some(ref dir) = mem_dir {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().map(|x| x == "md").unwrap_or(false) {
+                    if let Ok(meta) = entry.metadata() {
+                        total_chars += meta.len() as usize;
+                    }
                 }
             }
         }
     }
 
-    // Lessons directory
-    let lessons_dir = home.join("self-improvement-engine").join("lessons");
-    if let Ok(entries) = std::fs::read_dir(&lessons_dir) {
-        for entry in entries.flatten() {
-            if entry
-                .path()
-                .extension()
-                .map(|x| x == "md" || x == "json")
-                .unwrap_or(false)
-            {
-                if let Ok(meta) = entry.metadata() {
-                    total_chars += meta.len() as usize;
+    if env::var("CORTEX_INDEX_EXTENDED").unwrap_or_default() == "1" {
+        let lessons_dir = home.join("knowledge-sources").join("lessons");
+        if let Ok(entries) = std::fs::read_dir(&lessons_dir) {
+            for entry in entries.flatten() {
+                if entry
+                    .path()
+                    .extension()
+                    .map(|x| x == "md" || x == "json")
+                    .unwrap_or(false)
+                {
+                    if let Ok(meta) = entry.metadata() {
+                        total_chars += meta.len() as usize;
+                    }
                 }
             }
         }

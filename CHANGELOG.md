@@ -12,7 +12,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Desktop (Control Center)
 - Replaced embedded daemon with sidecar process manager (`sidecar.rs`) -- Control Center now launches the real `cortex.exe` binary
 - Version-synced all desktop artifacts (`package.json`, `src-tauri/Cargo.toml`, `tauri.conf.json`) to `0.3.0`
-- New app icons generated from `adityasmile.png` source image
+- New app icons generated from `icon_source.png` source image
 - Removed Ollama metric card and stat from Overview panel; EMBEDDINGS strip now shows ONNX status based on daemon reachability
 - Added About panel (12th nav entry) with version, stack info, contributors, and links
 

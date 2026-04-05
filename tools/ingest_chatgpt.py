@@ -57,7 +57,7 @@ FACT_SIGNALS = [
     "my company", "our codebase",
 ]
 
-# Topics that indicate technical/development conversations (likely Aditya)
+# Topics that indicate technical/development conversations (the primary user)
 TECH_FINGERPRINT = [
     "python", "rust", "javascript", "typescript", "react", "api",
     "database", "git", "docker", "deploy", "server", "code",
@@ -195,12 +195,12 @@ def extract_messages(conversation: dict) -> list[tuple[str, str, float]]:
 # ─── Multi-Signal User Classification ────────────────────────────────────
 #
 # Score each conversation across multiple dimensions to classify as:
-#   "aditya" (confident), "other" (confident other user), "uncertain" (review)
+#   "owner" (confident), "other" (confident other user), "uncertain" (review)
 #
 # The --triage mode writes a review file for uncertain conversations so the
 # user can manually label them before full ingestion.
 
-ADITYA_SIGNALS = {
+TECH_SIGNALS = {
     "python", "rust", "javascript", "typescript", "react", "api", "database",
     "git", "docker", "deploy", "server", "code", "function", "class",
     "module", "import", "npm", "pip", "uv", "cortex", "claude", "ai",
@@ -225,9 +225,9 @@ OTHER_SIGNALS = [
 @dataclass
 class ConversationClassification:
     title: str
-    aditya_score: float
+    owner_score: float
     other_score: float
-    label: str  # "aditya", "other", "uncertain"
+    label: str  # "owner", "other", "uncertain"
     reasons: list[str]
     message_count: int
     timestamp: float
@@ -247,10 +247,10 @@ def classify_conversation(
     words = user_text.split()
     reasons: list[str] = []
 
-    # Signal 1: Tech keywords (strong Aditya signal)
-    tech_hits = sum(1 for w in words if w in ADITYA_SIGNALS)
+    # Signal 1: Tech keywords (strong owner signal)
+    tech_hits = sum(1 for w in words if w in TECH_SIGNALS)
     tech_density = tech_hits / max(len(words), 1)
-    aditya_score = min(1.0, tech_density * 8)
+    owner_score = min(1.0, tech_density * 8)
     if tech_hits > 5:
         reasons.append(f"tech={tech_hits}")
 
@@ -260,36 +260,36 @@ def classify_conversation(
     if other_hits > 0:
         reasons.append(f"other={other_hits}")
 
-    # Signal 3: Code blocks (strong Aditya signal)
+    # Signal 3: Code blocks (strong owner signal)
     code_blocks = all_text.count("```")
     if code_blocks >= 2:
-        aditya_score = min(1.0, aditya_score + 0.3)
+        owner_score = min(1.0, owner_score + 0.3)
         reasons.append(f"code_blocks={code_blocks}")
 
-    # Signal 4: Long sessions (Aditya's coding chats tend to be long)
+    # Signal 4: Long sessions (owner's coding chats tend to be long)
     if len(messages) > 20:
-        aditya_score = min(1.0, aditya_score + 0.1)
+        owner_score = min(1.0, owner_score + 0.1)
         reasons.append(f"long={len(messages)}")
 
-    # Signal 5: Tool use (code_interpreter, browser, dalle = Aditya)
+    # Signal 5: Tool use (code_interpreter, browser, dalle = owner)
     for node in conversation.get("mapping", {}).values():
         author = node.get("message", {}).get("author", {})
         if author.get("name") in ("python", "browser", "dalle", "bio"):
-            aditya_score = min(1.0, aditya_score + 0.2)
+            owner_score = min(1.0, owner_score + 0.2)
             reasons.append(f"tool={author['name']}")
             break
 
     # Classify with a gap between thresholds to catch genuinely unclear ones
-    if aditya_score >= 0.35 and other_score < 0.2:
-        label = "aditya"
-    elif other_score >= 0.2 and aditya_score < 0.2:
+    if owner_score >= 0.35 and other_score < 0.2:
+        label = "owner"
+    elif other_score >= 0.2 and owner_score < 0.2:
         label = "other"
     else:
         label = "uncertain"
 
     return ConversationClassification(
         title=title,
-        aditya_score=round(aditya_score, 3),
+        owner_score=round(owner_score, 3),
         other_score=round(other_score, 3),
         label=label,
         reasons=reasons,
@@ -301,8 +301,8 @@ def classify_conversation(
 def triage_conversations(
     conversations: list[dict],
 ) -> tuple[list[dict], list[dict], list[ConversationClassification]]:
-    """Split conversations into (aditya, other, uncertain) buckets."""
-    aditya = []
+    """Split conversations into (owner, other, uncertain) buckets."""
+    owner = []
     other = []
     uncertain_meta: list[ConversationClassification] = []
 
@@ -311,14 +311,14 @@ def triage_conversations(
         if not messages:
             continue
         cls = classify_conversation(conv, messages)
-        if cls.label == "aditya":
-            aditya.append(conv)
+        if cls.label == "owner":
+            owner.append(conv)
         elif cls.label == "other":
             other.append(conv)
         else:
             uncertain_meta.append(cls)
 
-    return aditya, other, uncertain_meta
+    return owner, other, uncertain_meta
 
 
 def write_triage_report(
@@ -335,13 +335,13 @@ def write_triage_report(
         "#",
         f"# Total: {len(uncertain)}",
         "",
-        "# label | aditya_score | other_score | msgs | date | title | reasons",
+        "# label | owner_score | other_score | msgs | date | title | reasons",
     ]
-    for c in sorted(uncertain, key=lambda x: x.aditya_score, reverse=True):
+    for c in sorted(uncertain, key=lambda x: x.owner_score, reverse=True):
         date = time.strftime("%Y-%m-%d", time.gmtime(c.timestamp)) if c.timestamp else "unknown"
         reasons = ", ".join(c.reasons) if c.reasons else "no_signals"
         lines.append(
-            f"uncertain | {c.aditya_score:.2f} | {c.other_score:.2f} | "
+            f"uncertain | {c.owner_score:.2f} | {c.other_score:.2f} | "
             f"{c.message_count} | {date} | {c.title[:60]} | {reasons}"
         )
 
@@ -358,7 +358,7 @@ def should_include(conversation: dict, messages: list[tuple[str, str, float]],
             return True
 
     cls = classify_conversation(conversation, messages)
-    return cls.label == "aditya"
+    return cls.label == "owner"
 
 
 # ─── Extraction ──────────────────────────────────────────────────────────────
@@ -572,8 +572,8 @@ def main():
     if args.triage:
         conversations = parse_conversations(args.file)
         print(f"Loaded {len(conversations)} conversations. Classifying...")
-        aditya_convs, other_convs, uncertain = triage_conversations(conversations)
-        print(f"\n  Aditya (auto-classified): {len(aditya_convs)}")
+        owner_convs, other_convs, uncertain = triage_conversations(conversations)
+        print(f"\n  Owner (auto-classified): {len(owner_convs)}")
         print(f"  Other user (auto-classified): {len(other_convs)}")
         print(f"  Uncertain (needs review): {len(uncertain)}")
 
@@ -586,7 +586,7 @@ def main():
         else:
             print("\n  No uncertain conversations -- all auto-classified!")
 
-        print(f"\n  To ingest the {len(aditya_convs)} auto-classified conversations:")
+        print(f"\n  To ingest the {len(owner_convs)} auto-classified conversations:")
         print(f"  uv run python {__file__} {args.file} --dry-run")
         return
 
