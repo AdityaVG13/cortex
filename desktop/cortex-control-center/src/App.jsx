@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Component } from "react";
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
 import { checkForUpdates, installUpdate } from "./updater.js";
+import { createApi, createPostApi, settledWithRethrow, settledCollectErrors } from "./api-client.js";
 
 class BrainErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
@@ -360,70 +361,23 @@ export function App() {
     return Array.from(allAgents).sort((a, b) => a.localeCompare(b));
   }, [sessions, messageAgent]);
 
-  const api = useCallback(async (path, withAuth = false) => {
-    if (withAuth && !tokenRef.current) {
-      throw new Error(`${path}: no auth token (Tauri IPC ${invokeRef.current ? "available" : "missing"})`);
-    }
+  const api = useCallback(
+    createApi({
+      getInvoke: () => invokeRef.current,
+      getToken: () => tokenRef.current,
+      cortexBase,
+    }),
+    [cortexBase]
+  );
 
-    // In Tauri: proxy through Rust IPC to bypass WebView2 mixed-content restrictions
-    if (invokeRef.current) {
-      const response = await invokeRef.current("fetch_cortex", {
-        path,
-        authToken: withAuth ? tokenRef.current : "",
-      });
-      if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
-        throw new Error(`${path}: invalid IPC response`);
-      }
-      if (response.status < 200 || response.status >= 300) {
-        throw new Error(`${path}: HTTP ${response.status}`);
-      }
-      return JSON.parse(response.body);
-    }
-
-    // Browser fallback: direct fetch
-    const headers = { "X-Cortex-Request": "true" };
-    if (withAuth) headers.Authorization = `Bearer ${tokenRef.current}`;
-    const response = await fetch(`${cortexBase}${path}`, { headers });
-    if (!response.ok) {
-      throw new Error(`${path}: HTTP ${response.status}`);
-    }
-    return await response.json();
-  }, [cortexBase]);
-
-  const postApi = useCallback(async (path, body = {}) => {
-    if (!tokenRef.current) {
-      throw new Error(`POST ${path}: no auth token`);
-    }
-
-    if (invokeRef.current) {
-      const response = await invokeRef.current("post_cortex", {
-        path,
-        authToken: tokenRef.current,
-        body: JSON.stringify(body),
-      });
-      if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
-        throw new Error(`POST ${path}: invalid IPC response`);
-      }
-      if (response.status < 200 || response.status >= 300) {
-        throw new Error(`POST ${path}: HTTP ${response.status}`);
-      }
-      return JSON.parse(response.body);
-    }
-
-    const response = await fetch(`${cortexBase}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Cortex-Request": "true",
-        Authorization: `Bearer ${tokenRef.current}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      throw new Error(`POST ${path}: HTTP ${response.status}`);
-    }
-    return await response.json();
-  }, [cortexBase]);
+  const postApi = useCallback(
+    createPostApi({
+      getInvoke: () => invokeRef.current,
+      getToken: () => tokenRef.current,
+      cortexBase,
+    }),
+    [cortexBase]
+  );
 
   const call = useCallback(async (command, args = {}) => {
     if (!invokeRef.current) throw new Error("No Tauri IPC available");
@@ -507,22 +461,20 @@ export function App() {
   }, [api]);
 
   const refreshCoreData = useCallback(async () => {
-    const [sessionsResult, locksResult, tasksResult] = await Promise.allSettled([
-      api("/sessions", true),
-      api("/locks", true),
-      api("/tasks?status=all", true),
+    await settledWithRethrow([
+      {
+        fn: () => api("/sessions", true),
+        apply: (v) => setSessions(Array.isArray(v?.sessions) ? v.sessions : []),
+      },
+      {
+        fn: () => api("/locks", true),
+        apply: (v) => setLocks(Array.isArray(v?.locks) ? v.locks : []),
+      },
+      {
+        fn: () => api("/tasks?status=all", true),
+        apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks : []),
+      },
     ]);
-
-    const unwrap = (r) => r.status === "fulfilled" ? r.value : null;
-    setSessions(Array.isArray(unwrap(sessionsResult)?.sessions) ? unwrap(sessionsResult).sessions : []);
-    setLocks(Array.isArray(unwrap(locksResult)?.locks) ? unwrap(locksResult).locks : []);
-    setTasks(Array.isArray(unwrap(tasksResult)?.tasks) ? unwrap(tasksResult).tasks : []);
-
-    const failed = [sessionsResult, locksResult, tasksResult].filter(r => r.status === "rejected");
-    if (failed.length) {
-      const reasons = failed.map(f => f.reason?.message || String(f.reason));
-      throw new Error(reasons.join("; "));
-    }
   }, [api]);
 
   const refreshFeed = useCallback(async () => {
@@ -599,21 +551,18 @@ export function App() {
       invokeRef.current = null;
     }
     await readAuthToken();
-    const results = await Promise.allSettled([
-      refreshDaemonState(),
-      refreshHealth(),
-      refreshCoreData(),
-      refreshFeed(),
-      refreshMessages(),
-      refreshActivity(),
-      refreshSavings(),
-      refreshConflicts(),
+    const errors = await settledCollectErrors([
+      refreshDaemonState,
+      refreshHealth,
+      refreshCoreData,
+      refreshFeed,
+      refreshMessages,
+      refreshActivity,
+      refreshSavings,
+      refreshConflicts,
     ]);
-    const failures = results.filter(r => r.status === "rejected");
-    if (failures.length) {
-      const reasons = failures.map(f => f.reason?.message || String(f.reason));
-      const unique = [...new Set(reasons)];
-      setFeedbackMessage(unique.join("; "));
+    if (errors.length) {
+      setFeedbackMessage(errors.join("; "));
     }
   }, [
     readAuthToken,
