@@ -79,7 +79,16 @@ cargo build --release
 # Binary at target/release/cortex(.exe)
 ```
 
-**Optional knowledge sources:** Set environment variable `CORTEX_INDEX_EXTENDED=1` before `cortex serve` if you index extra on-disk lesson, goal, and playbook trees beyond the default Claude Code paths. Fresh installs omit this.
+**Optional knowledge sources:** Set environment variable `CORTEX_INDEX_EXTENDED=1` before `cortex serve` if you use the extended indexers below. Fresh installs omit this.
+
+When extended indexing is enabled, Cortex looks under your home directory for:
+
+- `~/knowledge-sources/lessons/` (e.g. `lessons.jsonl`)
+- `~/knowledge-sources/tools/goal-setter/` (`current-goals.json`)
+- `~/knowledge-sources/tools/skill-tracker/` (`invocations.jsonl`)
+- `~/knowledge-sources/tools/gorci/` (`last-run.json`)
+- `~/.claude/extended-knowledge/` (root `*.md` insights)
+- `~/.claude/extended-knowledge/crew/` (`*.md` playbooks)
 
 ---
 

@@ -674,7 +674,7 @@ fn estimate_raw_baseline(home: &Path) -> usize {
     }
 
     if env::var("CORTEX_INDEX_EXTENDED").unwrap_or_default() == "1" {
-        let lessons_dir = home.join(concat!("self-improvement-", "engine")).join("lessons");
+        let lessons_dir = home.join("knowledge-sources").join("lessons");
         if let Ok(entries) = std::fs::read_dir(&lessons_dir) {
             for entry in entries.flatten() {
                 if entry

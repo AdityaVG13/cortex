@@ -5,7 +5,7 @@
 //! `~/.claude/projects/<cwd-slug>/memory`.
 //!
 //! **Extended indexers** (opt-in): six additional sources (lessons, goals, skill tracker, gorci, crew playbooks,
-//! self-improvement markdown). Set `CORTEX_INDEX_EXTENDED=1` to enable.
+//! extended-knowledge markdown). Set `CORTEX_INDEX_EXTENDED=1` to enable.
 
 use crate::compiler::claude_project_slug;
 use rusqlite::Connection;
@@ -203,7 +203,7 @@ fn parse_frontmatter(raw: &str) -> (HashMap<String, String>, String) {
 
 fn index_lessons(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join(concat!("self-improvement-", "engine"))
+        .join("knowledge-sources")
         .join("lessons")
         .join("lessons.jsonl");
     if !path.exists() {
@@ -243,7 +243,7 @@ fn index_lessons(conn: &Connection, home: &Path) -> usize {
 
 fn index_goals(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join(concat!("self-improvement-", "engine"))
+        .join("knowledge-sources")
         .join("tools")
         .join("goal-setter")
         .join("current-goals.json");
@@ -288,7 +288,7 @@ fn index_goals(conn: &Connection, home: &Path) -> usize {
 
 fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join(concat!("self-improvement-", "engine"))
+        .join("knowledge-sources")
         .join("tools")
         .join("skill-tracker")
         .join("invocations.jsonl");
@@ -346,7 +346,7 @@ fn index_skill_tracker(conn: &Connection, home: &Path) -> usize {
 
 fn index_gorci(conn: &Connection, home: &Path) -> usize {
     let path = home
-        .join(concat!("self-improvement-", "engine"))
+        .join("knowledge-sources")
         .join("tools")
         .join("gorci")
         .join("last-run.json");
@@ -398,7 +398,7 @@ fn index_gorci(conn: &Connection, home: &Path) -> usize {
 // ── Source 7: Crew playbooks ───────────────────────────────────────────────
 
 fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
-    let crew_dir = home.join(".claude").join("self-improvement").join("crew");
+    let crew_dir = home.join(".claude").join("extended-knowledge").join("crew");
     if !crew_dir.exists() {
         return 0;
     }
@@ -431,10 +431,10 @@ fn index_crew_playbooks(conn: &Connection, home: &Path) -> usize {
     count
 }
 
-// ── Source 8: Self-improvement insights ────────────────────────────────────
+// ── Source 8: Extended-knowledge insights ───────────────────────────────────
 
 fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
-    let si_dir = home.join(".claude").join("self-improvement");
+    let si_dir = home.join(".claude").join("extended-knowledge");
     if !si_dir.exists() {
         return 0;
     }
@@ -447,7 +447,7 @@ fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        // Only index .md files in the root of self-improvement (not subdirs)
+        // Only index .md files in the root of extended-knowledge (not subdirs)
         if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
@@ -460,7 +460,7 @@ fn index_self_improvement(conn: &Connection, home: &Path) -> usize {
                 .to_string();
             // Truncate long insights to 1000 chars for index efficiency
             let text: String = content.chars().take(1000).collect();
-            let source = format!("self-improvement::{name}");
+            let source = format!("extended::{name}");
             if upsert_memory(conn, &text, &source, "insight", "indexer") {
                 count += 1;
             }
