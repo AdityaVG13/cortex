@@ -206,8 +206,12 @@ pub fn cortex_dir() -> PathBuf {
 pub fn generate_token() -> String {
     let token = Uuid::new_v4().simple().to_string();
     let dir = cortex_dir();
-    fs::create_dir_all(&dir).ok();
-    fs::write(dir.join("cortex.token"), &token).ok();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("[cortex] WARNING: cannot create {}: {e}", dir.display());
+    }
+    if let Err(e) = fs::write(dir.join("cortex.token"), &token) {
+        eprintln!("[cortex] WARNING: cannot write token: {e}");
+    }
     token
 }
 
@@ -272,7 +276,9 @@ pub fn verify_api_key_argon2id(api_key: &str, hash: &str) -> bool {
 #[allow(dead_code)]
 pub fn write_pid() {
     let dir = cortex_dir();
-    fs::create_dir_all(&dir).ok();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("[cortex] WARNING: cannot create {}: {e}", dir.display());
+    }
     fs::write(dir.join("cortex.pid"), std::process::id().to_string()).ok();
 }
 

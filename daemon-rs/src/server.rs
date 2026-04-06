@@ -385,9 +385,14 @@ async fn run_plain(
     port: u16,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    let listener = tokio::net::TcpListener::bind((bind_addr, port))
-        .await
-        .unwrap();
+    let listener = match tokio::net::TcpListener::bind((bind_addr, port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[cortex] FATAL: Cannot bind to {bind_addr}:{port} -- {e}");
+            eprintln!("[cortex] Is another Cortex instance running? Try: cortex paths --json");
+            std::process::exit(1);
+        }
+    };
     eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
@@ -404,7 +409,14 @@ async fn run_tls(
 ) {
     use tokio::net::TcpListener;
 
-    let listener = TcpListener::bind((bind_addr, port)).await.unwrap();
+    let listener = match TcpListener::bind((bind_addr, port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[cortex] FATAL: Cannot bind to {bind_addr}:{port} -- {e}");
+            eprintln!("[cortex] Is another Cortex instance running? Try: cortex paths --json");
+            std::process::exit(1);
+        }
+    };
     eprintln!("[cortex] Listening on https://{bind_addr}:{port} (TLS via rustls)");
 
     let mut make_svc = router.into_make_service();
