@@ -287,7 +287,7 @@ mod scm {
 
         // Run the daemon with service shutdown signal
         rt.block_on(async {
-            crate::run_daemon(async move {
+            crate::run_daemon(crate::auth::CortexPaths::resolve(), async move {
                 // Bridge std::sync::mpsc to async via spawn_blocking
                 tokio::task::spawn_blocking(move || {
                     stop_rx.recv().ok();

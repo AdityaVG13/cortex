@@ -38,10 +38,14 @@ mod setup;
 mod state;
 mod tls;
 
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let paths = auth::CortexPaths::resolve_from_args(&args);
 
     match mode {
         // ── HTTP daemon (standalone or via service) ─────────────────
@@ -58,7 +62,7 @@ async fn main() {
                 std::future::pending::<()>().await;
             }
 
-            run_daemon(async {
+            run_daemon(paths.clone(), async {
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => {
                         eprintln!("[cortex] Received Ctrl+C, shutting down...");
@@ -72,31 +76,63 @@ async fn main() {
         }
 
         // ── MCP stdio transport ─────────────────────────────────────
-        // Tries proxy mode first (thin client → daemon on :7437).
-        // Falls back to standalone if daemon is unreachable.
         "mcp" => {
-            if mcp_proxy::run().await {
-                // Proxy mode handled everything -- clean exit
-                return;
+            let base_url = format!("http://127.0.0.1:{}", paths.port);
+            if let Err(e) = mcp_proxy::run(&base_url, None).await {
+                eprintln!("[cortex-mcp] {e}");
+
+                // Legacy fallback: standalone MCP (stdio only, no daemon pretending).
+                eprintln!("[cortex-mcp] Running standalone -- start the daemon for shared state");
+                let db_path = paths.db.clone();
+                eprintln!("[cortex-mcp] DB: {}", db_path.display());
+
+                let (mcp_state, _shutdown_rx) =
+                    state::initialize(&db_path, false).expect("Failed to initialize state");
+
+                mcp_stdio::run(mcp_state.clone()).await;
+                eprintln!("[cortex-mcp] MCP session ended.");
+
+                let conn = mcp_state.db.lock().await;
+                if let Err(e) =
+                    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
+                {
+                    eprintln!("[cortex-mcp] Warning: WAL checkpoint failed: {e}");
+                }
             }
+        }
 
-            // Fallback: standalone MCP (stdio only, no daemon pretending).
-            // Arch review fix: do NOT write PID or bind HTTP port.
-            // A standalone MCP session is not a daemon and must not conflict with one.
-            eprintln!("[cortex-mcp] Running standalone -- start the daemon for shared state");
-            let db_path = auth::db_path();
-            eprintln!("[cortex-mcp] DB: {}", db_path.display());
+        "paths" => {
+            if args.iter().any(|a| a == "--json") {
+                println!("{}", paths.to_json());
+            } else {
+                eprintln!("Usage: cortex paths --json");
+                std::process::exit(1);
+            }
+        }
 
-            let (mcp_state, _shutdown_rx) =
-                state::initialize(&db_path, false).expect("Failed to initialize state");
-
-            mcp_stdio::run(mcp_state.clone()).await;
-            eprintln!("[cortex-mcp] MCP session ended.");
-
-            let conn = mcp_state.db.lock().await;
-            if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
-            {
-                eprintln!("[cortex-mcp] Warning: WAL checkpoint failed: {e}");
+        "plugin" => {
+            let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            match subcmd {
+                "ensure-daemon" => {
+                    let agent = parse_flag_value(&args[3..], "--agent");
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref()).await {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                "mcp" => {
+                    let base_url = parse_flag_value(&args[3..], "--url")
+                        .unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
+                    let api_key = parse_flag_value(&args[3..], "--api-key");
+                    if let Err(e) = mcp_proxy::run(&base_url, api_key.as_deref()).await {
+                        eprintln!("[cortex-plugin] {e}");
+                        std::process::exit(1);
+                    }
+                }
+                _ => {
+                    eprintln!("Usage: cortex plugin <ensure-daemon|mcp>");
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -612,62 +648,70 @@ async fn main() {
                 }
             }
         }
+        "--help" | "-h" | "help" => {
+            print_usage_and_exit(0);
+        }
 
         _ => {
-            eprintln!(
-                "Cortex v{} -- Universal AI Memory Daemon",
-                env!("CARGO_PKG_VERSION")
-            );
-            eprintln!();
-            eprintln!("Usage: cortex <command>");
-            eprintln!();
-            eprintln!("Setup:");
-            eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
-            eprintln!("  setup --team       Team-mode setup + schema migration + owner API key");
-            eprintln!("  migrate            Alias for setup --team (solo -> team migration)");
-            eprintln!("  migrate --dry-run  Preview migration without modifying the database");
-            eprintln!();
-            eprintln!("Daemon:");
-            eprintln!("  serve              HTTP daemon on :7437");
-            eprintln!("  mcp                MCP stdio (proxy to daemon, standalone fallback)");
-            eprintln!();
-            eprintln!("Hooks:");
-            eprintln!("  hook-boot [AGENT]  SessionStart hook (default: claude-opus)");
-            eprintln!("  hook-status        Statusline one-liner");
-            eprintln!();
-            eprintln!("Tools:");
-            eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
-            eprintln!("  export             Export data (--format json|sql, --out <file>)");
-            eprintln!(
-                "  import             Import JSON data (--file <path>, optional --user <username>)"
-            );
-            eprintln!();
-            eprintln!("User Management (team mode):");
-            eprintln!("  user add <name>    Add user [--role member|admin] [--display-name \"...\"]");
-            eprintln!("  user rotate-key <name>  Rotate a user's API key");
-            eprintln!("  user remove <name> Remove user (with confirmation)");
-            eprintln!("  user list          List all users");
-            eprintln!();
-            eprintln!("Team Management (team mode):");
-            eprintln!("  team create <name> Create a team");
-            eprintln!("  team add <team> <user>  Add member [--role member|admin]");
-            eprintln!("  team remove <team> <user>  Remove member (with confirmation)");
-            eprintln!("  team list          List all teams");
-            eprintln!();
-            eprintln!("Admin (team mode):");
-            eprintln!("  admin list-unowned List rows without an owner");
-            eprintln!("  admin assign-owner [--from <user>] --to <user> [--table <t>]");
-            eprintln!("  admin stats        Database and per-user statistics");
-            eprintln!();
-            eprintln!("Service:");
-            eprintln!("  service install    Register as Windows Service (auto-start)");
-            eprintln!("  service uninstall  Remove Windows Service");
-            eprintln!("  service start      Start the service");
-            eprintln!("  service stop       Stop the service");
-            eprintln!("  service status     Check service status");
-            std::process::exit(1);
+            print_usage_and_exit(1);
         }
     }
+}
+
+fn print_usage_and_exit(code: i32) -> ! {
+    eprintln!(
+        "Cortex v{} -- Universal AI Memory Daemon",
+        env!("CARGO_PKG_VERSION")
+    );
+    eprintln!();
+    eprintln!("Usage: cortex <command>");
+    eprintln!();
+    eprintln!("Setup:");
+    eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
+    eprintln!("  setup --team       Team-mode setup + schema migration + owner API key");
+    eprintln!("  migrate            Alias for setup --team (solo -> team migration)");
+    eprintln!("  migrate --dry-run  Preview migration without modifying the database");
+    eprintln!();
+    eprintln!("Daemon:");
+    eprintln!("  serve              HTTP daemon on :7437");
+    eprintln!("  mcp                MCP stdio (proxy to daemon, standalone fallback)");
+    eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
+    eprintln!("  plugin ensure-daemon [--agent <name>]");
+    eprintln!("  plugin mcp [--url <base>] [--api-key <key>]");
+    eprintln!();
+    eprintln!("Hooks:");
+    eprintln!("  hook-boot [AGENT]  SessionStart hook (default: claude-opus)");
+    eprintln!("  hook-status        Statusline one-liner");
+    eprintln!();
+    eprintln!("Tools:");
+    eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
+    eprintln!("  export             Export data (--format json|sql, --out <file>)");
+    eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
+    eprintln!();
+    eprintln!("User Management (team mode):");
+    eprintln!("  user add <name>    Add user [--role member|admin] [--display-name \"...\"]");
+    eprintln!("  user rotate-key <name>  Rotate a user's API key");
+    eprintln!("  user remove <name> Remove user (with confirmation)");
+    eprintln!("  user list          List all users");
+    eprintln!();
+    eprintln!("Team Management (team mode):");
+    eprintln!("  team create <name> Create a team");
+    eprintln!("  team add <team> <user>  Add member [--role member|admin]");
+    eprintln!("  team remove <team> <user>  Remove member (with confirmation)");
+    eprintln!("  team list          List all teams");
+    eprintln!();
+    eprintln!("Admin (team mode):");
+    eprintln!("  admin list-unowned List rows without an owner");
+    eprintln!("  admin assign-owner [--from <user>] --to <user> [--table <t>]");
+    eprintln!("  admin stats        Database and per-user statistics");
+    eprintln!();
+    eprintln!("Service:");
+    eprintln!("  service install    Register as Windows Service (auto-start)");
+    eprintln!("  service uninstall  Remove Windows Service");
+    eprintln!("  service start      Start the service");
+    eprintln!("  service stop       Stop the service");
+    eprintln!("  service status     Check service status");
+    std::process::exit(code);
 }
 
 fn run_export_cli(args: &[String]) {
@@ -864,10 +908,137 @@ fn run_import_cli(args: &[String]) {
     );
 }
 
+fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|idx| args.get(idx + 1))
+        .cloned()
+}
+
+async fn daemon_healthy(port: u16) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    client
+        .get(format!("http://127.0.0.1:{port}/health"))
+        .send()
+        .await
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false)
+}
+
+async fn wait_for_health(port: u16, timeout: Duration) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() <= timeout {
+        if daemon_healthy(port).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+fn spawn_daemon(paths: &auth::CortexPaths) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("serve")
+        .env("CORTEX_HOME", &paths.home)
+        .env("CORTEX_DB", &paths.db)
+        .env("CORTEX_PORT", paths.port.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
+    }
+
+    cmd.spawn().map_err(|e| format!("spawn daemon: {e}"))?;
+    Ok(())
+}
+
+async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("create boot client: {e}"))?;
+
+    let mut req = client
+        .get(format!("http://127.0.0.1:{port}/boot"))
+        .query(&[("agent", agent), ("budget", "200")])
+        .header("x-cortex-request", "true");
+
+    if let Ok(token) = std::fs::read_to_string(token_path) {
+        let token = token.trim();
+        if !token.is_empty() {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+    }
+
+    let resp = req.send().await.map_err(|e| format!("boot request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("boot returned {}", resp.status()))
+    }
+}
+
+async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>) -> Result<(), String> {
+    std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
+    let _ = auth::migrate_legacy_db(paths)?;
+
+    let lock = auth::acquire_daemon_lock(paths);
+    let mut should_spawn = false;
+
+    match lock {
+        Ok(_guard) => {
+            if !daemon_healthy(paths.port).await {
+                should_spawn = true;
+            }
+
+            if should_spawn {
+                spawn_daemon(paths)?;
+                if !wait_for_health(paths.port, Duration::from_secs(10)).await {
+                    return Err(format!(
+                        "daemon did not become healthy on port {} within 10s",
+                        paths.port
+                    ));
+                }
+            }
+        }
+        Err(_) => {
+            if !wait_for_health(paths.port, Duration::from_secs(10)).await {
+                return Err(format!(
+                    "daemon lock is held and daemon is not healthy on port {}",
+                    paths.port
+                ));
+            }
+        }
+    }
+
+    if let Some(agent) = agent {
+        if let Err(e) = boot_agent(paths.port, &paths.token, agent).await {
+            eprintln!("[cortex-plugin] Warning: boot call failed for agent '{agent}': {e}");
+        }
+    }
+
+    println!("{}", paths.port);
+    Ok(())
+}
+
 // ── Admin CLI helpers ───────────────────────────────────────────────────────
 
 fn read_auth_token() -> Result<String, String> {
-    let token_path = auth::cortex_dir().join("cortex.token");
+    let token_path = auth::CortexPaths::resolve().token;
     std::fs::read_to_string(&token_path)
         .map(|v| v.trim().to_string())
         .map_err(|_| {
@@ -883,9 +1054,10 @@ async fn admin_request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
+    let port = auth::CortexPaths::resolve().port;
     let token = read_auth_token()?;
     let client = reqwest::Client::new();
-    let url = format!("http://localhost:7437{path}");
+    let url = format!("http://localhost:{port}{path}");
     let req = match method {
         "GET" => client.get(&url),
         "POST" => client.post(&url),
@@ -974,10 +1146,11 @@ fn json_field(val: &serde_json::Value, key: &str) -> String {
 /// - `serve` passes Ctrl+C / SIGTERM
 /// - `service-run` passes the SCM stop signal
 pub(crate) async fn run_daemon(
+    paths: auth::CortexPaths,
     extra_shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     auth::kill_stale_daemon();
-    let db_path = auth::db_path();
+    let db_path = paths.db.clone();
     eprintln!(
         "[cortex] Starting Cortex v{} (Rust)...",
         env!("CARGO_PKG_VERSION")
@@ -987,9 +1160,13 @@ pub(crate) async fn run_daemon(
     let (state, shutdown_rx) =
         state::initialize(&db_path, true).expect("Failed to initialize state");
 
-    auth::write_pid();
-    let token_path = auth::cortex_dir().join("cortex.token");
-    let pid_path = auth::cortex_dir().join("cortex.pid");
+    if let Some(parent) = paths.pid.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&paths.pid, std::process::id().to_string()).ok();
+
+    let token_path = paths.token.clone();
+    let pid_path = paths.pid.clone();
     eprintln!("[cortex] Auth token at {}", token_path.display());
     eprintln!(
         "[cortex] PID {} written to {}",
@@ -1113,7 +1290,7 @@ pub(crate) async fn run_daemon(
     }
 
     let db_for_shutdown = state.db.clone();
-    let router = server::build_router(state);
+    let router = server::build_router(state, paths.port);
 
     // Combine shutdown sources: HTTP /shutdown, extra (Ctrl+C or SCM stop)
     let shutdown_future = async {
@@ -1125,7 +1302,7 @@ pub(crate) async fn run_daemon(
         }
     };
 
-    server::run(router, 7437, shutdown_future).await;
+    server::run(router, paths.port, &db_path, shutdown_future).await;
 
     // WAL checkpoint + cleanup
     eprintln!("[cortex] Flushing database...");

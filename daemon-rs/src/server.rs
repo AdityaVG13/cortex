@@ -23,14 +23,19 @@ use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
 use serde_json::Value;
+use std::path::Path;
 use tower_http::cors::CorsLayer;
 
-pub fn build_router(state: RuntimeState) -> Router {
+pub fn build_router(state: RuntimeState, port: u16) -> Router {
     // SEC-001: restrict CORS to localhost origins only.
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://127.0.0.1:7437".parse::<HeaderValue>().unwrap(),
-            "http://localhost:7437".parse::<HeaderValue>().unwrap(),
+            format!("http://127.0.0.1:{port}")
+                .parse::<HeaderValue>()
+                .unwrap(),
+            format!("http://localhost:{port}")
+                .parse::<HeaderValue>()
+                .unwrap(),
             "http://127.0.0.1:1420".parse::<HeaderValue>().unwrap(),
             "http://localhost:1420".parse::<HeaderValue>().unwrap(),
             "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
@@ -335,6 +340,7 @@ async fn handle_focus_end(
 pub async fn run(
     router: Router,
     port: u16,
+    db_path: &Path,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     let bind_addr = std::env::var("CORTEX_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -349,7 +355,7 @@ pub async fn run(
         Err(e) => {
             // Team mode: refuse to start with broken TLS (auth integrity requires it)
             // Solo mode: warn and fall back to plain HTTP
-            let team_mode = detect_team_mode_for_tls();
+            let team_mode = detect_team_mode_for_tls(db_path);
             if team_mode {
                 eprintln!("[cortex] TLS configuration error: {e}");
                 eprintln!("[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY");
@@ -365,9 +371,8 @@ pub async fn run(
 
 /// Lightweight team-mode detection for TLS decisions (before full state init).
 /// Opens the DB briefly to read the config table.
-fn detect_team_mode_for_tls() -> bool {
-    let db_path = crate::auth::db_path();
-    if let Ok(conn) = crate::db::open(&db_path) {
+fn detect_team_mode_for_tls(db_path: &Path) -> bool {
+    if let Ok(conn) = crate::db::open(db_path) {
         crate::db::is_team_mode(&conn)
     } else {
         false
@@ -496,8 +501,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_non_admin_routes_preserved_across_team_migration() {
-        let solo_router = build_router(build_state(false).await);
-        let team_router = build_router(build_state(true).await);
+        let solo_router = build_router(build_state(false).await, 7437);
+        let team_router = build_router(build_state(true).await, 7437);
 
         let cases: Vec<(Method, &str, Option<&str>)> = vec![
             (Method::GET, "/health", None),
