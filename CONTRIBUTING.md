@@ -7,7 +7,13 @@ Thanks for contributing. Cortex is a local-first memory system for AI agents, wi
 - Search existing issues and pull requests before opening a new one.
 - Prefer small, reviewable PRs over broad refactors.
 - If your change affects behavior, update docs in the same PR.
-- If your change affects APIs or workflows, update [README.md](README.md) or [docs/CONNECTING.md](docs/CONNECTING.md).
+- If your change affects APIs or workflows, update [README.md](README.md) or [Info/connecting.md](Info/connecting.md).
+
+## Multi-Model Development
+
+- Cortex work is coordinated across Claude, Gemini, Codex, and local models.
+- Check open issues and [Info/roadmap.md](Info/roadmap.md) before starting to avoid duplicate work.
+- If you claim a roadmap item, note scope and milestone clearly in your PR description.
 
 ## Development Setup
 
@@ -91,4 +97,4 @@ Please update docs when you change:
 - Avoid silently changing security-sensitive defaults.
 - Do not commit local databases, logs, personal config, or machine-specific artifacts.
 
-For security issues, do not open a public issue with exploit details. Follow [SECURITY.md](SECURITY.md).
+For security issues, do not open a public issue with exploit details. Follow [Info/security-rules.md](Info/security-rules.md).

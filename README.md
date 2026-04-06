@@ -94,7 +94,7 @@ Cortex is a high-performance Rust daemon living at `~/.cortex`. It uses an embed
 | Component | Description |
 |-----------|-------------|
 | **Capsule Compiler** | Compiles boot prompts from **Identity** (stable) and **Delta** (recent) capsules. |
-| **In-Process ONNX** | Uses `all-MiniLM-L6-v2` locally. No network hops or Ollama required. |
+| **In-Process ONNX** | Uses `all-MiniLM-L6-v2` locally with no external inference service. |
 | **Conflict Detection** | Flags semantic contradictions between different AIs automatically. |
 | **Progressive Recall** | Three-tier retrieval: **Peek** (headlines) -> **Unfold** (full text) -> **Recall** (search). |
 
@@ -106,16 +106,20 @@ These tools are injected into your agent's context automatically:
 - `cortex_recall`: Hybrid semantic + keyword search with token budgeting.
 - `cortex_store`: Persist a decision or insight with conflict detection.
 - `cortex_digest`: Daily health digest and token savings analytics.
-- `cortex_status`: Check brain health and connection stats.
+- `cortex_health`: Check brain health and connection stats.
+
+Full tool list and parameters: [Info/mcp-tools.md](Info/mcp-tools.md)
 
 ## CLI Reference
 | Command | Description |
 |---------|-------------|
 | `cortex serve` | Start the Cortex daemon |
 | `cortex paths --json` | Output canonical file and port paths |
+| `cortex plugin ensure-daemon` | Start (or reuse) daemon with migration + lock safety |
 | `cortex plugin mcp` | Bridge MCP stdio to Cortex HTTP API |
 | `cortex setup --team` | Initialize team mode and generate API keys |
-| `cortex export/import` | Bulk memory management |
+| `cortex export` | Export data (`--format json|sql`) |
+| `cortex import` | Import JSON export into solo/team mode |
 
 ## Security & Roadmap
 - **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [Info/security-rules.md](Info/security-rules.md).
@@ -125,4 +129,4 @@ These tools are injected into your agent's context automatically:
 
 *Full Roadmap: [Info/roadmap.md](Info/roadmap.md)*
 
-[Contributing](CONTRIBUTING.md) | [Security Rules](Info/security-rules.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
+[Contributing](CONTRIBUTING.md) | [Security](Info/security-rules.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)

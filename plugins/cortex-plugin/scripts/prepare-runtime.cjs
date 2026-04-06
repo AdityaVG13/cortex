@@ -94,6 +94,10 @@ function computeSha256(filePath) {
   return hash.digest('hex').toLowerCase();
 }
 
+function escapePowerShellLiteral(value) {
+  return value.replace(/'/g, "''");
+}
+
 // Extract archive (cross-platform)
 function extractArchive(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
@@ -102,9 +106,27 @@ function extractArchive(archivePath, destDir) {
     // Use tar for .tar.gz (available on Windows 10+ via bash/git-bash/wsl)
     execSync(`tar xzf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
   } else if (archivePath.endsWith('.zip')) {
-    // Windows: use tar (can read .zip) or PowerShell
-    // tar xf works for .zip on Windows 10+
-    execSync(`tar xf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
+    if (PLATFORM === 'win32') {
+      const archiveLiteral = escapePowerShellLiteral(archivePath);
+      const destLiteral = escapePowerShellLiteral(destDir);
+      try {
+        execSync(
+          `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${archiveLiteral}' -DestinationPath '${destLiteral}' -Force"`,
+          { stdio: 'inherit' },
+        );
+      } catch (_powershellError) {
+        console.error('[cortex-plugin] PowerShell Expand-Archive failed; trying tar fallback');
+        try {
+          execSync(`tar xf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
+        } catch (tarError) {
+          throw new Error(
+            `Failed to extract ZIP via PowerShell and tar fallback. Install Git for Windows (tar) or ensure Expand-Archive works: ${tarError.message}`,
+          );
+        }
+      }
+    } else {
+      execSync(`tar xf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
+    }
   } else {
     throw new Error(`Unknown archive format: ${archivePath}`);
   }

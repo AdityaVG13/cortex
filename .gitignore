@@ -17,6 +17,7 @@ dist/
 *.bak
 
 # Internal design docs (not for public repo)
+docs/
 docs/architecture/
 docs/compatibility/
 docs/schema/
