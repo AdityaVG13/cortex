@@ -30,201 +30,89 @@
 
 ---
 
-AI coding assistants forget everything between sessions. Every conversation starts from scratch -- re-discovering your toolchain, conventions, and past decisions. Burning tokens and patience.
+<p align="center"><a href="https://ko-fi.com/adityavg13">☕ Support Cortex</a> -- all donations go directly toward funding AI projects (API costs, compute, tooling)</p>
 
-Cortex gives every AI a shared brain that persists, compresses, and pushes context before being asked. It works with Claude Code, Cursor, and any tool that speaks HTTP or MCP.
+Claude Code remembers everything. Across every session.
 
-**By the numbers:**
-- 97% token compression on boot (19K raw -> ~500 tokens served)
-- Sub-100ms recall with hybrid semantic + keyword search
-- Bearer auth on all sensitive endpoints, CORS-locked to localhost
-- 13 MCP tools, 35+ HTTP endpoints, SSE real-time stream
-- Zero external runtime dependencies -- no Ollama or Python required
-
-| You want to... | Cortex gives you... |
-|---|---|
-| Stop repeating setup and project context to every agent | Capsule-compiled boot prompts with durable identity + recent delta |
-| Share decisions across Claude Code, Cursor, Codex, Gemini, and others | A single local brain with HTTP and MCP access |
-| Keep memory local and fast | Rust daemon, SQLite persistence, and in-process ONNX embeddings |
-| Avoid silent contradictions between agents | Conflict detection and human-resolvable disputed decisions |
-| Manage the system visually | A desktop control center for graph exploration, activity, tasks, and conflicts |
-
----
-
-## Features
-
-Built for local-first AI workflows where multiple coding agents need shared memory without shared confusion.
-
-- **Persistent shared memory for multiple AIs:** Claude Code, Cursor, Codex, Gemini, and any HTTP/MCP-capable tool can read and write the same brain.
-- **Token-aware context delivery:** Capsule boot, peek, unfold, and recall flows minimize startup/context costs without losing key history.
-- **Local-first architecture:** Rust daemon, SQLite persistence, and in-process ONNX embeddings keep the core stack self-contained.
-- **Conflict-aware knowledge model:** Contradictory decisions are surfaced instead of silently overwritten.
-- **Desktop control plane:** A Tauri app provides graph exploration, task coordination, live agent activity, and conflict resolution.
-
----
+- **Your decisions persist.** Architecture choices, coding conventions, and debugging lessons are remembered and surfaced in future sessions.
+- **Every session starts warm.** No more re-explaining your toolchain or project structure. Claude already knows.
+- **Works across your tools.** A shared brain for Claude Code, Cursor, Gemini CLI, and any MCP-compatible tool.
 
 ## Installation
 
-Choose the release binary if you want the fastest path to a working daemon. Build from source if you are developing Cortex itself or need to inspect internals.
+### Claude Code Plugin (Recommended)
 
-### Download (recommended)
+Cortex is now available as a Claude Code plugin. This is the fastest way to get started.
 
-Grab the latest release from [GitHub Releases](https://github.com/AdityaVG13/cortex/releases/tag/v0.4.0):
+```bash
+claude plugin marketplace add AdityaVG13/cortex
+claude plugin install cortex@cortex-marketplace
+```
 
-| Platform | Download |
-|----------|----------|
-| **Windows (x86_64)** | [`cortex-v0.4.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-windows-x86_64.zip) |
-| **macOS (arm64)** | [`cortex-v0.4.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-macos-aarch64.tar.gz) |
-| **Linux (x86_64)** | [`cortex-v0.4.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-linux-x86_64.tar.gz) |
+Start a new session. That's it. Cortex boots automatically.
 
-Extract the archive and place the binary on your PATH. On Windows, the Control Center app handles the daemon lifecycle and auto-updates automatically.
+### Desktop App (Control Center)
 
-### Build from source
+The Cortex Control Center provides a visual dashboard for your brain. Download the latest installer for Windows, macOS, or Linux from the [Releases](https://github.com/AdityaVG13/cortex/releases) page.
 
-Requires [Rust 1.78+](https://rustup.rs/):
+### From Source
+
+For contributors and power users:
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
 cd cortex/daemon-rs
 cargo build --release
-# Binary at target/release/cortex(.exe)
 ```
 
----
+## First Session Experience
 
-## Quick Start
+When you start a new session with the Cortex plugin installed, you'll see a boot message:
 
-This is the shortest path from zero to a running local brain.
+```text
+Brain: READY | Cortex initialized at ~/.cortex | 42 memories
+```
 
-1. **Start the daemon:**
-   ```bash
-   cortex serve
-   ```
+Try storing a coding convention:
+> "Cortex, remember that we use early returns and avoid nested if statements in this project."
 
-2. **Verify it's alive:**
-   ```bash
-   curl http://localhost:7437/health
-   # {"status":"ok","stats":{"memories":0,"decisions":0,"embeddings":0}}
-   ```
+In a future session, Claude will recall this:
+> "I've recalled your convention for early returns. I'll ensure the new function follows this pattern."
 
-3. **Read the connection guide:**
-   - Start with [docs/CONNECTING.md](docs/CONNECTING.md) for auth, `/boot`, and platform-specific setup.
-   - `/health` is public; most useful endpoints require the bearer token in `~/.cortex/cortex.token`.
+## Team Mode
 
-For the best experience, use the [Desktop App](#desktop-app).
+Cortex supports shared brains for engineering teams. Run a shared instance on a server and every team member's agent will contribute to and learn from the same collective memory.
 
----
+1. Run `cortex serve --host 0.0.0.0` on your shared server.
+2. Team lead runs `cortex setup --team` to create API keys.
+3. Team members enter the server URL and their API key when prompted by the plugin.
 
-## Desktop App
-
-Cortex Control Center is a Tauri-powered desktop application with a Jarvis-inspired UI for managing your AI brain.
-
-### Control Center Features
-- **Visual Memory Graph:** 3D force-directed visualization of semantic relationships.
-- **Agent Coordination:** Live monitoring of active agent sessions and heartbeats.
-- **Task & Feed Management:** Shared Kanban board and inter-agent message feed.
-- **Conflict Resolution:** Side-by-side dispute resolution UI for contradictory AI memories.
-- **Auto-Updater:** Built-in update management for Windows users via `tauri-plugin-updater`.
-- **System Tray:** Runs silently in the background with quick access to logs and status.
-
----
-
-## Connecting Your AI
-
-Every integration reduces to the same pattern: boot for context, recall when needed, and store durable decisions back into the brain.
-
-- **Claude Code:** `claude mcp add cortex -s user -- /path/to/cortex mcp`
-- **Cursor:** Add Cortex to `~/.cursor/mcp.json` as an MCP server.
-- **Any CLI/agent:** Call `/boot?agent=YOUR_NAME` with the bearer token from `~/.cortex/cortex.token`.
-- **Full setup guide:** See [docs/CONNECTING.md](docs/CONNECTING.md) for curl examples, auth, and supported workflows.
-
----
+See the [Team Mode Setup Guide](docs/team-mode-setup.md) for full details.
 
 ## How It Works
 
-The system is designed to compress context aggressively without losing the pieces that matter across sessions.
+Cortex is a high-performance Rust daemon that lives at `~/.cortex`. It uses an embedded SQLite database for persistence and in-process ONNX embeddings for lightning-fast semantic search. 
 
-| Component | Description |
-|-----------|-------------|
-| **Capsule Compiler** | Compiles a minimal boot prompt from **Identity** (stable context) and **Delta** (what changed since last boot) capsules. |
-| **In-Process ONNX** | Uses `all-MiniLM-L6-v2` vectors computed locally. No network hops or external LLM requirements for embeddings. |
-| **Conflict Detection** | Automatically flags semantic contradictions between different AIs (e.g., conflicting architectural decisions). |
-| **Progressive Recall** | Three-tier retrieval: **Peek** (headlines only) -> **Unfold** (selected full text) -> **Budget Recall** (token-aware search). |
-| **Score Decay** | Ebbinghaus-inspired aging. Memories strengthen with use and decay with time, keeping the brain sharp. |
+When an agent starts a session, it calls the `/boot` endpoint. Cortex compiles an **Identity Capsule** (who you are and your global rules) and a **Delta Capsule** (what changed since your last session). These are pushed into the agent's context window, ensuring it's "warm" from the first prompt.
 
----
+- **No external dependencies:** No Ollama or external API calls required for embeddings.
+- **MCP Native:** Speaks the Model Context Protocol for seamless integration.
+- **Surgical Recall:** Sub-100ms hybrid search ensures the right memory is found at the right time.
 
-## API Reference
+## CLI Reference
 
-The full API surface is larger than the summary below. Use the tables here for orientation, then go to the OpenAPI spec or connection guide when wiring tools up.
-
-### MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `cortex_boot` | Get compiled boot prompt with session context. |
-| `cortex_peek` | Headlines-only recall (~80% token savings). |
-| `cortex_recall` | Hybrid search with token budgeting. |
-| `cortex_store` | Persist a decision or insight with conflict detection. |
-| `cortex_unfold` | Drill into specific memory/decision/crystal nodes. |
-| `cortex_digest` | Daily health digest and token savings analytics. |
-| `cortex_focus_start` | Start context checkpoint (sawtooth compression). |
-| `cortex_focus_end` | Summarize and consolidate focus session. |
-| `cortex_health` | System health check. |
-| `cortex_forget` | Decay memories matching a keyword. |
-| `cortex_resolve` | Resolve disputed decisions (keep/merge). |
-
-### HTTP Endpoints (Summary)
-
-| Path | Method | Description |
-|------|--------|-------------|
-| `/boot` | GET | Capsule-compiled boot prompt. |
-| `/recall` | GET | Semantic + keyword search. |
-| `/store` | POST | Store memory with conflict detection. |
-| `/health` | GET | System status and metrics. |
-| `/digest` | GET | Activity summary and savings data. |
-| `/mcp-rpc` | POST | HTTP-to-MCP JSON-RPC proxy. |
-| `/events/stream`| GET | Real-time SSE event stream. |
-| `/tasks` | GET/POST| Multi-agent task management. |
-| `/locks` | GET/POST| File locking for agent coordination. |
-
-*Full OpenAPI spec available in `specs/cortex-openapi.yaml`.*
-
----
-
-## Security
-
-Cortex is built for local use first. The defaults assume the daemon is running on your machine and should not be exposed broadly without deliberate hardening.
-
-- **Bearer Authentication:** Sensitive endpoints require the token found in `~/.cortex/cortex.token`.
-- **CORS Protection:** Restricted to localhost origins by default to prevent SSRF and unauthorized access.
-- **Data Integrity:** SQLite with WAL mode and prepared statements; zero string interpolation in SQL.
-- **Process Isolation:** Stale daemon detection validates process identity before termination.
-
----
-
-## Community
-
-If you are evaluating the project for adoption, these are the root docs that matter most after the README.
-
-- Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Security policy: [SECURITY.md](SECURITY.md)
-- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-
-## Roadmap
-
-The roadmap tracks hardening, governance, and multi-tenant work beyond the current release.
-
-See [ROADMAP.md](ROADMAP.md) for detailed milestone tracking.
-
-- **v0.5.0:** Foundation hardening (TTL, Rollback, Schema migration).
-- **v0.6.0:** Governance (Budgets, Retention, Human review).
-- **v0.7.0:** Multi-tenant hardening (Privacy, Scoped tokens).
-- **v1.0.0:** AI Information Ingester (ChatGPT/Claude/Gemini export import).
-
----
+| Command | Description |
+|---------|-------------|
+| `cortex serve` | Start the Cortex daemon |
+| `cortex paths --json` | Output canonical file and port paths in JSON |
+| `cortex plugin ensure-daemon` | Internal: verify or start local daemon for plugin |
+| `cortex plugin mcp` | Internal: bridge MCP stdio to Cortex HTTP API |
+| `cortex setup --team` | Initialize team mode and generate API keys |
+| `cortex export` | Export all memories to JSON |
+| `cortex import` | Import memories from a JSON file |
 
 ## License
 
-AGPL-3.0-only -- See [LICENSE](LICENSE) for details.
+Cortex is licensed under the [AGPL-3.0-only](LICENSE) license.
+
+[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Desktop App](https://github.com/AdityaVG13/cortex/releases)
