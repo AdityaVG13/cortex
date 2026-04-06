@@ -16,7 +16,7 @@ use crate::state::RuntimeState;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-const SESSION_TTL_SECONDS: i64 = 120;
+const SESSION_TTL_SECONDS: i64 = 7200; // 2 hours -- agents heartbeat to extend
 const MAX_ACTIVITIES: i64 = 1000;
 const MAX_MESSAGES_PER_AGENT: i64 = 100;
 const MAX_TASKS: i64 = 500;

@@ -65,7 +65,7 @@ async fn main() {
         // ── MCP stdio transport ─────────────────────────────────────
         "mcp" => {
             let base_url = format!("http://127.0.0.1:{}", paths.port);
-            if let Err(e) = mcp_proxy::run(&base_url, None).await {
+            if let Err(e) = mcp_proxy::run(&base_url, None, None).await {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
@@ -94,7 +94,8 @@ async fn main() {
                     let base_url = parse_flag_value(&args[3..], "--url")
                         .unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
                     let api_key = parse_flag_value(&args[3..], "--api-key");
-                    if let Err(e) = mcp_proxy::run(&base_url, api_key.as_deref()).await {
+                    let agent = parse_flag_value(&args[3..], "--agent");
+                    if let Err(e) = mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await {
                         eprintln!("[cortex-plugin] {e}");
                         std::process::exit(1);
                     }

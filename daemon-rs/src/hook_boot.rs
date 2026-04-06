@@ -111,6 +111,35 @@ fn status_path() -> PathBuf {
         .join("brain-status.json")
 }
 
+/// Register an active session with the daemon so the Agents panel shows it.
+async fn register_session(agent: &str, port: u16) {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let url = format!("http://127.0.0.1:{port}/session/start");
+    let body = json!({
+        "agent": agent,
+        "ttl": 7200,
+        "description": "Active coding session"
+    });
+
+    let mut req = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("x-cortex-request", "true")
+        .json(&body);
+    if let Some(token) = read_auth_token() {
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let _ = req.send().await;
+}
+
 // ---- Public entry points ----------------------------------------------------
 
 /// SessionStart hook -- outputs JSON for Claude Code hook system.
@@ -128,6 +157,11 @@ pub async fn run_boot(agent: &str) {
 
     let cortex_connected = boot.is_some() || health.is_some();
     let cortex_booted = boot.is_some();
+
+    // Register session so the Agents panel shows this agent as online
+    if cortex_booted {
+        register_session(agent, port).await;
+    }
     let overall = if cortex_connected {
         "ONLINE"
     } else {

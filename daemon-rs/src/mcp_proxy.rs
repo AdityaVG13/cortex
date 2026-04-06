@@ -27,7 +27,7 @@ const MAX_CONSECUTIVE_FAILURES: u32 = 10;
 const MAX_RESPAWN_ATTEMPTS: u32 = 3;
 
 /// Read the auth token from ~/.cortex/cortex.token.
-fn read_auth_token() -> Option<String> {
+pub(crate) fn read_auth_token() -> Option<String> {
     let token_path = crate::auth::CortexPaths::resolve().token;
     match std::fs::read_to_string(&token_path) {
         Ok(token) => {
@@ -63,6 +63,7 @@ fn detect_team_mode(api_key: Option<&str>) -> bool {
 pub async fn run(
     base_url: &str,
     api_key: Option<&str>,
+    agent: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base_url = base_url.trim_end_matches('/');
     let mut rpc_url = format!("{base_url}/mcp-rpc");
@@ -108,6 +109,46 @@ pub async fn run(
         eprintln!(
             "[cortex-mcp] Health check failed after {HEALTH_CHECK_ATTEMPTS} attempts; keeping proxy alive and deferring errors to JSON-RPC responses"
         );
+    }
+
+    // Spawn background heartbeat to keep the session alive in the Agents panel
+    if let Some(agent_name) = agent {
+        let heartbeat_url = format!("{base_url}/session/heartbeat");
+        let heartbeat_agent = agent_name.to_string();
+        let heartbeat_token = api_key.map(String::from);
+        tokio::spawn(async move {
+            let hb_client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1800)).await; // 30 min
+                let body = serde_json::json!({ "agent": heartbeat_agent });
+                let auth = heartbeat_token
+                    .as_deref()
+                    .map(|k| format!("Bearer {k}"))
+                    .or_else(|| crate::mcp_proxy::read_auth_token().map(|t| format!("Bearer {t}")));
+                let mut req = hb_client
+                    .post(&heartbeat_url)
+                    .header("content-type", "application/json")
+                    .header("x-cortex-request", "true")
+                    .json(&body);
+                if let Some(auth) = auth {
+                    req = req.header("authorization", auth);
+                }
+                match req.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        eprintln!("[cortex-mcp] Session heartbeat sent for {heartbeat_agent}");
+                    }
+                    Ok(resp) => {
+                        eprintln!("[cortex-mcp] Heartbeat returned HTTP {}", resp.status());
+                    }
+                    Err(e) => {
+                        eprintln!("[cortex-mcp] Heartbeat failed: {e}");
+                    }
+                }
+            }
+        });
     }
 
     let stdin = tokio::io::stdin();
