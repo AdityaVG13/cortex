@@ -1,87 +1,146 @@
 # Cortex Roadmap
 
-What's coming next. Features organized by release milestone.
+This roadmap is public and contributor-focused: enough detail to start building, without exposing internal planning artifacts.
 
 ---
 
-## v0.4.0 -- Public Launch (current)
+## Current Release Track -- v0.4.x
 
-Core daemon is stable. Security hardened. Ready for contributors.
+Focus: polish and reliability after public launch.
 
-- [ ] Version bump + GitHub release with installer
-- [ ] README rewrite for external developers
-- [ ] CONTRIBUTING.md + SECURITY.md
-- [ ] Architecture docs audit (public vs internal)
-- [ ] Recall quality baseline analysis
-- [ ] Auto-generated CHANGELOG on version tags
-- [ ] Desktop app (Control Center) end-to-end verification
+### In-flight priorities
+- Desktop app parity with daemon configuration (`~/.cortex`, dynamic ports, binary discovery)
+- Plugin packaging verification (cross-platform assets + checksum flow)
+- Documentation quality pass (install clarity, team mode onboarding, MCP reference)
+- Release verification sweep (smoke tests + changelog completeness)
 
 ---
 
 ## v0.5.0 -- Foundation Hardening
 
-Schema discipline, data repair, and memory quality.
+Goal: make Cortex robust for daily development workflows.
 
-- [ ] **TTL / hard expiration** -- `expires_at` column for temporal facts that shouldn't decay slowly
-- [ ] **Session-based rollback** -- archive all data from a faulty agent run in one command
-- [ ] **Schema versioning** -- named migration epochs, `cortex doctor` verification command
-- [ ] **Derived-state repair** -- `cortex reindex`, `cortex re-embed`, `cortex recrystallize` for when indexes drift
-- [ ] **Semantic dedup at store time** -- distinguish "new fact" from "reinforcement of existing fact"
-- [ ] **Boot prompt audit trail** -- record which sources were included in each compiled boot prompt
+### Planned themes
+1. **Lifecycle control**
+   - TTL / hard expiration (`expires_at`) for short-lived facts
+   - Session rollback primitives for bad agent runs
+2. **Schema discipline**
+   - Versioned migrations with explicit upgrade checks
+   - Doctor-style validation command for schema/runtime consistency
+3. **Derived-state repair**
+   - Rebuild commands for indexes, embeddings, and crystallized state
+4. **Memory quality**
+   - Semantic dedup on store path
+   - Boot prompt audit trail (which sources were used, and why)
+
+### Contributor-ready tasks
+- Add migration tests for new metadata columns
+- Improve CLI UX around repair/reindex status output
+- Add failure-mode tests for rollback and dedup edge cases
 
 ---
 
 ## v0.6.0 -- Governance & Economics
 
-Budget controls, retention policies, and human review surfaces.
+Goal: make team deployments predictable, auditable, and budget-aware.
 
-- [ ] **Budget governance** -- per-endpoint token limits, max recalls per turn, invocation frequency caps
-- [ ] **Retention policy classes** -- durable knowledge vs operational context vs audit records vs ephemera
-- [ ] **Human review workflows** -- inboxes for shared knowledge, review queues, promotion paths (private -> team -> shared)
-- [ ] **Dynamic context ranking** -- rank injected memories by relevance, inject top 3-5 items only
-- [ ] **Contradiction triage worker** -- background resolution tasks for disputed facts
-- [ ] **Adapter conformance spec** -- canonical behavior tests for MCP, HTTP, Python SDK, TypeScript SDK
+### Planned themes
+1. **Budget governance**
+   - Per-endpoint limits (recall depth, boot budget, invocation rates)
+2. **Retention classes**
+   - Distinguish durable knowledge vs operational context vs ephemera
+3. **Human review surfaces**
+   - Queue/review flow for promoting shared knowledge
+4. **Context quality**
+   - Dynamic ranking so high-value memories are injected first
+5. **Adapter conformance**
+   - Shared contract tests across MCP + HTTP + SDKs
+
+### Contributor-ready tasks
+- Contract tests for tool parity across transports
+- Config schema improvements for retention/budget policies
+- Dashboard UX for review queues and budget visibility
 
 ---
 
 ## v0.7.0 -- Multi-Tenant Hardening
 
-Privacy, fairness, and agent identity for team deployments.
+Goal: secure, fair, and operable team mode at larger scale.
 
-- [ ] **Deep erasure** (`DELETE /forget`) -- scrub row + FTS + embedding + re-crystallize affected crystals
-- [ ] **Crystal lineage tracking** -- trace which memories built each crystal, re-crystallize on source deletion
-- [ ] **Capability-scoped agent tokens** -- cryptographic agent identity with restricted write authority
-- [ ] **Multi-tenant fairness** -- per-user quotas for store/recall/embedding throughput
-- [ ] **Backup, restore, disaster recovery** -- source-of-truth backup, derived rebuild, encrypted key handling
-- [ ] **Namespace-isolated embedding spaces** -- separate vector indexes per team for enterprise security
+### Planned themes
+1. **Privacy and data control**
+   - Deep erasure across core rows + derived indices
+   - Crystal lineage for traceability and safe re-crystallization
+2. **Auth hardening**
+   - Stronger capability-scoped identity model for agent calls
+3. **Fairness and resiliency**
+   - Per-user quotas and admission control
+   - Backup/restore and disaster-recovery workflows
+4. **Isolation**
+   - Namespace/team-aware embedding boundaries
+
+### Contributor-ready tasks
+- Visibility/isolation integration tests
+- Backup and restore dry-run tooling
+- Observability improvements for auth/quotas
 
 ---
 
 ## v0.8.0 -- Advanced Agent Support
 
-Branch awareness, provenance, and autonomous agent coordination.
+Goal: improve multi-agent coordination and provenance.
 
-- [ ] **Branch-aware filtering** -- prioritize memories from current git branch and ancestors
-- [ ] **Reasoning provenance** -- every recalled memory includes its source (commit, session, parent decision)
-- [ ] **Multi-agent deadlock detection** -- dependency graph on tasks with cycle detection
-- [ ] **Chrome extension** -- inject Cortex context into claude.ai, chatgpt.com, gemini.google.com
+### Planned themes
+1. **Branch-aware memory relevance**
+2. **Reasoning provenance and traceability**
+3. **Deadlock-safe multi-agent task orchestration**
+4. **Control Center task dispatch and live progress**
+
+### Contributor-ready tasks
+- Task graph UI/UX improvements
+- Provenance metadata surfacing in recall responses
+- Lock contention and deadlock simulation tests
 
 ---
 
 ## v1.0.0 -- AI Information Ingester
 
-Import, classify, and index your data from any AI platform.
+Goal: import and normalize knowledge from major AI platforms.
 
-- [ ] ChatGPT export parser (conversations.json)
-- [ ] Claude conversation ingester
-- [ ] Gemini conversation ingester
-- [ ] Intelligent separator (topic detection + classification into decisions/facts/preferences)
-- [ ] Dedup against existing Cortex memories
-- [ ] Confidence scoring for imported data
-- [ ] Bulk import CLI (`cortex ingest <export.json>`)
+### Planned themes
+1. **Export parsers**
+   - ChatGPT, Claude, Gemini conversation ingestion
+2. **Normalization pipeline**
+   - Classify imported content into durable memory types
+3. **Quality controls**
+   - Dedup against existing memories
+   - Confidence scoring for imported entries
+4. **Operator tooling**
+   - Bulk ingest CLI with preview + dry-run
+
+### Contributor-ready tasks
+- Parser fixtures and golden tests
+- Classification quality benchmarks
+- CLI progress/error reporting improvements
 
 ---
 
-## Contributing
+## Public Backlog (cross-milestone)
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and PR guidelines. Pick any unchecked item, open an issue or PR to claim it.
+These are open contribution areas that may land in any release based on quality and urgency:
+
+- Key rotation improvements and operational key hygiene workflows
+- Optional at-rest encryption integration path
+- Expanded adapter compatibility (OpenAI-style function interfaces)
+- Additional diagnostics and memory quality metrics
+- Documentation and onboarding UX improvements
+
+---
+
+## How to Contribute
+
+1. Pick a roadmap item and open/claim an issue.
+2. Propose a small implementation slice with clear acceptance criteria.
+3. Link tests or verification output in your PR.
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for setup, checks, and PR expectations.
