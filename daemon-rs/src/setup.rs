@@ -30,6 +30,18 @@ use crate::auth;
 use crate::db;
 use crate::embeddings;
 
+fn daemon_port() -> u16 {
+    auth::CortexPaths::resolve().port
+}
+
+fn daemon_base_url() -> String {
+    format!("http://localhost:{}", daemon_port())
+}
+
+fn daemon_url(path: &str) -> String {
+    format!("{}{}", daemon_base_url(), path)
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -129,8 +141,8 @@ pub async fn run_setup() {
         "  Your API token: {}... (full token in ~/.cortex/cortex.token)",
         token_preview
     );
-    eprintln!("  Daemon:         http://localhost:7437");
-    eprintln!("  Health check:   curl http://localhost:7437/health");
+    eprintln!("  Daemon:         {}", daemon_base_url());
+    eprintln!("  Health check:   curl {}", daemon_url("/health"));
     eprintln!();
     eprintln!("  Cortex is ready. Your AI now has persistent memory.");
     eprintln!();
@@ -659,8 +671,7 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
         return Ok("Already configured (skipped)".into());
     }
 
-    // Normalize path separators for the platform
-    let exe_path = cortex_exe.replace('/', "\\");
+    let exe_path = PathBuf::from(cortex_exe).to_string_lossy().to_string();
 
     // Add cortex entry
     mcp_servers
@@ -737,9 +748,10 @@ fn summarize_configs(results: &[(&str, StepResult)]) -> StepResult {
 // ─── Step 4: Start daemon ───────────────────────────────────────────────────
 
 async fn step_daemon(cortex_exe: &str) -> StepResult {
+    let port = daemon_port();
     // Check if daemon is already running
     if is_daemon_healthy().await {
-        return StepResult::Ok("Daemon already running on :7437".into());
+        return StepResult::Ok(format!("Daemon already running on :{port}"));
     }
 
     // Start daemon in background
@@ -756,7 +768,7 @@ async fn step_daemon(cortex_exe: &str) -> StepResult {
             for i in 0..20 {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 if is_daemon_healthy().await {
-                    return StepResult::Ok(format!("Started on :7437 (took ~{}s)", (i + 1) / 2));
+                    return StepResult::Ok(format!("Started on :{port} (took ~{}s)", (i + 1) / 2));
                 }
             }
             StepResult::Warn(
@@ -769,6 +781,7 @@ async fn step_daemon(cortex_exe: &str) -> StepResult {
 
 async fn is_daemon_healthy() -> bool {
     let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(2))
         .build()
         .ok();
@@ -776,7 +789,7 @@ async fn is_daemon_healthy() -> bool {
     let Some(client) = client else { return false };
 
     client
-        .get("http://localhost:7437/health")
+        .get(daemon_url("/health"))
         .send()
         .await
         .map(|r| r.status().is_success())
@@ -792,6 +805,7 @@ async fn step_verify() -> StepResult {
     };
 
     let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(5))
         .build()
     {
@@ -801,8 +815,9 @@ async fn step_verify() -> StepResult {
 
     // Store a test memory
     let store_resp = client
-        .post("http://localhost:7437/store")
+        .post(daemon_url("/store"))
         .header("Authorization", format!("Bearer {token}"))
+        .header("X-Cortex-Request", "true")
         .json(&serde_json::json!({
             "decision": "Cortex installed and verified",
             "context": "Automated setup verification",
@@ -825,8 +840,9 @@ async fn step_verify() -> StepResult {
 
     // Recall it back
     let recall_resp = client
-        .get("http://localhost:7437/recall")
+        .get(daemon_url("/recall"))
         .header("Authorization", format!("Bearer {token}"))
+        .header("X-Cortex-Request", "true")
         .query(&[("q", "Cortex installed"), ("k", "1"), ("budget", "100")])
         .send()
         .await;

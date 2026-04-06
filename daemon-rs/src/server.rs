@@ -28,23 +28,24 @@ use tower_http::cors::CorsLayer;
 
 pub fn build_router(state: RuntimeState, port: u16) -> Router {
     // SEC-001: restrict CORS to localhost origins only.
+    let allowed_origins = vec![
+        format!("http://127.0.0.1:{port}"),
+        format!("http://localhost:{port}"),
+        "http://127.0.0.1:1420".to_string(),
+        "http://localhost:1420".to_string(),
+        "http://127.0.0.1:3000".to_string(),
+        "http://localhost:3000".to_string(),
+        "http://127.0.0.1:5173".to_string(),
+        "http://localhost:5173".to_string(),
+        "tauri://localhost".to_string(),
+        "https://tauri.localhost".to_string(),
+    ]
+    .into_iter()
+    .filter_map(|origin| parse_allowed_origin(&origin))
+    .collect::<Vec<_>>();
+
     let cors = CorsLayer::new()
-        .allow_origin([
-            format!("http://127.0.0.1:{port}")
-                .parse::<HeaderValue>()
-                .unwrap(),
-            format!("http://localhost:{port}")
-                .parse::<HeaderValue>()
-                .unwrap(),
-            "http://127.0.0.1:1420".parse::<HeaderValue>().unwrap(),
-            "http://localhost:1420".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
-            "http://localhost:5173".parse::<HeaderValue>().unwrap(),
-            "tauri://localhost".parse::<HeaderValue>().unwrap(),
-            "https://tauri.localhost".parse::<HeaderValue>().unwrap(),
-        ])
+        .allow_origin(allowed_origins)
         .allow_methods(tower_http::cors::Any)
         .allow_headers(tower_http::cors::Any);
 
@@ -177,9 +178,13 @@ async fn handle_mcp_rpc(
         }));
     }
 
-    let caller_id = handlers::ensure_auth_with_caller(&headers, &state)
-        .ok()
-        .flatten();
+    let caller_id = match handlers::ensure_auth_with_caller(&headers, &state) {
+        Ok(caller_id) => caller_id,
+        Err(_) => {
+            eprintln!("[cortex] Failed to resolve MCP caller after auth succeeded");
+            None
+        }
+    };
     match handle_mcp_message_with_caller(&state, &msg, caller_id).await {
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),
@@ -394,10 +399,12 @@ async fn run_plain(
         }
     };
     eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
-    axum::serve(listener, router)
+    if let Err(e) = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
         .await
-        .ok();
+    {
+        eprintln!("[cortex] HTTP server exited with error: {e}");
+    }
 }
 
 async fn run_tls(
@@ -437,14 +444,23 @@ async fn run_tls(
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    let Ok(tower_svc) = svc.await;
+                                    let tower_svc = match svc.await {
+                                        Ok(tower_svc) => tower_svc,
+                                        Err(e) => {
+                                            eprintln!("[cortex] Failed to build TLS service for {_addr}: {e}");
+                                            return;
+                                        }
+                                    };
                                     let hyper_svc = hyper_util::service::TowerToHyperService::new(tower_svc);
                                     let io = hyper_util::rt::TokioIo::new(tls_stream);
-                                    let _ = hyper_util::server::conn::auto::Builder::new(
+                                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
                                         hyper_util::rt::TokioExecutor::new(),
                                     )
                                     .serve_connection(io, hyper_svc)
-                                    .await;
+                                    .await
+                                    {
+                                        eprintln!("[cortex] TLS connection error for {_addr}: {e}");
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("[cortex] TLS handshake failed: {e}");
@@ -457,6 +473,16 @@ async fn run_tls(
                     }
                 }
             }
+        }
+    }
+}
+
+fn parse_allowed_origin(origin: &str) -> Option<HeaderValue> {
+    match origin.parse::<HeaderValue>() {
+        Ok(value) => Some(value),
+        Err(e) => {
+            eprintln!("[cortex] Invalid CORS origin '{origin}': {e}");
+            None
         }
     }
 }

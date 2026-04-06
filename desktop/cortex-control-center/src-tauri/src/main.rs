@@ -38,6 +38,10 @@ const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
 const DEFAULT_DAEMON_PORT: u16 = 7437;
+const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 3_000;
+const DAEMON_CONNECT_TIMEOUT_MS: u64 = 3_000;
+const DAEMON_READ_TIMEOUT_MS: u64 = 10_000;
+const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
 
 struct DaemonState {
   daemon: Mutex<SidecarDaemon>,
@@ -129,7 +133,7 @@ fn cortex_db_path() -> Result<PathBuf, String> {
 
 fn is_cortex_reachable() -> bool {
   let addr = SocketAddr::from(([127, 0, 0, 1], resolve_daemon_port()));
-  TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+  TcpStream::connect_timeout(&addr, Duration::from_millis(DAEMON_REACHABILITY_TIMEOUT_MS)).is_ok()
 }
 
 fn cortex_binary_name() -> &'static str {
@@ -140,38 +144,60 @@ fn cortex_binary_name() -> &'static str {
   }
 }
 
-fn parse_port_from_paths_json(output: &[u8]) -> Option<u16> {
-  let json: serde_json::Value = serde_json::from_slice(output).ok()?;
-  let port = json.get("port")?.as_u64()?;
-  u16::try_from(port).ok()
+fn parse_port_from_paths_json(output: &[u8]) -> Result<u16, String> {
+  let json: serde_json::Value = serde_json::from_slice(output)
+    .map_err(|err| format!("Invalid JSON from `cortex paths --json`: {err}"))?;
+  let port = json
+    .get("port")
+    .and_then(|value| value.as_u64())
+    .ok_or_else(|| "Missing `port` in `cortex paths --json` output".to_string())?;
+  u16::try_from(port).map_err(|err| format!("Port value out of range ({port}): {err}"))
 }
 
-fn resolve_port_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Option<u16> {
+fn resolve_port_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Result<Option<u16>, String> {
   let output = Command::new(binary)
     .args(["paths", "--json"])
     .output()
-    .ok()?;
+    .map_err(|err| format!("Failed to execute `cortex paths --json`: {err}"))?;
   if !output.status.success() {
-    return None;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+      return Ok(None);
+    }
+    return Err(format!("`cortex paths --json` failed: {stderr}"));
   }
-  parse_port_from_paths_json(&output.stdout)
+  parse_port_from_paths_json(&output.stdout).map(Some)
 }
 
 fn resolve_daemon_port() -> u16 {
-  if let Some(port) = resolve_port_with_binary("cortex") {
-    return port;
+  match resolve_port_with_binary("cortex") {
+    Ok(Some(port)) => return port,
+    Ok(None) => {}
+    Err(err) => eprintln!("[cortex-control-center] {err}"),
   }
 
   if let Some(binary) = find_cortex_binary() {
-    if let Some(port) = resolve_port_with_binary(&binary) {
-      return port;
+    match resolve_port_with_binary(&binary) {
+      Ok(Some(port)) => return port,
+      Ok(None) => {}
+      Err(err) => eprintln!("[cortex-control-center] {err}"),
     }
   }
 
-  env::var("CORTEX_PORT")
-    .ok()
-    .and_then(|value| value.parse::<u16>().ok())
-    .unwrap_or(DEFAULT_DAEMON_PORT)
+  match env::var("CORTEX_PORT") {
+    Ok(value) => match value.parse::<u16>() {
+      Ok(port) => port,
+      Err(err) => {
+        eprintln!("[cortex-control-center] Invalid CORTEX_PORT '{value}': {err}");
+        DEFAULT_DAEMON_PORT
+      }
+    },
+    Err(env::VarError::NotPresent) => DEFAULT_DAEMON_PORT,
+    Err(err) => {
+      eprintln!("[cortex-control-center] Failed to read CORTEX_PORT: {err}");
+      DEFAULT_DAEMON_PORT
+    }
+  }
 }
 
 fn find_cortex_binary() -> Option<PathBuf> {
@@ -410,14 +436,14 @@ fn send_cortex_request(
   let port = resolve_daemon_port();
   let mut stream = TcpStream::connect_timeout(
     &SocketAddr::from(([127, 0, 0, 1], port)),
-    Duration::from_millis(2000),
+    Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),
   )
   .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
   stream
-    .set_read_timeout(Some(Duration::from_millis(5000)))
+    .set_read_timeout(Some(Duration::from_millis(DAEMON_READ_TIMEOUT_MS)))
     .map_err(|e| format!("Cannot set read timeout: {e}"))?;
   stream
-    .set_write_timeout(Some(Duration::from_millis(2000)))
+    .set_write_timeout(Some(Duration::from_millis(DAEMON_WRITE_TIMEOUT_MS)))
     .map_err(|e| format!("Cannot set write timeout: {e}"))?;
 
   let mut request = format!(

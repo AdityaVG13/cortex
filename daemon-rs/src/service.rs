@@ -33,11 +33,16 @@ const DISPLAY_NAME: &str = "Cortex Memory Daemon";
 const DESCRIPTION: &str =
     "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
 
+fn daemon_health_url() -> String {
+    let port = crate::auth::CortexPaths::resolve().port;
+    format!("http://127.0.0.1:{port}/health")
+}
+
 // ---- CLI commands (work on any platform) ------------------------------------
 
 pub fn install() {
     let exe = std::env::current_exe().expect("Failed to get exe path");
-    let exe_path = exe.display().to_string().replace('/', "\\");
+    let exe_path = exe.to_string_lossy().to_string();
 
     // COR-8 fix: detect current username to run service under user account,
     // NOT LocalSystem. LocalSystem has a different USERPROFILE which would
@@ -121,12 +126,13 @@ pub fn start() {
             eprintln!("[cortex] Service started");
             // Wait and verify
             std::thread::sleep(std::time::Duration::from_secs(3));
+            let health_url = daemon_health_url();
             if let Ok(h) = std::process::Command::new("curl")
-                .args(["-s", "http://127.0.0.1:7437/health"])
+                .args(["-s", &health_url])
                 .output()
             {
                 if h.status.success() {
-                    eprintln!("[cortex] Daemon is LIVE on :7437");
+                    eprintln!("[cortex] Daemon is LIVE at {health_url}");
                     eprintln!("{}", String::from_utf8_lossy(&h.stdout));
                 } else {
                     eprintln!("[cortex] Service started but health check pending");
@@ -184,8 +190,9 @@ pub fn status() {
             eprintln!("[cortex] Service: {state}");
 
             // Also check HTTP health
+            let health_url = daemon_health_url();
             if let Ok(h) = std::process::Command::new("curl")
-                .args(["-s", "http://127.0.0.1:7437/health"])
+                .args(["-s", &health_url])
                 .output()
             {
                 if h.status.success() {

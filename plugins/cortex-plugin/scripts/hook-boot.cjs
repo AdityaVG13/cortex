@@ -10,8 +10,7 @@
  */
 
 const path = require('path');
-const { execSync, spawnSync } = require('child_process');
-const fs = require('fs');
+const { spawnSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
@@ -22,6 +21,7 @@ require('./prepare-runtime.cjs');
 const PLATFORM = process.platform;
 const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
 const binaryPath = path.join(PLUGIN_DATA, 'bin', binaryName);
+const DEFAULT_DAEMON_PORT = 7437;
 
 // User config from Claude Code (CLAUDE_PLUGIN_OPTION_<KEY>)
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
@@ -33,16 +33,26 @@ const isTeamMode = cortexUrl && cortexUrl.trim().length > 0;
  * Health check a daemon endpoint
  */
 function healthCheck(url, timeoutMs = 5000) {
+  const timeoutSecs = Math.max(1, Math.ceil(timeoutMs / 1000));
   try {
-    const result = spawnSync('curl', ['-sf', '--connect-timeout', String(Math.floor(timeoutMs / 1000)), `${url}/health`], {
+    const result = spawnSync('curl', ['-sf', '--connect-timeout', String(timeoutSecs), '--max-time', String(timeoutSecs), `${url}/health`], {
       encoding: 'utf8',
       timeout: timeoutMs
     });
+    if (result.error) {
+      return { ok: false, error: result.error.message };
+    }
     if (result.status === 0 && result.stdout) {
       const data = JSON.parse(result.stdout);
-      return { ok: true, status: data.status, memories: data.memories, decisions: data.decisions };
+      const stats = data.stats || {};
+      return {
+        ok: true,
+        status: data.status,
+        memories: stats.memories,
+        decisions: stats.decisions
+      };
     }
-    return { ok: false };
+    return { ok: false, error: (result.stderr || '').trim() || `curl exited with ${result.status}` };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -53,15 +63,20 @@ function healthCheck(url, timeoutMs = 5000) {
  */
 function getLocalHealth() {
   // Resolve port from daemon (cortex paths --json)
-  let port = 7437;
+  let port = DEFAULT_DAEMON_PORT;
   try {
     const result = spawnSync(binaryPath, ['paths', '--json'], { encoding: 'utf8', timeout: 5000 });
+    if (result.error) {
+      console.error(`[cortex-plugin] paths --json failed: ${result.error.message}`);
+    }
     if (result.status === 0 && result.stdout) {
       const paths = JSON.parse(result.stdout);
       port = paths.port || port;
+    } else if (result.status !== 0 && result.stderr) {
+      console.error(`[cortex-plugin] paths --json stderr: ${result.stderr.trim()}`);
     }
   } catch (e) {
-    // Default port
+    console.error(`[cortex-plugin] Failed to resolve daemon port: ${e.message}`);
   }
   return healthCheck(`http://127.0.0.1:${port}`);
 }
@@ -85,6 +100,14 @@ function ensureLocalDaemon() {
       timeout: 15000,
       env: { ...process.env }
     });
+
+    if (result.error) {
+      return {
+        started: false,
+        error: result.error.message,
+        health: getLocalHealth()
+      };
+    }
 
     if (result.status !== 0) {
       return {

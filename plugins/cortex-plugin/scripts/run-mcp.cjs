@@ -17,9 +17,13 @@ const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 
 function crashLog(msg) {
   const home = process.env.USERPROFILE || process.env.HOME || '.';
-  const logPath = path.join(home, '.cortex', 'mcp-crash.log');
+  const cortexDir = path.join(home, '.cortex');
+  const logPath = path.join(cortexDir, 'mcp-crash.log');
   const line = `[${new Date().toISOString()}] ${msg}\n`;
-  try { fs.appendFileSync(logPath, line); } catch (_) {}
+  try {
+    fs.mkdirSync(cortexDir, { recursive: true });
+    fs.appendFileSync(logPath, line);
+  } catch (_) {}
   console.error(`[cortex-plugin] ${msg}`);
 }
 
@@ -54,6 +58,16 @@ if (isTeamMode) {
 const child = spawn(binaryPath, args, {
   stdio: 'inherit',
   env: process.env
+});
+
+process.on('uncaughtException', (err) => {
+  crashLog(`BRIDGE CRASH: ${err && err.stack ? err.stack : err}`);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  crashLog(`BRIDGE REJECTION: ${reason && reason.stack ? reason.stack : reason}`);
+  process.exit(1);
 });
 
 child.on('error', (err) => {

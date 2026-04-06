@@ -31,9 +31,14 @@ fn resolve_mcp_caller(state: &RuntimeState) -> Option<i64> {
         return None;
     }
 
-    let key = std::env::var("CORTEX_API_KEY")
-        .ok()
-        .or_else(auth::read_token);
+    let key = match std::env::var("CORTEX_API_KEY") {
+        Ok(key) => Some(key),
+        Err(std::env::VarError::NotPresent) => auth::read_token(),
+        Err(e) => {
+            eprintln!("[cortex-mcp] team mode: failed to read CORTEX_API_KEY: {e}");
+            auth::read_token()
+        }
+    };
 
     let key = match key {
         Some(k) if k.starts_with("ctx_") => k,
@@ -150,6 +155,8 @@ fn write_stdout(value: &Value) {
         eprintln!("[cortex-mcp] stdout newline error: {e}");
         return;
     }
-    let _ = handle.flush();
+    if let Err(e) = handle.flush() {
+        eprintln!("[cortex-mcp] stdout flush error: {e}");
+    }
 }
 

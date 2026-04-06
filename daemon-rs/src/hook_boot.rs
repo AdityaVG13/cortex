@@ -25,7 +25,6 @@ use serde_json::json;
 use std::path::PathBuf;
 
 const DEFAULT_BUDGET: u32 = 600;
-const DEFAULT_PORT: u16 = 7437;
 
 // ---- Internal types ---------------------------------------------------------
 
@@ -45,24 +44,27 @@ struct HealthResult {
 
 /// Read the auth token from ~/.cortex/cortex.token for authenticated requests.
 fn read_auth_token() -> Option<String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()?;
-    let path = PathBuf::from(home).join(".cortex").join("cortex.token");
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
+    let path = crate::auth::CortexPaths::resolve().token;
+    match std::fs::read_to_string(path) {
+        Ok(token) => {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 fn daemon_port() -> u16 {
-    std::env::var("CORTEX_PORT")
-        .ok()
-        .and_then(|v| v.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT)
+    crate::auth::CortexPaths::resolve().port
 }
 
 async fn fetch_boot(agent: &str, budget: u32, port: u16) -> Option<BootResult> {
     let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(7))
         .build()
         .ok()?;
@@ -90,6 +92,7 @@ async fn fetch_boot(agent: &str, budget: u32, port: u16) -> Option<BootResult> {
 
 async fn fetch_health(port: u16) -> Option<HealthResult> {
     let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(2))
         .build()
         .ok()?;

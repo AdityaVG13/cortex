@@ -138,14 +138,16 @@ fn file_modified(path: &PathBuf) -> u64 {
 async fn fetch_boot_context(agent: &str, budget: u32) -> String {
     let token = read_auth_token();
     let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(7))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return "<!-- Cortex: failed to create HTTP client -->".to_string(),
+        Err(e) => return format!("<!-- Cortex: failed to create HTTP client ({e}) -->"),
     };
 
-    let url = format!("http://127.0.0.1:7437/boot?agent={agent}&budget={budget}");
+    let port = crate::auth::CortexPaths::resolve().port;
+    let url = format!("http://127.0.0.1:{port}/boot?agent={agent}&budget={budget}");
     let mut req = client.get(&url).header("x-cortex-request", "true");
     if let Some(t) = &token {
         req = req.header("Authorization", format!("Bearer {t}"));
@@ -170,14 +172,17 @@ async fn fetch_boot_context(agent: &str, budget: u32) -> String {
 }
 
 fn read_auth_token() -> Option<String> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .ok()?;
-    let path = std::path::PathBuf::from(home)
-        .join(".cortex")
-        .join("cortex.token");
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|s| s.trim().to_string())
+    let path = crate::auth::CortexPaths::resolve().token;
+    match std::fs::read_to_string(&path) {
+        Ok(token) => {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Err(_) => None,
+    }
 }
 

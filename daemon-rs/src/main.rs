@@ -29,6 +29,7 @@ mod hook_boot;
 mod indexer;
 mod logging;
 mod mcp_proxy;
+#[allow(dead_code)]
 mod mcp_stdio;
 mod prompt_inject;
 mod rate_limit;
@@ -80,24 +81,7 @@ async fn main() {
             let base_url = format!("http://127.0.0.1:{}", paths.port);
             if let Err(e) = mcp_proxy::run(&base_url, None).await {
                 eprintln!("[cortex-mcp] {e}");
-
-                // Legacy fallback: standalone MCP (stdio only, no daemon pretending).
-                eprintln!("[cortex-mcp] Running standalone -- start the daemon for shared state");
-                let db_path = paths.db.clone();
-                eprintln!("[cortex-mcp] DB: {}", db_path.display());
-
-                let (mcp_state, _shutdown_rx) =
-                    state::initialize(&db_path, false).expect("Failed to initialize state");
-
-                mcp_stdio::run(mcp_state.clone()).await;
-                eprintln!("[cortex-mcp] MCP session ended.");
-
-                let conn = mcp_state.db.lock().await;
-                if let Err(e) =
-                    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
-                {
-                    eprintln!("[cortex-mcp] Warning: WAL checkpoint failed: {e}");
-                }
+                std::process::exit(1);
             }
         }
 
@@ -674,7 +658,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!();
     eprintln!("Daemon:");
     eprintln!("  serve              HTTP daemon on :7437");
-    eprintln!("  mcp                MCP stdio (proxy to daemon, standalone fallback)");
+    eprintln!("  mcp                MCP stdio (proxy to daemon)");
     eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
     eprintln!("  plugin ensure-daemon [--agent <name>]");
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>]");
