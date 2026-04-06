@@ -307,9 +307,16 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Flatten desktop artifacts
+        shell: bash
+        run: |
+          # Desktop bundles land in subdirs (dmg/, appimage/, deb/, nsis/, macos/).
+          # Move them to dist/ root so the release glob picks them up.
+          find dist -mindepth 2 -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.AppImage.tar.gz' -o -name '*.AppImage.tar.gz.sig' -o -name '*.deb' -o -name '*-setup.exe' -o -name '*.nsis.zip' -o -name '*.nsis.zip.sig' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \) -exec mv {} dist/ \;
+
       - name: List release artifacts
         shell: bash
-        run: find dist -maxdepth 2 -type f | sort
+        run: find dist -maxdepth 1 -type f | sort
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836
