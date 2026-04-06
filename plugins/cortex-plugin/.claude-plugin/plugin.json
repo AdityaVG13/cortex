@@ -1,0 +1,18 @@
+{
+  "name": "cortex",
+  "version": "0.4.0",
+  "description": "Remembers your decisions, coding conventions, and debugging lessons across every Claude Code session. Persistent local memory for AI coding agents.",
+  "homepage": "https://github.com/AdityaVG13/cortex",
+  "repository": "https://github.com/AdityaVG13/cortex",
+  "license": "AGPL-3.0-only",
+  "userConfig": {
+    "cortex_url": {
+      "description": "Cortex server URL (leave blank for local solo mode, or enter your team server URL e.g. https://cortex.myteam.com:7437)",
+      "sensitive": false
+    },
+    "cortex_api_key": {
+      "description": "API key for team server authentication (leave blank for local solo mode)",
+      "sensitive": true
+    }
+  }
+}

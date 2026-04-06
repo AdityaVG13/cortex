@@ -1,0 +1,6 @@
+# Placeholder for Cortex plugin assets
+# Binary archives will be added here by the release workflow:
+# - cortex-v0.4.0-windows-x86_64.zip
+# - cortex-v0.4.0-macos-aarch64.tar.gz
+# - cortex-v0.4.0-linux-x86_64.tar.gz
+# - SHA256SUMS
