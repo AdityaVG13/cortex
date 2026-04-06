@@ -314,6 +314,14 @@ jobs:
           # Move them to dist/ root so the release glob picks them up.
           find dist -mindepth 2 -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.AppImage.tar.gz' -o -name '*.AppImage.tar.gz.sig' -o -name '*.deb' -o -name '*-setup.exe' -o -name '*.nsis.zip' -o -name '*.nsis.zip.sig' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' \) -exec mv {} dist/ \;
 
+      - name: Regenerate SHA256SUMS with all assets
+        shell: bash
+        run: |
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum cortex-v*.zip cortex-v*.tar.gz *.exe *.dmg *.AppImage *.deb *.app.tar.gz 2>/dev/null | sort > SHA256SUMS
+          cat SHA256SUMS
+
       - name: List release artifacts
         shell: bash
         run: find dist -maxdepth 1 -type f | sort
