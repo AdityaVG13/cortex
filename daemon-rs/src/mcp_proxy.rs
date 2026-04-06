@@ -65,13 +65,34 @@ pub async fn run(
         eprintln!("[cortex-mcp] Solo mode proxy -> {base_url}");
     }
 
-    let health = client.get(&health_url).send().await.map_err(|e| {
-        format!("Cortex daemon unreachable at {health_url} -- start with `cortex plugin ensure-daemon`: {e}")
-    })?;
-    if !health.status().is_success() {
+    // Health check with retry (daemon may still be starting)
+    let max_health_retries = 5;
+    let mut healthy = false;
+    for attempt in 1..=max_health_retries {
+        match client.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                healthy = true;
+                break;
+            }
+            Ok(resp) => {
+                eprintln!(
+                    "[cortex-mcp] Health check attempt {attempt}/{max_health_retries}: HTTP {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[cortex-mcp] Health check attempt {attempt}/{max_health_retries}: {e}"
+                );
+            }
+        }
+        if attempt < max_health_retries {
+            tokio::time::sleep(std::time::Duration::from_secs(attempt as u64)).await;
+        }
+    }
+    if !healthy {
         return Err(format!(
-            "Cortex daemon unhealthy at {health_url} (HTTP {})",
-            health.status()
+            "Cortex daemon unreachable at {health_url} after {max_health_retries} attempts -- start with `cortex plugin ensure-daemon`"
         )
         .into());
     }
@@ -80,6 +101,9 @@ pub async fn run(
     let reader = BufReader::new(stdin);
     let mut lines = reader.lines();
     let mut stdout = tokio::io::stdout();
+
+    let max_retries: u32 = 3;
+    let mut consecutive_failures: u32 = 0;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let trimmed = line.trim();
@@ -103,31 +127,87 @@ pub async fn run(
         };
 
         let has_id = msg.get("id").is_some();
-        let auth_header = if let Some(key) = api_key {
-            Some(format!("Bearer {key}"))
-        } else {
-            read_auth_token().map(|token| format!("Bearer {token}"))
-        };
 
-        let mut req = client
-            .post(&rpc_url)
-            .header("content-type", "application/json")
-            .header("x-cortex-request", "true");
-        if let Some(auth) = auth_header {
-            req = req.header("authorization", auth);
+        // Retry loop for daemon requests
+        let mut last_err = String::new();
+        let mut resp_ok = None;
+        for attempt in 0..=max_retries {
+            let auth_header = if let Some(key) = api_key {
+                Some(format!("Bearer {key}"))
+            } else {
+                read_auth_token().map(|token| format!("Bearer {token}"))
+            };
+
+            let mut req = client
+                .post(&rpc_url)
+                .header("content-type", "application/json")
+                .header("x-cortex-request", "true");
+            if let Some(auth) = auth_header {
+                req = req.header("authorization", auth);
+            }
+
+            match req.body(trimmed.to_string()).send().await {
+                Ok(resp) => {
+                    resp_ok = Some(resp);
+                    consecutive_failures = 0;
+                    break;
+                }
+                Err(e) => {
+                    last_err = format!("{e}");
+                    if attempt < max_retries {
+                        eprintln!(
+                            "[cortex-mcp] Request failed (attempt {}/{}): {e}",
+                            attempt + 1,
+                            max_retries + 1
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            500 * (attempt as u64 + 1),
+                        ))
+                        .await;
+                    }
+                }
+            }
         }
 
-        let resp = req
-            .body(trimmed.to_string())
-            .send()
-            .await
-            .map_err(|e| format!("Failed to forward MCP request to {rpc_url}: {e}"))?;
+        let resp = match resp_ok {
+            Some(r) => r,
+            None => {
+                consecutive_failures += 1;
+                eprintln!(
+                    "[cortex-mcp] All {max_retries} retries failed: {last_err} (consecutive: {consecutive_failures})"
+                );
+                // Return error to client instead of killing the proxy
+                if has_id {
+                    let id = msg.get("id").cloned().unwrap_or(Value::Null);
+                    let err_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "error": { "code": -32603, "message": format!("Daemon unavailable: {last_err}") },
+                        "id": id
+                    });
+                    let _ = stdout
+                        .write_all(format!("{}\n", err_resp).as_bytes())
+                        .await;
+                    let _ = stdout.flush().await;
+                }
+                // Only die after 10 consecutive total failures (daemon is truly gone)
+                if consecutive_failures >= 10 {
+                    return Err(format!(
+                        "Daemon unreachable after {consecutive_failures} consecutive failures: {last_err}"
+                    )
+                    .into());
+                }
+                continue;
+            }
+        };
 
         if has_id {
-            let body = resp
-                .text()
-                .await
-                .map_err(|e| format!("Failed to read MCP response body: {e}"))?;
+            let body = match resp.text().await {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[cortex-mcp] Failed to read response body: {e}");
+                    continue;
+                }
+            };
             let body = body.trim();
             if !body.is_empty() {
                 stdout.write_all(format!("{body}\n").as_bytes()).await?;
