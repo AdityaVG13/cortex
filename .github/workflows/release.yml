@@ -58,6 +58,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
+          toolchain: stable
           targets: ${{ matrix.rust_target }}
 
       - name: Cache Cargo
@@ -189,6 +190,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
 
       - name: Cache Cargo
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809

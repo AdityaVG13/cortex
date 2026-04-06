@@ -48,6 +48,13 @@ AI coding assistants forget everything between sessions. Every conversation star
 - **Every session starts warm.** No more re-explaining your toolchain. Claude already knows.
 - **97% token efficiency.** Boot context is compressed from 19K+ raw tokens down to ~500.
 
+## Documentation Map
+- [README.md](README.md) -- install + usage overview
+- [CONNECTING.md](CONNECTING.md) -- AI/tool integration quickstart
+- [SECURITY.md](SECURITY.md) -- threat model and security posture
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- development workflow
+- [Info/roadmap.md](Info/roadmap.md) -- contributor roadmap
+
 ## Installation
 
 ### Claude Code Plugin (Recommended)
@@ -73,6 +80,14 @@ Visual dashboard for your brain. Download for your platform:
 git clone https://github.com/AdityaVG13/cortex.git
 cd cortex/daemon-rs && cargo build --release
 ```
+
+## Compatibility Matrix
+
+| Component | Windows x86_64 | macOS arm64 | Linux x86_64 |
+|---|---|---|---|
+| Daemon binary (`cortex`) | ✅ | ✅ | ✅ |
+| Claude plugin runtime archive | ✅ `.zip` | ✅ `.tar.gz` | ✅ `.tar.gz` |
+| Control Center desktop app | ✅ (primary) | ⚠️ planned | ⚠️ planned |
 
 ## First Session Experience
 When you start a session with Cortex, you'll see:
