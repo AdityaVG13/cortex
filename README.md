@@ -36,6 +36,8 @@
 
 Claude Code remembers everything. Across every session.
 
+**100% local. Your data never leaves your machine. No cloud. No telemetry. No external API calls.**
+
 AI coding assistants forget everything between sessions. Every conversation starts from scratch -- re-discovering your toolchain, conventions, and past decisions. Cortex gives every AI a shared brain that persists, compresses, and pushes context before being asked.
 
 | You want to... | Cortex gives you... |
