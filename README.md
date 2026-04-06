@@ -67,13 +67,13 @@ claude plugin install cortex@cortex-marketplace
 **Restart your session. That's it.**
 
 ### Desktop App (Cortex Control Center)
-Visual dashboard for your brain. Download for your platform:
+Visual dashboard for your brain. Download the installer for your platform from the [latest release](https://github.com/AdityaVG13/cortex/releases/latest):
 
-| Platform | Download |
-|----------|----------|
-| **Windows** | [`cortex-v0.4.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-windows-x86_64.zip) |
-| **macOS** | [`cortex-v0.4.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-macos-aarch64.tar.gz) |
-| **Linux** | [`cortex-v0.4.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-linux-x86_64.tar.gz) |
+| Platform | Installer | Daemon Only |
+|----------|-----------|-------------|
+| **Windows** | [`.exe` (NSIS installer)](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-windows-x86_64.zip) |
+| **macOS** | [`.dmg`](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-macos-aarch64.tar.gz) |
+| **Linux** | [`.AppImage` / `.deb`](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-linux-x86_64.tar.gz) |
 
 ### From Source
 ```bash
@@ -87,14 +87,14 @@ cd cortex/daemon-rs && cargo build --release
 |---|---|---|---|
 | Daemon binary (`cortex`) | ✅ | ✅ | ✅ |
 | Claude plugin runtime archive | ✅ `.zip` | ✅ `.tar.gz` | ✅ `.tar.gz` |
-| Control Center desktop app | ✅ (primary) | ⚠️ planned | ⚠️ planned |
+| Control Center desktop app | ✅ `.exe` | ✅ `.dmg` | ✅ `.AppImage` `.deb` |
 
 ## First Session Experience
 When you start a session with Cortex, you'll see:
 ```text
 Brain: READY | Cortex initialized at ~/.cortex | 42 memories
 ```
-**The "Aha" moment:** Store a convention like *"Cortex, remember we use early returns here."* In any later session, ask for a code review—Claude will recall that specific convention without being reminded.
+**The "Aha" moment:** Store a convention like *"Cortex, remember we use early returns here."* In any later session, ask for a code review--Claude will recall that specific convention without being reminded.
 
 ## Team Mode
 Run a shared instance on a server to give your whole engineering team a collective memory.
