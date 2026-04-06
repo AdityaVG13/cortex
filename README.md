@@ -17,13 +17,13 @@
 
 <p align="center">
   <a href="#installation">Installation</a> --
-  <a href="#quick-start">Quick Start</a> --
+  <a href="#first-session-experience">Quick Start</a> --
   <a href="#desktop-app">Desktop App</a> --
   <a href="#how-it-works">How It Works</a> --
-  <a href="#features">Features</a> --
-  <a href="Info/connecting.md">Connect Your AI</a> --
-  <a href="#api-reference">API Reference</a> --
-  <a href="Info/security-rules.md">Security</a> --
+  <a href="#core-mcp-tools">MCP Tools</a> --
+  <a href="CONNECTING.md">Connect Your AI</a> --
+  <a href="#cli-reference">CLI Reference</a> --
+  <a href="SECURITY.md">Security</a> --
   <a href="CONTRIBUTING.md">Community</a> --
   <a href="Info/roadmap.md">Roadmap</a>
 </p>
@@ -98,7 +98,7 @@ Cortex is a high-performance Rust daemon living at `~/.cortex`. It uses an embed
 | **Conflict Detection** | Flags semantic contradictions between different AIs automatically. |
 | **Progressive Recall** | Three-tier retrieval: **Peek** (headlines) -> **Unfold** (full text) -> **Recall** (search). |
 
-*Full connection guide: [Info/connecting.md](Info/connecting.md)*
+*Full connection guide: [CONNECTING.md](CONNECTING.md)*
 
 ## Core MCP Tools
 These tools are injected into your agent's context automatically:
@@ -122,11 +122,11 @@ Full tool list and parameters: [Info/mcp-tools.md](Info/mcp-tools.md)
 | `cortex import` | Import JSON export into solo/team mode |
 
 ## Security & Roadmap
-- **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [Info/security-rules.md](Info/security-rules.md).
+- **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [SECURITY.md](SECURITY.md) (mirror: [Info/security-rules.md](Info/security-rules.md)).
 - **v0.5.0:** Foundation hardening (TTL, Rollback, Schema migration).
 - **v0.6.0:** Governance (Budgets, Retention, Human review).
 - **v1.0.0:** Multi-agent information ingesters.
 
 *Full Roadmap: [Info/roadmap.md](Info/roadmap.md)*
 
-[Contributing](CONTRIBUTING.md) | [Security](Info/security-rules.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
+[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Connecting](CONNECTING.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)

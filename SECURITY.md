@@ -1,6 +1,6 @@
 # Security Policy
 
-Top-level GitHub policy file: [`SECURITY.md`](../SECURITY.md).
+Public mirror: [`Info/security-rules.md`](Info/security-rules.md).
 
 ## Supported Versions
 
