@@ -7,131 +7,223 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to publish (for example: v0.2.0)"
+        description: "Release tag to publish (for example: v0.4.0)"
         required: true
         type: string
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  build-daemon:
     name: Build daemon (${{ matrix.os_name }})
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os_name: linux-x86_64
             runner: ubuntu-latest
-            archive_name: linux-x86_64
-            archive_ext: tar.gz
-            binary_name: cortex
             rust_target: x86_64-unknown-linux-gnu
+            binary_name: cortex
+            artifact_name: cortex-linux-x86_64
           - os_name: windows-x86_64
             runner: windows-latest
-            archive_name: windows-x86_64
-            archive_ext: zip
-            binary_name: cortex.exe
             rust_target: x86_64-pc-windows-msvc
+            binary_name: cortex.exe
+            artifact_name: cortex-windows-x86_64.exe
           - os_name: macos-aarch64
             runner: macos-14
-            archive_name: macos-aarch64
-            archive_ext: tar.gz
-            binary_name: cortex
             rust_target: aarch64-apple-darwin
+            binary_name: cortex
+            artifact_name: cortex-macos-aarch64
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Resolve release tag
-        shell: pwsh
+        shell: bash
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ github.event.inputs.release_tag }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
-          }
-          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            RELEASE_TAG="${{ github.ref_name }}"
+          fi
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
-          workspaces: daemon-rs -> daemon-rs/target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Build release binary
-        working-directory: daemon-rs
-        run: cargo build --release --target ${{ matrix.rust_target }}
+        shell: bash
+        run: cargo build --manifest-path daemon-rs/Cargo.toml --release --target "${{ matrix.rust_target }}"
 
-      - name: Package Unix archive
-        if: runner.os != 'Windows'
+      - name: Stage binary artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "daemon-rs/target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}" "dist/${{ matrix.artifact_name }}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  package-plugin:
+    name: Package plugin assets
+    runs-on: ubuntu-latest
+    needs: [build-daemon]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            RELEASE_TAG="${{ github.ref_name }}"
+          fi
+          VERSION="${RELEASE_TAG#v}"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cortex-windows-x86_64.exe
+          path: dist/windows
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cortex-macos-aarch64
+          path: dist/macos
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: cortex-linux-x86_64
+          path: dist/linux
+
+      - name: Assemble plugin archives
         shell: bash
         run: |
           set -euo pipefail
-          ARCHIVE="cortex-${RELEASE_TAG}-${{ matrix.archive_name }}.${{ matrix.archive_ext }}"
-          tar -czf "${ARCHIVE}" -C "daemon-rs/target/${{ matrix.rust_target }}/release" "${{ matrix.binary_name }}"
-          echo "ARCHIVE=${ARCHIVE}" >> "${GITHUB_ENV}"
+          mkdir -p plugins/cortex-plugin/assets
+          mkdir -p package/windows package/macos package/linux
 
-      - name: Package Windows archive
-        if: runner.os == 'Windows'
-        shell: pwsh
+          cp "dist/windows/cortex-windows-x86_64.exe" "package/windows/cortex.exe"
+          cp "dist/macos/cortex-macos-aarch64" "package/macos/cortex"
+          cp "dist/linux/cortex-linux-x86_64" "package/linux/cortex"
+
+          chmod +x package/macos/cortex package/linux/cortex
+
+          zip -j "plugins/cortex-plugin/assets/cortex-v${VERSION}-windows-x86_64.zip" "package/windows/cortex.exe"
+          tar -czf "plugins/cortex-plugin/assets/cortex-v${VERSION}-macos-aarch64.tar.gz" -C package/macos cortex
+          tar -czf "plugins/cortex-plugin/assets/cortex-v${VERSION}-linux-x86_64.tar.gz" -C package/linux cortex
+
+      - name: Enforce archive size budget
+        shell: bash
         run: |
-          $archive = "cortex-$env:RELEASE_TAG-${{ matrix.archive_name }}.${{ matrix.archive_ext }}"
-          Compress-Archive -Path "daemon-rs/target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}" -DestinationPath $archive -Force
-          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          set -euo pipefail
+          MAX_BYTES=12582912
+          for archive in plugins/cortex-plugin/assets/cortex-v${VERSION}-*; do
+            size="$(stat -c%s "${archive}")"
+            if (( size > MAX_BYTES )); then
+              echo "Archive too large: ${archive} (${size} bytes > ${MAX_BYTES})"
+              exit 1
+            fi
+          done
 
-      - name: Upload archive artifact
-        uses: actions/upload-artifact@v4
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd plugins/cortex-plugin/assets
+          sha256sum "cortex-v${VERSION}-windows-x86_64.zip" > SHA256SUMS
+          sha256sum "cortex-v${VERSION}-macos-aarch64.tar.gz" >> SHA256SUMS
+          sha256sum "cortex-v${VERSION}-linux-x86_64.tar.gz" >> SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload plugin assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.ARCHIVE }}
-          path: ${{ env.ARCHIVE }}
+          name: cortex-plugin-assets
+          path: plugins/cortex-plugin/assets/*
+          if-no-files-found: error
+
+      - name: Upload packaged plugin directory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cortex-plugin
+          path: plugins/cortex-plugin
           if-no-files-found: error
 
   build-desktop:
-    name: Build desktop app (${{ matrix.os_name }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os_name: windows-x86_64
-            runner: windows-latest
-
+    name: Build desktop app (windows-x86_64)
+    runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
 
-      - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@v2
+      - name: Cache Cargo
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
-          workspaces: |
-            daemon-rs -> daemon-rs/target
-            desktop/cortex-control-center/src-tauri -> desktop/cortex-control-center/src-tauri/target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon-rs/target
+            desktop/cortex-control-center/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
 
       - name: Install frontend deps
-        working-directory: desktop/cortex-control-center
+        shell: bash
         run: npm ci
+        working-directory: desktop/cortex-control-center
 
       - name: Build daemon binary (for sidecar)
-        working-directory: daemon-rs
-        run: cargo build --release
+        shell: bash
+        run: cargo build --manifest-path daemon-rs/Cargo.toml --release
+
+      - name: Mask signing secrets
+        shell: bash
+        run: |
+          echo "::add-mask::${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+          echo "::add-mask::${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"
 
       - name: Build desktop app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@7a7e7e08c0179083619ead83e4669b4718a9f191
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -141,7 +233,7 @@ jobs:
           tauriScript: npx tauri
 
       - name: Upload desktop artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: desktop-windows-x86_64
           path: |
@@ -151,37 +243,40 @@ jobs:
           if-no-files-found: warn
 
   release:
-    name: Publish GitHub Release
+    name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: [build, build-desktop]
+    needs: [package-plugin, build-desktop]
     steps:
-      - name: Resolve release tag
-        shell: pwsh
+      - name: Resolve release version
+        shell: bash
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ github.event.inputs.release_tag }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
-          }
-          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+          else
+            RELEASE_TAG="${{ github.ref_name }}"
+          fi
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "${GITHUB_ENV}"
+          echo "VERSION=${RELEASE_TAG#v}" >> "${GITHUB_ENV}"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true
 
-      - name: List artifacts
-        run: find dist -type f | head -30
+      - name: List release artifacts
+        shell: bash
+        run: find dist -maxdepth 2 -type f | sort
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
-            dist/cortex-${{ env.RELEASE_TAG }}-windows-x86_64.zip
-            dist/cortex-${{ env.RELEASE_TAG }}-macos-aarch64.tar.gz
-            dist/cortex-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
+            dist/cortex-v${{ env.VERSION }}-windows-x86_64.zip
+            dist/cortex-v${{ env.VERSION }}-macos-aarch64.tar.gz
+            dist/cortex-v${{ env.VERSION }}-linux-x86_64.tar.gz
+            dist/SHA256SUMS
             dist/*.exe
             dist/*.nsis.zip
             dist/*.nsis.zip.sig

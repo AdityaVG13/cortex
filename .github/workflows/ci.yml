@@ -1,0 +1,116 @@
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Detect desktop changes
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+        with:
+          filters: |
+            desktop:
+              - "desktop/cortex-control-center/**"
+
+  rust:
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+
+      - name: Cache Cargo
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            daemon-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo build --release
+        run: cargo build --manifest-path daemon-rs/Cargo.toml --release
+
+      - name: cargo clippy -- -D warnings
+        run: cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path daemon-rs/Cargo.toml
+
+  plugin-validation:
+    name: Plugin validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Validate plugin scripts
+        run: |
+          node --check plugins/cortex-plugin/scripts/prepare-runtime.cjs
+          node --check plugins/cortex-plugin/scripts/hook-boot.cjs
+          node --check plugins/cortex-plugin/scripts/run-mcp.cjs
+
+      - name: Validate plugin JSON
+        run: |
+          python -m json.tool plugins/cortex-plugin/.claude-plugin/plugin.json > /dev/null
+          python -m json.tool plugins/cortex-plugin/.mcp.json > /dev/null
+
+  desktop:
+    name: Desktop validation
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: desktop/cortex-control-center
+
+      - name: Build web frontend
+        run: npm run web:build
+        working-directory: desktop/cortex-control-center
+
+      - name: Run desktop tests
+        run: npm test
+        working-directory: desktop/cortex-control-center
