@@ -13,13 +13,18 @@
 //! Resilience:
 //! - Plugin mode requires daemon connectivity (no standalone fallback)
 //! - Team mode uses explicit API key injection from CLI args
+//! - Auto-respawn: if daemon dies mid-session, proxy detects and restarts it
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use crate::auth::CortexPaths;
+use crate::daemon_lifecycle;
+
 const HEALTH_CHECK_ATTEMPTS: u32 = 5;
 const REQUEST_ATTEMPTS: u32 = 3;
 const MAX_CONSECUTIVE_FAILURES: u32 = 10;
+const MAX_RESPAWN_ATTEMPTS: u32 = 3;
 
 /// Read the auth token from ~/.cortex/cortex.token.
 fn read_auth_token() -> Option<String> {
@@ -60,8 +65,9 @@ pub async fn run(
     api_key: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base_url = base_url.trim_end_matches('/');
-    let rpc_url = format!("{base_url}/mcp-rpc");
+    let mut rpc_url = format!("{base_url}/mcp-rpc");
     let health_url = format!("{base_url}/health");
+    let paths = CortexPaths::resolve();
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -111,6 +117,7 @@ pub async fn run(
     let mut stdout = tokio::io::stdout();
 
     let mut consecutive_failures: u32 = 0;
+    let mut respawn_attempts: u32 = 0;
 
     loop {
         let line = match lines.next_line().await {
@@ -290,10 +297,32 @@ pub async fn run(
         }
 
         if should_count_failure && consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-            return Err(format!(
-                "Daemon unreachable after {consecutive_failures} consecutive failures: {last_err}"
-            )
-            .into());
+            if respawn_attempts >= MAX_RESPAWN_ATTEMPTS {
+                return Err(format!(
+                    "Daemon unreachable after {consecutive_failures} consecutive failures \
+                     and {respawn_attempts} respawn attempts: {last_err}"
+                )
+                .into());
+            }
+
+            respawn_attempts += 1;
+            eprintln!(
+                "[cortex-mcp] {consecutive_failures} consecutive failures; \
+                 respawn attempt {respawn_attempts}/{MAX_RESPAWN_ATTEMPTS}"
+            );
+
+            if daemon_lifecycle::try_respawn(&paths).await {
+                // Daemon is back -- rebuild URLs in case port changed
+                let new_base = format!("http://127.0.0.1:{}", paths.port);
+                rpc_url = format!("{new_base}/mcp-rpc");
+                consecutive_failures = 0;
+                eprintln!("[cortex-mcp] Daemon recovered; resuming proxy");
+            } else {
+                eprintln!(
+                    "[cortex-mcp] Respawn attempt {respawn_attempts} failed; \
+                     will retry on next failure batch"
+                );
+            }
         }
 
         if let Some(body) = response_body {

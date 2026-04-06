@@ -6,6 +6,7 @@ mod compaction;
 mod compiler;
 mod conflict;
 mod crystallize;
+mod daemon_lifecycle;
 mod db;
 mod embeddings;
 mod export_data;
@@ -25,7 +26,6 @@ mod setup;
 mod state;
 mod tls;
 
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 #[tokio::main]
@@ -885,56 +885,7 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
-async fn daemon_healthy(port: u16) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-
-    client
-        .get(format!("http://127.0.0.1:{port}/health"))
-        .send()
-        .await
-        .map(|resp| resp.status().is_success())
-        .unwrap_or(false)
-}
-
-async fn wait_for_health(port: u16, timeout: Duration) -> bool {
-    let started = std::time::Instant::now();
-    while started.elapsed() <= timeout {
-        if daemon_healthy(port).await {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    false
-}
-
-fn spawn_daemon(paths: &auth::CortexPaths) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
-    let mut cmd = Command::new(exe);
-    cmd.arg("serve")
-        .env("CORTEX_HOME", &paths.home)
-        .env("CORTEX_DB", &paths.db)
-        .env("CORTEX_PORT", paths.port.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
-    }
-
-    cmd.spawn().map_err(|e| format!("spawn daemon: {e}"))?;
-    Ok(())
-}
+use daemon_lifecycle::{daemon_healthy, wait_for_health, spawn_daemon};
 
 async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
