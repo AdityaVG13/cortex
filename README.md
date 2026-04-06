@@ -21,11 +21,11 @@
   <a href="#desktop-app">Desktop App</a> --
   <a href="#how-it-works">How It Works</a> --
   <a href="#features">Features</a> --
-  <a href="#connecting-your-ai">Connect Your AI</a> --
+  <a href="Info/connecting.md">Connect Your AI</a> --
   <a href="#api-reference">API Reference</a> --
-  <a href="#security">Security</a> --
-  <a href="#community">Community</a> --
-  <a href="#roadmap">Roadmap</a>
+  <a href="Info/security-rules.md">Security</a> --
+  <a href="CONTRIBUTING.md">Community</a> --
+  <a href="Info/roadmap.md">Roadmap</a>
 </p>
 
 ---
