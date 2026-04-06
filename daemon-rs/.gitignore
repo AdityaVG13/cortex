@@ -1,0 +1,17 @@
+# Build artifacts
+target/
+*.exe
+*.pdb
+
+# Benchmark data (local only, not distributed)
+benchmark/
+dashboard/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
