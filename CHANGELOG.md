@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-04-06
+
+### Features
+- **Cross-platform desktop builds** -- macOS (`.dmg`) and Linux (`.AppImage`, `.deb`) installers now ship alongside Windows in every release
+- **Daemon auto-respawn** -- MCP proxy detects daemon death mid-session and restarts it automatically (bounded to 3 attempts with backoff). Sessions survive transient crashes without user intervention
+
+### Fixes
+- Unix daemon respawn uses `setsid()` so the child process survives the parent CLI exiting
+- MCP proxy re-resolves `CortexPaths` after respawn to pick up port changes
+
+### Documentation
+- README: analytics screenshot, known limitations, cross-platform download table, temporary logo note
+- Removed `docs/internal/roadmap-internal.md` from tracking (internal codenames)
+
+### CI
+- `build-desktop` converted to 3-platform matrix; reuses daemon artifacts as Tauri sidecars
+- Release workflow uploads `.dmg`, `.AppImage`, `.deb` alongside `.exe`
+
 ## [0.4.0] - 2026-04-05
 
 ### Security
@@ -48,6 +66,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [0.3.0] - 2026-04-04
 
-[Unreleased]: https://github.com/AdityaVG13/cortex/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AdityaVG13/cortex/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/AdityaVG13/cortex/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AdityaVG13/cortex/compare/v0.3.0...v0.4.0
 
