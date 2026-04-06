@@ -9,10 +9,19 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
+
+function crashLog(msg) {
+  const home = process.env.USERPROFILE || process.env.HOME || '.';
+  const logPath = path.join(home, '.cortex', 'mcp-crash.log');
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  try { fs.appendFileSync(logPath, line); } catch (_) {}
+  console.error(`[cortex-plugin] ${msg}`);
+}
 
 // Load prepare-runtime first (ensures binary is extracted)
 require('./prepare-runtime.cjs');
@@ -48,14 +57,17 @@ const child = spawn(binaryPath, args, {
 });
 
 child.on('error', (err) => {
-  console.error(`[cortex-plugin] Failed to spawn MCP server: ${err.message}`);
+  crashLog(`SPAWN FAILED: ${err.message} (binary: ${binaryPath})`);
   process.exit(1);
 });
 
 child.on('exit', (code, signal) => {
   if (signal) {
-    console.error(`[cortex-plugin] MCP server killed by signal ${signal}`);
+    crashLog(`MCP server killed by signal ${signal}`);
     process.exit(1);
+  }
+  if (code !== 0) {
+    crashLog(`MCP server exited with code ${code}`);
   }
   process.exit(code || 0);
 });
