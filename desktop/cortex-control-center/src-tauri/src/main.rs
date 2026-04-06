@@ -24,6 +24,7 @@ use std::env;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -36,6 +37,7 @@ const TRAY_ID: &str = "cortex-tray";
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
+const DEFAULT_DAEMON_PORT: u16 = 7437;
 
 struct DaemonState {
   daemon: Mutex<SidecarDaemon>,
@@ -122,18 +124,60 @@ fn token_path() -> Result<PathBuf, String> {
 }
 
 fn cortex_db_path() -> Result<PathBuf, String> {
-  Ok(cortex_home()?.join("cortex").join("cortex.db"))
+  Ok(cortex_home()?.join(".cortex").join("cortex.db"))
 }
 
 fn is_cortex_reachable() -> bool {
-  let addr = SocketAddr::from(([127, 0, 0, 1], 7437));
+  let addr = SocketAddr::from(([127, 0, 0, 1], resolve_daemon_port()));
   TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+fn cortex_binary_name() -> &'static str {
+  if cfg!(windows) {
+    "cortex.exe"
+  } else {
+    "cortex"
+  }
+}
+
+fn parse_port_from_paths_json(output: &[u8]) -> Option<u16> {
+  let json: serde_json::Value = serde_json::from_slice(output).ok()?;
+  let port = json.get("port")?.as_u64()?;
+  u16::try_from(port).ok()
+}
+
+fn resolve_port_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Option<u16> {
+  let output = Command::new(binary)
+    .args(["paths", "--json"])
+    .output()
+    .ok()?;
+  if !output.status.success() {
+    return None;
+  }
+  parse_port_from_paths_json(&output.stdout)
+}
+
+fn resolve_daemon_port() -> u16 {
+  if let Some(port) = resolve_port_with_binary("cortex") {
+    return port;
+  }
+
+  if let Some(binary) = find_cortex_binary() {
+    if let Some(port) = resolve_port_with_binary(&binary) {
+      return port;
+    }
+  }
+
+  env::var("CORTEX_PORT")
+    .ok()
+    .and_then(|value| value.parse::<u16>().ok())
+    .unwrap_or(DEFAULT_DAEMON_PORT)
 }
 
 fn find_cortex_binary() -> Option<PathBuf> {
   if let Ok(exe) = env::current_exe() {
     if let Some(dir) = exe.parent() {
-      let sidecar = dir.join("cortex.exe");
+      let sidecar = dir.join(cortex_binary_name());
       if sidecar.exists() {
         return Some(sidecar);
       }
@@ -141,12 +185,17 @@ fn find_cortex_binary() -> Option<PathBuf> {
   }
 
   if let Ok(home) = cortex_home() {
+    let plugin_path = home.join(".cortex").join("bin").join(cortex_binary_name());
+    if plugin_path.exists() {
+      return Some(plugin_path);
+    }
+
     let dev_path = home
       .join("cortex")
       .join("daemon-rs")
       .join("target")
       .join("release")
-      .join("cortex.exe");
+      .join(cortex_binary_name());
     if dev_path.exists() {
       return Some(dev_path);
     }
@@ -258,12 +307,14 @@ fn quit_app(app: tauri::AppHandle, daemon_state: State<DaemonState>) -> Result<(
 fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
   let (running, pid) = state.status()?;
   let reachable = is_cortex_reachable();
+  let port = resolve_daemon_port();
   let message = if running && reachable {
     format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
   } else if running {
     format!(
-      "Cortex daemon running (pid {}) but not reachable on :7437 yet.",
-      pid.unwrap_or_default()
+      "Cortex daemon running (pid {}) but not reachable on :{} yet.",
+      pid.unwrap_or_default(),
+      port
     )
   } else if reachable {
     "Cortex daemon reachable (external process).".to_string()
@@ -283,12 +334,14 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
   let (running, pid) = state.start()?;
   let reachable = is_cortex_reachable();
+  let port = resolve_daemon_port();
   let message = if reachable {
     format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
   } else {
     format!(
-      "Cortex daemon started (pid {}) but :7437 is not reachable yet.",
-      pid.unwrap_or_default()
+      "Cortex daemon started (pid {}) but :{} is not reachable yet.",
+      pid.unwrap_or_default(),
+      port
     )
   };
 
@@ -354,8 +407,9 @@ fn send_cortex_request(
     return Err("Invalid request path".to_string());
   }
 
+  let port = resolve_daemon_port();
   let mut stream = TcpStream::connect_timeout(
-    &SocketAddr::from(([127, 0, 0, 1], 7437)),
+    &SocketAddr::from(([127, 0, 0, 1], port)),
     Duration::from_millis(2000),
   )
   .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
@@ -367,7 +421,7 @@ fn send_cortex_request(
     .map_err(|e| format!("Cannot set write timeout: {e}"))?;
 
   let mut request = format!(
-    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:7437\r\nX-Cortex-Request: true\r\n"
+    "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\n"
   );
   if !auth_token.is_empty() {
     request.push_str(&format!("Authorization: Bearer {auth_token}\r\n"));
@@ -497,18 +551,7 @@ struct EditorDetection {
 }
 
 fn cortex_exe_path() -> Option<PathBuf> {
-  let home = cortex_home().ok()?;
-  let path = home
-    .join("cortex")
-    .join("daemon-rs")
-    .join("target")
-    .join("release")
-    .join("cortex.exe");
-  if path.exists() {
-    Some(path)
-  } else {
-    None
-  }
+  find_cortex_binary()
 }
 
 fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
@@ -627,9 +670,10 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
 
 #[tauri::command]
 fn setup_editors() -> Result<Vec<EditorDetection>, String> {
-  let cortex_exe = cortex_exe_path()
-    .ok_or("Could not find cortex.exe at ~/cortex/daemon-rs/target/release/")?;
-  let exe_str = cortex_exe.to_string_lossy().replace('/', "\\");
+  let cortex_exe = cortex_exe_path().ok_or(
+    "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/target/release/",
+  )?;
+  let exe_str = cortex_exe.to_string_lossy().to_string();
 
   let mut results = vec![];
   match register_claude_code_mcp(&exe_str) {
