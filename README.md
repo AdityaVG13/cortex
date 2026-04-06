@@ -34,85 +34,91 @@
 
 Claude Code remembers everything. Across every session.
 
-- **Your decisions persist.** Architecture choices, coding conventions, and debugging lessons are remembered and surfaced in future sessions.
-- **Every session starts warm.** No more re-explaining your toolchain or project structure. Claude already knows.
-- **Works across your tools.** A shared brain for Claude Code, Cursor, Gemini CLI, and any MCP-compatible tool.
+AI coding assistants forget everything between sessions. Every conversation starts from scratch -- re-discovering your toolchain, conventions, and past decisions. Cortex gives every AI a shared brain that persists, compresses, and pushes context before being asked.
+
+| You want to... | Cortex gives you... |
+|---|---|
+| Stop repeating setup and project context | Capsule-compiled boot prompts with durable identity + recent delta |
+| Share decisions across every tool | A single local brain for Claude Code, Cursor, Gemini, and more |
+| Keep memory local and fast | Rust daemon, SQLite persistence, and in-process ONNX embeddings |
+| Avoid contradictions | Conflict detection and human-resolvable disputed decisions |
+| Manage the system visually | A desktop control center for graph exploration and task coordination |
+
+- **Your decisions persist.** Architecture choices and debugging lessons are remembered and surfaced.
+- **Every session starts warm.** No more re-explaining your toolchain. Claude already knows.
+- **97% token efficiency.** Boot context is compressed from 19K+ raw tokens down to ~500.
 
 ## Installation
 
 ### Claude Code Plugin (Recommended)
-
-Cortex is now available as a Claude Code plugin. This is the fastest way to get started.
+Cortex is now available as a primary Claude Code plugin. This handles daemon lifecycle automatically.
 
 ```bash
 claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
 ```
+**Restart your session. That's it.**
 
-Start a new session. That's it. Cortex boots automatically.
+### Desktop App (Cortex Control Center)
+Visual dashboard for your brain. Download for your platform:
 
-### Desktop App (Control Center)
-
-The Cortex Control Center provides a visual dashboard for your brain. Download the latest installer for Windows, macOS, or Linux from the [Releases](https://github.com/AdityaVG13/cortex/releases) page.
+| Platform | Download |
+|----------|----------|
+| **Windows** | [`cortex-v0.4.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-windows-x86_64.zip) |
+| **macOS** | [`cortex-v0.4.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-macos-aarch64.tar.gz) |
+| **Linux** | [`cortex-v0.4.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-linux-x86_64.tar.gz) |
 
 ### From Source
-
-For contributors and power users:
-
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
-cd cortex/daemon-rs
-cargo build --release
+cd cortex/daemon-rs && cargo build --release
 ```
 
 ## First Session Experience
-
-When you start a new session with the Cortex plugin installed, you'll see a boot message:
-
+When you start a session with Cortex, you'll see:
 ```text
 Brain: READY | Cortex initialized at ~/.cortex | 42 memories
 ```
-
-Try storing a coding convention:
-> "Cortex, remember that we use early returns and avoid nested if statements in this project."
-
-In a future session, Claude will recall this:
-> "I've recalled your convention for early returns. I'll ensure the new function follows this pattern."
+**The "Aha" moment:** Store a convention like *"Cortex, remember we use early returns here."* In any later session, ask for a code review—Claude will recall that specific convention without being reminded.
 
 ## Team Mode
-
-Cortex supports shared brains for engineering teams. Run a shared instance on a server and every team member's agent will contribute to and learn from the same collective memory.
-
-1. Run `cortex serve --host 0.0.0.0` on your shared server.
-2. Team lead runs `cortex setup --team` to create API keys.
-3. Team members enter the server URL and their API key when prompted by the plugin.
-
-See the [Team Mode Setup Guide](docs/team-mode-setup.md) for full details.
+Run a shared instance on a server to give your whole engineering team a collective memory.
+1. Run `cortex serve --host 0.0.0.0` on a server.
+2. Initialize with `cortex setup --team`.
+3. Members enter the server URL and API key when prompted by the plugin.
+*Detailed guide: [docs/team-mode-setup.md](docs/team-mode-setup.md)*
 
 ## How It Works
+Cortex is a high-performance Rust daemon living at `~/.cortex`. It uses an embedded SQLite DB and in-process ONNX embeddings for lightning-fast semantic search.
 
-Cortex is a high-performance Rust daemon that lives at `~/.cortex`. It uses an embedded SQLite database for persistence and in-process ONNX embeddings for lightning-fast semantic search. 
+| Component | Description |
+|-----------|-------------|
+| **Capsule Compiler** | Compiles boot prompts from **Identity** (stable) and **Delta** (recent) capsules. |
+| **In-Process ONNX** | Uses `all-MiniLM-L6-v2` locally. No network hops or Ollama required. |
+| **Conflict Detection** | Flags semantic contradictions between different AIs automatically. |
+| **Progressive Recall** | Three-tier retrieval: **Peek** (headlines) -> **Unfold** (full text) -> **Recall** (search). |
 
-When an agent starts a session, it calls the `/boot` endpoint. Cortex compiles an **Identity Capsule** (who you are and your global rules) and a **Delta Capsule** (what changed since your last session). These are pushed into the agent's context window, ensuring it's "warm" from the first prompt.
-
-- **No external dependencies:** No Ollama or external API calls required for embeddings.
-- **MCP Native:** Speaks the Model Context Protocol for seamless integration.
-- **Surgical Recall:** Sub-100ms hybrid search ensures the right memory is found at the right time.
+## Core MCP Tools
+These tools are injected into your agent's context automatically:
+- `cortex_boot`: Get compiled boot prompt with session context.
+- `cortex_recall`: Hybrid semantic + keyword search with token budgeting.
+- `cortex_store`: Persist a decision or insight with conflict detection.
+- `cortex_digest`: Daily health digest and token savings analytics.
+- `cortex_status`: Check brain health and connection stats.
 
 ## CLI Reference
-
 | Command | Description |
 |---------|-------------|
 | `cortex serve` | Start the Cortex daemon |
-| `cortex paths --json` | Output canonical file and port paths in JSON |
-| `cortex plugin ensure-daemon` | Internal: verify or start local daemon for plugin |
-| `cortex plugin mcp` | Internal: bridge MCP stdio to Cortex HTTP API |
+| `cortex paths --json` | Output canonical file and port paths |
+| `cortex plugin mcp` | Bridge MCP stdio to Cortex HTTP API |
 | `cortex setup --team` | Initialize team mode and generate API keys |
-| `cortex export` | Export all memories to JSON |
-| `cortex import` | Import memories from a JSON file |
+| `cortex export/import` | Bulk memory management |
 
-## License
+## Security & Roadmap
+- **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost.
+- **v0.5.0:** Foundation hardening (TTL, Rollback, Schema migration).
+- **v0.6.0:** Governance (Budgets, Retention, Human review).
+- **v1.0.0:** Multi-agent information ingesters.
 
-Cortex is licensed under the [AGPL-3.0-only](LICENSE) license.
-
-[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Desktop App](https://github.com/AdityaVG13/cortex/releases)
+[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
