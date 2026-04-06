@@ -1,0 +1,18 @@
+{
+  "name": "cortex-marketplace",
+  "owner": {
+    "name": "AdityaVG13",
+    "email": "contact@adityavg.com"
+  },
+  "metadata": {
+    "description": "Cortex: persistent memory for AI coding agents"
+  },
+  "plugins": [
+    {
+      "name": "cortex",
+      "source": "./plugins/cortex-plugin",
+      "description": "Remembers your decisions, conventions, and lessons across every Claude Code session",
+      "version": "0.4.0"
+    }
+  ]
+}
