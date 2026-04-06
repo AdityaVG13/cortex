@@ -22,6 +22,11 @@ docs/compatibility/
 docs/schema/
 docs/internal/
 docs/archive/
+model_delineation.md
+ROADMAP.md
+SECURITY.md
+docs/team-mode-setup.md
+docs/CONNECTING.md
 
 # Build artifacts at repo root
 cortex-app.exe
@@ -70,14 +75,6 @@ cortex-dashboard.bat
 cortex-app.bat
 cortex-mcp.cmd
 Cortex?Ingester?Instructions.txt
-
-# TLS certs and private keys
-*.pem
-*.key
-
-# Environment files
-.env
-.env.*
 
 # Editor/tool artifacts
 .aider*

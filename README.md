@@ -86,7 +86,7 @@ Run a shared instance on a server to give your whole engineering team a collecti
 1. Run `cortex serve --host 0.0.0.0` on a server.
 2. Initialize with `cortex setup --team`.
 3. Members enter the server URL and API key when prompted by the plugin.
-*Detailed guide: [docs/team-mode-setup.md](docs/team-mode-setup.md)*
+*Detailed guide: [Info/team-mode-setup.md](Info/team-mode-setup.md)*
 
 ## How It Works
 Cortex is a high-performance Rust daemon living at `~/.cortex`. It uses an embedded SQLite DB and in-process ONNX embeddings for lightning-fast semantic search.
@@ -97,6 +97,8 @@ Cortex is a high-performance Rust daemon living at `~/.cortex`. It uses an embed
 | **In-Process ONNX** | Uses `all-MiniLM-L6-v2` locally. No network hops or Ollama required. |
 | **Conflict Detection** | Flags semantic contradictions between different AIs automatically. |
 | **Progressive Recall** | Three-tier retrieval: **Peek** (headlines) -> **Unfold** (full text) -> **Recall** (search). |
+
+*Full connection guide: [Info/connecting.md](Info/connecting.md)*
 
 ## Core MCP Tools
 These tools are injected into your agent's context automatically:
@@ -116,9 +118,11 @@ These tools are injected into your agent's context automatically:
 | `cortex export/import` | Bulk memory management |
 
 ## Security & Roadmap
-- **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost.
+- **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [Info/security-rules.md](Info/security-rules.md).
 - **v0.5.0:** Foundation hardening (TTL, Rollback, Schema migration).
 - **v0.6.0:** Governance (Budgets, Retention, Human review).
 - **v1.0.0:** Multi-agent information ingesters.
 
-[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
+*Full Roadmap: [Info/roadmap.md](Info/roadmap.md)*
+
+[Contributing](CONTRIBUTING.md) | [Security Rules](Info/security-rules.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
