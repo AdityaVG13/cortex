@@ -55,7 +55,8 @@ pub async fn run(
     let health_url = format!("{base_url}/health");
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(3))
         .build()?;
 
     let team_mode = detect_team_mode(api_key);
