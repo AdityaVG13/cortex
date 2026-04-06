@@ -149,6 +149,7 @@ Full tool list and parameters: [Info/mcp-tools.md](Info/mcp-tools.md)
 ## Known Limitations
 - **Recall ranking is approximate.** Semantic search works well for broad queries but may not always surface the most relevant result first. Improving retrieval precision is a priority for v0.5.0.
 - **First-run experience varies by platform.** We test on Windows, macOS, and Linux, but edge environments may need minor troubleshooting. If install doesn't work cleanly, open an issue -- we want to hear about it.
+- **Some desktop app features may appear buggy.** The Control Center is under active development -- certain panels (e.g., agent presence) may not display correctly yet. Fixes are being worked on.
 
 ## Security & Roadmap
 - **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [SECURITY.md](SECURITY.md) (mirror: [Info/security-rules.md](Info/security-rules.md)).
