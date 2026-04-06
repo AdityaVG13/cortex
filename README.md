@@ -83,7 +83,7 @@ Brain: READY | Cortex initialized at ~/.cortex | 42 memories
 
 ## Team Mode
 Run a shared instance on a server to give your whole engineering team a collective memory.
-1. Run `cortex serve --host 0.0.0.0` on a server.
+1. Run `CORTEX_BIND=0.0.0.0 cortex serve` on a server.
 2. Initialize with `cortex setup --team`.
 3. Members enter the server URL and API key when prompted by the plugin.
 *Detailed guide: [Info/team-mode-setup.md](Info/team-mode-setup.md)*
