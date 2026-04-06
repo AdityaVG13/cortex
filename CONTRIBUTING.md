@@ -11,13 +11,22 @@ Thanks for contributing. Cortex is a local-first memory system for AI agents, wi
 
 ## Development Setup
 
+### Prerequisites
+
+- **Rust 1.78+** (required for daemon): Install from <https://rustup.rs/>
+- **Node.js 18+** (required for desktop app): Install from <https://nodejs.org/>
+- **Windows users**: MSVC build tools (required for Rust): `x86 Native Tools Command Prompt for VS`
+- **Linux users**: `pkg-config` and `libssl-dev` (required for some dependencies): `sudo apt install pkg-config libssl-dev`
+- **macOS users**: Xcode command line tools: `xcode-select --install`
+
 ### Core daemon
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
 cd cortex
 cd daemon-rs
-cargo build
+cargo build --release
+# Binary at target/release/cortex(.exe)
 ```
 
 ### Desktop app
