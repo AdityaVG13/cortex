@@ -21,8 +21,8 @@ All CRITICAL security and OSS-readiness tasks are complete. These remaining item
 | ✓109 | Auto-generate CHANGELOG on version tags (git-cliff) | D4 | Done - cliff.toml + .github/workflows/changelog.yml |
 | ✓113 | Verify desktop app (Control Center) is wired end-to-end | CC | Done |
 | ✓114 | Wire Agents panel: show connected MCP sessions, active agents, team user presence | D5 | Done - Already wired: AgentItem renders sessions, SSE listens for session events, api(/sessions) fetches data. Fixed CSS bug: --agent-droid had quotes around hex value. |
-| ✓115 | Desktop app: fix About icon, update License field, version bump to v0.4.0 | D4 | Done - icon uses BASE_URL, license AGPL-3.0, version 0.4.0 |
-| ✓116 | Version bump ALL files to v0.4.0 + AGPL-3.0 license sweep | D4 | Done - all Cargo.toml, package.json, README updated; 49 .rs files have SPDX headers |
+| ✓115 | Desktop app: fix About icon, update License field, version bump to v0.4.0 | D4 | Done - icon uses BASE_URL, license MIT (relicensed from AGPL-3.0 post-tag in df3138a), version 0.4.0 |
+| ✓116 | Version bump ALL files to v0.4.0 + license sweep | D4 | Done - all Cargo.toml, package.json, README updated; 49 .rs files have SPDX headers; relicensed to MIT in df3138a |
 
 ---
 
