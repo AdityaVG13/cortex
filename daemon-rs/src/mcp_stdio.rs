@@ -43,7 +43,13 @@ fn resolve_mcp_caller(state: &RuntimeState) -> Option<i64> {
         }
     };
 
-    let hashes = state.team_api_key_hashes.read().unwrap();
+    let hashes = match state.team_api_key_hashes.read() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[cortex-mcp] WARNING: lock poisoned reading API key hashes: {e}");
+            return None;
+        }
+    };
     for (user_id, hash) in hashes.iter() {
         if auth::verify_api_key_argon2id(&key, hash) {
             eprintln!("[cortex-mcp] team mode: authenticated as user {user_id}");
