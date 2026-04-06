@@ -32,6 +32,8 @@
 
 <p align="center"><a href="https://ko-fi.com/adityavg13">☕ Support Cortex</a> -- all donations go directly toward funding AI projects (API costs, compute, tooling)</p>
 
+<p align="center"><em>The logo is temporary (yes, that's my face). If you have ideas for what the real one should look like, open an issue or let me know!</em></p>
+
 Claude Code remembers everything. Across every session.
 
 AI coding assistants forget everything between sessions. Every conversation starts from scratch -- re-discovering your toolchain, conventions, and past decisions. Cortex gives every AI a shared brain that persists, compresses, and pushes context before being asked.
@@ -47,6 +49,7 @@ AI coding assistants forget everything between sessions. Every conversation star
 - **Your decisions persist.** Architecture choices and debugging lessons are remembered and surfaced.
 - **Every session starts warm.** No more re-explaining your toolchain. Claude already knows.
 - **97% token efficiency.** Boot context is compressed from 19K+ raw tokens down to ~500.
+- **Self-healing connections.** If the daemon crashes mid-session, the MCP proxy automatically detects the failure and respawns it -- your session stays alive without manual intervention.
 
 ## Documentation Map
 - [README.md](README.md) -- install + usage overview
@@ -112,6 +115,7 @@ Cortex is a high-performance Rust daemon living at `~/.cortex`. It uses an embed
 | **In-Process ONNX** | Uses `all-MiniLM-L6-v2` locally with no external inference service. |
 | **Conflict Detection** | Flags semantic contradictions between different AIs automatically. |
 | **Progressive Recall** | Three-tier retrieval: **Peek** (headlines) -> **Unfold** (full text) -> **Recall** (search). |
+| **Auto-Respawn** | MCP proxy detects daemon failure and restarts it automatically -- sessions survive crashes. |
 
 *Full connection guide: [CONNECTING.md](CONNECTING.md)*
 
@@ -141,6 +145,8 @@ Full tool list and parameters: [Info/mcp-tools.md](Info/mcp-tools.md)
 - **v0.5.0:** Foundation hardening (TTL, Rollback, Schema migration).
 - **v0.6.0:** Governance (Budgets, Retention, Human review).
 - **v1.0.0:** Multi-agent information ingesters.
+
+More features coming soon! Check the roadmap or open an issue if there's something you'd like to see.
 
 *Full Roadmap: [Info/roadmap.md](Info/roadmap.md)*
 
