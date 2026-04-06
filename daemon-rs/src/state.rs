@@ -257,12 +257,9 @@ fn initialize_with_conn(
     let (events_tx, _) = broadcast::channel::<DaemonEvent>(256);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    let models_dir = crate::auth::cortex_dir().join("models");
+    let resolved_paths = crate::auth::CortexPaths::resolve();
+    let home = resolved_paths.home.clone();
+    let models_dir = resolved_paths.models.clone();
     let embedding_engine = crate::embeddings::EmbeddingEngine::load(&models_dir).map(Arc::new);
 
     if embedding_engine.is_some() {
@@ -276,8 +273,7 @@ fn initialize_with_conn(
         );
     }
 
-    let cortex_dir = crate::auth::cortex_dir();
-    let write_buffer_path = cortex_dir.join("write_buffer.jsonl");
+    let write_buffer_path = home.join("write_buffer.jsonl");
 
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),

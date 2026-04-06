@@ -190,6 +190,11 @@ pub fn acquire_daemon_lock(paths: &CortexPaths) -> Result<fs::File, String> {
 
 /// Returns `~/.cortex` (or `$HOME/.cortex` on non-Windows).
 pub fn cortex_dir() -> PathBuf {
+    if let Ok(explicit) = std::env::var("CORTEX_HOME") {
+        if !explicit.trim().is_empty() {
+            return PathBuf::from(explicit);
+        }
+    }
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());

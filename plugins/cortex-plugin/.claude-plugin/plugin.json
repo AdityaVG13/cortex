@@ -7,10 +7,14 @@
   "license": "AGPL-3.0-only",
   "userConfig": {
     "cortex_url": {
+      "title": "Cortex Server URL",
+      "type": "string",
       "description": "Cortex server URL (leave blank for local solo mode, or enter your team server URL e.g. https://cortex.myteam.com:7437)",
       "sensitive": false
     },
     "cortex_api_key": {
+      "title": "Cortex API Key",
+      "type": "string",
       "description": "API key for team server authentication (leave blank for local solo mode)",
       "sensitive": true
     }
