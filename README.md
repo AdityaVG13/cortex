@@ -48,7 +48,7 @@ AI coding assistants forget everything between sessions. Every conversation star
 
 - **Your decisions persist.** Architecture choices and debugging lessons are remembered and surfaced.
 - **Every session starts warm.** No more re-explaining your toolchain. Claude already knows.
-- **97% token efficiency.** Boot context is compressed from 19K+ raw tokens down to ~500.
+- **Up to 97% token compression (tested).** Boot context is compressed from 19K+ raw tokens down to ~500.
 - **Self-healing connections.** If the daemon crashes mid-session, the MCP proxy automatically detects the failure and respawns it -- your session stays alive without manual intervention.
 
 ## Documentation Map
@@ -77,6 +77,12 @@ Visual dashboard for your brain. Download the installer for your platform from t
 | **Windows** | [`.exe` (NSIS installer)](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.0-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-windows-x86_64.zip) |
 | **macOS** | [`.dmg`](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.0-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-macos-aarch64.tar.gz) |
 | **Linux** | [`.AppImage` / `.deb`](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.0-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.0/cortex-v0.4.0-linux-x86_64.tar.gz) |
+
+<p align="center">
+  <img src="assets/control-center-analytics.png" alt="Cortex Control Center -- Analytics" width="90%">
+  <br>
+  <em>Control Center analytics: real-time token savings, boot history, and per-agent compression rates.</em>
+</p>
 
 ### From Source
 ```bash
@@ -139,6 +145,10 @@ Full tool list and parameters: [Info/mcp-tools.md](Info/mcp-tools.md)
 | `cortex setup --team` | Initialize team mode and generate API keys |
 | `cortex export` | Export data (`--format json|sql`) |
 | `cortex import` | Import JSON export into solo/team mode |
+
+## Known Limitations
+- **Recall ranking is approximate.** Semantic search works well for broad queries but may not always surface the most relevant result first. Improving retrieval precision is a priority for v0.5.0.
+- **First-run experience varies by platform.** We test on Windows, macOS, and Linux, but edge environments may need minor troubleshooting. If install doesn't work cleanly, open an issue -- we want to hear about it.
 
 ## Security & Roadmap
 - **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [SECURITY.md](SECURITY.md) (mirror: [Info/security-rules.md](Info/security-rules.md)).
