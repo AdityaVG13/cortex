@@ -19,24 +19,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install git-cliff
-        run: |
-          wget -qO- https://github.com/orhun/git-cliff/releases/latest/download/git-cliff-${{ runner.os }}-amd64.tar.gz | tar -xz \
-            && sudo mv git-cliff /usr/local/bin/ \
-            && sudo chown root:root /usr/local/bin/git-cliff \
-            && sudo chmod +x /usr/local/bin/git-cliff
-        shell: bash
-
       - name: Generate CHANGELOG.md
-        run: |
-          git cliff --output CHANGELOG.md --tag "${{ github.ref_name }}"
-        shell: bash
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --output CHANGELOG.md --tag "${{ github.ref_name }}"
+        env:
+          GITHUB_REPO: ${{ github.repository }}
 
       - name: Commit CHANGELOG.md
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git commit -m "docs: update CHANGELOG.md for ${{ github.ref_name }}"
+          git diff --cached --quiet || git commit -m "docs: update CHANGELOG.md for ${{ github.ref_name }}"
           git push
         shell: bash
