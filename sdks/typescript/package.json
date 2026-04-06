@@ -3,7 +3,7 @@
   "version": "0.4.0",
   "description": "TypeScript SDK for the Cortex AI Memory daemon",
   "type": "module",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

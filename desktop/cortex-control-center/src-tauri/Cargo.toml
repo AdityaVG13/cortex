@@ -3,7 +3,7 @@ name = "cortex-control-center"
 version = "0.4.0"
 description = "Native desktop control center for Cortex"
 edition = "2021"
-license = "AGPL-3.0-only"
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

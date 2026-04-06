@@ -1556,7 +1556,7 @@ export function App() {
                     ["Storage", "SQLite (WAL)"],
                     ["Transport", "HTTP + MCP stdio"],
                     ["Port", "7437"],
-                    ["License", "AGPL-3.0"],
+                    ["License", "MIT"],
                   ].map(([label, value]) => (
                     <div key={label} style={{
                       background: "var(--surface)", border: "1px solid var(--border)",

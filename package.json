@@ -20,7 +20,7 @@
     "mcp",
     "cortex"
   ],
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "dependencies": {
     "sql.js": "^1.11.0"
   }

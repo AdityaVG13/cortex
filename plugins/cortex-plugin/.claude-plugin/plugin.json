@@ -4,7 +4,7 @@
   "description": "Remembers your decisions, coding conventions, and debugging lessons across every Claude Code session. Persistent local memory for AI coding agents.",
   "homepage": "https://github.com/AdityaVG13/cortex",
   "repository": "https://github.com/AdityaVG13/cortex",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "userConfig": {
     "cortex_url": {
       "title": "Cortex Server URL",
