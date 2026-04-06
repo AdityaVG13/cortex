@@ -58,6 +58,22 @@ pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
         cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
     }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        // Start the child in a new session so it survives the parent CLI process.
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
+
     cmd.spawn().map_err(|e| format!("spawn daemon: {e}"))?;
     Ok(())
 }

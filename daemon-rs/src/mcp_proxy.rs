@@ -67,7 +67,6 @@ pub async fn run(
     let base_url = base_url.trim_end_matches('/');
     let mut rpc_url = format!("{base_url}/mcp-rpc");
     let health_url = format!("{base_url}/health");
-    let paths = CortexPaths::resolve();
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -311,8 +310,10 @@ pub async fn run(
                  respawn attempt {respawn_attempts}/{MAX_RESPAWN_ATTEMPTS}"
             );
 
+            let mut paths = CortexPaths::resolve();
             if daemon_lifecycle::try_respawn(&paths).await {
-                // Daemon is back -- rebuild URLs in case port changed
+                // Daemon is back -- rebuild URLs using the latest resolved port.
+                paths = CortexPaths::resolve();
                 let new_base = format!("http://127.0.0.1:{}", paths.port);
                 rpc_url = format!("{new_base}/mcp-rpc");
                 consecutive_failures = 0;
@@ -367,4 +368,3 @@ async fn write_raw_line(
     }
     Ok(true)
 }
-
