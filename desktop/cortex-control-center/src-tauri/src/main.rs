@@ -202,14 +202,26 @@ fn find_cortex_binary() -> Option<PathBuf> {
       return Some(plugin_path);
     }
 
-    let dev_path = home
+    // Prefer release binary (built by beforeBuildCommand)
+    let release_path = home
       .join("cortex")
       .join("daemon-rs")
       .join("target")
       .join("release")
       .join(cortex_binary_name());
-    if dev_path.exists() {
-      return Some(dev_path);
+    if release_path.exists() {
+      return Some(release_path);
+    }
+
+    // Fall back to debug binary (built by beforeDevCommand)
+    let debug_path = home
+      .join("cortex")
+      .join("daemon-rs")
+      .join("target")
+      .join("debug")
+      .join(cortex_binary_name());
+    if debug_path.exists() {
+      return Some(debug_path);
     }
   }
 
