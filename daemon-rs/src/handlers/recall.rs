@@ -663,9 +663,7 @@ fn run_recall_with_engine(
     });
     ranked.truncate(k);
 
-    for row in &ranked {
-        bump_retrieval(conn, &row.source);
-    }
+    bump_retrievals_batch(conn, &ranked);
 
     Ok(ranked)
 }
@@ -738,7 +736,7 @@ fn search_memories(
     query_text: &str,
     limit: usize,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let tokens = extract_search_keywords(query_text);
+    let tokens = extract_search_keywords_with_synonyms(query_text);
 
     if tokens.is_empty() {
         let mut stmt = conn
@@ -786,18 +784,23 @@ fn search_memories(
         .join(" OR ");
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
+        // Field-boosted BM25: memories_fts columns are (text, source, tags).
+        // Weights: text=1.0, source=5.0, tags=3.0 -- matches in source (e.g. file paths)
+        // and tags carry higher signal than body text.
+        // bm25() returns negative values (more negative = better match), so ORDER BY ASC.
         let mut stmt = conn
             .prepare(
                 "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility \
                  FROM memories_fts fts \
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
-                 LIMIT 100",
+                 ORDER BY bm25(memories_fts, 1.0, 5.0, 3.0) \
+                 LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([&fts_query], |row| {
+            .query_map(params![&fts_query, limit as i64], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -1022,7 +1025,7 @@ fn search_decisions(
     query_text: &str,
     limit: usize,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let tokens = extract_search_keywords(query_text);
+    let tokens = extract_search_keywords_with_synonyms(query_text);
 
     if tokens.is_empty() {
         let mut stmt = conn
@@ -1064,18 +1067,22 @@ fn search_decisions(
         .join(" OR ");
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
+        // Field-boosted BM25: decisions_fts columns are (decision, context).
+        // Weights: decision=5.0, context=1.0 -- the decision text is primary signal;
+        // context is the source/label string and lower priority.
         let mut stmt = conn
             .prepare(
                 "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility \
                  FROM decisions_fts fts \
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
-                 LIMIT 100",
+                 ORDER BY bm25(decisions_fts, 5.0, 1.0) \
+                 LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([&fts_query], |row| {
+            .query_map(params![&fts_query, limit as i64], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -1331,6 +1338,78 @@ fn extract_search_keywords(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Coding synonym map: maps abbreviated/shorthand terms to their full-form equivalents
+/// and vice versa. Used during FTS query construction to expand search coverage.
+///
+/// Strategy: every token in the query that has a synonym gets BOTH forms added to the
+/// OR list. This is directional expansion (short → long, or long → short) -- the map
+/// handles both directions as separate entries.
+fn coding_synonyms(word: &str) -> Option<&'static str> {
+    match word {
+        "func"      => Some("function"),
+        "fn"        => Some("function"),
+        "err"       => Some("error"),
+        "db"        => Some("database"),
+        "auth"      => Some("authentication"),
+        "authn"     => Some("authentication"),
+        "authz"     => Some("authorization"),
+        "cfg"       => Some("config"),
+        "config"    => Some("configuration"),
+        "msg"       => Some("message"),
+        "req"       => Some("request"),
+        "res"       => Some("response"),
+        "resp"      => Some("response"),
+        "impl"      => Some("implementation"),
+        "repo"      => Some("repository"),
+        "env"       => Some("environment"),
+        "var"       => Some("variable"),
+        "arg"       => Some("argument"),
+        "args"      => Some("arguments"),
+        "param"     => Some("parameter"),
+        "params"    => Some("parameters"),
+        "dir"       => Some("directory"),
+        "tmp"       => Some("temporary"),
+        "async"     => Some("asynchronous"),
+        "sync"      => Some("synchronous"),
+        "tx"        => Some("transaction"),
+        "rx"        => Some("receive"),
+        "conn"      => Some("connection"),
+        "stmt"      => Some("statement"),
+        "idx"       => Some("index"),
+        "str"       => Some("string"),
+        "int"       => Some("integer"),
+        "bool"      => Some("boolean"),
+        "vec"       => Some("vector"),
+        "dict"      => Some("dictionary"),
+        "obj"       => Some("object"),
+        "num"       => Some("number"),
+        "char"      => Some("character"),
+        _           => None,
+    }
+}
+
+/// Like `extract_search_keywords` but also expands coding synonyms.
+/// Each token that has a known synonym produces both the original and the expanded form.
+/// Deduplicates the final list while preserving order.
+fn extract_search_keywords_with_synonyms(text: &str) -> Vec<String> {
+    let base = extract_search_keywords(text);
+    let mut seen = HashSet::new();
+    let mut result = Vec::with_capacity(base.len() * 2);
+    for word in base {
+        if seen.insert(word.clone()) {
+            if let Some(expanded) = coding_synonyms(&word) {
+                // Insert expanded form first (higher signal), then original
+                let exp_str = expanded.to_string();
+                if seen.insert(exp_str.clone()) {
+                    result.push(exp_str);
+                }
+            }
+            result.push(word);
+        }
+    }
+    result
+}
+
 fn parse_timestamp_ms(value: &str) -> i64 {
     if value.trim().is_empty() {
         return 0;
@@ -1371,40 +1450,87 @@ fn round4(value: f64) -> f64 {
 ///   Early retrievals give big boosts (0.15 → 0.14 → 0.12...),
 ///   diminishing as the memory is already well-reinforced.
 ///   This counteracts the time-based decay in decay_pass().
-fn bump_retrieval(conn: &Connection, source: &str) {
+/// Batch-update retrieval stats for all returned results in 2 statements
+/// instead of 2*N individual UPDATEs.
+fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
+    if items.is_empty() {
+        return;
+    }
     let now = now_iso();
+    let sources: Vec<&str> = items.iter().map(|i| i.source.as_str()).collect();
 
-    // Boost memories
-    let _ = conn.execute(
+    // Batch boost memories -- single UPDATE with IN clause
+    let placeholders: String = sources.iter().enumerate()
+        .map(|(i, _)| format!("?{}", i + 2))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
         "UPDATE memories SET \
            retrievals = retrievals + 1, \
            last_accessed = ?1, \
            score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
-         WHERE source = ?2",
-        params![now.clone(), source],
+         WHERE source IN ({})",
+        placeholders
     );
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(sources.len() + 1);
+    params_vec.push(Box::new(now.clone()));
+    for s in &sources {
+        params_vec.push(Box::new(s.to_string()));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let _ = conn.execute(&sql, param_refs.as_slice());
 
-    // Boost decisions
-    if let Some(id_text) = source.strip_prefix("decision::") {
-        if let Ok(id) = id_text.parse::<i64>() {
-            let _ = conn.execute(
-                "UPDATE decisions SET \
-                   retrievals = retrievals + 1, \
-                   last_accessed = ?1, \
-                   score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
-                 WHERE id = ?2",
-                params![now, id],
-            );
-        }
-    } else {
-        let _ = conn.execute(
+    // Batch boost decisions by id
+    let decision_ids: Vec<i64> = sources.iter()
+        .filter_map(|s| s.strip_prefix("decision::").and_then(|id| id.parse().ok()))
+        .collect();
+    if !decision_ids.is_empty() {
+        let d_placeholders: String = decision_ids.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let d_sql = format!(
             "UPDATE decisions SET \
                retrievals = retrievals + 1, \
                last_accessed = ?1, \
                score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
-             WHERE context = ?2",
-            params![now, source],
+             WHERE id IN ({})",
+            d_placeholders
         );
+        let mut d_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(decision_ids.len() + 1);
+        d_params.push(Box::new(now.clone()));
+        for id in &decision_ids {
+            d_params.push(Box::new(*id));
+        }
+        let d_refs: Vec<&dyn rusqlite::types::ToSql> = d_params.iter().map(|p| p.as_ref()).collect();
+        let _ = conn.execute(&d_sql, d_refs.as_slice());
+    }
+
+    // Batch boost decisions by context (non-id sources)
+    let context_sources: Vec<&str> = sources.iter()
+        .filter(|s| !s.starts_with("decision::"))
+        .copied()
+        .collect();
+    if !context_sources.is_empty() {
+        let c_placeholders: String = context_sources.iter().enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let c_sql = format!(
+            "UPDATE decisions SET \
+               retrievals = retrievals + 1, \
+               last_accessed = ?1, \
+               score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
+             WHERE context IN ({})",
+            c_placeholders
+        );
+        let mut c_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(context_sources.len() + 1);
+        c_params.push(Box::new(now));
+        for s in &context_sources {
+            c_params.push(Box::new(s.to_string()));
+        }
+        let c_refs: Vec<&dyn rusqlite::types::ToSql> = c_params.iter().map(|p| p.as_ref()).collect();
+        let _ = conn.execute(&c_sql, c_refs.as_slice());
     }
 }
 
@@ -1486,40 +1612,69 @@ async fn record_recall_pattern(state: &RuntimeState, agent: &str, query: &str) {
     }
 }
 
+/// Tier 0: Exact query match for the agent.
+/// Tier 1: Jaccard fuzzy match on keywords (threshold >= 0.6) across all agents' caches.
+///
+/// Both tiers enforce the 5-minute TTL.  The pre_cache is a per-agent HashMap;
+/// for Tier 1 we scan all entries and pick the best Jaccard match above the threshold.
+/// LRU ordering is maintained by `predict_and_cache` (max 100 entries, oldest evicted).
+const JACCARD_FUZZY_THRESHOLD: f64 = 0.6;
+
 async fn get_pre_cached(state: &RuntimeState, agent: &str, query: &str) -> Option<Vec<RecallItem>> {
     let mut cache = state.pre_cache.lock().await;
     let now = Utc::now().timestamp_millis();
 
+    // Tier 0: exact match for this agent
     if let Some(entry) = cache.get(agent) {
         if entry.query == query && entry.expires_at > now {
-            // Deserialize the cached Value results back into RecallItems
-            if let Some(arr) = entry.results.as_array() {
-                let items: Vec<RecallItem> = arr
-                    .iter()
-                    .filter_map(|v| {
-                        Some(RecallItem {
-                            source: v.get("source")?.as_str()?.to_string(),
-                            relevance: v.get("relevance")?.as_f64()?,
-                            excerpt: v.get("excerpt")?.as_str()?.to_string(),
-                            method: v.get("method")?.as_str()?.to_string(),
-                            tokens: v.get("tokens").and_then(|t| t.as_u64()).map(|t| t as usize),
-                            entropy: v.get("entropy").and_then(|e| e.as_f64()),
-                        })
-                    })
-                    .collect();
-                return Some(items);
-            }
+            return deserialize_cache_entry(&entry.results);
         }
     }
 
-    let should_remove = cache
-        .get(agent)
-        .map(|entry| entry.expires_at <= now)
-        .unwrap_or(false);
-    if should_remove {
+    // Evict expired entry for this agent
+    if cache.get(agent).map(|e| e.expires_at <= now).unwrap_or(false) {
         cache.remove(agent);
     }
+
+    // Tier 1: fuzzy Jaccard match across all cached entries (any agent)
+    let mut best_score = 0.0_f64;
+    let mut best_key: Option<String> = None;
+    for (key, entry) in cache.iter() {
+        if entry.expires_at <= now {
+            continue;
+        }
+        let sim = jaccard_similarity(query, &entry.query);
+        if sim >= JACCARD_FUZZY_THRESHOLD && sim > best_score {
+            best_score = sim;
+            best_key = Some(key.clone());
+        }
+    }
+
+    if let Some(key) = best_key {
+        if let Some(entry) = cache.get(&key) {
+            return deserialize_cache_entry(&entry.results);
+        }
+    }
+
     None
+}
+
+fn deserialize_cache_entry(results: &serde_json::Value) -> Option<Vec<RecallItem>> {
+    let arr = results.as_array()?;
+    let items: Vec<RecallItem> = arr
+        .iter()
+        .filter_map(|v| {
+            Some(RecallItem {
+                source: v.get("source")?.as_str()?.to_string(),
+                relevance: v.get("relevance")?.as_f64()?,
+                excerpt: v.get("excerpt")?.as_str()?.to_string(),
+                method: v.get("method")?.as_str()?.to_string(),
+                tokens: v.get("tokens").and_then(|t| t.as_u64()).map(|t| t as usize),
+                entropy: v.get("entropy").and_then(|e| e.as_f64()),
+            })
+        })
+        .collect();
+    Some(items)
 }
 
 async fn predict_and_cache(
@@ -1572,13 +1727,31 @@ async fn predict_and_cache(
     // Serialize results as JSON Value for storage in the pre-cache
     let results_json: Value = results.into_iter().map(recall_to_json).collect();
 
+    let now_ms = Utc::now().timestamp_millis();
     let mut cache = state.pre_cache.lock().await;
+
+    // Evict all expired entries first (TTL cleanup)
+    cache.retain(|_, entry| entry.expires_at > now_ms);
+
+    // LRU eviction: if still at capacity, remove the entry with the oldest expiry
+    // (soonest to expire = was cached longest ago, approximates LRU without a linked list)
+    const MAX_CACHE_ENTRIES: usize = 100;
+    if cache.len() >= MAX_CACHE_ENTRIES {
+        if let Some(oldest_key) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.expires_at)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest_key);
+        }
+    }
+
     cache.insert(
         agent.to_string(),
         PreCacheEntry {
             query: predicted_query,
             results: results_json,
-            expires_at: Utc::now().timestamp_millis() + PRECACHE_TTL_MS,
+            expires_at: now_ms + PRECACHE_TTL_MS,
         },
     );
     Ok(())
@@ -1746,6 +1919,56 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     None
 }
 
+// ─── Jaccard keyword similarity ──────────────────────────────────────────────
+
+/// Jaccard similarity on whitespace-tokenized keyword sets.
+///
+/// Returns |A ∩ B| / |A ∪ B|.  Returns 0.0 for empty inputs.
+/// Used for Tier-1 fuzzy cache matching: queries with >= 0.6 Jaccard similarity
+/// are considered close enough to reuse cached results.
+fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    let set_a: HashSet<&str> = a.split_whitespace().collect();
+    let set_b: HashSet<&str> = b.split_whitespace().collect();
+    if set_a.is_empty() && set_b.is_empty() {
+        return 1.0;
+    }
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
+// ─── RRF fusion ──────────────────────────────────────────────────────────────
+
+/// Reciprocal Rank Fusion (Cormack et al., 2009).
+///
+/// Fuses multiple ranked lists into a single list using the formula:
+///   score(item) = Σ  1 / (k + rank + 1)   for each list containing item
+///
+/// `k = 60.0` is the standard value from the original paper.
+/// Items only in one list still accumulate their 1/(k+1) score.
+/// Returns results sorted by fused score descending.
+///
+/// # Arguments
+/// * `lists` -- slice of ranked lists, each a `Vec<(id, score)>` in descending score order
+/// * `k`     -- smoothing constant (use `60.0` per Cormack et al.)
+///
+/// Wire-up is in Task 1.5 (pipeline integration). Allow dead_code until then.
+#[allow(dead_code)]
+fn rrf_fuse(lists: &[Vec<(i64, f64)>], k: f64) -> Vec<(i64, f64)> {
+    let mut fused: HashMap<i64, f64> = HashMap::new();
+    for list in lists {
+        for (rank, &(id, _score)) in list.iter().enumerate() {
+            *fused.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+        }
+    }
+    let mut result: Vec<(i64, f64)> = fused.into_iter().collect();
+    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    result
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1879,6 +2102,126 @@ mod tests {
     fn test_round4() {
         assert_eq!(round4(0.12345), 0.1235);
         assert_eq!(round4(1.0), 1.0);
+    }
+
+    // ── RRF fusion tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_rrf_fuse_single_list() {
+        // Single list: ranks 0,1,2 with k=60
+        let list = vec![(10, 0.9), (20, 0.7), (30, 0.5)];
+        let result = rrf_fuse(&[list], 60.0);
+        assert_eq!(result.len(), 3);
+        // Item at rank 0 should be first (highest fused score)
+        assert_eq!(result[0].0, 10);
+        assert_eq!(result[1].0, 20);
+        assert_eq!(result[2].0, 30);
+        // Score for rank-0 item: 1/(60+0+1) = 1/61
+        let expected = 1.0 / 61.0;
+        assert!((result[0].1 - expected).abs() < 1e-10, "expected {expected}, got {}", result[0].1);
+    }
+
+    #[test]
+    fn test_rrf_fuse_two_lists_agreement() {
+        // Item 10 is rank-0 in both lists -- should score highest
+        let list_a = vec![(10, 0.9), (20, 0.5)];
+        let list_b = vec![(10, 0.8), (30, 0.4)];
+        let result = rrf_fuse(&[list_a, list_b], 60.0);
+        assert_eq!(result[0].0, 10);
+        // Score = 1/(60+0+1) + 1/(60+0+1) = 2/61
+        let expected = 2.0 / 61.0;
+        assert!((result[0].1 - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_rrf_fuse_promotes_consistent_middle() {
+        // Verify RRF correctly weights cross-list agreement vs single-list high rank.
+        //
+        // list_a = [(10,_), (20,_), (30,_)]: rank0=10, rank1=20, rank2=30
+        // list_b = [(30,_), (20,_)]:          rank0=30, rank1=20
+        //
+        // RRF scores (k=60):
+        //   item10: 1/(60+0+1)           = 1/61  ≈ 0.016393
+        //   item20: 1/(60+1+1)+1/(60+1+1) = 2/62  ≈ 0.032258
+        //   item30: 1/(60+2+1)+1/(60+0+1) = 1/63+1/61 ≈ 0.032266
+        //
+        // item30 beats item20 by 0.000008 (rank-0 bonus in list_b outweighs
+        // rank-2 penalty in list_a vs rank-1 in both for item20).
+        // Both item20 and item30 score ~2x item10 (cross-list agreement crushes lone rank-0).
+        let list_a = vec![(10, 0.9), (20, 0.6), (30, 0.2)];
+        let list_b = vec![(30, 0.8), (20, 0.5)];
+        let result = rrf_fuse(&[list_a, list_b], 60.0);
+        assert_eq!(result.len(), 3);
+
+        // item 10 (only in list_a at rank 0) should be last -- single-list penalty
+        let pos_10 = result.iter().position(|(id, _)| *id == 10).unwrap();
+        let pos_20 = result.iter().position(|(id, _)| *id == 20).unwrap();
+        let pos_30 = result.iter().position(|(id, _)| *id == 30).unwrap();
+        assert!(pos_10 > pos_20, "item10 (rank-0 in one list) should lose to item20 (rank-1 in both)");
+        assert!(pos_10 > pos_30, "item10 (rank-0 in one list) should lose to item30 (rank-0 + rank-2)");
+
+        // Both multi-list items score well above single-list item10
+        let score_10 = result[pos_10].1;
+        let score_20 = result[pos_20].1;
+        assert!(score_20 > score_10 * 1.9, "item20 cross-list score should be ~2x item10");
+    }
+
+    #[test]
+    fn test_rrf_fuse_empty_lists() {
+        let result = rrf_fuse(&[], 60.0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_rrf_fuse_single_empty_list() {
+        let result = rrf_fuse(&[vec![]], 60.0);
+        assert!(result.is_empty());
+    }
+
+    // ── synonym expansion tests ────────────────────────────────────
+
+    #[test]
+    fn test_synonym_expansion_func() {
+        let kw = extract_search_keywords_with_synonyms("func error db");
+        assert!(kw.contains(&"function".to_string()), "func -> function");
+        assert!(kw.contains(&"error".to_string()));
+        assert!(kw.contains(&"database".to_string()), "db -> database");
+    }
+
+    #[test]
+    fn test_synonym_expansion_no_duplicates() {
+        // "function" is already full form -- should not duplicate
+        let kw = extract_search_keywords_with_synonyms("function");
+        let count = kw.iter().filter(|w| *w == "function").count();
+        assert_eq!(count, 1, "no duplicate expansions");
+    }
+
+    // ── query cache tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_jaccard_similarity_identical() {
+        let score = jaccard_similarity("rust error handling", "rust error handling");
+        assert!((score - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jaccard_similarity_disjoint() {
+        let score = jaccard_similarity("apple orange", "banana grape");
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_jaccard_similarity_partial() {
+        // "rust error" vs "rust warning" -- 1 shared ("rust"), 3 total -> 1/3
+        let score = jaccard_similarity("rust error", "rust warning");
+        assert!((score - 1.0 / 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jaccard_similarity_above_threshold() {
+        // "recall pipeline rrf fusion" vs "recall rrf pipeline" -- 3 shared, 4 total -> 0.75 >= 0.6
+        let score = jaccard_similarity("recall pipeline rrf fusion", "recall rrf pipeline");
+        assert!(score >= 0.6, "expected >= 0.6, got {score}");
     }
 }
 
