@@ -69,7 +69,17 @@ impl SidecarDaemon {
     pub fn stop(&mut self) -> Result<SidecarStatus, String> {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
-            let _ = child.wait();
+            // Poll with timeout to prevent hang if kill doesn't take effect immediately
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if start.elapsed() < std::time::Duration::from_secs(5) => {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    _ => break,
+                }
+            }
         }
         Ok(SidecarStatus {
             running: false,

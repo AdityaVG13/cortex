@@ -307,7 +307,10 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle, daemon_state: State<DaemonState>) -> Result<(), String> {
+  // Kill our own sidecar child if we spawned it
   let _ = daemon_state.stop();
+  // Don't HTTP shutdown external daemons on quit -- Claude or other tools
+  // may still be using it. Only the Stop button does that explicitly.
   let _ = flush_cortex_db_on_shutdown();
   let lifecycle = app.state::<LifecycleState>();
   lifecycle.request_quit();
@@ -365,15 +368,67 @@ fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String
   })
 }
 
+/// Send POST /shutdown to the daemon's HTTP endpoint (works for any daemon,
+/// regardless of who spawned it). Returns Ok(()) on success or if connection
+/// fails (daemon already gone).
+fn send_http_shutdown() -> Result<(), String> {
+  use std::io::{Read, Write};
+
+  let port = resolve_daemon_port();
+  let addr = SocketAddr::from(([127, 0, 0, 1], port));
+  let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(2000)) {
+    Ok(s) => s,
+    Err(_) => return Ok(()), // daemon already unreachable
+  };
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(5000)));
+  let _ = stream.set_write_timeout(Some(Duration::from_millis(2000)));
+
+  let token = token_path()
+    .ok()
+    .and_then(|p| fs::read_to_string(p).ok())
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+
+  let body = "{}";
+  let mut request = format!(
+    "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\n"
+  );
+  if !token.is_empty() {
+    request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+  }
+  request.push_str("Content-Type: application/json\r\n");
+  request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+  request.push_str("Connection: close\r\n\r\n");
+  request.push_str(body);
+
+  let _ = stream.write_all(request.as_bytes());
+  let mut buf = Vec::new();
+  let _ = stream.read_to_end(&mut buf);
+  Ok(())
+}
+
 #[tauri::command]
 fn stop_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
   let (was_running, _) = state.status()?;
   let _ = state.stop();
+
+  // If daemon is still reachable (started externally by Claude, CLI, etc.),
+  // send a graceful HTTP shutdown signal
+  let still_reachable = is_cortex_reachable();
+  if still_reachable {
+    let _ = send_http_shutdown();
+    // Brief wait for graceful shutdown to take effect
+    std::thread::sleep(Duration::from_millis(500));
+  }
+
   let reachable = is_cortex_reachable();
-  let message = if was_running {
+  let message = if was_running && !reachable {
     "Stopped Cortex daemon.".to_string()
+  } else if !was_running && still_reachable && !reachable {
+    "Sent shutdown to external daemon.".to_string()
   } else if reachable {
-    "Sidecar not running (external daemon is still reachable).".to_string()
+    "Shutdown signal sent, daemon still shutting down...".to_string()
   } else {
     "Daemon is already stopped.".to_string()
   };

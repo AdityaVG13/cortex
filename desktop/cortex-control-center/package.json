@@ -7,6 +7,8 @@
   "scripts": {
     "web:dev": "vite",
     "web:build": "vite build",
+    "build:daemon": "cargo build --release --manifest-path ../../daemon-rs/Cargo.toml",
+    "build:daemon:dev": "cargo build --manifest-path ../../daemon-rs/Cargo.toml",
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",

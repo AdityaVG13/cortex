@@ -24,10 +24,7 @@ fn copy_sidecar_binary() {
   };
   let dest = binaries_dir.join(format!("cortex-{target_triple}{ext}"));
 
-  if dest.exists() {
-    return;
-  }
-
+  // Always copy the latest binary (daemon is built by beforeBuildCommand)
   let mut candidates = Vec::new();
   if let Some(sidecar_override) = env::var_os("CORTEX_SIDECAR_BIN") {
     candidates.push(PathBuf::from(sidecar_override));

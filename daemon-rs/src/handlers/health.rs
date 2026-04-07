@@ -331,12 +331,10 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         .iter()
         .map(|p| p["baseline"].as_i64().unwrap_or(0))
         .sum();
-    let avg_percent = if !points.is_empty() {
-        points
-            .iter()
-            .map(|p| p["percent"].as_i64().unwrap_or(0))
-            .sum::<i64>()
-            / points.len() as i64
+    // Weighted average by baseline (not simple average).
+    // Prevents tiny boots with 0% from dragging down 99% large boots.
+    let avg_percent = if total_baseline > 0 {
+        (total_saved * 100) / total_baseline
     } else {
         0
     };

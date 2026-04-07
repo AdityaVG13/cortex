@@ -880,23 +880,26 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
         0
     };
 
-    let _ = conn.execute(
-        "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
-        params![
-            "boot_savings",
-            serde_json::to_string(&json!({
-                "agent": agent,
-                "served": token_estimate,
-                "baseline": raw_baseline,
-                "saved": saved,
-                "percent": percent,
-                "admitted": admitted.len(),
-                "rejected": rejected.len()
-            }))
-            .unwrap_or_default(),
-            "rust-daemon"
-        ],
-    );
+    // Only record savings when baseline is meaningful (skip empty-DB boots)
+    if raw_baseline > 0 {
+        let _ = conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
+            params![
+                "boot_savings",
+                serde_json::to_string(&json!({
+                    "agent": agent,
+                    "served": token_estimate,
+                    "baseline": raw_baseline,
+                    "saved": saved,
+                    "percent": percent,
+                    "admitted": admitted.len(),
+                    "rejected": rejected.len()
+                }))
+                .unwrap_or_default(),
+                "rust-daemon"
+            ],
+        );
+    }
 
     BootResult {
         boot_prompt: assembled,
