@@ -45,7 +45,13 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open(path)
 }
 
-/// Apply WAL mode, FULL synchronous writes, and foreign-key enforcement.
+/// Apply WAL mode, NORMAL synchronous writes, and foreign-key enforcement.
+///
+/// NOTE: PRAGMA synchronous=NORMAL is safe with WAL mode. From SQLite docs:
+/// - FULL: Extra safety at the cost of significant performance (OS crash protection)
+/// - NORMAL: All changes are synced before passing control to caller at critical moments
+///   (process crash protection). With WAL checkpoint every 10s, data loss is limited to <10s.
+///   This is the recommended setting for WAL mode workloads.
 pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
