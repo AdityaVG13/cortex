@@ -85,6 +85,9 @@ pub struct RuntimeState {
     pub team_api_key_hashes: Arc<std::sync::RwLock<Vec<(i64, String)>>>,
     /// Set to true when ONNX embedding fails at runtime (graceful degradation).
     pub degraded_mode: Arc<AtomicBool>,
+    /// Set to true when a runtime `quick_check` detects B-tree corruption.
+    /// Exposed on the `/health` endpoint as `db_corrupted`.
+    pub db_corrupted: Arc<AtomicBool>,
     /// Path for buffering writes when daemon is unreachable in proxy mode.
     /// Used by mcp_proxy via cortex_dir() directly; kept here for discoverability.
     #[allow(dead_code)]
@@ -128,43 +131,65 @@ pub fn initialize(
 
     crate::db::initialize_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
-    // 2. Integrity check — attempt .bak recovery if corruption detected.
+    // 2. Startup integrity gate -- run PRAGMA integrity_check before accepting requests.
+    // If the check fails, attempt auto-repair (dump-and-rebuild).  If repair also
+    // fails, start in degraded mode so the user gets a clear error rather than
+    // silent corruption.
     match crate::db::verify_integrity(&conn) {
-        Ok(true) => {}
+        Ok(true) => {
+            eprintln!("[cortex] DB integrity: OK");
+        }
         Ok(false) | Err(_) => {
-            eprintln!("[cortex] WARNING: database integrity check failed -- attempting recovery");
-            let bak_path = db_path.with_extension("db.bak");
-            if bak_path.exists() {
-                eprintln!(
-                    "[cortex] Found backup at {}, restoring...",
-                    bak_path.display()
-                );
-                drop(conn);
-                if let Err(e) = std::fs::copy(&bak_path, db_path) {
-                    eprintln!("[cortex] ERROR: backup restore failed: {e}");
-                    return Err(format!("Database corrupt and backup restore failed: {e}"));
+            eprintln!(
+                "[cortex] WARNING: PRAGMA integrity_check FAILED on {} -- attempting auto-repair",
+                db_path.display()
+            );
+
+            // Drop the write connection before auto_repair renames the file.
+            drop(conn);
+
+            let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+            match crate::db::auto_repair(db_path, &timestamp) {
+                Ok(result) => {
+                    eprintln!(
+                        "[cortex] Auto-repair succeeded: {} memories, {} decisions recovered. \
+                         Corrupted DB preserved at {}",
+                        result.memories_recovered,
+                        result.decisions_recovered,
+                        result.corrupt_db_path.display()
+                    );
+                    // Reopen the repaired DB and continue normal startup.
+                    let conn = crate::db::open(db_path)
+                        .map_err(|e| format!("Failed to open repaired DB: {e}"))?;
+                    crate::db::configure(&conn)
+                        .map_err(|e| format!("Failed to configure repaired DB: {e}"))?;
+                    return initialize_with_conn(conn, db_path, allow_token_rotation);
                 }
-                let conn = crate::db::open(db_path)
-                    .map_err(|e| format!("Failed to reopen after restore: {e}"))?;
-                crate::db::configure(&conn)
-                    .map_err(|e| format!("Failed to configure restored DB: {e}"))?;
-                crate::db::initialize_schema(&conn)
-                    .map_err(|e| format!("Failed to init schema on restored DB: {e}"))?;
-                match crate::db::verify_integrity(&conn) {
-                    Ok(true) => eprintln!("[cortex] Recovery successful -- restored from backup"),
-                    _ => {
-                        return Err(
-                            "Database corrupt: backup also failed integrity check".to_string()
-                        );
-                    }
+                Err(e) => {
+                    eprintln!(
+                        "[cortex] Auto-repair failed ({e:?}). \
+                         Starting in degraded mode -- reads may return incomplete data. \
+                         DB path: {}",
+                        db_path.display()
+                    );
+                    // Reopen whatever DB exists (may be the corrupted original if
+                    // auto_repair failed before the rename step).
+                    let conn = crate::db::open(db_path).map_err(|open_err| {
+                        format!(
+                            "Database corrupt and could not be reopened after failed repair: {open_err}"
+                        )
+                    })?;
+                    crate::db::configure(&conn).ok();
+                    crate::db::initialize_schema(&conn).ok();
+                    let (state, rx) =
+                        initialize_with_conn(conn, db_path, allow_token_rotation)?;
+                    // Signal degraded mode so /health reflects corruption.
+                    // db_corrupted is Arc<AtomicBool> -- no mut binding needed.
+                    state
+                        .db_corrupted
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Ok((state, rx));
                 }
-                // Proceed with the restored connection -- reassign below
-                return initialize_with_conn(conn, db_path, allow_token_rotation);
-            } else {
-                eprintln!(
-                    "[cortex] No backup found at {} -- continuing with degraded database",
-                    bak_path.display()
-                );
             }
         }
     }
@@ -280,6 +305,7 @@ fn initialize_with_conn(
         default_owner_id,
         team_api_key_hashes,
         degraded_mode: Arc::new(AtomicBool::new(false)),
+        db_corrupted: Arc::new(AtomicBool::new(false)),
         write_buffer_path,
     };
 

@@ -1143,6 +1143,34 @@ pub(crate) async fn run_daemon(
         });
     }
 
+    // ── Background quick_check every 30 minutes ────────────────────────
+    // Runs PRAGMA quick_check (B-tree only) to catch corruption that develops
+    // during runtime.  On failure, sets db_corrupted so /health reflects it.
+    {
+        let db_qc = state.db_read.clone();
+        let db_corrupted_flag = state.db_corrupted.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            interval.tick().await; // skip first tick -- startup integrity_check already ran
+            loop {
+                interval.tick().await;
+                let conn = db_qc.lock().await;
+                if db::quick_check(&conn) {
+                    // Clear the flag if a previous check had set it (e.g. after manual repair).
+                    db_corrupted_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    eprintln!(
+                        "[cortex] WARNING: runtime PRAGMA quick_check FAILED -- \
+                         database may be corrupted. Restart the daemon to trigger auto-repair. \
+                         /health endpoint now shows degraded=true, db_corrupted=true."
+                    );
+                    db_corrupted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        });
+    }
+
     // ── Background aging pass every 6 hours ──────────────────────────
     {
         let db_aging = state.db.clone();
