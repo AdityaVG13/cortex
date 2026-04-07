@@ -27,6 +27,88 @@ mod state;
 mod tls;
 
 use std::time::Duration;
+use std::path::Path;
+use chrono::{self, Utc};
+
+// ── Backup rotation helpers ───────────────────────────────────────────────
+
+/// Check if a backup should be created (>24h since last backup).
+fn should_backup(backup_dir: &Path) -> bool {
+    let last_backup_file = backup_dir.join(".last_backup");
+    if !last_backup_file.exists() {
+        return true;
+    }
+    match std::fs::read_to_string(&last_backup_file) {
+        Ok(ts) => {
+            if let Ok(last_backup) = chrono::DateTime::parse_from_rfc3339(&ts) {
+                let now = Utc::now();
+                // Convert FixedOffset to UTC for subtraction
+                let last_utc = last_backup.with_timezone(&Utc);
+                let hours_since_last = (now - last_utc).num_hours();
+                hours_since_last >= 24
+            } else {
+                true
+            }
+        }
+        Err(_) => true,
+    }
+}
+
+/// Rotate backups to keep only the most recent N (default 7).
+fn rotate_backups(backup_dir: &Path, keep: usize) -> Option<std::io::Error> {
+    let mut backups: Vec<_> = std::fs::read_dir(backup_dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.file_name().to_string_lossy().starts_with("cortex-")
+                && entry.file_name().to_string_lossy().ends_with(".db")
+                && !entry.file_name().to_string_lossy().contains(".corrupt")
+        })
+        .collect();
+    
+    if backups.len() <= keep {
+        return None;
+    }
+    
+    // Sort by modification time (oldest first)
+    backups.sort_by_key(|entry| entry.metadata().ok().and_then(|m| m.modified().ok()));
+    
+    // Remove oldest backups beyond the keep limit
+    for backup in backups.iter().take(backups.len() - keep) {
+        if let Err(e) = std::fs::remove_file(backup.path()) {
+            return Some(e);
+        }
+    }
+    
+    None
+}
+
+/// Create a backup of the database file.
+fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<String, String> {
+    std::fs::create_dir_all(backup_dir).map_err(|e| format!("create backup dir: {e}"))?;
+    
+    let timestamp = chrono::Local::now().format("%Y%m%d");
+    let dest = backup_dir.join(format!("cortex-{timestamp}.db"));
+    
+    // Copy the DB file (not move - preserves original)
+    std::fs::copy(db_path, &dest).map_err(|e| format!("copy db: {e}"))?;
+    
+    eprintln!("[cortex] Backup created: {}", dest.display());
+    
+    // Rotate old backups (keep max 7)
+    if let Some(e) = rotate_backups(backup_dir, 7) {
+        eprintln!("[cortex] Warning: backup rotation failed: {e}");
+    }
+    
+    // Update last backup timestamp
+    let last_backup_file = backup_dir.join(".last_backup");
+    let now_ts = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = std::fs::write(&last_backup_file, now_ts) {
+        eprintln!("[cortex] Warning: failed to write last_backup timestamp: {e}");
+    }
+    
+    Ok(dest.to_string_lossy().to_string())
+}
 
 #[tokio::main]
 async fn main() {
@@ -179,6 +261,113 @@ async fn main() {
         "import" => {
             let remaining: Vec<String> = args[2..].to_vec();
             run_import_cli(&remaining);
+        }
+
+        // ── Backup/restore CLI ────────────────────────────────────
+        "backup" => {
+            let db_path = paths.db.clone();
+            let home_dir = paths.home.clone();
+            // Force checkpoint before backup for consistency
+            let conn = match db::open(&db_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: failed to open database: {e}");
+                    std::process::exit(1);
+                }
+            };
+            db::checkpoint_wal_best_effort(&conn);
+            drop(conn);
+            
+            let backup_dir = home_dir.join("backups");
+            match create_backup(&db_path, &backup_dir) {
+                Ok(path) => {
+                    println!("Backup created: {path}");
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "restore" => {
+            let restore_file = match args.get(2) {
+                Some(f) => f.clone(),
+                None => {
+                    eprintln!("Usage: cortex restore <backup-file.db>");
+                    eprintln!("       cortex restore <backup-file.db> --skip-verification");
+                    eprintln!();
+                    eprintln!("Example: cortex restore ~/.cortex/backups/cortex-20260407.db");
+                    std::process::exit(1);
+                }
+            };
+            
+            let skip_verification = args.iter().any(|a| a == "--skip-verification");
+            
+            // Check if daemon is running by checking PID file
+            let paths_check = auth::CortexPaths::resolve();
+            let daemon_running = paths_check.pid.exists();
+            
+            if daemon_running {
+                eprintln!("[cortex] Warning: Daemon PID file exists at {}", paths_check.pid.display());
+                eprintln!("[cortex] Please stop the daemon first with: Ctrl+C or kill the daemon process");
+                eprintln!("[cortex] Continuing restore anyway...");
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            
+            let db_path = paths.db.clone();
+            let home_dir = paths.home.clone();
+            
+            // Create a pre-restore backup
+            let timestamp = chrono::Local::now().format("%Y%m%dT%H%M%S");
+            let pre_backup = home_dir.join(format!("cortex.pre-restore.{}.db", timestamp));
+            
+            eprintln!("[cortex] Creating pre-restore backup at: {}", pre_backup.display());
+            if let Err(e) = std::fs::copy(&db_path, &pre_backup) {
+                eprintln!("[cortex] Error: failed to create pre-restore backup: {e}");
+                eprintln!("[cortex] Restore cancelled for safety");
+                std::process::exit(1);
+            }
+            
+            // Restore from backup file
+            eprintln!("[cortex] Restoring from: {}", restore_file);
+            if let Err(e) = std::fs::copy(&restore_file, &db_path) {
+                eprintln!("[cortex] Error: failed to restore backup: {e}");
+                eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
+                std::process::exit(1);
+            }
+            
+            // Verify integrity of restored DB
+            if !skip_verification {
+                eprintln!("[cortex] Verifying integrity of restored database...");
+                match db::open(&db_path) {
+                    Ok(conn) => {
+                        if !db::verify_integrity(&conn).unwrap_or(false) {
+                            eprintln!("[cortex] Error: restored database failed integrity check!");
+                            eprintln!("[cortex] Rolling back to pre-restore backup...");
+                            if let Err(e) = std::fs::copy(&pre_backup, &db_path) {
+                                eprintln!("[cortex] Critical: rollback failed! DB may be corrupted: {e}");
+                            } else {
+                                eprintln!("[cortex] Rollback complete");
+                            }
+                            std::process::exit(1);
+                        }
+                        eprintln!("[cortex] Integrity check passed");
+                    }
+                    Err(e) => {
+                        eprintln!("[cortex] Error: failed to open restored database: {e}");
+                        eprintln!("[cortex] Rolling back to pre-restore backup...");
+                        if let Err(e) = std::fs::copy(&pre_backup, &db_path) {
+                            eprintln!("[cortex] Critical: rollback failed! DB may be corrupted: {e}");
+                        } else {
+                            eprintln!("[cortex] Rollback complete");
+                        }
+                        std::process::exit(1);
+                    }
+                }
+            }
+            
+            eprintln!("[cortex] Restore complete. Pre-restore backup preserved at: {}", pre_backup.display());
+            eprintln!("[cortex] You can now restart the daemon with: cortex serve");
         }
 
         // ── User management CLI ────────────────────────────────────
@@ -658,6 +847,8 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
+    eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
+    eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
     eprintln!();
     eprintln!("User Management (team mode):");
     eprintln!("  user add <name>    Add user [--role member|admin] [--display-name \"...\"]");
@@ -1096,6 +1287,18 @@ pub(crate) async fn run_daemon(
         pid_path.display()
     );
 
+    // ── Recover WAL on startup ──────────────────────────────────────
+    // Run WAL checkpoint to recover any pending writes from a previous crash.
+    // This ensures committed transactions are flushed to the main DB file.
+    {
+        let conn = state.db.lock().await;
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            eprintln!("[cortex] WAL recovery warning: {e}");
+        } else {
+            eprintln!("[cortex] WAL recovery complete");
+        }
+    }
+
     // ── Schema migrations (idempotent) ──────────────────────────────
     {
         let conn = state.db.lock().await;
@@ -1129,16 +1332,58 @@ pub(crate) async fn run_daemon(
         });
     }
 
-    // ── Background WAL checkpoint every 60s ───────────────────────────
+    // ── Background WAL checkpoint every 10s (crash-safe) ──────────────
     {
         let db_wal = state.db.clone();
+        let db_path = db_path.clone();
+        let home_dir = paths.home.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;
-                let conn = db_wal.lock().await;
-                db::checkpoint_wal_best_effort(&conn);
+                
+                // Checkpoint WAL first to ensure consistency
+                {
+                    let conn = db_wal.lock().await;
+                    db::checkpoint_wal_best_effort(&conn);
+                }
+                
+                // Check if daily backup is needed
+                let backup_dir = home_dir.join("backups");
+                if should_backup(&backup_dir) {
+                    if let Err(e) = create_backup(&db_path, &backup_dir) {
+                        eprintln!("[cortex] Backup failed: {e}");
+                    }
+                }
+            }
+        });
+    }
+
+    // ── Background quick_check every 30 minutes ────────────────────────
+    // Runs PRAGMA quick_check (B-tree only) to catch corruption that develops
+    // during runtime.  On failure, sets db_corrupted so /health reflects it.
+    {
+        let db_qc = state.db_read.clone();
+        let db_corrupted_flag = state.db_corrupted.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            interval.tick().await; // skip first tick -- startup integrity_check already ran
+            loop {
+                interval.tick().await;
+                let conn = db_qc.lock().await;
+                if db::quick_check(&conn) {
+                    // Clear the flag if a previous check had set it (e.g. after manual repair).
+                    db_corrupted_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    eprintln!(
+                        "[cortex] WARNING: runtime PRAGMA quick_check FAILED -- \
+                         database may be corrupted. Restart the daemon to trigger auto-repair. \
+                         /health endpoint now shows degraded=true, db_corrupted=true."
+                    );
+                    db_corrupted_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
             }
         });
     }

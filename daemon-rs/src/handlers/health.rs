@@ -38,6 +38,10 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
         .degraded_mode
         .load(std::sync::atomic::Ordering::Relaxed);
 
+    let db_corrupted = state
+        .db_corrupted
+        .load(std::sync::atomic::Ordering::Relaxed);
+
     let embedding_status = if degraded {
         "degraded"
     } else if state.embedding_engine.is_some() {
@@ -49,8 +53,9 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
     json_response(
         StatusCode::OK,
         json!({
-            "status": "ok",
-            "degraded": degraded,
+            "status": if db_corrupted { "degraded" } else { "ok" },
+            "degraded": degraded || db_corrupted,
+            "db_corrupted": db_corrupted,
             "embedding_status": embedding_status,
             "team_mode": state.team_mode,
             "stats": {

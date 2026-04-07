@@ -1,0 +1,1126 @@
+{
+  "timestamp": "2026-04-06T18:39:53",
+  "version": 2,
+  "queries": 20,
+  "has_embeddings": false,
+  "aggregate": {
+    "ground_truth_precision": 0.552,
+    "keyword_precision": 0.335,
+    "mean_reciprocal_rank": 0.692,
+    "hit_rate": 0.9,
+    "avg_response_ms": 97.5,
+    "avg_results_per_query": 4.5,
+    "total_cortex_tokens": 4089,
+    "naive_baseline_tokens": 203635,
+    "token_savings_pct": 98.0
+  },
+  "category_stats": {
+    "project_decisions": {
+      "queries": 4,
+      "gt_precision": 0.4,
+      "mrr": 0.583,
+      "avg_ms": 104.3,
+      "avg_tokens": 324.2
+    },
+    "feedback_rules": {
+      "queries": 4,
+      "gt_precision": 0.595,
+      "mrr": 0.75,
+      "avg_ms": 87.2,
+      "avg_tokens": 249.8
+    },
+    "cross_agent": {
+      "queries": 4,
+      "gt_precision": 0.475,
+      "mrr": 0.75,
+      "avg_ms": 98.5,
+      "avg_tokens": 136.0
+    },
+    "architecture": {
+      "queries": 4,
+      "gt_precision": 0.291,
+      "mrr": 0.375,
+      "avg_ms": 99.9,
+      "avg_tokens": 134.5
+    },
+    "user_context": {
+      "queries": 4,
+      "gt_precision": 1.0,
+      "mrr": 1.0,
+      "avg_ms": 97.8,
+      "avg_tokens": 177.8
+    }
+  },
+  "results": [
+    {
+      "query": "token optimization settings",
+      "category": "project_decisions",
+      "result_count": 10,
+      "cortex_tokens": 443,
+      "response_ms": 85.7,
+      "gt_relevant": 4,
+      "gt_precision": 0.4,
+      "kw_precision": 0.4,
+      "mrr": 0.333,
+      "scored_results": [
+        {
+          "source": "Batch upload after full keyword scan (16 keywords).",
+          "excerpt_preview": "GitHub Repo Scout \u2014 batch run at 2026-04-03T04:41:50.894624\n226 repos (score threshold met). Full JS",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.257,
+          "method": "keyword",
+          "tokens": 67
+        },
+        {
+          "source": "sessions::sessions",
+          "excerpt_preview": "{\"start\":\"2026-04-01T17:10:10.417Z\",\"tools\":{\"Read\":2,\"Edit\":1,\"Grep\":2,\"TaskUpdate\":1},\"files_read\"",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.1983,
+          "method": "keyword",
+          "tokens": 45
+        },
+        {
+          "source": "state.md::What Was Done",
+          "excerpt_preview": "This Session\nRTK path fix (.bashrc), cache expiry guard hook (60m TTL), CCMeter installed, token opt",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.1825,
+          "method": "keyword",
+          "tokens": 47
+        },
+        {
+          "source": "Batch after under-radar scan (22 keywords).",
+          "excerpt_preview": "GitHub Repo Scout (under_radar) batch at 2026-04-03T06:41:39...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0816,
+          "method": "keyword",
+          "tokens": 28
+        },
+        {
+          "source": "self-improvement::token-optimization-2026-03-22",
+          "excerpt_preview": "# Token Optimization Report \u2014 2026-03-22\n\n## Changes Made\n\n#...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0472,
+          "method": "keyword",
+          "tokens": 30
+        },
+        {
+          "source": "self-improvement::dolphin-overnight-tasks",
+          "excerpt_preview": "# Dolphin Overnight Task Queue\n\n## Task 1: Autoresearch Fork...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0462,
+          "method": "keyword",
+          "tokens": 28
+        },
+        {
+          "source": "memory::project_token_optimization.md",
+          "excerpt_preview": "[token-optimization-tools] (project) Token optimization sett...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0212,
+          "method": "keyword",
+          "tokens": 27
+        },
+        {
+          "source": "state.md::Next Session",
+          "excerpt_preview": "1. **Plugin build tonight (Phase 2A)** -- droid-glm5 prompt ...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0169,
+          "method": "keyword",
+          "tokens": 23
+        },
+        {
+          "source": "Brainstormed with Aditya 2026-03-31. Priority: Speed > Quality > Context resilie",
+          "excerpt_preview": "Crew Protocol implemented: 5-role parallel agent team (Scout...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0109,
+          "method": "keyword",
+          "tokens": 85
+        },
+        {
+          "source": "Token optimization. 277 skills down to ~50. Estimated 50-60% boot context reduct",
+          "excerpt_preview": "Uninstalled 12 plugins for token optimization: compound-engi...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9985,
+          "method": "keyword",
+          "tokens": 63
+        }
+      ]
+    },
+    {
+      "query": "cache expiry guard hook",
+      "category": "project_decisions",
+      "result_count": 6,
+      "cortex_tokens": 301,
+      "response_ms": 92.5,
+      "gt_relevant": 2,
+      "gt_precision": 0.333,
+      "kw_precision": 0.333,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "Session covered: RTK path fix, cache expiry guard hook, CCMeter install, Claude ",
+          "excerpt_preview": "Token optimization: removed MAX_OUTPUT_TOKENS=128K (was bypassing 8K slot reservation), added DISABL",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.1344,
+          "method": "keyword",
+          "tokens": 92
+        },
+        {
+          "source": "Built after analyzing Reddit token waste audit (Medium_Island_2795). Cache expir",
+          "excerpt_preview": "Cache expiry guard hook deployed: ~/.claude/hooks/cache-expi...",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0617,
+          "method": "keyword",
+          "tokens": 60
+        },
+        {
+          "source": "Batch upload after full keyword scan (16 keywords).",
+          "excerpt_preview": "GitHub Repo Scout \u2014 batch run at 2026-04-03T04:41:50.894624\n...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0056,
+          "method": "keyword",
+          "tokens": 31
+        },
+        {
+          "source": "memory::project_plugin_infrastructure.md",
+          "excerpt_preview": "[project_plugin_infrastructure] (project) 3 plugins, 5 MCPs,...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9871,
+          "method": "keyword",
+          "tokens": 28
+        },
+        {
+          "source": "Autonomous overnight sprint starting",
+          "excerpt_preview": "GOD mode v1 shipped: Ebbinghaus decay, semantic dedup (cosin...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9419,
+          "method": "keyword",
+          "tokens": 27
+        },
+        {
+          "source": "Addresses Codex challenge about MCP architecture -- MCP is now a thin proxy shar",
+          "excerpt_preview": "SINGLE-BINARY ARCHITECTURE COMPLETE. cortex.exe now handles:...",
+          "keyword_score": 0.25,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9035,
+          "method": "keyword",
+          "tokens": 63
+        }
+      ]
+    },
+    {
+      "query": "RTK path fix bashrc",
+      "category": "project_decisions",
+      "result_count": 5,
+      "cortex_tokens": 135,
+      "response_ms": 104.0,
+      "gt_relevant": 1,
+      "gt_precision": 0.2,
+      "kw_precision": 0.0,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "self-improvement::community-intel-2026-03-22",
+          "excerpt_preview": "# Community Intel Report \u2014 2026-03-22\n\nFirst sweep of r/Clau...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9747,
+          "method": "keyword",
+          "tokens": 29
+        },
+        {
+          "source": "RTK optimization session 2026-04-01",
+          "excerpt_preview": "RTK TOML filters configured at %APPDATA%/rtk/filters.toml. C...",
+          "keyword_score": 0.25,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9508,
+          "method": "keyword",
+          "tokens": 26
+        },
+        {
+          "source": "Dolphin overnight build loop diagnosis and fix session 2026-04-01",
+          "excerpt_preview": "Dolphin-Tools v2 build loop complete. Root causes of v1 fail...",
+          "keyword_score": 0.25,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.945,
+          "method": "keyword",
+          "tokens": 34
+        },
+        {
+          "source": "crew::critic-playbook",
+          "excerpt_preview": "# Critic Playbook\n\nRole: Adversarial review. You exist to fi...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9438,
+          "method": "keyword",
+          "tokens": 23
+        },
+        {
+          "source": "crew::architect-playbook",
+          "excerpt_preview": "# Architect Playbook\n\nRole: Planning and design. You turn re...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9398,
+          "method": "keyword",
+          "tokens": 23
+        }
+      ]
+    },
+    {
+      "query": "CCMeter analytics dashboard",
+      "category": "project_decisions",
+      "result_count": 9,
+      "cortex_tokens": 418,
+      "response_ms": 135.1,
+      "gt_relevant": 6,
+      "gt_precision": 0.667,
+      "kw_precision": 0.222,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "Batch after under-radar scan (22 keywords).",
+          "excerpt_preview": "GitHub Repo Scout (under_radar) batch at 2026-04-03T06:41:39.103096\n520 repos (score threshold). Ful",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0816,
+          "method": "keyword",
+          "tokens": 52
+        },
+        {
+          "source": "Installed from github.com/hmenzagh/CCMeter. Complements RTK (which compresses ou",
+          "excerpt_preview": "CCMeter installed: ~/.cargo/bin/ccmeter.exe (v1.2.0). Rust TUI dashboard for Claude Code session ana",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0576,
+          "method": "keyword",
+          "tokens": 71
+        },
+        {
+          "source": "state.md::What Was Done",
+          "excerpt_preview": "This Session\nRTK path fix (.bashrc), cache expiry guard hook...",
+          "keyword_score": 0.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0249,
+          "method": "keyword",
+          "tokens": 23
+        },
+        {
+          "source": "Session covered: RTK path fix, cache expiry guard hook, CCMeter install, Claude ",
+          "excerpt_preview": "Token optimization: removed MAX_OUTPUT_TOKENS=128K (was bypa...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9819,
+          "method": "keyword",
+          "tokens": 68
+        },
+        {
+          "source": "memory::project_cortex_plan.md",
+          "excerpt_preview": "[cortex-plan] (project) Cortex v0.4.0 -- Rust daemon on :743...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.8975,
+          "method": "keyword",
+          "tokens": 25
+        },
+        {
+          "source": "sessions::sessions",
+          "excerpt_preview": "{\"start\":\"2026-04-01T17:10:10.417Z\",\"tools\":{\"Read\":2,\"Edit\"...",
+          "keyword_score": 0.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8787,
+          "method": "keyword",
+          "tokens": 22
+        },
+        {
+          "source": "memory::project_dashboard_control_center.md",
+          "excerpt_preview": "[project_dashboard_control_center] (project) Cortex dashboar...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8775,
+          "method": "keyword",
+          "tokens": 28
+        },
+        {
+          "source": "Session 2026-03-29. Commits: b1e9c9d (conductor phases 0-3), 6a5db13 (shared fee",
+          "excerpt_preview": "Cortex Conductor fully operational: Phase 0 (locks/activity/...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8648,
+          "method": "keyword",
+          "tokens": 93
+        },
+        {
+          "source": "Major UI/UX milestone 2026-03-29. All in desktop/cortex-control-center/.",
+          "excerpt_preview": "Cortex Control Center Phase 1-4 UI complete: Jarvis design s...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.8632,
+          "method": "keyword",
+          "tokens": 36
+        }
+      ]
+    },
+    {
+      "query": "browser cleanup playwright",
+      "category": "feedback_rules",
+      "result_count": 6,
+      "cortex_tokens": 248,
+      "response_ms": 89.8,
+      "gt_relevant": 6,
+      "gt_precision": 1.0,
+      "kw_precision": 0.333,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "memory::feedback_browser_cleanup.md",
+          "excerpt_preview": "[feedback_browser_cleanup] (feedback) Always close dev-browser/Playwright after tasks -- never kill ",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0552,
+          "method": "keyword",
+          "tokens": 50
+        },
+        {
+          "source": "2026-03-30. Gemini deep research (200+ sources) also saved alongside.",
+          "excerpt_preview": "BROWSER AUTOMATION RESEARCH COMPLETE. 40+ sources. Key findi...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9242,
+          "method": "keyword",
+          "tokens": 35
+        },
+        {
+          "source": "memory::feedback_close_dev_browser.md",
+          "excerpt_preview": "[feedback_close_dev_browser] (feedback) After browser tasks,...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9092,
+          "method": "keyword",
+          "tokens": 27
+        },
+        {
+          "source": "Plugin cleanup session. claude-mem uninstalled, data migrated. Most observations",
+          "excerpt_preview": "claude-mem data archived to SIE/docs/claude-mem-archive.md (...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8718,
+          "method": "keyword",
+          "tokens": 83
+        },
+        {
+          "source": "browser-tooling-status-2026-04-01",
+          "excerpt_preview": "dev-browser is the browser automation tool, NOT Playwright. ...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8451,
+          "method": "keyword",
+          "tokens": 26
+        },
+        {
+          "source": "memory::feedback_close_playwright.md",
+          "excerpt_preview": "[Close Playwright after reading] (feedback) Always close Pla...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.838,
+          "method": "keyword",
+          "tokens": 27
+        }
+      ]
+    },
+    {
+      "query": "uv python package management",
+      "category": "feedback_rules",
+      "result_count": 7,
+      "cortex_tokens": 287,
+      "response_ms": 91.8,
+      "gt_relevant": 4,
+      "gt_precision": 0.571,
+      "kw_precision": 0.286,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "Batch upload after full keyword scan (16 keywords).",
+          "excerpt_preview": "GitHub Repo Scout \u2014 batch run at 2026-04-03T08:10:36.152025\n252 repos (score threshold met). Full JS",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.2448,
+          "method": "keyword",
+          "tokens": 55
+        },
+        {
+          "source": "lessons::*::2026-03-25T07:58:02.772Z",
+          "excerpt_preview": "[pattern] Always use uv for Python package management -- Evi...",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0315,
+          "method": "keyword",
+          "tokens": 27
+        },
+        {
+          "source": "memory::feedback_uv_only.md",
+          "excerpt_preview": "[feedback_uv_only] (feedback) Always use uv for Python packa...",
+          "keyword_score": 0.5,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0062,
+          "method": "keyword",
+          "tokens": 24
+        },
+        {
+          "source": "self-improvement::clawteam-analysis-2026-03-22",
+          "excerpt_preview": "# ClawTeam Analysis \u2014 Suitability for Self-Improvement Pipel...",
+          "keyword_score": 0.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9261,
+          "method": "keyword",
+          "tokens": 30
+        },
+        {
+          "source": "self-improvement::review-2026-03-22",
+          "excerpt_preview": "# Self-Review Report \u2014 2026-03-22\n\n## Health Score: 7/8 sect...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9105,
+          "method": "keyword",
+          "tokens": 27
+        },
+        {
+          "source": "Aditya mentioned before bed. Relevant to our ecosystem -- we already have a heav",
+          "excerpt_preview": "claw-code: Python rewrite of Claude Code CLI hit 100K GitHub...",
+          "keyword_score": 0.25,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8803,
+          "method": "keyword",
+          "tokens": 97
+        },
+        {
+          "source": "memory::reference_strix_security.md",
+          "excerpt_preview": "[reference_strix_security] (reference) Strix \u2014 open-source A...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.8762,
+          "method": "keyword",
+          "tokens": 27
+        }
+      ]
+    },
+    {
+      "query": "never use em-dashes",
+      "category": "feedback_rules",
+      "result_count": 7,
+      "cortex_tokens": 275,
+      "response_ms": 64.7,
+      "gt_relevant": 1,
+      "gt_precision": 0.143,
+      "kw_precision": 0.286,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "self-improvement::clawteam-analysis-2026-03-22",
+          "excerpt_preview": "# ClawTeam Analysis \u2014 Suitability for Self-Improvement Pipeline\n\n**Date:** 2026-03-22\n**Hardware:** ",
+          "keyword_score": 0.33,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0946,
+          "method": "keyword",
+          "tokens": 66
+        },
+        {
+          "source": "memory::feedback_no_emdashes.md",
+          "excerpt_preview": "[feedback_no_emdashes] (feedback) Never use em-dashes in any output, especially PowerShell scripts\nN",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0248,
+          "method": "keyword",
+          "tokens": 49
+        },
+        {
+          "source": "crew::builder-playbook",
+          "excerpt_preview": "# Builder Playbook\n\nRole: Implementation. You execute the pl...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0219,
+          "method": "keyword",
+          "tokens": 23
+        },
+        {
+          "source": "crew::scout-playbook",
+          "excerpt_preview": "# Scout Playbook\n\nRole: Research and reconnaissance. You exp...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9709,
+          "method": "keyword",
+          "tokens": 22
+        },
+        {
+          "source": "User corrected: never remove ccstatusline, add cortex status after it",
+          "excerpt_preview": "Statusline: ccstatusline must remain primary. cortex-statusl...",
+          "keyword_score": 0.67,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9374,
+          "method": "keyword",
+          "tokens": 35
+        },
+        {
+          "source": "crew::closer-playbook",
+          "excerpt_preview": "# Closer Playbook\n\nRole: Final verification and SIE feedback...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.924,
+          "method": "keyword",
+          "tokens": 23
+        },
+        {
+          "source": "Local LLM routing research 2026-03-29. Sources: lmsys.org RouteLLM, arxiv 2406.1",
+          "excerpt_preview": "LOCAL LLM ROUTING / CLASSIFICATION: RouteLLM (LMSYS, ICLR 20...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9134,
+          "method": "keyword",
+          "tokens": 57
+        }
+      ]
+    },
+    {
+      "query": "cortex recall before investigation",
+      "category": "feedback_rules",
+      "result_count": 3,
+      "cortex_tokens": 189,
+      "response_ms": 102.4,
+      "gt_relevant": 2,
+      "gt_precision": 0.667,
+      "kw_precision": 0.667,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "memory::feedback_use_brain_recall.md",
+          "excerpt_preview": "[feedback_use_brain_recall] (feedback) Always use cortex_recall (port 7437) BEFORE searching files o",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.1841,
+          "method": "keyword",
+          "tokens": 63
+        },
+        {
+          "source": "memory::feedback_cortex_first.md",
+          "excerpt_preview": "[feedback_cortex_first] (feedback) Always search Cortex before file reads, greps, or debugging -- re",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0864,
+          "method": "keyword",
+          "tokens": 49
+        },
+        {
+          "source": "Gemini deep research 2026-03-31. 5 iterative docs, no substantive contradictions",
+          "excerpt_preview": "Cortex v2 architecture plan from Gemini deep research (5 doc...",
+          "keyword_score": 0.25,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0516,
+          "method": "keyword",
+          "tokens": 77
+        }
+      ]
+    },
+    {
+      "query": "codex agent contributions",
+      "category": "cross_agent",
+      "result_count": 5,
+      "cortex_tokens": 136,
+      "response_ms": 79.4,
+      "gt_relevant": 2,
+      "gt_precision": 0.4,
+      "kw_precision": 0.0,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "Batch upload after full keyword scan (16 keywords).",
+          "excerpt_preview": "GitHub Repo Scout \u2014 batch run at 2026-04-03T08:10:36.152025\n...",
+          "keyword_score": 0.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0789,
+          "method": "keyword",
+          "tokens": 31
+        },
+        {
+          "source": "decision::21",
+          "excerpt_preview": "PRODUCT VISION: Conductor lives INSIDE Cortex, not separate....",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0123,
+          "method": "keyword",
+          "tokens": 20
+        },
+        {
+          "source": "github_repo_scout token optimization / new repos / commit-message filter",
+          "excerpt_preview": "GitHub scout (token optimization, new repos, no forks) @ 202...",
+          "keyword_score": 0.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.95,
+          "method": "keyword",
+          "tokens": 36
+        },
+        {
+          "source": "decision::18",
+          "excerpt_preview": "Factory Droid MCP config confirmed: ~/.factory/mcp.json with...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9213,
+          "method": "keyword",
+          "tokens": 20
+        },
+        {
+          "source": "self-improvement::hn-blogs-optimization-intel",
+          "excerpt_preview": "# HN/Blogs Optimization Intelligence Report\n\n**Date**: 2026-...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9167,
+          "method": "keyword",
+          "tokens": 29
+        }
+      ]
+    },
+    {
+      "query": "gemini agent decisions",
+      "category": "cross_agent",
+      "result_count": 1,
+      "cortex_tokens": 113,
+      "response_ms": 102.9,
+      "gt_relevant": 1,
+      "gt_precision": 1.0,
+      "kw_precision": 0.0,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "Written specs, tests, and implementation. 16/18 tests passing (2 test cleanup is",
+          "excerpt_preview": "Phase 0 file locking and inter-agent communication implement...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9676,
+          "method": "keyword",
+          "tokens": 113
+        }
+      ]
+    },
+    {
+      "query": "factory droid builds",
+      "category": "cross_agent",
+      "result_count": 6,
+      "cortex_tokens": 214,
+      "response_ms": 113.1,
+      "gt_relevant": 3,
+      "gt_precision": 0.5,
+      "kw_precision": 0.5,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "decision::12",
+          "excerpt_preview": "Factory Droid: Going with $20/mo Pro plan. BYOK is free (CLI only). Qwen3-Coder 480B-Cloud runs on O",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0545,
+          "method": "keyword",
+          "tokens": 44
+        },
+        {
+          "source": "memory::project_archana_app.md",
+          "excerpt_preview": "[project_archana_app] (project) Archana App \u2014 meeting confir...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0426,
+          "method": "keyword",
+          "tokens": 25
+        },
+        {
+          "source": "memory::reference_local_llm_inventory.md",
+          "excerpt_preview": "[reference_local_llm_inventory] (reference) Local LLM models...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0391,
+          "method": "keyword",
+          "tokens": 28
+        },
+        {
+          "source": "Fixed daemon startup issue - daemon runs fine but needed Windows Start-Process m",
+          "excerpt_preview": "Factory Droid (GLM-4.7) successfully connected to Cortex bra...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0193,
+          "method": "keyword",
+          "tokens": 77
+        },
+        {
+          "source": "decision::26",
+          "excerpt_preview": "ROOT CAUSE FOUND: MiniMax M2.5 tool calling is broken in Fac...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 1.0181,
+          "method": "keyword",
+          "tokens": 20
+        },
+        {
+          "source": "decision::23",
+          "excerpt_preview": "MILESTONE: Factory Droid successfully connected to Cortex vi...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0124,
+          "method": "keyword",
+          "tokens": 20
+        }
+      ]
+    },
+    {
+      "query": "multi-agent shared state",
+      "category": "cross_agent",
+      "result_count": 2,
+      "cortex_tokens": 81,
+      "response_ms": 98.7,
+      "gt_relevant": 0,
+      "gt_precision": 0.0,
+      "kw_precision": 0.0,
+      "mrr": 0,
+      "scored_results": [
+        {
+          "source": "5 files modified: db.rs, state.rs, main.rs, mcp_proxy.rs, handlers/health.rs. No",
+          "excerpt_preview": "Cortex P1 ALL PHASES COMPLETE. Phase 1: FTS5 trigram search ...",
+          "keyword_score": 0.33,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9216,
+          "method": "keyword",
+          "tokens": 51
+        },
+        {
+          "source": "Competitive intelligence research across 6 repos",
+          "excerpt_preview": "Competitive landscape 2026-03-29: Nobody building multi-agen...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9102,
+          "method": "keyword",
+          "tokens": 30
+        }
+      ]
+    },
+    {
+      "query": "boot compiler capsule system",
+      "category": "architecture",
+      "result_count": 2,
+      "cortex_tokens": 90,
+      "response_ms": 85.2,
+      "gt_relevant": 1,
+      "gt_precision": 0.5,
+      "kw_precision": 0.5,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "2026-03-30 session. Commits: 947d45d through cfef941. Node.js kept in src/ for r",
+          "excerpt_preview": "RUST DAEMON CUTOVER COMPLETE. MCP switched from Node.js to c...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.973,
+          "method": "keyword",
+          "tokens": 40
+        },
+        {
+          "source": "User correctly identified that syncing 3 files is hiding the real problem. Real ",
+          "excerpt_preview": "Security rules should be a compiler capsule type in Cortex, ...",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8706,
+          "method": "keyword",
+          "tokens": 50
+        }
+      ]
+    },
+    {
+      "query": "conflict detection jaccard cosine",
+      "category": "architecture",
+      "result_count": 3,
+      "cortex_tokens": 231,
+      "response_ms": 95.1,
+      "gt_relevant": 1,
+      "gt_precision": 0.333,
+      "kw_precision": 0.333,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "Plan reviewed by code-architect agent",
+          "excerpt_preview": "Rust daemon migration plan written and reviewed. 10 tasks extracting 4,278-line embedded_daemon.rs f",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9518,
+          "method": "keyword",
+          "tokens": 50
+        },
+        {
+          "source": "User wants Cursor to fix Codex review findings. .cursorrules now includes: axum ",
+          "excerpt_preview": "Updated cortex/.cursorrules to comprehensive Rust-focused format with full API reference, architectu",
+          "keyword_score": 0.5,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.913,
+          "method": "keyword",
+          "tokens": 121
+        },
+        {
+          "source": "User wants Claude to proactively surface ideas and connections the user hasn't t",
+          "excerpt_preview": "Rewrote Dolphin-Tools AGENTS.md and mission_plan.md for over...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.8217,
+          "method": "keyword",
+          "tokens": 60
+        }
+      ]
+    },
+    {
+      "query": "embedding engine MiniLM",
+      "category": "architecture",
+      "result_count": 1,
+      "cortex_tokens": 69,
+      "response_ms": 98.3,
+      "gt_relevant": 0,
+      "gt_precision": 0.0,
+      "kw_precision": 0.0,
+      "mrr": 0,
+      "scored_results": [
+        {
+          "source": "Sources: ccleaks.com, free-code repo (paoloanzn), claw-code (instructkr), tweets",
+          "excerpt_preview": "Claude Code source analysis (2026-03-31): 8 unreleased featu...",
+          "keyword_score": 0.33,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.8845,
+          "method": "keyword",
+          "tokens": 69
+        }
+      ]
+    },
+    {
+      "query": "crystal cluster formation",
+      "category": "architecture",
+      "result_count": 3,
+      "cortex_tokens": 148,
+      "response_ms": 120.9,
+      "gt_relevant": 1,
+      "gt_precision": 0.333,
+      "kw_precision": 0.333,
+      "mrr": 0.5,
+      "scored_results": [
+        {
+          "source": "Local LLM routing research 2026-03-29. Sources: lmsys.org RouteLLM, arxiv 2406.1",
+          "excerpt_preview": "LOCAL LLM ROUTING / CLASSIFICATION: RouteLLM (LMSYS, ICLR 2025) achieves 85% cost reduction while ma",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.9134,
+          "method": "keyword",
+          "tokens": 80
+        },
+        {
+          "source": "crystallize.rs (new), recall.rs Pass 0 crystal search, mcp.rs crystal unfold. Co",
+          "excerpt_preview": "Built Knowledge Crystallization Engine: greedy clustering at...",
+          "keyword_score": 0.67,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.8861,
+          "method": "keyword",
+          "tokens": 42
+        },
+        {
+          "source": "memory::reference_oriongraphdb.md",
+          "excerpt_preview": "[reference_oriongraphdb] (reference) OrionGraphDB -- graph d...",
+          "keyword_score": 0.0,
+          "ground_truth_match": false,
+          "cortex_relevance": 0.7177,
+          "method": "keyword",
+          "tokens": 26
+        }
+      ]
+    },
+    {
+      "query": "user writing voice style",
+      "category": "user_context",
+      "result_count": 2,
+      "cortex_tokens": 52,
+      "response_ms": 85.9,
+      "gt_relevant": 2,
+      "gt_precision": 1.0,
+      "kw_precision": 0.5,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "memory::user_aditya_profile.md",
+          "excerpt_preview": "[user_aditya_profile] (user) Aditya's writing style profile ...",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0195,
+          "method": "keyword",
+          "tokens": 25
+        },
+        {
+          "source": "memory::feedback_separate_humanizer.md",
+          "excerpt_preview": "[feedback_separate_humanizer] (feedback) Keep personal voice...",
+          "keyword_score": 0.25,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9278,
+          "method": "keyword",
+          "tokens": 27
+        }
+      ]
+    },
+    {
+      "query": "self improvement engine goals",
+      "category": "user_context",
+      "result_count": 3,
+      "cortex_tokens": 104,
+      "response_ms": 97.6,
+      "gt_relevant": 3,
+      "gt_precision": 1.0,
+      "kw_precision": 0.667,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "memory::project_self_improvement_loop.md",
+          "excerpt_preview": "[project_self_improvement_loop] (project) Self-improvement engine at AdityaVG13/self-improvement-eng",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.1899,
+          "method": "keyword",
+          "tokens": 52
+        },
+        {
+          "source": "memory::project_autoresearch_v2.md",
+          "excerpt_preview": "[autoresearch-v2-origin] (project) Historical \u2014 initial self...",
+          "keyword_score": 0.25,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0713,
+          "method": "keyword",
+          "tokens": 27
+        },
+        {
+          "source": "self-improvement::session-log",
+          "excerpt_preview": "# Session Log\n\nAppend-only timeline of session learnings. Ea...",
+          "keyword_score": 0.5,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0281,
+          "method": "keyword",
+          "tokens": 25
+        }
+      ]
+    },
+    {
+      "query": "tauri dashboard control center",
+      "category": "user_context",
+      "result_count": 6,
+      "cortex_tokens": 431,
+      "response_ms": 111.9,
+      "gt_relevant": 6,
+      "gt_precision": 1.0,
+      "kw_precision": 1.0,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "memory::project_dashboard_control_center.md",
+          "excerpt_preview": "[project_dashboard_control_center] (project) Cortex dashboard -- three layers built (HTML, TUI, stat",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.1967,
+          "method": "keyword",
+          "tokens": 52
+        },
+        {
+          "source": "Session 2026-03-29. Commits: b1e9c9d (conductor phases 0-3), 6a5db13 (shared fee",
+          "excerpt_preview": "Cortex Conductor fully operational: Phase 0 (locks/activity/messages), Session Bus, Task Board, Shar",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.1793,
+          "method": "keyword",
+          "tokens": 117
+        },
+        {
+          "source": "User noticed Ollama box in cortex_control_center Tauri app. Not needed since Rus",
+          "excerpt_preview": "Tauri dashboard still shows Ollama status box -- remove it w...",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0492,
+          "method": "keyword",
+          "tokens": 57
+        },
+        {
+          "source": "Successfully built Tauri Control Center after resolving icon issues. App opens a",
+          "excerpt_preview": "Tauri Desktop App built and testing successful. Cortex Contr...",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0322,
+          "method": "keyword",
+          "tokens": 48
+        },
+        {
+          "source": "Implemented in desktop/cortex-control-center/dist/{index.html,main.js,styles.css",
+          "excerpt_preview": "Wired Tauri Control Center dashboard to live conductor data:...",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9917,
+          "method": "keyword",
+          "tokens": 46
+        },
+        {
+          "source": "Session 2026-04-05. Files: App.jsx, BrainVisualizer.jsx, constants.js, tauri.con",
+          "excerpt_preview": "Control Center audit complete: 9 bugs fixed. Key findings: T...",
+          "keyword_score": 0.75,
+          "ground_truth_match": true,
+          "cortex_relevance": 0.9458,
+          "method": "keyword",
+          "tokens": 111
+        }
+      ]
+    },
+    {
+      "query": "job applicator skill",
+      "category": "user_context",
+      "result_count": 3,
+      "cortex_tokens": 124,
+      "response_ms": 95.6,
+      "gt_relevant": 3,
+      "gt_precision": 1.0,
+      "kw_precision": 0.333,
+      "mrr": 1.0,
+      "scored_results": [
+        {
+          "source": "memory::project_job_applicator.md",
+          "excerpt_preview": "[project_job_applicator] (project) Automated job application system -- skill in ultraskills plugin, ",
+          "keyword_score": 1.0,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0891,
+          "method": "keyword",
+          "tokens": 49
+        },
+        {
+          "source": "Ship-or-delete cleanup session. Skills that never fired in 195 sessions were eit",
+          "excerpt_preview": "Major cleanup: deleted 7 unused plugins (~310MB), 17 ultrask...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0715,
+          "method": "keyword",
+          "tokens": 47
+        },
+        {
+          "source": "self-improvement::skill-audit-2026-04-02",
+          "excerpt_preview": "# Skill Audit: 7 Unverified Ultra Skills\r\n**Date:** 2026-04-...",
+          "keyword_score": 0.33,
+          "ground_truth_match": true,
+          "cortex_relevance": 1.0397,
+          "method": "keyword",
+          "tokens": 28
+        }
+      ]
+    }
+  ]
+}
