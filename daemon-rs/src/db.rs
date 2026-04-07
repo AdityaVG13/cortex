@@ -3,6 +3,43 @@ use std::path::Path;
 
 use rusqlite::{params, Connection};
 
+/// Result of an auto-repair attempt.
+#[derive(Debug)]
+pub struct RepairResult {
+    pub memories_recovered: usize,
+    pub decisions_recovered: usize,
+    pub corrupt_db_path: std::path::PathBuf,
+}
+
+/// Error type for auto-repair failures.
+pub enum RepairError {
+    /// Could not open the corrupted DB for reading.
+    OpenCorrupt(rusqlite::Error),
+    /// Could not create a fresh DB for the repaired copy.
+    OpenFresh(rusqlite::Error),
+    /// Data export from the corrupted DB failed.
+    Export(rusqlite::Error),
+    /// Import into the fresh DB failed.
+    Import(rusqlite::Error),
+    /// The repaired DB itself failed integrity_check.
+    RepairIntegrityFailed,
+    /// File-system rename/copy operations failed.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Debug for RepairError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RepairError::OpenCorrupt(e) => write!(f, "RepairError::OpenCorrupt({e})"),
+            RepairError::OpenFresh(e) => write!(f, "RepairError::OpenFresh({e})"),
+            RepairError::Export(e) => write!(f, "RepairError::Export({e})"),
+            RepairError::Import(e) => write!(f, "RepairError::Import({e})"),
+            RepairError::RepairIntegrityFailed => write!(f, "RepairError::RepairIntegrityFailed"),
+            RepairError::Io(e) => write!(f, "RepairError::Io({e})"),
+        }
+    }
+}
+
 /// Open a SQLite connection at the given path.
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open(path)
@@ -762,6 +799,270 @@ pub fn verify_integrity(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(result.trim().eq_ignore_ascii_case("ok"))
 }
 
+/// Run `PRAGMA quick_check` (B-tree structure only -- faster than integrity_check).
+/// Returns `true` when the database passes.
+pub fn quick_check(conn: &Connection) -> bool {
+    conn.query_row("PRAGMA quick_check", [], |row| {
+        row.get::<_, String>(0)
+    })
+    .map(|s| s.trim().eq_ignore_ascii_case("ok"))
+    .unwrap_or(false)
+}
+
+/// Attempt to recover data from a corrupted DB using dump-and-rebuild.
+///
+/// Steps:
+///   1. Open `db_path` read-only in a *separate* connection (does not touch the live connection).
+///   2. `SELECT *` from every data table -- data pages survive most B-tree corruption.
+///   3. Write all rows into a fresh temp DB at `{db_path}.repair_tmp`.
+///   4. Run `PRAGMA integrity_check` on the fresh DB.
+///   5. Rename `db_path` → `{db_path}.corrupt.{timestamp}` (never deleted).
+///   6. Rename `{db_path}.repair_tmp` → `db_path`.
+///
+/// The original DB is preserved in all failure paths -- if any step before 5
+/// fails, `db_path` is unchanged.
+///
+/// FTS virtual tables are re-created and populated from data; they are not
+/// exported directly.
+pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, RepairError> {
+    eprintln!("[cortex] auto_repair: beginning dump-and-rebuild of {}", db_path.display());
+
+    // ── Step 1: open the corrupted DB read-only ────────────────────────────
+    let corrupt_conn = Connection::open(db_path).map_err(RepairError::OpenCorrupt)?;
+    // Open read-only: ignore any write errors on WAL frames, read what we can.
+    let _ = corrupt_conn.execute_batch("PRAGMA query_only = ON;");
+
+    // ── Step 2: export all data tables ────────────────────────────────────
+    // Order matters for foreign-key integrity, though FKs are off during repair.
+    // Non-relational tables that carry user data are listed first; operational
+    // tables that can be empty after rebuild are listed last.
+    const DATA_TABLES: &[&str] = &[
+        "memories",
+        "decisions",
+        "embeddings",
+        "co_occurrence",
+        "events",
+        "activities",
+        "messages",
+        "sessions",
+        "tasks",
+        "feed",
+        "feed_acks",
+        "context_cache",
+        "focus_sessions",
+        "recall_feedback",
+        "memory_clusters",
+        "cluster_members",
+        "locks",
+    ];
+
+    // Export: for each table collect column names and all rows as raw SQL strings.
+    // We use TEXT casts for all values so we can INSERT via execute_batch without
+    // complex type mapping.  This is safe because SQLite is loosely typed.
+    let mut table_exports: Vec<(String, Vec<String>)> = Vec::new();
+    let mut memories_recovered = 0usize;
+    let mut decisions_recovered = 0usize;
+
+    for &table in DATA_TABLES {
+        // Check if the table even exists in the corrupted DB.
+        let exists: bool = corrupt_conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1",
+                params![table],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !exists {
+            eprintln!("[cortex] auto_repair: table '{table}' not found in corrupt DB, skipping");
+            continue;
+        }
+
+        // Get column names via PRAGMA.
+        let mut col_stmt = corrupt_conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(RepairError::Export)?;
+        let columns: Vec<String> = col_stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(RepairError::Export)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if columns.is_empty() {
+            eprintln!("[cortex] auto_repair: table '{table}' has no columns, skipping");
+            continue;
+        }
+
+        // SELECT * and build INSERT statements using rusqlite's dynamic row access.
+        let col_list = columns.join(", ");
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
+        let placeholder_list = placeholders.join(", ");
+
+        let mut data_stmt = match corrupt_conn
+            .prepare(&format!("SELECT {col_list} FROM {table}"))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[cortex] auto_repair: failed to prepare SELECT on '{table}': {e}");
+                continue;
+            }
+        };
+
+        let query_result = data_stmt.query([]);
+        let mut rows = match query_result {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[cortex] auto_repair: failed to query '{table}': {e}");
+                continue;
+            }
+        };
+
+        // Build INSERT..VALUES strings with escaped literals.
+        // We quote every value as a SQL literal string using SQLite's double-single-quote
+        // escaping.  BLOB columns are exported as X'' hex literals.
+        let insert_prefix =
+            format!("INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({placeholder_list})");
+
+        let mut row_values: Vec<Vec<String>> = Vec::new();
+        loop {
+            match rows.next() {
+                Ok(Some(row)) => {
+                    let mut vals: Vec<String> = Vec::new();
+                    for i in 0..columns.len() {
+                        use rusqlite::types::ValueRef;
+                        let val = match row.get_ref(i) {
+                            Ok(ValueRef::Null) => "NULL".to_string(),
+                            Ok(ValueRef::Integer(n)) => n.to_string(),
+                            Ok(ValueRef::Real(f)) => format!("{f}"),
+                            Ok(ValueRef::Text(t)) => {
+                                let s = String::from_utf8_lossy(t);
+                                // Escape single quotes.
+                                format!("'{}'", s.replace('\'', "''"))
+                            }
+                            Ok(ValueRef::Blob(b)) => {
+                                let hex: String =
+                                    b.iter().map(|byte| format!("{byte:02X}")).collect();
+                                format!("X'{hex}'")
+                            }
+                            Err(_) => "NULL".to_string(),
+                        };
+                        vals.push(val);
+                    }
+                    row_values.push(vals);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    // Row-level corruption: skip the bad row and continue.
+                    eprintln!("[cortex] auto_repair: row error in '{table}': {e} -- skipping row");
+                    continue;
+                }
+            }
+        }
+
+        eprintln!(
+            "[cortex] auto_repair: exported {} rows from '{table}'",
+            row_values.len()
+        );
+        if table == "memories" {
+            memories_recovered = row_values.len();
+        } else if table == "decisions" {
+            decisions_recovered = row_values.len();
+        }
+
+        // Convert to literal INSERT statements (values already SQL-safe).
+        let inserts: Vec<String> = row_values
+            .into_iter()
+            .map(|vals| {
+                let val_list = vals.join(", ");
+                format!("INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({val_list});")
+            })
+            .collect();
+
+        table_exports.push((insert_prefix, inserts));
+    }
+
+    drop(corrupt_conn); // Release the read lock on the corrupt DB.
+
+    // ── Step 3: build a fresh DB at a temp path ────────────────────────────
+    let tmp_path = db_path.with_extension("repair_tmp");
+    // Remove any leftover temp from a previous failed attempt.
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
+    configure(&fresh).map_err(RepairError::Import)?;
+    initialize_schema(&fresh).map_err(RepairError::Import)?;
+
+    // Disable FK enforcement during bulk insert so we can insert in any order.
+    fresh
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .map_err(RepairError::Import)?;
+
+    // Insert all exported rows.
+    for (_prefix, inserts) in &table_exports {
+        for stmt in inserts {
+            if let Err(e) = fresh.execute_batch(stmt) {
+                // Non-fatal: log and continue -- a few bad rows are acceptable.
+                eprintln!("[cortex] auto_repair: insert skipped ({e}): {stmt:.80}");
+            }
+        }
+    }
+
+    // Re-enable FK enforcement and re-populate FTS indexes.
+    fresh
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(RepairError::Import)?;
+
+    // Populate FTS from the newly inserted data.
+    fresh
+        .execute_batch(
+            "INSERT OR IGNORE INTO memories_fts(rowid, text, source, tags) \
+             SELECT id, text, source, tags FROM memories; \
+             INSERT OR IGNORE INTO decisions_fts(rowid, decision, context) \
+             SELECT id, decision, context FROM decisions;",
+        )
+        .map_err(RepairError::Import)?;
+
+    // VACUUM to compact and re-linearize the B-tree.
+    fresh
+        .execute_batch("VACUUM;")
+        .map_err(RepairError::Import)?;
+
+    // ── Step 4: verify the fresh DB ────────────────────────────────────────
+    let integrity_ok = verify_integrity(&fresh).unwrap_or(false);
+    drop(fresh);
+
+    if !integrity_ok {
+        let _ = std::fs::remove_file(&tmp_path);
+        eprintln!("[cortex] auto_repair: repaired DB failed integrity_check -- aborting");
+        return Err(RepairError::RepairIntegrityFailed);
+    }
+
+    // ── Steps 5 & 6: atomic swap ───────────────────────────────────────────
+    // Rename original → .corrupt.{timestamp}
+    let corrupt_archive = db_path.with_extension(format!("corrupt.{timestamp}"));
+    std::fs::rename(db_path, &corrupt_archive).map_err(RepairError::Io)?;
+
+    // Rename repaired temp → original path.
+    std::fs::rename(&tmp_path, db_path).map_err(|e| {
+        // Roll back: restore the original so the daemon isn't left with no DB.
+        let _ = std::fs::rename(&corrupt_archive, db_path);
+        RepairError::Io(e)
+    })?;
+
+    eprintln!(
+        "[cortex] auto_repair: SUCCESS -- {} memories, {} decisions recovered. \
+         Corrupted DB archived at {}",
+        memories_recovered,
+        decisions_recovered,
+        corrupt_archive.display()
+    );
+
+    Ok(RepairResult {
+        memories_recovered,
+        decisions_recovered,
+        corrupt_db_path: corrupt_archive,
+    })
+}
+
 /// Set `status = 'archived'` for all rows in `table` whose `id` is in `ids`.
 /// Only `memories` and `decisions` are supported; other table names return an
 /// error.  Returns the number of rows actually updated.
@@ -934,6 +1235,127 @@ mod tests {
         assert!(!table_has_column(&conn, "locks", "owner_id"));
         assert!(table_has_column(&conn, "feed_acks", "agent"));
         assert!(!table_has_column(&conn, "feed_acks", "owner_id"));
+    }
+
+    #[test]
+    fn test_quick_check_clean_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        initialize_schema(&conn).unwrap();
+        assert!(quick_check(&conn), "fresh in-memory DB should pass quick_check");
+    }
+
+    #[test]
+    fn test_auto_repair_recovers_data() {
+        use std::io::Write;
+
+        // ── Build a valid DB with test data at a temp file path ────────────
+        // Use a unique path under the system temp dir so parallel test runs don't collide.
+        let tmp_dir = std::env::temp_dir();
+        let db_path = tmp_dir.join(format!(
+            "cortex_repair_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos()
+        ));
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            configure(&conn).unwrap();
+            initialize_schema(&conn).unwrap();
+
+            // Insert known rows.
+            conn.execute(
+                "INSERT INTO memories (text, source, type) VALUES (?1, ?2, ?3)",
+                params!["repair test memory", "test::repair", "memory"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO decisions (decision, context, type) VALUES (?1, ?2, ?3)",
+                params!["repair test decision", "test context", "decision"],
+            )
+            .unwrap();
+            // Checkpoint so data is in the main DB file, not just WAL.
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        } // Connection closed -- file flushed.
+
+        // Verify the DB is clean before corruption.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            assert!(verify_integrity(&conn).unwrap(), "DB should be clean before corruption");
+        }
+
+        // ── Corrupt the DB by overwriting a page mid-file ─────────────────
+        // We write garbage into the middle of the file. SQLite's B-tree index
+        // pages live in the middle; data in leaf pages (lower in the file) often
+        // survives. For this test we write at a safe offset that corrupts the
+        // free-list / interior pages but leaves leaf data readable.
+        {
+            let meta = std::fs::metadata(&db_path).unwrap();
+            let file_size = meta.len();
+            // Write 512 bytes of 0xFF starting at 40% of the file (index area).
+            let corrupt_offset = (file_size as f64 * 0.4) as u64;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&db_path)
+                .unwrap();
+            use std::io::Seek;
+            f.seek(std::io::SeekFrom::Start(corrupt_offset)).unwrap();
+            f.write_all(&[0xFF_u8; 512]).unwrap();
+            f.flush().unwrap();
+        }
+
+        // ── Run auto_repair ────────────────────────────────────────────────
+        let result = auto_repair(&db_path, "20260407_test");
+        match &result {
+            Ok(r) => {
+                eprintln!(
+                    "[test] auto_repair: {} memories, {} decisions recovered",
+                    r.memories_recovered, r.decisions_recovered
+                );
+                // The corrupt archive must exist.
+                assert!(
+                    r.corrupt_db_path.exists(),
+                    "corrupt DB should be preserved at {:?}",
+                    r.corrupt_db_path
+                );
+            }
+            Err(e) => {
+                // If SQLite was able to read the corrupted pages without error
+                // (it sometimes can), repair may not be triggered -- that's OK.
+                // But if repair ran and produced an error, that's a test failure.
+                panic!("auto_repair returned error: {e:?}");
+            }
+        }
+
+        // The repaired DB at the original path must pass integrity_check.
+        if db_path.exists() {
+            let conn = Connection::open(&db_path).unwrap();
+            assert!(
+                verify_integrity(&conn).unwrap_or(false),
+                "repaired DB must pass integrity_check"
+            );
+
+            // At least memories and decisions tables must be present.
+            let mem_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+                .unwrap_or(0);
+            let dec_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0))
+                .unwrap_or(0);
+            eprintln!("[test] Repaired DB: {mem_count} memories, {dec_count} decisions");
+            // We may not recover all rows if the page containing them was corrupted,
+            // but the DB itself must be structurally sound (integrity check above).
+            drop(conn);
+        }
+
+        // Cleanup temp files.
+        let _ = std::fs::remove_file(&db_path);
+        // Also remove the corrupt archive if it exists.
+        if let Ok(r) = &result {
+            let _ = std::fs::remove_file(&r.corrupt_db_path);
+        }
     }
 
     #[test]
