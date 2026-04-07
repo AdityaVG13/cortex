@@ -402,25 +402,28 @@ fn run_recall_with_engine(
         extracted.join(" ")
     };
 
-    let mut merged: HashMap<String, RecallItem> = HashMap::new();
+    // ── Tier 0/1: Cache check (handled upstream in execute_unified_recall) ────
+    // This function is the retrieval engine; caching is the caller's responsibility.
 
-    // ── Pass 1: Semantic search via embeddings (if available) ────────────────
-    // Cosine sims land in ~[0.3, 0.8] while keyword scores are ~[0.5, 1.0].
-    // Rescale so semantic results compete fairly: 0.3 → 0.55, 1.0 → 1.0.
+    // ── Crystal search (highest priority, always runs when engine available) ──
+    // Crystals bypass Tier 2 early-exit: they represent consolidated knowledge
+    // and should always surface regardless of FTS confidence.
     const SIM_FLOOR: f64 = 0.3;
     const SCALE_BASE: f64 = 0.55;
     let scale_sim = |sim: f32| -> f64 {
         SCALE_BASE + (sim as f64 - SIM_FLOOR) * ((1.0 - SCALE_BASE) / (1.0 - SIM_FLOOR))
     };
 
+    // crystal results keyed by source -- inserted into final merged map after fusion
+    let mut crystal_items: HashMap<String, RecallItem> = HashMap::new();
+
     if let Some(engine) = engine {
         if let Some(query_vec) = engine.embed(query_text) {
-            // ── Pass 0: Crystal search (highest priority, visibility-aware) ─
             for (crystal_id, label, text, relevance) in
                 crate::crystallize::search_crystals_filtered(conn, &query_vec, 3, ctx.caller_id, ctx.team_mode)
             {
                 let source = format!("crystal::{crystal_id}::{label}");
-                merged.insert(
+                crystal_items.insert(
                     source.clone(),
                     RecallItem {
                         source,
@@ -432,206 +435,272 @@ fn run_recall_with_engine(
                     },
                 );
             }
+        }
+    }
 
-            // Search memory embeddings (includes owner_id + visibility for team filtering)
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.target_id, e.vector, m.text, m.source, m.owner_id, m.visibility \
-                 FROM embeddings e \
-                 JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active'"
-            ) {
-                let rows: Vec<(Vec<u8>, String, String, Option<i64>, Option<String>)> = stmt
-                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|r| r.ok())
-                    .collect();
+    // ── Tier 2: Keyword-only fast path (ByteRover-inspired) ──────────────────
+    // Run FTS5 first. If the top result is confident (score >= 0.93) with a
+    // meaningful gap from #2 (delta >= 0.08), return immediately without
+    // spending cycles on embedding inference. Target: 40%+ queries resolved here.
+    const TIER2_CONFIDENCE: f64 = 0.93;
+    const TIER2_GAP: f64 = 0.08;
 
-                for (blob, text, source, owner_id, visibility) in rows {
-                    if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                        continue;
-                    }
-                    let existing_vec = crate::embeddings::blob_to_vector(&blob);
-                    let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
-                    if sim > SIM_FLOOR as f32 {
-                        merged.insert(source.clone(), RecallItem {
-                            source,
-                            relevance: scale_sim(sim),
-                            excerpt: text.chars().take(200).collect(),
-                            method: "semantic".to_string(),
-                            tokens: None,
-                            entropy: None,
-                        });
-                    }
-                }
+    let raw_k = if ctx.team_mode { k.max(10) * 5 } else { 20 };
+    let mut fts_limit = raw_k.max(20);
+
+    // Collect keyword candidates for Tier 2 check and later RRF
+    let kw_candidates: Vec<SearchCandidate> = {
+        let mut retry = 0;
+        let mut all: Vec<SearchCandidate> = Vec::new();
+        loop {
+            all.clear();
+            for row in search_memories(conn, &keyword_query, fts_limit)?
+                .into_iter()
+                .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
+            {
+                all.push(row);
             }
+            for row in search_decisions(conn, &keyword_query, fts_limit)?
+                .into_iter()
+                .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
+            {
+                all.push(row);
+            }
+            all.sort_by(|a, b| {
+                b.relevance
+                    .partial_cmp(&a.relevance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if ctx.team_mode && all.len() < k && retry < 2 {
+                fts_limit *= 2;
+                retry += 1;
+                continue;
+            }
+            break;
+        }
+        all
+    };
 
-            // Search decision embeddings (includes owner_id + visibility for team filtering)
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT e.target_id, e.vector, d.decision, d.context, d.owner_id, d.visibility \
-                 FROM embeddings e \
-                 JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active'"
-            ) {
-                let rows: Vec<(Vec<u8>, String, Option<String>, Option<i64>, Option<String>)> = stmt
-                    .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|r| r.ok())
-                    .collect();
+    // Tier 2 early exit: high-confidence keyword result with no close competitor
+    let tier2_resolved = kw_candidates.len() >= 2
+        && kw_candidates[0].relevance >= TIER2_CONFIDENCE
+        && (kw_candidates[0].relevance - kw_candidates[1].relevance) >= TIER2_GAP;
 
-                for (blob, decision, context, owner_id, visibility) in rows {
-                    if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                        continue;
-                    }
-                    let existing_vec = crate::embeddings::blob_to_vector(&blob);
-                    let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
-                    if sim > SIM_FLOOR as f32 {
-                        let source = context.unwrap_or_else(|| format!("decision::{}", decision.chars().take(40).collect::<String>()));
-                        let scaled = scale_sim(sim);
-                        let existing = merged.get(&source);
-                        if existing.is_none() || scaled > existing.unwrap().relevance {
-                            merged.insert(source.clone(), RecallItem {
-                                source,
+    // If engine unavailable, flag degraded mode regardless of Tier 2 status
+    let embed_available = engine.is_some();
+
+    // ── Semantic search (skipped on Tier 2 early exit or no engine) ──────────
+    // Produces a ranked list of (source, score) pairs for RRF.
+    // Also accumulates per-source metadata (score, ts) for compound scoring.
+    struct SemEntry {
+        relevance: f64,
+        excerpt: String,
+    }
+    let mut sem_map: HashMap<String, SemEntry> = HashMap::new();
+
+    if !tier2_resolved {
+        if let Some(engine) = engine {
+            if let Some(query_vec) = engine.embed(query_text) {
+                // Memory embeddings
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT e.target_id, e.vector, m.text, m.source, m.owner_id, m.visibility \
+                     FROM embeddings e \
+                     JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active'"
+                ) {
+                    let rows: Vec<(Vec<u8>, String, String, Option<i64>, Option<String>)> = stmt
+                        .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    for (blob, text, source, owner_id, visibility) in rows {
+                        if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                            continue;
+                        }
+                        let existing_vec = crate::embeddings::blob_to_vector(&blob);
+                        let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
+                        if sim > SIM_FLOOR as f32 {
+                            let scaled = scale_sim(sim);
+                            let entry = sem_map.entry(source).or_insert(SemEntry {
                                 relevance: scaled,
-                                excerpt: decision.chars().take(200).collect(),
-                                method: "semantic".to_string(),
-                                tokens: None,
-                                entropy: None,
+                                excerpt: text.chars().take(200).collect(),
                             });
+                            if scaled > entry.relevance {
+                                *entry = SemEntry {
+                                    relevance: scaled,
+                                    excerpt: text.chars().take(200).collect(),
+                                };
+                            }
                         }
                     }
                 }
-            }
-        } else {
-            // engine.embed() returned None -- ONNX inference failed at runtime
-            if let Some(flag) = degraded_flag {
-                // compare_exchange: only log on first transition false→true
-                if flag
-                    .compare_exchange(
-                        false,
-                        true,
-                        std::sync::atomic::Ordering::Relaxed,
-                        std::sync::atomic::Ordering::Relaxed,
-                    )
-                    .is_ok()
-                {
-                    eprintln!(
-                        "[recall] Semantic search unavailable, using keyword fallback"
-                    );
+
+                // Decision embeddings
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT e.target_id, e.vector, d.decision, d.context, d.owner_id, d.visibility \
+                     FROM embeddings e \
+                     JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active'"
+                ) {
+                    let rows: Vec<(Vec<u8>, String, Option<String>, Option<i64>, Option<String>)> = stmt
+                        .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| r.ok())
+                        .collect();
+
+                    for (blob, decision, context, owner_id, visibility) in rows {
+                        if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                            continue;
+                        }
+                        let existing_vec = crate::embeddings::blob_to_vector(&blob);
+                        let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
+                        if sim > SIM_FLOOR as f32 {
+                            let source = context.unwrap_or_else(|| {
+                                format!("decision::{}", decision.chars().take(40).collect::<String>())
+                            });
+                            let scaled = scale_sim(sim);
+                            let excerpt = decision.chars().take(200).collect();
+                            let entry = sem_map.entry(source).or_insert(SemEntry {
+                                relevance: scaled,
+                                excerpt,
+                            });
+                            if scaled > entry.relevance {
+                                entry.relevance = scaled;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // engine.embed() returned None -- ONNX inference failed
+                if let Some(flag) = degraded_flag {
+                    if flag
+                        .compare_exchange(
+                            false,
+                            true,
+                            std::sync::atomic::Ordering::Relaxed,
+                            std::sync::atomic::Ordering::Relaxed,
+                        )
+                        .is_ok()
+                    {
+                        eprintln!("[recall] Semantic search unavailable, using keyword fallback");
+                    }
                 }
             }
+        } else if !embed_available {
+            // No engine configured -- log once on first degraded transition
+            if let Some(flag) = degraded_flag {
+                let _ = flag.compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
         }
     }
 
-    // ── Pass 2: Keyword search (over-fetch for visibility filtering) ──────
-    // When an entry was already found by semantic search, fuse scores:
-    //   hybrid_score = max(semantic, keyword) + 0.15 * min(semantic, keyword)
-    // This boosts entries confirmed by both methods without over-inflating.
+    // ── RRF fusion ────────────────────────────────────────────────────────────
+    // Assign stable integer indices to each unique source across both lists,
+    // then fuse ranks. rrf_fuse() works on (i64, f64) so we map source → index.
     //
-    // Over-fetch: in team mode, fetch raw_k candidates so that after visibility
-    // filtering we still have enough results. Retry with doubled limit up to
-    // 2 times if too many get filtered out.
-    let raw_k = if ctx.team_mode { k.max(10) * 5 } else { 20 };
-    let mut fts_limit = raw_k.max(20);
-    let mut retry = 0;
-    loop {
-    for row in search_memories(conn, &keyword_query, fts_limit)?
-        .into_iter()
-        .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
-    {
-        let key = row.source.clone();
-        if let Some(existing) = merged.get(&key) {
-            if existing.method == "semantic" {
-                let fused = existing.relevance.max(row.relevance)
-                    + 0.15 * existing.relevance.min(row.relevance);
-                merged.insert(
-                    key,
-                    RecallItem {
-                        source: row.source,
-                        relevance: fused,
-                        excerpt: row.excerpt,
-                        method: "hybrid".to_string(),
-                        tokens: None,
-                        entropy: None,
-                    },
-                );
-                continue;
-            }
+    // On Tier 2 early exit: semantic list is empty, RRF degrades to keyword-only
+    // ranking (correct behavior -- no fusion penalty).
+    let mut source_index: HashMap<String, i64> = HashMap::new();
+    let mut index_source: Vec<String> = Vec::new();
+
+    let mut get_idx = |source: &str| -> i64 {
+        if let Some(&idx) = source_index.get(source) {
+            return idx;
         }
-        let should_replace = merged
-            .get(&key)
-            .map(|existing| row.relevance > existing.relevance)
-            .unwrap_or(true);
-        if should_replace {
-            merged.insert(
-                key,
-                RecallItem {
-                    source: row.source,
-                    relevance: row.relevance,
-                    excerpt: row.excerpt,
-                    method: "keyword".to_string(),
-                    tokens: None,
-                    entropy: None,
-                },
-            );
-        }
+        let idx = index_source.len() as i64;
+        source_index.insert(source.to_string(), idx);
+        index_source.push(source.to_string());
+        idx
+    };
+
+    // Build ranked list for keyword results (sorted by relevance desc)
+    let kw_list: Vec<(i64, f64)> = kw_candidates
+        .iter()
+        .map(|c| (get_idx(&c.source), c.relevance))
+        .collect();
+
+    // Build ranked list for semantic results (sorted by relevance desc)
+    let mut sem_sorted: Vec<(&String, f64)> = sem_map
+        .iter()
+        .map(|(src, e)| (src, e.relevance))
+        .collect();
+    sem_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let sem_list: Vec<(i64, f64)> = sem_sorted
+        .iter()
+        .map(|(src, rel)| (get_idx(src), *rel))
+        .collect();
+
+    let fused = rrf_fuse(&[kw_list, sem_list], 60.0);
+
+    // ── Compound scoring + merge into RecallItem map ──────────────────────────
+    // For each fused entry: look up metadata from kw_candidates or sem_map,
+    // determine method label, then apply compound_score().
+    let mut merged: HashMap<String, RecallItem> = HashMap::new();
+
+    for (idx, rrf_score) in &fused {
+        let source = match index_source.get(*idx as usize) {
+            Some(s) => s.clone(),
+            None => continue,
+        };
+
+        // Prefer keyword candidate metadata (has score + ts); fall back to sem
+        let (excerpt, importance, ts_ms, method) = if let Some(kw) = kw_candidates
+            .iter()
+            .find(|c| c.source == source)
+        {
+            let in_sem = sem_map.contains_key(&source);
+            let method = if in_sem { "hybrid" } else { "keyword" };
+            (kw.excerpt.clone(), kw.score, kw.ts, method)
+        } else if let Some(sem) = sem_map.get(&source) {
+            (sem.excerpt.clone(), 1.0_f64, 0_i64, "semantic")
+        } else {
+            continue;
+        };
+
+        // Convert ts (Unix-ms) to ISO 8601 for compound_score()
+        let created_at_str = if ts_ms > 0 {
+            Utc.timestamp_millis_opt(ts_ms)
+                .single()
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // importance is 0-1 in DB; normalize() expects 0-100 range
+        let relevance = round4(compound_score(*rrf_score, importance * 100.0, &created_at_str));
+
+        merged.insert(
+            source.clone(),
+            RecallItem {
+                source,
+                relevance,
+                excerpt,
+                method: method.to_string(),
+                tokens: None,
+                entropy: None,
+            },
+        );
     }
 
-    for row in search_decisions(conn, &keyword_query, fts_limit)?
-        .into_iter()
-        .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
-    {
-        let key = row.source.clone();
-        if let Some(existing) = merged.get(&key) {
-            if existing.method == "semantic" {
-                let fused = existing.relevance.max(row.relevance)
-                    + 0.15 * existing.relevance.min(row.relevance);
-                merged.insert(
-                    key,
-                    RecallItem {
-                        source: row.source,
-                        relevance: fused,
-                        excerpt: row.excerpt,
-                        method: "hybrid".to_string(),
-                        tokens: None,
-                        entropy: None,
-                    },
-                );
-                continue;
-            }
-        }
-        let should_replace = merged
-            .get(&key)
-            .map(|existing| row.relevance > existing.relevance)
-            .unwrap_or(true);
-        if should_replace {
-            merged.insert(
-                key,
-                RecallItem {
-                    source: row.source,
-                    relevance: row.relevance,
-                    excerpt: row.excerpt,
-                    method: "keyword".to_string(),
-                    tokens: None,
-                    entropy: None,
-                },
-            );
-        }
+    // Crystal items bypass RRF (they're already fused/consolidated knowledge);
+    // insert after -- they will not be overwritten since crystal:: keys don't appear in kw/sem
+    for (src, item) in crystal_items {
+        merged.entry(src).or_insert(item);
     }
 
-    // Over-fetch retry: if team mode filtered out too many, widen the FTS net
-    if ctx.team_mode && merged.len() < k && retry < 2 {
-        fts_limit *= 2;
-        retry += 1;
-        continue;
-    }
-    break;
-    } // end over-fetch retry loop
-
-    // Compute entropy and apply entropy-weighted re-ranking.
-    // High-entropy (information-dense) results get boosted; low-entropy
-    // (boilerplate) gets penalized. Weight: 15% adjustment around midpoint 3.5.
+    // ── Entropy-weighted re-ranking ───────────────────────────────────────────
+    // High-entropy (information-dense) excerpts get a relevance boost (+/-15%
+    // around midpoint H=3.5). Applied after compound scoring so entropy acts as
+    // a diversity signal on top of the RRF+compound base.
     let mut ranked: Vec<RecallItem> = merged
         .into_values()
         .map(|mut item| {
@@ -642,7 +711,7 @@ fn run_recall_with_engine(
         })
         .collect();
 
-    // ── Pass 3: Relevance feedback reranking ──────────────────────────────
+    // ── Relevance feedback reranking ──────────────────────────────────────────
     // Boost results that have been useful in past recalls (unfolded),
     // penalize results that were consistently ignored. Graceful no-op when
     // no feedback data exists (cold start).
@@ -1955,8 +2024,6 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
 /// * `lists` -- slice of ranked lists, each a `Vec<(id, score)>` in descending score order
 /// * `k`     -- smoothing constant (use `60.0` per Cormack et al.)
 ///
-/// Wire-up is in Task 1.5 (pipeline integration). Allow dead_code until then.
-#[allow(dead_code)]
 fn rrf_fuse(lists: &[Vec<(i64, f64)>], k: f64) -> Vec<(i64, f64)> {
     let mut fused: HashMap<i64, f64> = HashMap::new();
     for list in lists {
@@ -1973,7 +2040,6 @@ fn rrf_fuse(lists: &[Vec<(i64, f64)>], k: f64) -> Vec<(i64, f64)> {
 
 /// Calculate elapsed days since an ISO 8601 timestamp.
 /// Returns days as f64, handling invalid timestamps gracefully (returns very large value).
-#[allow(dead_code)]
 fn days_since(created_at: &str) -> f64 {
     match chrono::DateTime::parse_from_rfc3339(created_at) {
         Ok(dt) => {
@@ -1988,7 +2054,6 @@ fn days_since(created_at: &str) -> f64 {
 /// Normalize importance score to 0.0-1.0 range.
 /// Scores are typically 0-100 from spaced repetition; we normalize by dividing by 100.
 /// Also clamps to stay within bounds.
-#[allow(dead_code)]
 fn normalize(importance: f64) -> f64 {
     let normalized = importance / 100.0;
     normalized.clamp(0.0, 1.0)
@@ -2004,7 +2069,6 @@ fn normalize(importance: f64) -> f64 {
 /// * `created_at` -- ISO 8601 timestamp string
 ///
 /// Returns compound score in 0.0-1.0 range (approximately)
-#[allow(dead_code)]
 fn compound_score(rrf: f64, importance: f64, created_at: &str) -> f64 {
     let days = days_since(created_at);
     let recency = (-days / 30.0).exp(); // 21-day half-life
