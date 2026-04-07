@@ -180,13 +180,25 @@ QUERIES = [
 
 def cortex_recall(query: str, budget: int = 500) -> dict:
     url = f"{CORTEX_URL}/recall?q={query.replace(' ', '+')}&budget={budget}"
-    start = time.perf_counter()
-    data = request_json(url, timeout=5)
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    results = data.get("results", []) if data else []
+    total_elapsed_ms = 0.0
+    data: dict | None = None
+    results = []
+    for attempt in range(3):
+        start = time.perf_counter()
+        data = request_json(url, timeout=5)
+        total_elapsed_ms += (time.perf_counter() - start) * 1000
+        results = data.get("results", []) if data else []
+        if results or attempt == 2:
+            if not results:
+                print(
+                    f"WARN: recall returned 0 results after 3 attempts for query: {query}",
+                    file=sys.stderr,
+                )
+            break
+        time.sleep(0.2)
     return {
         "results": results,
-        "elapsed_ms": round(elapsed_ms, 1),
+        "elapsed_ms": round(total_elapsed_ms, 1),
         "token_estimate": sum(r.get("tokens", 0) for r in results),
     }
 
@@ -271,21 +283,13 @@ def run_benchmark():
     print("=" * 70)
     check_daemon_health()
 
-    # Try to check if /embed endpoint exists
-    has_embed = False
-    try:
-        test_url = f"{CORTEX_URL}/embed?text=test"
-        data = request_json(test_url, timeout=3, fatal=False) or {}
-        if "vector" in data:
-            has_embed = True
-            print("  Embedding endpoint: available (cosine scoring enabled)")
-    except Exception:
-        print("  Embedding endpoint: not available (keyword + ground truth only)")
-
-    all_embeddings = {}
+    # Check if embeddings exist in the DB directly (no /embed endpoint needed)
+    all_embeddings = load_all_embeddings()
+    has_embed = len(all_embeddings) > 0
     if has_embed:
-        all_embeddings = load_all_embeddings()
-        print(f"  Loaded {len(all_embeddings)} embeddings from DB")
+        print(f"  Embeddings: {len(all_embeddings)} loaded from DB (cosine scoring enabled)")
+    else:
+        print("  Embeddings: none found in DB (keyword + ground truth only)")
 
     baseline_tokens = naive_baseline_tokens()
     print(f"  Naive baseline: {baseline_tokens:,} tokens (full dump)")

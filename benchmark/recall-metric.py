@@ -8,6 +8,7 @@ recall = returned_relevant / total_relevant_in_db
 import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -132,8 +133,18 @@ def find_all_relevant_in_db(gt_patterns: list[str]) -> list[dict]:
 
 def cortex_recall(query: str, budget: int = 500) -> list[dict]:
     url = f"{CORTEX_URL}/recall?q={query.replace(' ', '+')}&budget={budget}"
-    data = request_json(url, timeout=5)
-    return data.get("results", [])
+    for attempt in range(3):
+        data = request_json(url, timeout=5)
+        results = data.get("results", [])
+        if results or attempt == 2:
+            if not results:
+                print(
+                    f"WARN: recall returned 0 results after 3 attempts for query: {query}",
+                    file=sys.stderr,
+                )
+            return results
+        time.sleep(0.2)
+    return []
 
 
 def check_returned(returned_results: list[dict], db_item: dict) -> bool:
