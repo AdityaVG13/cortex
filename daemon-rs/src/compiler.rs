@@ -649,32 +649,31 @@ fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, String
 
 // ─── Raw baseline estimation ────────────────────────────────────────────────
 
-/// Estimate what raw file reads would cost — the baseline Cortex replaces.
-/// Counts chars in state.md + memory files + any user-configured custom sources.
-fn estimate_raw_baseline(home: &Path) -> usize {
+/// Estimate what raw context would cost — the baseline Cortex replaces.
+/// Counts chars in DB memories + decisions + any user-configured custom sources.
+/// Uses DB query (not filesystem) so baseline is correct regardless of agent CWD.
+fn estimate_raw_baseline(conn: &Connection, home: &Path) -> usize {
     let mut total_chars: usize = 0;
 
-    // state.md
-    let state_path = home.join(".claude").join("state.md");
-    if let Ok(meta) = std::fs::metadata(&state_path) {
-        total_chars += meta.len() as usize;
-    }
+    // DB memories: active entries only
+    let mem_chars: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(LENGTH(text)), 0) FROM memories WHERE status = 'active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    total_chars += mem_chars as usize;
 
-    // Memory files
-    let mem_dir = claude_project_slug().map(|slug| {
-        home.join(".claude").join("projects").join(slug).join("memory")
-    });
-    if let Some(ref dir) = mem_dir {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                if entry.path().extension().map(|x| x == "md").unwrap_or(false) {
-                    if let Ok(meta) = entry.metadata() {
-                        total_chars += meta.len() as usize;
-                    }
-                }
-            }
-        }
-    }
+    // DB decisions: active entries only
+    let dec_chars: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(LENGTH(decision)), 0) FROM decisions WHERE status = 'active'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    total_chars += dec_chars as usize;
 
     // Custom sources from ~/.cortex/sources.toml or CORTEX_EXTRA_SOURCES
     for path in custom_source_paths(home) {
@@ -873,7 +872,7 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     let token_estimate = estimate_tokens(&assembled);
 
     // ── 5. Savings and observability ────────────────────────────────────────
-    let raw_baseline = estimate_raw_baseline(home);
+    let raw_baseline = estimate_raw_baseline(conn, home);
     let saved = raw_baseline.saturating_sub(token_estimate);
     let percent = if raw_baseline > 0 {
         (saved * 100) / raw_baseline
