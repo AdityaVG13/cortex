@@ -6,6 +6,10 @@ target/
 cortex.db
 cortex.db-wal
 cortex.db-shm
+cortex.lock
+cortex.pid
+cortex.token
+write_buffer.jsonl
 .cortex/
 
 # Logs

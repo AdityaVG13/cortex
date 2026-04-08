@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 use super::health::build_digest;
@@ -54,6 +55,75 @@ fn wrap_mcp_tool_result_verbose(state: &RuntimeState, data: Value) -> Value {
             "text": decorated.to_string()
         }]
     })
+}
+
+async fn upsert_mcp_session(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+    raw_agent: &str,
+    model: Option<&str>,
+    description_prefix: &str,
+) -> Result<(String, String), String> {
+    let mut agent = raw_agent.trim().to_string();
+    if agent.is_empty() {
+        return Err("Missing required argument: agent".to_string());
+    }
+    if agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+        return Err("Invalid agent label".to_string());
+    }
+    if !agent.contains('(') {
+        if let Some(model_name) = model.map(str::trim).filter(|m| !m.is_empty()) {
+            if agent.eq_ignore_ascii_case("droid") {
+                agent = format!("DROID ({model_name})");
+            } else {
+                agent = format!("{agent} ({model_name})");
+            }
+        }
+    }
+
+    let owner_id = if state.team_mode {
+        caller_id.or(state.default_owner_id)
+    } else {
+        None
+    };
+    let now = now_iso();
+    let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
+    let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
+    let description = model
+        .map(|m| format!("{description_prefix} · {m}"))
+        .unwrap_or_else(|| description_prefix.to_string());
+
+    let conn = state.db.lock().await;
+    if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, 'mcp', '[]', ?4, ?5, ?5, ?6)
+             ON CONFLICT(owner_id, agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![agent, owner_id, session_id, description, now, expires_at],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, 'mcp', '[]', ?3, ?4, ?4, ?5)
+             ON CONFLICT(agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![agent, session_id, description, now, expires_at],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    crate::db::checkpoint_wal_best_effort(&conn);
+    Ok((agent, expires_at))
 }
 
 // ─── MCP tool definitions ─────────────────────────────────────────────────────
@@ -207,6 +277,17 @@ pub fn mcp_tools() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "cortex_reconnect",
+            "description": "Re-register this MCP agent session after a daemon restart or transient disconnect. Safe to call mid-session.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string", "description": "Agent display name (default: mcp)" },
+                    "model": { "type": "string", "description": "Optional model label to append, e.g. '5.3 Codex Extra High'" }
+                }
+            }
+        }),
     ]
 }
 
@@ -230,8 +311,10 @@ async fn mcp_dispatch(
                 .or_else(|| args.get("source_agent").and_then(|v| v.as_str()))
                 .unwrap_or("mcp")
                 .to_string();
+            let model = args.get("model").and_then(|v| v.as_str());
             let _budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             let profile_str = profile.unwrap_or_else(|| "full".to_string());
+            let _ = upsert_mcp_session(state, caller_id, &agent, model, "MCP boot session").await;
 
             // Clear served content for this agent on boot
             {
@@ -280,6 +363,25 @@ async fn mcp_dispatch(
                 "profile": if profile_str == "full" { "capsules" } else { &profile_str },
                 "capsules": result.capsules,
                 "savings": result.savings
+            }))
+        }
+
+        "cortex_reconnect" => {
+            let agent = args
+                .get("agent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("mcp");
+            let model = args.get("model").and_then(|v| v.as_str());
+            let (display_agent, expires_at) =
+                upsert_mcp_session(state, caller_id, agent, model, "MCP reconnect").await?;
+            state.emit(
+                "session",
+                json!({"action": "reconnected", "agent": display_agent}),
+            );
+            Ok(json!({
+                "reconnected": true,
+                "agent": display_agent,
+                "expiresAt": expires_at
             }))
         }
 

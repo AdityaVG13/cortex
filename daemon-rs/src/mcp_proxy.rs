@@ -23,8 +23,9 @@ use crate::daemon_lifecycle;
 
 const HEALTH_CHECK_ATTEMPTS: u32 = 5;
 const REQUEST_ATTEMPTS: u32 = 3;
-const MAX_CONSECUTIVE_FAILURES: u32 = 10;
-const MAX_RESPAWN_ATTEMPTS: u32 = 3;
+const MAX_CONSECUTIVE_FAILURES: u32 = 2;
+const RESPAWN_COOLDOWN_SECS: u64 = 15;
+const SESSION_HEARTBEAT_SECS: u64 = 60;
 
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
@@ -59,6 +60,106 @@ fn detect_team_mode(api_key: Option<&str>) -> bool {
     api_key.is_some()
 }
 
+fn env_trimmed(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
+    let model = env_trimmed("CORTEX_AGENT_MODEL").or_else(|| env_trimmed("CORTEX_MODEL"));
+
+    let mut agent = env_trimmed("CORTEX_AGENT_DISPLAY")
+        .or_else(|| agent_arg.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
+        .or_else(|| env_trimmed("CORTEX_AGENT_NAME"))
+        .unwrap_or_else(|| "mcp".to_string());
+
+    if !agent.contains('(') {
+        if let Some(model_name) = model.as_deref() {
+            if agent.eq_ignore_ascii_case("droid") {
+                agent = format!("DROID ({model_name})");
+            } else {
+                agent = format!("{agent} ({model_name})");
+            }
+        }
+    }
+
+    (agent, model)
+}
+
+fn build_auth_header(api_key: Option<&str>) -> Option<String> {
+    if let Some(key) = api_key {
+        return Some(format!("Bearer {key}"));
+    }
+    read_auth_token().map(|token| format!("Bearer {token}"))
+}
+
+async fn session_start(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    agent: &str,
+    model: Option<&str>,
+) -> bool {
+    let mut req = client
+        .post(format!("{base_url}/session/start"))
+        .header("content-type", "application/json")
+        .header("x-cortex-request", "true")
+        .json(&serde_json::json!({
+            "agent": agent,
+            "ttl": 7200,
+            "description": model
+                .map(|m| format!("MCP session · {m}"))
+                .unwrap_or_else(|| "MCP session".to_string())
+        }));
+
+    if let Some(auth) = build_auth_header(api_key) {
+        req = req.header("authorization", auth);
+    }
+
+    match req.send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+enum SessionHeartbeatOutcome {
+    Renewed,
+    MissingSession,
+    Failed,
+}
+
+async fn session_heartbeat(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    agent: &str,
+    model: Option<&str>,
+) -> SessionHeartbeatOutcome {
+    let mut req = client
+        .post(format!("{base_url}/session/heartbeat"))
+        .header("content-type", "application/json")
+        .header("x-cortex-request", "true")
+        .json(&serde_json::json!({
+            "agent": agent,
+            "description": model.map(|m| format!("MCP session · {m}")).unwrap_or_else(|| "MCP session".to_string())
+        }));
+
+    if let Some(auth) = build_auth_header(api_key) {
+        req = req.header("authorization", auth);
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => SessionHeartbeatOutcome::Renewed,
+        Ok(resp) if resp.status() == reqwest::StatusCode::NOT_FOUND => {
+            SessionHeartbeatOutcome::MissingSession
+        }
+        Ok(_) => SessionHeartbeatOutcome::Failed,
+        Err(_) => SessionHeartbeatOutcome::Failed,
+    }
+}
+
 /// Run MCP proxy over stdio -> HTTP.
 pub async fn run(
     base_url: &str,
@@ -66,8 +167,10 @@ pub async fn run(
     agent: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base_url = base_url.trim_end_matches('/');
-    let mut rpc_url = format!("{base_url}/mcp-rpc");
-    let health_url = format!("{base_url}/health");
+    let mut rpc_base_url = base_url.to_string();
+    let mut rpc_url = format!("{rpc_base_url}/mcp-rpc");
+    let health_url = format!("{rpc_base_url}/health");
+    let (agent_display, agent_model) = resolve_agent_identity(agent);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -76,9 +179,9 @@ pub async fn run(
 
     let team_mode = detect_team_mode(api_key);
     if team_mode {
-        eprintln!("[cortex-mcp] Team mode proxy -> {base_url}");
+        eprintln!("[cortex-mcp] Team mode proxy -> {base_url} as '{agent_display}'");
     } else {
-        eprintln!("[cortex-mcp] Solo mode proxy -> {base_url}");
+        eprintln!("[cortex-mcp] Solo mode proxy -> {base_url} as '{agent_display}'");
     }
 
     // Health check with retry (daemon may still be starting)
@@ -111,41 +214,59 @@ pub async fn run(
         );
     }
 
-    // Spawn background heartbeat to keep the session alive in the Agents panel
-    if let Some(agent_name) = agent {
-        let heartbeat_url = format!("{base_url}/session/heartbeat");
-        let heartbeat_agent = agent_name.to_string();
-        let heartbeat_token = api_key.map(String::from);
+    let _ = session_start(
+        &client,
+        &rpc_base_url,
+        api_key,
+        &agent_display,
+        agent_model.as_deref(),
+    )
+    .await;
+
+    // Spawn background heartbeat to keep sessions visible and recover after daemon restarts.
+    {
+        let heartbeat_base_url = rpc_base_url.clone();
+        let heartbeat_agent = agent_display.clone();
+        let heartbeat_model = agent_model.clone();
+        let heartbeat_api_key = api_key.map(String::from);
         tokio::spawn(async move {
-            let hb_client = reqwest::Client::builder()
+            let hb_client = match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
-                .unwrap();
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1800)).await; // 30 min
-                let body = serde_json::json!({ "agent": heartbeat_agent });
-                let auth = heartbeat_token
-                    .as_deref()
-                    .map(|k| format!("Bearer {k}"))
-                    .or_else(|| crate::mcp_proxy::read_auth_token().map(|t| format!("Bearer {t}")));
-                let mut req = hb_client
-                    .post(&heartbeat_url)
-                    .header("content-type", "application/json")
-                    .header("x-cortex-request", "true")
-                    .json(&body);
-                if let Some(auth) = auth {
-                    req = req.header("authorization", auth);
+            {
+                Ok(client) => client,
+                Err(e) => {
+                    eprintln!("[cortex-mcp] Heartbeat client init failed: {e}");
+                    return;
                 }
-                match req.send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        eprintln!("[cortex-mcp] Session heartbeat sent for {heartbeat_agent}");
+            };
+
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(SESSION_HEARTBEAT_SECS)).await;
+                match session_heartbeat(
+                    &hb_client,
+                    &heartbeat_base_url,
+                    heartbeat_api_key.as_deref(),
+                    &heartbeat_agent,
+                    heartbeat_model.as_deref(),
+                )
+                .await
+                {
+                    SessionHeartbeatOutcome::Renewed => {}
+                    SessionHeartbeatOutcome::MissingSession => {
+                        let restarted = session_start(
+                            &hb_client,
+                            &heartbeat_base_url,
+                            heartbeat_api_key.as_deref(),
+                            &heartbeat_agent,
+                            heartbeat_model.as_deref(),
+                        )
+                        .await;
+                        if restarted {
+                            eprintln!("[cortex-mcp] Re-registered session for {heartbeat_agent}");
+                        }
                     }
-                    Ok(resp) => {
-                        eprintln!("[cortex-mcp] Heartbeat returned HTTP {}", resp.status());
-                    }
-                    Err(e) => {
-                        eprintln!("[cortex-mcp] Heartbeat failed: {e}");
-                    }
+                    SessionHeartbeatOutcome::Failed => {}
                 }
             }
         });
@@ -158,6 +279,7 @@ pub async fn run(
 
     let mut consecutive_failures: u32 = 0;
     let mut respawn_attempts: u32 = 0;
+    let mut last_respawn_attempt_at: Option<std::time::Instant> = None;
 
     loop {
         let line = match lines.next_line().await {
@@ -221,7 +343,11 @@ pub async fn run(
                 .post(&rpc_url)
                 .header("content-type", "application/json")
                 .header("x-cortex-request", "true")
+                .header("x-source-agent", &agent_display)
                 .timeout(remaining.min(std::time::Duration::from_secs(10)));
+            if let Some(model) = agent_model.as_deref() {
+                req = req.header("x-source-model", model);
+            }
             if let Some(auth) = auth_header {
                 req = req.header("authorization", auth);
             }
@@ -337,32 +463,40 @@ pub async fn run(
         }
 
         if should_count_failure && consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-            if respawn_attempts >= MAX_RESPAWN_ATTEMPTS {
-                return Err(format!(
-                    "Daemon unreachable after {consecutive_failures} consecutive failures \
-                     and {respawn_attempts} respawn attempts: {last_err}"
-                )
-                .into());
+            let in_cooldown = last_respawn_attempt_at
+                .map(|t| t.elapsed() < std::time::Duration::from_secs(RESPAWN_COOLDOWN_SECS))
+                .unwrap_or(false);
+            if in_cooldown {
+                continue;
             }
 
             respawn_attempts += 1;
+            last_respawn_attempt_at = Some(std::time::Instant::now());
             eprintln!(
                 "[cortex-mcp] {consecutive_failures} consecutive failures; \
-                 respawn attempt {respawn_attempts}/{MAX_RESPAWN_ATTEMPTS}"
+                 respawn attempt {respawn_attempts}"
             );
 
             let mut paths = CortexPaths::resolve();
             if daemon_lifecycle::try_respawn(&paths).await {
                 // Daemon is back -- rebuild URLs using the latest resolved port.
                 paths = CortexPaths::resolve();
-                let new_base = format!("http://127.0.0.1:{}", paths.port);
-                rpc_url = format!("{new_base}/mcp-rpc");
+                rpc_base_url = format!("http://127.0.0.1:{}", paths.port);
+                rpc_url = format!("{rpc_base_url}/mcp-rpc");
+                let _ = session_start(
+                    &client,
+                    &rpc_base_url,
+                    api_key,
+                    &agent_display,
+                    agent_model.as_deref(),
+                )
+                .await;
                 consecutive_failures = 0;
                 eprintln!("[cortex-mcp] Daemon recovered; resuming proxy");
             } else {
                 eprintln!(
                     "[cortex-mcp] Respawn attempt {respawn_attempts} failed; \
-                     will retry on next failure batch"
+                     will keep retrying while proxy stays online"
                 );
             }
         }

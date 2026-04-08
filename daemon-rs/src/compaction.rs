@@ -30,6 +30,7 @@ const FEEDBACK_AGGREGATION_DAYS: i64 = 60;
 pub struct CompactionResult {
     pub events_pruned: usize,
     pub archived_text_stripped: usize,
+    pub expired_pruned: usize,
     pub crystal_embeddings_pruned: usize,
     pub feedback_aggregated: usize,
     pub bytes_before: i64,
@@ -51,18 +52,22 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
     // 2. Archived entry text cleanup
     result.archived_text_stripped = strip_archived_text(conn);
 
-    // 3. Crystal member embedding pruning
+    // 3. Hard-expiration cleanup
+    result.expired_pruned = prune_expired_entries(conn);
+
+    // 4. Crystal member embedding pruning
     result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
 
-    // 4. Feedback aggregation
+    // 5. Feedback aggregation
     result.feedback_aggregated = aggregate_old_feedback(conn);
 
-    // 5. Reclaim space
+    // 6. Reclaim space
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     // VACUUM is expensive but reclaims space from deletions.
     // Only run if we deleted a meaningful amount.
     let total_deleted = result.events_pruned
         + result.archived_text_stripped
+        + result.expired_pruned
         + result.crystal_embeddings_pruned
         + result.feedback_aggregated;
     if total_deleted > 100 {
@@ -74,8 +79,9 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
     if total_deleted > 0 {
         let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
         eprintln!(
-            "[compaction] Pruned: {} events, {} archived texts, {} crystal embeddings, {} feedback rows. Saved {}KB",
+            "[compaction] Pruned: {} events, {} archived texts, {} expired rows, {} crystal embeddings, {} feedback rows. Saved {}KB",
             result.events_pruned, result.archived_text_stripped,
+            result.expired_pruned,
             result.crystal_embeddings_pruned, result.feedback_aggregated,
             saved_kb
         );
@@ -119,6 +125,26 @@ fn strip_archived_text(conn: &Connection) -> usize {
              AND decision != '[compacted]' \
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
             params![ARCHIVED_TEXT_RETENTION_DAYS],
+        )
+        .unwrap_or(0);
+
+    count
+}
+
+fn prune_expired_entries(conn: &Connection) -> usize {
+    let mut count = 0usize;
+
+    count += conn
+        .execute(
+            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            [],
+        )
+        .unwrap_or(0);
+
+    count += conn
+        .execute(
+            "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+            [],
         )
         .unwrap_or(0);
 
@@ -261,6 +287,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::configure(&conn).unwrap();
         crate::db::initialize_schema(&conn).unwrap();
+        crate::db::run_pending_migrations(&conn);
         crate::crystallize::migrate_crystal_tables(&conn);
         conn
     }
@@ -319,6 +346,7 @@ mod tests {
         // Empty DB should compact cleanly
         assert_eq!(result.events_pruned, 0);
         assert_eq!(result.archived_text_stripped, 0);
+        assert_eq!(result.expired_pruned, 0);
     }
 
     #[test]
@@ -328,6 +356,39 @@ mod tests {
         assert!(!breakdown.is_empty());
         // All counts should be 0 for empty DB
         assert!(breakdown.iter().all(|(_, count)| *count == 0));
+    }
+
+    #[test]
+    fn test_prune_expired_entries() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO memories (text, source, status, expires_at) VALUES ('expired memory', 'ttl::mem', 'active', datetime('now', '-1 second'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, expires_at) VALUES ('expired decision', 'ttl::dec', 'active', datetime('now', '-1 second'))",
+            [],
+        )
+        .unwrap();
+
+        let deleted = prune_expired_entries(&conn);
+        assert_eq!(deleted, 2);
+
+        let mem_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories WHERE source = 'ttl::mem'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let dec_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE context = 'ttl::dec'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mem_count, 0);
+        assert_eq!(dec_count, 0);
     }
 }
 

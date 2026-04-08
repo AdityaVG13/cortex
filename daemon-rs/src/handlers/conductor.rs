@@ -159,6 +159,11 @@ fn parse_json_array(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
 }
 
+fn is_valid_agent_label(agent: &str) -> bool {
+    let trimmed = agent.trim();
+    !trimmed.is_empty() && trimmed.len() <= 160 && !trimmed.chars().any(|ch| ch.is_control())
+}
+
 fn parse_timestamp_ms(value: &str) -> i64 {
     if value.trim().is_empty() {
         return 0;
@@ -344,13 +349,13 @@ fn fetch_sessions(
     {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
-             FROM sessions WHERE owner_id = ?1 ORDER BY started_at ASC",
+             FROM sessions WHERE owner_id = ?1 ORDER BY last_heartbeat DESC",
             vec![Box::new(owner_id)],
         )
     } else {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
-             FROM sessions ORDER BY started_at ASC",
+             FROM sessions ORDER BY last_heartbeat DESC",
             vec![],
         )
     };
@@ -941,6 +946,12 @@ pub async fn handle_session_start(
             )
         }
     };
+    if !is_valid_agent_label(&agent) {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Invalid agent label" }),
+        );
+    }
 
     let ttl = body.ttl.unwrap_or(SESSION_TTL_SECONDS).max(1);
     let owner_id = owner_id_from_state(&state);
@@ -1029,23 +1040,10 @@ pub async fn handle_session_heartbeat(
     }
 
     let agent = body.agent.unwrap_or_default().trim().to_string();
-    if agent.is_empty() {
+    if !is_valid_agent_label(&agent) {
         return json_response(
             StatusCode::BAD_REQUEST,
             json!({ "error": "Missing or invalid required field: agent" }),
-        );
-    }
-    if agent.len() > 100 {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "Invalid agent: name too long (max 100 chars)" }),
-        );
-    }
-    let agent_re = Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
-    if !agent_re.is_match(&agent) {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            json!({ "error": "Invalid agent: name contains invalid characters (use alphanumeric, underscore, hyphen only)" }),
         );
     }
 

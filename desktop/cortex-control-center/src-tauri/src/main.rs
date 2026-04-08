@@ -28,6 +28,9 @@ const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 3_000;
 const DAEMON_CONNECT_TIMEOUT_MS: u64 = 3_000;
 const DAEMON_READ_TIMEOUT_MS: u64 = 10_000;
 const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
+const DAEMON_START_WAIT_MS: u64 = 12_000;
+const DAEMON_STOP_WAIT_MS: u64 = 8_000;
+const DAEMON_WAIT_POLL_MS: u64 = 200;
 
 struct DaemonState {
   daemon: Mutex<SidecarDaemon>,
@@ -120,6 +123,19 @@ fn cortex_db_path() -> Result<PathBuf, String> {
 fn is_cortex_reachable() -> bool {
   let addr = SocketAddr::from(([127, 0, 0, 1], resolve_daemon_port()));
   TcpStream::connect_timeout(&addr, Duration::from_millis(DAEMON_REACHABILITY_TIMEOUT_MS)).is_ok()
+}
+
+fn wait_for_reachability(target: bool, timeout: Duration) -> bool {
+  let started = std::time::Instant::now();
+  loop {
+    if is_cortex_reachable() == target {
+      return true;
+    }
+    if started.elapsed() >= timeout {
+      return false;
+    }
+    std::thread::sleep(Duration::from_millis(DAEMON_WAIT_POLL_MS));
+  }
 }
 
 fn cortex_binary_name() -> &'static str {
@@ -268,7 +284,6 @@ fn flush_cortex_db_on_shutdown() -> Result<(), String> {
       r#"
     PRAGMA journal_mode = WAL;
     PRAGMA wal_checkpoint(TRUNCATE);
-    PRAGMA optimize;
     "#,
     )
     .map_err(|err| format!("Failed to flush WAL on shutdown {}: {err}", db_path.display()))?;
@@ -360,7 +375,11 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 #[tauri::command]
 fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
   let (running, pid) = state.start()?;
-  let reachable = is_cortex_reachable();
+  let reachable = if is_cortex_reachable() {
+    true
+  } else {
+    wait_for_reachability(true, Duration::from_millis(DAEMON_START_WAIT_MS))
+  };
   let port = resolve_daemon_port();
   let message = if reachable {
     format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
@@ -430,8 +449,7 @@ fn stop_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String>
   let still_reachable = is_cortex_reachable();
   if still_reachable {
     let _ = send_http_shutdown();
-    // Brief wait for graceful shutdown to take effect
-    std::thread::sleep(Duration::from_millis(500));
+    let _ = wait_for_reachability(false, Duration::from_millis(DAEMON_STOP_WAIT_MS));
   }
 
   let reachable = is_cortex_reachable();
