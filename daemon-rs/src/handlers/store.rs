@@ -3,7 +3,6 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -165,11 +164,7 @@ pub fn store_decision_with_ttl(
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let confidence = confidence.unwrap_or(0.8);
     let ts = now_iso();
-    let expires_at = ttl_seconds.map(|secs| {
-        (Utc::now() + Duration::seconds(secs))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string()
-    });
+    let expires_at = compute_expires_at(conn, ttl_seconds)?;
 
     // ── 1. Conflict detection (cosine first, then Jaccard fallback) ──────────
     let cr = match cosine_conflict {
@@ -291,6 +286,7 @@ pub fn store_decision_with_ttl(
             .prepare(
                 "SELECT decision FROM decisions \
                  WHERE status = 'active' \
+                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
                  ORDER BY created_at DESC LIMIT 50",
             )
             .map_err(|e| e.to_string())?;
@@ -360,3 +356,19 @@ pub fn store_decision_with_ttl(
     ))
 }
 
+fn compute_expires_at(
+    conn: &Connection,
+    ttl_seconds: Option<i64>,
+) -> Result<Option<String>, String> {
+    let Some(ttl_seconds) = ttl_seconds else {
+        return Ok(None);
+    };
+    let modifier = format!("+{ttl_seconds} seconds");
+    conn.query_row(
+        "SELECT datetime('now', ?1)",
+        params![modifier],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .map_err(|e| format!("Failed to compute expires_at: {e}"))
+}

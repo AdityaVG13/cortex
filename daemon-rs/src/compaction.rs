@@ -132,21 +132,33 @@ fn strip_archived_text(conn: &Connection) -> usize {
 }
 
 fn prune_expired_entries(conn: &Connection) -> usize {
-    let mut count = 0usize;
-
-    count += conn
+    let memories_deleted = conn
         .execute(
             "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
             [],
         )
         .unwrap_or(0);
 
-    count += conn
+    let decisions_deleted = conn
         .execute(
             "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
             [],
         )
         .unwrap_or(0);
+
+    let count = memories_deleted + decisions_deleted;
+    if count > 0 {
+        let payload = serde_json::json!({
+            "memories_deleted": memories_deleted,
+            "decisions_deleted": decisions_deleted,
+        })
+        .to_string();
+        let _ = conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('expired_entries_pruned', ?1, 'compaction', datetime('now'))",
+            params![payload],
+        );
+    }
 
     count
 }
@@ -389,6 +401,16 @@ mod tests {
             .unwrap();
         assert_eq!(mem_count, 0);
         assert_eq!(dec_count, 0);
+
+        let event: (String, String) = conn
+            .query_row(
+                "SELECT type, data FROM events WHERE source_agent = 'compaction' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(event.0, "expired_entries_pruned");
+        assert!(event.1.contains("\"memories_deleted\":1"));
+        assert!(event.1.contains("\"decisions_deleted\":1"));
     }
 }
-

@@ -274,6 +274,7 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           disputes_id INTEGER,
           supersedes_id INTEGER,
           confirmed_by TEXT,
+          expires_at TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -295,6 +296,7 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           disputes_id INTEGER,
           supersedes_id INTEGER,
           confirmed_by TEXT,
+          expires_at TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -1726,4 +1728,3 @@ mod tests {
         assert!(!feed_acks_sql.contains("UNIQUE(agent)"));
     }
 }
-

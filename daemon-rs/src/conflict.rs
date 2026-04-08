@@ -52,6 +52,7 @@ pub fn detect_conflict(
             "SELECT id, decision, source_agent \
              FROM decisions \
              WHERE status = 'active' \
+             AND (expires_at IS NULL OR expires_at > datetime('now')) \
              ORDER BY id DESC \
              LIMIT 50",
         )
@@ -128,7 +129,8 @@ pub fn detect_conflict_cosine(
             "SELECT d.id, d.source_agent, e.vector \
              FROM decisions d \
              JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
-             WHERE d.status = 'active'",
+             WHERE d.status = 'active' \
+             AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
         )
         .ok()?;
 
@@ -240,5 +242,28 @@ mod tests {
         assert!(!result.is_conflict);
         assert!(!result.is_update);
     }
-}
 
+    #[test]
+    fn test_detect_conflict_ignores_expired_decisions() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, type, source_agent, status, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '-1 second'))",
+            rusqlite::params![
+                "Cortex uses SQLite for storage",
+                "test",
+                "decision",
+                "claude",
+                "active"
+            ],
+        )
+        .unwrap();
+
+        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "claude").unwrap();
+        assert!(!result.is_conflict);
+        assert!(!result.is_update);
+    }
+}
