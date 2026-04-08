@@ -74,7 +74,7 @@ impl SidecarDaemon {
             loop {
                 match child.try_wait() {
                     Ok(Some(_)) => break,
-                    Ok(None) if start.elapsed() < std::time::Duration::from_secs(5) => {
+                    Ok(None) if start.elapsed() < std::time::Duration::from_secs(2) => {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     _ => break,
