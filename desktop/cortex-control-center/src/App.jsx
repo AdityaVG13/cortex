@@ -1627,6 +1627,8 @@ export function App() {
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                     {[
                       { handle: "AdityaVG13", role: "Creator & maintainer" },
+                      { handle: "Claude Code", role: "Core architecture & retrieval pipeline" },
+                      { handle: "Factory Droid", role: "Desktop app, reconnection & telemetry" },
                     ].map(({ handle, role }) => (
                       <div key={handle} style={{
                         display: "flex", alignItems: "center", gap: "0.75rem",
