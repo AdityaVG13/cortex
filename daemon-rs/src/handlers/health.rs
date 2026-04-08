@@ -2,6 +2,7 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use chrono::{NaiveDateTime, Timelike, Utc};
 use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -286,6 +287,26 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
 
 // ─── GET /savings ────────────────────────────────────────────────────────────
 
+fn parse_event_timestamp_utc(raw: &str) -> Option<chrono::DateTime<Utc>> {
+    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(ts.with_timezone(&Utc));
+    }
+
+    if let Ok(naive) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") {
+        return Some(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
+            naive, Utc,
+        ));
+    }
+
+    if let Ok(naive) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
+            naive, Utc,
+        ));
+    }
+
+    None
+}
+
 pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
@@ -411,7 +432,11 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     let by_agent_arr: Vec<Value> = by_agent
         .into_iter()
         .map(|(agent, (saved, served, baseline, boots))| {
-            let percent = if baseline > 0 { (saved * 100) / baseline } else { 0 };
+            let percent = if baseline > 0 {
+                (saved * 100) / baseline
+            } else {
+                0
+            };
             json!({
                 "agent": agent,
                 "saved": saved,
@@ -425,6 +450,194 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
 
     let recent: Vec<Value> = points.iter().rev().take(20).cloned().collect();
 
+    let mut by_operation: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
+    for op in ["recall", "store", "boot", "tool"] {
+        by_operation.insert(op.to_string(), (0, 0, 0, 0));
+    }
+    let mut daily_savings_all: BTreeMap<String, i64> = BTreeMap::new();
+    let mut recall_daily: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut activity_heatmap_map: BTreeMap<(String, i64), i64> = BTreeMap::new();
+
+    let mut event_stmt = match conn
+        .prepare("SELECT type, data, source_agent, created_at FROM events ORDER BY created_at ASC")
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            )
+        }
+    };
+
+    let event_rows: Vec<(String, Option<String>, Option<String>, String)> = event_stmt
+        .query_map([], |row| {
+            let event_type: String = row.get(0)?;
+            let data: Option<String> = row.get(1)?;
+            let source_agent: Option<String> = row.get(2)?;
+            let created_at: Option<String> = row.get(3)?;
+            Ok((
+                event_type,
+                data,
+                source_agent,
+                created_at.unwrap_or_default(),
+            ))
+        })
+        .map(|iter| iter.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default();
+
+    for (event_type, data_str, source_agent, created_at) in event_rows {
+        let parsed = data_str
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .unwrap_or_else(|| json!({}));
+
+        let (operation, saved, served, baseline) = match event_type.as_str() {
+            "boot_savings" => (
+                Some("boot"),
+                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
+            ),
+            "recall_query" => (
+                Some("recall"),
+                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed
+                    .get("spent")
+                    .or_else(|| parsed.get("served"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                parsed
+                    .get("budget")
+                    .or_else(|| parsed.get("baseline"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+            ),
+            "store_savings" => (
+                Some("store"),
+                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
+            ),
+            "decision_stored"
+            | "decision_supersede"
+            | "decision_conflict"
+            | "decision_rejected_duplicate" => (Some("store"), 0, 0, 0),
+            "tool_call_savings" => (
+                Some("tool"),
+                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
+                parsed.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
+            ),
+            _ => (None, 0, 0, 0),
+        };
+
+        if let Some(op) = operation {
+            let entry = by_operation.entry(op.to_string()).or_insert((0, 0, 0, 0));
+            entry.0 += saved;
+            entry.1 += served;
+            entry.2 += baseline;
+            entry.3 += 1;
+        }
+
+        if saved > 0 {
+            let day = &created_at[..created_at.len().min(10)];
+            if !day.is_empty() {
+                *daily_savings_all.entry(day.to_string()).or_insert(0) += saved;
+            }
+        }
+
+        if event_type == "recall_query" {
+            let day = &created_at[..created_at.len().min(10)];
+            if !day.is_empty() {
+                let row = recall_daily.entry(day.to_string()).or_insert((0, 0));
+                if parsed.get("hits").and_then(|v| v.as_i64()).unwrap_or(0) > 0 {
+                    row.0 += 1;
+                } else {
+                    row.1 += 1;
+                }
+            }
+        }
+
+        if !created_at.is_empty() {
+            if let Some(ts) = parse_event_timestamp_utc(&created_at) {
+                let day = ts.format("%a").to_string();
+                let hour = ts.hour() as i64;
+                *activity_heatmap_map.entry((day, hour)).or_insert(0) += 1;
+            }
+        } else if let Some(agent) = source_agent {
+            if !agent.is_empty() {
+                *activity_heatmap_map
+                    .entry(("Unknown".to_string(), 0))
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+
+    let by_operation_arr: Vec<Value> = ["recall", "store", "boot", "tool"]
+        .iter()
+        .map(|op| {
+            let (saved, served, baseline, events) =
+                by_operation.get(*op).copied().unwrap_or((0, 0, 0, 0));
+            let percent = if baseline > 0 {
+                (saved * 100) / baseline
+            } else {
+                0
+            };
+            json!({
+                "operation": op,
+                "saved": saved,
+                "served": served,
+                "baseline": baseline,
+                "events": events,
+                "percent": percent
+            })
+        })
+        .collect();
+
+    let mut running_saved = 0_i64;
+    let cumulative: Vec<Value> = daily_savings_all
+        .into_iter()
+        .map(|(date, saved_delta)| {
+            running_saved += saved_delta;
+            json!({
+                "date": date,
+                "savedDelta": saved_delta,
+                "savedTotal": running_saved
+            })
+        })
+        .collect();
+
+    let recall_trend: Vec<Value> = recall_daily
+        .into_iter()
+        .map(|(date, (hits, misses))| {
+            let queries = hits + misses;
+            let hit_rate = if queries > 0 {
+                ((hits as f64 / queries as f64) * 1000.0).round() / 10.0
+            } else {
+                0.0
+            };
+            json!({
+                "date": date,
+                "hits": hits,
+                "misses": misses,
+                "queries": queries,
+                "hitRatePct": hit_rate
+            })
+        })
+        .collect();
+
+    let activity_heatmap: Vec<Value> = activity_heatmap_map
+        .into_iter()
+        .map(|((day, hour), count)| {
+            json!({
+                "day": day,
+                "hour": hour,
+                "count": count
+            })
+        })
+        .collect();
+
     json_response(
         StatusCode::OK,
         json!({
@@ -437,12 +650,16 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                 "avgSavedPerBoot": avg_saved_per_boot,
                 "avgServedPerBoot": avg_served_per_boot,
                 "avgBaselinePerBoot": avg_baseline_per_boot,
-                "scope": "boot_prompt_only",
-                "note": "Savings track /boot prompt compilation vs estimated raw context tokens. This does not include recall/store tool-call savings."
+                "scope": "boot_prompt_plus_event_operations",
+                "note": "Boot savings are precise from /boot events. Recall/store/tool figures are event-derived estimates when instrumentation is available."
             },
             "daily": daily_arr,
             "byAgent": by_agent_arr,
             "recent": recent,
+            "byOperation": by_operation_arr,
+            "cumulative": cumulative,
+            "recallTrend": recall_trend,
+            "activityHeatmap": activity_heatmap,
         }),
     )
 }

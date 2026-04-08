@@ -204,7 +204,15 @@ pub async fn handle_budget_recall(
     let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
-    match run_budget_recall_with_engine(&mut conn, &q, budget, k, engine, &ctx, Some(&state.degraded_mode)) {
+    match run_budget_recall_with_engine(
+        &mut conn,
+        &q,
+        budget,
+        k,
+        engine,
+        &ctx,
+        Some(&state.degraded_mode),
+    ) {
         Ok(results) => {
             let spent: usize = results
                 .iter()
@@ -278,6 +286,13 @@ pub async fn handle_peek(
 
 // ─── Unified recall pipeline ─────────────────────────────────────────────────
 
+async fn emit_recall_query_event(state: &RuntimeState, agent: &str, payload: Value) {
+    let conn = state.db.lock().await;
+    if super::log_event(&conn, "recall_query", payload, agent).is_ok() {
+        checkpoint_wal_best_effort(&conn);
+    }
+}
+
 pub async fn execute_unified_recall(
     state: &RuntimeState,
     query_text: &str,
@@ -290,6 +305,21 @@ pub async fn execute_unified_recall(
     if budget > 0 {
         if let Some(cached) = get_pre_cached(state, agent, query_text).await {
             let deduped_cached = dedup_and_mark_served(state, agent, cached).await;
+            emit_recall_query_event(
+                state,
+                agent,
+                json!({
+                    "agent": agent,
+                    "query": truncate_chars(query_text, 120),
+                    "budget": budget,
+                    "spent": 0,
+                    "saved": budget as i64,
+                    "hits": deduped_cached.len(),
+                    "mode": if budget >= 500 { "full" } else { "balanced" },
+                    "cached": true
+                }),
+            )
+            .await;
             return Ok(json!({
                 "results": deduped_cached.into_iter().map(recall_to_json).collect::<Vec<_>>(),
                 "budget": budget,
@@ -344,6 +374,21 @@ pub async fn execute_unified_recall(
                 })
             })
             .collect::<Vec<_>>();
+        emit_recall_query_event(
+            state,
+            agent,
+            json!({
+                "agent": agent,
+                "query": truncate_chars(query_text, 120),
+                "budget": 0,
+                "spent": 0,
+                "saved": 0,
+                "hits": headlines.len(),
+                "mode": "headlines",
+                "cached": false
+            }),
+        )
+        .await;
         return Ok(json!({
             "count": headlines.len(),
             "results": headlines,
@@ -363,13 +408,29 @@ pub async fn execute_unified_recall(
         })
         .sum();
     let saved = budget as i64 - spent as i64;
+    let mode = if budget >= 500 { "full" } else { "balanced" };
+    emit_recall_query_event(
+        state,
+        agent,
+        json!({
+            "agent": agent,
+            "query": truncate_chars(query_text, 120),
+            "budget": budget,
+            "spent": spent,
+            "saved": saved,
+            "hits": results.len(),
+            "mode": mode,
+            "cached": false
+        }),
+    )
+    .await;
 
     let payload = json!({
         "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
         "budget": budget,
         "spent": spent,
         "saved": saved,
-        "mode": if budget >= 500 { "full" } else { "balanced" }
+        "mode": mode
     });
 
     Ok(payload)
@@ -419,9 +480,13 @@ fn run_recall_with_engine(
 
     if let Some(engine) = engine {
         if let Some(query_vec) = engine.embed(query_text) {
-            for (crystal_id, label, text, relevance) in
-                crate::crystallize::search_crystals_filtered(conn, &query_vec, 3, ctx.caller_id, ctx.team_mode)
-            {
+            for (crystal_id, label, text, relevance) in crate::crystallize::search_crystals_filtered(
+                conn,
+                &query_vec,
+                3,
+                ctx.caller_id,
+                ctx.team_mode,
+            ) {
                 let source = format!("crystal::{crystal_id}::{label}");
                 crystal_items.insert(
                     source.clone(),
@@ -630,10 +695,8 @@ fn run_recall_with_engine(
         .collect();
 
     // Build ranked list for semantic results (sorted by relevance desc)
-    let mut sem_sorted: Vec<(&String, f64)> = sem_map
-        .iter()
-        .map(|(src, e)| (src, e.relevance))
-        .collect();
+    let mut sem_sorted: Vec<(&String, f64)> =
+        sem_map.iter().map(|(src, e)| (src, e.relevance)).collect();
     sem_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let sem_list: Vec<(i64, f64)> = sem_sorted
         .iter()
@@ -654,18 +717,16 @@ fn run_recall_with_engine(
         };
 
         // Prefer keyword candidate metadata (has score + ts); fall back to sem
-        let (excerpt, importance, ts_ms, method) = if let Some(kw) = kw_candidates
-            .iter()
-            .find(|c| c.source == source)
-        {
-            let in_sem = sem_map.contains_key(&source);
-            let method = if in_sem { "hybrid" } else { "keyword" };
-            (kw.excerpt.clone(), kw.score, kw.ts, method)
-        } else if let Some(sem) = sem_map.get(&source) {
-            (sem.excerpt.clone(), 1.0_f64, 0_i64, "semantic")
-        } else {
-            continue;
-        };
+        let (excerpt, importance, ts_ms, method) =
+            if let Some(kw) = kw_candidates.iter().find(|c| c.source == source) {
+                let in_sem = sem_map.contains_key(&source);
+                let method = if in_sem { "hybrid" } else { "keyword" };
+                (kw.excerpt.clone(), kw.score, kw.ts, method)
+            } else if let Some(sem) = sem_map.get(&source) {
+                (sem.excerpt.clone(), 1.0_f64, 0_i64, "semantic")
+            } else {
+                continue;
+            };
 
         // Convert ts (Unix-ms) to ISO 8601 for compound_score()
         let created_at_str = if ts_ms > 0 {
@@ -678,7 +739,11 @@ fn run_recall_with_engine(
         };
 
         // importance is 0-1 in DB; normalize() expects 0-100 range
-        let relevance = round4(compound_score(*rrf_score, importance * 100.0, &created_at_str));
+        let relevance = round4(compound_score(
+            *rrf_score,
+            importance * 100.0,
+            &created_at_str,
+        ));
 
         merged.insert(
             source.clone(),
@@ -1423,45 +1488,45 @@ fn extract_search_keywords(text: &str) -> Vec<String> {
 /// handles both directions as separate entries.
 fn coding_synonyms(word: &str) -> Option<&'static str> {
     match word {
-        "func"      => Some("function"),
-        "fn"        => Some("function"),
-        "err"       => Some("error"),
-        "db"        => Some("database"),
-        "auth"      => Some("authentication"),
-        "authn"     => Some("authentication"),
-        "authz"     => Some("authorization"),
-        "cfg"       => Some("config"),
-        "config"    => Some("configuration"),
-        "msg"       => Some("message"),
-        "req"       => Some("request"),
-        "res"       => Some("response"),
-        "resp"      => Some("response"),
-        "impl"      => Some("implementation"),
-        "repo"      => Some("repository"),
-        "env"       => Some("environment"),
-        "var"       => Some("variable"),
-        "arg"       => Some("argument"),
-        "args"      => Some("arguments"),
-        "param"     => Some("parameter"),
-        "params"    => Some("parameters"),
-        "dir"       => Some("directory"),
-        "tmp"       => Some("temporary"),
-        "async"     => Some("asynchronous"),
-        "sync"      => Some("synchronous"),
-        "tx"        => Some("transaction"),
-        "rx"        => Some("receive"),
-        "conn"      => Some("connection"),
-        "stmt"      => Some("statement"),
-        "idx"       => Some("index"),
-        "str"       => Some("string"),
-        "int"       => Some("integer"),
-        "bool"      => Some("boolean"),
-        "vec"       => Some("vector"),
-        "dict"      => Some("dictionary"),
-        "obj"       => Some("object"),
-        "num"       => Some("number"),
-        "char"      => Some("character"),
-        _           => None,
+        "func" => Some("function"),
+        "fn" => Some("function"),
+        "err" => Some("error"),
+        "db" => Some("database"),
+        "auth" => Some("authentication"),
+        "authn" => Some("authentication"),
+        "authz" => Some("authorization"),
+        "cfg" => Some("config"),
+        "config" => Some("configuration"),
+        "msg" => Some("message"),
+        "req" => Some("request"),
+        "res" => Some("response"),
+        "resp" => Some("response"),
+        "impl" => Some("implementation"),
+        "repo" => Some("repository"),
+        "env" => Some("environment"),
+        "var" => Some("variable"),
+        "arg" => Some("argument"),
+        "args" => Some("arguments"),
+        "param" => Some("parameter"),
+        "params" => Some("parameters"),
+        "dir" => Some("directory"),
+        "tmp" => Some("temporary"),
+        "async" => Some("asynchronous"),
+        "sync" => Some("synchronous"),
+        "tx" => Some("transaction"),
+        "rx" => Some("receive"),
+        "conn" => Some("connection"),
+        "stmt" => Some("statement"),
+        "idx" => Some("index"),
+        "str" => Some("string"),
+        "int" => Some("integer"),
+        "bool" => Some("boolean"),
+        "vec" => Some("vector"),
+        "dict" => Some("dictionary"),
+        "obj" => Some("object"),
+        "num" => Some("number"),
+        "char" => Some("character"),
+        _ => None,
     }
 }
 
@@ -1537,7 +1602,9 @@ fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
     let sources: Vec<&str> = items.iter().map(|i| i.source.as_str()).collect();
 
     // Batch boost memories -- single UPDATE with IN clause
-    let placeholders: String = sources.iter().enumerate()
+    let placeholders: String = sources
+        .iter()
+        .enumerate()
         .map(|(i, _)| format!("?{}", i + 2))
         .collect::<Vec<_>>()
         .join(",");
@@ -1549,20 +1616,25 @@ fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
          WHERE source IN ({})",
         placeholders
     );
-    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(sources.len() + 1);
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
+        Vec::with_capacity(sources.len() + 1);
     params_vec.push(Box::new(now.clone()));
     for s in &sources {
         params_vec.push(Box::new(s.to_string()));
     }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
     let _ = conn.execute(&sql, param_refs.as_slice());
 
     // Batch boost decisions by id
-    let decision_ids: Vec<i64> = sources.iter()
+    let decision_ids: Vec<i64> = sources
+        .iter()
         .filter_map(|s| s.strip_prefix("decision::").and_then(|id| id.parse().ok()))
         .collect();
     if !decision_ids.is_empty() {
-        let d_placeholders: String = decision_ids.iter().enumerate()
+        let d_placeholders: String = decision_ids
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 2))
             .collect::<Vec<_>>()
             .join(",");
@@ -1574,22 +1646,27 @@ fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
              WHERE id IN ({})",
             d_placeholders
         );
-        let mut d_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(decision_ids.len() + 1);
+        let mut d_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(decision_ids.len() + 1);
         d_params.push(Box::new(now.clone()));
         for id in &decision_ids {
             d_params.push(Box::new(*id));
         }
-        let d_refs: Vec<&dyn rusqlite::types::ToSql> = d_params.iter().map(|p| p.as_ref()).collect();
+        let d_refs: Vec<&dyn rusqlite::types::ToSql> =
+            d_params.iter().map(|p| p.as_ref()).collect();
         let _ = conn.execute(&d_sql, d_refs.as_slice());
     }
 
     // Batch boost decisions by context (non-id sources)
-    let context_sources: Vec<&str> = sources.iter()
+    let context_sources: Vec<&str> = sources
+        .iter()
         .filter(|s| !s.starts_with("decision::"))
         .copied()
         .collect();
     if !context_sources.is_empty() {
-        let c_placeholders: String = context_sources.iter().enumerate()
+        let c_placeholders: String = context_sources
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 2))
             .collect::<Vec<_>>()
             .join(",");
@@ -1601,12 +1678,14 @@ fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
              WHERE context IN ({})",
             c_placeholders
         );
-        let mut c_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(context_sources.len() + 1);
+        let mut c_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(context_sources.len() + 1);
         c_params.push(Box::new(now));
         for s in &context_sources {
             c_params.push(Box::new(s.to_string()));
         }
-        let c_refs: Vec<&dyn rusqlite::types::ToSql> = c_params.iter().map(|p| p.as_ref()).collect();
+        let c_refs: Vec<&dyn rusqlite::types::ToSql> =
+            c_params.iter().map(|p| p.as_ref()).collect();
         let _ = conn.execute(&c_sql, c_refs.as_slice());
     }
 }
@@ -1709,7 +1788,11 @@ async fn get_pre_cached(state: &RuntimeState, agent: &str, query: &str) -> Optio
     }
 
     // Evict expired entry for this agent
-    if cache.get(agent).map(|e| e.expires_at <= now).unwrap_or(false) {
+    if cache
+        .get(agent)
+        .map(|e| e.expires_at <= now)
+        .unwrap_or(false)
+    {
         cache.remove(agent);
     }
 
@@ -2093,13 +2176,22 @@ mod tests {
     // ── is_visible tests ───────────────────────────────────────────
 
     fn solo_ctx() -> RecallContext {
-        RecallContext { caller_id: None, team_mode: false }
+        RecallContext {
+            caller_id: None,
+            team_mode: false,
+        }
     }
     fn team_ctx(caller: i64) -> RecallContext {
-        RecallContext { caller_id: Some(caller), team_mode: true }
+        RecallContext {
+            caller_id: Some(caller),
+            team_mode: true,
+        }
     }
     fn team_ctx_no_caller() -> RecallContext {
-        RecallContext { caller_id: None, team_mode: true }
+        RecallContext {
+            caller_id: None,
+            team_mode: true,
+        }
     }
 
     #[test]
@@ -2233,7 +2325,11 @@ mod tests {
         assert_eq!(result[2].0, 30);
         // Score for rank-0 item: 1/(60+0+1) = 1/61
         let expected = 1.0 / 61.0;
-        assert!((result[0].1 - expected).abs() < 1e-10, "expected {expected}, got {}", result[0].1);
+        assert!(
+            (result[0].1 - expected).abs() < 1e-10,
+            "expected {expected}, got {}",
+            result[0].1
+        );
     }
 
     #[test]
@@ -2272,13 +2368,22 @@ mod tests {
         let pos_10 = result.iter().position(|(id, _)| *id == 10).unwrap();
         let pos_20 = result.iter().position(|(id, _)| *id == 20).unwrap();
         let pos_30 = result.iter().position(|(id, _)| *id == 30).unwrap();
-        assert!(pos_10 > pos_20, "item10 (rank-0 in one list) should lose to item20 (rank-1 in both)");
-        assert!(pos_10 > pos_30, "item10 (rank-0 in one list) should lose to item30 (rank-0 + rank-2)");
+        assert!(
+            pos_10 > pos_20,
+            "item10 (rank-0 in one list) should lose to item20 (rank-1 in both)"
+        );
+        assert!(
+            pos_10 > pos_30,
+            "item10 (rank-0 in one list) should lose to item30 (rank-0 + rank-2)"
+        );
 
         // Both multi-list items score well above single-list item10
         let score_10 = result[pos_10].1;
         let score_20 = result[pos_20].1;
-        assert!(score_20 > score_10 * 1.9, "item20 cross-list score should be ~2x item10");
+        assert!(
+            score_20 > score_10 * 1.9,
+            "item20 cross-list score should be ~2x item10"
+        );
     }
 
     #[test]
@@ -2300,18 +2405,30 @@ mod tests {
         let now = chrono::Utc::now();
         let today = now.to_rfc3339();
         let days_today = days_since(&today);
-        
+
         // Today should be very close to 0 (within 1 minute tolerance)
-        assert!(days_today < 0.001, "days_since(today) should be ~0, got {}", days_today);
-        
+        assert!(
+            days_today < 0.001,
+            "days_since(today) should be ~0, got {}",
+            days_today
+        );
+
         //Yesterday (approximately)
         let yesterday = (now - chrono::Duration::days(1)).to_rfc3339();
         let days_yesterday = days_since(&yesterday);
-        assert!((days_yesterday - 1.0).abs() < 0.02, "days_since(yesterday) should be ~1.0, got {}", days_yesterday);
-        
+        assert!(
+            (days_yesterday - 1.0).abs() < 0.02,
+            "days_since(yesterday) should be ~1.0, got {}",
+            days_yesterday
+        );
+
         // Invalid timestamp should return MAX
         let days_invalid = days_since("invalid-date");
-        assert_eq!(days_invalid, f64::MAX, "days_since(invalid) should return MAX");
+        assert_eq!(
+            days_invalid,
+            f64::MAX,
+            "days_since(invalid) should return MAX"
+        );
     }
 
     #[test]
@@ -2320,10 +2437,10 @@ mod tests {
         assert!((normalize(0.0) - 0.0).abs() < f64::EPSILON);
         assert!((normalize(50.0) - 0.5).abs() < f64::EPSILON);
         assert!((normalize(100.0) - 1.0).abs() < f64::EPSILON);
-        
+
         // Clamp above 100
         assert_eq!(normalize(150.0), 1.0);
-        
+
         // Clamp below 0
         assert_eq!(normalize(-10.0), 0.0);
     }
@@ -2334,19 +2451,30 @@ mod tests {
         let today = now.to_rfc3339();
         let week_ago = (now - chrono::Duration::weeks(1)).to_rfc3339();
         let month_ago = (now - chrono::Duration::days(30)).to_rfc3339();
-        
+
         // High RRF, high importance, recent: should score well
         let score_high = compound_score(0.1, 100.0, &today);
-        assert!(score_high > 0.06, "high RRF + high importance + recent should score well, got {}", score_high);
-        
+        assert!(
+            score_high > 0.06,
+            "high RRF + high importance + recent should score well, got {}",
+            score_high
+        );
+
         // Low RRF, low importance, old: should score poorly (recency factor dominates but is low for old items)
         let score_low = compound_score(0.001, 0.0, &month_ago);
-        assert!(score_low < 0.08, "low RRF + low importance + old should score poorly, got {}", score_low);
-        
+        assert!(
+            score_low < 0.08,
+            "low RRF + low importance + old should score poorly, got {}",
+            score_low
+        );
+
         // Recency decay: same RRF/imp, older date = lower score
         let score_today = compound_score(0.05, 50.0, &today);
         let score_week = compound_score(0.05, 50.0, &week_ago);
-        assert!(score_today > score_week, "same RRF/imp, today should score > week ago");
+        assert!(
+            score_today > score_week,
+            "same RRF/imp, today should score > week ago"
+        );
     }
 
     // ── synonym expansion tests ────────────────────────────────────
@@ -2395,4 +2523,3 @@ mod tests {
         assert!(score >= 0.6, "expected >= 0.6, got {score}");
     }
 }
-
