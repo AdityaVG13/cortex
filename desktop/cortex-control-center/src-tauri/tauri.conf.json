@@ -26,6 +26,12 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "startMenuFolder": "Cortex"
+      }
+    },
     "externalBin": ["binaries/cortex"],
     "icon": [
       "icons/32x32.png",
