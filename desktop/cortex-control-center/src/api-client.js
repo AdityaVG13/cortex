@@ -11,10 +11,16 @@
  * @param {string} deps.cortexBase - base URL for browser fallback
  * @returns {(path: string, withAuth?: boolean) => Promise<any>}
  */
-export function createApi({ getInvoke, getToken, cortexBase }) {
-  return async function api(path, withAuth = false) {
+export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
+  return async function api(path, withAuth = false, _retried = false) {
     const invoke = getInvoke();
     const token = getToken();
+
+    if (withAuth && !token && !_retried) {
+      // Token not loaded yet -- try refreshing once (daemon may still be writing it)
+      if (onTokenRefresh) await onTokenRefresh();
+      return api(path, withAuth, true);
+    }
 
     if (withAuth && !token) {
       throw new Error(`${path}: no auth token (Tauri IPC ${invoke ? "available" : "missing"})`);
@@ -29,6 +35,11 @@ export function createApi({ getInvoke, getToken, cortexBase }) {
       if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
         throw new Error(`${path}: invalid IPC response`);
       }
+      // On 401, re-read token and retry once (handles daemon token rotation on startup)
+      if (response.status === 401 && withAuth && !_retried && onTokenRefresh) {
+        await onTokenRefresh();
+        return api(path, withAuth, true);
+      }
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`${path}: HTTP ${response.status}`);
       }
@@ -39,6 +50,10 @@ export function createApi({ getInvoke, getToken, cortexBase }) {
     const headers = { "X-Cortex-Request": "true" };
     if (withAuth) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(`${cortexBase}${path}`, { headers });
+    if (response.status === 401 && withAuth && !_retried && onTokenRefresh) {
+      await onTokenRefresh();
+      return api(path, withAuth, true);
+    }
     if (!response.ok) {
       throw new Error(`${path}: HTTP ${response.status}`);
     }

@@ -460,6 +460,13 @@ export function App() {
       getInvoke: () => invokeRef.current,
       getToken: () => tokenRef.current,
       cortexBase,
+      onTokenRefresh: async () => {
+        if (!invokeRef.current) return;
+        try {
+          const token = await invokeRef.current("read_auth_token");
+          tokenRef.current = token || "";
+        } catch { /* ignore */ }
+      },
     }),
     [cortexBase]
   );
