@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, Component } from "re
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
 import { checkForUpdates, installUpdate } from "./updater.js";
 import { createApi, createPostApi, settledWithRethrow, settledCollectErrors } from "./api-client.js";
+import { CURRENCY_OPTIONS, USD_TO_CURRENCY_RATE, SAVINGS_OPERATION_LABELS } from "./constants.js";
 
 class BrainErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
@@ -26,6 +27,8 @@ const SSE_RECONNECT_BASE_MS = 1000;
 const SSE_RECONNECT_MAX_MS = 5000;
 const DAEMON_START_WAIT_TIMEOUT_MS = 90000;
 const DAEMON_START_POLL_INTERVAL_MS = 750;
+const DAEMON_STOP_HANG_TIMEOUT_MS = 5000;
+const SAVINGS_USD_PER_MILLION = 15;
 
 const FEED_KIND_LABEL = {
   prompt: "Prompt",
@@ -317,6 +320,27 @@ function ActivityItem({ entry }) {
   );
 }
 
+function normalizeSession(session, index) {
+  const files = Array.isArray(session?.files)
+    ? session.files
+    : Array.isArray(session?.files_json)
+      ? session.files_json
+      : [];
+  const startedAt = session?.startedAt ?? session?.started_at ?? null;
+  const lastHeartbeat = session?.lastHeartbeat ?? session?.last_heartbeat ?? startedAt;
+  const expiresAt = session?.expiresAt ?? session?.expires_at ?? null;
+  const sessionId = session?.sessionId ?? session?.session_id ?? `${session?.agent || "agent"}-${index}`;
+
+  return {
+    ...session,
+    files,
+    sessionId,
+    startedAt,
+    lastHeartbeat,
+    expiresAt,
+  };
+}
+
 export function App() {
   const [panel, setPanel] = useState("overview");
   const [daemonState, setDaemonState] = useState(EMPTY_DAEMON);
@@ -352,16 +376,48 @@ export function App() {
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState(null);
   const [updateInstalling, setUpdateInstalling] = useState(false);
+  const [restartingDaemon, setRestartingDaemon] = useState(false);
+  const [restartError, setRestartError] = useState("");
+  const [currency, setCurrency] = useState(() => localStorage.getItem("cortex_currency") || "USD");
+  const [analyticsMode, setAnalyticsMode] = useState(() => localStorage.getItem("cortex_analytics_mode") || "aggregate");
 
   const invokeRef = useRef(null);
   const tokenRef = useRef("");
   const refreshAllRef = useRef(async () => {});
 
+  const normalizedSessions = useMemo(() => {
+    if (!Array.isArray(sessions)) return [];
+    return sessions
+      .map((session, index) => normalizeSession(session, index))
+      .sort((a, b) => {
+        const aTs = new Date(a.lastHeartbeat || 0).getTime();
+        const bTs = new Date(b.lastHeartbeat || 0).getTime();
+        return bTs - aTs;
+      });
+  }, [sessions]);
+
   const knownAgents = useMemo(() => {
-    const allAgents = new Set(sessions.map((session) => session.agent).filter(Boolean));
+    const allAgents = new Set(normalizedSessions.map((session) => session.agent).filter(Boolean));
     if (messageAgent.trim()) allAgents.add(messageAgent.trim());
     return Array.from(allAgents).sort((a, b) => a.localeCompare(b));
-  }, [sessions, messageAgent]);
+  }, [normalizedSessions, messageAgent]);
+
+  const currencyRate = USD_TO_CURRENCY_RATE[currency] ?? USD_TO_CURRENCY_RATE.USD;
+
+  const currencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency,
+        maximumFractionDigits: currency === "JPY" || currency === "KRW" ? 0 : 2,
+      }),
+    [currency]
+  );
+
+  const formatCurrency = useCallback(
+    (usdAmount) => currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
+    [currencyFormatter, currencyRate]
+  );
 
   const api = useCallback(
     createApi({
@@ -584,6 +640,14 @@ export function App() {
   }, [cortexBase]);
 
   useEffect(() => {
+    localStorage.setItem("cortex_currency", currency);
+  }, [currency]);
+
+  useEffect(() => {
+    localStorage.setItem("cortex_analytics_mode", analyticsMode);
+  }, [analyticsMode]);
+
+  useEffect(() => {
     refreshAllRef.current = refreshAll;
   }, [refreshAll]);
 
@@ -605,9 +669,9 @@ export function App() {
 
   useEffect(() => {
     if (messageAgent.trim()) return;
-    const defaultAgent = sessions.find((session) => session.agent)?.agent;
+    const defaultAgent = normalizedSessions.find((session) => session.agent)?.agent;
     if (defaultAgent) setMessageAgent(defaultAgent);
-  }, [sessions, messageAgent]);
+  }, [normalizedSessions, messageAgent]);
 
   useEffect(() => {
     refreshMessages().catch(err => setFeedbackMessage(`Messages: ${err.message || err}`));
@@ -758,6 +822,44 @@ export function App() {
   const recentOverviewTasks = useMemo(() => [...claimedTasks, ...pendingTasks].slice(0, 5), [claimedTasks, pendingTasks]);
   const pill = statusPill(daemonState);
 
+  const operationRows = useMemo(
+    () => (Array.isArray(savings?.byOperation) ? savings.byOperation : []),
+    [savings]
+  );
+
+  const operationMaxSaved = useMemo(
+    () => Math.max(...operationRows.map((row) => Number(row.saved || 0)), 1),
+    [operationRows]
+  );
+
+  const cumulativeSeries = useMemo(
+    () => (Array.isArray(savings?.cumulative) ? savings.cumulative : []),
+    [savings]
+  );
+
+  const recallTrendSeries = useMemo(
+    () => (Array.isArray(savings?.recallTrend) ? savings.recallTrend : []),
+    [savings]
+  );
+
+  const activityHeatmap = useMemo(
+    () => (Array.isArray(savings?.activityHeatmap) ? savings.activityHeatmap : []),
+    [savings]
+  );
+
+  const activityHeatmapLookup = useMemo(() => {
+    const map = new Map();
+    activityHeatmap.forEach((entry) => {
+      map.set(`${entry.day}:${Number(entry.hour)}`, Number(entry.count || 0));
+    });
+    return map;
+  }, [activityHeatmap]);
+
+  const activityHeatmapMax = useMemo(
+    () => Math.max(...activityHeatmap.map((entry) => Number(entry.count || 0)), 1),
+    [activityHeatmap]
+  );
+
   const waitForDaemonReachable = useCallback(async () => {
     const started = Date.now();
     while (Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS) {
@@ -833,6 +935,53 @@ export function App() {
     }
   }
 
+  async function handleRestartDaemon() {
+    if (!invokeRef.current || restartingDaemon) return;
+
+    setRestartingDaemon(true);
+    setRestartError("");
+
+    try {
+      const statusBefore = await call("daemon_status").catch(() => null);
+      const shouldStop = Boolean(statusBefore?.running || statusBefore?.reachable);
+
+      if (shouldStop) {
+        setFeedbackMessage("Restarting daemon: stopping...");
+        const stopResult = await Promise.race([
+          call("stop_daemon"),
+          new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), DAEMON_STOP_HANG_TIMEOUT_MS)),
+        ]);
+        if (stopResult?.timedOut) {
+          setFeedbackMessage("Shutdown timed out. Forcing stop and retrying...");
+          await call("stop_daemon").catch(() => null);
+        }
+      } else {
+        setFeedbackMessage("Daemon already stopped. Starting...");
+      }
+
+      setFeedbackMessage("Restarting daemon: starting...");
+      const startResult = await call("start_daemon");
+      if (startResult?.message) {
+        setFeedbackMessage(startResult.message);
+      }
+
+      const reachable = await waitForDaemonReachable();
+      if (!reachable) {
+        throw new Error("Daemon did not become reachable after restart.");
+      }
+
+      await readAuthToken();
+      await refreshAll();
+      setFeedbackMessage("Daemon restarted successfully.");
+    } catch (error) {
+      const message = error?.message || String(error);
+      setRestartError(message);
+      setFeedbackMessage(`Restart failed: ${message}`);
+    } finally {
+      setRestartingDaemon(false);
+    }
+  }
+
   // Keyboard nav
   useEffect(() => {
     function handleKey(e) {
@@ -882,6 +1031,16 @@ export function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <div className="daemon-restart-row">
+            <button
+              type="button"
+              className="btn-ctrl btn-restart"
+              onClick={handleRestartDaemon}
+              disabled={restartingDaemon}
+            >
+              {restartingDaemon ? "Restarting... ⟳" : "Restart"}
+            </button>
+          </div>
           <div className="daemon-controls-grid">
             <button type="button" className="btn-ctrl btn-primary" onClick={handleStartDaemon}>Start</button>
             <button type="button" className="btn-ctrl" onClick={handleStopDaemon}>Stop</button>
@@ -891,6 +1050,11 @@ export function App() {
               }
             }}>Exit</button>
           </div>
+          {restartError ? (
+            <button type="button" className="btn-sm btn-danger btn-restart-retry" onClick={handleRestartDaemon}>
+              Retry Restart
+            </button>
+          ) : null}
           {availableUpdate && (
             <div className="update-banner">
               <span>v{availableUpdate.version} available</span>
@@ -931,11 +1095,27 @@ export function App() {
             <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
             <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
             <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
-            <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {sessions.length}</span>
+            <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
             <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
               <span className="topbar-label">HOST</span>
               {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
             </span>
+            {invokeRef.current ? (
+              <button
+                type="button"
+                className="topbar-close-button"
+                title="Minimizes to tray -- daemon stays alive"
+                onClick={async () => {
+                  try {
+                    await call("hide_to_tray");
+                  } catch {
+                    // no-op: tray hide is best effort
+                  }
+                }}
+              >
+                ✕
+              </button>
+            ) : null}
             <span className={`topbar-status ${daemonState.reachable ? "online" : "offline"}`}>
               {daemonState.reachable ? "● ONLINE" : "○ OFFLINE"}
             </span>
@@ -1025,7 +1205,7 @@ export function App() {
               </div>
               <div className="sys-item">
                 <span className="sys-label">AGENTS</span>
-                <span className="sys-value sys-ok">{sessions.length} CONNECTED</span>
+                <span className="sys-value sys-ok">{normalizedSessions.length} CONNECTED</span>
               </div>
               <div className="sys-item">
                 <span className="sys-label">LOCKS</span>
@@ -1045,10 +1225,10 @@ export function App() {
               <div className="card">
                 <div className="card-header">
                   <h2>Active Agents</h2>
-                  <span className="badge">{sessions.length}</span>
+                  <span className="badge">{normalizedSessions.length}</span>
                 </div>
                 <ul className="item-list">
-                  {sessions.length ? sessions.map((session) => <AgentItem key={session.sessionId || session.agent} session={session} />) : <EmptyItem text="No agents online" />}
+                  {normalizedSessions.length ? normalizedSessions.map((session) => <AgentItem key={session.sessionId || session.agent} session={session} />) : <EmptyItem text="No agents online" />}
                 </ul>
               </div>
 
@@ -1072,7 +1252,7 @@ export function App() {
             </div>
             <div className="card full">
               <ul className="item-list">
-                {sessions.length ? sessions.map((session) => <AgentItem key={session.sessionId || session.agent} session={session} />) : <EmptyItem text="No agents online" />}
+                {normalizedSessions.length ? normalizedSessions.map((session) => <AgentItem key={session.sessionId || session.agent} session={session} />) : <EmptyItem text="No agents online" />}
               </ul>
             </div>
           </section>
@@ -1336,8 +1516,32 @@ export function App() {
           <section className="panel active">
             <div className="panel-header">
               <h1>Analytics</h1>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <span className="panel-subtitle">Token savings & brain health</span>
+                <label className="analytics-inline-control">
+                  <span>Currency</span>
+                  <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                    {CURRENCY_OPTIONS.map((code) => (
+                      <option key={code} value={code}>{code}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="analytics-view-toggle" role="tablist" aria-label="Analytics view mode">
+                  <button
+                    type="button"
+                    className={`btn-sm ${analyticsMode === "aggregate" ? "btn-primary" : ""}`}
+                    onClick={() => setAnalyticsMode("aggregate")}
+                  >
+                    Aggregate
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn-sm ${analyticsMode === "operations" ? "btn-primary" : ""}`}
+                    onClick={() => setAnalyticsMode("operations")}
+                  >
+                    By Operation
+                  </button>
+                </div>
                 <button type="button" className="btn-sm" onClick={() => refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`))}>Refresh</button>
               </div>
             </div>
@@ -1365,107 +1569,216 @@ export function App() {
                     <span className="metric-icon">→</span>
                   </div>
                   <div className="metric" data-accent="green">
-                    <span className="metric-value">${((savings.summary?.totalSaved || 0) * 15 / 1000000).toFixed(2)}</span>
-                    <span className="metric-label">Est. USD Saved</span>
+                    <span className="metric-value">{formatCurrency(((savings.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
+                    <span className="metric-label">Est. {currency} Saved</span>
                     <span className="metric-icon">$</span>
                   </div>
                 </div>
 
-                <div className="analytics-explainer">
-                  <p>Cortex compiles a token-budgeted boot prompt instead of loading raw context. `baseline` is the estimated raw context tokens; `served` is the compiled boot prompt tokens. This section tracks boot savings only (not recall/store/tool-call savings).</p>
-                </div>
+                {analyticsMode === "aggregate" ? (
+                  <>
+                    <div className="analytics-explainer">
+                      <p>Cortex compiles a token-budgeted boot prompt instead of loading raw context. `baseline` is the estimated raw context tokens; `served` is the compiled boot prompt tokens. Aggregate view emphasizes total compounding impact; use "By Operation" for recall/store/boot/tool splits.</p>
+                    </div>
 
-                <div className="overview-grid">
-                  <div className="card">
-                    <div className="card-header">
-                      <h2>Daily Token Savings</h2>
-                    </div>
-                    <Sparkline
-                      data={(savings.daily || []).map(d => d.saved)}
-                      width={500}
-                      height={80}
-                    />
-                    <div className="chart-legend">
-                      {(savings.daily || []).slice(-7).map(d => (
-                        <span key={d.date} className="chart-day">
-                          <span className="chart-day-label">{d.date.slice(5)}</span>
-                          <span className="chart-day-value">{d.saved.toLocaleString()}</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
+                    <div className="overview-grid">
+                      <div className="card">
+                        <div className="card-header">
+                          <h2>Daily Token Savings</h2>
+                        </div>
+                        <Sparkline
+                          data={(savings.daily || []).map(d => d.saved)}
+                          width={500}
+                          height={80}
+                        />
+                        <div className="chart-legend">
+                          {(savings.daily || []).slice(-7).map(d => (
+                            <span key={d.date} className="chart-day">
+                              <span className="chart-day-label">{d.date.slice(5)}</span>
+                              <span className="chart-day-value">{d.saved.toLocaleString()}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
 
-                  <div className="card">
-                    <div className="card-header">
-                      <h2>Boots Per Day</h2>
+                      <div className="card">
+                        <div className="card-header">
+                          <h2>Boots Per Day</h2>
+                        </div>
+                        <Sparkline
+                          data={(savings.daily || []).map(d => d.boots)}
+                          width={500}
+                          height={80}
+                          color="var(--agent-claude)"
+                        />
+                        <div className="chart-legend">
+                          {(savings.daily || []).slice(-7).map(d => (
+                            <span key={d.date} className="chart-day">
+                              <span className="chart-day-label">{d.date.slice(5)}</span>
+                              <span className="chart-day-value">{d.boots}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                    <Sparkline
-                      data={(savings.daily || []).map(d => d.boots)}
-                      width={500}
-                      height={80}
-                      color="var(--agent-claude)"
-                    />
-                    <div className="chart-legend">
-                      {(savings.daily || []).slice(-7).map(d => (
-                        <span key={d.date} className="chart-day">
-                          <span className="chart-day-label">{d.date.slice(5)}</span>
-                          <span className="chart-day-value">{d.boots}</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
 
-                {savings.byAgent?.length > 0 && (
-                  <div className="card" style={{ marginTop: 14 }}>
-                    <div className="card-header">
-                      <h2>Boot Savings by Agent</h2>
-                    </div>
-                    <ul className="item-list">
-                      {savings.byAgent
-                        .slice()
-                        .sort((a, b) => Number(b.saved || 0) - Number(a.saved || 0))
-                        .slice(0, 8)
-                        .map((row, i) => (
-                          <li key={`${row.agent}-${i}`}>
-                            <div className="item-meta">
-                              <span className="item-name" style={{ color: agentColor(row.agent) }}>{row.agent}</span>
-                              <span className="memory-method">{Number(row.percent || 0)}% saved</span>
-                              <span className="muted-inline">{Number(row.boots || 0)} boots</span>
-                            </div>
-                            <div className="item-detail">
-                              {`${Number(row.saved || 0).toLocaleString()}t saved · ${Number(row.served || 0).toLocaleString()}t served`}
-                            </div>
-                          </li>
-                        ))}
-                    </ul>
-                  </div>
-                )}
-
-                {savings.recent?.length > 0 && (
-                  <div className="card" style={{ marginTop: 14 }}>
-                    <div className="card-header">
-                      <h2>Recent Boot Savings</h2>
-                      <span className="badge">{savings.recent.length}</span>
-                    </div>
-                    <ul className="item-list">
-                      {savings.recent.slice(-10).reverse().map((s, i) => (
-                        <li key={`${s.timestamp}-${i}`}>
-                          <div className="item-meta">
-                            <span className="item-name" style={{ color: agentColor(s.agent) }}>{s.agent}</span>
-                            <span className="memory-method">{s.percent}% saved</span>
-                            <span className="muted-inline">{timeAgo(s.timestamp)}</span>
+                    {(cumulativeSeries.length > 1 || recallTrendSeries.length > 1) && (
+                      <div className="overview-grid" style={{ marginTop: 14 }}>
+                        <div className="card">
+                          <div className="card-header">
+                            <h2>Cumulative Savings</h2>
                           </div>
-                          <div className="item-detail">
-                            {`boot prompt ${Number(s.served || 0).toLocaleString()}t from est. raw ${Number(s.baseline || 0).toLocaleString()}t (${Number(s.saved || 0).toLocaleString()}t saved)`}
-                            {(Number(s.admitted || 0) > 0 || Number(s.rejected || 0) > 0)
-                              ? ` · capsules ${Number(s.admitted || 0)} in / ${Number(s.rejected || 0)} out`
-                              : ""}
+                          <Sparkline
+                            data={cumulativeSeries.map((point) => Number(point.savedTotal || 0))}
+                            width={500}
+                            height={80}
+                            color="var(--green)"
+                          />
+                          <div className="chart-legend">
+                            {cumulativeSeries.slice(-7).map((point) => (
+                              <span key={point.date || point.timestamp} className="chart-day">
+                                <span className="chart-day-label">{(point.date || "").slice(5)}</span>
+                                <span className="chart-day-value">{Number(point.savedTotal || 0).toLocaleString()}</span>
+                              </span>
+                            ))}
                           </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                        </div>
+
+                        <div className="card">
+                          <div className="card-header">
+                            <h2>Recall Hit Rate</h2>
+                          </div>
+                          <Sparkline
+                            data={recallTrendSeries.map((point) => Number(point.hitRatePct || 0))}
+                            width={500}
+                            height={80}
+                            color="var(--cyan)"
+                          />
+                          <div className="chart-legend">
+                            {recallTrendSeries.slice(-7).map((point) => (
+                              <span key={point.date} className="chart-day">
+                                <span className="chart-day-label">{(point.date || "").slice(5)}</span>
+                                <span className="chart-day-value">{Math.round(Number(point.hitRatePct || 0))}%</span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {activityHeatmap.length > 0 && (
+                      <div className="card" style={{ marginTop: 14 }}>
+                        <div className="card-header">
+                          <h2>Agent Activity Heatmap</h2>
+                        </div>
+                        <div className="activity-heatmap">
+                          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+                            <div key={day} className="activity-heatmap-row">
+                              <span className="activity-heatmap-day">{day}</span>
+                              <div className="activity-heatmap-cells">
+                                {Array.from({ length: 24 }).map((_, hour) => {
+                                  const count = activityHeatmapLookup.get(`${day}:${hour}`) || 0;
+                                  const alpha = count > 0 ? Math.max(0.15, count / activityHeatmapMax) : 0.05;
+                                  return (
+                                    <span
+                                      key={`${day}-${hour}`}
+                                      className="activity-heatmap-cell"
+                                      title={`${day} ${hour.toString().padStart(2, "0")}:00 · ${count} events`}
+                                      style={{ background: `rgba(0, 212, 255, ${alpha})` }}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {savings.byAgent?.length > 0 && (
+                      <div className="card" style={{ marginTop: 14 }}>
+                        <div className="card-header">
+                          <h2>Boot Savings by Agent</h2>
+                        </div>
+                        <ul className="item-list">
+                          {savings.byAgent
+                            .slice()
+                            .sort((a, b) => Number(b.saved || 0) - Number(a.saved || 0))
+                            .slice(0, 8)
+                            .map((row, i) => (
+                              <li key={`${row.agent}-${i}`}>
+                                <div className="item-meta">
+                                  <span className="item-name" style={{ color: agentColor(row.agent) }}>{row.agent}</span>
+                                  <span className="memory-method">{Number(row.percent || 0)}% saved</span>
+                                  <span className="muted-inline">{Number(row.boots || 0)} boots</span>
+                                </div>
+                                <div className="item-detail">
+                                  {`${Number(row.saved || 0).toLocaleString()}t saved · ${Number(row.served || 0).toLocaleString()}t served`}
+                                </div>
+                              </li>
+                            ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {savings.recent?.length > 0 && (
+                      <div className="card" style={{ marginTop: 14 }}>
+                        <div className="card-header">
+                          <h2>Recent Boot Savings</h2>
+                          <span className="badge">{savings.recent.length}</span>
+                        </div>
+                        <ul className="item-list">
+                          {savings.recent.slice(-10).reverse().map((s, i) => (
+                            <li key={`${s.timestamp}-${i}`}>
+                              <div className="item-meta">
+                                <span className="item-name" style={{ color: agentColor(s.agent) }}>{s.agent}</span>
+                                <span className="memory-method">{s.percent}% saved</span>
+                                <span className="muted-inline">{timeAgo(s.timestamp)}</span>
+                              </div>
+                              <div className="item-detail">
+                                {`boot prompt ${Number(s.served || 0).toLocaleString()}t from est. raw ${Number(s.baseline || 0).toLocaleString()}t (${Number(s.saved || 0).toLocaleString()}t saved)`}
+                                {(Number(s.admitted || 0) > 0 || Number(s.rejected || 0) > 0)
+                                  ? ` · capsules ${Number(s.admitted || 0)} in / ${Number(s.rejected || 0)} out`
+                                  : ""}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="analytics-explainer">
+                      <p>Operation view breaks savings into recall, store, boot compression, and tool-call categories using local events. Hover each bar for raw vs compressed token counts.</p>
+                    </div>
+                    <div className="card">
+                      <div className="card-header">
+                        <h2>Savings by Operation</h2>
+                      </div>
+                      <div className="operation-bars">
+                        {operationRows.length ? operationRows.map((row) => {
+                          const saved = Number(row.saved || 0);
+                          const served = Number(row.served || 0);
+                          const baseline = Number(row.baseline || 0);
+                          const width = Math.max(4, Math.round((saved / operationMaxSaved) * 100));
+                          const label = SAVINGS_OPERATION_LABELS[row.operation] || row.operation;
+                          return (
+                            <div className="operation-bar-row" key={row.operation}>
+                              <div className="operation-bar-header">
+                                <span className="item-name">{label}</span>
+                                <span className="muted-inline">{saved.toLocaleString()} tokens · {formatCurrency((saved * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
+                              </div>
+                              <div className="operation-bar-track" title={`Raw ${baseline.toLocaleString()} · Compressed ${served.toLocaleString()}`}>
+                                <span className="operation-bar-fill" style={{ width: `${width}%` }} />
+                              </div>
+                              <div className="item-detail">{`${Number(row.events || 0)} events · raw ${baseline.toLocaleString()} · compressed ${served.toLocaleString()}`}</div>
+                            </div>
+                          );
+                        }) : <EmptyItem text="No operation breakdown data yet" />}
+                      </div>
+                    </div>
+                  </>
                 )}
               </>
             ) : (
@@ -1620,6 +1933,40 @@ export function App() {
                       <div style={{ marginTop: 4, fontWeight: 500 }}>{value}</div>
                     </div>
                   ))}
+                </div>
+
+                <div style={{ marginBottom: "2rem" }}>
+                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>App Lifecycle (Start/Stop/Restart)</h3>
+                  <table className="about-lifecycle-table">
+                    <thead>
+                      <tr>
+                        <th>Action</th>
+                        <th>What happens</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>Start</td>
+                        <td>Launches the daemon sidecar and waits for a healthy API before reloading data.</td>
+                      </tr>
+                      <tr>
+                        <td>Stop</td>
+                        <td>Sends a graceful shutdown request, then tears down sidecar process handles.</td>
+                      </tr>
+                      <tr>
+                        <td>Restart</td>
+                        <td>Runs Stop then Start with timeout handling; retries when shutdown hangs.</td>
+                      </tr>
+                      <tr>
+                        <td>Close Window (✕)</td>
+                        <td>Minimizes to tray by default so Cortex keeps running in background.</td>
+                      </tr>
+                      <tr>
+                        <td>Exit</td>
+                        <td>Fully quits the app process and attempts daemon shutdown.</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
 
                 <div style={{ marginBottom: "2rem" }}>
