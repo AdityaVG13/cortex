@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use crate::auth::CortexPaths;
 
+const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
+
 /// Check if the daemon responds to /health within 2s.
 pub async fn daemon_healthy(port: u16) -> bool {
     let client = match reqwest::Client::builder()
@@ -91,12 +93,14 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
         return false;
     }
 
-    let healthy = wait_for_health(paths.port, Duration::from_secs(10)).await;
+    let healthy =
+        wait_for_health(paths.port, Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS)).await;
     if healthy {
         eprintln!("[cortex-lifecycle] Daemon respawned successfully on port {}", paths.port);
     } else {
         eprintln!(
-            "[cortex-lifecycle] Daemon did not become healthy within 10s after respawn"
+            "[cortex-lifecycle] Daemon did not become healthy within {}s after respawn",
+            RESPAWN_HEALTH_TIMEOUT_SECS
         );
     }
     healthy

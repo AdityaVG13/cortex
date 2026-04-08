@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Result of an auto-repair attempt.
 #[derive(Debug)]
@@ -68,12 +68,13 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 5] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 6] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
     ("004_crystal_tables", "crystal_tables"),
     ("005_quality_dedup_columns", "quality_dedup_columns"),
+    ("006", "ttl_expiration"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -167,6 +168,19 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
                 [],
             );
             let _ = conn.execute("UPDATE decisions SET quality = 50 WHERE quality IS NULL", []);
+            Ok(())
+        }
+        "006" => {
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN expires_at TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN expires_at TEXT",
+            )?;
             Ok(())
         }
         other => Err(migration_error(format!("unknown schema migration: {other}"))),
@@ -976,6 +990,32 @@ pub fn rebuild_fts(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Seed FTS indexes at most once per database.
+///
+/// Uses a marker row in `schema_migrations` so startup does not rescan the
+/// entire corpus on every daemon restart.
+pub fn rebuild_fts_if_needed(conn: &Connection) -> rusqlite::Result<bool> {
+    let already_seeded = conn
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 'fts_seeded_v1' LIMIT 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+
+    if already_seeded.is_some() {
+        return Ok(false);
+    }
+
+    rebuild_fts(conn)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
+         VALUES ('fts_seeded_v1', 'fts_seeded', datetime('now'))",
+        [],
+    )?;
+    Ok(true)
+}
+
 /// Run `PRAGMA integrity_check` and return `true` when the database reports
 /// `ok`.
 pub fn verify_integrity(conn: &Connection) -> rusqlite::Result<bool> {
@@ -1374,6 +1414,28 @@ mod tests {
     }
 
     #[test]
+    fn test_rebuild_fts_if_needed_rebuilds_once_for_empty_fts() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        initialize_schema(&conn).unwrap();
+
+        let rebuilt = rebuild_fts_if_needed(&conn).unwrap();
+        assert!(rebuilt, "first call should seed FTS marker");
+
+        let marker_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 'fts_seeded_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker_rows, 1, "expected FTS marker row to be persisted");
+
+        let rebuilt_again = rebuild_fts_if_needed(&conn).unwrap();
+        assert!(!rebuilt_again, "second call should skip when marker already exists");
+    }
+
+    #[test]
     fn test_solo_schema_baseline_unchanged() {
         let conn = Connection::open_in_memory().unwrap();
         configure(&conn).unwrap();
@@ -1568,8 +1630,10 @@ mod tests {
 
         assert!(table_has_column(&conn, "memories", "merged_count"));
         assert!(table_has_column(&conn, "memories", "quality"));
+        assert!(table_has_column(&conn, "memories", "expires_at"));
         assert!(table_has_column(&conn, "decisions", "merged_count"));
         assert!(table_has_column(&conn, "decisions", "quality"));
+        assert!(table_has_column(&conn, "decisions", "expires_at"));
         assert!(table_exists(&conn, "focus_sessions"));
         assert!(table_exists(&conn, "memory_clusters"));
         assert!(table_exists(&conn, "cluster_members"));

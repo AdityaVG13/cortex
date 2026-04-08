@@ -19,11 +19,13 @@ class BrainErrorBoundary extends Component {
 }
 
 const DEFAULT_CORTEX_BASE = "http://127.0.0.1:7437";
-const FALLBACK_REFRESH_MS = 15000;
+const FALLBACK_REFRESH_MS = 5000;
 const ANALYTICS_REFRESH_MS = 60000;
 const SSE_REFRESH_THROTTLE_MS = 300;
 const SSE_RECONNECT_BASE_MS = 1000;
-const SSE_RECONNECT_MAX_MS = 30000;
+const SSE_RECONNECT_MAX_MS = 5000;
+const DAEMON_START_WAIT_TIMEOUT_MS = 90000;
+const DAEMON_START_POLL_INTERVAL_MS = 750;
 
 const FEED_KIND_LABEL = {
   prompt: "Prompt",
@@ -756,6 +758,26 @@ export function App() {
   const recentOverviewTasks = useMemo(() => [...claimedTasks, ...pendingTasks].slice(0, 5), [claimedTasks, pendingTasks]);
   const pill = statusPill(daemonState);
 
+  const waitForDaemonReachable = useCallback(async () => {
+    const started = Date.now();
+    while (Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS) {
+      try {
+        if (invokeRef.current) {
+          const state = await call("daemon_status");
+          setDaemonState(state);
+          if (state?.reachable) return true;
+        } else {
+          const health = await api("/health");
+          if (health?.status === "ok") return true;
+        }
+      } catch {
+        // continue polling until timeout
+      }
+      await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
+    }
+    return false;
+  }, [api, call]);
+
   async function handleMemorySearch(e) {
     e?.preventDefault();
     if (!memoryQuery.trim()) return;
@@ -788,8 +810,10 @@ export function App() {
     try {
       const result = await call("start_daemon");
       setFeedbackMessage(result.message || "Daemon start requested.");
-      // Daemon needs a moment to write the token file on first start
-      await new Promise(r => setTimeout(r, 2000));
+      const reachable = await waitForDaemonReachable();
+      if (!reachable) {
+        setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
+      }
       await readAuthToken();
       await refreshAll();
     } catch (error) {
@@ -802,6 +826,7 @@ export function App() {
     try {
       const result = await call("stop_daemon");
       setFeedbackMessage(result.message || "Daemon stop requested.");
+      tokenRef.current = "";
       await refreshAll();
     } catch (error) {
       setFeedbackMessage(`Stop failed: ${error.message || error}`);
@@ -1321,7 +1346,7 @@ export function App() {
                 <div className="metrics" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
                   <div className="metric" data-accent="cyan">
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} /></span>
-                    <span className="metric-label">Tokens Saved</span>
+                    <span className="metric-label">Boot Tokens Saved</span>
                     <span className="metric-icon">↓</span>
                   </div>
                   <div className="metric" data-accent="green">
@@ -1331,12 +1356,12 @@ export function App() {
                   </div>
                   <div className="metric" data-accent="blue">
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalBoots || 0} /></span>
-                    <span className="metric-label">Total Boots</span>
+                    <span className="metric-label">Boot Compilations</span>
                     <span className="metric-icon">⟳</span>
                   </div>
                   <div className="metric" data-accent="purple">
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} /></span>
-                    <span className="metric-label">Tokens Served</span>
+                    <span className="metric-label">Boot Prompt Tokens</span>
                     <span className="metric-icon">→</span>
                   </div>
                   <div className="metric" data-accent="green">
@@ -1347,7 +1372,7 @@ export function App() {
                 </div>
 
                 <div className="analytics-explainer">
-                  <p>Cortex compiles a token-budgeted boot prompt instead of reading raw files. Each boot saves ~96% of tokens that would otherwise be spent on raw file reads. The savings compound across every AI session — Claude, Droid, Gemini, and any agent connecting to this brain.</p>
+                  <p>Cortex compiles a token-budgeted boot prompt instead of loading raw context. `baseline` is the estimated raw context tokens; `served` is the compiled boot prompt tokens. This section tracks boot savings only (not recall/store/tool-call savings).</p>
                 </div>
 
                 <div className="overview-grid">
@@ -1391,6 +1416,32 @@ export function App() {
                   </div>
                 </div>
 
+                {savings.byAgent?.length > 0 && (
+                  <div className="card" style={{ marginTop: 14 }}>
+                    <div className="card-header">
+                      <h2>Boot Savings by Agent</h2>
+                    </div>
+                    <ul className="item-list">
+                      {savings.byAgent
+                        .slice()
+                        .sort((a, b) => Number(b.saved || 0) - Number(a.saved || 0))
+                        .slice(0, 8)
+                        .map((row, i) => (
+                          <li key={`${row.agent}-${i}`}>
+                            <div className="item-meta">
+                              <span className="item-name" style={{ color: agentColor(row.agent) }}>{row.agent}</span>
+                              <span className="memory-method">{Number(row.percent || 0)}% saved</span>
+                              <span className="muted-inline">{Number(row.boots || 0)} boots</span>
+                            </div>
+                            <div className="item-detail">
+                              {`${Number(row.saved || 0).toLocaleString()}t saved · ${Number(row.served || 0).toLocaleString()}t served`}
+                            </div>
+                          </li>
+                        ))}
+                    </ul>
+                  </div>
+                )}
+
                 {savings.recent?.length > 0 && (
                   <div className="card" style={{ marginTop: 14 }}>
                     <div className="card-header">
@@ -1406,7 +1457,10 @@ export function App() {
                             <span className="muted-inline">{timeAgo(s.timestamp)}</span>
                           </div>
                           <div className="item-detail">
-                            {s.baseline.toLocaleString()} baseline → {s.served.toLocaleString()} served ({s.saved.toLocaleString()} saved)
+                            {`boot prompt ${Number(s.served || 0).toLocaleString()}t from est. raw ${Number(s.baseline || 0).toLocaleString()}t (${Number(s.saved || 0).toLocaleString()}t saved)`}
+                            {(Number(s.admitted || 0) > 0 || Number(s.rejected || 0) > 0)
+                              ? ` · capsules ${Number(s.admitted || 0)} in / ${Number(s.rejected || 0)} out`
+                              : ""}
                           </div>
                         </li>
                       ))}

@@ -308,13 +308,27 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         .into_iter()
         .map(|(data_str, created)| {
             let d: Value = serde_json::from_str(&data_str).unwrap_or(json!({}));
+            let served = d.get("served").and_then(|v| v.as_i64()).unwrap_or(0);
+            let baseline = d.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0);
+            let saved = d.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
+            let percent = d.get("percent").and_then(|v| v.as_i64()).unwrap_or(0);
+            let admitted = d.get("admitted").and_then(|v| v.as_i64()).unwrap_or(0);
+            let rejected = d.get("rejected").and_then(|v| v.as_i64()).unwrap_or(0);
+            let compression_ratio = if served > 0 {
+                ((baseline as f64 / served as f64) * 100.0).round() / 100.0
+            } else {
+                0.0
+            };
             json!({
                 "timestamp": created,
                 "agent": d.get("agent").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                "served": d.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
-                "baseline": d.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
-                "saved": d.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
-                "percent": d.get("percent").and_then(|v| v.as_i64()).unwrap_or(0),
+                "served": served,
+                "baseline": baseline,
+                "saved": saved,
+                "percent": percent,
+                "admitted": admitted,
+                "rejected": rejected,
+                "compressionRatio": compression_ratio
             })
         })
         .collect();
@@ -338,28 +352,69 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     } else {
         0
     };
+    let total_boots = points.len() as i64;
+    let avg_saved_per_boot = if total_boots > 0 {
+        total_saved / total_boots
+    } else {
+        0
+    };
+    let avg_served_per_boot = if total_boots > 0 {
+        total_served / total_boots
+    } else {
+        0
+    };
+    let avg_baseline_per_boot = if total_boots > 0 {
+        total_baseline / total_boots
+    } else {
+        0
+    };
 
     // Daily aggregation
-    let mut daily: BTreeMap<String, (i64, i64, i64)> = BTreeMap::new();
+    let mut daily: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
     for p in &points {
         let ts = p["timestamp"].as_str().unwrap_or("");
         let day = &ts[..ts.len().min(10)];
         if day.is_empty() {
             continue;
         }
-        let e = daily.entry(day.to_string()).or_insert((0, 0, 0));
+        let e = daily.entry(day.to_string()).or_insert((0, 0, 0, 0));
         e.0 += p["saved"].as_i64().unwrap_or(0);
         e.1 += p["served"].as_i64().unwrap_or(0);
-        e.2 += 1;
+        e.2 += p["baseline"].as_i64().unwrap_or(0);
+        e.3 += 1;
     }
     let daily_arr: Vec<Value> = daily
         .into_iter()
-        .map(|(date, (saved, served, boots))| {
-            json!({"date": date, "saved": saved, "served": served, "boots": boots})
+        .map(|(date, (saved, served, baseline, boots))| {
+            json!({"date": date, "saved": saved, "served": served, "baseline": baseline, "boots": boots})
         })
         .collect();
 
-    let recent: Vec<&Value> = points.iter().rev().take(20).collect();
+    let mut by_agent: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
+    for p in &points {
+        let agent = p["agent"].as_str().unwrap_or("unknown").to_string();
+        let e = by_agent.entry(agent).or_insert((0, 0, 0, 0));
+        e.0 += p["saved"].as_i64().unwrap_or(0);
+        e.1 += p["served"].as_i64().unwrap_or(0);
+        e.2 += p["baseline"].as_i64().unwrap_or(0);
+        e.3 += 1;
+    }
+    let by_agent_arr: Vec<Value> = by_agent
+        .into_iter()
+        .map(|(agent, (saved, served, baseline, boots))| {
+            let percent = if baseline > 0 { (saved * 100) / baseline } else { 0 };
+            json!({
+                "agent": agent,
+                "saved": saved,
+                "served": served,
+                "baseline": baseline,
+                "boots": boots,
+                "percent": percent
+            })
+        })
+        .collect();
+
+    let recent: Vec<Value> = points.iter().rev().take(20).cloned().collect();
 
     json_response(
         StatusCode::OK,
@@ -369,9 +424,15 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                 "totalServed": total_served,
                 "totalBaseline": total_baseline,
                 "avgPercent": avg_percent,
-                "totalBoots": points.len()
+                "totalBoots": points.len(),
+                "avgSavedPerBoot": avg_saved_per_boot,
+                "avgServedPerBoot": avg_served_per_boot,
+                "avgBaselinePerBoot": avg_baseline_per_boot,
+                "scope": "boot_prompt_only",
+                "note": "Savings track /boot prompt compilation vs estimated raw context tokens. This does not include recall/store tool-call savings."
             },
             "daily": daily_arr,
+            "byAgent": by_agent_arr,
             "recent": recent,
         }),
     )

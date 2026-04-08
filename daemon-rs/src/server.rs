@@ -171,6 +171,8 @@ async fn handle_mcp_rpc(
             None
         }
     };
+    handlers::register_agent_presence_from_headers(&state, &headers, caller_id).await;
+
     match handle_mcp_message_with_caller(&state, &msg, caller_id).await {
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),

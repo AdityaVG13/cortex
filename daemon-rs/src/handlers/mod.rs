@@ -18,6 +18,7 @@ pub mod store;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use chrono::{Duration, Utc};
 use serde_json::Value;
 use std::net::IpAddr;
 
@@ -267,6 +268,86 @@ fn rate_limit_response(retry_after: u64, remaining: usize) -> Response {
 /// Current UTC time in ISO-8601 with millisecond precision.
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn normalize_agent_label(raw_agent: &str, raw_model: Option<&str>) -> Option<String> {
+    let mut agent = raw_agent.trim().to_string();
+    if agent.is_empty() || agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+        return None;
+    }
+
+    if !agent.contains('(') {
+        if let Some(model) = raw_model.map(str::trim).filter(|m| !m.is_empty()) {
+            if agent.eq_ignore_ascii_case("droid") {
+                agent = format!("DROID ({model})");
+            } else {
+                agent = format!("{agent} ({model})");
+            }
+        }
+    }
+
+    Some(agent)
+}
+
+/// Track active agent presence in `sessions` when source headers are provided.
+/// Safe best-effort helper -- failures are intentionally ignored by callers.
+pub async fn register_agent_presence_from_headers(
+    state: &RuntimeState,
+    headers: &HeaderMap,
+    caller_id: Option<i64>,
+) {
+    let raw_agent = match headers.get("x-source-agent").and_then(|v| v.to_str().ok()) {
+        Some(v) => v,
+        None => return,
+    };
+    let raw_model = headers
+        .get("x-source-model")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+
+    let Some(agent) = normalize_agent_label(raw_agent, raw_model) else {
+        return;
+    };
+
+    let owner_id = if state.team_mode {
+        caller_id.or(state.default_owner_id)
+    } else {
+        None
+    };
+    let now = now_iso();
+    let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
+    let session_id = format!("session-{}", uuid::Uuid::new_v4());
+    let description = raw_model
+        .map(|model| format!("Connected via MCP · {model}"))
+        .unwrap_or_else(|| "Connected via MCP".to_string());
+
+    let conn = state.db.lock().await;
+    if let Some(owner_id) = owner_id {
+        let _ = conn.execute(
+            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, 'mcp', '[]', ?4, ?5, ?5, ?6)
+             ON CONFLICT(owner_id, agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![agent, owner_id, session_id, description, now, expires_at],
+        );
+    } else {
+        let _ = conn.execute(
+            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, 'mcp', '[]', ?3, ?4, ?4, ?5)
+             ON CONFLICT(agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![agent, session_id, description, now, expires_at],
+        );
+    }
 }
 
 /// Insert an event row into the `events` table.

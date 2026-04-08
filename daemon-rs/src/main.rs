@@ -1216,6 +1216,7 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
 }
 
 use daemon_lifecycle::{daemon_healthy, wait_for_health, spawn_daemon};
+const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 
 async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
@@ -1258,16 +1259,16 @@ async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>) -> Result
 
             if should_spawn {
                 spawn_daemon(paths)?;
-                if !wait_for_health(paths.port, Duration::from_secs(10)).await {
+                if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                     return Err(format!(
-                        "daemon did not become healthy on port {} within 10s",
-                        paths.port
+                        "daemon did not become healthy on port {} within {}s",
+                        paths.port, DAEMON_STARTUP_WAIT_SECS
                     ));
                 }
             }
         }
         Err(_) => {
-            if !wait_for_health(paths.port, Duration::from_secs(10)).await {
+            if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                 return Err(format!(
                     "daemon lock is held and daemon is not healthy on port {}",
                     paths.port
@@ -1446,12 +1447,26 @@ pub(crate) async fn run_daemon(
         }
     }
 
-    // ── Knowledge indexing + score decay ────────────────────────────
+    // ── Startup indexing + decay (non-blocking) ─────────────────────
+    // This used to run inline before the server bound its port, which could
+    // delay startup significantly on large source trees.
     {
-        let conn = state.db.lock().await;
-        let indexed = indexer::index_all(&conn, &state.home, state.default_owner_id);
-        let decayed = indexer::decay_pass(&conn);
-        eprintln!("[cortex] Indexed {indexed} entries, decayed {decayed} scores");
+        let db_index = state.db.clone();
+        let home = state.home.clone();
+        let owner_id = state.default_owner_id;
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let (indexed, decayed) = {
+                let conn = db_index.lock().await;
+                let indexed = indexer::index_all(&conn, &home, owner_id);
+                let decayed = indexer::decay_pass(&conn);
+                (indexed, decayed)
+            };
+            eprintln!(
+                "[cortex] Startup indexing complete: indexed {indexed}, decayed {decayed} scores in {}ms",
+                started.elapsed().as_millis()
+            );
+        });
     }
 
     // ── Background embedding builder ────────────────────────────────
@@ -1614,7 +1629,7 @@ pub(crate) async fn run_daemon(
     eprintln!("[cortex] Flushing database...");
     {
         let conn = db_for_shutdown.lock().await;
-        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;") {
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
             eprintln!("[cortex] Warning: WAL checkpoint failed: {e}");
         }
     }

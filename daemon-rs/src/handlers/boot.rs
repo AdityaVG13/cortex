@@ -5,7 +5,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ensure_auth, json_response, now_iso};
+use super::{ensure_auth_with_caller, json_response, now_iso};
 use crate::compiler;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
@@ -26,9 +26,10 @@ pub async fn handle_boot(
     Query(query): Query<BootQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     let agent = query
         .agent
         .or_else(|| {
@@ -38,6 +39,8 @@ pub async fn handle_boot(
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
+    super::register_agent_presence_from_headers(&state, &headers, caller_id).await;
+
     let profile = query.profile.unwrap_or_else(|| "full".to_string());
     let max_tokens = query.budget.unwrap_or(600);
 

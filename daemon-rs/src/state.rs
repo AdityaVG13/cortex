@@ -131,15 +131,19 @@ pub fn initialize(
 
     crate::db::initialize_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
-    // 2. Startup integrity gate -- run PRAGMA integrity_check before accepting requests.
-    // If the check fails, attempt auto-repair (dump-and-rebuild).  If repair also
-    // fails, start in degraded mode so the user gets a clear error rather than
-    // silent corruption.
-    match crate::db::verify_integrity(&conn) {
-        Ok(true) => {
-            eprintln!("[cortex] DB integrity: OK");
-        }
-        Ok(false) | Err(_) => {
+    // 2. Startup integrity gate.
+    // Use fast quick_check on boot for low-latency restarts. Only escalate to
+    // full integrity_check + auto-repair when quick_check fails.
+    if crate::db::quick_check(&conn) {
+        eprintln!("[cortex] DB quick_check: OK");
+    } else {
+        eprintln!(
+            "[cortex] WARNING: PRAGMA quick_check FAILED on {} -- running full integrity_check",
+            db_path.display()
+        );
+
+        let integrity_ok = crate::db::verify_integrity(&conn).unwrap_or(false);
+        if !integrity_ok {
             eprintln!(
                 "[cortex] WARNING: PRAGMA integrity_check FAILED on {} -- attempting auto-repair",
                 db_path.display()
@@ -184,13 +188,14 @@ pub fn initialize(
                     let (state, rx) =
                         initialize_with_conn(conn, db_path, allow_token_rotation)?;
                     // Signal degraded mode so /health reflects corruption.
-                    // db_corrupted is Arc<AtomicBool> -- no mut binding needed.
                     state
                         .db_corrupted
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                     return Ok((state, rx));
                 }
             }
+        } else {
+            eprintln!("[cortex] DB integrity: OK (after quick_check failure)");
         }
     }
 
@@ -202,9 +207,11 @@ fn initialize_with_conn(
     db_path: &std::path::Path,
     allow_token_rotation: bool,
 ) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
-    // Rebuild FTS indexes for existing data (idempotent).
-    if let Err(e) = crate::db::rebuild_fts(&conn) {
-        eprintln!("[cortex] WARNING: FTS rebuild failed: {e}");
+    // Rebuild FTS indexes only when they appear empty for non-empty source data.
+    match crate::db::rebuild_fts_if_needed(&conn) {
+        Ok(true) => eprintln!("[cortex] FTS baseline rebuilt"),
+        Ok(false) => {}
+        Err(e) => eprintln!("[cortex] WARNING: FTS rebuild check failed: {e}"),
     }
 
     // Open a separate read-only connection for concurrent reads.

@@ -3,6 +3,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
+use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -22,6 +23,7 @@ pub struct StoreRequest {
     pub entry_type: Option<String>,
     pub source_agent: Option<String>,
     pub confidence: Option<f64>,
+    pub ttl_seconds: Option<i64>,
 }
 
 // ─── POST /store ─────────────────────────────────────────────────────────────
@@ -51,6 +53,15 @@ pub async fn handle_store(
         .or(body.source_agent)
         .unwrap_or_else(|| "http".to_string());
 
+    if let Some(ttl_seconds) = body.ttl_seconds {
+        if ttl_seconds <= 0 {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "ttl_seconds must be > 0" }),
+            );
+        }
+    }
+
     // Try cosine conflict detection first (if embeddings available).
     let cosine_conflict = if let Some(engine) = &state.embedding_engine {
         let conn = state.db.lock().await;
@@ -60,13 +71,14 @@ pub async fn handle_store(
     };
 
     let mut conn = state.db.lock().await;
-    let result = store_decision(
+    let result = store_decision_with_ttl(
         &mut conn,
         decision.trim(),
         body.context,
         body.entry_type,
         source_agent.clone(),
         body.confidence,
+        body.ttl_seconds,
         cosine_conflict,
         caller_id,
     );
@@ -125,9 +137,39 @@ pub fn store_decision(
     cosine_conflict: Option<crate::conflict::ConflictResult>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
+    store_decision_with_ttl(
+        conn,
+        decision,
+        context,
+        entry_type,
+        source_agent,
+        confidence,
+        None,
+        cosine_conflict,
+        owner_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn store_decision_with_ttl(
+    conn: &mut Connection,
+    decision: &str,
+    context: Option<String>,
+    entry_type: Option<String>,
+    source_agent: String,
+    confidence: Option<f64>,
+    ttl_seconds: Option<i64>,
+    cosine_conflict: Option<crate::conflict::ConflictResult>,
+    owner_id: Option<i64>,
+) -> Result<(Value, Option<i64>), String> {
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let confidence = confidence.unwrap_or(0.8);
     let ts = now_iso();
+    let expires_at = ttl_seconds.map(|secs| {
+        (Utc::now() + Duration::seconds(secs))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    });
 
     // ── 1. Conflict detection (cosine first, then Jaccard fallback) ──────────
     let cr = match cosine_conflict {
@@ -143,16 +185,16 @@ pub fn store_decision(
         if let Some(oid) = owner_id {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, status, disputes_id, owner_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?8)",
-                params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, oid, ts],
+                 (decision, context, type, source_agent, confidence, status, disputes_id, owner_id, expires_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?9, ?9)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, oid, expires_at, ts],
             )
         } else {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, status, disputes_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?7)",
-                params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, ts],
+                 (decision, context, type, source_agent, confidence, status, disputes_id, expires_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?8)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, existing_id, expires_at, ts],
             )
         }
         .map_err(|e| e.to_string())?;
@@ -203,16 +245,16 @@ pub fn store_decision(
         if let Some(oid) = owner_id {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, supersedes_id, owner_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-                params![decision, context, entry_type, source_agent.clone(), confidence, old_id, oid, ts],
+                 (decision, context, type, source_agent, confidence, supersedes_id, owner_id, expires_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, old_id, oid, expires_at, ts],
             )
         } else {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, supersedes_id, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-                params![decision, context, entry_type, source_agent.clone(), confidence, old_id, ts],
+                 (decision, context, type, source_agent, confidence, supersedes_id, expires_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                params![decision, context, entry_type, source_agent.clone(), confidence, old_id, expires_at, ts],
             )
         }
         .map_err(|e| e.to_string())?;
@@ -289,16 +331,16 @@ pub fn store_decision(
     if let Some(oid) = owner_id {
         conn.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, owner_id, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
-            params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, oid, ts],
+             (decision, context, type, source_agent, confidence, surprise, status, owner_id, expires_at, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?9)",
+            params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, oid, expires_at, ts],
         )
     } else {
         conn.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?7)",
-            params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, ts],
+             (decision, context, type, source_agent, confidence, surprise, status, expires_at, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
+            params![decision, context, entry_type, source_agent.clone(), confidence, surprise_rounded, expires_at, ts],
         )
     }
     .map_err(|e| e.to_string())?;

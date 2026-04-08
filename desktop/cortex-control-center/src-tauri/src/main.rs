@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -24,10 +25,13 @@ const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
 const DEFAULT_DAEMON_PORT: u16 = 7437;
-const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 3_000;
+const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 400;
 const DAEMON_CONNECT_TIMEOUT_MS: u64 = 3_000;
 const DAEMON_READ_TIMEOUT_MS: u64 = 10_000;
 const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
+const DAEMON_START_WAIT_MS: u64 = 12_000;
+const DAEMON_STOP_WAIT_MS: u64 = 8_000;
+const DAEMON_WAIT_POLL_MS: u64 = 200;
 
 struct DaemonState {
   daemon: Mutex<SidecarDaemon>,
@@ -117,9 +121,27 @@ fn cortex_db_path() -> Result<PathBuf, String> {
   Ok(cortex_home()?.join(".cortex").join("cortex.db"))
 }
 
-fn is_cortex_reachable() -> bool {
-  let addr = SocketAddr::from(([127, 0, 0, 1], resolve_daemon_port()));
-  TcpStream::connect_timeout(&addr, Duration::from_millis(DAEMON_REACHABILITY_TIMEOUT_MS)).is_ok()
+fn daemon_port() -> u16 {
+  static CACHED_DAEMON_PORT: OnceLock<u16> = OnceLock::new();
+  *CACHED_DAEMON_PORT.get_or_init(resolve_daemon_port)
+}
+
+fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
+  let addr = SocketAddr::from(([127, 0, 0, 1], port));
+  TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)).is_ok()
+}
+
+async fn wait_for_reachability(port: u16, target: bool, timeout: Duration) -> bool {
+  let started = std::time::Instant::now();
+  loop {
+    if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) == target {
+      return true;
+    }
+    if started.elapsed() >= timeout {
+      return false;
+    }
+    std::thread::sleep(Duration::from_millis(DAEMON_WAIT_POLL_MS));
+  }
 }
 
 fn cortex_binary_name() -> &'static str {
@@ -268,7 +290,6 @@ fn flush_cortex_db_on_shutdown() -> Result<(), String> {
       r#"
     PRAGMA journal_mode = WAL;
     PRAGMA wal_checkpoint(TRUNCATE);
-    PRAGMA optimize;
     "#,
     )
     .map_err(|err| format!("Failed to flush WAL on shutdown {}: {err}", db_path.display()))?;
@@ -333,8 +354,8 @@ fn quit_app(app: tauri::AppHandle, daemon_state: State<DaemonState>) -> Result<(
 #[tauri::command]
 fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
   let (running, pid) = state.status()?;
-  let reachable = is_cortex_reachable();
-  let port = resolve_daemon_port();
+  let port = daemon_port();
+  let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
   let message = if running && reachable {
     format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
   } else if running {
@@ -358,10 +379,14 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 }
 
 #[tauri::command]
-fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
+async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
+  let port = daemon_port();
   let (running, pid) = state.start()?;
-  let reachable = is_cortex_reachable();
-  let port = resolve_daemon_port();
+  let reachable = if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+    true
+  } else {
+    wait_for_reachability(port, true, Duration::from_millis(DAEMON_START_WAIT_MS)).await
+  };
   let message = if reachable {
     format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
   } else {
@@ -384,15 +409,15 @@ fn start_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String
 /// regardless of who spawned it). Returns Ok(()) on success or if connection
 /// fails (daemon already gone).
 fn send_http_shutdown() -> Result<(), String> {
-  use std::io::{Read, Write};
+  use std::io::Write;
 
-  let port = resolve_daemon_port();
+  let port = daemon_port();
   let addr = SocketAddr::from(([127, 0, 0, 1], port));
   let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(2000)) {
     Ok(s) => s,
     Err(_) => return Ok(()), // daemon already unreachable
   };
-  let _ = stream.set_read_timeout(Some(Duration::from_millis(5000)));
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
   let _ = stream.set_write_timeout(Some(Duration::from_millis(2000)));
 
   let token = token_path()
@@ -415,26 +440,25 @@ fn send_http_shutdown() -> Result<(), String> {
   request.push_str(body);
 
   let _ = stream.write_all(request.as_bytes());
-  let mut buf = Vec::new();
-  let _ = stream.read_to_end(&mut buf);
+  let _ = stream.flush();
   Ok(())
 }
 
 #[tauri::command]
-fn stop_daemon(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
+async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
+  let port = daemon_port();
   let (was_running, _) = state.status()?;
   let _ = state.stop();
 
   // If daemon is still reachable (started externally by Claude, CLI, etc.),
   // send a graceful HTTP shutdown signal
-  let still_reachable = is_cortex_reachable();
+  let still_reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
   if still_reachable {
     let _ = send_http_shutdown();
-    // Brief wait for graceful shutdown to take effect
-    std::thread::sleep(Duration::from_millis(500));
+    let _ = wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
   }
 
-  let reachable = is_cortex_reachable();
+  let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
   let message = if was_running && !reachable {
     "Stopped Cortex daemon.".to_string()
   } else if !was_running && still_reachable && !reachable {
@@ -486,7 +510,7 @@ fn send_cortex_request(
     return Err("Invalid request path".to_string());
   }
 
-  let port = resolve_daemon_port();
+  let port = daemon_port();
   let mut stream = TcpStream::connect_timeout(
     &SocketAddr::from(([127, 0, 0, 1], port)),
     Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),

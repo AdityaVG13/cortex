@@ -505,7 +505,8 @@ fn run_recall_with_engine(
                 if let Ok(mut stmt) = conn.prepare(
                     "SELECT e.target_id, e.vector, m.text, m.source, m.owner_id, m.visibility \
                      FROM embeddings e \
-                     JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active'"
+                     JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
+                     AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))"
                 ) {
                     let rows: Vec<(Vec<u8>, String, String, Option<i64>, Option<String>)> = stmt
                         .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
@@ -541,7 +542,8 @@ fn run_recall_with_engine(
                 if let Ok(mut stmt) = conn.prepare(
                     "SELECT e.target_id, e.vector, d.decision, d.context, d.owner_id, d.visibility \
                      FROM embeddings e \
-                     JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active'"
+                     JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
+                     AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))"
                 ) {
                     let rows: Vec<(Vec<u8>, String, Option<String>, Option<i64>, Option<String>)> = stmt
                         .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
@@ -812,6 +814,7 @@ fn search_memories(
             .prepare(
                 "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at, compressed_text, age_tier \
                  FROM memories WHERE status = 'active' \
+                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -863,6 +866,7 @@ fn search_memories(
                  FROM memories_fts fts \
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
+                 AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
                  ORDER BY bm25(memories_fts, 1.0, 5.0, 3.0) \
                  LIMIT ?2",
             )
@@ -984,7 +988,8 @@ fn search_memories_fallback(
     let mut stmt = conn
         .prepare(
             "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at \
-             FROM memories WHERE status = 'active'",
+             FROM memories WHERE status = 'active' \
+             AND (expires_at IS NULL OR expires_at > datetime('now'))",
         )
         .map_err(|e| e.to_string())?;
 
@@ -1101,6 +1106,7 @@ fn search_decisions(
             .prepare(
                 "SELECT id, decision, context, score, retrievals, last_accessed, created_at \
                  FROM decisions WHERE status = 'active' \
+                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -1145,6 +1151,7 @@ fn search_decisions(
                  FROM decisions_fts fts \
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
+                 AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
                  ORDER BY bm25(decisions_fts, 5.0, 1.0) \
                  LIMIT ?2",
             )
@@ -1263,7 +1270,8 @@ fn search_decisions_fallback(
     let mut stmt = conn
         .prepare(
             "SELECT id, decision, context, score, retrievals, last_accessed, created_at \
-             FROM decisions WHERE status = 'active'",
+             FROM decisions WHERE status = 'active' \
+             AND (expires_at IS NULL OR expires_at > datetime('now'))",
         )
         .map_err(|e| e.to_string())?;
 
@@ -1905,7 +1913,7 @@ pub async fn handle_unfold(
 /// Look up the full text of a single source string (team visibility applied when `ctx.team_mode`).
 pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Option<Value> {
     if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
-        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
         params![source],
         |row| {
             Ok((
@@ -1924,7 +1932,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     if let Some(id_str) = source.strip_prefix("decision::") {
         if let Ok(id) = id_str.parse::<i64>() {
             if let Ok((decision, context, owner_id, visibility)) = conn.query_row(
-                "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 AND status = 'active'",
+                "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))",
                 params![id],
                 |row| {
                     Ok((
@@ -1947,7 +1955,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
 
     if let Ok((decision, context, owner_id, visibility)) = conn.query_row(
-        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
         params![source],
         |row| {
             Ok((
@@ -1969,7 +1977,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
 
     let stripped = source.strip_prefix("memory::").unwrap_or(source);
     if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
-        "SELECT text, type, owner_id, visibility FROM memories WHERE source LIKE ?1 AND status = 'active' ORDER BY score DESC LIMIT 1",
+        "SELECT text, type, owner_id, visibility FROM memories WHERE source LIKE ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
         params![format!("%{stripped}%")],
         |row| {
             Ok((
