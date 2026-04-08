@@ -400,13 +400,36 @@ export function App() {
 
   const normalizedSessions = useMemo(() => {
     if (!Array.isArray(sessions)) return [];
-    return sessions
+    const sorted = sessions
       .map((session, index) => normalizeSession(session, index))
       .sort((a, b) => {
         const aTs = new Date(a.lastHeartbeat || 0).getTime();
         const bTs = new Date(b.lastHeartbeat || 0).getTime();
         return bTs - aTs;
       });
+
+    const deduped = new Map();
+    for (const session of sorted) {
+      const agentRaw = String(session?.agent || "").trim();
+      if (!agentRaw) {
+        deduped.set(session.sessionId || `session-${deduped.size}`, session);
+        continue;
+      }
+      const base = agentRaw.replace(/\s*\([^)]*\)\s*$/, "").trim().toLowerCase();
+      const key = base === "droid" ? "droid" : agentRaw.toLowerCase();
+      const existing = deduped.get(key);
+      if (!existing) {
+        deduped.set(key, session);
+        continue;
+      }
+      const existingHasModel = /\([^)]+\)/.test(String(existing.agent || ""));
+      const currentHasModel = /\([^)]+\)/.test(agentRaw);
+      if (currentHasModel && !existingHasModel) {
+        deduped.set(key, session);
+      }
+    }
+
+    return Array.from(deduped.values());
   }, [sessions]);
 
   const knownAgents = useMemo(() => {
@@ -1168,22 +1191,6 @@ export function App() {
               <span className="topbar-label">HOST</span>
               {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
             </span>
-            {invokeRef.current ? (
-              <button
-                type="button"
-                className="topbar-close-button"
-                title="Minimizes to tray -- daemon stays alive"
-                onClick={async () => {
-                  try {
-                    await call("hide_to_tray");
-                  } catch {
-                    // no-op: tray hide is best effort
-                  }
-                }}
-              >
-                ✕
-              </button>
-            ) : null}
             <span className={`topbar-status ${daemonState.reachable ? "online" : "offline"}`}>
               {daemonState.reachable ? "● ONLINE" : "○ OFFLINE"}
             </span>

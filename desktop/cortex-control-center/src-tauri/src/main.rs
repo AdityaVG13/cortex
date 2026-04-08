@@ -879,7 +879,7 @@ fn main() {
                 let lifecycle = window.app_handle().state::<LifecycleState>();
                 if !lifecycle.is_quit_requested() {
                     api.prevent_close();
-                    let _ = window.hide();
+                    hide_main_window(&window.app_handle());
                 }
             }
         })

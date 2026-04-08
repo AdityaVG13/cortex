@@ -1091,26 +1091,6 @@ body {
   font-size: 11px;
 }
 
-.topbar-close-button {
-  width: 22px;
-  height: 22px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-3);
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: 11px;
-  line-height: 1;
-  transition: all 0.15s ease;
-}
-
-.topbar-close-button:hover {
-  border-color: var(--red);
-  color: var(--red);
-  background: var(--red-dim);
-}
-
 .topbar-stat {
   color: var(--text-2);
 }

@@ -3,80 +3,75 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-  copy_sidecar_binary();
-  tauri_build::build()
+    copy_sidecar_binary();
+    tauri_build::build()
 }
 
 fn copy_sidecar_binary() {
-  let target_triple = env::var("TARGET").unwrap_or_default();
-  if target_triple.is_empty() {
-    return;
-  }
-
-  let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-  let binaries_dir = manifest_dir.join("binaries");
-  let _ = fs::create_dir_all(&binaries_dir);
-
-  let ext = if target_triple.contains("windows") {
-    ".exe"
-  } else {
-    ""
-  };
-  let dest = binaries_dir.join(format!("cortex-{target_triple}{ext}"));
-
-  // Always copy the latest binary (daemon is built by beforeBuildCommand)
-  let mut candidates = Vec::new();
-  if let Some(sidecar_override) = env::var_os("CORTEX_SIDECAR_BIN") {
-    candidates.push(PathBuf::from(sidecar_override));
-  }
-
-  if let Some(repo_root) = manifest_dir
-    .parent()
-    .and_then(|p| p.parent())
-    .and_then(|p| p.parent())
-  {
-    candidates.push(
-      repo_root
-        .join("daemon-rs")
-        .join("target")
-        .join("release")
-        .join(format!("cortex{ext}")),
-    );
-  }
-
-  let home = env::var_os("USERPROFILE")
-    .or_else(|| env::var_os("HOME"))
-    .map(PathBuf::from);
-
-  if let Some(home) = home {
-    candidates.push(
-      home
-        .join(".cortex")
-        .join("bin")
-        .join(format!("cortex{ext}")),
-    );
-    candidates.push(
-      home
-        .join("cortex")
-        .join("daemon-rs")
-        .join("target")
-        .join("release")
-        .join(format!("cortex{ext}")),
-    );
-  }
-
-  for src in candidates {
-    if src.exists() {
-      let _ = fs::copy(&src, &dest);
-      println!(
-        "cargo:warning=Copied sidecar binary from {}",
-        src.display()
-      );
-      return;
+    let target_triple = env::var("TARGET").unwrap_or_default();
+    if target_triple.is_empty() {
+        return;
     }
-  }
 
-  println!(
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let binaries_dir = manifest_dir.join("binaries");
+    let _ = fs::create_dir_all(&binaries_dir);
+
+    let ext = if target_triple.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let dest = binaries_dir.join(format!("cortex-{target_triple}{ext}"));
+
+    // Always copy the latest binary (daemon is built by beforeBuildCommand)
+    let mut candidates = Vec::new();
+    if let Some(sidecar_override) = env::var_os("CORTEX_SIDECAR_BIN") {
+        candidates.push(PathBuf::from(sidecar_override));
+    }
+
+    if let Some(repo_root) = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+    {
+        candidates.push(
+            repo_root
+                .join("daemon-rs")
+                .join("target")
+                .join("release")
+                .join(format!("cortex{ext}")),
+        );
+    }
+
+    let home = env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from);
+
+    if let Some(home) = home {
+        candidates.push(
+            home.join(".cortex")
+                .join("bin")
+                .join(format!("cortex{ext}")),
+        );
+        candidates.push(
+            home.join("cortex")
+                .join("daemon-rs")
+                .join("target")
+                .join("release")
+                .join(format!("cortex{ext}")),
+        );
+    }
+
+    for src in candidates {
+        if src.exists() {
+            let _ = fs::copy(&src, &dest);
+            println!("cargo:warning=Copied sidecar binary from {}", src.display());
+            return;
+        }
+    }
+
+    println!(
     "cargo:warning=Cortex sidecar binary not found. Expected one of: CORTEX_SIDECAR_BIN, <repo>/daemon-rs/target/release/cortex{ext}, ~/.cortex/bin/cortex{ext}, ~/cortex/daemon-rs/target/release/cortex{ext}"
   );
 }

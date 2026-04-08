@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 use serde::Serialize;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SidecarStatus {
@@ -103,4 +103,3 @@ impl Drop for SidecarDaemon {
         let _ = self.stop();
     }
 }
-
