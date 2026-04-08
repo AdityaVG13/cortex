@@ -262,6 +262,9 @@ async fn main() {
             let remaining: Vec<String> = args[2..].to_vec();
             run_import_cli(&remaining);
         }
+        "doctor" => {
+            run_doctor_cli(&paths);
+        }
 
         // ── Backup/restore CLI ────────────────────────────────────
         "backup" => {
@@ -847,6 +850,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
+    eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
     eprintln!();
@@ -874,6 +878,140 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  service stop       Stop the service");
     eprintln!("  service status     Check service status");
     std::process::exit(code);
+}
+
+fn run_doctor_cli(paths: &auth::CortexPaths) {
+    let db_path = paths.db.clone();
+    println!("[doctor] db_path={}", db_path.display());
+
+    let conn = match db::open(&db_path) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[doctor] FAIL open: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = db::configure(&conn) {
+        eprintln!("[doctor] FAIL configure: {e}");
+        std::process::exit(1);
+    }
+
+    let expected_tables = [
+        "memories",
+        "decisions",
+        "embeddings",
+        "events",
+        "co_occurrence",
+        "locks",
+        "activities",
+        "messages",
+        "sessions",
+        "tasks",
+        "feed",
+        "feed_acks",
+        "context_cache",
+        "recall_feedback",
+        "schema_migrations",
+        "focus_sessions",
+        "memory_clusters",
+        "cluster_members",
+        "memories_fts",
+        "decisions_fts",
+    ];
+
+    let missing_tables: Vec<&str> = expected_tables
+        .iter()
+        .copied()
+        .filter(|table| !db::table_exists(&conn, table))
+        .collect();
+    if missing_tables.is_empty() {
+        println!("[doctor] OK tables: {}/{}", expected_tables.len(), expected_tables.len());
+    } else {
+        println!(
+            "[doctor] FAIL tables missing: {}",
+            missing_tables.join(", ")
+        );
+    }
+
+    let (schema_current, pending_versions) = match db::pending_migration_versions(&conn) {
+        Ok(pending) => (pending.is_empty(), pending),
+        Err(e) => {
+            println!("[doctor] FAIL schema status: {e}");
+            (false, vec![])
+        }
+    };
+    if schema_current {
+        let applied = db::applied_migration_versions(&conn)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        println!(
+            "[doctor] OK schema current: {applied}/{} migrations applied",
+            db::migration_definitions().len()
+        );
+    } else if !pending_versions.is_empty() {
+        println!(
+            "[doctor] FAIL schema pending: {}",
+            pending_versions.join(", ")
+        );
+    }
+
+    let integrity_ok = match db::verify_integrity(&conn) {
+        Ok(true) => {
+            println!("[doctor] OK integrity_check");
+            true
+        }
+        Ok(false) => {
+            println!("[doctor] FAIL integrity_check");
+            false
+        }
+        Err(e) => {
+            println!("[doctor] FAIL integrity_check error: {e}");
+            false
+        }
+    };
+
+    let fts_trigger_names = [
+        "memories_fts_ai",
+        "memories_fts_ad",
+        "memories_fts_au",
+        "decisions_fts_ai",
+        "decisions_fts_ad",
+        "decisions_fts_au",
+    ];
+    let fts_tables_ok = db::table_exists(&conn, "memories_fts") && db::table_exists(&conn, "decisions_fts");
+    let fts_queries_ok = conn
+        .query_row("SELECT COUNT(*) FROM memories_fts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .is_ok()
+        && conn
+            .query_row("SELECT COUNT(*) FROM decisions_fts", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .is_ok();
+    let fts_triggers_ok = fts_trigger_names.iter().all(|name| {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1 LIMIT 1",
+            rusqlite::params![name],
+            |_| Ok(()),
+        )
+        .is_ok()
+    });
+    let fts_ok = fts_tables_ok && fts_queries_ok && fts_triggers_ok;
+    if fts_ok {
+        println!("[doctor] OK fts indexes");
+    } else {
+        println!("[doctor] FAIL fts indexes");
+    }
+
+    let all_ok = missing_tables.is_empty() && schema_current && integrity_ok && fts_ok;
+    if all_ok {
+        println!("[doctor] GREEN");
+        return;
+    }
+
+    println!("[doctor] RED");
+    std::process::exit(1);
 }
 
 fn run_export_cli(args: &[String]) {
@@ -1302,9 +1440,10 @@ pub(crate) async fn run_daemon(
     // ── Schema migrations (idempotent) ──────────────────────────────
     {
         let conn = state.db.lock().await;
-        db::migrate_aging_columns(&conn);
-        db::migrate_focus_table(&conn);
-        crystallize::migrate_crystal_tables(&conn);
+        let applied = db::run_pending_migrations(&conn);
+        if applied > 0 {
+            eprintln!("[cortex] Applied {applied} schema migrations");
+        }
     }
 
     // ── Knowledge indexing + score decay ────────────────────────────
