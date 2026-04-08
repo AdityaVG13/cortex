@@ -251,4 +251,3 @@ async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
 
     Ok(())
 }
-

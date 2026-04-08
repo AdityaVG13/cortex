@@ -31,7 +31,14 @@ pub fn index_all(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize
 }
 
 /// Upsert a memory by source. If source exists, update text. Otherwise insert.
-fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, agent: &str, owner_id: Option<i64>) -> bool {
+fn upsert_memory(
+    conn: &Connection,
+    text: &str,
+    source: &str,
+    mem_type: &str,
+    agent: &str,
+    owner_id: Option<i64>,
+) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return false;
@@ -219,8 +226,12 @@ struct CustomSource {
     recursive: bool,
 }
 
-fn default_mem_type() -> String { "custom".to_string() }
-fn default_glob() -> String { "*.md".to_string() }
+fn default_mem_type() -> String {
+    "custom".to_string()
+}
+fn default_glob() -> String {
+    "*.md".to_string()
+}
 
 /// Resolve `~` to the user's home directory.
 fn expand_tilde(p: &str) -> PathBuf {
@@ -290,7 +301,12 @@ fn index_custom_sources(conn: &Connection, home: &Path, owner_id: Option<i64>) -
 }
 
 /// Index all matching files in a directory.
-fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource, owner_id: Option<i64>) -> usize {
+fn index_directory(
+    conn: &Connection,
+    dir: &Path,
+    src: &CustomSource,
+    owner_id: Option<i64>,
+) -> usize {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return 0,
@@ -317,7 +333,12 @@ fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource, owner_id: 
 }
 
 /// Index a single file's content as a memory entry.
-fn index_single_file(conn: &Connection, path: &Path, src: &CustomSource, owner_id: Option<i64>) -> usize {
+fn index_single_file(
+    conn: &Connection,
+    path: &Path,
+    src: &CustomSource,
+    owner_id: Option<i64>,
+) -> usize {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return 0,
@@ -492,18 +513,30 @@ mem_type = "config"
 
         // Verify sources are stored correctly
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'notes::%'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE source LIKE 'notes::%'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 2, "expected 2 note memories");
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'config::%'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE source LIKE 'config::%'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "expected 1 config memory");
 
         // Verify mem_type is set correctly
         let mem_type: String = conn
-            .query_row("SELECT type FROM memories WHERE source LIKE 'notes::%' LIMIT 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT type FROM memories WHERE source LIKE 'notes::%' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(mem_type, "note");
 
@@ -542,12 +575,14 @@ truncate = 100
         assert_eq!(n, 1);
 
         let text: String = conn
-            .query_row("SELECT text FROM memories WHERE source = 'docs::long'", [], |r| r.get(0))
+            .query_row(
+                "SELECT text FROM memories WHERE source = 'docs::long'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(text.len(), 100, "text should be truncated to 100 chars");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
-
 }
-

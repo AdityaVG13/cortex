@@ -26,9 +26,9 @@ mod setup;
 mod state;
 mod tls;
 
-use std::time::Duration;
-use std::path::Path;
 use chrono::{self, Utc};
+use std::path::Path;
+use std::time::Duration;
 
 // ── Backup rotation helpers ───────────────────────────────────────────────
 
@@ -65,48 +65,48 @@ fn rotate_backups(backup_dir: &Path, keep: usize) -> Option<std::io::Error> {
                 && !entry.file_name().to_string_lossy().contains(".corrupt")
         })
         .collect();
-    
+
     if backups.len() <= keep {
         return None;
     }
-    
+
     // Sort by modification time (oldest first)
     backups.sort_by_key(|entry| entry.metadata().ok().and_then(|m| m.modified().ok()));
-    
+
     // Remove oldest backups beyond the keep limit
     for backup in backups.iter().take(backups.len() - keep) {
         if let Err(e) = std::fs::remove_file(backup.path()) {
             return Some(e);
         }
     }
-    
+
     None
 }
 
 /// Create a backup of the database file.
 fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<String, String> {
     std::fs::create_dir_all(backup_dir).map_err(|e| format!("create backup dir: {e}"))?;
-    
+
     let timestamp = chrono::Local::now().format("%Y%m%d");
     let dest = backup_dir.join(format!("cortex-{timestamp}.db"));
-    
+
     // Copy the DB file (not move - preserves original)
     std::fs::copy(db_path, &dest).map_err(|e| format!("copy db: {e}"))?;
-    
+
     eprintln!("[cortex] Backup created: {}", dest.display());
-    
+
     // Rotate old backups (keep max 7)
     if let Some(e) = rotate_backups(backup_dir, 7) {
         eprintln!("[cortex] Warning: backup rotation failed: {e}");
     }
-    
+
     // Update last backup timestamp
     let last_backup_file = backup_dir.join(".last_backup");
     let now_ts = chrono::Utc::now().to_rfc3339();
     if let Err(e) = std::fs::write(&last_backup_file, now_ts) {
         eprintln!("[cortex] Warning: failed to write last_backup timestamp: {e}");
     }
-    
+
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -177,7 +177,9 @@ async fn main() {
                         .unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
                     let api_key = parse_flag_value(&args[3..], "--api-key");
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await {
+                    if let Err(e) =
+                        mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await
+                    {
                         eprintln!("[cortex-plugin] {e}");
                         std::process::exit(1);
                     }
@@ -280,7 +282,7 @@ async fn main() {
             };
             db::checkpoint_wal_best_effort(&conn);
             drop(conn);
-            
+
             let backup_dir = home_dir.join("backups");
             match create_backup(&db_path, &backup_dir) {
                 Ok(path) => {
@@ -303,42 +305,53 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            
+
             let skip_verification = args.iter().any(|a| a == "--skip-verification");
-            
+
             // Check if daemon is running by checking PID file
             let paths_check = auth::CortexPaths::resolve();
             let daemon_running = paths_check.pid.exists();
-            
+
             if daemon_running {
-                eprintln!("[cortex] Warning: Daemon PID file exists at {}", paths_check.pid.display());
-                eprintln!("[cortex] Please stop the daemon first with: Ctrl+C or kill the daemon process");
+                eprintln!(
+                    "[cortex] Warning: Daemon PID file exists at {}",
+                    paths_check.pid.display()
+                );
+                eprintln!(
+                    "[cortex] Please stop the daemon first with: Ctrl+C or kill the daemon process"
+                );
                 eprintln!("[cortex] Continuing restore anyway...");
                 std::thread::sleep(Duration::from_millis(500));
             }
-            
+
             let db_path = paths.db.clone();
             let home_dir = paths.home.clone();
-            
+
             // Create a pre-restore backup
             let timestamp = chrono::Local::now().format("%Y%m%dT%H%M%S");
             let pre_backup = home_dir.join(format!("cortex.pre-restore.{}.db", timestamp));
-            
-            eprintln!("[cortex] Creating pre-restore backup at: {}", pre_backup.display());
+
+            eprintln!(
+                "[cortex] Creating pre-restore backup at: {}",
+                pre_backup.display()
+            );
             if let Err(e) = std::fs::copy(&db_path, &pre_backup) {
                 eprintln!("[cortex] Error: failed to create pre-restore backup: {e}");
                 eprintln!("[cortex] Restore cancelled for safety");
                 std::process::exit(1);
             }
-            
+
             // Restore from backup file
             eprintln!("[cortex] Restoring from: {}", restore_file);
             if let Err(e) = std::fs::copy(&restore_file, &db_path) {
                 eprintln!("[cortex] Error: failed to restore backup: {e}");
-                eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
+                eprintln!(
+                    "[cortex] Pre-restore backup preserved at: {}",
+                    pre_backup.display()
+                );
                 std::process::exit(1);
             }
-            
+
             // Verify integrity of restored DB
             if !skip_verification {
                 eprintln!("[cortex] Verifying integrity of restored database...");
@@ -348,7 +361,9 @@ async fn main() {
                             eprintln!("[cortex] Error: restored database failed integrity check!");
                             eprintln!("[cortex] Rolling back to pre-restore backup...");
                             if let Err(e) = std::fs::copy(&pre_backup, &db_path) {
-                                eprintln!("[cortex] Critical: rollback failed! DB may be corrupted: {e}");
+                                eprintln!(
+                                    "[cortex] Critical: rollback failed! DB may be corrupted: {e}"
+                                );
                             } else {
                                 eprintln!("[cortex] Rollback complete");
                             }
@@ -360,7 +375,9 @@ async fn main() {
                         eprintln!("[cortex] Error: failed to open restored database: {e}");
                         eprintln!("[cortex] Rolling back to pre-restore backup...");
                         if let Err(e) = std::fs::copy(&pre_backup, &db_path) {
-                            eprintln!("[cortex] Critical: rollback failed! DB may be corrupted: {e}");
+                            eprintln!(
+                                "[cortex] Critical: rollback failed! DB may be corrupted: {e}"
+                            );
                         } else {
                             eprintln!("[cortex] Rollback complete");
                         }
@@ -368,8 +385,11 @@ async fn main() {
                     }
                 }
             }
-            
-            eprintln!("[cortex] Restore complete. Pre-restore backup preserved at: {}", pre_backup.display());
+
+            eprintln!(
+                "[cortex] Restore complete. Pre-restore backup preserved at: {}",
+                pre_backup.display()
+            );
             eprintln!("[cortex] You can now restart the daemon with: cortex serve");
         }
 
@@ -474,39 +494,37 @@ async fn main() {
                         }
                     }
                 }
-                "list" => {
-                    match admin_request("GET", "/admin/users", None).await {
-                        Ok(json) => {
-                            let users = json["users"].as_array();
-                            match users {
-                                Some(arr) if !arr.is_empty() => {
+                "list" => match admin_request("GET", "/admin/users", None).await {
+                    Ok(json) => {
+                        let users = json["users"].as_array();
+                        match users {
+                            Some(arr) if !arr.is_empty() => {
+                                println!(
+                                    "{:<6} {:<20} {:<20} {:<10} CREATED",
+                                    "ID", "USERNAME", "DISPLAY NAME", "ROLE"
+                                );
+                                println!("{}", "-".repeat(80));
+                                for u in arr {
                                     println!(
-                                        "{:<6} {:<20} {:<20} {:<10} CREATED",
-                                        "ID", "USERNAME", "DISPLAY NAME", "ROLE"
+                                        "{:<6} {:<20} {:<20} {:<10} {}",
+                                        json_field(u, "id"),
+                                        json_str(u, "username"),
+                                        json_str_or(u, "display_name", "-"),
+                                        json_str(u, "role"),
+                                        json_str_or(u, "created_at", "-"),
                                     );
-                                    println!("{}", "-".repeat(80));
-                                    for u in arr {
-                                        println!(
-                                            "{:<6} {:<20} {:<20} {:<10} {}",
-                                            json_field(u, "id"),
-                                            json_str(u, "username"),
-                                            json_str_or(u, "display_name", "-"),
-                                            json_str(u, "role"),
-                                            json_str_or(u, "created_at", "-"),
-                                        );
-                                    }
-                                    println!();
-                                    println!("{} user(s)", arr.len());
                                 }
-                                _ => println!("No users found."),
+                                println!();
+                                println!("{} user(s)", arr.len());
                             }
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {e}");
-                            std::process::exit(1);
+                            _ => println!("No users found."),
                         }
                     }
-                }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                },
                 _ => {
                     eprintln!("Usage: cortex user <add|rotate-key|remove|list>");
                     std::process::exit(1);
@@ -543,14 +561,18 @@ async fn main() {
                     let team_name = match args.get(3) {
                         Some(t) => t.clone(),
                         None => {
-                            eprintln!("Usage: cortex team add <team> <username> [--role member|admin]");
+                            eprintln!(
+                                "Usage: cortex team add <team> <username> [--role member|admin]"
+                            );
                             std::process::exit(1);
                         }
                     };
                     let username = match args.get(4) {
                         Some(u) => u.clone(),
                         None => {
-                            eprintln!("Usage: cortex team add <team> <username> [--role member|admin]");
+                            eprintln!(
+                                "Usage: cortex team add <team> <username> [--role member|admin]"
+                            );
                             std::process::exit(1);
                         }
                     };
@@ -623,38 +645,33 @@ async fn main() {
                         }
                     }
                 }
-                "list" => {
-                    match admin_request("GET", "/admin/teams", None).await {
-                        Ok(json) => {
-                            let teams = json["teams"].as_array();
-                            match teams {
-                                Some(arr) if !arr.is_empty() => {
+                "list" => match admin_request("GET", "/admin/teams", None).await {
+                    Ok(json) => {
+                        let teams = json["teams"].as_array();
+                        match teams {
+                            Some(arr) if !arr.is_empty() => {
+                                println!("{:<6} {:<30} {:<10} CREATED", "ID", "NAME", "MEMBERS");
+                                println!("{}", "-".repeat(70));
+                                for t in arr {
                                     println!(
-                                        "{:<6} {:<30} {:<10} CREATED",
-                                        "ID", "NAME", "MEMBERS"
+                                        "{:<6} {:<30} {:<10} {}",
+                                        json_field(t, "id"),
+                                        json_str(t, "name"),
+                                        json_field(t, "member_count"),
+                                        json_str_or(t, "created_at", "-"),
                                     );
-                                    println!("{}", "-".repeat(70));
-                                    for t in arr {
-                                        println!(
-                                            "{:<6} {:<30} {:<10} {}",
-                                            json_field(t, "id"),
-                                            json_str(t, "name"),
-                                            json_field(t, "member_count"),
-                                            json_str_or(t, "created_at", "-"),
-                                        );
-                                    }
-                                    println!();
-                                    println!("{} team(s)", arr.len());
                                 }
-                                _ => println!("No teams found."),
+                                println!();
+                                println!("{} team(s)", arr.len());
                             }
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {e}");
-                            std::process::exit(1);
+                            _ => println!("No teams found."),
                         }
                     }
-                }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                },
                 _ => {
                     eprintln!("Usage: cortex team <create|add|remove|list>");
                     std::process::exit(1);
@@ -666,32 +683,30 @@ async fn main() {
         "admin" => {
             let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
             match subcmd {
-                "list-unowned" => {
-                    match admin_request("GET", "/admin/unowned", None).await {
-                        Ok(json) => {
-                            let unowned = json["unowned"].as_object();
-                            match unowned {
-                                Some(map) if !map.is_empty() => {
-                                    println!("{:<25} UNOWNED ROWS", "TABLE");
-                                    println!("{}", "-".repeat(40));
-                                    let mut total: i64 = 0;
-                                    for (table, count) in map {
-                                        let n = count.as_i64().unwrap_or(0);
-                                        total += n;
-                                        println!("{:<25} {}", table, n);
-                                    }
-                                    println!("{}", "-".repeat(40));
-                                    println!("{:<25} {}", "TOTAL", total);
+                "list-unowned" => match admin_request("GET", "/admin/unowned", None).await {
+                    Ok(json) => {
+                        let unowned = json["unowned"].as_object();
+                        match unowned {
+                            Some(map) if !map.is_empty() => {
+                                println!("{:<25} UNOWNED ROWS", "TABLE");
+                                println!("{}", "-".repeat(40));
+                                let mut total: i64 = 0;
+                                for (table, count) in map {
+                                    let n = count.as_i64().unwrap_or(0);
+                                    total += n;
+                                    println!("{:<25} {}", table, n);
                                 }
-                                _ => println!("No unowned data found."),
+                                println!("{}", "-".repeat(40));
+                                println!("{:<25} {}", "TOTAL", total);
                             }
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {e}");
-                            std::process::exit(1);
+                            _ => println!("No unowned data found."),
                         }
                     }
-                }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                },
                 "assign-owner" => {
                     let mut from_user: Option<String> = None;
                     let mut to_user: Option<String> = None;
@@ -757,54 +772,53 @@ async fn main() {
                         }
                     }
                 }
-                "stats" => {
-                    match admin_request("GET", "/admin/stats", None).await {
-                        Ok(json) => {
-                            println!("Cortex Admin Stats");
-                            println!("{}", "=".repeat(50));
-                            println!();
-                            println!("Users: {}    Teams: {}    DB Size: {}",
-                                json_field(&json, "user_count"),
-                                json_field(&json, "team_count"),
-                                json_str_or(&json, "db_size_mb", "?"),
-                            );
-                            println!();
+                "stats" => match admin_request("GET", "/admin/stats", None).await {
+                    Ok(json) => {
+                        println!("Cortex Admin Stats");
+                        println!("{}", "=".repeat(50));
+                        println!();
+                        println!(
+                            "Users: {}    Teams: {}    DB Size: {}",
+                            json_field(&json, "user_count"),
+                            json_field(&json, "team_count"),
+                            json_str_or(&json, "db_size_mb", "?"),
+                        );
+                        println!();
 
-                            if let Some(tables) = json["tables"].as_object() {
-                                println!("{:<25} ROWS", "TABLE");
-                                println!("{}", "-".repeat(40));
-                                for (tbl, count) in tables {
-                                    println!("{:<25} {}", tbl, count);
-                                }
-                            }
-
-                            if let Some(per_user) = json["per_user"].as_array() {
-                                if !per_user.is_empty() {
-                                    println!();
-                                    println!("Per-User Breakdown:");
-                                    println!(
-                                        "  {:<20} {:<10} {:<10} CRYSTALS",
-                                        "USERNAME", "MEMORIES", "DECISIONS"
-                                    );
-                                    println!("  {}", "-".repeat(55));
-                                    for u in per_user {
-                                        println!(
-                                            "  {:<20} {:<10} {:<10} {}",
-                                            json_str(u, "username"),
-                                            json_field(u, "memories"),
-                                            json_field(u, "decisions"),
-                                            json_field(u, "crystals"),
-                                        );
-                                    }
-                                }
+                        if let Some(tables) = json["tables"].as_object() {
+                            println!("{:<25} ROWS", "TABLE");
+                            println!("{}", "-".repeat(40));
+                            for (tbl, count) in tables {
+                                println!("{:<25} {}", tbl, count);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("Error: {e}");
-                            std::process::exit(1);
+
+                        if let Some(per_user) = json["per_user"].as_array() {
+                            if !per_user.is_empty() {
+                                println!();
+                                println!("Per-User Breakdown:");
+                                println!(
+                                    "  {:<20} {:<10} {:<10} CRYSTALS",
+                                    "USERNAME", "MEMORIES", "DECISIONS"
+                                );
+                                println!("  {}", "-".repeat(55));
+                                for u in per_user {
+                                    println!(
+                                        "  {:<20} {:<10} {:<10} {}",
+                                        json_str(u, "username"),
+                                        json_field(u, "memories"),
+                                        json_field(u, "decisions"),
+                                        json_field(u, "crystals"),
+                                    );
+                                }
+                            }
                         }
                     }
-                }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
+                },
                 _ => {
                     eprintln!("Usage: cortex admin <list-unowned|assign-owner|stats>");
                     std::process::exit(1);
@@ -925,7 +939,11 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
         .filter(|table| !db::table_exists(&conn, table))
         .collect();
     if missing_tables.is_empty() {
-        println!("[doctor] OK tables: {}/{}", expected_tables.len(), expected_tables.len());
+        println!(
+            "[doctor] OK tables: {}/{}",
+            expected_tables.len(),
+            expected_tables.len()
+        );
     } else {
         println!(
             "[doctor] FAIL tables missing: {}",
@@ -978,7 +996,8 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
         "decisions_fts_ad",
         "decisions_fts_au",
     ];
-    let fts_tables_ok = db::table_exists(&conn, "memories_fts") && db::table_exists(&conn, "decisions_fts");
+    let fts_tables_ok =
+        db::table_exists(&conn, "memories_fts") && db::table_exists(&conn, "decisions_fts");
     let fts_queries_ok = conn
         .query_row("SELECT COUNT(*) FROM memories_fts", [], |row| {
             row.get::<_, i64>(0)
@@ -1215,7 +1234,7 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
-use daemon_lifecycle::{daemon_healthy, wait_for_health, spawn_daemon};
+use daemon_lifecycle::{daemon_healthy, spawn_daemon, wait_for_health};
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 
 async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
@@ -1236,7 +1255,10 @@ async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Res
         }
     }
 
-    let resp = req.send().await.map_err(|e| format!("boot request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("boot request failed: {e}"))?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -1259,7 +1281,8 @@ async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>) -> Result
 
             if should_spawn {
                 spawn_daemon(paths)?;
-                if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
+                if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await
+                {
                     return Err(format!(
                         "daemon did not become healthy on port {} within {}s",
                         paths.port, DAEMON_STARTUP_WAIT_SECS
@@ -1336,9 +1359,7 @@ async fn admin_request(
         .await
         .map_err(|e| format!("Failed to read response: {e}"))?;
     if status.as_u16() == 403 {
-        return Err(
-            "Admin commands require team mode. Run: cortex setup --team".to_string(),
-        );
+        return Err("Admin commands require team mode. Run: cortex setup --team".to_string());
     }
     if status.as_u16() == 404 {
         return Err("Endpoint not found. Is the daemon up to date?".to_string());
@@ -1496,13 +1517,13 @@ pub(crate) async fn run_daemon(
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;
-                
+
                 // Checkpoint WAL first to ensure consistency
                 {
                     let conn = db_wal.lock().await;
                     db::checkpoint_wal_best_effort(&conn);
                 }
-                
+
                 // Check if daily backup is needed
                 let backup_dir = home_dir.join("backups");
                 if should_backup(&backup_dir) {
@@ -1521,8 +1542,7 @@ pub(crate) async fn run_daemon(
         let db_qc = state.db_read.clone();
         let db_corrupted_flag = state.db_corrupted.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
             interval.tick().await; // skip first tick -- startup integrity_check already ran
             loop {
                 interval.tick().await;
@@ -1578,7 +1598,11 @@ pub(crate) async fn run_daemon(
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             {
                 let conn = db_crystal.lock().await;
-                let result = crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref(), crystal_owner_id);
+                let result = crystallize::run_crystallize_pass(
+                    &conn,
+                    engine_crystal.as_deref(),
+                    crystal_owner_id,
+                );
                 if result.crystals_created > 0 || result.crystals_updated > 0 {
                     eprintln!(
                         "[cortex] Initial crystallization: {} created, {} updated",
@@ -1592,7 +1616,11 @@ pub(crate) async fn run_daemon(
             loop {
                 interval.tick().await;
                 let conn = db_crystal.lock().await;
-                crystallize::run_crystallize_pass(&conn, engine_crystal.as_deref(), crystal_owner_id);
+                crystallize::run_crystallize_pass(
+                    &conn,
+                    engine_crystal.as_deref(),
+                    crystal_owner_id,
+                );
             }
         });
     }
@@ -1719,4 +1747,3 @@ async fn build_embeddings_async(
 
     eprintln!("[embeddings] Built {computed}/{total} embeddings");
 }
-

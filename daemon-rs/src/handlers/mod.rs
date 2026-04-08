@@ -373,4 +373,3 @@ pub fn estimate_tokens(text: &str) -> usize {
 pub fn truncate_chars(input: &str, max: usize) -> String {
     input.chars().take(max).collect::<String>()
 }
-

@@ -96,7 +96,10 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
     let healthy =
         wait_for_health(paths.port, Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS)).await;
     if healthy {
-        eprintln!("[cortex-lifecycle] Daemon respawned successfully on port {}", paths.port);
+        eprintln!(
+            "[cortex-lifecycle] Daemon respawned successfully on port {}",
+            paths.port
+        );
     } else {
         eprintln!(
             "[cortex-lifecycle] Daemon did not become healthy within {}s after respawn",

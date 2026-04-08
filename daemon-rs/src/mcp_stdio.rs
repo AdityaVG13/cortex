@@ -66,7 +66,9 @@ pub async fn run(state: RuntimeState) {
     let caller_id = resolve_mcp_caller(&state);
     eprintln!(
         "[cortex-mcp] MCP stdio transport started (caller_id: {})",
-        caller_id.map(|id| id.to_string()).unwrap_or_else(|| "none".to_string())
+        caller_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_string())
     );
 
     let stdin = tokio::io::stdin();
@@ -145,4 +147,3 @@ fn write_stdout(value: &Value) {
         eprintln!("[cortex-mcp] stdout flush error: {e}");
     }
 }
-

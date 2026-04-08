@@ -110,7 +110,10 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
             "/tasks/abandon",
             post(handlers::conductor::handle_abandon_task),
         )
-        .route("/tasks/delete", post(handlers::conductor::handle_delete_task))
+        .route(
+            "/tasks/delete",
+            post(handlers::conductor::handle_delete_task),
+        )
         // ── Feed ────────────────────────────────────────────────────
         .route(
             "/feed",
@@ -123,16 +126,37 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         .route("/import", post(handlers::export::handle_import))
         // ── Admin (team-mode only, owner/admin role required) ──
         .route("/admin/user/add", post(handlers::admin::handle_user_add))
-        .route("/admin/user/rotate-key", post(handlers::admin::handle_user_rotate_key))
-        .route("/admin/user/remove", post(handlers::admin::handle_user_remove))
+        .route(
+            "/admin/user/rotate-key",
+            post(handlers::admin::handle_user_rotate_key),
+        )
+        .route(
+            "/admin/user/remove",
+            post(handlers::admin::handle_user_remove),
+        )
         .route("/admin/users", get(handlers::admin::handle_user_list))
-        .route("/admin/team/create", post(handlers::admin::handle_team_create))
-        .route("/admin/team/add-member", post(handlers::admin::handle_team_add_member))
-        .route("/admin/team/remove-member", post(handlers::admin::handle_team_remove_member))
+        .route(
+            "/admin/team/create",
+            post(handlers::admin::handle_team_create),
+        )
+        .route(
+            "/admin/team/add-member",
+            post(handlers::admin::handle_team_add_member),
+        )
+        .route(
+            "/admin/team/remove-member",
+            post(handlers::admin::handle_team_remove_member),
+        )
         .route("/admin/teams", get(handlers::admin::handle_team_list))
         .route("/admin/unowned", get(handlers::admin::handle_unowned))
-        .route("/admin/assign-owner", post(handlers::admin::handle_assign_owner))
-        .route("/admin/set-visibility", post(handlers::admin::handle_set_visibility))
+        .route(
+            "/admin/assign-owner",
+            post(handlers::admin::handle_assign_owner),
+        )
+        .route(
+            "/admin/set-visibility",
+            post(handlers::admin::handle_set_visibility),
+        )
         .route("/admin/archive", post(handlers::admin::handle_archive))
         .route("/admin/stats", get(handlers::admin::handle_stats))
         // ── SSE events ──────────────────────────────────────────────
@@ -261,7 +285,11 @@ async fn handle_crystallize(
         return resp;
     }
     let conn = state.db.lock().await;
-    let result = crate::crystallize::run_crystallize_pass(&conn, state.embedding_engine.as_deref(), state.default_owner_id);
+    let result = crate::crystallize::run_crystallize_pass(
+        &conn,
+        state.embedding_engine.as_deref(),
+        state.default_owner_id,
+    );
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({

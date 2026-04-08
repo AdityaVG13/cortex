@@ -188,4 +188,3 @@ mod tests {
         assert!(map.contains_key(&ip));
     }
 }
-

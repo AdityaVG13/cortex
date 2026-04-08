@@ -145,10 +145,7 @@ async fn register_session(agent: &str, port: u16) {
 /// SessionStart hook -- outputs JSON for Claude Code hook system.
 pub async fn run_boot(agent: &str) {
     let port = daemon_port();
-    let (boot, health) = tokio::join!(
-        fetch_boot(agent, DEFAULT_BUDGET, port),
-        fetch_health(port)
-    );
+    let (boot, health) = tokio::join!(fetch_boot(agent, DEFAULT_BUDGET, port), fetch_health(port));
 
     let (total, memories, decisions) = health
         .as_ref()
@@ -261,4 +258,3 @@ pub async fn run_status() {
         }
     }
 }
-

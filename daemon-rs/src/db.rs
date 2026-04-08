@@ -124,7 +124,9 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             if table_exists(conn, "focus_sessions") {
                 Ok(())
             } else {
-                Err(migration_error("focus table migration did not create focus_sessions"))
+                Err(migration_error(
+                    "focus table migration did not create focus_sessions",
+                ))
             }
         }
         "004_crystal_tables" => {
@@ -167,7 +169,10 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
                 "UPDATE decisions SET merged_count = 0 WHERE merged_count IS NULL",
                 [],
             );
-            let _ = conn.execute("UPDATE decisions SET quality = 50 WHERE quality IS NULL", []);
+            let _ = conn.execute(
+                "UPDATE decisions SET quality = 50 WHERE quality IS NULL",
+                [],
+            );
             Ok(())
         }
         "006" => {
@@ -183,7 +188,9 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             )?;
             Ok(())
         }
-        other => Err(migration_error(format!("unknown schema migration: {other}"))),
+        other => Err(migration_error(format!(
+            "unknown schema migration: {other}"
+        ))),
     }
 }
 
@@ -1028,11 +1035,9 @@ pub fn verify_integrity(conn: &Connection) -> rusqlite::Result<bool> {
 /// Run `PRAGMA quick_check` (B-tree structure only -- faster than integrity_check).
 /// Returns `true` when the database passes.
 pub fn quick_check(conn: &Connection) -> bool {
-    conn.query_row("PRAGMA quick_check", [], |row| {
-        row.get::<_, String>(0)
-    })
-    .map(|s| s.trim().eq_ignore_ascii_case("ok"))
-    .unwrap_or(false)
+    conn.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map(|s| s.trim().eq_ignore_ascii_case("ok"))
+        .unwrap_or(false)
 }
 
 /// Attempt to recover data from a corrupted DB using dump-and-rebuild.
@@ -1051,7 +1056,10 @@ pub fn quick_check(conn: &Connection) -> bool {
 /// FTS virtual tables are re-created and populated from data; they are not
 /// exported directly.
 pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, RepairError> {
-    eprintln!("[cortex] auto_repair: beginning dump-and-rebuild of {}", db_path.display());
+    eprintln!(
+        "[cortex] auto_repair: beginning dump-and-rebuild of {}",
+        db_path.display()
+    );
 
     // ── Step 1: open the corrupted DB read-only ────────────────────────────
     let corrupt_conn = Connection::open(db_path).map_err(RepairError::OpenCorrupt)?;
@@ -1123,9 +1131,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
         let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
         let placeholder_list = placeholders.join(", ");
 
-        let mut data_stmt = match corrupt_conn
-            .prepare(&format!("SELECT {col_list} FROM {table}"))
-        {
+        let mut data_stmt = match corrupt_conn.prepare(&format!("SELECT {col_list} FROM {table}")) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("[cortex] auto_repair: failed to prepare SELECT on '{table}': {e}");
@@ -1434,7 +1440,10 @@ mod tests {
         assert_eq!(marker_rows, 1, "expected FTS marker row to be persisted");
 
         let rebuilt_again = rebuild_fts_if_needed(&conn).unwrap();
-        assert!(!rebuilt_again, "second call should skip when marker already exists");
+        assert!(
+            !rebuilt_again,
+            "second call should skip when marker already exists"
+        );
     }
 
     #[test]
@@ -1491,7 +1500,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         configure(&conn).unwrap();
         initialize_schema(&conn).unwrap();
-        assert!(quick_check(&conn), "fresh in-memory DB should pass quick_check");
+        assert!(
+            quick_check(&conn),
+            "fresh in-memory DB should pass quick_check"
+        );
     }
 
     #[test]
@@ -1526,13 +1538,17 @@ mod tests {
             )
             .unwrap();
             // Checkpoint so data is in the main DB file, not just WAL.
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
         } // Connection closed -- file flushed.
 
         // Verify the DB is clean before corruption.
         {
             let conn = Connection::open(&db_path).unwrap();
-            assert!(verify_integrity(&conn).unwrap(), "DB should be clean before corruption");
+            assert!(
+                verify_integrity(&conn).unwrap(),
+                "DB should be clean before corruption"
+            );
         }
 
         // ── Corrupt the DB by overwriting a page mid-file ─────────────────
@@ -1626,7 +1642,9 @@ mod tests {
         );
 
         let recorded: i64 = conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(recorded as usize, migration_definitions().len());
 

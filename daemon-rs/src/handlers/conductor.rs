@@ -1647,7 +1647,10 @@ pub async fn handle_delete_task(
                 "task",
                 json!({ "action": "deleted", "taskId": task_id, "title": title }),
             );
-            json_response(StatusCode::OK, json!({ "deleted": true, "taskId": task_id }))
+            json_response(
+                StatusCode::OK,
+                json!({ "deleted": true, "taskId": task_id }),
+            )
         }
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1859,4 +1862,3 @@ pub async fn handle_next_task(
 
     json_response(StatusCode::OK, json!({ "task": task }))
 }
-

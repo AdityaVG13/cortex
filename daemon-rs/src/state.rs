@@ -185,8 +185,7 @@ pub fn initialize(
                     })?;
                     crate::db::configure(&conn).ok();
                     crate::db::initialize_schema(&conn).ok();
-                    let (state, rx) =
-                        initialize_with_conn(conn, db_path, allow_token_rotation)?;
+                    let (state, rx) = initialize_with_conn(conn, db_path, allow_token_rotation)?;
                     // Signal degraded mode so /health reflects corruption.
                     state
                         .db_corrupted
@@ -318,4 +317,3 @@ fn initialize_with_conn(
 
     Ok((state, shutdown_rx))
 }
-

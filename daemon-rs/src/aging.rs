@@ -359,4 +359,3 @@ pub fn get_display_text(text: &str, compressed_text: &Option<String>, age_tier: 
             .unwrap_or_else(|| text.to_string()),
     }
 }
-

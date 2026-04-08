@@ -342,7 +342,12 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
 
     if dry_run {
-        eprintln!("    {:<width$} {:>6} rows", "Total:", total, width = label_width);
+        eprintln!(
+            "    {:<width$} {:>6} rows",
+            "Total:",
+            total,
+            width = label_width
+        );
         eprintln!();
         let _ = conn.execute_batch("ROLLBACK");
         eprintln!("  No changes made.");
@@ -844,4 +849,3 @@ async fn step_verify() -> StepResult {
         Err(e) => StepResult::Warn(format!("Recall failed: {e}. Store succeeded.")),
     }
 }
-

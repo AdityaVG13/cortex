@@ -192,4 +192,3 @@ fn sanitize_markdown(input: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-

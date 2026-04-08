@@ -316,4 +316,3 @@ pub fn dispatch_service() {
     eprintln!("[cortex] Windows Service is only available on Windows");
     std::process::exit(1);
 }
-

@@ -427,4 +427,3 @@ mod tests {
         assert!(has_retrieval_immunity(&conn, "memory::y"));
     }
 }
-

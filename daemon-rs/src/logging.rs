@@ -27,4 +27,3 @@ pub fn log_line(message: &str) {
         let _ = writeln!(file, "[{ts}] {message}");
     }
 }
-

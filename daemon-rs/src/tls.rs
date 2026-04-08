@@ -82,4 +82,3 @@ fn load_rustls_config(cert_path: &Path, key_path: &Path) -> Result<ServerConfig,
         .with_single_cert(certs, key)
         .map_err(|e| format!("Failed to build TLS config: {e}"))
 }
-

@@ -33,12 +33,7 @@ fn detect_identity() -> String {
 
     let shell = env::var("SHELL")
         .or_else(|_| env::var("COMSPEC"))
-        .map(|s| {
-            s.rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(&s)
-                .to_string()
-        })
+        .map(|s| s.rsplit(['/', '\\']).next().unwrap_or(&s).to_string())
         .unwrap_or_else(|_| "unknown".to_string());
 
     format!("User: {user}. Platform: {platform}. Shell: {shell}.")
@@ -916,4 +911,3 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
 
 // Dead code removed: find_memory_dir, read_memory_files, read_lessons
 // (indexer.rs has its own implementation; these were ported but unused)
-

@@ -25,7 +25,7 @@ const HEALTH_CHECK_ATTEMPTS: u32 = 5;
 const REQUEST_ATTEMPTS: u32 = 3;
 const MAX_CONSECUTIVE_FAILURES: u32 = 2;
 const RESPAWN_COOLDOWN_SECS: u64 = 15;
-const SESSION_HEARTBEAT_SECS: u64 = 60;
+const SESSION_HEARTBEAT_SECS: u64 = 15;
 
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
@@ -71,7 +71,11 @@ fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
     let model = env_trimmed("CORTEX_AGENT_MODEL").or_else(|| env_trimmed("CORTEX_MODEL"));
 
     let mut agent = env_trimmed("CORTEX_AGENT_DISPLAY")
-        .or_else(|| agent_arg.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
+        .or_else(|| {
+            agent_arg
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
         .or_else(|| env_trimmed("CORTEX_AGENT_NAME"))
         .unwrap_or_else(|| "mcp".to_string());
 
@@ -266,7 +270,21 @@ pub async fn run(
                             eprintln!("[cortex-mcp] Re-registered session for {heartbeat_agent}");
                         }
                     }
-                    SessionHeartbeatOutcome::Failed => {}
+                    SessionHeartbeatOutcome::Failed => {
+                        let restarted = session_start(
+                            &hb_client,
+                            &heartbeat_base_url,
+                            heartbeat_api_key.as_deref(),
+                            &heartbeat_agent,
+                            heartbeat_model.as_deref(),
+                        )
+                        .await;
+                        if restarted {
+                            eprintln!(
+                                "[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}"
+                            );
+                        }
+                    }
                 }
             }
         });
@@ -321,8 +339,7 @@ pub async fn run(
         let mut last_err = String::new();
         let mut response_body: Option<String> = None;
         let mut should_count_failure = false;
-        let request_deadline = tokio::time::Instant::now()
-            + std::time::Duration::from_secs(15);
+        let request_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 
         for attempt in 1..=REQUEST_ATTEMPTS {
             let now = tokio::time::Instant::now();
@@ -433,10 +450,8 @@ pub async fn run(
                         eprintln!(
                             "[cortex-mcp] Request failed (attempt {attempt}/{REQUEST_ATTEMPTS}): {e}"
                         );
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            500 * attempt as u64,
-                        ))
-                        .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
+                            .await;
                     }
                 }
             }

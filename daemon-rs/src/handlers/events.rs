@@ -62,4 +62,3 @@ pub async fn handle_events_stream(State(state): State<RuntimeState>) -> Response
     // CORS handled by tower-http CorsLayer in server.rs -- no manual override
     sse.into_response()
 }
-

@@ -76,7 +76,12 @@ pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
 }
 
 /// End a focus session. Summarizes raw traces, stores the summary, returns stats.
-pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i64>) -> Result<Value, String> {
+pub fn focus_end(
+    conn: &Connection,
+    label: &str,
+    agent: &str,
+    owner_id: Option<i64>,
+) -> Result<Value, String> {
     let session: Option<(i64, String)> = conn
         .query_row(
             "SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'",
@@ -230,4 +235,3 @@ fn summarize_entries(entries: &[String]) -> String {
 fn estimate_tokens(text: &str) -> usize {
     (text.len() as f64 / 3.8).ceil() as usize
 }
-

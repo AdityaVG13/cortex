@@ -364,11 +364,9 @@ fn compute_expires_at(
         return Ok(None);
     };
     let modifier = format!("+{ttl_seconds} seconds");
-    conn.query_row(
-        "SELECT datetime('now', ?1)",
-        params![modifier],
-        |row| row.get(0),
-    )
+    conn.query_row("SELECT datetime('now', ?1)", params![modifier], |row| {
+        row.get(0)
+    })
     .map(Some)
     .map_err(|e| format!("Failed to compute expires_at: {e}"))
 }

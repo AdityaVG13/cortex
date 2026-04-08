@@ -300,4 +300,3 @@ pub async fn handle_shutdown(State(state): State<RuntimeState>, headers: HeaderM
 
     json_response(StatusCode::OK, json!({ "shutdown": true }))
 }
-

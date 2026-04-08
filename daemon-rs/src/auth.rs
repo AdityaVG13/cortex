@@ -122,8 +122,7 @@ pub fn migrate_legacy_db(paths: &CortexPaths) -> Result<bool, String> {
     fs::create_dir_all(paths.db.parent().unwrap_or(&paths.home))
         .map_err(|e| format!("create dir: {e}"))?;
 
-    fs::copy(&legacy, &paths.db)
-        .map_err(|e| format!("copy db: {e}"))?;
+    fs::copy(&legacy, &paths.db).map_err(|e| format!("copy db: {e}"))?;
 
     // Copy WAL and SHM if present
     for ext in ["db-wal", "db-shm"] {
@@ -135,8 +134,8 @@ pub fn migrate_legacy_db(paths: &CortexPaths) -> Result<bool, String> {
     }
 
     // Verify integrity of the copy
-    let conn = rusqlite::Connection::open(&paths.db)
-        .map_err(|e| format!("open migrated db: {e}"))?;
+    let conn =
+        rusqlite::Connection::open(&paths.db).map_err(|e| format!("open migrated db: {e}"))?;
     let check: String = conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|e| format!("integrity check: {e}"))?;
@@ -400,4 +399,3 @@ fn base62_encode_bytes(bytes: &[u8]) -> String {
         .map(|d| BASE62[*d as usize] as char)
         .collect()
 }
-

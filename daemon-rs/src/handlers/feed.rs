@@ -599,4 +599,3 @@ pub async fn handle_feed_ack(
         ),
     }
 }
-

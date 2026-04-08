@@ -28,12 +28,7 @@ const OWNER_TABLES: &[&str] = &[
     "focus_sessions",
 ];
 
-const VISIBILITY_TABLES: &[&str] = &[
-    "memories",
-    "decisions",
-    "memory_clusters",
-    "feed",
-];
+const VISIBILITY_TABLES: &[&str] = &["memories", "decisions", "memory_clusters", "feed"];
 
 fn is_allowed_table(table: &str, allowlist: &[&str]) -> bool {
     allowlist.contains(&table)
@@ -110,7 +105,10 @@ pub async fn handle_user_add(
 
     let role = body.role.as_deref().unwrap_or("member");
     if !["owner", "admin", "member"].contains(&role) {
-        return json_error(StatusCode::BAD_REQUEST, "role must be owner, admin, or member");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "role must be owner, admin, or member",
+        );
     }
 
     let api_key = crate::auth::generate_ctx_api_key();
@@ -248,18 +246,15 @@ pub async fn handle_user_remove(
     json_response(StatusCode::OK, json!({ "removed": username }))
 }
 
-pub async fn handle_user_list(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_user_list(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
     }
 
-    let mut stmt = match conn.prepare(
-        "SELECT id, username, display_name, role, created_at, last_active_at FROM users",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT id, username, display_name, role, created_at, last_active_at FROM users")
+    {
         Ok(s) => s,
         Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
@@ -298,10 +293,7 @@ pub async fn handle_team_create(
         return json_error(StatusCode::BAD_REQUEST, "name is required");
     }
 
-    let result = conn.execute(
-        "INSERT INTO teams (name) VALUES (?1)",
-        params![name],
-    );
+    let result = conn.execute("INSERT INTO teams (name) VALUES (?1)", params![name]);
 
     match result {
         Ok(_) => {}
@@ -316,10 +308,7 @@ pub async fn handle_team_create(
 
     let team_id = conn.last_insert_rowid();
 
-    json_response(
-        StatusCode::OK,
-        json!({ "team_id": team_id, "name": name }),
-    )
+    json_response(StatusCode::OK, json!({ "team_id": team_id, "name": name }))
 }
 
 pub async fn handle_team_add_member(
@@ -365,7 +354,10 @@ pub async fn handle_team_add_member(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("UNIQUE") || msg.contains("PRIMARY KEY") {
-                return json_error(StatusCode::CONFLICT, "user is already a member of this team");
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "user is already a member of this team",
+                );
             }
             return json_error(StatusCode::INTERNAL_SERVER_ERROR, &msg);
         }
@@ -431,10 +423,7 @@ pub async fn handle_team_remove_member(
     )
 }
 
-pub async fn handle_team_list(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_team_list(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -467,10 +456,7 @@ pub async fn handle_team_list(
 
 // ─── Data Management ────────────────────────────────────────────────────────
 
-pub async fn handle_unowned(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_unowned(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -479,9 +465,7 @@ pub async fn handle_unowned(
     let mut unowned = serde_json::Map::new();
     for table in OWNER_TABLES {
         let sql = format!("SELECT COUNT(*) FROM {table} WHERE owner_id IS NULL");
-        let count: i64 = conn
-            .query_row(&sql, [], |row| row.get(0))
-            .unwrap_or(0);
+        let count: i64 = conn.query_row(&sql, [], |row| row.get(0)).unwrap_or(0);
         unowned.insert(table.to_string(), json!(count));
     }
 
@@ -561,7 +545,10 @@ pub async fn handle_set_visibility(
     }
 
     if !["private", "team", "shared"].contains(&body.visibility.as_str()) {
-        return json_error(StatusCode::BAD_REQUEST, "visibility must be private, team, or shared");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "visibility must be private, team, or shared",
+        );
     }
 
     if !is_allowed_table(&body.table, VISIBILITY_TABLES) {
@@ -572,7 +559,12 @@ pub async fn handle_set_visibility(
         return json_response(StatusCode::OK, json!({ "updated": 0 }));
     }
 
-    let placeholders: Vec<String> = body.ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
+    let placeholders: Vec<String> = body
+        .ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 2))
+        .collect();
     let sql = format!(
         "UPDATE {} SET visibility = ?1 WHERE id IN ({})",
         body.table,
@@ -584,7 +576,8 @@ pub async fn handle_set_visibility(
     for id in &body.ids {
         param_values.push(Box::new(*id));
     }
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     let updated = conn.execute(&sql, params_ref.as_slice()).unwrap_or(0);
 
@@ -612,25 +605,32 @@ pub async fn handle_archive(
         return json_response(StatusCode::OK, json!({ "archived": 0 }));
     }
 
-    let placeholders: Vec<String> = body.ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+    let placeholders: Vec<String> = body
+        .ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
     let sql = format!(
         "UPDATE {} SET status = 'archived' WHERE id IN ({})",
         body.table,
         placeholders.join(", ")
     );
 
-    let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = body.ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
-    let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+    let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = body
+        .ids
+        .iter()
+        .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+    let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|p| p.as_ref()).collect();
 
     let archived = conn.execute(&sql, params_ref.as_slice()).unwrap_or(0);
 
     json_response(StatusCode::OK, json!({ "archived": archived }))
 }
 
-pub async fn handle_stats(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -646,9 +646,19 @@ pub async fn handle_stats(
 
     // Per-table row counts
     let table_names = [
-        "memories", "decisions", "memory_clusters", "recall_feedback",
-        "sessions", "locks", "tasks", "messages", "feed", "feed_acks",
-        "activities", "focus_sessions", "events",
+        "memories",
+        "decisions",
+        "memory_clusters",
+        "recall_feedback",
+        "sessions",
+        "locks",
+        "tasks",
+        "messages",
+        "feed",
+        "feed_acks",
+        "activities",
+        "focus_sessions",
+        "events",
     ];
     let mut tables = serde_json::Map::new();
     for table in &table_names {
@@ -703,4 +713,3 @@ pub async fn handle_stats(
         }),
     )
 }
-

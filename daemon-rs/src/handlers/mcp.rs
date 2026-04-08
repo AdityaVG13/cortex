@@ -367,10 +367,7 @@ async fn mcp_dispatch(
         }
 
         "cortex_reconnect" => {
-            let agent = args
-                .get("agent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("mcp");
+            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
             let model = args.get("model").and_then(|v| v.as_str());
             let (display_agent, expires_at) =
                 upsert_mcp_session(state, caller_id, agent, model, "MCP reconnect").await?;
@@ -897,4 +894,3 @@ fn sanitize_markdown(input: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-

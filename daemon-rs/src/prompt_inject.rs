@@ -171,4 +171,3 @@ fn read_auth_token() -> Option<String> {
         Err(_) => None,
     }
 }
-

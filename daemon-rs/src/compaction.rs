@@ -411,9 +411,11 @@ mod tests {
         assert_eq!(deleted, 2);
 
         let mem_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories WHERE source = 'ttl::mem'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE source = 'ttl::mem'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         let dec_count: i64 = conn
             .query_row(
