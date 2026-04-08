@@ -195,6 +195,7 @@ async fn handle_compact(
         serde_json::json!({
             "eventsPruned": result.events_pruned,
             "archivedTextStripped": result.archived_text_stripped,
+            "expiredPruned": result.expired_pruned,
             "crystalEmbeddingsPruned": result.crystal_embeddings_pruned,
             "feedbackAggregated": result.feedback_aggregated,
             "bytesBefore": result.bytes_before,
@@ -596,4 +597,3 @@ mod tests {
         }
     }
 }
-

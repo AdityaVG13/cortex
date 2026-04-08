@@ -13,7 +13,7 @@ use crate::state::RuntimeState;
 
 pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
     // Read DB stats in a short lock, then drop it before the network call.
-    let (memories, decisions, embeddings_count, events) = {
+    let (memories, decisions, embeddings_count, events, db_freelist_pages) = {
         let conn = state.db_read.lock().await;
         let m: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
@@ -27,8 +27,15 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
         let ev: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap_or(0);
-        (m, d, e, ev)
+        let freelist: i64 = conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap_or(0);
+        (m, d, e, ev, freelist)
     }; // DB lock released here.
+
+    let db_size_bytes = std::fs::metadata(&state.db_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
 
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -58,6 +65,8 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
             "db_corrupted": db_corrupted,
             "embedding_status": embedding_status,
             "team_mode": state.team_mode,
+            "db_freelist_pages": db_freelist_pages,
+            "db_size_bytes": db_size_bytes,
             "stats": {
                 "memories": memories,
                 "decisions": decisions,
@@ -522,4 +531,3 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
         }),
     )
 }
-

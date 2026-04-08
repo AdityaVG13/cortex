@@ -633,6 +633,7 @@ pub fn list_crystals(conn: &Connection) -> Vec<serde_json::Value> {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -655,8 +656,8 @@ mod tests {
 
     #[test]
     fn test_compute_centroid() {
-        let v1 = vec![1.0, 0.0, 0.0];
-        let v2 = vec![0.0, 1.0, 0.0];
+        let v1 = [1.0, 0.0, 0.0];
+        let v2 = [0.0, 1.0, 0.0];
         let centroid = compute_centroid(&[&v1[..], &v2[..]]);
         // Average is [0.5, 0.5, 0] normalized ≈ [0.707, 0.707, 0]
         assert!(centroid[0] > 0.6 && centroid[0] < 0.8);
@@ -795,4 +796,3 @@ pub fn migrate_crystal_tables(conn: &Connection) {
         Err(e) => eprintln!("[db] Crystal table migration: {e}"),
     }
 }
-

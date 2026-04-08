@@ -15,8 +15,11 @@ use rusqlite::{params, Connection};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-/// Events older than this are deleted.
-const EVENT_RETENTION_DAYS: i64 = 30;
+/// Non-boot events older than this are deleted.
+const EVENT_RETENTION_DAYS: i64 = 14;
+
+/// Only VACUUM when SQLite reports enough reclaimable pages to justify the IO.
+const VACUUM_FREELIST_THRESHOLD_PAGES: i64 = 100;
 
 /// Archived entries older than this have their text stripped (metadata kept).
 const ARCHIVED_TEXT_RETENTION_DAYS: i64 = 90;
@@ -63,14 +66,15 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
 
     // 6. Reclaim space
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-    // VACUUM is expensive but reclaims space from deletions.
-    // Only run if we deleted a meaningful amount.
+    // VACUUM is expensive. Use SQLite's freelist_count instead of raw delete
+    // volume so we only pay the cost when pages are actually reclaimable.
+    let freelist_pages = freelist_count(conn);
     let total_deleted = result.events_pruned
         + result.archived_text_stripped
         + result.expired_pruned
         + result.crystal_embeddings_pruned
         + result.feedback_aggregated;
-    if total_deleted > 100 {
+    if freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES {
         let _ = conn.execute_batch("VACUUM;");
     }
 
@@ -94,8 +98,10 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
 
 fn prune_old_events(conn: &Connection) -> usize {
     conn.execute(
-        "DELETE FROM events WHERE julianday('now') - julianday(created_at) > ?1",
-        params![EVENT_RETENTION_DAYS],
+        "DELETE FROM events \
+         WHERE type NOT IN ('agent_boot', 'boot_savings') \
+         AND created_at < datetime('now', ?1)",
+        params![format!("-{EVENT_RETENTION_DAYS} days")],
     )
     .unwrap_or(0)
 }
@@ -260,6 +266,11 @@ fn db_size_bytes(conn: &Connection) -> i64 {
     page_count * page_size
 }
 
+fn freelist_count(conn: &Connection) -> i64 {
+    conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))
+        .unwrap_or(0)
+}
+
 /// Get storage breakdown by table (for diagnostics).
 pub fn storage_breakdown(conn: &Connection) -> Vec<(String, i64)> {
     let tables = [
@@ -314,6 +325,18 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('agent_boot', '{}', 'test', datetime('now', '-60 days'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', '{}', 'test', datetime('now', '-60 days'))",
+            [],
+        )
+        .unwrap();
         // Insert a recent event
         conn.execute(
             "INSERT INTO events (type, data, source_agent) VALUES ('test', '{}', 'test')",
@@ -327,7 +350,7 @@ mod tests {
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(remaining, 1);
+        assert_eq!(remaining, 3);
     }
 
     #[test]
