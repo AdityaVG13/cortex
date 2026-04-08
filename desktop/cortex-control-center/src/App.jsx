@@ -28,6 +28,7 @@ const SSE_RECONNECT_MAX_MS = 5000;
 const DAEMON_START_WAIT_TIMEOUT_MS = 90000;
 const DAEMON_START_POLL_INTERVAL_MS = 750;
 const DAEMON_STOP_HANG_TIMEOUT_MS = 5000;
+const DAEMON_STOP_WAIT_TIMEOUT_MS = 15000;
 const SAVINGS_USD_PER_MILLION = 15;
 
 const FEED_KIND_LABEL = {
@@ -341,6 +342,17 @@ function normalizeSession(session, index) {
   };
 }
 
+function isDaemonOfflineErrorMessage(message) {
+  const value = String(message || "").toLowerCase();
+  return (
+    value.includes("cannot connect to daemon") ||
+    value.includes("cannot reach daemon") ||
+    value.includes("actively refused") ||
+    value.includes("os error 10061") ||
+    value.includes("connection refused")
+  );
+}
+
 export function App() {
   const [panel, setPanel] = useState("overview");
   const [daemonState, setDaemonState] = useState(EMPTY_DAEMON);
@@ -384,6 +396,7 @@ export function App() {
   const invokeRef = useRef(null);
   const tokenRef = useRef("");
   const refreshAllRef = useRef(async () => {});
+  const daemonTransitionRef = useRef(false);
 
   const normalizedSessions = useMemo(() => {
     if (!Array.isArray(sessions)) return [];
@@ -450,7 +463,10 @@ export function App() {
         return;
       } catch (err) {
         tokenRef.current = "";
-        setFeedbackMessage(`Auth token read failed: ${err.message || err}`);
+        const message = err?.message || String(err);
+        if (!daemonTransitionRef.current || !isDaemonOfflineErrorMessage(message)) {
+          setFeedbackMessage(`Auth token read failed: ${message}`);
+        }
       }
     }
   }, [call]);
@@ -460,7 +476,6 @@ export function App() {
       try {
         const state = await call("daemon_status");
         setDaemonState(state);
-        setFeedbackMessage(state.message || "Daemon status updated.");
         return;
       } catch {
         // fallback to HTTP health
@@ -481,7 +496,6 @@ export function App() {
         message: `Connected -- ${health.stats?.memories ?? 0} memories`,
       };
       setDaemonState(nextState);
-      setFeedbackMessage(nextState.message);
     } else {
       const nextState = {
         running: false,
@@ -490,7 +504,6 @@ export function App() {
         message: "Cannot reach daemon on :7437",
       };
       setDaemonState(nextState);
-      setFeedbackMessage(nextState.message);
     }
   }, [api, call]);
 
@@ -609,6 +622,22 @@ export function App() {
       invokeRef.current = null;
     }
     await readAuthToken();
+
+    if (daemonTransitionRef.current) {
+      const transitionErrors = await settledCollectErrors([
+        refreshDaemonState,
+        refreshHealth,
+      ]);
+      if (
+        transitionErrors.length &&
+        !transitionErrors.every((error) => isDaemonOfflineErrorMessage(error))
+      ) {
+        const unique = [...new Set(transitionErrors)];
+        setFeedbackMessage(unique.join("; "));
+      }
+      return;
+    }
+
     const errors = await settledCollectErrors([
       refreshDaemonState,
       refreshHealth,
@@ -620,7 +649,10 @@ export function App() {
       refreshConflicts,
     ]);
     if (errors.length) {
-      setFeedbackMessage(errors.join("; "));
+      const unique = [...new Set(errors)];
+      if (!unique.every((error) => isDaemonOfflineErrorMessage(error))) {
+        setFeedbackMessage(unique.join("; "));
+      }
     }
   }, [
     readAuthToken,
@@ -880,6 +912,27 @@ export function App() {
     return false;
   }, [api, call]);
 
+  const waitForDaemonOffline = useCallback(async () => {
+    const started = Date.now();
+    while (Date.now() - started < DAEMON_STOP_WAIT_TIMEOUT_MS) {
+      try {
+        if (invokeRef.current) {
+          const state = await call("daemon_status");
+          setDaemonState(state);
+          if (!state?.reachable) return true;
+        } else {
+          await api("/health");
+        }
+      } catch (error) {
+        if (isDaemonOfflineErrorMessage(error?.message || error)) {
+          return true;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
+    }
+    return false;
+  }, [api, call]);
+
   async function handleMemorySearch(e) {
     e?.preventDefault();
     if (!memoryQuery.trim()) return;
@@ -909,6 +962,7 @@ export function App() {
 
   async function handleStartDaemon() {
     if (!invokeRef.current) return;
+    daemonTransitionRef.current = true;
     try {
       const result = await call("start_daemon");
       setFeedbackMessage(result.message || "Daemon start requested.");
@@ -916,22 +970,29 @@ export function App() {
       if (!reachable) {
         setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
       }
+      daemonTransitionRef.current = false;
       await readAuthToken();
       await refreshAll();
     } catch (error) {
       setFeedbackMessage(`Start failed: ${error.message || error}`);
+    } finally {
+      daemonTransitionRef.current = false;
     }
   }
 
   async function handleStopDaemon() {
     if (!invokeRef.current) return;
+    daemonTransitionRef.current = true;
     try {
       const result = await call("stop_daemon");
       setFeedbackMessage(result.message || "Daemon stop requested.");
       tokenRef.current = "";
+      daemonTransitionRef.current = false;
       await refreshAll();
     } catch (error) {
       setFeedbackMessage(`Stop failed: ${error.message || error}`);
+    } finally {
+      daemonTransitionRef.current = false;
     }
   }
 
@@ -940,6 +1001,7 @@ export function App() {
 
     setRestartingDaemon(true);
     setRestartError("");
+    daemonTransitionRef.current = true;
 
     try {
       const statusBefore = await call("daemon_status").catch(() => null);
@@ -947,13 +1009,17 @@ export function App() {
 
       if (shouldStop) {
         setFeedbackMessage("Restarting daemon: stopping...");
+        const stopPromise = call("stop_daemon").catch(() => ({ failed: true }));
         const stopResult = await Promise.race([
-          call("stop_daemon"),
+          stopPromise,
           new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), DAEMON_STOP_HANG_TIMEOUT_MS)),
         ]);
         if (stopResult?.timedOut) {
-          setFeedbackMessage("Shutdown timed out. Forcing stop and retrying...");
-          await call("stop_daemon").catch(() => null);
+          setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...");
+        }
+        const stopped = await waitForDaemonOffline();
+        if (!stopped) {
+          setFeedbackMessage("Daemon stop is still in progress. Continuing with start attempt...");
         }
       } else {
         setFeedbackMessage("Daemon already stopped. Starting...");
@@ -970,6 +1036,7 @@ export function App() {
         throw new Error("Daemon did not become reachable after restart.");
       }
 
+      daemonTransitionRef.current = false;
       await readAuthToken();
       await refreshAll();
       setFeedbackMessage("Daemon restarted successfully.");
@@ -978,6 +1045,7 @@ export function App() {
       setRestartError(message);
       setFeedbackMessage(`Restart failed: ${message}`);
     } finally {
+      daemonTransitionRef.current = false;
       setRestartingDaemon(false);
     }
   }

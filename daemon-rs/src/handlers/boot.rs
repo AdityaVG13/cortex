@@ -39,7 +39,11 @@ pub async fn handle_boot(
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
+    let has_source_agent_header = headers.get("x-source-agent").is_some();
     super::register_agent_presence_from_headers(&state, &headers, caller_id).await;
+    if !has_source_agent_header {
+        register_agent_presence_from_boot(&state, caller_id, &agent).await;
+    }
 
     let profile = query.profile.unwrap_or_else(|| "full".to_string());
     let max_tokens = query.budget.unwrap_or(600);
@@ -141,3 +145,50 @@ fn current_owner_id(conn: &rusqlite::Connection) -> Option<i64> {
     .and_then(|v| v.parse::<i64>().ok())
 }
 
+async fn register_agent_presence_from_boot(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+    agent: &str,
+) {
+    let agent = agent.trim();
+    if agent.is_empty() || agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+        return;
+    }
+
+    let owner_id = if state.team_mode {
+        caller_id.or(state.default_owner_id)
+    } else {
+        None
+    };
+    let now = now_iso();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    let session_id = format!("session-{}", uuid::Uuid::new_v4());
+    let description = "Connected via boot";
+
+    let conn = state.db.lock().await;
+    if let Some(owner_id) = owner_id {
+        let _ = conn.execute(
+            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, 'mcp', '[]', ?4, ?5, ?5, ?6)
+             ON CONFLICT(owner_id, agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![agent, owner_id, session_id, description, now, expires_at],
+        );
+    } else {
+        let _ = conn.execute(
+            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, 'mcp', '[]', ?3, ?4, ?4, ?5)
+             ON CONFLICT(agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![agent, session_id, description, now, expires_at],
+        );
+    }
+}
