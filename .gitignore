@@ -74,10 +74,6 @@ config/*.env
 
 # Personal scripts
 cortex-start.ps1
-cortex-start.bat
-cortex-dashboard.bat
-cortex-app.bat
-cortex-mcp.cmd
 Cortex?Ingester?Instructions.txt
 
 # Editor/tool artifacts
@@ -85,3 +81,8 @@ Cortex?Ingester?Instructions.txt
 .tmp-*
 __pycache__/
 .npmrc
+
+# Shipsecure Pro (source zip + all extracted files)
+.shipsecure-pro.zip
+.shipsecure-temp/
+security/
