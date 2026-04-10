@@ -267,60 +267,33 @@ pub fn write_pid() {
     fs::write(dir.join("cortex.pid"), std::process::id().to_string()).ok();
 }
 
-/// Kill a stale daemon process if PID file exists and process is still alive.
-pub fn kill_stale_daemon() {
-    let pid_path = cortex_dir().join("cortex.pid");
+/// Remove stale PID/lock files when the recorded daemon process no longer exists.
+pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
+    let pid_path = &paths.pid;
     if !pid_path.exists() {
-        return;
+        return None;
     }
 
-    if let Ok(pid_str) = fs::read_to_string(&pid_path) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            // Don't kill ourselves.
-            if pid == std::process::id() {
-                return;
-            }
+    let pid = fs::read_to_string(pid_path)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())?;
 
-            #[cfg(windows)]
-            {
-                use std::process::Command;
-                if !pid_looks_like_cortex(pid) {
-                    let _ = fs::remove_file(&pid_path);
-                    return;
-                }
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/F"])
-                    .output();
-            }
-
-            #[cfg(unix)]
-            {
-                if !pid_looks_like_cortex(pid) {
-                    let _ = fs::remove_file(&pid_path);
-                    return;
-                }
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
-            }
-
-            eprintln!("[cortex] Killed stale daemon (PID {pid})");
-            let _ = fs::remove_file(&pid_path);
-
-            // Brief pause for port release.
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
+    if pid == std::process::id() || process_is_running(pid) {
+        return None;
     }
+
+    let _ = fs::remove_file(pid_path);
+    let _ = fs::remove_file(&paths.lock);
+    eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
+    Some(pid)
 }
 
 #[cfg(windows)]
-fn pid_looks_like_cortex(pid: u32) -> bool {
+fn process_is_running(pid: u32) -> bool {
     use std::process::Command;
 
-    let query =
-        format!("(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine");
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &query])
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output();
     let Ok(out) = output else {
         return false;
@@ -328,18 +301,13 @@ fn pid_looks_like_cortex(pid: u32) -> bool {
     if !out.status.success() {
         return false;
     }
-    let cmd = String::from_utf8_lossy(&out.stdout).to_lowercase();
-    cmd.contains("cortex")
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout.contains(&format!("\"{pid}\""))
 }
 
 #[cfg(unix)]
-fn pid_looks_like_cortex(pid: u32) -> bool {
-    let path = format!("/proc/{pid}/cmdline");
-    let Ok(raw) = fs::read(path) else {
-        return false;
-    };
-    let cmd = String::from_utf8_lossy(&raw).to_lowercase();
-    cmd.contains("cortex")
+fn process_is_running(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 /// Returns the canonical database path: `~/.cortex/cortex.db`.
@@ -398,4 +366,36 @@ fn base62_encode_bytes(bytes: &[u8]) -> String {
         .rev()
         .map(|d| BASE62[*d as usize] as char)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_auth_{name}_{unique}"))
+    }
+
+    #[test]
+    fn cleanup_stale_pid_lock_removes_dead_process_files() {
+        let home_dir = temp_test_dir("stale_pid");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, None);
+        fs::write(&paths.pid, "999999").unwrap();
+        fs::write(&paths.lock, "locked").unwrap();
+
+        let cleaned = cleanup_stale_pid_lock(&paths);
+        assert_eq!(cleaned, Some(999999));
+        assert!(!paths.pid.exists());
+        assert!(!paths.lock.exists());
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
 }

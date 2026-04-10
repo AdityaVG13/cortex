@@ -1525,7 +1525,7 @@ pub(crate) async fn run_daemon(
     paths: auth::CortexPaths,
     extra_shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    auth::kill_stale_daemon();
+    let _ = auth::cleanup_stale_pid_lock(&paths);
     let db_path = paths.db.clone();
     eprintln!(
         "[cortex] Starting Cortex v{} (Rust)...",
