@@ -96,6 +96,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Tightened the README hero copy and simplified the top navigation so the landing page reads more like a premium product surface and less like a raw doc index.
 - Added a second tracked SVG system visual and reworked the top-half section flow so Proof, Monte Carlo, and the Cortex operating model all read as one designed narrative.
 
+## Phase 6F: README Real Visual Rewrite -- DONE
+- **Commit:** `edd39a3` | **Agent:** CX (Codex)
+- Replaced the synthetic README proof surfaces with real product proof: the cleaner Control Center analytics screenshot and a restrained animated Monte Carlo savings reveal built from benchmark imagery.
+- Rebuilt the README flow around a proof-first narrative, cleaner quickstart, corrected public doc links, and tighter product copy so the page sells Cortex before it starts enumerating internals.
+- Removed the earlier placeholder SVG surfaces from the shipped asset set so the public repo only carries visuals that match the current product direction.
+
 ---
 
 ## Branches Awaiting Merge to Master
