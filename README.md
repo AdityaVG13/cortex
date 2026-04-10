@@ -28,11 +28,14 @@
   <strong>Cortex exists for one reason:</strong> memory should feel like infrastructure, not a party trick.
 </p>
 
-<p align="center">
-  <img src="assets/hero-proof-strip.png" alt="Cortex analytics proof strip showing saved tokens, compression, boot compilations, and prompt token totals" width="100%">
-</p>
-
-<p align="center"><em>Real product surface, not a mockup: live savings, compression, and boot activity from Cortex Control Center.</em></p>
+<table align="center">
+  <tr>
+    <td width="190" align="center"><strong>10.7M</strong><br><sub>boot tokens saved</sub></td>
+    <td width="190" align="center"><strong>99%</strong><br><sub>avg compression</sub></td>
+    <td width="190" align="center"><strong>90%</strong><br><sub>benchmark hit rate</sub></td>
+    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg recall latency</sub></td>
+  </tr>
+</table>
 
 ## Start in two commands
 
@@ -58,10 +61,10 @@ Memory products are easy to demo and hard to trust. Cortex only gets interesting
 The Control Center is there to answer the uncomfortable question fast: "Is this thing actually paying for itself?" If the answer is no, you should know that immediately. If the answer is yes, the page makes it obvious.
 
 <p align="center">
-  <img src="assets/monte-carlo-readme.gif" alt="Animated Monte Carlo projection showing a 30-day Cortex savings horizon" width="100%">
+  <img src="assets/monte-carlo-readme.png" alt="Monte Carlo projection showing a 30-day Cortex savings horizon" width="100%">
 </p>
 
-<p align="center"><em>Monte Carlo savings horizon: a restrained 30-day projection built from real Cortex benchmark data, not marketing math.</em></p>
+<p align="center"><em>Monte Carlo savings horizon: a 30-day projection built from real Cortex benchmark data, not marketing math.</em></p>
 
 Source notes: live savings and compression figures come from the current Control Center surface. Retrieval metrics come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
 
