@@ -1,39 +1,29 @@
-<p align="center"><strong>Local memory for the tools you already use.</strong></p>
+<p align="center"><strong>Private local memory for your tools.</strong></p>
 
 <p align="center">
   <img src="assets/cortex-header.gif" alt="Cortex" width="100%">
 </p>
 
-<h1 align="center">One durable brain.<br>Every tool you use.</h1>
+<h1 align="center">One shared memory.<br>Every tool you use.</h1>
 <p align="center">
-  Cortex gives your tools one shared memory.
-  It keeps the useful context, cuts the repeated setup, and stays on your machine.
+  Install Cortex once.
+  Your tools stop starting from scratch.
 </p>
 
 <p align="center">
   <a href="https://github.com/AdityaVG13/cortex/releases/latest">Get started</a> |
-  <a href="Info/connecting.md">Connect your tools</a> |
-  <a href="Info/research.md">Read the research</a>
+  <a href="Info/connecting.md">Connect your tools</a>
 </p>
 
 <p align="center">
-  <sub>v0.4.1 &nbsp;&nbsp;|&nbsp;&nbsp; Private by default &nbsp;&nbsp;|&nbsp;&nbsp; MCP + HTTP &nbsp;&nbsp;|&nbsp;&nbsp; MIT</sub>
-</p>
-
-<p align="center">
-  <a href="https://ko-fi.com/adityavg13"><strong>Support Cortex</strong></a> funds releases, benchmarks, app polish, and long-term maintenance.
-</p>
-
-<p align="center">
-  <strong>Cortex exists for one reason:</strong> you should not have to repeat yourself to every tool you use.
+  <sub>Private by default &nbsp;&nbsp;|&nbsp;&nbsp; HTTP + MCP &nbsp;&nbsp;|&nbsp;&nbsp; MIT</sub>
 </p>
 
 <table align="center">
   <tr>
-    <td width="190" align="center"><strong>Private</strong><br><sub>stays on your machine</sub></td>
-    <td width="190" align="center"><strong>Shared</strong><br><sub>one memory across tools</sub></td>
-    <td width="190" align="center"><strong>99%</strong><br><sub>avg prompt shrink in benchmarks</sub></td>
-    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg recall time in benchmarks</sub></td>
+    <td width="250" align="center"><strong>Private by default</strong><br><sub>your data stays on your machine</sub></td>
+    <td width="250" align="center"><strong>One memory across tools</strong><br><sub>HTTP or MCP, same Cortex memory</sub></td>
+    <td width="250" align="center"><strong>Real proof below</strong><br><sub>benchmarks, live analytics, and a usage-based forecast</sub></td>
   </tr>
 </table>
 

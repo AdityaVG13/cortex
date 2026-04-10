@@ -180,6 +180,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Clarified that MCP works anywhere it is supported, and HTTP works for any AI or tool that can call an API.
 - Kept the named examples, but shifted them into examples of the integration surface instead of an exhaustive compatibility list.
 
+## Phase 6T: README Hero Simplification -- DONE
+- **Commit:** `pending` | **Agent:** CX (Codex)
+- Simplified the top of the README to one clear promise: one shared memory across tools, without the extra hero chrome competing for attention.
+- Removed the top support and mission copy, tightened the CTA row, and replaced the pseudo-dashboard metrics with three quieter trust boxes.
+- Verified the new hero composition with a local preview before commit so the spacing and box layout were checked as rendered, not just in source.
+
 ---
 
 ## Branches Awaiting Merge to Master
