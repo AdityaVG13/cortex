@@ -32,6 +32,14 @@ use std::time::Duration;
 
 const BACKUP_RETENTION_COUNT: usize = 3;
 const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
+const LOG_ROTATION_BYTES: u64 = 1024 * 1024;
+const STARTUP_LOG_FILES: &[&str] = &[
+    "daemon.log",
+    "daemon.err.log",
+    "daemon.out.log",
+    "mcp-crash.log",
+    "rust-daemon.err.log",
+];
 
 // ── Backup rotation helpers ───────────────────────────────────────────────
 
@@ -122,6 +130,44 @@ fn cleanup_bridge_backups(home: &Path, schema_version: i32) -> bool {
             false
         }
     }
+}
+
+fn rotate_log_file(home: &Path, file_name: &str) -> Result<bool, std::io::Error> {
+    let log_path = home.join(file_name);
+    let metadata = match std::fs::metadata(&log_path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+
+    if metadata.len() <= LOG_ROTATION_BYTES {
+        return Ok(false);
+    }
+
+    let rotated_path = home.join(format!("{file_name}.1"));
+    if rotated_path.exists() {
+        std::fs::remove_file(&rotated_path)?;
+    }
+    std::fs::rename(&log_path, &rotated_path)?;
+    std::fs::File::create(&log_path)?;
+    Ok(true)
+}
+
+fn rotate_startup_logs(home: &Path) -> usize {
+    let mut rotated = 0usize;
+    for file_name in STARTUP_LOG_FILES {
+        match rotate_log_file(home, file_name) {
+            Ok(true) => {
+                rotated += 1;
+                eprintln!("[cortex] Rotated log file {file_name}");
+            }
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("[cortex] Warning: failed to rotate {file_name}: {e}");
+            }
+        }
+    }
+    rotated
 }
 
 /// Create a backup of the database file.
@@ -1508,6 +1554,10 @@ pub(crate) async fn run_daemon(
     eprintln!(
         "[cortex] Cleaned {cleaned_backups} old backups, kept {BACKUP_RETENTION_COUNT}"
     );
+    let rotated_logs = rotate_startup_logs(&paths.home);
+    if rotated_logs > 0 {
+        eprintln!("[cortex] Rotated {rotated_logs} oversized log files");
+    }
 
     // ── Recover WAL on startup ──────────────────────────────────────
     // Run WAL checkpoint to recover any pending writes from a previous crash.
@@ -1871,6 +1921,27 @@ mod tests {
 
         assert!(cleanup_bridge_backups(&home_dir, 5));
         assert!(!bridge_dir.exists());
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn rotate_log_file_replaces_existing_rotation_and_creates_fresh_log() {
+        let home_dir = temp_test_dir("log_rotation");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let log_path = home_dir.join("daemon.log");
+        let rotated_path = home_dir.join("daemon.log.1");
+        fs::write(&rotated_path, "old-rotation").unwrap();
+        fs::write(&log_path, vec![b'x'; (LOG_ROTATION_BYTES as usize) + 1]).unwrap();
+
+        assert!(rotate_log_file(&home_dir, "daemon.log").unwrap());
+        assert!(log_path.exists());
+        assert_eq!(fs::metadata(&log_path).unwrap().len(), 0);
+        assert_eq!(
+            fs::metadata(&rotated_path).unwrap().len(),
+            LOG_ROTATION_BYTES + 1
+        );
 
         let _ = fs::remove_dir_all(&home_dir);
     }
