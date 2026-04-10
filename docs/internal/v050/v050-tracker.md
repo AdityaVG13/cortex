@@ -120,6 +120,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Rebuilt the Monte Carlo GIF so the chart stays static while the forecast lines animate, then enlarged the end-state callout numbers for better readability on GitHub.
 - Kept the README render-safe while pushing the hero zone closer to a premium product-launch presentation.
 
+## Phase 6J: Hero Minimalism Pass -- DONE
+- **Commit:** `0b98ccd` | **Agent:** CX (Codex)
+- Re-cropped `assets/hero-proof-strip.png` taller after GitHub review showed the metric cards were being clipped too aggressively in the hero.
+- Simplified the hero copy and metadata treatment: stronger headline, fewer top-level links, and a quieter metadata line in place of badge-heavy chrome.
+- Kept the same real analytics surface, but adjusted the crop and pacing so the top of the README reads more like a product launch and less like a standard GitHub template.
+
 ---
 
 ## Branches Awaiting Merge to Master
