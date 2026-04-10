@@ -30,10 +30,10 @@
 
 <table align="center">
   <tr>
-    <td width="190" align="center"><strong>10.7M</strong><br><sub>prompt tokens saved</sub></td>
-    <td width="190" align="center"><strong>99%</strong><br><sub>avg prompt shrink</sub></td>
-    <td width="190" align="center"><strong>90%</strong><br><sub>recall benchmark hit rate</sub></td>
-    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg recall time</sub></td>
+    <td width="190" align="center"><strong>Private</strong><br><sub>stays on your machine</sub></td>
+    <td width="190" align="center"><strong>Shared</strong><br><sub>one memory across tools</sub></td>
+    <td width="190" align="center"><strong>99%</strong><br><sub>avg prompt shrink in benchmarks</sub></td>
+    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg recall time in benchmarks</sub></td>
   </tr>
 </table>
 
@@ -56,7 +56,7 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
   <img src="assets/control-center-analytics.png" alt="Cortex Control Center analytics showing token savings, compression, recall hit rate, and agent activity" width="100%">
 </p>
 
-<p align="center"><em>Live Cortex analytics: savings, compression, recall quality, startup history, and activity in one place.</em></p>
+<p align="center"><em>Example Cortex analytics from a real active install: savings, compression, recall quality, startup history, and activity in one place.</em></p>
 
 If Cortex is helping, you should be able to see it. If it is not, you should know that just as quickly.
 
@@ -64,9 +64,9 @@ If Cortex is helping, you should be able to see it. If it is not, you should kno
   <img src="assets/monte-carlo-readme.png" alt="Monte Carlo projection showing a 30-day Cortex savings horizon" width="100%">
 </p>
 
-<p align="center"><em>Monte Carlo savings horizon: a 30-day projection built from real Cortex benchmark data, not marketing math.</em></p>
+<p align="center"><em>Monte Carlo savings horizon: an example 30-day projection based on Aditya's own live Cortex data.</em></p>
 
-Source notes: savings and compression figures come from the current Control Center view. Retrieval quality comes from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
+Source notes: the screenshot above is one real active Cortex install. The Monte Carlo chart is based on Aditya's own Cortex history. Benchmark figures come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
 
 ## Why teams keep it running
 
