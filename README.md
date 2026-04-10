@@ -1,4 +1,4 @@
-<p align="center"><strong>A local memory layer for the tools you already use.</strong></p>
+<p align="center"><strong>Local memory for the tools you already use.</strong></p>
 
 <p align="center">
   <img src="assets/cortex-header.gif" alt="Cortex" width="100%">
@@ -6,8 +6,8 @@
 
 <h1 align="center">One durable brain.<br>Every tool you use.</h1>
 <p align="center">
-  Cortex gives your coding tools one shared memory.
-  It remembers what matters, cuts the repeated setup, and stays on your machine.
+  Cortex gives your tools one shared memory.
+  It keeps the useful context, cuts the repeated setup, and stays on your machine.
 </p>
 
 <p align="center">
@@ -31,34 +31,34 @@
 <table align="center">
   <tr>
     <td width="190" align="center"><strong>10.7M</strong><br><sub>prompt tokens saved</sub></td>
-    <td width="190" align="center"><strong>99%</strong><br><sub>avg startup shrink</sub></td>
+    <td width="190" align="center"><strong>99%</strong><br><sub>avg prompt shrink</sub></td>
     <td width="190" align="center"><strong>90%</strong><br><sub>recall benchmark hit rate</sub></td>
-    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg lookup time</sub></td>
+    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg recall time</sub></td>
   </tr>
 </table>
 
 ## Start in two commands
 
-If you want the fastest path from install to a working setup, start with the Claude Code plugin. Cortex handles the background setup for you.
+If you want the quickest path from install to a working setup, start with the Claude Code plugin. Cortex handles the background setup for you.
 
 ```bash
 claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
 ```
 
-Restart your session and Cortex boots itself. Prefer installers or a source build? Jump to [more install options](#more-install-options).
+Restart your session and Cortex comes up on its own. Prefer an installer or a source build? Jump to [more install options](#more-install-options).
 
 ## See the payoff
 
-Memory tools are easy to pitch and hard to trust. Cortex gets interesting when the savings stop looking hypothetical.
+Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.
 
 <p align="center">
   <img src="assets/control-center-analytics.png" alt="Cortex Control Center analytics showing token savings, compression, recall hit rate, and agent activity" width="100%">
 </p>
 
-<p align="center"><em>Live Cortex analytics: savings, compression, recall quality, boot history, and agent activity in one operator surface.</em></p>
+<p align="center"><em>Live Cortex analytics: savings, compression, recall quality, startup history, and activity in one place.</em></p>
 
-The Control Center answers the only question that matters: is Cortex saving you time and tokens, or not? If the answer is no, you should see that fast. If the answer is yes, the dashboard makes it obvious.
+If Cortex is helping, you should be able to see it. If it is not, you should know that just as quickly.
 
 <p align="center">
   <img src="assets/monte-carlo-readme.png" alt="Monte Carlo projection showing a 30-day Cortex savings horizon" width="100%">
@@ -66,27 +66,27 @@ The Control Center answers the only question that matters: is Cortex saving you 
 
 <p align="center"><em>Monte Carlo savings horizon: a 30-day projection built from real Cortex benchmark data, not marketing math.</em></p>
 
-Source notes: current savings and compression figures come from the Control Center surface. Retrieval quality comes from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
+Source notes: savings and compression figures come from the current Control Center view. Retrieval quality comes from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
 
 ## Why teams keep it running
 
-Cortex is built for the part after the demo, when the novelty wears off and the repetition starts getting expensive.
+Cortex is built for the part after the demo, when the novelty wears off and the repetition gets old.
 
 - Claude Code, Codex, Cursor, Gemini, and your own scripts can all use the same memory.
-- Startup prompts get smaller because Cortex brings back the useful parts instead of replaying everything.
-- Decisions, fixes, and project rules stay easy to pull back up instead of getting lost in scrollback.
-- The Control Center shows savings, recall quality, and activity in plain view.
+- New sessions start lighter because Cortex brings back the useful parts instead of replaying everything.
+- Decisions, fixes, and project rules stay easy to pull back up instead of disappearing into old chats.
+- The Control Center keeps savings, recall quality, and activity out in the open.
 
 ## Works with your stack
 
-Cortex is meant to fit into the tools you already use, not force a brand-new workflow just to get memory.
+Cortex is meant to fit into the tools you already use, not make you learn a whole new workflow just to keep context around.
 
-- Claude Code. The smoothest setup path, with lifecycle handled for you.
+- Claude Code. The easiest setup path, with lifecycle handled for you.
 - Codex. Native MCP support, plus HTTP fallback when you need it.
 - Cursor. Shares the same local memory instead of keeping a separate silo.
 - Gemini. Works through MCP for CLI and tool-driven workflows.
 - Local LLMs. Use HTTP or MCP from your own app, desktop tool, or local runtime.
-- Team mode. Run one shared memory layer for a whole engineering team when one machine is no longer enough.
+- Team mode. Run one shared memory service for a whole engineering team when one machine is no longer enough.
 
 ## More install options
 
@@ -113,22 +113,22 @@ cd cortex/daemon-rs
 cargo build --release
 ```
 
-When Cortex boots cleanly, you should see a READY message and an active memory count. From there, the workflow is simple: store a decision once, stop re-explaining it later.
+When Cortex boots cleanly, you should see a READY message and an active memory count. After that, the basic loop is simple: save something once, stop explaining it over and over.
 
 ## What ships in the box
 
 You do not need a giant platform rewrite to get value from Cortex. The useful parts show up quickly.
 
-- Smaller startup prompts. Cortex builds a leaner boot prompt instead of replaying raw history.
-- Faster recall. Keyword and semantic search work together so useful memory rises faster.
+- Smaller startup prompts. Cortex brings back the useful context instead of replaying raw history.
+- Faster recall. Keyword and semantic search work together so the right memory shows up sooner.
 - Flexible connections. Apps, scripts, and coding tools can all talk to the same memory through MCP or HTTP.
 - Local embeddings. `all-MiniLM-L6-v2` runs in-process through ONNX, with no outside inference service required.
 - Memory controls. Decay, supersession, and conflict handling keep the memory base from turning into a junk drawer.
-- Control Center. One place to see health, savings, activity, and what the system is actually doing.
+- Control Center. One place to see health, savings, activity, and what Cortex is doing.
 
 ## Built in public, backed by research
 
-Cortex is open about where ideas came from and where they changed shape. The research page is there to show what influenced Cortex, what changed in implementation, what shipped, and what is still on the roadmap.
+Cortex is open about where ideas came from and how they changed once they hit real code. The research page shows what influenced Cortex, what changed in implementation, what shipped, and what is still on the roadmap.
 
 - **ByteRover.** Helped shape progressive retrieval and the longer-term memory-tier model.
 - **Reciprocal Rank Fusion.** Provides the ranking fusion rule behind the current retrieval stack.
@@ -139,12 +139,12 @@ Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/
 
 ## Documentation
 
-The docs are organized by what you are trying to do, not by internal folder names.
+The docs are organized around what you are trying to do, not around internal folder names.
 
-- Connect Cortex. [Info/connecting.md](Info/connecting.md) covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and troubleshooting.
+- Connect Cortex. [Info/connecting.md](Info/connecting.md) covers setup, MCP, HTTP, auth, and troubleshooting.
 - Research and roadmap. [Info/research.md](Info/research.md) and [Info/roadmap.md](Info/roadmap.md) show what shipped, what is planned, and why.
 - Security and contribution. [security/SECURITY.md](security/SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
-- Team deployment. [Info/team-mode-setup.md](Info/team-mode-setup.md) covers the shared-server setup when one local machine is no longer enough.
+- Team deployment. [Info/team-mode-setup.md](Info/team-mode-setup.md) covers the shared-server setup when one machine is no longer enough.
 
 <details>
 <summary>Open the docs map and CLI reference</summary>
@@ -177,9 +177,9 @@ The docs are organized by what you are trying to do, not by internal folder name
 
 ## Security and roadmap
 
-- Cortex defaults to a localhost-only surface and bearer-token auth. The token lives under `~/.cortex/cortex.token`.
-- The v0.5.0 direction is retrieval hardening, storage governance, public research traceability, and sharper operator surfaces.
-- Longer-term work includes admission control, maturity tiers, provenance-aware multi-agent memory, and adaptive compression.
+- Cortex defaults to localhost-only access with bearer-token auth. The token lives under `~/.cortex/cortex.token`.
+- The v0.5.0 direction is stronger retrieval, better storage rules, public research traceability, and a cleaner operator experience.
+- Longer-term work includes smarter memory admission, maturity tiers, shared multi-agent memory, and adaptive compression.
 
 Roadmap details: [Info/roadmap.md](Info/roadmap.md)
 
