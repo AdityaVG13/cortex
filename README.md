@@ -70,22 +70,61 @@ Source notes: live savings and compression figures come from the current Control
 
 ## Why teams keep it running
 
-| Without Cortex | With Cortex |
-|---|---|
-| Every agent has to relearn the repo from scratch. | One local daemon serves the same memory to every tool. |
-| Boot prompts keep swelling as projects get older. | `cortex_boot` compiles a smaller prompt from stable memory plus recent delta. |
-| Good decisions vanish into chat logs and terminal scrollback. | Decisions, rules, and bug fixes stay queryable through MCP and HTTP. |
-| It is hard to tell whether "memory" is helping or just adding complexity. | The Control Center shows savings, recall quality, and activity in one place. |
+<table align="center">
+  <tr>
+    <td width="360" valign="top" align="left">
+      <strong>Shared memory, not siloed memory</strong><br>
+      <sub>One local daemon serves the same memory to Claude Code, Codex, Cursor, Gemini, and your own tooling.</sub>
+    </td>
+    <td width="360" valign="top" align="left">
+      <strong>Smaller boots, less repetition</strong><br>
+      <sub><code>cortex_boot</code> compiles a smaller prompt from stable memory plus recent delta instead of replaying raw history.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="360" valign="top" align="left">
+      <strong>Decisions stop disappearing</strong><br>
+      <sub>Architecture rules, review preferences, and bug fixes stay queryable through MCP and HTTP instead of getting buried in scrollback.</sub>
+    </td>
+    <td width="360" valign="top" align="left">
+      <strong>Operators can see what changed</strong><br>
+      <sub>The Control Center shows savings, recall quality, and agent activity, so memory stays inspectable instead of mystical.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Works with your stack
 
-| Stack | How Cortex fits |
-|---|---|
-| Claude Code | Primary plugin path with lifecycle handled for you. |
-| Codex | Native MCP bridge plus HTTP fallback when you need it. |
-| Cursor | Shared local memory through the same daemon instead of a separate silo. |
-| Gemini | Works through MCP for CLI and tool-driven workflows. |
-| Local LLMs | Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime. |
+<table align="center">
+  <tr>
+    <td width="240" valign="top" align="center">
+      <strong>Claude Code</strong><br>
+      <sub>Primary plugin path with lifecycle handled for you.</sub>
+    </td>
+    <td width="240" valign="top" align="center">
+      <strong>Codex</strong><br>
+      <sub>Native MCP bridge plus HTTP fallback when you need it.</sub>
+    </td>
+    <td width="240" valign="top" align="center">
+      <strong>Cursor</strong><br>
+      <sub>Shared local memory through the same daemon instead of a separate silo.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="240" valign="top" align="center">
+      <strong>Gemini</strong><br>
+      <sub>Works through MCP for CLI and tool-driven workflows.</sub>
+    </td>
+    <td width="240" valign="top" align="center">
+      <strong>Local LLMs</strong><br>
+      <sub>Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime.</sub>
+    </td>
+    <td width="240" valign="top" align="center">
+      <strong>Team mode</strong><br>
+      <sub>Run one shared brain for an entire engineering team when local-only is not enough.</sub>
+    </td>
+  </tr>
+</table>
 
 ## More install options
 
@@ -118,12 +157,36 @@ When Cortex boots cleanly, you should see a READY message and an active memory c
 
 Cortex does not ask you to buy into some giant platform shift on day one. The useful parts land quickly:
 
-- **Capsule compiler.** Builds boot prompts from stable identity plus recent delta instead of replaying raw context.
-- **Hybrid retrieval.** Blends keyword, semantic, and fused ranking locally so useful memory rises faster.
-- **MCP and HTTP surfaces.** Lets coding agents, local apps, scripts, and orchestration layers all talk to the same memory system.
-- **Local embeddings.** Runs `all-MiniLM-L6-v2` in-process through ONNX, with no external inference requirement.
-- **Governance and conflict handling.** Supports decay, supersession, dispute handling, and future provenance-aware memory work.
-- **Control Center.** Gives operators a visual surface for health, savings, activity, and memory-system behavior.
+<table align="center">
+  <tr>
+    <td width="240" valign="top" align="left">
+      <strong>Capsule compiler</strong><br>
+      <sub>Builds boot prompts from stable identity plus recent delta instead of replaying raw context.</sub>
+    </td>
+    <td width="240" valign="top" align="left">
+      <strong>Hybrid retrieval</strong><br>
+      <sub>Blends keyword, semantic, and fused ranking locally so useful memory rises faster.</sub>
+    </td>
+    <td width="240" valign="top" align="left">
+      <strong>MCP and HTTP surfaces</strong><br>
+      <sub>Lets coding agents, apps, scripts, and orchestration layers talk to the same memory system.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="240" valign="top" align="left">
+      <strong>Local embeddings</strong><br>
+      <sub>Runs <code>all-MiniLM-L6-v2</code> in-process through ONNX, with no external inference requirement.</sub>
+    </td>
+    <td width="240" valign="top" align="left">
+      <strong>Governance</strong><br>
+      <sub>Supports decay, supersession, dispute handling, and future provenance-aware memory work.</sub>
+    </td>
+    <td width="240" valign="top" align="left">
+      <strong>Control Center</strong><br>
+      <sub>Gives operators a visual surface for health, savings, activity, and memory-system behavior.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Built in public, backed by research
 
@@ -138,9 +201,22 @@ Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/
 
 ## Documentation
 
-- **Connect Cortex.** [Info/connecting.md](Info/connecting.md) covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and the troubleshooting path.
-- **Research and roadmap.** [Info/research.md](Info/research.md) and [Info/roadmap.md](Info/roadmap.md) show what shipped, what is planned, and why.
-- **Security and contribution.** [security/SECURITY.md](security/SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
+<table align="center">
+  <tr>
+    <td width="240" valign="top" align="left">
+      <strong>Connect Cortex</strong><br>
+      <sub><a href="Info/connecting.md">Info/connecting.md</a> covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and troubleshooting.</sub>
+    </td>
+    <td width="240" valign="top" align="left">
+      <strong>Research and roadmap</strong><br>
+      <sub><a href="Info/research.md">Info/research.md</a> and <a href="Info/roadmap.md">Info/roadmap.md</a> show what shipped, what is planned, and why.</sub>
+    </td>
+    <td width="240" valign="top" align="left">
+      <strong>Security and contribution</strong><br>
+      <sub><a href="security/SECURITY.md">security/SECURITY.md</a>, <a href="CONTRIBUTING.md">CONTRIBUTING.md</a>, and <a href="CODE_OF_CONDUCT.md">CODE_OF_CONDUCT.md</a> cover trust, reporting, and project standards.</sub>
+    </td>
+  </tr>
+</table>
 
 <details>
 <summary>Open the docs map and CLI reference</summary>
