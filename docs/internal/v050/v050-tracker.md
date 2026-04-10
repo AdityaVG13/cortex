@@ -102,6 +102,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Rebuilt the README flow around a proof-first narrative, cleaner quickstart, corrected public doc links, and tighter product copy so the page sells Cortex before it starts enumerating internals.
 - Removed the earlier placeholder SVG surfaces from the shipped asset set so the public repo only carries visuals that match the current product direction.
 
+## Phase 6G: README Render Correction -- DONE
+- **Commit:** `ea151df` | **Agent:** CX (Codex)
+- Removed the GitHub-unsafe HTML and Markdown mixing that leaked raw `</td>` tags into the public README render.
+- Fixed the broken badge URL in the hero, restored the support link near the top of the page, and converted the affected sections to render-safe Markdown lists and tables.
+- Kept the real analytics screenshot and Monte Carlo proof asset, but stripped out the layout patterns that looked broken or off-center in GitHub.
+
 ---
 
 ## Branches Awaiting Merge to Master
