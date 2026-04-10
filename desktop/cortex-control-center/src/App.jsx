@@ -455,20 +455,22 @@ export function App() {
     [currencyFormatter, currencyRate]
   );
 
+  const refreshTokenForApi = useCallback(async () => {
+    if (!invokeRef.current) return;
+    try {
+      const token = await invokeRef.current("read_auth_token");
+      tokenRef.current = token || "";
+    } catch { /* ignore */ }
+  }, []);
+
   const api = useCallback(
     createApi({
       getInvoke: () => invokeRef.current,
       getToken: () => tokenRef.current,
       cortexBase,
-      onTokenRefresh: async () => {
-        if (!invokeRef.current) return;
-        try {
-          const token = await invokeRef.current("read_auth_token");
-          tokenRef.current = token || "";
-        } catch { /* ignore */ }
-      },
+      onTokenRefresh: refreshTokenForApi,
     }),
-    [cortexBase]
+    [cortexBase, refreshTokenForApi]
   );
 
   const postApi = useCallback(
@@ -476,8 +478,9 @@ export function App() {
       getInvoke: () => invokeRef.current,
       getToken: () => tokenRef.current,
       cortexBase,
+      onTokenRefresh: refreshTokenForApi,
     }),
-    [cortexBase]
+    [cortexBase, refreshTokenForApi]
   );
 
   const call = useCallback(async (command, args = {}) => {

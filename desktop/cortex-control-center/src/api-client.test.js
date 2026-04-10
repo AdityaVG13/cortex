@@ -11,8 +11,10 @@ import {
 function makeDeps(overrides = {}) {
   return {
     getInvoke: () => overrides.invoke ?? null,
-    getToken: () => overrides.token ?? "",
+    getToken: () =>
+      typeof overrides.getToken === "function" ? overrides.getToken() : (overrides.token ?? ""),
     cortexBase: overrides.cortexBase ?? "http://127.0.0.1:7437",
+    onTokenRefresh: overrides.onTokenRefresh,
   };
 }
 
@@ -139,6 +141,33 @@ describe("createPostApi - postApi()", () => {
     );
   });
 
+  it("refreshes token once before POST when startup token is missing", async () => {
+    let token = "";
+    const onTokenRefresh = vi.fn(async () => {
+      token = "fresh-token";
+    });
+    const invoke = vi.fn(() =>
+      Promise.resolve({ status: 200, body: '{"ok":true}' })
+    );
+
+    const postApi = createPostApi(
+      makeDeps({
+        getToken: () => token,
+        invoke,
+        onTokenRefresh,
+      })
+    );
+
+    const result = await postApi("/resolve", { keepId: "a" });
+    expect(result).toEqual({ ok: true });
+    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("post_cortex", {
+      path: "/resolve",
+      authToken: "fresh-token",
+      body: '{"keepId":"a"}',
+    });
+  });
+
   it("throws on invalid IPC response", async () => {
     const invoke = vi.fn(() => Promise.resolve(undefined));
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
@@ -169,6 +198,39 @@ describe("createPostApi - postApi()", () => {
     });
   });
 
+  it("retries POST once after IPC 401 using refreshed token", async () => {
+    let token = "stale-token";
+    const onTokenRefresh = vi.fn(async () => {
+      token = "fresh-token";
+    });
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 401, body: '{"error":"Unauthorized"}' })
+      .mockResolvedValueOnce({ status: 200, body: '{"ok":true}' });
+
+    const postApi = createPostApi(
+      makeDeps({
+        getToken: () => token,
+        invoke,
+        onTokenRefresh,
+      })
+    );
+
+    const result = await postApi("/resolve", { keepId: "a" });
+    expect(result).toEqual({ ok: true });
+    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenNthCalledWith(1, "post_cortex", {
+      path: "/resolve",
+      authToken: "stale-token",
+      body: '{"keepId":"a"}',
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "post_cortex", {
+      path: "/resolve",
+      authToken: "fresh-token",
+      body: '{"keepId":"a"}',
+    });
+  });
+
   it("throws on browser fetch HTTP non-2xx", async () => {
     globalThis.fetch = mockFetch(500, {}, false);
     const postApi = createPostApi(makeDeps({ token: "tok" }));
@@ -188,6 +250,54 @@ describe("createPostApi - postApi()", () => {
           Authorization: "Bearer tok",
         }),
         body: '{"x":1}',
+      })
+    );
+  });
+
+  it("retries browser POST once after 401 using refreshed token", async () => {
+    let token = "stale-token";
+    const onTokenRefresh = vi.fn(async () => {
+      token = "fresh-token";
+    });
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve({ error: "Unauthorized" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true }),
+      });
+
+    const postApi = createPostApi(
+      makeDeps({
+        getToken: () => token,
+        onTokenRefresh,
+      })
+    );
+
+    const result = await postApi("/resolve", { x: 1 });
+    expect(result).toEqual({ ok: true });
+    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:7437/resolve",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer stale-token",
+        }),
+      })
+    );
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:7437/resolve",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer fresh-token",
+        }),
       })
     );
   });

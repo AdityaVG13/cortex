@@ -67,12 +67,18 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
  * @param {() => Function|null} deps.getInvoke - returns Tauri invoke fn or null
  * @param {() => string} deps.getToken - returns current auth token
  * @param {string} deps.cortexBase - base URL for browser fallback
+ * @param {() => Promise<void>|void} [deps.onTokenRefresh] - refreshes auth token once on startup/rotation
  * @returns {(path: string, body?: object) => Promise<any>}
  */
-export function createPostApi({ getInvoke, getToken, cortexBase }) {
-  return async function postApi(path, body = {}) {
+export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
+  return async function postApi(path, body = {}, _retried = false) {
     const invoke = getInvoke();
     const token = getToken();
+
+    if (!token && !_retried) {
+      if (onTokenRefresh) await onTokenRefresh();
+      return postApi(path, body, true);
+    }
 
     if (!token) {
       throw new Error(`POST ${path}: no auth token`);
@@ -87,6 +93,10 @@ export function createPostApi({ getInvoke, getToken, cortexBase }) {
       });
       if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
         throw new Error(`POST ${path}: invalid IPC response`);
+      }
+      if (response.status === 401 && !_retried && onTokenRefresh) {
+        await onTokenRefresh();
+        return postApi(path, body, true);
       }
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`POST ${path}: HTTP ${response.status}`);
@@ -104,6 +114,10 @@ export function createPostApi({ getInvoke, getToken, cortexBase }) {
       },
       body: JSON.stringify(body),
     });
+    if (response.status === 401 && !_retried && onTokenRefresh) {
+      await onTokenRefresh();
+      return postApi(path, body, true);
+    }
     if (!response.ok) {
       throw new Error(`POST ${path}: HTTP ${response.status}`);
     }
