@@ -41,14 +41,11 @@
   <strong>Cortex exists for one reason:</strong> memory should feel like infrastructure, not a party trick.
 </p>
 
-<table>
-  <tr>
-    <td width="25%" align="center"><strong>10.7M</strong><br><sub>boot tokens saved</sub></td>
-    <td width="25%" align="center"><strong>99%</strong><br><sub>live avg compression</sub></td>
-    <td width="25%" align="center"><strong>90%</strong><br><sub>benchmark hit rate</sub></td>
-    <td width="25%" align="center"><strong>97.5ms</strong><br><sub>avg recall latency</sub></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="assets/hero-proof-strip.png" alt="Cortex analytics proof strip showing saved tokens, compression, boot compilations, and prompt token totals" width="100%">
+</p>
+
+<p align="center"><em>Real product surface, not a mockup: live savings, compression, and boot activity from Cortex Control Center.</em></p>
 
 ## Quickstart
 
