@@ -74,21 +74,21 @@ Source notes: live savings and compression figures come from the current Control
   <tr>
     <td width="360" valign="top" align="left">
       <strong>Shared memory, not siloed memory</strong><br>
-      <sub>One local daemon serves the same memory to Claude Code, Codex, Cursor, Gemini, and your own tooling.</sub>
+      One local daemon serves the same memory to Claude Code, Codex, Cursor, Gemini, and your own tooling.
     </td>
     <td width="360" valign="top" align="left">
       <strong>Smaller boots, less repetition</strong><br>
-      <sub><code>cortex_boot</code> compiles a smaller prompt from stable memory plus recent delta instead of replaying raw history.</sub>
+      <code>cortex_boot</code> compiles a smaller prompt from stable memory plus recent delta instead of replaying raw history.
     </td>
   </tr>
   <tr>
     <td width="360" valign="top" align="left">
       <strong>Decisions stop disappearing</strong><br>
-      <sub>Architecture rules, review preferences, and bug fixes stay queryable through MCP and HTTP instead of getting buried in scrollback.</sub>
+      Architecture rules, review preferences, and bug fixes stay queryable through MCP and HTTP instead of getting buried in scrollback.
     </td>
     <td width="360" valign="top" align="left">
       <strong>Operators can see what changed</strong><br>
-      <sub>The Control Center shows savings, recall quality, and agent activity, so memory stays inspectable instead of mystical.</sub>
+      The Control Center shows savings, recall quality, and agent activity, so memory stays inspectable instead of mystical.
     </td>
   </tr>
 </table>
@@ -97,31 +97,33 @@ Source notes: live savings and compression figures come from the current Control
 
 <table align="center">
   <tr>
-    <td width="240" valign="top" align="center">
+    <td width="360" valign="top" align="left">
       <strong>Claude Code</strong><br>
-      <sub>Primary plugin path with lifecycle handled for you.</sub>
+      Primary plugin path with lifecycle handled for you.
     </td>
-    <td width="240" valign="top" align="center">
+    <td width="360" valign="top" align="left">
       <strong>Codex</strong><br>
-      <sub>Native MCP bridge plus HTTP fallback when you need it.</sub>
-    </td>
-    <td width="240" valign="top" align="center">
-      <strong>Cursor</strong><br>
-      <sub>Shared local memory through the same daemon instead of a separate silo.</sub>
+      Native MCP bridge plus HTTP fallback when you need it.
     </td>
   </tr>
   <tr>
-    <td width="240" valign="top" align="center">
+    <td width="360" valign="top" align="left">
+      <strong>Cursor</strong><br>
+      Shared local memory through the same daemon instead of a separate silo.
+    </td>
+    <td width="360" valign="top" align="left">
       <strong>Gemini</strong><br>
-      <sub>Works through MCP for CLI and tool-driven workflows.</sub>
+      Works through MCP for CLI and tool-driven workflows.
     </td>
-    <td width="240" valign="top" align="center">
+  </tr>
+  <tr>
+    <td width="360" valign="top" align="left">
       <strong>Local LLMs</strong><br>
-      <sub>Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime.</sub>
+      Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime.
     </td>
-    <td width="240" valign="top" align="center">
+    <td width="360" valign="top" align="left">
       <strong>Team mode</strong><br>
-      <sub>Run one shared brain for an entire engineering team when local-only is not enough.</sub>
+      Run one shared brain for an entire engineering team when local-only is not enough.
     </td>
   </tr>
 </table>
@@ -159,31 +161,33 @@ Cortex does not ask you to buy into some giant platform shift on day one. The us
 
 <table align="center">
   <tr>
-    <td width="240" valign="top" align="left">
+    <td width="360" valign="top" align="left">
       <strong>Capsule compiler</strong><br>
-      <sub>Builds boot prompts from stable identity plus recent delta instead of replaying raw context.</sub>
+      Builds boot prompts from stable identity plus recent delta instead of replaying raw context.
     </td>
-    <td width="240" valign="top" align="left">
+    <td width="360" valign="top" align="left">
       <strong>Hybrid retrieval</strong><br>
-      <sub>Blends keyword, semantic, and fused ranking locally so useful memory rises faster.</sub>
-    </td>
-    <td width="240" valign="top" align="left">
-      <strong>MCP and HTTP surfaces</strong><br>
-      <sub>Lets coding agents, apps, scripts, and orchestration layers talk to the same memory system.</sub>
+      Blends keyword, semantic, and fused ranking locally so useful memory rises faster.
     </td>
   </tr>
   <tr>
-    <td width="240" valign="top" align="left">
+    <td width="360" valign="top" align="left">
+      <strong>MCP and HTTP surfaces</strong><br>
+      Lets coding agents, apps, scripts, and orchestration layers talk to the same memory system.
+    </td>
+    <td width="360" valign="top" align="left">
       <strong>Local embeddings</strong><br>
-      <sub>Runs <code>all-MiniLM-L6-v2</code> in-process through ONNX, with no external inference requirement.</sub>
+      Runs <code>all-MiniLM-L6-v2</code> in-process through ONNX, with no external inference requirement.
     </td>
-    <td width="240" valign="top" align="left">
+  </tr>
+  <tr>
+    <td width="360" valign="top" align="left">
       <strong>Governance</strong><br>
-      <sub>Supports decay, supersession, dispute handling, and future provenance-aware memory work.</sub>
+      Supports decay, supersession, dispute handling, and future provenance-aware memory work.
     </td>
-    <td width="240" valign="top" align="left">
+    <td width="360" valign="top" align="left">
       <strong>Control Center</strong><br>
-      <sub>Gives operators a visual surface for health, savings, activity, and memory-system behavior.</sub>
+      Gives operators a visual surface for health, savings, activity, and memory-system behavior.
     </td>
   </tr>
 </table>
@@ -203,17 +207,23 @@ Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/
 
 <table align="center">
   <tr>
-    <td width="240" valign="top" align="left">
+    <td width="360" valign="top" align="left">
       <strong>Connect Cortex</strong><br>
-      <sub><a href="Info/connecting.md">Info/connecting.md</a> covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and troubleshooting.</sub>
+      <a href="Info/connecting.md">Info/connecting.md</a> covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and troubleshooting.
     </td>
-    <td width="240" valign="top" align="left">
+    <td width="360" valign="top" align="left">
       <strong>Research and roadmap</strong><br>
-      <sub><a href="Info/research.md">Info/research.md</a> and <a href="Info/roadmap.md">Info/roadmap.md</a> show what shipped, what is planned, and why.</sub>
+      <a href="Info/research.md">Info/research.md</a> and <a href="Info/roadmap.md">Info/roadmap.md</a> show what shipped, what is planned, and why.
     </td>
-    <td width="240" valign="top" align="left">
+  </tr>
+  <tr>
+    <td width="360" valign="top" align="left">
       <strong>Security and contribution</strong><br>
-      <sub><a href="security/SECURITY.md">security/SECURITY.md</a>, <a href="CONTRIBUTING.md">CONTRIBUTING.md</a>, and <a href="CODE_OF_CONDUCT.md">CODE_OF_CONDUCT.md</a> cover trust, reporting, and project standards.</sub>
+      <a href="security/SECURITY.md">security/SECURITY.md</a>, <a href="CONTRIBUTING.md">CONTRIBUTING.md</a>, and <a href="CODE_OF_CONDUCT.md">CODE_OF_CONDUCT.md</a> cover trust, reporting, and project standards.
+    </td>
+    <td width="360" valign="top" align="left">
+      <strong>Team deployment</strong><br>
+      <a href="Info/team-mode-setup.md">Info/team-mode-setup.md</a> covers the shared-server setup when one local machine is no longer enough.
     </td>
   </tr>
 </table>
