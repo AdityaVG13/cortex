@@ -86,6 +86,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added deterministic client-side Monte Carlo projection logic so the analytics page can visualize 30-day cumulative savings bands without needing new daemon endpoints.
 - Refined the chart styling system with cleaner SVG geometry, projection bands, lighter grid treatment, and responsive layout rules so the page reads more like a polished developer product surface and less like a generic dashboard stack.
 
+## Phase 6D: README Monte Carlo Proof Surface -- DONE
+- **Commit:** `632da53` | **Agent:** CX (Codex)
+- Added a dedicated Monte Carlo proof graphic to the public README so the compounding-savings story now appears on the landing page instead of living only inside the app analytics surface.
+- Created a tracked SVG proof asset under `assets/` so the README uses a repo-owned visual rather than depending on local benchmark imagery or screenshots.
+
 ---
 
 ## Branches Awaiting Merge to Master
