@@ -126,6 +126,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Simplified the hero copy and metadata treatment: stronger headline, fewer top-level links, and a quieter metadata line in place of badge-heavy chrome.
 - Kept the same real analytics surface, but adjusted the crop and pacing so the top of the README reads more like a product launch and less like a standard GitHub template.
 
+## Phase 6K: Proof Surface Simplification -- DONE
+- **Commit:** `904c35c` | **Agent:** CX (Codex)
+- Removed the cropped hero proof strip after review showed it was weaker than a simple centered metric-box layout.
+- Replaced the Monte Carlo GIF with the verified static PNG and removed the rejected animated asset from the shipped README.
+- Kept the README focused on cleaner static proof elements while continuing the broader Apple-style cleanup pass.
+
 ---
 
 ## Branches Awaiting Merge to Master
