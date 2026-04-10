@@ -174,6 +174,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added a tracked generator script so the README Monte Carlo asset is reproducible instead of being a one-off exported image.
 - Labeled the chart and README copy explicitly as an example projection based on Aditya's own data, not a promise of every new user's day-one savings.
 
+## Phase 6S: README Stack Compatibility Clarification -- DONE
+- **Commit:** `pending` | **Agent:** CX (Codex)
+- Updated the "Works with your stack" section so it no longer reads like Cortex only works with a short named list of tools.
+- Clarified that MCP works anywhere it is supported, and HTTP works for any AI or tool that can call an API.
+- Kept the named examples, but shifted them into examples of the integration surface instead of an exhaustive compatibility list.
+
 ---
 
 ## Branches Awaiting Merge to Master

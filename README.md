@@ -83,9 +83,9 @@ Cortex is meant to fit into the tools you already use, not make you learn a whol
 
 - Claude Code. The easiest setup path, with lifecycle handled for you.
 - Codex. Native MCP support, plus HTTP fallback when you need it.
-- Cursor. Shares the same local memory instead of keeping a separate silo.
-- Gemini. Works through MCP for CLI and tool-driven workflows.
-- Local LLMs. Use HTTP or MCP from your own app, desktop tool, or local runtime.
+- Cursor, Gemini, and other MCP-capable tools. Point them at the same Cortex memory instead of giving each one its own silo.
+- Any AI that can make HTTP requests. If it can talk to an API, it can talk to Cortex.
+- Local LLMs and custom tooling. Use HTTP or MCP from your own app, desktop tool, orchestration layer, or runtime.
 - Team mode. Run one shared memory service for a whole engineering team when one machine is no longer enough.
 
 ## More install options
