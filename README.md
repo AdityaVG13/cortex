@@ -1,4 +1,4 @@
-<p align="center"><strong>Local-first memory for coding agents.</strong></p>
+<p align="center"><strong>A local memory layer for the tools you already use.</strong></p>
 
 <p align="center">
   <img src="assets/cortex-header.gif" alt="Cortex" width="100%">
@@ -6,8 +6,8 @@
 
 <h1 align="center">One durable brain.<br>Every tool you use.</h1>
 <p align="center">
-  Cortex gives Claude Code, Codex, Cursor, Gemini, and local LLM workflows a shared brain that survives restarts,
-  compresses boot context, and stays on your machine.
+  Cortex gives your coding tools one shared memory.
+  It remembers what matters, cuts the repeated setup, and stays on your machine.
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <sub>v0.4.1 &nbsp;&nbsp;|&nbsp;&nbsp; Rust + ONNX &nbsp;&nbsp;|&nbsp;&nbsp; MCP-native &nbsp;&nbsp;|&nbsp;&nbsp; MIT</sub>
+  <sub>v0.4.1 &nbsp;&nbsp;|&nbsp;&nbsp; Private by default &nbsp;&nbsp;|&nbsp;&nbsp; MCP + HTTP &nbsp;&nbsp;|&nbsp;&nbsp; MIT</sub>
 </p>
 
 <p align="center">
@@ -25,21 +25,21 @@
 </p>
 
 <p align="center">
-  <strong>Cortex exists for one reason:</strong> memory should feel like infrastructure, not a party trick.
+  <strong>Cortex exists for one reason:</strong> you should not have to repeat yourself to every tool you use.
 </p>
 
 <table align="center">
   <tr>
-    <td width="190" align="center"><strong>10.7M</strong><br><sub>boot tokens saved</sub></td>
-    <td width="190" align="center"><strong>99%</strong><br><sub>avg compression</sub></td>
-    <td width="190" align="center"><strong>90%</strong><br><sub>benchmark hit rate</sub></td>
-    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg recall latency</sub></td>
+    <td width="190" align="center"><strong>10.7M</strong><br><sub>prompt tokens saved</sub></td>
+    <td width="190" align="center"><strong>99%</strong><br><sub>avg startup shrink</sub></td>
+    <td width="190" align="center"><strong>90%</strong><br><sub>recall benchmark hit rate</sub></td>
+    <td width="190" align="center"><strong>97.5ms</strong><br><sub>avg lookup time</sub></td>
   </tr>
 </table>
 
 ## Start in two commands
 
-If you want the shortest path from "that looks interesting" to "this is helping," use the Claude Code plugin. Cortex handles daemon lifecycle for you.
+If you want the fastest path from install to a working setup, start with the Claude Code plugin. Cortex handles the background setup for you.
 
 ```bash
 claude plugin marketplace add AdityaVG13/cortex
@@ -48,19 +48,17 @@ claude plugin install cortex@cortex-marketplace
 
 Restart your session and Cortex boots itself. Prefer installers or a source build? Jump to [more install options](#more-install-options).
 
-<p align="center">
-  <img src="assets/section-proof.svg" alt="See the payoff" width="100%">
-</p>
+## See the payoff
 
-Memory products are easy to demo and hard to trust. Cortex only gets interesting once the savings show up on screen.
+Memory tools are easy to pitch and hard to trust. Cortex gets interesting when the savings stop looking hypothetical.
 
 <p align="center">
   <img src="assets/control-center-analytics.png" alt="Cortex Control Center analytics showing token savings, compression, recall hit rate, and agent activity" width="100%">
 </p>
 
-<p align="center"><em>Live Cortex analytics: saved tokens, compression, recall quality, boot history, and agent activity in one operator surface.</em></p>
+<p align="center"><em>Live Cortex analytics: savings, compression, recall quality, boot history, and agent activity in one operator surface.</em></p>
 
-The Control Center is there to answer the uncomfortable question fast: "Is this thing actually paying for itself?" If the answer is no, you should know that immediately. If the answer is yes, the page makes it obvious.
+The Control Center answers the only question that matters: is Cortex saving you time and tokens, or not? If the answer is no, you should see that fast. If the answer is yes, the dashboard makes it obvious.
 
 <p align="center">
   <img src="assets/monte-carlo-readme.png" alt="Monte Carlo projection showing a 30-day Cortex savings horizon" width="100%">
@@ -68,71 +66,27 @@ The Control Center is there to answer the uncomfortable question fast: "Is this 
 
 <p align="center"><em>Monte Carlo savings horizon: a 30-day projection built from real Cortex benchmark data, not marketing math.</em></p>
 
-Source notes: live savings and compression figures come from the current Control Center surface. Retrieval metrics come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
+Source notes: current savings and compression figures come from the Control Center surface. Retrieval quality comes from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
 
-<p align="center">
-  <img src="assets/section-why.svg" alt="Why teams keep it running" width="100%">
-</p>
+## Why teams keep it running
 
-<table align="center">
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Shared memory, not siloed memory</strong><br>
-      One local daemon serves the same memory to Claude Code, Codex, Cursor, Gemini, and your own tooling.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Smaller boots, less repetition</strong><br>
-      <code>cortex_boot</code> compiles a smaller prompt from stable memory plus recent delta instead of replaying raw history.
-    </td>
-  </tr>
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Decisions stop disappearing</strong><br>
-      Architecture rules, review preferences, and bug fixes stay queryable through MCP and HTTP instead of getting buried in scrollback.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Operators can see what changed</strong><br>
-      The Control Center shows savings, recall quality, and agent activity, so memory stays inspectable instead of mystical.
-    </td>
-  </tr>
-</table>
+Cortex is built for the part after the demo, when the novelty wears off and the repetition starts getting expensive.
 
-<p align="center">
-  <img src="assets/section-stack.svg" alt="Works with your stack" width="100%">
-</p>
+- Claude Code, Codex, Cursor, Gemini, and your own scripts can all use the same memory.
+- Startup prompts get smaller because Cortex brings back the useful parts instead of replaying everything.
+- Decisions, fixes, and project rules stay easy to pull back up instead of getting lost in scrollback.
+- The Control Center shows savings, recall quality, and activity in plain view.
 
-<table align="center">
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Claude Code</strong><br>
-      Primary plugin path with lifecycle handled for you.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Codex</strong><br>
-      Native MCP bridge plus HTTP fallback when you need it.
-    </td>
-  </tr>
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Cursor</strong><br>
-      Shared local memory through the same daemon instead of a separate silo.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Gemini</strong><br>
-      Works through MCP for CLI and tool-driven workflows.
-    </td>
-  </tr>
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Local LLMs</strong><br>
-      Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Team mode</strong><br>
-      Run one shared brain for an entire engineering team when local-only is not enough.
-    </td>
-  </tr>
-</table>
+## Works with your stack
+
+Cortex is meant to fit into the tools you already use, not force a brand-new workflow just to get memory.
+
+- Claude Code. The smoothest setup path, with lifecycle handled for you.
+- Codex. Native MCP support, plus HTTP fallback when you need it.
+- Cursor. Shares the same local memory instead of keeping a separate silo.
+- Gemini. Works through MCP for CLI and tool-driven workflows.
+- Local LLMs. Use HTTP or MCP from your own app, desktop tool, or local runtime.
+- Team mode. Run one shared memory layer for a whole engineering team when one machine is no longer enough.
 
 ## More install options
 
@@ -161,48 +115,20 @@ cargo build --release
 
 When Cortex boots cleanly, you should see a READY message and an active memory count. From there, the workflow is simple: store a decision once, stop re-explaining it later.
 
-<p align="center">
-  <img src="assets/section-ships.svg" alt="What ships in the box" width="100%">
-</p>
+## What ships in the box
 
-Cortex does not ask you to buy into some giant platform shift on day one. The useful parts land quickly:
+You do not need a giant platform rewrite to get value from Cortex. The useful parts show up quickly.
 
-<table align="center">
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Capsule compiler</strong><br>
-      Builds boot prompts from stable identity plus recent delta instead of replaying raw context.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Hybrid retrieval</strong><br>
-      Blends keyword, semantic, and fused ranking locally so useful memory rises faster.
-    </td>
-  </tr>
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>MCP and HTTP surfaces</strong><br>
-      Lets coding agents, apps, scripts, and orchestration layers talk to the same memory system.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Local embeddings</strong><br>
-      Runs <code>all-MiniLM-L6-v2</code> in-process through ONNX, with no external inference requirement.
-    </td>
-  </tr>
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Governance</strong><br>
-      Supports decay, supersession, dispute handling, and future provenance-aware memory work.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Control Center</strong><br>
-      Gives operators a visual surface for health, savings, activity, and memory-system behavior.
-    </td>
-  </tr>
-</table>
+- Smaller startup prompts. Cortex builds a leaner boot prompt instead of replaying raw history.
+- Faster recall. Keyword and semantic search work together so useful memory rises faster.
+- Flexible connections. Apps, scripts, and coding tools can all talk to the same memory through MCP or HTTP.
+- Local embeddings. `all-MiniLM-L6-v2` runs in-process through ONNX, with no outside inference service required.
+- Memory controls. Decay, supersession, and conflict handling keep the memory base from turning into a junk drawer.
+- Control Center. One place to see health, savings, activity, and what the system is actually doing.
 
 ## Built in public, backed by research
 
-Cortex is open about where ideas came from and where they changed shape. The research page is not a citation dump. It spells out what looked promising, what Cortex adapted, what shipped, and what is still waiting on the roadmap.
+Cortex is open about where ideas came from and where they changed shape. The research page is there to show what influenced Cortex, what changed in implementation, what shipped, and what is still on the roadmap.
 
 - **ByteRover.** Helped shape progressive retrieval and the longer-term memory-tier model.
 - **Reciprocal Rank Fusion.** Provides the ranking fusion rule behind the current retrieval stack.
@@ -211,32 +137,14 @@ Cortex is open about where ideas came from and where they changed shape. The res
 
 Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/research.md)
 
-<p align="center">
-  <img src="assets/section-docs.svg" alt="Documentation" width="100%">
-</p>
+## Documentation
 
-<table align="center">
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Connect Cortex</strong><br>
-      <a href="Info/connecting.md">Info/connecting.md</a> covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and troubleshooting.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Research and roadmap</strong><br>
-      <a href="Info/research.md">Info/research.md</a> and <a href="Info/roadmap.md">Info/roadmap.md</a> show what shipped, what is planned, and why.
-    </td>
-  </tr>
-  <tr>
-    <td width="360" valign="top" align="left">
-      <strong>Security and contribution</strong><br>
-      <a href="security/SECURITY.md">security/SECURITY.md</a>, <a href="CONTRIBUTING.md">CONTRIBUTING.md</a>, and <a href="CODE_OF_CONDUCT.md">CODE_OF_CONDUCT.md</a> cover trust, reporting, and project standards.
-    </td>
-    <td width="360" valign="top" align="left">
-      <strong>Team deployment</strong><br>
-      <a href="Info/team-mode-setup.md">Info/team-mode-setup.md</a> covers the shared-server setup when one local machine is no longer enough.
-    </td>
-  </tr>
-</table>
+The docs are organized by what you are trying to do, not by internal folder names.
+
+- Connect Cortex. [Info/connecting.md](Info/connecting.md) covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and troubleshooting.
+- Research and roadmap. [Info/research.md](Info/research.md) and [Info/roadmap.md](Info/roadmap.md) show what shipped, what is planned, and why.
+- Security and contribution. [security/SECURITY.md](security/SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
+- Team deployment. [Info/team-mode-setup.md](Info/team-mode-setup.md) covers the shared-server setup when one local machine is no longer enough.
 
 <details>
 <summary>Open the docs map and CLI reference</summary>
