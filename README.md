@@ -21,6 +21,7 @@
   <a href="#desktop-app">Desktop App</a> --
   <a href="#how-it-works">How It Works</a> --
   <a href="#core-mcp-tools">MCP Tools</a> --
+  <a href="Info/research.md">Research</a> --
   <a href="CONNECTING.md">Connect Your AI</a> --
   <a href="#cli-reference">CLI Reference</a> --
   <a href="SECURITY.md">Security</a> --
@@ -175,4 +176,4 @@ More features coming soon! Check the roadmap or open an issue if there's somethi
 
 *Full Roadmap: [Info/roadmap.md](Info/roadmap.md)*
 
-[Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Connecting](CONNECTING.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
+[Research](Info/research.md) | [Contributing](CONTRIBUTING.md) | [Security](SECURITY.md) | [Connecting](CONNECTING.md) | [Changelog](CHANGELOG.md) | [License](LICENSE)
