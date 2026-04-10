@@ -132,6 +132,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Replaced the Monte Carlo GIF with the verified static PNG and removed the rejected animated asset from the shipped README.
 - Kept the README focused on cleaner static proof elements while continuing the broader Apple-style cleanup pass.
 
+## Phase 6L: Middle Section Card Layout Pass -- DONE
+- **Commit:** `9b7df79` | **Agent:** CX (Codex)
+- Rebuilt the middle of the README around centered text-only card grids for the "why," "stack," "what ships," and "documentation" sections.
+- Avoided the prior GitHub rendering failure mode by keeping the box cells free of embedded markdown headings and list syntax.
+- Kept the proof assets static and verified while shifting the page body closer to a calmer, more premium product layout.
+
 ---
 
 ## Branches Awaiting Merge to Master
