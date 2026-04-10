@@ -150,6 +150,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Used the new bars selectively on the proof, why, stack, shipping, and documentation sections, keeping the body copy render-safe and the rest of the layout intact.
 - Rendered the bars through a local browser preview sheet before commit so the shipped visuals were verified as images instead of approved from source alone.
 
+## Phase 6O: README Header Bar Removal -- DONE
+- **Commit:** `40f04dd` | **Agent:** CX (Codex)
+- Removed the custom SVG section bars after review showed they were fighting the body copy and making the README feel less natural.
+- Restored standard GitHub headers for the proof, why, stack, shipping, and documentation sections while keeping the simpler plain-language copy underneath.
+- Deleted the now-unused section-bar assets so the public repo no longer carries abandoned README chrome.
+
 ---
 
 ## Branches Awaiting Merge to Master
