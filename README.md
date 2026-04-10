@@ -50,6 +50,17 @@
   </tr>
 </table>
 
+## Quickstart
+
+If you want the shortest path from "that looks interesting" to "this is helping," use the Claude Code plugin. Cortex handles daemon lifecycle for you.
+
+```bash
+claude plugin marketplace add AdityaVG13/cortex
+claude plugin install cortex@cortex-marketplace
+```
+
+Restart your session and Cortex boots itself. Prefer installers or a source build? Jump to [more install options](#more-install-options).
+
 ## See the payoff
 
 Memory products are easy to demo and hard to trust. Cortex only gets interesting once the savings show up on screen.
@@ -72,9 +83,12 @@ Source notes: live savings and compression figures come from the current Control
 
 ## Why teams keep it running
 
-- **One memory layer, not five.** Store an architectural rule, coding convention, or hard-won bug fix once. Claude Code, Codex, Cursor, Gemini, and your own local workflows can all recall it through the same daemon.
-- **Boot prompts stop ballooning.** Cortex compiles a boot prompt instead of replaying raw history. The result is smaller context, faster warm starts, and less time spent re-explaining the same project to the same tools.
-- **You can inspect the system.** SQLite backs the memory, ONNX handles embeddings locally, and the Control Center shows what is happening. No black box, no mandatory cloud service, no mystery bill.
+| Without Cortex | With Cortex |
+|---|---|
+| Every agent has to relearn the repo from scratch. | One local daemon serves the same memory to every tool. |
+| Boot prompts keep swelling as projects get older. | `cortex_boot` compiles a smaller prompt from stable memory plus recent delta. |
+| Good decisions vanish into chat logs and terminal scrollback. | Decisions, rules, and bug fixes stay queryable through MCP and HTTP. |
+| It is hard to tell whether "memory" is helping or just adding complexity. | The Control Center shows savings, recall quality, and activity in one place. |
 
 ## Works with your stack
 
@@ -86,16 +100,7 @@ Source notes: live savings and compression figures come from the current Control
 | Gemini | Works through MCP for CLI and tool-driven workflows. |
 | Local LLMs | Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime. |
 
-## Quickstart
-
-### Recommended: Claude Code plugin
-
-```bash
-claude plugin marketplace add AdityaVG13/cortex
-claude plugin install cortex@cortex-marketplace
-```
-
-Restart your session and Cortex will bootstrap itself.
+## More install options
 
 ### Desktop app
 
@@ -124,25 +129,23 @@ When Cortex boots cleanly, you should see a READY message and an active memory c
 
 ## What ships in the box
 
-| Component | What it does |
-|---|---|
-| Capsule compiler | Builds boot prompts from stable identity plus recent delta instead of replaying raw context. |
-| Hybrid retrieval | Blends keyword, semantic, and fused ranking locally so useful memory rises faster. |
-| MCP and HTTP surfaces | Lets coding agents, local apps, scripts, and orchestration layers all talk to the same memory system. |
-| Local embeddings | Runs `all-MiniLM-L6-v2` in-process through ONNX, with no external inference requirement. |
-| Governance and conflict handling | Supports decay, supersession, dispute handling, and future provenance-aware memory work. |
-| Control Center | Gives operators a visual surface for health, savings, activity, and memory-system behavior. |
+Cortex does not ask you to buy into some giant platform shift on day one. The useful parts land quickly:
+
+- **Capsule compiler.** Builds boot prompts from stable identity plus recent delta instead of replaying raw context.
+- **Hybrid retrieval.** Blends keyword, semantic, and fused ranking locally so useful memory rises faster.
+- **MCP and HTTP surfaces.** Lets coding agents, local apps, scripts, and orchestration layers all talk to the same memory system.
+- **Local embeddings.** Runs `all-MiniLM-L6-v2` in-process through ONNX, with no external inference requirement.
+- **Governance and conflict handling.** Supports decay, supersession, dispute handling, and future provenance-aware memory work.
+- **Control Center.** Gives operators a visual surface for health, savings, activity, and memory-system behavior.
 
 ## Built in public, backed by research
 
 Cortex is open about where ideas came from and where they changed shape. The research page is not a citation dump. It spells out what looked promising, what Cortex adapted, what shipped, and what is still waiting on the roadmap.
 
-| Reference | Why it matters here |
-|---|---|
-| ByteRover | Helped shape progressive retrieval and the longer-term memory-tier model. |
-| Reciprocal Rank Fusion | Provides the ranking fusion rule behind the current retrieval stack. |
-| Memori | Informs the planned move toward stronger semantic structure and dedup. |
-| A-MAC, MemoryOS, FluxMem | Push the roadmap toward admission control, maturity tiers, and memory crystallization. |
+- **ByteRover.** Helped shape progressive retrieval and the longer-term memory-tier model.
+- **Reciprocal Rank Fusion.** Provides the ranking fusion rule behind the current retrieval stack.
+- **Memori.** Informs the planned move toward stronger semantic structure and dedup.
+- **A-MAC, MemoryOS, FluxMem.** Push the roadmap toward admission control, maturity tiers, and memory crystallization.
 
 Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/research.md)
 
