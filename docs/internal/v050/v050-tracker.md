@@ -62,6 +62,13 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added a troubleshooting section to `cortex --help` so users can discover `cortex doctor`, the required HTTP auth headers, the Codex MCP hot-attach limitation, and the app-hosted daemon restart path without reading repo docs first.
 - Added README guidance pointing users to `cortex --help`, `cortex doctor`, and `Info/connecting.md` as the primary recovery path for connectivity and auth issues.
 
+## Phase 7E: Review Fixes for Feed + Desktop Auth Retry -- DONE
+- **Commit:** `261574e` | **Agent:** CX (Codex)
+- Fixed `GET /feed?unread=true` so a stale `feed_acks.last_seen_id` no longer suppresses every unread item after feed TTL pruning removes the anchor row.
+- Added daemon regression tests covering both the stale-ack fallback path and the normal "after ack, skip self entries" unread path.
+- Fixed Cortex Control Center POST requests to refresh and retry once after missing/stale auth tokens, matching the existing GET behavior during daemon token rotation.
+- Added desktop regression tests covering POST token refresh before first call and retry-after-401 flows for both IPC and browser fallback.
+
 ---
 
 ## Branches Awaiting Merge to Master
