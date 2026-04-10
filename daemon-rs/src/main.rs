@@ -31,6 +31,7 @@ use std::path::Path;
 use std::time::Duration;
 
 const BACKUP_RETENTION_COUNT: usize = 3;
+const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
 
 // ── Backup rotation helpers ───────────────────────────────────────────────
 
@@ -93,6 +94,32 @@ fn cleanup_backup_retention(backup_dir: &Path) -> usize {
         Err(e) => {
             eprintln!("[cortex] Warning: backup rotation failed: {e}");
             0
+        }
+    }
+}
+
+fn cleanup_bridge_backups(home: &Path, schema_version: i32) -> bool {
+    if schema_version < BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION {
+        return false;
+    }
+
+    let bridge_backup_dir = home.join("bridge-backups");
+    if !bridge_backup_dir.exists() {
+        return false;
+    }
+
+    match std::fs::remove_dir_all(&bridge_backup_dir) {
+        Ok(()) => {
+            eprintln!(
+                "[cortex] Removed legacy bridge-backups for schema version {schema_version}"
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!(
+                "[cortex] Warning: failed to remove legacy bridge-backups: {e}"
+            );
+            false
         }
     }
 }
@@ -1495,13 +1522,15 @@ pub(crate) async fn run_daemon(
     }
 
     // ── Schema migrations (idempotent) ──────────────────────────────
-    {
+    let schema_version = {
         let conn = state.db.lock().await;
         let applied = db::run_pending_migrations(&conn);
         if applied > 0 {
             eprintln!("[cortex] Applied {applied} schema migrations");
         }
-    }
+        db::current_schema_user_version(&conn).unwrap_or(0)
+    };
+    let _ = cleanup_bridge_backups(&paths.home, schema_version);
 
     // ── Startup indexing + decay (non-blocking) ─────────────────────
     // This used to run inline before the server bound its port, which could
@@ -1828,5 +1857,21 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn cleanup_bridge_backups_requires_schema_version_five_or_higher() {
+        let home_dir = temp_test_dir("bridge_backups");
+        let bridge_dir = home_dir.join("bridge-backups");
+        fs::create_dir_all(&bridge_dir).unwrap();
+        fs::write(bridge_dir.join("legacy.txt"), "legacy").unwrap();
+
+        assert!(!cleanup_bridge_backups(&home_dir, 4));
+        assert!(bridge_dir.exists());
+
+        assert!(cleanup_bridge_backups(&home_dir, 5));
+        assert!(!bridge_dir.exists());
+
+        let _ = fs::remove_dir_all(&home_dir);
     }
 }

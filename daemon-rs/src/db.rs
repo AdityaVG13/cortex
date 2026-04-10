@@ -82,6 +82,43 @@ pub fn migration_definitions() -> &'static [MigrationDef] {
     &SCHEMA_MIGRATIONS
 }
 
+fn migration_user_version(version: &str) -> i32 {
+    version
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>()
+        .parse::<i32>()
+        .unwrap_or(0)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn latest_schema_user_version() -> i32 {
+    migration_definitions()
+        .iter()
+        .map(|(version, _)| migration_user_version(version))
+        .max()
+        .unwrap_or(0)
+}
+
+pub fn current_schema_user_version(conn: &Connection) -> rusqlite::Result<i32> {
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+}
+
+pub fn set_schema_user_version(conn: &Connection, version: i32) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "user_version", version)?;
+    Ok(())
+}
+
+fn sync_schema_user_version(conn: &Connection, applied_versions: &HashSet<String>) -> rusqlite::Result<i32> {
+    let version = applied_versions
+        .iter()
+        .map(|entry| migration_user_version(entry))
+        .max()
+        .unwrap_or(0);
+    set_schema_user_version(conn, version)?;
+    Ok(version)
+}
+
 /// Ensure schema migration tracking table exists.
 pub fn ensure_schema_migrations_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -252,6 +289,10 @@ pub fn run_pending_migrations(conn: &Connection) -> usize {
 
         applied_set.insert((*version).to_string());
         applied_count += 1;
+    }
+
+    if let Err(e) = sync_schema_user_version(conn, &applied_set) {
+        eprintln!("[db] failed to update PRAGMA user_version: {e}");
     }
 
     applied_count
@@ -1647,6 +1688,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(recorded as usize, migration_definitions().len());
+        assert_eq!(
+            current_schema_user_version(&conn).unwrap(),
+            latest_schema_user_version()
+        );
 
         assert!(table_has_column(&conn, "memories", "merged_count"));
         assert!(table_has_column(&conn, "memories", "quality"));
