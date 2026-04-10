@@ -156,6 +156,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Restored standard GitHub headers for the proof, why, stack, shipping, and documentation sections while keeping the simpler plain-language copy underneath.
 - Deleted the now-unused section-bar assets so the public repo no longer carries abandoned README chrome.
 
+## Phase 6P: README Copy Simplification -- DONE
+- **Commit:** `69b3f32` | **Agent:** CX (Codex)
+- Rewrote the hero, proof, compatibility, shipping, and documentation copy in plainer language so the README reads like a product people can use, not an internal AI tooling explainer.
+- Simplified the top metadata and stat labels to reduce jargon while keeping the same proof points.
+- Kept the existing visuals and layout, focusing this pass only on wording, readability, and pacing.
+
 ---
 
 ## Branches Awaiting Merge to Master
