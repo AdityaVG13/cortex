@@ -99,6 +99,83 @@ fn build_auth_header(api_key: Option<&str>) -> Option<String> {
     read_auth_token().map(|token| format!("Bearer {token}"))
 }
 
+fn persist_write_buffer(
+    buffer_path: &std::path::Path,
+    remaining: &[String],
+) -> Result<(), std::io::Error> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(buffer_path)?;
+    for line in remaining {
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
+}
+
+async fn drain_write_buffer(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    api_key: Option<&str>,
+    agent: &str,
+    model: Option<&str>,
+    paths: &CortexPaths,
+) {
+    let buffer_path = &paths.write_buffer;
+    let content = match std::fs::read_to_string(buffer_path) {
+        Ok(content) if !content.trim().is_empty() => content,
+        _ => return,
+    };
+
+    let lines: Vec<String> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+
+    let mut remaining = Vec::new();
+    let mut drained = 0usize;
+
+    for line in lines {
+        let mut req = client
+            .post(rpc_url)
+            .header("content-type", "application/json")
+            .header("x-cortex-request", "true")
+            .header("x-source-agent", agent);
+        if let Some(model_name) = model {
+            req = req.header("x-source-model", model_name);
+        }
+        if let Some(auth) = build_auth_header(api_key) {
+            req = req.header("authorization", auth);
+        }
+
+        match req.body(line.clone()).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                drained += 1;
+            }
+            _ => remaining.push(line),
+        }
+    }
+
+    if let Err(e) = persist_write_buffer(buffer_path, &remaining) {
+        eprintln!(
+            "[cortex-mcp] Failed to compact write buffer {}: {e}",
+            buffer_path.display()
+        );
+        return;
+    }
+
+    if drained > 0 {
+        eprintln!(
+            "[cortex-mcp] Drained {drained} buffered writes and compacted {}",
+            buffer_path.display()
+        );
+    }
+}
+
 async fn session_start(
     client: &reqwest::Client,
     base_url: &str,
@@ -216,6 +293,17 @@ pub async fn run(
         eprintln!(
             "[cortex-mcp] Health check failed after {HEALTH_CHECK_ATTEMPTS} attempts; keeping proxy alive and deferring errors to JSON-RPC responses"
         );
+    } else {
+        let paths = CortexPaths::resolve();
+        drain_write_buffer(
+            &client,
+            &rpc_url,
+            api_key,
+            &agent_display,
+            agent_model.as_deref(),
+            &paths,
+        )
+        .await;
     }
 
     let _ = session_start(
@@ -440,6 +528,18 @@ pub async fn run(
                         );
                     }
 
+                    if consecutive_failures > 0 && status.is_success() {
+                        let paths = CortexPaths::resolve();
+                        drain_write_buffer(
+                            &client,
+                            &rpc_url,
+                            api_key,
+                            &agent_display,
+                            agent_model.as_deref(),
+                            &paths,
+                        )
+                        .await;
+                    }
                     consecutive_failures = 0;
                     break;
                 }
@@ -506,6 +606,15 @@ pub async fn run(
                     agent_model.as_deref(),
                 )
                 .await;
+                drain_write_buffer(
+                    &client,
+                    &rpc_url,
+                    api_key,
+                    &agent_display,
+                    agent_model.as_deref(),
+                    &paths,
+                )
+                .await;
                 consecutive_failures = 0;
                 eprintln!("[cortex-mcp] Daemon recovered; resuming proxy");
             } else {
@@ -557,4 +666,33 @@ async fn write_raw_line(
         };
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_mcp_{name}_{unique}"))
+    }
+
+    #[test]
+    fn persist_write_buffer_truncates_when_no_entries_remain() {
+        let home_dir = temp_test_dir("write_buffer");
+        fs::create_dir_all(&home_dir).unwrap();
+        let buffer_path = home_dir.join("write_buffer.jsonl");
+        fs::write(&buffer_path, "{\"old\":true}\n").unwrap();
+
+        persist_write_buffer(&buffer_path, &[]).unwrap();
+
+        assert_eq!(fs::read_to_string(&buffer_path).unwrap(), "");
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
 }
