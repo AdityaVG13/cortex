@@ -114,6 +114,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Reworked the middle of the page into a clearer product story: "without Cortex / with Cortex," simpler shipped-capabilities copy, and a less table-heavy research summary.
 - Kept the real proof assets, but tightened the pacing so the README now reads more like a product landing page and less like a technical inventory.
 
+## Phase 6I: Hero Proof Strip + Monte Carlo Motion Polish -- DONE
+- **Commit:** `8ec93c0` | **Agent:** CX (Codex)
+- Replaced the top README metric table with a cropped proof strip from the real analytics surface so the hero now carries product UI instead of generic stat cards.
+- Rebuilt the Monte Carlo GIF so the chart stays static while the forecast lines animate, then enlarged the end-state callout numbers for better readability on GitHub.
+- Kept the README render-safe while pushing the hero zone closer to a premium product-launch presentation.
+
 ---
 
 ## Branches Awaiting Merge to Master
