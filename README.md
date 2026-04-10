@@ -167,6 +167,8 @@ Connection and auth details live in [CONNECTING.md](CONNECTING.md).
 
 Cortex is built in public, and its research surface is public too. The project is not pretending papers were "implemented directly"; it is explicit about which ideas were inspiring, which ones shipped, and which ones are still on the roadmap.
 
+The graphic above is intentionally simplified so it stays readable at a glance. The full paper-by-paper record explains what Cortex liked, how it changed each idea for its own constraints, and where that work lands in the product.
+
 | Reference | Why it matters to Cortex |
 |---|---|
 | ByteRover (2026) | Helped shape Phase 1 progressive retrieval and the later memory-tier roadmap. |
