@@ -69,6 +69,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Fixed Cortex Control Center POST requests to refresh and retry once after missing/stale auth tokens, matching the existing GET behavior during daemon token rotation.
 - Added desktop regression tests covering POST token refresh before first call and retry-after-401 flows for both IPC and browser fallback.
 
+## Phase 6A: Public README + Research Redesign -- DONE
+- **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
+- Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
+- Expanded `Info/research.md` from a paper list into a public design record with richer per-reference adaptation notes, stronger `Inspired by` wording for open-source influences, and explicit shipped / planned / deferred status.
+- Added `assets/proof-surface.svg` and `assets/research-lineage.svg` so the public docs now carry a consistent premium visual language instead of relying on plain text alone.
+
 ---
 
 ## Branches Awaiting Merge to Master
