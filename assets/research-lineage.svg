@@ -1,0 +1,103 @@
+<svg width="1440" height="920" viewBox="0 0 1440 920" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="40" x2="1310" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10192B"/>
+      <stop offset="1" stop-color="#050A14"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="280" y1="0" x2="1180" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2EDCFF"/>
+      <stop offset="1" stop-color="#50F0C3"/>
+    </linearGradient>
+    <linearGradient id="planned" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#2EDCFF"/>
+      <stop offset="1" stop-color="#507CFF"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1440" height="920" rx="36" fill="url(#bg)"/>
+  <rect x="32" y="32" width="1376" height="856" rx="30" fill="#07111E" stroke="#18324A"/>
+
+  <circle cx="250" cy="200" r="170" fill="#00D4FF" fill-opacity="0.06"/>
+  <circle cx="1170" cy="720" r="190" fill="#4F7CFF" fill-opacity="0.06"/>
+
+  <text x="96" y="108" fill="#8DA9C7" font-family="'Segoe UI', Arial, sans-serif" font-size="22" letter-spacing="4">CORTEX / RESEARCH LINEAGE</text>
+  <text x="96" y="164" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="52">Research in. Product decisions out.</text>
+  <text x="96" y="208" fill="#86A3C0" font-family="'Segoe UI', Arial, sans-serif" font-size="24">Cortex documents inspiration openly, then adapts it for a local-first, MCP-native, coding-focused memory system.</text>
+
+  <text x="132" y="280" fill="#6F8CAA" font-family="'Segoe UI', Arial, sans-serif" font-size="18" letter-spacing="3">RESEARCH INPUTS</text>
+  <text x="590" y="280" fill="#6F8CAA" font-family="'Segoe UI', Arial, sans-serif" font-size="18" letter-spacing="3">CORTEX DESIGN</text>
+  <text x="1085" y="280" fill="#6F8CAA" font-family="'Segoe UI', Arial, sans-serif" font-size="18" letter-spacing="3">STATUS</text>
+
+  <g>
+    <rect x="96" y="320" width="360" height="106" rx="24" fill="#0C1727" stroke="#1B3D5D"/>
+    <text x="126" y="360" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">ByteRover + RRF + Hybrid Retrieval</text>
+    <text x="126" y="394" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Progressive retrieval, fused ranking, small-model discipline</text>
+    <text x="126" y="418" fill="#39DEFF" font-family="'Consolas', 'Courier New', monospace" font-size="16">ByteRover / RRF / Rethinking Hybrid Retrieval / DS@GT</text>
+
+    <rect x="540" y="320" width="392" height="106" rx="24" fill="#0B1827" stroke="#1F5171"/>
+    <text x="570" y="360" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">Phase 1 hybrid recall stack</text>
+    <text x="570" y="394" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Keyword + semantic + fusion inside a local daemon path</text>
+    <text x="570" y="418" fill="#39DEFF" font-family="'Consolas', 'Courier New', monospace" font-size="16">shipped foundation, reranking still future work</text>
+
+    <rect x="1016" y="320" width="310" height="106" rx="24" fill="#0D1B20" stroke="#2A665A"/>
+    <text x="1046" y="360" fill="#4CF3BE" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="28">Implemented</text>
+    <text x="1046" y="394" fill="#A8F6E1" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Phase 1 / v0.5.0</text>
+  </g>
+
+  <g>
+    <rect x="96" y="466" width="360" height="106" rx="24" fill="#0C1727" stroke="#1B3D5D"/>
+    <text x="126" y="506" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">Episodic Memory + MemoryBank + Memori</text>
+    <text x="126" y="540" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Durable traces, decay, semantic structure, dedup pressure</text>
+    <text x="126" y="564" fill="#39DEFF" font-family="'Consolas', 'Courier New', monospace" font-size="16">raw sessions to durable memory objects</text>
+
+    <rect x="540" y="466" width="392" height="106" rx="24" fill="#0B1827" stroke="#1F5171"/>
+    <text x="570" y="506" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">Trace + decision split, then Phase 2 structure</text>
+    <text x="570" y="540" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Shipped session awareness now; semantic triples and dedup next</text>
+    <text x="570" y="564" fill="#39DEFF" font-family="'Consolas', 'Courier New', monospace" font-size="16">v0.4.1 foundation plus Phase 2 roadmap</text>
+
+    <rect x="1016" y="466" width="310" height="106" rx="24" fill="#10182A" stroke="#3F5DA5"/>
+    <text x="1046" y="506" fill="#8FD9FF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="28">Mixed</text>
+    <text x="1046" y="540" fill="#BFD4FF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">shipped base + planned Phase 2</text>
+  </g>
+
+  <g>
+    <rect x="96" y="612" width="360" height="106" rx="24" fill="#0C1727" stroke="#1B3D5D"/>
+    <text x="126" y="652" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">A-MAC + MemoryOS + FluxMem</text>
+    <text x="126" y="686" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Admission, maturity tiers, probabilistic crystallization</text>
+    <text x="126" y="710" fill="#39DEFF" font-family="'Consolas', 'Courier New', monospace" font-size="16">lifecycle and governance research</text>
+
+    <rect x="540" y="612" width="392" height="106" rx="24" fill="#0B1827" stroke="#1F5171"/>
+    <text x="570" y="652" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">Admission control and memory tiers</text>
+    <text x="570" y="686" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Future Cortex governance is explicit, phased, and operator-visible</text>
+    <text x="570" y="710" fill="#39DEFF" font-family="'Consolas', 'Courier New', monospace" font-size="16">Phase 4A / 4B / 4C</text>
+
+    <rect x="1016" y="612" width="310" height="106" rx="24" fill="#11182A" stroke="#2C5AA7"/>
+    <text x="1046" y="652" fill="#9CDCFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="28">Planned</text>
+    <text x="1046" y="686" fill="#C5D7FF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">named roadmap phases</text>
+  </g>
+
+  <g>
+    <rect x="96" y="758" width="360" height="96" rx="24" fill="#0C1727" stroke="#1B3D5D"/>
+    <text x="126" y="798" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">MaaS + MemGPT + Collaborative Memory + MIRIX</text>
+    <text x="126" y="830" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Memory as infrastructure, provenance, routing, multi-agent boundaries</text>
+
+    <rect x="540" y="758" width="392" height="96" rx="24" fill="#0B1827" stroke="#1F5171"/>
+    <text x="570" y="798" fill="#F4FAFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="26">Shared daemon today, deeper governance later</text>
+    <text x="570" y="830" fill="#84A2BF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Cortex already ships the service boundary; provenance and routing are next</text>
+
+    <rect x="1016" y="758" width="310" height="96" rx="24" fill="#11182A" stroke="#3E5C94"/>
+    <text x="1046" y="798" fill="#B4CBFF" font-family="'Segoe UI Semibold', 'Segoe UI', Arial, sans-serif" font-size="28">Shipped + planned</text>
+    <text x="1046" y="830" fill="#D7E2FF" font-family="'Segoe UI', Arial, sans-serif" font-size="18">foundation now, hardening ahead</text>
+  </g>
+
+  <path d="M456 373H540" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M932 373H1016" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M456 519H540" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M932 519H1016" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M456 665H540" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M932 665H1016" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M456 806H540" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+  <path d="M932 806H1016" stroke="url(#flow)" stroke-width="6" stroke-linecap="round"/>
+
+  <text x="96" y="884" fill="#89A6C3" font-family="'Segoe UI', Arial, sans-serif" font-size="18">Inspired by external work. Implemented through Cortex's own local-first daemon, MCP, and coding-workflow constraints.</text>
+</svg>
