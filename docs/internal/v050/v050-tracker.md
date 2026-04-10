@@ -108,6 +108,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Fixed the broken badge URL in the hero, restored the support link near the top of the page, and converted the affected sections to render-safe Markdown lists and tables.
 - Kept the real analytics screenshot and Monte Carlo proof asset, but stripped out the layout patterns that looked broken or off-center in GitHub.
 
+## Phase 6H: README Art Direction Pass -- DONE
+- **Commit:** `d729b98` | **Agent:** CX (Codex)
+- Moved the install path higher in the README so visitors can see how to start before they hit the deeper product documentation.
+- Reworked the middle of the page into a clearer product story: "without Cortex / with Cortex," simpler shipped-capabilities copy, and a less table-heavy research summary.
+- Kept the real proof assets, but tightened the pacing so the README now reads more like a product landing page and less like a technical inventory.
+
 ---
 
 ## Branches Awaiting Merge to Master
