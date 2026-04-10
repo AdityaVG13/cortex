@@ -186,6 +186,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Removed the top support and mission copy, tightened the CTA row, and replaced the pseudo-dashboard metrics with three quieter trust boxes.
 - Verified the new hero composition with a local preview before commit so the spacing and box layout were checked as rendered, not just in source.
 
+## Phase 6U: README Support Link Restoration -- DONE
+- **Commit:** `ff58675` | **Agent:** CX (Codex)
+- Restored the donation link near the top of the README after the hero simplification pass removed it.
+- Kept the link quieter than the old version by placing it under the trust boxes instead of turning it back into a competing hero element.
+- Verified the updated hero composition with a local rendered preview before commit.
+
 ---
 
 ## Branches Awaiting Merge to Master
