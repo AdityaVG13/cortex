@@ -2,8 +2,8 @@
   <img src="assets/cortex-header.gif" alt="Cortex" width="100%">
 </p>
 
-<h3 align="center">Local memory infrastructure for AI coding agents.</h3>
-<h4 align="center">Persistent context, hybrid recall, and MCP-native tooling in one Rust binary.</h4>
+<h3 align="center">The local memory layer for serious AI coding workflows.</h3>
+<h4 align="center">Persistent context, hybrid recall, boot compression, and MCP-native tooling in one Rust system.</h4>
 
 <p align="center">
   <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.4.1"><img src="https://img.shields.io/badge/release-v0.4.1-blue?style=for-the-badge" alt="Release v0.4.1"></a>
@@ -19,16 +19,10 @@
   <a href="#proof-not-promises">Proof</a> --
   <a href="#why-cortex-exists">Why Cortex</a> --
   <a href="#installation">Installation</a> --
-  <a href="#works-with-your-stack">Works With Your Stack</a> --
+  <a href="#works-with-your-stack">Stack</a> --
   <a href="#desktop-app">Desktop App</a> --
-  <a href="#how-it-works">How It Works</a> --
   <a href="#built-on-research">Research</a> --
-  <a href="#documentation-map">README</a> --
-  <a href="Info/research.md">Research Page</a> --
-  <a href="CODE_OF_CONDUCT.md">Code of Conduct</a> --
-  <a href="CONNECTING.md">Connect Your AI</a> --
-  <a href="#core-mcp-tools">MCP Tools</a> --
-  <a href="#cli-reference">CLI</a> --
+  <a href="#documentation-map">Docs</a> --
   <a href="SECURITY.md">Security</a> --
   <a href="Info/roadmap.md">Roadmap</a>
 </p>
@@ -45,6 +39,10 @@
 </p>
 
 Cortex exists because coding agents still lose too much context between sessions. Every restart costs time, tokens, and trust. Cortex turns long-term memory into local infrastructure: SQLite for persistence, ONNX for embeddings, MCP for agent access, and a desktop control center for inspection and governance.
+
+<p align="center">
+  <strong>Built for Claude Code, Codex, Cursor, Gemini, and local LLM stacks that need one durable brain instead of five separate memory silos.</strong>
+</p>
 
 ## Proof, Not Promises
 
@@ -71,6 +69,10 @@ The surface above turns the analytics model into a public product claim: memory 
 Source notes: retrieval metrics come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md). Compression tracking is documented in [`Info/connecting.md`](Info/connecting.md).
 
 ## Why Cortex Exists
+
+<p align="center">
+  <img src="assets/system-surface.svg" alt="Cortex operating model showing capture, rank, compress, and serve as the four product jobs of the memory system" width="100%">
+</p>
 
 The point of Cortex is not "more memory." The point is reliable memory that feels operational, local, and worth trusting inside a real coding workflow.
 
@@ -152,7 +154,7 @@ Detailed guide: [Info/team-mode-setup.md](Info/team-mode-setup.md)
   <img src="assets/control-center-analytics.png" alt="Cortex Control Center analytics view" width="92%">
 </p>
 
-The Control Center gives Cortex a visual surface for operators, not just a terminal pipe. It exposes token savings, boot history, daemon health, and agent activity in the same visual language now shaping the public docs: dense information, clear hierarchy, and strong contrast instead of generic dashboard chrome.
+The Control Center gives Cortex a visual surface for operators, not just a terminal pipe. It exposes token savings, boot history, daemon health, Monte Carlo savings horizons, and agent activity in the same visual language now shaping the public docs: dense information, clear hierarchy, and strong contrast instead of generic dashboard chrome.
 
 ## How It Works
 
