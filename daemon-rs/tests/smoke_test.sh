@@ -12,7 +12,10 @@ echo "=== Cortex Rust Daemon Smoke Test ==="
 if curl -s http://localhost:$PORT/health > /dev/null 2>&1; then
     TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
     if [ -n "$TOKEN" ]; then
-        curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:$PORT/shutdown > /dev/null 2>&1 || true
+        curl -s -X POST \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "X-Cortex-Request: true" \
+          http://localhost:$PORT/shutdown > /dev/null 2>&1 || true
         sleep 2
     fi
 fi
@@ -50,63 +53,63 @@ run_test "GET /health" \
     '"status":"ok"'
 
 run_test "GET /boot" \
-    "curl -s 'http://localhost:$PORT/boot?agent=test&budget=600'" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' 'http://localhost:$PORT/boot?agent=test&budget=600'" \
     '"bootPrompt"'
 
 run_test "GET /recall" \
-    "curl -s 'http://localhost:$PORT/recall?q=cortex'" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' 'http://localhost:$PORT/recall?q=cortex'" \
     '"results"'
 
 run_test "GET /peek" \
-    "curl -s 'http://localhost:$PORT/peek?q=cortex'" \
-    '"matches"'
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' 'http://localhost:$PORT/peek?q=cortex'" \
+    '"results"'
 
 run_test "GET /digest" \
-    "curl -s http://localhost:$PORT/digest" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/digest" \
     '"oneliner"'
 
 run_test "GET /savings" \
-    "curl -s http://localhost:$PORT/savings" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/savings" \
     '"summary"'
 
 echo ""
 echo "--- Auth-Required Endpoints ---"
 run_test "POST /store" \
-    "curl -s -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' http://localhost:$PORT/store -d '{\"decision\":\"smoke test\",\"context\":\"integration test\"}'" \
+    "curl -s -X POST -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' -H 'Content-Type: application/json' http://localhost:$PORT/store -d '{\"decision\":\"smoke test\",\"context\":\"integration test\"}'" \
     '"stored":true'
 
 run_test "POST /store (no auth)" \
-    "curl -s -X POST -H 'Content-Type: application/json' http://localhost:$PORT/store -d '{\"decision\":\"test\"}'" \
+    "curl -s -X POST -H 'X-Cortex-Request: true' -H 'Content-Type: application/json' http://localhost:$PORT/store -d '{\"decision\":\"test\"}'" \
     '"error"'
 
 run_test "GET /recall/budget" \
-    "curl -s 'http://localhost:$PORT/recall/budget?q=smoke+test&budget=200'" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' 'http://localhost:$PORT/recall/budget?q=smoke+test&budget=200'" \
     '"results"'
 
 run_test "POST /forget" \
-    "curl -s -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' http://localhost:$PORT/forget -d '{\"keyword\":\"smoke test\"}'" \
+    "curl -s -X POST -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' -H 'Content-Type: application/json' http://localhost:$PORT/forget -d '{\"source\":\"smoke test\"}'" \
     '"affected"'
 
 run_test "GET /dump" \
-    "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:$PORT/dump" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/dump" \
     '"memories"'
 
 echo ""
 echo "--- Conductor Endpoints ---"
 run_test "GET /sessions" \
-    "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:$PORT/sessions" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/sessions" \
     '"sessions"'
 
 run_test "GET /tasks" \
-    "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:$PORT/tasks" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/tasks" \
     '"tasks"'
 
 run_test "GET /locks" \
-    "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:$PORT/locks" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/locks" \
     '"locks"'
 
 run_test "GET /feed" \
-    "curl -s -H 'Authorization: Bearer $TOKEN' http://localhost:$PORT/feed" \
+    "curl -s -H 'Authorization: Bearer $TOKEN' -H 'X-Cortex-Request: true' http://localhost:$PORT/feed" \
     '"entries"'
 
 echo ""
@@ -115,7 +118,10 @@ echo "  Passed: $PASS"
 echo "  Failed: $FAIL"
 
 # Shutdown
-curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:$PORT/shutdown > /dev/null 2>&1
+curl -s -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  http://localhost:$PORT/shutdown > /dev/null 2>&1
 wait $DAEMON_PID 2>/dev/null
 
 if [ $FAIL -gt 0 ]; then

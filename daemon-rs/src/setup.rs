@@ -42,7 +42,10 @@ pub enum ConfigMethod {
     /// Write MCP server entry to a JSON config file
     JsonMerge,
     /// Run a CLI command (e.g., `claude mcp add`)
-    CliCommand(String),
+    CliCommand {
+        program: &'static str,
+        args: &'static [&'static str],
+    },
     /// Show manual instructions to the user
     #[allow(dead_code)]
     Manual(String),
@@ -477,7 +480,21 @@ fn step_detect() -> Vec<DetectedTool> {
         found.push(DetectedTool {
             name: "Claude Code",
             config_path: None,
-            config_method: ConfigMethod::CliCommand("claude mcp add cortex -s user".into()),
+            config_method: ConfigMethod::CliCommand {
+                program: "claude",
+                args: &["mcp", "add", "cortex", "-s", "user", "--"],
+            },
+        });
+    }
+
+    if command_exists("codex") {
+        found.push(DetectedTool {
+            name: "Codex CLI",
+            config_path: None,
+            config_method: ConfigMethod::CliCommand {
+                program: "codex",
+                args: &["mcp", "add", "cortex", "--"],
+            },
         });
     }
 
@@ -619,12 +636,16 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
                 Err(e) => StepResult::Warn(format!("Auto-config failed: {e}. Configure manually.")),
             }
         }
-        ConfigMethod::CliCommand(base_cmd) => match run_claude_mcp_add(base_cmd, cortex_exe) {
-            Ok(()) => StepResult::Ok("Registered via CLI".into()),
-            Err(e) => StepResult::Warn(format!(
-                "CLI failed: {e}. Run manually: {base_cmd} -- {cortex_exe} mcp"
-            )),
-        },
+        ConfigMethod::CliCommand { program, args } => {
+            match run_mcp_add(program, args, cortex_exe) {
+                Ok(()) => StepResult::Ok("Registered via CLI".into()),
+                Err(e) => StepResult::Warn(format!(
+                    "CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp",
+                    program,
+                    args.join(" ")
+                )),
+            }
+        }
         ConfigMethod::Manual(instructions) => {
             StepResult::Ok(format!("Manual setup needed: {instructions}"))
         }
@@ -685,13 +706,12 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
     Ok(format!("Configured at {}", config_path.display()))
 }
 
-fn run_claude_mcp_add(_base_cmd: &str, cortex_exe: &str) -> Result<(), String> {
-    let output = Command::new("claude")
-        .args([
-            "mcp", "add", "cortex", "-s", "user", "--", cortex_exe, "mcp",
-        ])
+fn run_mcp_add(program: &str, args: &[&str], cortex_exe: &str) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(args)
+        .args([cortex_exe, "mcp"])
         .output()
-        .map_err(|e| format!("Failed to run claude CLI: {e}"))?;
+        .map_err(|e| format!("Failed to run {program} CLI: {e}"))?;
 
     if output.status.success() {
         Ok(())

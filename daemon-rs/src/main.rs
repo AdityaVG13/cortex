@@ -146,6 +146,10 @@ async fn main() {
 
         // ── MCP stdio transport ─────────────────────────────────────
         "mcp" => {
+            if let Err(e) = ensure_daemon(&paths, None, false).await {
+                eprintln!("[cortex-mcp] {e}");
+                std::process::exit(1);
+            }
             let base_url = format!("http://127.0.0.1:{}", paths.port);
             if let Err(e) = mcp_proxy::run(&base_url, None, None).await {
                 eprintln!("[cortex-mcp] {e}");
@@ -167,7 +171,7 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(&paths, agent.as_deref()).await {
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true).await {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
@@ -1266,7 +1270,11 @@ async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Res
     }
 }
 
-async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>) -> Result<(), String> {
+async fn ensure_daemon(
+    paths: &auth::CortexPaths,
+    agent: Option<&str>,
+    emit_port: bool,
+) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
 
@@ -1306,7 +1314,9 @@ async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>) -> Result
         }
     }
 
-    println!("{}", paths.port);
+    if emit_port {
+        println!("{}", paths.port);
+    }
     Ok(())
 }
 

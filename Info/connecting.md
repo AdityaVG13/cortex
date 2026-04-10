@@ -5,7 +5,11 @@
 You are an AI connecting to a Cortex persistent brain. Run this now:
 
 ```bash
-curl http://localhost:7437/boot?agent=YOUR_NAME
+TOKEN=$(cat ~/.cortex/cortex.token)
+curl -s \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  "http://localhost:7437/boot?agent=YOUR_NAME"
 ```
 
 Replace `YOUR_NAME` with your agent ID (e.g., `cursor`, `claude`, `gemini`, `codex`).
@@ -39,7 +43,10 @@ Already connected via MCP. Use `cortex_boot`, `cortex_recall`, `cortex_store` to
 At session start, run:
 ```bash
 TOKEN=$(cat ~/.cortex/cortex.token)
-curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:7437/boot?agent=YOUR_NAME"
+curl -s \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  "http://localhost:7437/boot?agent=YOUR_NAME"
 ```
 
 Store decisions with:
@@ -47,6 +54,7 @@ Store decisions with:
 curl -X POST http://localhost:7437/store \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
   -H "X-Source-Agent: YOUR_NAME" \
   -d '{"decision": "What you learned", "context": "Why it matters"}'
 ```
@@ -54,10 +62,17 @@ curl -X POST http://localhost:7437/store \
 ### Generic AI Agents
 Most agents can be configured to read a file or call a URL at startup. Point your agent to the `/boot` endpoint to receive its persistent context.
 
-### Cline / Cursor (MCP)
+### Codex CLI (MCP)
 Register the MCP sidecar:
 ```bash
-claude mcp add cortex -s user -- /path/to/cortex.exe mcp
+codex mcp add cortex -- /path/to/cortex.exe mcp
+```
+Then restart Codex. Newly-added MCP servers do not hot-attach to the current session.
+
+### Cline / Cursor / other MCP clients
+Register the MCP sidecar with the command syntax your client expects. For Codex use the command above. For other clients, point the MCP server at:
+```bash
+/path/to/cortex.exe mcp
 ```
 Or use HTTP directly via terminal commands.
 
@@ -70,9 +85,9 @@ Use the output as context for your session.
 
 ### Any new AI tool
 If it can make HTTP requests or run shell commands, it can connect. The protocol is:
-1. `GET /boot?agent=your-name` -- get context
-2. `GET /recall?q=topic` -- search memories
-3. `POST /store` with auth -- save decisions
+1. `GET /boot?agent=your-name` with `Authorization: Bearer <token>` and `X-Cortex-Request: true` -- get context
+2. `GET /recall?q=topic` with the same headers -- search memories
+3. `POST /store` with the same headers -- save decisions
 
 That's it. Three endpoints. Any language, any platform.
 
@@ -83,7 +98,10 @@ That's it. Three endpoints. Any language, any platform.
 ### 1. Boot (get context -- call FIRST)
 
 ```bash
-curl "http://localhost:7437/boot?agent=YOUR_NAME"
+curl -s \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  "http://localhost:7437/boot?agent=YOUR_NAME"
 ```
 
 The capsule compiler returns two things:
@@ -112,7 +130,10 @@ Response:
 ### 2. Recall (search memories)
 
 ```bash
-curl "http://localhost:7437/recall?q=authentication+architecture&k=5"
+curl -s \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  "http://localhost:7437/recall?q=authentication+architecture&k=5"
 ```
 
 Hybrid search: ONNX embeddings (in-process) + tokenized keyword fallback. Always works even without external dependencies.
@@ -124,6 +145,7 @@ TOKEN=$(cat ~/.cortex/cortex.token)
 curl -X POST http://localhost:7437/store \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
   -H "X-Source-Agent: YOUR_AGENT_NAME" \
   -d '{"decision": "What you learned", "context": "Why", "type": "decision"}'
 ```
@@ -135,7 +157,10 @@ Types: `decision`, `lesson`, `preference`, `bugfix`
 ### 4. Digest (check brain health)
 
 ```bash
-curl http://localhost:7437/digest
+curl -s \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  http://localhost:7437/digest
 ```
 
 Returns: memory counts, today's activity, token savings, top recalled entries, agent boot history.
@@ -144,7 +169,10 @@ Returns: memory counts, today's activity, token savings, top recalled entries, a
 
 ```bash
 TOKEN=$(cat ~/.cortex/cortex.token)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:7437/dump
+curl -s \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
+  http://localhost:7437/dump
 ```
 
 Returns ALL active memories and decisions. Used by the dreaming/compaction worker.
@@ -155,6 +183,7 @@ Returns ALL active memories and decisions. Used by the dreaming/compaction worke
 curl -X POST http://localhost:7437/archive \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
+  -H "X-Cortex-Request: true" \
   -d '{"type": "memories", "ids": [1, 2, 3]}'
 ```
 
@@ -187,19 +216,23 @@ Call `/boot` to get compiled context about the owner. The identity capsule is bu
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/boot?agent=NAME` | No | Capsule-compiled boot prompt |
-| GET | `/recall?q=QUERY&k=7` | No | Hybrid semantic + keyword search |
-| POST | `/store` | Yes | Store decision with conflict detection |
-| POST | `/diary` | Yes | Write session handoff to state.md |
+| GET | `/boot?agent=NAME` | Bearer token + `X-Cortex-Request` | Capsule-compiled boot prompt |
+| GET | `/recall?q=QUERY&k=7` | Bearer token + `X-Cortex-Request` | Hybrid semantic + keyword search |
+| POST | `/store` | Bearer token + `X-Cortex-Request` | Store decision with conflict detection |
+| POST | `/diary` | Bearer token + `X-Cortex-Request` | Write session handoff to state.md |
 | GET | `/health` | No | System status |
-| GET | `/digest` | No | Daily health digest with token savings |
-| GET | `/dump` | Yes | All active memories + decisions (batch) |
-| POST | `/archive` | Yes | Bulk status change to archived |
-| POST | `/forget` | Yes | Decay entries matching keyword |
-| POST | `/resolve` | Yes | Resolve disputed decision pair |
-| POST | `/shutdown` | Yes | Graceful daemon shutdown |
+| GET | `/digest` | Bearer token + `X-Cortex-Request` | Daily health digest with token savings |
+| GET | `/dump` | Bearer token + `X-Cortex-Request` | All active memories + decisions (batch) |
+| POST | `/archive` | Bearer token + `X-Cortex-Request` | Bulk status change to archived |
+| POST | `/forget` | Bearer token + `X-Cortex-Request` | Decay entries matching keyword |
+| POST | `/resolve` | Bearer token + `X-Cortex-Request` | Resolve disputed decision pair |
+| POST | `/shutdown` | Bearer token + `X-Cortex-Request` | Graceful daemon shutdown |
 
-Auth = `Authorization: Bearer TOKEN` where TOKEN is from `~/.cortex/cortex.token`.
+Protected endpoints require both:
+- `Authorization: Bearer TOKEN` where `TOKEN` is from `~/.cortex/cortex.token`
+- `X-Cortex-Request: true`
+
+`X-Cortex-Request` is the SSRF guard. Any non-empty value satisfies the check, but `true` is the canonical value shown in examples.
 
 ---
 
@@ -209,6 +242,12 @@ Auth = `Authorization: Bearer TOKEN` where TOKEN is from `~/.cortex/cortex.token
 ```bash
 cortex serve
 ```
+
+**403 Missing X-Cortex-Request header:** Add `X-Cortex-Request: true` to every non-health request.
+
+**401 Unauthorized:** Refresh the token from `~/.cortex/cortex.token` and send it as `Authorization: Bearer <token>`.
+
+**MCP tools still missing after `codex mcp add`:** Restart Codex. MCP servers added mid-session are available in the next session, not the current one.
 
 **Empty boot prompt:** No memories stored yet. Store some context and boot again.
 

@@ -2,7 +2,7 @@
 use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
-use super::health::build_digest;
+use super::health::{build_digest, build_health_payload};
 use super::mutate::{forget_keyword, resolve_decision};
 use super::recall::{execute_unified_recall, unfold_source, RecallContext};
 use super::store::store_decision;
@@ -452,37 +452,7 @@ async fn mcp_dispatch(
             Ok(entry)
         }
 
-        "cortex_health" => {
-            let conn = state.db.lock().await;
-
-            let memories: i64 = conn
-                .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
-                .unwrap_or(0);
-            let decisions: i64 = conn
-                .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
-                .unwrap_or(0);
-            let embeddings: i64 = conn
-                .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
-                .unwrap_or(0);
-            let events: i64 = conn
-                .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
-                .unwrap_or(0);
-
-            let home = std::env::var("USERPROFILE")
-                .or_else(|_| std::env::var("HOME"))
-                .unwrap_or_default();
-
-            Ok(json!({
-                "status": "ok",
-                "stats": {
-                    "memories": memories,
-                    "decisions": decisions,
-                    "embeddings": embeddings,
-                    "events": events,
-                    "home": home
-                }
-            }))
-        }
+        "cortex_health" => Ok(build_health_payload(state).await),
 
         "cortex_digest" => {
             let conn = state.db.lock().await;

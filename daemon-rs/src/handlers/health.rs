@@ -8,11 +8,12 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 use super::{ensure_auth, json_response, truncate_chars};
+use crate::auth::CortexPaths;
 use crate::state::RuntimeState;
 
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
-pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
+pub async fn build_health_payload(state: &RuntimeState) -> Value {
     // Read DB stats in a short lock, then drop it before the network call.
     let (memories, decisions, embeddings_count, events, db_freelist_pages) = {
         let conn = state.db_read.lock().await;
@@ -38,10 +39,6 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
         .map(|meta| meta.len())
         .unwrap_or(0);
 
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-
     let degraded = state
         .degraded_mode
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -58,25 +55,41 @@ pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
         "unavailable"
     };
 
-    json_response(
-        StatusCode::OK,
-        json!({
-            "status": if db_corrupted { "degraded" } else { "ok" },
-            "degraded": degraded || db_corrupted,
-            "db_corrupted": db_corrupted,
-            "embedding_status": embedding_status,
-            "team_mode": state.team_mode,
-            "db_freelist_pages": db_freelist_pages,
-            "db_size_bytes": db_size_bytes,
-            "stats": {
-                "memories": memories,
-                "decisions": decisions,
-                "embeddings": embeddings_count,
-                "events": events,
-                "home": home
-            }
-        }),
-    )
+    let paths = CortexPaths::resolve();
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+
+    json!({
+        "status": if degraded || db_corrupted { "degraded" } else { "ok" },
+        "degraded": degraded || db_corrupted,
+        "db_corrupted": db_corrupted,
+        "embedding_status": embedding_status,
+        "team_mode": state.team_mode,
+        "db_freelist_pages": db_freelist_pages,
+        "db_size_bytes": db_size_bytes,
+        "stats": {
+            "memories": memories,
+            "decisions": decisions,
+            "embeddings": embeddings_count,
+            "events": events,
+            "home": paths.home.display().to_string()
+        },
+        "runtime": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "mode": if state.team_mode { "team" } else { "solo" },
+            "port": paths.port,
+            "db_path": state.db_path.display().to_string(),
+            "token_path": paths.token.display().to_string(),
+            "pid_path": paths.pid.display().to_string(),
+            "executable": executable
+        }
+    })
+}
+
+pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
+    json_response(StatusCode::OK, build_health_payload(&state).await)
 }
 
 // ─── GET /digest ─────────────────────────────────────────────────────────────

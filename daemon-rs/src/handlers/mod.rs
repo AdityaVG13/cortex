@@ -44,7 +44,7 @@ fn apply_json_headers(headers: &mut HeaderMap) {
 }
 
 #[allow(clippy::result_large_err)]
-/// Reject requests missing the `X-Cortex-Request: true` header.
+/// Reject requests missing the `X-Cortex-Request` header.
 /// Prevents SSRF attacks where a malicious website tricks the browser into
 /// calling localhost:7437 -- browsers cannot add custom headers without CORS
 /// preflight, and our CORS policy rejects non-localhost origins.
@@ -53,8 +53,9 @@ pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
     match headers
         .get("x-cortex-request")
         .and_then(|v| v.to_str().ok())
+        .map(str::trim)
     {
-        Some("true") => Ok(()),
+        Some(value) if !value.is_empty() => Ok(()),
         _ => Err(json_response(
             StatusCode::FORBIDDEN,
             serde_json::json!({ "error": "Missing X-Cortex-Request header" }),

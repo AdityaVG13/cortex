@@ -21,3 +21,4 @@ Source of truth: `daemon-rs/src/handlers/mcp.rs` (`mcp_tools()`).
 Notes:
 - `cortex_recall` defaults to budget `200` when omitted.
 - `cortex_health` and `cortex_digest` include liveness metadata in MCP responses.
+- `cortex_health` reports the same degraded/runtime details as HTTP `/health`, including `db_corrupted`, executable path, DB path, token path, and port.
