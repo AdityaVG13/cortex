@@ -80,6 +80,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Replaced the original research lineage graphic with a cleaner, more legible developer-tool layout: less diagram noise, stronger hierarchy, clearer research-to-product mapping, and a more premium black / emerald / mono aesthetic.
 - Tightened the README research section so the graphic is explicitly framed as the readable overview, while `Info/research.md` remains the full paper-by-paper adaptation record.
 
+## Phase 6C: Analytics Visual Redesign -- DONE
+- **Commit:** `aedf364` | **Agent:** CX (Codex)
+- Rebuilt the Analytics surface in Cortex Control Center around a clearer product hierarchy: premium header, stronger metric cards, a Monte Carlo projection hero, tighter secondary charts, improved heatmap styling, and balanced lower list panels.
+- Added deterministic client-side Monte Carlo projection logic so the analytics page can visualize 30-day cumulative savings bands without needing new daemon endpoints.
+- Refined the chart styling system with cleaner SVG geometry, projection bands, lighter grid treatment, and responsive layout rules so the page reads more like a polished developer product surface and less like a generic dashboard stack.
+
 ---
 
 ## Branches Awaiting Merge to Master
