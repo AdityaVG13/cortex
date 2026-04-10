@@ -269,12 +269,20 @@ pub fn write_pid() {
 
 /// Remove stale PID/lock files when the recorded daemon process no longer exists.
 pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
-    let pid_path = &paths.pid;
-    if !pid_path.exists() {
+    let pid = stale_pid_candidate(paths)?;
+
+    let _ = fs::remove_file(&paths.pid);
+    let _ = fs::remove_file(&paths.lock);
+    eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
+    Some(pid)
+}
+
+pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
+    if !paths.pid.exists() {
         return None;
     }
 
-    let pid = fs::read_to_string(pid_path)
+    let pid = fs::read_to_string(&paths.pid)
         .ok()
         .and_then(|value| value.trim().parse::<u32>().ok())?;
 
@@ -282,9 +290,6 @@ pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
         return None;
     }
 
-    let _ = fs::remove_file(pid_path);
-    let _ = fs::remove_file(&paths.lock);
-    eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
     Some(pid)
 }
 

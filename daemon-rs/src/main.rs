@@ -170,6 +170,157 @@ fn rotate_startup_logs(home: &Path) -> usize {
     rotated
 }
 
+fn collect_backup_cleanup_files(backup_dir: &Path, keep: usize) -> Vec<(std::path::PathBuf, u64)> {
+    let mut backups: Vec<_> = std::fs::read_dir(backup_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.file_name().to_string_lossy().starts_with("cortex-")
+                        && entry.file_name().to_string_lossy().ends_with(".db")
+                        && !entry.file_name().to_string_lossy().contains(".corrupt")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if backups.len() <= keep {
+        return Vec::new();
+    }
+
+    backups.sort_by_key(|entry| entry.metadata().ok().and_then(|m| m.modified().ok()));
+    let remove_count = backups.len() - keep;
+    backups
+        .into_iter()
+        .take(remove_count)
+        .map(|entry| {
+            let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+            (entry.path(), size)
+        })
+        .collect()
+}
+
+fn format_cleanup_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+
+    if bytes >= MB as u64 {
+        format!("{:.1} MB", bytes as f64 / MB)
+    } else if bytes >= KB as u64 {
+        format!("{:.1} KB", bytes as f64 / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn path_size_bytes(path: &Path) -> u64 {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta.len(),
+        Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| path_size_bytes(&entry.path()))
+                    .sum()
+            })
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn run_backup_cleanup(backup_dir: &Path, dry_run: bool) -> Vec<String> {
+    let candidates = collect_backup_cleanup_files(backup_dir, BACKUP_RETENTION_COUNT);
+    let mut lines = Vec::new();
+    for (path, size) in candidates {
+        let target = format!(
+            "backups/{}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+        );
+        lines.push(format!(
+            "DELETE {target} ({})",
+            format_cleanup_bytes(size)
+        ));
+        if !dry_run {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    lines
+}
+
+fn run_log_cleanup(home: &Path, dry_run: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    for file_name in STARTUP_LOG_FILES {
+        let log_path = home.join(file_name);
+        let metadata = match std::fs::metadata(&log_path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.len() <= LOG_ROTATION_BYTES {
+            continue;
+        }
+
+        lines.push(format!(
+            "ROTATE {file_name} ({})",
+            format_cleanup_bytes(metadata.len())
+        ));
+
+        if dry_run {
+            continue;
+        }
+
+        let rotated_path = home.join(format!("{file_name}.1"));
+        if rotated_path.exists() {
+            let _ = std::fs::remove_file(&rotated_path);
+        }
+        if std::fs::rename(&log_path, &rotated_path).is_ok() {
+            let _ = std::fs::File::create(&log_path);
+        }
+    }
+    lines
+}
+
+fn run_bridge_backup_cleanup(home: &Path, schema_version: i32, dry_run: bool) -> Vec<String> {
+    if schema_version < BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION {
+        return Vec::new();
+    }
+
+    let bridge_dir = home.join("bridge-backups");
+    if !bridge_dir.exists() {
+        return Vec::new();
+    }
+
+    let size = path_size_bytes(&bridge_dir);
+    let line = format!(
+        "DELETE bridge-backups/ ({})",
+        format_cleanup_bytes(size)
+    );
+    if !dry_run {
+        let _ = std::fs::remove_dir_all(&bridge_dir);
+    }
+    vec![line]
+}
+
+fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String> {
+    let Some(pid) = auth::stale_pid_candidate(paths) else {
+        return Vec::new();
+    };
+
+    let mut lines = vec![format!(
+        "DELETE cortex.pid (process {pid} not running)"
+    )];
+    if paths.lock.exists() {
+        lines.push("DELETE cortex.lock".to_string());
+    }
+
+    if !dry_run {
+        let _ = auth::cleanup_stale_pid_lock(paths);
+    }
+
+    lines
+}
+
 /// Create a backup of the database file.
 fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<String, String> {
     std::fs::create_dir_all(backup_dir).map_err(|e| format!("create backup dir: {e}"))?;
@@ -355,6 +506,10 @@ async fn main() {
         }
         "doctor" => {
             run_doctor_cli(&paths);
+        }
+        "cleanup" => {
+            let dry_run = args.iter().any(|a| a == "--dry-run");
+            run_cleanup_cli(&paths, dry_run);
         }
 
         // ── Backup/restore CLI ────────────────────────────────────
@@ -954,6 +1109,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
+    eprintln!("  cleanup [--dry-run]  Cleanup backups, logs, legacy bridge data, and stale PID files");
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
     eprintln!();
@@ -989,6 +1145,31 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually");
     eprintln!("  More help          See Info/connecting.md for full connection and auth examples");
     std::process::exit(code);
+}
+
+fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool) {
+    let schema_version = if paths.db.exists() {
+        db::open(&paths.db)
+            .and_then(|conn| db::current_schema_user_version(&conn))
+            .unwrap_or_default()
+    } else {
+        0
+    };
+
+    let mut lines = Vec::new();
+    lines.extend(run_backup_cleanup(&paths.home.join("backups"), dry_run));
+    lines.extend(run_log_cleanup(&paths.home, dry_run));
+    lines.extend(run_bridge_backup_cleanup(&paths.home, schema_version, dry_run));
+    lines.extend(run_stale_pid_cleanup(paths, dry_run));
+
+    if lines.is_empty() {
+        println!("No cleanup actions needed");
+        return;
+    }
+
+    for line in lines {
+        println!("{line}");
+    }
 }
 
 fn run_doctor_cli(paths: &auth::CortexPaths) {
@@ -1944,5 +2125,24 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn run_backup_cleanup_dry_run_reports_files_without_deleting_them() {
+        let backup_dir = temp_test_dir("backup_cleanup_dry_run");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        for idx in 0..4 {
+            let path = backup_dir.join(format!("cortex-2026040{}.db", idx + 1));
+            fs::write(&path, format!("backup-{idx}")).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let lines = run_backup_cleanup(&backup_dir, true);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("DELETE backups/"));
+        assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 4);
+
+        let _ = fs::remove_dir_all(&backup_dir);
     }
 }
