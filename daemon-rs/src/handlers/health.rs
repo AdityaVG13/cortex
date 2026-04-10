@@ -11,6 +11,49 @@ use super::{ensure_auth, json_response, truncate_chars};
 use crate::auth::CortexPaths;
 use crate::state::RuntimeState;
 
+const STORAGE_LOG_FILES: &[&str] = &[
+    "daemon.log",
+    "daemon.err.log",
+    "daemon.out.log",
+    "mcp-crash.log",
+    "rust-daemon.err.log",
+];
+
+fn directory_size_bytes(path: &std::path::Path) -> u64 {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => meta.len(),
+        Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| directory_size_bytes(&entry.path()))
+                    .sum()
+            })
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn collect_storage_metrics(home: &std::path::Path) -> (u64, usize, u64) {
+    let storage_bytes = directory_size_bytes(home);
+    let backup_count = std::fs::read_dir(home.join("backups"))
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".db"))
+                .count()
+        })
+        .unwrap_or(0);
+
+    let log_bytes = STORAGE_LOG_FILES
+        .iter()
+        .flat_map(|name| [home.join(name), home.join(format!("{name}.1"))])
+        .map(|path| std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+        .sum();
+
+    (storage_bytes, backup_count, log_bytes)
+}
+
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
 pub async fn build_health_payload(state: &RuntimeState) -> Value {
@@ -56,6 +99,7 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
     };
 
     let paths = CortexPaths::resolve();
+    let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&paths.home);
     let executable = std::env::current_exe()
         .ok()
         .map(|path| path.display().to_string())
@@ -69,6 +113,9 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "team_mode": state.team_mode,
         "db_freelist_pages": db_freelist_pages,
         "db_size_bytes": db_size_bytes,
+        "storage_bytes": storage_bytes,
+        "backup_count": backup_count,
+        "log_bytes": log_bytes,
         "stats": {
             "memories": memories,
             "decisions": decisions,
@@ -760,4 +807,40 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
             "decisions": decisions,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_health_{name}_{unique}"))
+    }
+
+    #[test]
+    fn collect_storage_metrics_reports_storage_backup_count_and_log_bytes() {
+        let home_dir = temp_test_dir("storage_metrics");
+        let backup_dir = home_dir.join("backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        fs::write(backup_dir.join("cortex-a.db"), b"1234").unwrap();
+        fs::write(backup_dir.join("cortex-b.db"), b"56").unwrap();
+        fs::write(backup_dir.join("ignore.txt"), b"zzz").unwrap();
+        fs::write(home_dir.join("daemon.log"), b"abcd").unwrap();
+        fs::write(home_dir.join("daemon.log.1"), b"ef").unwrap();
+
+        let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&home_dir);
+
+        assert_eq!(backup_count, 2);
+        assert_eq!(log_bytes, 6);
+        assert_eq!(storage_bytes, 15);
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
 }
