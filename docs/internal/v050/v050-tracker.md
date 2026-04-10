@@ -57,6 +57,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Relaxed SSRF header parsing so any non-empty `X-Cortex-Request` value is accepted in new builds, preventing false 403s from header-value casing differences.
 - Made direct `cortex mcp` startup ensure the daemon without polluting stdio output, while keeping `plugin ensure-daemon` port output for existing callers.
 
+## Phase 7D: CLI Troubleshooting Entry Point -- DONE
+- **Commit:** `76f305d` | **Agent:** CX (Codex)
+- Added a troubleshooting section to `cortex --help` so users can discover `cortex doctor`, the required HTTP auth headers, the Codex MCP hot-attach limitation, and the app-hosted daemon restart path without reading repo docs first.
+- Added README guidance pointing users to `cortex --help`, `cortex doctor`, and `Info/connecting.md` as the primary recovery path for connectivity and auth issues.
+
 ---
 
 ## Branches Awaiting Merge to Master
@@ -69,4 +74,4 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 
 ---
 
-*Last updated: 2026-04-08*
+*Last updated: 2026-04-10*
