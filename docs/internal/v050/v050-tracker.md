@@ -75,6 +75,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Expanded `Info/research.md` from a paper list into a public design record with richer per-reference adaptation notes, stronger `Inspired by` wording for open-source influences, and explicit shipped / planned / deferred status.
 - Added `assets/proof-surface.svg` and `assets/research-lineage.svg` so the public docs now carry a consistent premium visual language instead of relying on plain text alone.
 
+## Phase 6B: Research Visual Refinement -- DONE
+- **Commit:** `501be51` | **Agent:** CX (Codex)
+- Replaced the original research lineage graphic with a cleaner, more legible developer-tool layout: less diagram noise, stronger hierarchy, clearer research-to-product mapping, and a more premium black / emerald / mono aesthetic.
+- Tightened the README research section so the graphic is explicitly framed as the readable overview, while `Info/research.md` remains the full paper-by-paper adaptation record.
+
 ---
 
 ## Branches Awaiting Merge to Master
