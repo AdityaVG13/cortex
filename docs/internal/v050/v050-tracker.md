@@ -91,6 +91,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added a dedicated Monte Carlo proof graphic to the public README so the compounding-savings story now appears on the landing page instead of living only inside the app analytics surface.
 - Created a tracked SVG proof asset under `assets/` so the README uses a repo-owned visual rather than depending on local benchmark imagery or screenshots.
 
+## Phase 6E: README Landing Page Polish -- DONE
+- **Commit:** `43a0bd8` | **Agent:** CX (Codex)
+- Tightened the README hero copy and simplified the top navigation so the landing page reads more like a premium product surface and less like a raw doc index.
+- Added a second tracked SVG system visual and reworked the top-half section flow so Proof, Monte Carlo, and the Cortex operating model all read as one designed narrative.
+
 ---
 
 ## Branches Awaiting Merge to Master
