@@ -52,6 +52,14 @@ Cortex exists because coding agents still lose too much context between sessions
   <img src="assets/proof-surface.svg" alt="Cortex benchmark proof surface showing retrieval quality, latency, compression, and local-first architecture" width="100%">
 </p>
 
+### Compounding Savings
+
+<p align="center">
+  <img src="assets/monte-carlo-surface.svg" alt="Cortex Monte Carlo projection surface showing a 30-day cumulative savings horizon with p10, p50, and p90 bands" width="100%">
+</p>
+
+The surface above turns the analytics model into a public product claim: memory is not just stored, it compounds. Cortex can estimate a likely 30-day savings range from recent daily behavior, making the compression story visible instead of leaving it as an abstract percentage.
+
 | Signal | Current baseline | Why it matters |
 |---|---:|---|
 | Ground truth precision | `0.552` | Cortex is already surfacing relevant project memory in benchmarked recall runs. |
