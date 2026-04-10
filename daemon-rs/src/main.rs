@@ -895,6 +895,14 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  service start      Start the service");
     eprintln!("  service stop       Stop the service");
     eprintln!("  service status     Check service status");
+    eprintln!();
+    eprintln!("Troubleshooting:");
+    eprintln!("  cortex doctor      Validate DB schema, migrations, integrity, and FTS state");
+    eprintln!("  HTTP 403           Add header: X-Cortex-Request: true");
+    eprintln!("  HTTP 401           Use Authorization: Bearer <token> from ~/.cortex/cortex.token");
+    eprintln!("  MCP not visible    Restart the client after `codex mcp add ...`; new MCP servers do not hot-attach mid-session");
+    eprintln!("  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually");
+    eprintln!("  More help          See Info/connecting.md for full connection and auth examples");
     std::process::exit(code);
 }
 

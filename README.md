@@ -141,12 +141,15 @@ Full tool list and parameters: [Info/mcp-tools.md](Info/mcp-tools.md)
 | Command | Description |
 |---------|-------------|
 | `cortex serve` | Start the Cortex daemon |
+| `cortex --help` | Show command reference plus troubleshooting guidance |
 | `cortex paths --json` | Output canonical file and port paths |
 | `cortex plugin ensure-daemon` | Start (or reuse) daemon with migration + lock safety |
 | `cortex plugin mcp` | Bridge MCP stdio to Cortex HTTP API |
 | `cortex setup --team` | Initialize team mode and generate API keys |
 | `cortex export` | Export data (`--format json|sql`) |
 | `cortex import` | Import JSON export into solo/team mode |
+
+If Cortex connectivity or auth looks wrong, start with `cortex --help`, then run `cortex doctor`. HTTP clients should also check the protected-request requirements in [Info/connecting.md](Info/connecting.md).
 
 ## Known Limitations
 - **Recall ranking is approximate.** Semantic search works well for broad queries but may not always surface the most relevant result first. Improving retrieval precision is a priority for v0.5.0.
