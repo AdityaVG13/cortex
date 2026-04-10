@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{forget_keyword, resolve_decision};
 use super::recall::{execute_unified_recall, unfold_source, RecallContext};
-use super::store::store_decision;
+use super::store::{persist_decision_embedding, store_decision_with_input_embedding};
 use super::{estimate_tokens, now_iso};
 use crate::state::RuntimeState;
 
@@ -433,9 +433,13 @@ async fn mcp_dispatch(
                 .unwrap_or("mcp")
                 .to_string();
             let confidence = args.get("confidence").and_then(|v| v.as_f64());
+            let decision_embedding = state
+                .embedding_engine
+                .as_ref()
+                .and_then(|engine| engine.embed(decision));
 
             let mut conn = state.db.lock().await;
-            let (entry, _id) = store_decision(
+            let (entry, new_id) = store_decision_with_input_embedding(
                 &mut conn,
                 decision,
                 context,
@@ -443,8 +447,14 @@ async fn mcp_dispatch(
                 source_agent.clone(),
                 confidence,
                 None,
+                decision_embedding.as_deref(),
                 caller_id,
-            )?;
+            )
+            .map_err(|err| err.to_string())?;
+
+            if let (Some(id), Some(vec)) = (new_id, decision_embedding.as_deref()) {
+                let _ = persist_decision_embedding(&conn, id, vec);
+            }
 
             // Auto-append to active focus session (sawtooth pattern)
             crate::focus::focus_append(&conn, &source_agent, decision);

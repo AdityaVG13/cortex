@@ -116,6 +116,7 @@ pub fn detect_conflict(
 /// The merge tier prevents near-duplicate memories that waste context budget.
 /// Instead of storing "use uv for python" alongside "always use uv, never pip",
 /// it merges them into a single strengthened entry.
+#[allow(dead_code)]
 pub fn detect_conflict_cosine(
     decision: &str,
     source_agent: &str,

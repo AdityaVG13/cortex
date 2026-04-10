@@ -68,13 +68,14 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 6] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 7] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
     ("004_crystal_tables", "crystal_tables"),
     ("005_quality_dedup_columns", "quality_dedup_columns"),
     ("006", "ttl_expiration"),
+    ("007", "semantic_store_quality_defaults"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -225,6 +226,42 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             )?;
             Ok(())
         }
+        "007" => {
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN merged_count INTEGER DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN quality INTEGER DEFAULT 50",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN merged_count INTEGER DEFAULT 0",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN quality INTEGER DEFAULT 50",
+            )?;
+            let _ = conn.execute(
+                "UPDATE memories SET merged_count = 0 WHERE merged_count IS NULL",
+                [],
+            );
+            let _ = conn.execute("UPDATE memories SET quality = 50 WHERE quality IS NULL", []);
+            let _ = conn.execute(
+                "UPDATE decisions SET merged_count = 0 WHERE merged_count IS NULL",
+                [],
+            );
+            let _ = conn.execute(
+                "UPDATE decisions SET quality = 50 WHERE quality IS NULL",
+                [],
+            );
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -322,6 +359,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           disputes_id INTEGER,
           supersedes_id INTEGER,
           confirmed_by TEXT,
+          merged_count INTEGER DEFAULT 0,
+          quality INTEGER DEFAULT 50,
           expires_at TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
@@ -344,6 +383,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           disputes_id INTEGER,
           supersedes_id INTEGER,
           confirmed_by TEXT,
+          merged_count INTEGER DEFAULT 0,
+          quality INTEGER DEFAULT 50,
           expires_at TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
