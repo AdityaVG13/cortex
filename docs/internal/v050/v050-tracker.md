@@ -138,6 +138,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Avoided the prior GitHub rendering failure mode by keeping the box cells free of embedded markdown headings and list syntax.
 - Kept the proof assets static and verified while shifting the page body closer to a calmer, more premium product layout.
 
+## Phase 6M: Middle Section Readability Correction -- DONE
+- **Commit:** `fcc9be3` | **Agent:** CX (Codex)
+- Reduced the middle-section card layouts from denser three-column blocks to larger two-column rows where needed.
+- Removed the tiny `sub` styling from card copy so the text reads at a normal size on GitHub.
+- Kept the centered-box treatment, but shifted the emphasis from compression to legibility.
+
 ---
 
 ## Branches Awaiting Merge to Master
