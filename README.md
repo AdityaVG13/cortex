@@ -1,40 +1,27 @@
+<p align="center"><strong>Local-first memory for coding agents.</strong></p>
+
 <p align="center">
   <img src="assets/cortex-header.gif" alt="Cortex" width="100%">
 </p>
 
-<h2 align="center">One local memory system for every coding agent you use.</h2>
+<h1 align="center">One durable brain.<br>Every tool you use.</h1>
 <p align="center">
   Cortex gives Claude Code, Codex, Cursor, Gemini, and local LLM workflows a shared brain that survives restarts,
   compresses boot context, and stays on your machine.
 </p>
 
 <p align="center">
-  <a href="https://github.com/AdityaVG13/cortex/releases/latest">Install or download</a> |
+  <a href="https://github.com/AdityaVG13/cortex/releases/latest">Get started</a> |
   <a href="Info/connecting.md">Connect your tools</a> |
-  <a href="Info/research.md">Read the research</a> |
-  <a href="Info/roadmap.md">View the roadmap</a>
+  <a href="Info/research.md">Read the research</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.4.1"><img src="https://img.shields.io/badge/release-v0.4.1-0f172a?style=for-the-badge" alt="Release v0.4.1"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-111827?style=for-the-badge" alt="License: MIT"></a>
-  <a href="Info/connecting.md"><img src="https://img.shields.io/badge/local%20first-yes-00c2ff?style=for-the-badge" alt="Local first"></a>
-  <a href="Info/mcp-tools.md"><img src="https://img.shields.io/badge/MCP%20native-yes-22c55e?style=for-the-badge" alt="MCP native"></a>
+  <sub>v0.4.1 &nbsp;&nbsp;|&nbsp;&nbsp; Rust + ONNX &nbsp;&nbsp;|&nbsp;&nbsp; MCP-native &nbsp;&nbsp;|&nbsp;&nbsp; MIT</sub>
 </p>
 
 <p align="center">
   <a href="https://ko-fi.com/adityavg13"><strong>Support Cortex</strong></a> funds releases, benchmarks, app polish, and long-term maintenance.
-</p>
-
-<p align="center">
-  <a href="#see-the-payoff">Proof</a> |
-  <a href="#why-teams-keep-it-running">Why it works</a> |
-  <a href="#works-with-your-stack">Stack</a> |
-  <a href="#quickstart">Quickstart</a> |
-  <a href="#what-ships-in-the-box">What ships</a> |
-  <a href="#built-in-public-backed-by-research">Research</a> |
-  <a href="#documentation">Docs</a> |
-  <a href="#security-and-roadmap">Security</a>
 </p>
 
 <p align="center">
@@ -47,7 +34,7 @@
 
 <p align="center"><em>Real product surface, not a mockup: live savings, compression, and boot activity from Cortex Control Center.</em></p>
 
-## Quickstart
+## Start in two commands
 
 If you want the shortest path from "that looks interesting" to "this is helping," use the Claude Code plugin. Cortex handles daemon lifecycle for you.
 
