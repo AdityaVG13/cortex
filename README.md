@@ -17,9 +17,13 @@
 
 <p align="center">
   <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.4.1"><img src="https://img.shields.io/badge/release-v0.4.1-0f172a?style=for-the-badge" alt="Release v0.4.1"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0b1020?style=for-the-badge" alt="License: MIT"></a>
-  <a href="Info/connecting.md"><img src="https://img.shields.io/badge/local--first-yes-00c2ff?style=for-the-badge" alt="Local first"></a>
-  <a href="Info/mcp-tools.md"><img src="https://img.shields.io/badge/MCP-native-available-22c55e?style=for-the-badge" alt="MCP native"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-111827?style=for-the-badge" alt="License: MIT"></a>
+  <a href="Info/connecting.md"><img src="https://img.shields.io/badge/local%20first-yes-00c2ff?style=for-the-badge" alt="Local first"></a>
+  <a href="Info/mcp-tools.md"><img src="https://img.shields.io/badge/MCP%20native-yes-22c55e?style=for-the-badge" alt="MCP native"></a>
+</p>
+
+<p align="center">
+  <a href="https://ko-fi.com/adityavg13"><strong>Support Cortex</strong></a> funds releases, benchmarks, app polish, and long-term maintenance.
 </p>
 
 <p align="center">
@@ -68,73 +72,19 @@ Source notes: live savings and compression figures come from the current Control
 
 ## Why teams keep it running
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-
-### One memory layer, not five
-
-Store an architectural rule, coding convention, or hard-won bug fix once. Claude Code, Codex, Cursor, Gemini, and your own local workflows can all recall it through the same daemon.
-
-    </td>
-    <td width="33%" valign="top">
-
-### Boot prompts stop ballooning
-
-Cortex compiles a boot prompt instead of replaying raw history. The result is smaller context, faster warm starts, and less time spent re-explaining the same project to the same tools.
-
-    </td>
-    <td width="33%" valign="top">
-
-### You can inspect the system
-
-SQLite backs the memory, ONNX handles embeddings locally, and the Control Center shows what is happening. No black box, no mandatory cloud service, no mystery bill.
-
-    </td>
-  </tr>
-</table>
+- **One memory layer, not five.** Store an architectural rule, coding convention, or hard-won bug fix once. Claude Code, Codex, Cursor, Gemini, and your own local workflows can all recall it through the same daemon.
+- **Boot prompts stop ballooning.** Cortex compiles a boot prompt instead of replaying raw history. The result is smaller context, faster warm starts, and less time spent re-explaining the same project to the same tools.
+- **You can inspect the system.** SQLite backs the memory, ONNX handles embeddings locally, and the Control Center shows what is happening. No black box, no mandatory cloud service, no mystery bill.
 
 ## Works with your stack
 
-<table>
-  <tr>
-    <td width="20%" valign="top">
-
-### Claude Code
-
-Primary plugin path with lifecycle handled for you.
-
-    </td>
-    <td width="20%" valign="top">
-
-### Codex
-
-Native MCP bridge plus HTTP fallback when you need it.
-
-    </td>
-    <td width="20%" valign="top">
-
-### Cursor
-
-Shared local memory through the same daemon instead of a separate silo.
-
-    </td>
-    <td width="20%" valign="top">
-
-### Gemini
-
-Works through MCP for CLI and tool-driven workflows.
-
-    </td>
-    <td width="20%" valign="top">
-
-### Local LLMs
-
-Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime.
-
-    </td>
-  </tr>
-</table>
+| Stack | How Cortex fits |
+|---|---|
+| Claude Code | Primary plugin path with lifecycle handled for you. |
+| Codex | Native MCP bridge plus HTTP fallback when you need it. |
+| Cursor | Shared local memory through the same daemon instead of a separate silo. |
+| Gemini | Works through MCP for CLI and tool-driven workflows. |
+| Local LLMs | Use HTTP or MCP from your own orchestration stack, desktop app, or agent runtime. |
 
 ## Quickstart
 
@@ -174,54 +124,14 @@ When Cortex boots cleanly, you should see a READY message and an active memory c
 
 ## What ships in the box
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-
-### Capsule compiler
-
-Builds boot prompts from stable identity plus recent delta instead of replaying raw context.
-
-    </td>
-    <td width="33%" valign="top">
-
-### Hybrid retrieval
-
-Blends keyword, semantic, and fused ranking locally so useful memory rises faster.
-
-    </td>
-    <td width="33%" valign="top">
-
-### MCP and HTTP surfaces
-
-Use Cortex from coding agents, local apps, scripts, or your own orchestration layer.
-
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-
-### Local embeddings
-
-Runs `all-MiniLM-L6-v2` in-process through ONNX, with no external inference requirement.
-
-    </td>
-    <td width="33%" valign="top">
-
-### Governance and conflict handling
-
-Supports decay, supersession, dispute handling, and future provenance-aware memory work.
-
-    </td>
-    <td width="33%" valign="top">
-
-### Control Center
-
-Gives operators a visual surface for health, savings, activity, and memory-system behavior.
-
-    </td>
-  </tr>
-</table>
+| Component | What it does |
+|---|---|
+| Capsule compiler | Builds boot prompts from stable identity plus recent delta instead of replaying raw context. |
+| Hybrid retrieval | Blends keyword, semantic, and fused ranking locally so useful memory rises faster. |
+| MCP and HTTP surfaces | Lets coding agents, local apps, scripts, and orchestration layers all talk to the same memory system. |
+| Local embeddings | Runs `all-MiniLM-L6-v2` in-process through ONNX, with no external inference requirement. |
+| Governance and conflict handling | Supports decay, supersession, dispute handling, and future provenance-aware memory work. |
+| Control Center | Gives operators a visual surface for health, savings, activity, and memory-system behavior. |
 
 ## Built in public, backed by research
 
@@ -238,31 +148,9 @@ Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/
 
 ## Documentation
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-
-### Connect Cortex
-
-[Info/connecting.md](Info/connecting.md) covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and the troubleshooting path.
-
-    </td>
-    <td width="33%" valign="top">
-
-### Research and roadmap
-
-[Info/research.md](Info/research.md) and [Info/roadmap.md](Info/roadmap.md) show what shipped, what is planned, and why.
-
-    </td>
-    <td width="33%" valign="top">
-
-### Security and contribution
-
-[security/SECURITY.md](security/SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
-
-    </td>
-  </tr>
-</table>
+- **Connect Cortex.** [Info/connecting.md](Info/connecting.md) covers Claude Code, Codex, Cursor, Gemini, MCP, HTTP, auth, and the troubleshooting path.
+- **Research and roadmap.** [Info/research.md](Info/research.md) and [Info/roadmap.md](Info/roadmap.md) show what shipped, what is planned, and why.
+- **Security and contribution.** [security/SECURITY.md](security/SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
 
 <details>
 <summary>Open the docs map and CLI reference</summary>
