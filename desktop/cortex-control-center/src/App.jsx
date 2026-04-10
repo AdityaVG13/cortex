@@ -128,37 +128,254 @@ function AnimatedNumber({ value, duration = 600 }) {
 
 let sparklineCounter = 0;
 
-function Sparkline({ data, width = 280, height = 60, color = "var(--cyan)" }) {
-  const [id] = useState(() => `spark-fill-${++sparklineCounter}`);
-  if (!data || data.length < 2) return <div className="sparkline-empty">No data yet</div>;
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function formatCompactNumber(value) {
+  if (!Number.isFinite(value)) return "0";
+  if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+  if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  return Math.round(value).toString();
+}
+
+function buildLineGeometry(data, width, height, padding = 8) {
+  if (!data || data.length < 2) return null;
+  const numeric = data.map((value) => Number(value || 0));
+  const max = Math.max(...numeric, 1);
+  const min = Math.min(...numeric, 0);
   const range = max - min || 1;
-  const points = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * width;
-    const y = height - ((v - min) / range) * (height - 4) - 2;
-    return `${x},${y}`;
-  }).join(" ");
+  const innerWidth = width - padding * 2;
+  const innerHeight = height - padding * 2;
+  const points = numeric.map((value, index) => {
+    const x = padding + (index / (numeric.length - 1)) * innerWidth;
+    const y = padding + innerHeight - ((value - min) / range) * innerHeight;
+    return { x, y, value };
+  });
+  const line = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  const area = `${line} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
+  return { points, line, area, min, max, padding };
+}
+
+function createSeededRng(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function gaussianRandom(rng) {
+  let u = 0;
+  let v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+function percentileFromSorted(sorted, percentile) {
+  if (!sorted.length) return 0;
+  const index = (sorted.length - 1) * percentile;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sorted[lower];
+  const weight = index - lower;
+  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+}
+
+function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizonDays = 30, simulationCount = 180) {
+  const basis = dailySeries
+    .map((point) => Number(point?.saved || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (basis.length < 4) return null;
+
+  const recent = basis.slice(-14);
+  const logReturns = [];
+  for (let index = 1; index < recent.length; index += 1) {
+    const previous = Math.max(recent[index - 1], 1);
+    const current = Math.max(recent[index], 1);
+    logReturns.push(Math.log(current / previous));
+  }
+
+  const drift = logReturns.length
+    ? logReturns.reduce((sum, value) => sum + value, 0) / logReturns.length
+    : 0.02;
+  const variance = logReturns.length
+    ? logReturns.reduce((sum, value) => sum + (value - drift) ** 2, 0) / logReturns.length
+    : 0.04;
+  const volatility = Math.max(Math.sqrt(variance), 0.08);
+  const lastDaily = Math.max(recent[recent.length - 1], 1);
+  const startTotal = Number(cumulativeSeries.at(-1)?.savedTotal || basis.reduce((sum, value) => sum + value, 0));
+  const rng = createSeededRng(Math.round(startTotal + lastDaily + recent.length * 13));
+
+  const runs = Array.from({ length: simulationCount }, (_, simIndex) => {
+    let dailyValue = lastDaily;
+    let cumulativeValue = startTotal;
+    const series = [];
+    for (let day = 0; day < horizonDays; day += 1) {
+      const shock = gaussianRandom(rng) * volatility;
+      const meanReversion = ((recent.reduce((sum, value) => sum + value, 0) / recent.length) - dailyValue) / Math.max(dailyValue, 1) * 0.04;
+      const growth = Math.exp(drift + meanReversion + shock);
+      dailyValue = Math.max(0, dailyValue * growth);
+      cumulativeValue += dailyValue;
+      series.push({
+        day: day + 1,
+        daily: dailyValue,
+        cumulative: cumulativeValue,
+      });
+    }
+    return {
+      key: `sim-${simIndex}`,
+      series,
+      final: cumulativeValue,
+    };
+  });
+
+  const bandSeries = Array.from({ length: horizonDays }, (_, dayIndex) => {
+    const values = runs
+      .map((run) => run.series[dayIndex]?.cumulative || startTotal)
+      .sort((left, right) => left - right);
+    return {
+      day: dayIndex + 1,
+      p10: percentileFromSorted(values, 0.1),
+      p25: percentileFromSorted(values, 0.25),
+      p50: percentileFromSorted(values, 0.5),
+      p75: percentileFromSorted(values, 0.75),
+      p90: percentileFromSorted(values, 0.9),
+    };
+  });
+
+  const samples = runs
+    .filter((_, index) => index % Math.ceil(simulationCount / 14) === 0)
+    .slice(0, 14)
+    .map((run) => run.series.map((point) => point.cumulative));
+
+  const endingValues = runs.map((run) => run.final).sort((left, right) => left - right);
+  const summary = {
+    startTotal,
+    p10: percentileFromSorted(endingValues, 0.1),
+    p50: percentileFromSorted(endingValues, 0.5),
+    p90: percentileFromSorted(endingValues, 0.9),
+    avgDaily: recent.reduce((sum, value) => sum + value, 0) / recent.length,
+  };
+
+  return { bandSeries, samples, summary, horizonDays, simulationCount };
+}
+
+function Sparkline({
+  data,
+  width = 280,
+  height = 60,
+  color = "var(--cyan)",
+  showArea = true,
+  showEndDot = true,
+  className = "",
+}) {
+  const [id] = useState(() => `spark-fill-${++sparklineCounter}`);
+  const geometry = buildLineGeometry(data, width, height, 8);
+  if (!geometry) return <div className="sparkline-empty">No data yet</div>;
+  const lastPoint = geometry.points.at(-1);
+  const gridLines = Array.from({ length: 4 }, (_, index) => {
+    const y = 8 + (index * (height - 16)) / 3;
+    return <line key={`grid-${index}`} x1="8" x2={width - 8} y1={y} y2={y} className="sparkline-grid-line" />;
+  });
 
   return (
-    <svg width={width} height={height} className="sparkline">
+    <svg width={width} height={height} className={`sparkline ${className}`}>
       <defs>
         <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.2" />
+          <stop offset="0%" stopColor={color} stopOpacity="0.22" />
+          <stop offset="70%" stopColor={color} stopOpacity="0.08" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <polygon
-        points={`0,${height} ${points} ${width},${height}`}
-        fill={`url(#${id})`}
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
+      <g className="sparkline-grid">{gridLines}</g>
+      {showArea ? <path d={geometry.area} fill={`url(#${id})`} className="sparkline-area" /> : null}
+      <path d={geometry.line} fill="none" stroke={color} strokeWidth="2.25" strokeLinejoin="round" strokeLinecap="round" className="sparkline-line" />
+      {showEndDot && lastPoint ? (
+        <>
+          <circle cx={lastPoint.x} cy={lastPoint.y} r="6" fill={color} fillOpacity="0.18" />
+          <circle cx={lastPoint.x} cy={lastPoint.y} r="2.75" fill={color} className="sparkline-end-dot" />
+        </>
+      ) : null}
+    </svg>
+  );
+}
+
+function MonteCarloProjectionChart({ projection, width = 820, height = 280 }) {
+  if (!projection?.bandSeries?.length) return <div className="sparkline-empty">Not enough data for a projection yet</div>;
+
+  const bandValues = projection.bandSeries.flatMap((point) => [point.p10, point.p25, point.p50, point.p75, point.p90]);
+  const minValue = Math.min(...bandValues, projection.summary.startTotal);
+  const maxValue = Math.max(...bandValues, projection.summary.startTotal);
+  const padding = { top: 16, right: 18, bottom: 30, left: 18 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const valueRange = maxValue - minValue || 1;
+  const toX = (index) => padding.left + (index / (projection.bandSeries.length - 1)) * innerWidth;
+  const toY = (value) => padding.top + innerHeight - ((value - minValue) / valueRange) * innerHeight;
+  const areaPath = (upperKey, lowerKey) => {
+    const top = projection.bandSeries.map((point, index) => `${index === 0 ? "M" : "L"} ${toX(index)} ${toY(point[upperKey])}`).join(" ");
+    const bottom = [...projection.bandSeries]
+      .reverse()
+      .map((point, reverseIndex) => {
+        const index = projection.bandSeries.length - 1 - reverseIndex;
+        return `L ${toX(index)} ${toY(point[lowerKey])}`;
+      })
+      .join(" ");
+    return `${top} ${bottom} Z`;
+  };
+  const linePath = (key) => projection.bandSeries.map((point, index) => `${index === 0 ? "M" : "L"} ${toX(index)} ${toY(point[key])}`).join(" ");
+  const samplePaths = projection.samples.map((sample) => sample.map((value, index) => `${index === 0 ? "M" : "L"} ${toX(index)} ${toY(value)}`).join(" "));
+  const endPoint = projection.bandSeries.at(-1);
+
+  return (
+    <svg width={width} height={height} className="projection-chart" role="img" aria-label="30-day Monte Carlo projection for cumulative savings">
+      <defs>
+        <linearGradient id="projectionBandWide" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#4f7cff" stopOpacity="0.24" />
+          <stop offset="100%" stopColor="#4f7cff" stopOpacity="0.02" />
+        </linearGradient>
+        <linearGradient id="projectionBandCore" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#4af2a1" stopOpacity="0.28" />
+          <stop offset="100%" stopColor="#4af2a1" stopOpacity="0.04" />
+        </linearGradient>
+      </defs>
+      <g className="projection-grid">
+        {Array.from({ length: 4 }, (_, index) => {
+          const y = padding.top + (index * innerHeight) / 3;
+          return <line key={`y-${index}`} x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="projection-grid-line" />;
+        })}
+        {Array.from({ length: 6 }, (_, index) => {
+          const x = padding.left + (index * innerWidth) / 5;
+          return <line key={`x-${index}`} y1={padding.top} y2={height - padding.bottom} x1={x} x2={x} className="projection-grid-line projection-grid-line-vertical" />;
+        })}
+      </g>
+      <path d={areaPath("p90", "p10")} className="projection-band projection-band-wide" />
+      <path d={areaPath("p75", "p25")} className="projection-band projection-band-core" />
+      {samplePaths.map((path, index) => (
+        <path key={`sample-${index}`} d={path} className="projection-sample" style={{ animationDelay: `${index * 70}ms` }} />
+      ))}
+      <path d={linePath("p50")} className="projection-line" />
+      {endPoint ? (
+        <>
+          <circle cx={toX(projection.bandSeries.length - 1)} cy={toY(endPoint.p50)} r="9" className="projection-end-halo" />
+          <circle cx={toX(projection.bandSeries.length - 1)} cy={toY(endPoint.p50)} r="3.5" className="projection-end-dot" />
+          <text x={toX(projection.bandSeries.length - 1) - 120} y={toY(endPoint.p90) - 14} className="projection-annotation projection-annotation-high">
+            p90 {formatCompactNumber(endPoint.p90)}
+          </text>
+          <text x={toX(projection.bandSeries.length - 1) - 120} y={toY(endPoint.p50) - 10} className="projection-annotation">
+            p50 {formatCompactNumber(endPoint.p50)}
+          </text>
+          <text x={toX(projection.bandSeries.length - 1) - 120} y={toY(endPoint.p10) + 20} className="projection-annotation projection-annotation-low">
+            p10 {formatCompactNumber(endPoint.p10)}
+          </text>
+        </>
+      ) : null}
+      <text x={padding.left} y={height - 8} className="projection-axis-label">today</text>
+      <text x={width - padding.right - 28} y={height - 8} className="projection-axis-label">+30d</text>
     </svg>
   );
 }
@@ -897,6 +1114,11 @@ export function App() {
     [operationRows]
   );
 
+  const dailySeries = useMemo(
+    () => (Array.isArray(savings?.daily) ? savings.daily : []),
+    [savings]
+  );
+
   const cumulativeSeries = useMemo(
     () => (Array.isArray(savings?.cumulative) ? savings.cumulative : []),
     [savings]
@@ -923,6 +1145,27 @@ export function App() {
   const activityHeatmapMax = useMemo(
     () => Math.max(...activityHeatmap.map((entry) => Number(entry.count || 0)), 1),
     [activityHeatmap]
+  );
+
+  const bootSavingsMomentum = useMemo(() => {
+    if (dailySeries.length < 4) return null;
+    const recent = dailySeries.slice(-4);
+    const previous = dailySeries.slice(-8, -4);
+    if (!previous.length) return null;
+    const recentAverage = recent.reduce((sum, point) => sum + Number(point.saved || 0), 0) / recent.length;
+    const previousAverage = previous.reduce((sum, point) => sum + Number(point.saved || 0), 0) / previous.length;
+    if (previousAverage <= 0) return null;
+    return Math.round(((recentAverage - previousAverage) / previousAverage) * 100);
+  }, [dailySeries]);
+
+  const latestRecallHitRate = useMemo(
+    () => Math.round(Number(recallTrendSeries.at(-1)?.hitRatePct || 0)),
+    [recallTrendSeries]
+  );
+
+  const monteCarloProjection = useMemo(
+    () => buildMonteCarloProjection(dailySeries, cumulativeSeries),
+    [dailySeries, cumulativeSeries]
   );
 
   const waitForDaemonReachable = useCallback(async () => {
@@ -1599,10 +1842,16 @@ export function App() {
 
         {panel === "analytics" ? (
           <section className="panel active">
-            <div className="panel-header">
-              <h1>Analytics</h1>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <span className="panel-subtitle">Token savings & brain health</span>
+            <div className="analytics-panel-header">
+              <div className="analytics-header-copy">
+                <span className="analytics-kicker">Cortex / Analytics</span>
+                <h1>Compounding Memory Economics</h1>
+                <p>
+                  Track how Cortex turns raw recall pressure into a smaller boot prompt, compounding token savings over time instead of replaying the whole brain on every boot.
+                </p>
+              </div>
+              <div className="analytics-toolbar">
+                <span className="panel-subtitle">Token savings and brain health</span>
                 <label className="analytics-inline-control">
                   <span>Currency</span>
                   <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
@@ -1627,74 +1876,195 @@ export function App() {
                     By Operation
                   </button>
                 </div>
-                <button type="button" className="btn-sm" onClick={() => refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`))}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={() => refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`))}>
+                  Refresh
+                </button>
               </div>
             </div>
             {savings ? (
               <>
-                <div className="metrics" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
-                  <div className="metric" data-accent="cyan">
+                <div className="analytics-metrics-grid">
+                  <div className="metric metric-featured" data-accent="cyan">
+                    <span className="metric-kicker">Compounding return</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} /></span>
                     <span className="metric-label">Boot Tokens Saved</span>
+                    <span className="metric-footnote">
+                      {bootSavingsMomentum === null
+                        ? "Collecting enough history for a momentum read."
+                        : `${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs previous 4-day window`}
+                    </span>
                     <span className="metric-icon">↓</span>
                   </div>
                   <div className="metric" data-accent="green">
+                    <span className="metric-kicker">Efficiency</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.avgPercent || 0} />%</span>
                     <span className="metric-label">Avg Compression</span>
+                    <span className="metric-footnote">
+                      Avg saved per boot {formatCompactNumber(Number(savings.summary?.avgSavedPerBoot || 0))} tokens
+                    </span>
                     <span className="metric-icon">◎</span>
                   </div>
                   <div className="metric" data-accent="blue">
+                    <span className="metric-kicker">Throughput</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalBoots || 0} /></span>
                     <span className="metric-label">Boot Compilations</span>
+                    <span className="metric-footnote">
+                      Avg boot prompt {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} tokens served
+                    </span>
                     <span className="metric-icon">⟳</span>
                   </div>
                   <div className="metric" data-accent="purple">
+                    <span className="metric-kicker">Compiled context</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} /></span>
                     <span className="metric-label">Boot Prompt Tokens</span>
+                    <span className="metric-footnote">
+                      Baseline replay pressure {formatCompactNumber(Number(savings.summary?.totalBaseline || 0))} tokens
+                    </span>
                     <span className="metric-icon">→</span>
                   </div>
                   <div className="metric" data-accent="green">
+                    <span className="metric-kicker">Economic value</span>
                     <span className="metric-value">{formatCurrency(((savings.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
                     <span className="metric-label">Est. {currency} Saved</span>
+                    <span className="metric-footnote">
+                      Latest recall hit rate {latestRecallHitRate || 0}% with local-first memory
+                    </span>
                     <span className="metric-icon">$</span>
                   </div>
                 </div>
 
                 {analyticsMode === "aggregate" ? (
                   <>
-                    <div className="analytics-explainer">
-                      <p>Cortex compiles a token-budgeted boot prompt instead of loading raw context. `baseline` is the estimated raw context tokens; `served` is the compiled boot prompt tokens. Aggregate view emphasizes total compounding impact; use "By Operation" for recall/store/boot/tool splits.</p>
+                    <div className="analytics-explainer analytics-explainer-rich">
+                      <div className="analytics-explainer-title">How to read this</div>
+                      <p>
+                        Cortex compiles a budgeted boot prompt instead of replaying raw memory. <code>baseline</code> is estimated raw context load, <code>served</code> is the compiled prompt, and <code>saved</code> is the difference. Aggregate mode shows the compounding system view. By Operation isolates where those savings come from.
+                      </p>
+                      <div className="analytics-stat-strip">
+                        <div className="analytics-stat-chip">
+                          <span className="analytics-stat-chip-label">Avg raw per boot</span>
+                          <strong>{formatCompactNumber(Number(savings.summary?.avgBaselinePerBoot || 0))}t</strong>
+                        </div>
+                        <div className="analytics-stat-chip">
+                          <span className="analytics-stat-chip-label">Avg served per boot</span>
+                          <strong>{formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))}t</strong>
+                        </div>
+                        <div className="analytics-stat-chip">
+                          <span className="analytics-stat-chip-label">Median 30d projection</span>
+                          <strong>
+                            {monteCarloProjection
+                              ? `${formatCompactNumber(Number(monteCarloProjection.summary?.p50 || 0))}t`
+                              : "Pending"}
+                          </strong>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="overview-grid">
-                      <div className="card">
-                        <div className="card-header">
-                          <h2>Daily Token Savings</h2>
+                    <div className="analytics-stage-grid">
+                      <div className="card analytics-hero-card analytics-card-span-2">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Projection</span>
+                            <h2>Monte Carlo Savings Horizon</h2>
+                          </div>
+                          <span className="badge">
+                            {monteCarloProjection ? `${monteCarloProjection.simulationCount} sims / 30 days` : "Waiting for more history"}
+                          </span>
+                        </div>
+                        <p className="chart-summary">
+                          A deterministic Monte Carlo projection built from recent daily savings. It estimates the likely cumulative savings band if current memory growth and compression behavior continue.
+                        </p>
+                        <MonteCarloProjectionChart projection={monteCarloProjection} />
+                        {monteCarloProjection ? (
+                          <div className="analytics-stat-strip analytics-stat-strip-tight">
+                            <div className="analytics-stat-chip">
+                              <span className="analytics-stat-chip-label">p10</span>
+                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.p10 || 0))}t</strong>
+                            </div>
+                            <div className="analytics-stat-chip">
+                              <span className="analytics-stat-chip-label">p50</span>
+                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.p50 || 0))}t</strong>
+                            </div>
+                            <div className="analytics-stat-chip">
+                              <span className="analytics-stat-chip-label">p90</span>
+                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.p90 || 0))}t</strong>
+                            </div>
+                            <div className="analytics-stat-chip">
+                              <span className="analytics-stat-chip-label">Current run-rate</span>
+                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.avgDaily || 0))}t/day</strong>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="card analytics-chart-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Live health</span>
+                            <h2>Recall Quality</h2>
+                          </div>
+                          <span className="badge">{latestRecallHitRate || 0}%</span>
+                        </div>
+                        <p className="chart-summary">
+                          Recall hit rate stays visible alongside economics so memory quality and compression are judged together.
+                        </p>
+                        <Sparkline
+                          data={recallTrendSeries.map((point) => Number(point.hitRatePct || 0))}
+                          width={520}
+                          height={110}
+                          color="var(--cyan)"
+                          className="sparkline-tall"
+                        />
+                        <div className="chart-legend">
+                          {recallTrendSeries.slice(-7).map((point) => (
+                            <span key={point.date} className="chart-day">
+                              <span className="chart-day-label">{(point.date || "").slice(5)}</span>
+                              <span className="chart-day-value">{Math.round(Number(point.hitRatePct || 0))}%</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="overview-grid analytics-secondary-grid">
+                      <div className="card analytics-chart-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Short-term movement</span>
+                            <h2>Daily Token Savings</h2>
+                          </div>
+                          <span className="badge">{dailySeries.length} days</span>
                         </div>
                         <Sparkline
                           data={(savings.daily || []).map(d => d.saved)}
-                          width={500}
-                          height={80}
+                          width={520}
+                          height={120}
+                          className="sparkline-tall"
                         />
                         <div className="chart-legend">
                           {(savings.daily || []).slice(-7).map(d => (
                             <span key={d.date} className="chart-day">
                               <span className="chart-day-label">{d.date.slice(5)}</span>
-                              <span className="chart-day-value">{d.saved.toLocaleString()}</span>
+                              <span className="chart-day-value">{formatCompactNumber(Number(d.saved || 0))}</span>
                             </span>
                           ))}
                         </div>
                       </div>
 
-                      <div className="card">
-                        <div className="card-header">
-                          <h2>Boots Per Day</h2>
+                      <div className="card analytics-chart-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">System load</span>
+                            <h2>Boots Per Day</h2>
+                          </div>
+                          <span className="badge">{formatCompactNumber(Number(savings.summary?.totalBoots || 0))} total</span>
                         </div>
                         <Sparkline
                           data={(savings.daily || []).map(d => d.boots)}
-                          width={500}
-                          height={80}
+                          width={520}
+                          height={120}
                           color="var(--agent-claude)"
+                          className="sparkline-tall"
                         />
                         <div className="chart-legend">
                           {(savings.daily || []).slice(-7).map(d => (
@@ -1705,56 +2075,44 @@ export function App() {
                           ))}
                         </div>
                       </div>
-                    </div>
-
-                    {(cumulativeSeries.length > 1 || recallTrendSeries.length > 1) && (
-                      <div className="overview-grid" style={{ marginTop: 14 }}>
-                        <div className="card">
-                          <div className="card-header">
+                      <div className="card analytics-chart-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Long-term impact</span>
                             <h2>Cumulative Savings</h2>
                           </div>
-                          <Sparkline
-                            data={cumulativeSeries.map((point) => Number(point.savedTotal || 0))}
-                            width={500}
-                            height={80}
-                            color="var(--green)"
-                          />
-                          <div className="chart-legend">
-                            {cumulativeSeries.slice(-7).map((point) => (
-                              <span key={point.date || point.timestamp} className="chart-day">
-                                <span className="chart-day-label">{(point.date || "").slice(5)}</span>
-                                <span className="chart-day-value">{Number(point.savedTotal || 0).toLocaleString()}</span>
-                              </span>
-                            ))}
-                          </div>
+                          <span className="badge">{formatCompactNumber(Number(savings.summary?.totalSaved || 0))}t</span>
                         </div>
-
-                        <div className="card">
-                          <div className="card-header">
-                            <h2>Recall Hit Rate</h2>
-                          </div>
-                          <Sparkline
-                            data={recallTrendSeries.map((point) => Number(point.hitRatePct || 0))}
-                            width={500}
-                            height={80}
-                            color="var(--cyan)"
-                          />
-                          <div className="chart-legend">
-                            {recallTrendSeries.slice(-7).map((point) => (
-                              <span key={point.date} className="chart-day">
-                                <span className="chart-day-label">{(point.date || "").slice(5)}</span>
-                                <span className="chart-day-value">{Math.round(Number(point.hitRatePct || 0))}%</span>
-                              </span>
-                            ))}
-                          </div>
+                        <Sparkline
+                          data={cumulativeSeries.map((point) => Number(point.savedTotal || 0))}
+                          width={520}
+                          height={120}
+                          color="var(--green)"
+                          className="sparkline-tall"
+                        />
+                        <div className="chart-legend">
+                          {cumulativeSeries.slice(-7).map((point) => (
+                            <span key={point.date || point.timestamp} className="chart-day">
+                              <span className="chart-day-label">{(point.date || "").slice(5)}</span>
+                              <span className="chart-day-value">{formatCompactNumber(Number(point.savedTotal || 0))}</span>
+                            </span>
+                          ))}
                         </div>
                       </div>
-                    )}
+                    </div>
 
                     {activityHeatmap.length > 0 && (
-                      <div className="card" style={{ marginTop: 14 }}>
-                        <div className="card-header">
-                          <h2>Agent Activity Heatmap</h2>
+                      <div className="card analytics-heatmap-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Behavioral map</span>
+                            <h2>Agent Activity Heatmap</h2>
+                          </div>
+                          <div className="heatmap-legend-scale" aria-hidden="true">
+                            <span>Low</span>
+                            <span className="heatmap-legend-bar" />
+                            <span>High</span>
+                          </div>
                         </div>
                         <div className="activity-heatmap">
                           {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
@@ -1763,13 +2121,13 @@ export function App() {
                               <div className="activity-heatmap-cells">
                                 {Array.from({ length: 24 }).map((_, hour) => {
                                   const count = activityHeatmapLookup.get(`${day}:${hour}`) || 0;
-                                  const alpha = count > 0 ? Math.max(0.15, count / activityHeatmapMax) : 0.05;
+                                  const alpha = count > 0 ? clampNumber(count / activityHeatmapMax, 0.12, 1) : 0.04;
                                   return (
                                     <span
                                       key={`${day}-${hour}`}
                                       className="activity-heatmap-cell"
                                       title={`${day} ${hour.toString().padStart(2, "0")}:00 · ${count} events`}
-                                      style={{ background: `rgba(0, 212, 255, ${alpha})` }}
+                                      style={{ background: `linear-gradient(180deg, rgba(67, 234, 255, ${alpha}), rgba(58, 109, 255, ${alpha * 0.72}))` }}
                                     />
                                   );
                                 })}
@@ -1780,13 +2138,17 @@ export function App() {
                       </div>
                     )}
 
-                    {savings.byAgent?.length > 0 && (
-                      <div className="card" style={{ marginTop: 14 }}>
-                        <div className="card-header">
-                          <h2>Boot Savings by Agent</h2>
+                    <div className="analytics-lists-grid">
+                      <div className="card analytics-list-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Who is creating lift</span>
+                            <h2>Boot Savings by Agent</h2>
+                          </div>
+                          <span className="badge">{savings.byAgent?.length || 0}</span>
                         </div>
-                        <ul className="item-list">
-                          {savings.byAgent
+                        <ul className="item-list analytics-list">
+                          {savings.byAgent?.length ? savings.byAgent
                             .slice()
                             .sort((a, b) => Number(b.saved || 0) - Number(a.saved || 0))
                             .slice(0, 8)
@@ -1801,19 +2163,20 @@ export function App() {
                                   {`${Number(row.saved || 0).toLocaleString()}t saved · ${Number(row.served || 0).toLocaleString()}t served`}
                                 </div>
                               </li>
-                            ))}
+                            )) : <EmptyItem text="No per-agent savings data yet" />}
                         </ul>
                       </div>
-                    )}
 
-                    {savings.recent?.length > 0 && (
-                      <div className="card" style={{ marginTop: 14 }}>
-                        <div className="card-header">
-                          <h2>Recent Boot Savings</h2>
-                          <span className="badge">{savings.recent.length}</span>
+                      <div className="card analytics-list-card">
+                        <div className="analytics-card-header-tight">
+                          <div>
+                            <span className="analytics-card-kicker">Latest savings events</span>
+                            <h2>Recent Boot Savings</h2>
+                          </div>
+                          <span className="badge">{savings.recent?.length || 0}</span>
                         </div>
-                        <ul className="item-list">
-                          {savings.recent.slice(-10).reverse().map((s, i) => (
+                        <ul className="item-list analytics-list">
+                          {savings.recent?.length ? savings.recent.slice(-10).reverse().map((s, i) => (
                             <li key={`${s.timestamp}-${i}`}>
                               <div className="item-meta">
                                 <span className="item-name" style={{ color: agentColor(s.agent) }}>{s.agent}</span>
@@ -1827,19 +2190,24 @@ export function App() {
                                   : ""}
                               </div>
                             </li>
-                          ))}
+                          )) : <EmptyItem text="No recent boot savings events yet" />}
                         </ul>
                       </div>
-                    )}
+                    </div>
                   </>
                 ) : (
                   <>
-                    <div className="analytics-explainer">
-                      <p>Operation view breaks savings into recall, store, boot compression, and tool-call categories using local events. Hover each bar for raw vs compressed token counts.</p>
+                    <div className="analytics-explainer analytics-explainer-rich">
+                      <div className="analytics-explainer-title">Operation view</div>
+                      <p>Operation view breaks savings into recall, store, boot compression, and tool-call categories using local events. Use it to see where the system is earning margin, not just how much it saved overall.</p>
                     </div>
-                    <div className="card">
-                      <div className="card-header">
-                        <h2>Savings by Operation</h2>
+                    <div className="card analytics-operations-card">
+                      <div className="analytics-card-header-tight">
+                        <div>
+                          <span className="analytics-card-kicker">Attribution</span>
+                          <h2>Savings by Operation</h2>
+                        </div>
+                        <span className="badge">{operationRows.length} categories</span>
                       </div>
                       <div className="operation-bars">
                         {operationRows.length ? operationRows.map((row) => {
