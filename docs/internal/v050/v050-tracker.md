@@ -162,6 +162,18 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Simplified the top metadata and stat labels to reduce jargon while keeping the same proof points.
 - Kept the existing visuals and layout, focusing this pass only on wording, readability, and pacing.
 
+## Phase 6Q: README Proof Context Correction -- DONE
+- **Commit:** `be3c5fa` | **Agent:** CX (Codex)
+- Replaced the personalized hero stat row so the top of the README now shows product-level signals instead of one machine's cumulative savings.
+- Updated the analytics caption and source note to make clear that the screenshot is one real active install, not a guaranteed day-one result for every user.
+- Kept the proof section intact while removing the most misleading "works on my machine" implication from the page.
+
+## Phase 6R: README Monte Carlo Redesign -- DONE
+- **Commit:** `be3c5fa` | **Agent:** CX (Codex)
+- Replaced the old dual-axis Monte Carlo chart with a cleaner single-axis fan chart built from Aditya's live Cortex savings history.
+- Added a tracked generator script so the README Monte Carlo asset is reproducible instead of being a one-off exported image.
+- Labeled the chart and README copy explicitly as an example projection based on Aditya's own data, not a promise of every new user's day-one savings.
+
 ---
 
 ## Branches Awaiting Merge to Master
