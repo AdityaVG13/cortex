@@ -1,0 +1,18 @@
+<svg width="1200" height="116" viewBox="0 0 1200 116" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Documentation</title>
+  <desc id="desc">Branded section header for the documentation section of the Cortex README.</desc>
+  <rect x="1" y="1" width="1198" height="114" rx="24" fill="#08101B" stroke="#14304A"/>
+  <rect x="34" y="0" width="206" height="3" rx="1.5" fill="url(#docsLine)"/>
+  <text x="54" y="39" fill="#57C7FF" font-size="14" font-family="Consolas, 'SFMono-Regular', monospace" letter-spacing="0.24em">SECTION 05</text>
+  <text x="54" y="80" fill="#F5FAFF" font-size="40" font-weight="700" font-family="'Segoe UI', Arial, sans-serif">Documentation</text>
+  <rect x="956" y="30" width="166" height="56" rx="14" fill="#0D1725" stroke="#223A58"/>
+  <path d="M995 43H1084" stroke="#57C7FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M995 58H1084" stroke="#7B93B5" stroke-width="4" stroke-linecap="round"/>
+  <path d="M995 73H1052" stroke="#7B93B5" stroke-width="4" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="docsLine" x1="34" y1="1.5" x2="240" y2="1.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#57C7FF"/>
+      <stop offset="1" stop-color="#79A8FF"/>
+    </linearGradient>
+  </defs>
+</svg>

@@ -48,7 +48,9 @@ claude plugin install cortex@cortex-marketplace
 
 Restart your session and Cortex boots itself. Prefer installers or a source build? Jump to [more install options](#more-install-options).
 
-## See the payoff
+<p align="center">
+  <img src="assets/section-proof.svg" alt="See the payoff" width="100%">
+</p>
 
 Memory products are easy to demo and hard to trust. Cortex only gets interesting once the savings show up on screen.
 
@@ -68,7 +70,9 @@ The Control Center is there to answer the uncomfortable question fast: "Is this 
 
 Source notes: live savings and compression figures come from the current Control Center surface. Retrieval metrics come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
 
-## Why teams keep it running
+<p align="center">
+  <img src="assets/section-why.svg" alt="Why teams keep it running" width="100%">
+</p>
 
 <table align="center">
   <tr>
@@ -93,7 +97,9 @@ Source notes: live savings and compression figures come from the current Control
   </tr>
 </table>
 
-## Works with your stack
+<p align="center">
+  <img src="assets/section-stack.svg" alt="Works with your stack" width="100%">
+</p>
 
 <table align="center">
   <tr>
@@ -155,7 +161,9 @@ cargo build --release
 
 When Cortex boots cleanly, you should see a READY message and an active memory count. From there, the workflow is simple: store a decision once, stop re-explaining it later.
 
-## What ships in the box
+<p align="center">
+  <img src="assets/section-ships.svg" alt="What ships in the box" width="100%">
+</p>
 
 Cortex does not ask you to buy into some giant platform shift on day one. The useful parts land quickly:
 
@@ -203,7 +211,9 @@ Cortex is open about where ideas came from and where they changed shape. The res
 
 Full paper list, adaptation notes, and status tracking: [Info/research.md](Info/research.md)
 
-## Documentation
+<p align="center">
+  <img src="assets/section-docs.svg" alt="Documentation" width="100%">
+</p>
 
 <table align="center">
   <tr>
