@@ -58,6 +58,7 @@ AI coding assistants forget everything between sessions. Every conversation star
 - [CONNECTING.md](CONNECTING.md) -- AI/tool integration quickstart
 - [SECURITY.md](SECURITY.md) -- threat model and security posture
 - [CONTRIBUTING.md](CONTRIBUTING.md) -- development workflow
+- [Info/research.md](Info/research.md) -- papers and research behind Cortex
 - [Info/roadmap.md](Info/roadmap.md) -- contributor roadmap
 
 ## Installation
@@ -155,6 +156,14 @@ If Cortex connectivity or auth looks wrong, start with `cortex --help`, then run
 - **Recall ranking is approximate.** Semantic search works well for broad queries but may not always surface the most relevant result first. Improving retrieval precision is a priority for v0.5.0.
 - **First-run experience varies by platform.** We test on Windows, macOS, and Linux, but edge environments may need minor troubleshooting. If install doesn't work cleanly, open an issue -- we want to hear about it.
 - **Some desktop app features may appear buggy.** The Control Center is under active development -- certain panels (e.g., agent presence) may not display correctly yet. Fixes are being worked on.
+
+## Built on Research
+- **ByteRover (2026):** Inspired Cortex's Phase 1 progressive retrieval pipeline and the maturity-tier roadmap behind later memory lifecycle work.
+- **Reciprocal Rank Fusion (2009):** Gave Cortex the simple rank-fusion rule behind its multi-retriever recall stack.
+- **A-MAC (2026):** Informs the planned admission controller that will decide which memories deserve durable storage.
+- **FluxMem (2026):** Informs the planned probabilistic crystallization gate that will replace fixed similarity thresholds.
+
+Full paper list and Cortex feature mapping: [Info/research.md](Info/research.md)
 
 ## Security & Roadmap
 - **Security:** Bearer auth required (`~/.cortex/cortex.token`), CORS-locked to localhost. See [SECURITY.md](SECURITY.md) (mirror: [Info/security-rules.md](Info/security-rules.md)).
