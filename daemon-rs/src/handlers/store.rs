@@ -370,3 +370,79 @@ fn compute_expires_at(
     .map(Some)
     .map_err(|e| format!("Failed to compute expires_at: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        crate::db::run_pending_migrations(&conn);
+        conn
+    }
+
+    #[test]
+    fn store_decision_with_ttl_sets_expires_at() {
+        let mut conn = test_conn();
+        let (_, new_id) = store_decision_with_ttl(
+            &mut conn,
+            "temporary decision",
+            Some("ttl-test".to_string()),
+            None,
+            "tester".to_string(),
+            None,
+            Some(3600),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let new_id = new_id.unwrap();
+        let expires_at: Option<String> = conn
+            .query_row(
+                "SELECT expires_at FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(expires_at.is_some());
+
+        let expires_in_future: i64 = conn
+            .query_row(
+                "SELECT expires_at > datetime('now') FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(expires_in_future, 1);
+    }
+
+    #[test]
+    fn store_decision_without_ttl_leaves_expires_at_null() {
+        let mut conn = test_conn();
+        let (_, new_id) = store_decision_with_ttl(
+            &mut conn,
+            "persistent decision",
+            Some("ttl-test".to_string()),
+            None,
+            "tester".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let new_id = new_id.unwrap();
+        let expires_at: Option<String> = conn
+            .query_row(
+                "SELECT expires_at FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(expires_at.is_none());
+    }
+}

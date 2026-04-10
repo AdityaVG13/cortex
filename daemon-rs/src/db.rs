@@ -1028,6 +1028,28 @@ pub fn checkpoint_wal_best_effort(conn: &Connection) {
     let _ = checkpoint_wal(conn);
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ExpiredCleanupCounts {
+    pub memories_deleted: usize,
+    pub decisions_deleted: usize,
+}
+
+/// Delete expired rows from tables that support TTL-based retention.
+pub fn delete_expired_entries(conn: &Connection) -> rusqlite::Result<ExpiredCleanupCounts> {
+    let memories_deleted = conn.execute(
+        "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        [],
+    )?;
+    let decisions_deleted = conn.execute(
+        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        [],
+    )?;
+    Ok(ExpiredCleanupCounts {
+        memories_deleted,
+        decisions_deleted,
+    })
+}
+
 /// Rebuild FTS5 indexes from base table data. Call once after schema migration
 /// on databases that predate FTS5 support.
 pub fn rebuild_fts(conn: &Connection) -> rusqlite::Result<()> {
@@ -1702,6 +1724,97 @@ mod tests {
         assert!(table_exists(&conn, "focus_sessions"));
         assert!(table_exists(&conn, "memory_clusters"));
         assert!(table_exists(&conn, "cluster_members"));
+    }
+
+    #[test]
+    fn test_delete_expired_entries_removes_only_expired_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        initialize_schema(&conn).unwrap();
+        run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, expires_at, created_at, updated_at)
+             VALUES ('expired-memory', 'note', 'expired-memory', 'active', datetime('now', '-1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, expires_at, created_at, updated_at)
+             VALUES ('future-memory', 'note', 'future-memory', 'active', datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, expires_at, created_at, updated_at)
+             VALUES ('forever-memory', 'note', 'forever-memory', 'active', NULL, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, expires_at, created_at, updated_at)
+             VALUES ('expired-decision', 'expired-decision', 'active', datetime('now', '-1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, expires_at, created_at, updated_at)
+             VALUES ('future-decision', 'future-decision', 'active', datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, expires_at, created_at, updated_at)
+             VALUES ('forever-decision', 'forever-decision', 'active', NULL, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let deleted = delete_expired_entries(&conn).unwrap();
+        assert_eq!(
+            deleted,
+            ExpiredCleanupCounts {
+                memories_deleted: 1,
+                decisions_deleted: 1,
+            }
+        );
+
+        let remaining_memories: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE source IN ('future-memory', 'forever-memory')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_memories, 2);
+
+        let expired_memories: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE source = 'expired-memory'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(expired_memories, 0);
+
+        let remaining_decisions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE context IN ('future-decision', 'forever-decision')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_decisions, 2);
+
+        let expired_decisions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE context = 'expired-decision'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(expired_decisions, 0);
     }
 
     #[test]

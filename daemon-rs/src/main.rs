@@ -132,6 +132,19 @@ fn cleanup_bridge_backups(home: &Path, schema_version: i32) -> bool {
     }
 }
 
+fn cleanup_expired_rows(conn: &rusqlite::Connection, label: &str) {
+    match db::delete_expired_entries(conn) {
+        Ok(counts) if counts.memories_deleted > 0 || counts.decisions_deleted > 0 => {
+            eprintln!(
+                "[cortex] {label}: deleted {} expired memories and {} expired decisions",
+                counts.memories_deleted, counts.decisions_deleted
+            );
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("[cortex] Warning: expired-row cleanup failed: {e}"),
+    }
+}
+
 fn rotate_log_file(home: &Path, file_name: &str) -> Result<bool, std::io::Error> {
     let log_path = home.join(file_name);
     let metadata = match std::fs::metadata(&log_path) {
@@ -1870,6 +1883,7 @@ pub(crate) async fn run_daemon(
                         "[cortex] Initial aging: {compressed} compressed, {archived} archived"
                     );
                 }
+                cleanup_expired_rows(&conn, "Initial expired cleanup");
             }
             // Then run every 6 hours
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
@@ -1879,6 +1893,7 @@ pub(crate) async fn run_daemon(
                 let conn = db_aging.lock().await;
                 aging::run_aging_pass(&conn);
                 compaction::run_compaction(&conn);
+                cleanup_expired_rows(&conn, "Expired cleanup");
             }
         });
     }

@@ -2194,6 +2194,60 @@ mod tests {
         }
     }
 
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        crate::db::run_pending_migrations(&conn);
+        conn
+    }
+
+    #[test]
+    fn search_memories_excludes_expired_rows() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, expires_at, created_at, updated_at)
+             VALUES ('expired memory', 'note', 'expired-memory', 'active', datetime('now', '-1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, expires_at, created_at, updated_at)
+             VALUES ('active memory', 'note', 'active-memory', 'active', datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let results = search_memories(&conn, "", 10).unwrap();
+        let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
+
+        assert!(sources.contains(&"active-memory"));
+        assert!(!sources.contains(&"expired-memory"));
+    }
+
+    #[test]
+    fn search_decisions_excludes_expired_rows() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, expires_at, created_at, updated_at)
+             VALUES ('expired decision', 'expired-decision', 'active', datetime('now', '-1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, expires_at, created_at, updated_at)
+             VALUES ('active decision', 'active-decision', 'active', datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let results = search_decisions(&conn, "", 10).unwrap();
+        let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
+
+        assert!(sources.contains(&"active-decision"));
+        assert!(!sources.contains(&"expired-decision"));
+    }
+
     #[test]
     fn is_visible_solo_mode_always_true() {
         let ctx = solo_ctx();
