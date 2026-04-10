@@ -30,6 +30,8 @@ use chrono::{self, Utc};
 use std::path::Path;
 use std::time::Duration;
 
+const BACKUP_RETENTION_COUNT: usize = 3;
+
 // ── Backup rotation helpers ───────────────────────────────────────────────
 
 /// Check if a backup should be created (>24h since last backup).
@@ -54,33 +56,45 @@ fn should_backup(backup_dir: &Path) -> bool {
     }
 }
 
-/// Rotate backups to keep only the most recent N (default 7).
-fn rotate_backups(backup_dir: &Path, keep: usize) -> Option<std::io::Error> {
+/// Rotate backups to keep only the most recent N.
+fn rotate_backups(backup_dir: &Path, keep: usize) -> Result<usize, std::io::Error> {
     let mut backups: Vec<_> = std::fs::read_dir(backup_dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_name().to_string_lossy().starts_with("cortex-")
-                && entry.file_name().to_string_lossy().ends_with(".db")
-                && !entry.file_name().to_string_lossy().contains(".corrupt")
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.file_name().to_string_lossy().starts_with("cortex-")
+                        && entry.file_name().to_string_lossy().ends_with(".db")
+                        && !entry.file_name().to_string_lossy().contains(".corrupt")
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
     if backups.len() <= keep {
-        return None;
+        return Ok(0);
     }
 
     // Sort by modification time (oldest first)
     backups.sort_by_key(|entry| entry.metadata().ok().and_then(|m| m.modified().ok()));
 
-    // Remove oldest backups beyond the keep limit
+    let mut removed = 0usize;
     for backup in backups.iter().take(backups.len() - keep) {
-        if let Err(e) = std::fs::remove_file(backup.path()) {
-            return Some(e);
-        }
+        std::fs::remove_file(backup.path())?;
+        removed += 1;
     }
 
-    None
+    Ok(removed)
+}
+
+fn cleanup_backup_retention(backup_dir: &Path) -> usize {
+    match rotate_backups(backup_dir, BACKUP_RETENTION_COUNT) {
+        Ok(removed) => removed,
+        Err(e) => {
+            eprintln!("[cortex] Warning: backup rotation failed: {e}");
+            0
+        }
+    }
 }
 
 /// Create a backup of the database file.
@@ -95,10 +109,8 @@ fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<String, String> {
 
     eprintln!("[cortex] Backup created: {}", dest.display());
 
-    // Rotate old backups (keep max 7)
-    if let Some(e) = rotate_backups(backup_dir, 7) {
-        eprintln!("[cortex] Warning: backup rotation failed: {e}");
-    }
+    // Rotate old backups after creating a fresh backup.
+    let _ = cleanup_backup_retention(backup_dir);
 
     // Update last backup timestamp
     let last_backup_file = backup_dir.join(".last_backup");
@@ -1458,11 +1470,16 @@ pub(crate) async fn run_daemon(
 
     let token_path = paths.token.clone();
     let pid_path = paths.pid.clone();
+    let backup_dir = paths.home.join("backups");
     eprintln!("[cortex] Auth token at {}", token_path.display());
     eprintln!(
         "[cortex] PID {} written to {}",
         std::process::id(),
         pid_path.display()
+    );
+    let cleaned_backups = cleanup_backup_retention(&backup_dir);
+    eprintln!(
+        "[cortex] Cleaned {cleaned_backups} old backups, kept {BACKUP_RETENTION_COUNT}"
     );
 
     // ── Recover WAL on startup ──────────────────────────────────────
@@ -1764,4 +1781,52 @@ async fn build_embeddings_async(
     }
 
     eprintln!("[embeddings] Built {computed}/{total} embeddings");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_{name}_{unique}"))
+    }
+
+    #[test]
+    fn rotate_backups_keeps_three_most_recent_files() {
+        let backup_dir = temp_test_dir("backup_rotation");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        for idx in 0..5 {
+            let path = backup_dir.join(format!("cortex-2026040{}.db", idx + 1));
+            fs::write(&path, format!("backup-{idx}")).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let removed = rotate_backups(&backup_dir, BACKUP_RETENTION_COUNT).unwrap();
+        assert_eq!(removed, 2);
+
+        let mut remaining: Vec<String> = fs::read_dir(&backup_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        remaining.sort();
+
+        assert_eq!(
+            remaining,
+            vec![
+                "cortex-20260403.db".to_string(),
+                "cortex-20260404.db".to_string(),
+                "cortex-20260405.db".to_string(),
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
 }
