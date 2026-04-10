@@ -144,6 +144,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Removed the tiny `sub` styling from card copy so the text reads at a normal size on GitHub.
 - Kept the centered-box treatment, but shifted the emphasis from compression to legibility.
 
+## Phase 6N: README Section Header Bars -- DONE
+- **Commit:** `eac54d0` | **Agent:** CX (Codex)
+- Added five custom SVG section bars to the public README so the page can carry its own visual identity instead of relying only on GitHub-native white markdown headers.
+- Used the new bars selectively on the proof, why, stack, shipping, and documentation sections, keeping the body copy render-safe and the rest of the layout intact.
+- Rendered the bars through a local browser preview sheet before commit so the shipped visuals were verified as images instead of approved from source alone.
+
 ---
 
 ## Branches Awaiting Merge to Master
