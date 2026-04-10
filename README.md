@@ -27,6 +27,10 @@
   </tr>
 </table>
 
+<p align="center">
+  <sub><a href="https://ko-fi.com/adityavg13">Support Cortex</a> helps fund releases, benchmarks, and long-term maintenance.</sub>
+</p>
+
 ## Start in two commands
 
 If you want the quickest path from install to a working setup, start with the Claude Code plugin. Cortex handles the background setup for you.
