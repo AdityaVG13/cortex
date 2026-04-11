@@ -782,6 +782,8 @@ export function App() {
   const tokenRef = useRef(browserBootstrap.authToken || "");
   const refreshAllRef = useRef(async () => {});
   const daemonTransitionRef = useRef(false);
+  const skipInitialMessagesRefreshRef = useRef(true);
+  const skipInitialActivityRefreshRef = useRef(true);
 
   const normalizedSessions = useMemo(() => {
     if (!Array.isArray(sessions)) return [];
@@ -844,6 +846,20 @@ export function App() {
     (usdAmount) => currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
     [currencyFormatter, currencyRate]
   );
+
+  const clearTransientFeedback = useCallback((fallback = "Connected to daemon.") => {
+    setFeedbackMessage((current) => {
+      const text = String(current || "");
+      if (
+        text.includes("could not authenticate") ||
+        text.startsWith("Auth token read failed:") ||
+        text.includes(": HTTP 401")
+      ) {
+        return fallback;
+      }
+      return current;
+    });
+  }, []);
 
   const refreshTokenForApi = useCallback(async () => {
     if (!invokeRef.current) {
@@ -973,7 +989,8 @@ export function App() {
         apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks.map(normalizeTask) : []),
       },
     ]);
-  }, [api]);
+    clearTransientFeedback();
+  }, [api, clearTransientFeedback]);
 
   const refreshFeed = useCallback(async () => {
     const query = new URLSearchParams();
@@ -985,7 +1002,8 @@ export function App() {
     const feedResult = await api(`/feed?${query.toString()}`, true);
     const entries = Array.isArray(feedResult?.entries) ? [...feedResult.entries].reverse() : [];
     setFeedEntries(entries);
-  }, [api, feedFilters]);
+    clearTransientFeedback();
+  }, [api, clearTransientFeedback, feedFilters]);
 
   const refreshMessages = useCallback(async () => {
     const targetAgent = messageAgent.trim();
@@ -999,7 +1017,8 @@ export function App() {
     const result = await api(`/messages?${query.toString()}`, true);
     const entries = Array.isArray(result?.messages) ? [...result.messages].reverse() : [];
     setMessageEntries(entries);
-  }, [api, messageAgent]);
+    clearTransientFeedback();
+  }, [api, clearTransientFeedback, messageAgent]);
 
   const refreshActivity = useCallback(async () => {
     const query = new URLSearchParams();
@@ -1007,17 +1026,20 @@ export function App() {
     const result = await api(`/activity?${query.toString()}`, true);
     const entries = Array.isArray(result?.activities) ? [...result.activities].reverse() : [];
     setActivityEntries(entries);
-  }, [api, activitySince]);
+    clearTransientFeedback();
+  }, [activitySince, api, clearTransientFeedback]);
 
   const refreshSavings = useCallback(async () => {
     const result = await api("/savings", true);
     if (result) setSavings(result);
-  }, [api]);
+    clearTransientFeedback();
+  }, [api, clearTransientFeedback]);
 
   const refreshConflicts = useCallback(async () => {
     const result = await api("/conflicts", true);
     setConflictPairs(Array.isArray(result?.pairs) ? result.pairs : []);
-  }, [api]);
+    clearTransientFeedback();
+  }, [api, clearTransientFeedback]);
 
   const handleResolveConflict = useCallback(async (keepId, action, supersededId) => {
     setConflictLoading(true);
@@ -1083,8 +1105,11 @@ export function App() {
           setShowConnectionDialog(true);
         }
       }
+    } else {
+      clearTransientFeedback();
     }
   }, [
+    clearTransientFeedback,
     readAuthToken,
     refreshDaemonState,
     refreshHealth,
@@ -1136,6 +1161,10 @@ export function App() {
   }, [normalizedSessions, messageAgent]);
 
   useEffect(() => {
+    if (skipInitialMessagesRefreshRef.current) {
+      skipInitialMessagesRefreshRef.current = false;
+      return;
+    }
     refreshMessages().catch((error) => {
       const message = error?.message || String(error);
       if (!message || isDaemonOfflineErrorMessage(message)) return;
@@ -1144,6 +1173,10 @@ export function App() {
   }, [refreshMessages]);
 
   useEffect(() => {
+    if (skipInitialActivityRefreshRef.current) {
+      skipInitialActivityRefreshRef.current = false;
+      return;
+    }
     refreshActivity().catch((error) => {
       const message = error?.message || String(error);
       if (!message || isDaemonOfflineErrorMessage(message)) return;
