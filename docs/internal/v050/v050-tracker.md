@@ -122,6 +122,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Changed the Control Center sidecar launcher so debug desktop sessions no longer spawn Cortex directly from the workspace `daemon-rs` build output, which was still locking the dev target binary while the app was open on Windows.
 - Added a managed runtime-copy path under the user's Cortex runtime directory plus stale-copy cleanup, so debug sessions can relaunch Cortex from a disposable copy while packaged release behavior stays unchanged.
 
+## Phase 7L: Desktop Runtime Copy Session Isolation -- DONE
+- **Commit:** `ef77822` | **Agent:** CX (Codex)
+- Scoped each debug Control Center runtime-copy directory to the current app session instead of sharing one global temp folder, so one desktop window can no longer delete another session's managed daemon copy during cleanup.
+- Added regression coverage for the session-scoped runtime path so the Windows dev-only launcher keeps the build-unlock behavior from 7K without introducing cross-session temp-copy collisions.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
