@@ -9,11 +9,10 @@ use sidecar::SidecarDaemon;
 use std::env;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -113,22 +112,49 @@ fn cortex_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "Could not resolve USERPROFILE/HOME".to_string())
 }
 
+#[derive(Clone, Debug, Default)]
+struct ResolvedCortexPaths {
+    token: Option<PathBuf>,
+    db: Option<PathBuf>,
+    port: Option<u16>,
+}
+
+fn default_cortex_dir() -> Result<PathBuf, String> {
+    Ok(cortex_home()?.join(".cortex"))
+}
+
 fn token_path() -> Result<PathBuf, String> {
-    Ok(cortex_home()?.join(".cortex").join("cortex.token"))
+    resolved_cortex_paths()
+        .token
+        .ok_or_else(|| "Could not resolve Cortex token path".to_string())
 }
 
 fn cortex_db_path() -> Result<PathBuf, String> {
-    Ok(cortex_home()?.join(".cortex").join("cortex.db"))
+    resolved_cortex_paths()
+        .db
+        .ok_or_else(|| "Could not resolve Cortex database path".to_string())
 }
 
 fn daemon_port() -> u16 {
-    static CACHED_DAEMON_PORT: OnceLock<u16> = OnceLock::new();
-    *CACHED_DAEMON_PORT.get_or_init(resolve_daemon_port)
+    resolve_daemon_port()
 }
 
 fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)).is_ok()
+    let response = send_cortex_request_with_port(
+        port,
+        "GET",
+        "/health",
+        "",
+        None,
+        Duration::from_millis(timeout_ms),
+        Duration::from_millis(timeout_ms),
+        Duration::from_millis(timeout_ms),
+    );
+
+    matches!(
+        response,
+        Ok(resp) if is_cortex_health_response(resp.status, &resp.body)
+    )
 }
 
 async fn wait_for_reachability(port: u16, target: bool, timeout: Duration) -> bool {
@@ -156,17 +182,68 @@ fn cortex_binary_name() -> &'static str {
     }
 }
 
-fn parse_port_from_paths_json(output: &[u8]) -> Result<u16, String> {
+fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> {
+    let release_path = home
+        .join("cortex")
+        .join("daemon-rs")
+        .join("target")
+        .join("release")
+        .join(cortex_binary_name());
+    let debug_path = home
+        .join("cortex")
+        .join("daemon-rs")
+        .join("target")
+        .join("debug")
+        .join(cortex_binary_name());
+
+    if prefer_debug {
+        vec![debug_path, release_path]
+    } else {
+        vec![release_path, debug_path]
+    }
+}
+
+fn resolve_binary_on_path(binary_name: &str) -> Option<PathBuf> {
+    let locator = if cfg!(windows) { "where.exe" } else { "which" };
+    let output = Command::new(locator).arg(binary_name).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+}
+
+fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
     let json: serde_json::Value = serde_json::from_slice(output)
         .map_err(|err| format!("Invalid JSON from `cortex paths --json`: {err}"))?;
     let port = json
         .get("port")
         .and_then(|value| value.as_u64())
-        .ok_or_else(|| "Missing `port` in `cortex paths --json` output".to_string())?;
-    u16::try_from(port).map_err(|err| format!("Port value out of range ({port}): {err}"))
+        .map(|value| {
+            u16::try_from(value).map_err(|err| format!("Port value out of range ({value}): {err}"))
+        })
+        .transpose()?;
+
+    Ok(ResolvedCortexPaths {
+        token: json
+            .get("token")
+            .and_then(|value| value.as_str())
+            .map(PathBuf::from),
+        db: json
+            .get("db")
+            .and_then(|value| value.as_str())
+            .map(PathBuf::from),
+        port,
+    })
 }
 
-fn resolve_port_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Result<Option<u16>, String> {
+fn resolve_paths_with_binary(
+    binary: impl AsRef<std::ffi::OsStr>,
+) -> Result<Option<ResolvedCortexPaths>, String> {
     let output = Command::new(binary)
         .args(["paths", "--json"])
         .output()
@@ -178,80 +255,99 @@ fn resolve_port_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Result<Optio
         }
         return Err(format!("`cortex paths --json` failed: {stderr}"));
     }
-    parse_port_from_paths_json(&output.stdout).map(Some)
+    parse_paths_json(&output.stdout).map(Some)
 }
 
-fn resolve_daemon_port() -> u16 {
-    match resolve_port_with_binary("cortex") {
-        Ok(Some(port)) => return port,
-        Ok(None) => {}
-        Err(err) => eprintln!("[cortex-control-center] {err}"),
-    }
+fn fallback_cortex_paths() -> ResolvedCortexPaths {
+    let cortex_dir = env::var("CORTEX_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| default_cortex_dir().ok());
 
+    let port = match env::var("CORTEX_PORT") {
+        Ok(value) => match value.parse::<u16>() {
+            Ok(port) => Some(port),
+            Err(err) => {
+                eprintln!("[cortex-control-center] Invalid CORTEX_PORT '{value}': {err}");
+                Some(DEFAULT_DAEMON_PORT)
+            }
+        },
+        Err(env::VarError::NotPresent) => Some(DEFAULT_DAEMON_PORT),
+        Err(err) => {
+            eprintln!("[cortex-control-center] Failed to read CORTEX_PORT: {err}");
+            Some(DEFAULT_DAEMON_PORT)
+        }
+    };
+
+    ResolvedCortexPaths {
+        token: cortex_dir.as_ref().map(|dir| dir.join("cortex.token")),
+        db: cortex_dir.as_ref().map(|dir| dir.join("cortex.db")),
+        port,
+    }
+}
+
+fn resolved_cortex_paths() -> ResolvedCortexPaths {
     if let Some(binary) = find_cortex_binary() {
-        match resolve_port_with_binary(&binary) {
-            Ok(Some(port)) => return port,
+        match resolve_paths_with_binary(&binary) {
+            Ok(Some(paths)) => return paths,
             Ok(None) => {}
             Err(err) => eprintln!("[cortex-control-center] {err}"),
         }
     }
 
-    match env::var("CORTEX_PORT") {
-        Ok(value) => match value.parse::<u16>() {
-            Ok(port) => port,
-            Err(err) => {
-                eprintln!("[cortex-control-center] Invalid CORTEX_PORT '{value}': {err}");
-                DEFAULT_DAEMON_PORT
-            }
-        },
-        Err(env::VarError::NotPresent) => DEFAULT_DAEMON_PORT,
-        Err(err) => {
-            eprintln!("[cortex-control-center] Failed to read CORTEX_PORT: {err}");
-            DEFAULT_DAEMON_PORT
+    if let Some(binary) = resolve_binary_on_path("cortex") {
+        match resolve_paths_with_binary(&binary) {
+            Ok(Some(paths)) => return paths,
+            Ok(None) => {}
+            Err(err) => eprintln!("[cortex-control-center] {err}"),
         }
     }
+
+    fallback_cortex_paths()
+}
+
+fn resolve_daemon_port() -> u16 {
+    resolved_cortex_paths().port.unwrap_or(DEFAULT_DAEMON_PORT)
 }
 
 fn find_cortex_binary() -> Option<PathBuf> {
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sidecar = dir.join(cortex_binary_name());
-            if sidecar.exists() {
-                return Some(sidecar);
+    let sidecar_candidate = env::current_exe().ok().and_then(|exe| {
+        exe.parent()
+            .map(|dir| dir.join(cortex_binary_name()))
+            .filter(|path| path.exists())
+    });
+
+    if let Ok(home) = cortex_home() {
+        let plugin_path = home.join(".cortex").join("bin").join(cortex_binary_name());
+        let mut candidates = Vec::new();
+        if cfg!(debug_assertions) {
+            // In dev builds prefer workspace binaries so the app does not
+            // silently launch an older installed or copied sidecar daemon.
+            candidates.extend(workspace_binary_candidates(&home, true));
+            candidates.push(plugin_path);
+            if let Some(sidecar) = sidecar_candidate.clone() {
+                candidates.push(sidecar);
+            }
+        } else {
+            if let Some(sidecar) = sidecar_candidate.clone() {
+                candidates.push(sidecar);
+            }
+            candidates.push(plugin_path);
+            candidates.extend(workspace_binary_candidates(&home, false));
+        }
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
             }
         }
     }
 
-    if let Ok(home) = cortex_home() {
-        let plugin_path = home.join(".cortex").join("bin").join(cortex_binary_name());
-        if plugin_path.exists() {
-            return Some(plugin_path);
-        }
-
-        // Prefer release binary (built by beforeBuildCommand)
-        let release_path = home
-            .join("cortex")
-            .join("daemon-rs")
-            .join("target")
-            .join("release")
-            .join(cortex_binary_name());
-        if release_path.exists() {
-            return Some(release_path);
-        }
-
-        // Fall back to debug binary (built by beforeDevCommand)
-        let debug_path = home
-            .join("cortex")
-            .join("daemon-rs")
-            .join("target")
-            .join("debug")
-            .join(cortex_binary_name());
-        if debug_path.exists() {
-            return Some(debug_path);
-        }
+    if let Some(sidecar) = sidecar_candidate {
+        return Some(sidecar);
     }
 
-    None
+    resolve_binary_on_path(cortex_binary_name())
 }
 
 fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -398,7 +494,21 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 #[tauri::command]
 async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
-    let (running, pid) = state.start()?;
+    let (already_running, current_pid) = state.status()?;
+    if !already_running && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+        return Ok(DaemonCommandResult {
+            running: false,
+            reachable: true,
+            pid: None,
+            message: "Cortex daemon reachable (external process).".to_string(),
+        });
+    }
+
+    let (running, pid) = if already_running {
+        (already_running, current_pid)
+    } else {
+        state.start()?
+    };
     let reachable = if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         true
     } else {
@@ -426,17 +536,6 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
 /// regardless of who spawned it). Returns Ok(()) on success or if connection
 /// fails (daemon already gone).
 fn send_http_shutdown() -> Result<(), String> {
-    use std::io::Write;
-
-    let port = daemon_port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(2000)) {
-        Ok(s) => s,
-        Err(_) => return Ok(()), // daemon already unreachable
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(2000)));
-
     let token = token_path()
         .ok()
         .and_then(|p| fs::read_to_string(p).ok())
@@ -444,38 +543,67 @@ fn send_http_shutdown() -> Result<(), String> {
         .trim()
         .to_string();
 
-    let body = "{}";
-    let mut request =
-        format!("POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\n");
-    if !token.is_empty() {
-        request.push_str(&format!("Authorization: Bearer {token}\r\n"));
-    }
-    request.push_str("Content-Type: application/json\r\n");
-    request.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    request.push_str("Connection: close\r\n\r\n");
-    request.push_str(body);
+    interpret_shutdown_response(send_cortex_request("POST", "/shutdown", &token, Some("{}")))
+}
 
-    let _ = stream.write_all(request.as_bytes());
-    let _ = stream.flush();
-    Ok(())
+fn interpret_shutdown_response(
+    response: Result<FetchCortexResponse, String>,
+) -> Result<(), String> {
+    match response {
+        Ok(resp) if (200..300).contains(&resp.status) => Ok(()),
+        Ok(resp) if resp.status == 401 || resp.status == 403 => Err(
+            "Shutdown rejected by daemon authentication. Refresh the token or restart the daemon from Control Center."
+                .to_string(),
+        ),
+        Ok(resp) => {
+            let detail = extract_error_detail(&resp.body)
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            Err(format!("Daemon shutdown failed: HTTP {}{detail}", resp.status))
+        }
+        Err(err) if err.starts_with("Cannot connect to daemon") => Ok(()),
+        Err(err) => Err(format!("Failed to send daemon shutdown: {err}")),
+    }
+}
+
+fn extract_error_detail(body: &str) -> Option<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(error) = json.get("error").and_then(|value| value.as_str()) {
+            return Some(error.to_string());
+        }
+    }
+    Some(trimmed.chars().take(120).collect())
 }
 
 #[tauri::command]
 async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
     let (was_running, _) = state.status()?;
-    let _ = state.stop();
+    let managed_stop_error = state.stop().err();
 
     // If daemon is still reachable (started externally by Claude, CLI, etc.),
     // send a graceful HTTP shutdown signal
     let still_reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
+    let mut shutdown_error = None;
     if still_reachable {
-        let _ = send_http_shutdown();
+        if let Err(err) = send_http_shutdown() {
+            shutdown_error = Some(err);
+        }
         let _ =
             wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
     }
 
     let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
+    if reachable {
+        if let Some(err) = managed_stop_error.or(shutdown_error) {
+            return Err(err);
+        }
+    }
+
     let message = if was_running && !reachable {
         "Stopped Cortex daemon.".to_string()
     } else if !was_running && still_reachable && !reachable {
@@ -524,24 +652,42 @@ fn send_cortex_request(
     auth_token: &str,
     body: Option<&str>,
 ) -> Result<FetchCortexResponse, String> {
+    send_cortex_request_with_port(
+        daemon_port(),
+        method,
+        path,
+        auth_token,
+        body,
+        Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),
+        Duration::from_millis(DAEMON_READ_TIMEOUT_MS),
+        Duration::from_millis(DAEMON_WRITE_TIMEOUT_MS),
+    )
+}
+
+fn send_cortex_request_with_port(
+    port: u16,
+    method: &str,
+    path: &str,
+    auth_token: &str,
+    body: Option<&str>,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    write_timeout: Duration,
+) -> Result<FetchCortexResponse, String> {
     use std::io::{Read, Write};
-    use std::net::TcpStream;
 
     if path.contains('\r') || path.contains('\n') {
         return Err("Invalid request path".to_string());
     }
 
-    let port = daemon_port();
-    let mut stream = TcpStream::connect_timeout(
-        &SocketAddr::from(([127, 0, 0, 1], port)),
-        Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),
-    )
-    .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
+    let mut stream =
+        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), connect_timeout)
+            .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
     stream
-        .set_read_timeout(Some(Duration::from_millis(DAEMON_READ_TIMEOUT_MS)))
+        .set_read_timeout(Some(read_timeout))
         .map_err(|e| format!("Cannot set read timeout: {e}"))?;
     stream
-        .set_write_timeout(Some(Duration::from_millis(DAEMON_WRITE_TIMEOUT_MS)))
+        .set_write_timeout(Some(write_timeout))
         .map_err(|e| format!("Cannot set write timeout: {e}"))?;
 
     let mut request =
@@ -593,6 +739,22 @@ fn send_cortex_request(
     } else {
         Err("Invalid HTTP response".to_string())
     }
+}
+
+fn is_cortex_health_response(status: u16, body: &str) -> bool {
+    if !(200..300).contains(&status) {
+        return false;
+    }
+
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return false;
+    };
+
+    let health_status = json.get("status").and_then(|value| value.as_str());
+    let runtime = json.get("runtime").and_then(|value| value.as_object());
+    let stats = json.get("stats").and_then(|value| value.as_object());
+
+    matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
 
 #[derive(Serialize)]
@@ -794,7 +956,7 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
 #[tauri::command]
 fn setup_editors() -> Result<Vec<EditorDetection>, String> {
     let cortex_exe = cortex_exe_path().ok_or(
-    "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/target/release/",
+    "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/target/{debug,release}/",
   )?;
     let exe_str = cortex_exe.to_string_lossy().to_string();
 
@@ -870,7 +1032,9 @@ fn main() {
             setup_tray(app)?;
 
             let daemon_state = app.handle().state::<DaemonState>();
-            let _ = daemon_state.start();
+            if !is_cortex_reachable_with_port(daemon_port(), DAEMON_REACHABILITY_TIMEOUT_MS) {
+                let _ = daemon_state.start();
+            }
 
             Ok(())
         })
@@ -913,4 +1077,70 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        extract_error_detail, interpret_shutdown_response, is_cortex_health_response,
+        workspace_binary_candidates, FetchCortexResponse,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn workspace_binary_candidates_prefers_debug_for_dev_builds() {
+        let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), true);
+        assert!(candidates[0].to_string_lossy().contains("target\\debug"));
+        assert!(candidates[1].to_string_lossy().contains("target\\release"));
+    }
+
+    #[test]
+    fn workspace_binary_candidates_prefers_release_for_packaged_builds() {
+        let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), false);
+        assert!(candidates[0].to_string_lossy().contains("target\\release"));
+        assert!(candidates[1].to_string_lossy().contains("target\\debug"));
+    }
+
+    #[test]
+    fn interpret_shutdown_response_surfaces_auth_rejection() {
+        let err = interpret_shutdown_response(Ok(FetchCortexResponse {
+            status: 401,
+            body: "{\"error\":\"Unauthorized\"}".to_string(),
+        }))
+        .unwrap_err();
+
+        assert!(err.contains("Refresh the token"));
+    }
+
+    #[test]
+    fn extract_error_detail_prefers_json_error_field() {
+        let detail = extract_error_detail("{\"error\":\"Unauthorized\"}").unwrap();
+        assert_eq!(detail, "Unauthorized");
+    }
+
+    #[test]
+    fn cortex_health_probe_accepts_healthy_response_shape() {
+        assert!(is_cortex_health_response(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+        ));
+        assert!(is_cortex_health_response(
+            200,
+            r#"{"status":"degraded","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+        ));
+    }
+
+    #[test]
+    fn cortex_health_probe_rejects_non_cortex_responses() {
+        assert!(!is_cortex_health_response(200, "<html>ok</html>"));
+        assert!(!is_cortex_health_response(200, r#"{"status":"ok"}"#));
+        assert!(!is_cortex_health_response(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#
+        ));
+        assert!(!is_cortex_health_response(
+            503,
+            r#"{"status":"ok","runtime":{}}"#
+        ));
+    }
 }

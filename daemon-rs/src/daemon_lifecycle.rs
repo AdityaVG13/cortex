@@ -20,12 +20,34 @@ pub async fn daemon_healthy(port: u16) -> bool {
         Err(_) => return false,
     };
 
-    client
-        .get(format!("http://127.0.0.1:{port}/health"))
-        .send()
-        .await
-        .map(|resp| resp.status().is_success())
-        .unwrap_or(false)
+    let response = match client.get(format!("http://127.0.0.1:{port}/health")).send().await {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+
+    let status = response.status().as_u16();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+
+    is_cortex_health_payload(status, &body)
+}
+
+fn is_cortex_health_payload(status: u16, body: &str) -> bool {
+    if !(200..300).contains(&status) {
+        return false;
+    }
+
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return false;
+    };
+
+    let health_status = json.get("status").and_then(|value| value.as_str());
+    let runtime = json.get("runtime").and_then(|value| value.as_object());
+    let stats = json.get("stats").and_then(|value| value.as_object());
+
+    matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
 
 /// Poll /health until success or timeout.
@@ -107,4 +129,32 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
         );
     }
     healthy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cortex_health_payload;
+
+    #[test]
+    fn cortex_health_payload_accepts_expected_shapes() {
+        assert!(is_cortex_health_payload(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+        ));
+        assert!(is_cortex_health_payload(
+            200,
+            r#"{"status":"degraded","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+        ));
+    }
+
+    #[test]
+    fn cortex_health_payload_rejects_non_cortex_bodies() {
+        assert!(!is_cortex_health_payload(200, r#"{"status":"ok"}"#));
+        assert!(!is_cortex_health_payload(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#
+        ));
+        assert!(!is_cortex_health_payload(200, "<html>ok</html>"));
+        assert!(!is_cortex_health_payload(500, r#"{"status":"ok","runtime":{}}"#));
+    }
 }

@@ -12,6 +12,13 @@ use tokio_stream::wrappers::BroadcastStream;
 use super::now_iso;
 use crate::state::RuntimeState;
 
+fn scrub_event_payload(event_type: &str) -> Value {
+    json!({
+        "type": event_type,
+        "timestamp": now_iso()
+    })
+}
+
 // ─── GET /events/stream ─────────────────────────────────────────────────────
 
 pub async fn handle_events_stream(State(state): State<RuntimeState>) -> Response {
@@ -19,33 +26,17 @@ pub async fn handle_events_stream(State(state): State<RuntimeState>) -> Response
         Ok::<Event, Infallible>(
             Event::default()
                 .event("connected")
-                .data(json!({ "timestamp": now_iso(), "clients": 1 }).to_string()),
+                .data(scrub_event_payload("connected").to_string()),
         )
     });
 
     let updates = BroadcastStream::new(state.events.subscribe()).filter_map(|msg| async move {
         match msg {
             Ok(event) => {
-                let payload = match event.data {
-                    Value::Object(mut map) => {
-                        map.insert("type".to_string(), Value::String(event.event_type.clone()));
-                        map.insert("timestamp".to_string(), Value::String(now_iso()));
-                        Value::Object(map)
-                    }
-                    other => json!({
-                        "type": event.event_type,
-                        "data": other,
-                        "timestamp": now_iso()
-                    }),
-                };
+                let payload = scrub_event_payload(&event.event_type);
                 Some(Ok::<Event, Infallible>(
                     Event::default()
-                        .event(
-                            payload
-                                .get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("event"),
-                        )
+                        .event(&event.event_type)
                         .data(payload.to_string()),
                 ))
             }
@@ -61,4 +52,19 @@ pub async fn handle_events_stream(State(state): State<RuntimeState>) -> Response
     );
     // CORS handled by tower-http CorsLayer in server.rs -- no manual override
     sse.into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scrub_event_payload;
+
+    #[test]
+    fn scrub_event_payload_only_exposes_type_and_timestamp() {
+        let payload = scrub_event_payload("task");
+        let object = payload.as_object().expect("payload object");
+
+        assert_eq!(object.get("type").and_then(|value| value.as_str()), Some("task"));
+        assert!(object.get("timestamp").and_then(|value| value.as_str()).is_some());
+        assert_eq!(object.len(), 2);
+    }
 }

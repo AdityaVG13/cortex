@@ -241,6 +241,28 @@ async fn session_heartbeat(
     }
 }
 
+async fn session_end(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    agent: &str,
+) -> bool {
+    let mut req = client
+        .post(format!("{base_url}/session/end"))
+        .header("content-type", "application/json")
+        .header("x-cortex-request", "true")
+        .json(&serde_json::json!({ "agent": agent }));
+
+    if let Some(auth) = build_auth_header(api_key) {
+        req = req.header("authorization", auth);
+    }
+
+    match req.send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
 /// Run MCP proxy over stdio -> HTTP.
 pub async fn run(
     base_url: &str,
@@ -391,10 +413,12 @@ pub async fn run(
         let line = match lines.next_line().await {
             Ok(Some(line)) => line,
             Ok(None) => {
+                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
                 eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
                 return Ok(());
             }
             Err(e) => {
+                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
                 eprintln!("[cortex-mcp] Stdin read error: {e}");
                 return Err(e.into());
             }
@@ -414,6 +438,7 @@ pub async fn run(
                     "id": null
                 });
                 if !write_value(&mut stdout, &err).await? {
+                    let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
                     eprintln!("[cortex-mcp] Stdout closed while returning parse error");
                     return Ok(());
                 }
@@ -572,6 +597,7 @@ pub async fn run(
                 "id": id
             });
             if !write_value(&mut stdout, &err_resp).await? {
+                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon error");
                 return Ok(());
             }
@@ -627,6 +653,7 @@ pub async fn run(
 
         if let Some(body) = response_body {
             if !write_raw_line(&mut stdout, &body).await? {
+                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon response");
                 return Ok(());
             }

@@ -41,7 +41,7 @@ const cortexApiKey = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
 const isTeamMode = cortexUrl && cortexUrl.trim().length > 0;
 
 // Build args for cortex plugin mcp
-const args = ['plugin', 'mcp'];
+const args = ['plugin', 'mcp', '--agent', 'claude-code'];
 
 if (isTeamMode) {
   args.push('--url', cortexUrl.trim());

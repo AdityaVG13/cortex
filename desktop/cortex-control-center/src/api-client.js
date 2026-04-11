@@ -3,6 +3,13 @@
  * Pure functions that accept deps as params -- testable without React.
  */
 
+async function refreshTokenIfChanged(onTokenRefresh, getToken, previousToken) {
+  if (!onTokenRefresh) return false;
+  await onTokenRefresh();
+  const nextToken = getToken();
+  return Boolean(nextToken) && nextToken !== previousToken;
+}
+
 /**
  * Creates a GET API caller.
  * @param {object} deps
@@ -14,12 +21,15 @@
 export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
   return async function api(path, withAuth = false, _retried = false) {
     const invoke = getInvoke();
-    const token = getToken();
+    let token = getToken();
 
     if (withAuth && !token && !_retried) {
       // Token not loaded yet -- try refreshing once (daemon may still be writing it)
-      if (onTokenRefresh) await onTokenRefresh();
-      return api(path, withAuth, true);
+      const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+      if (refreshed) {
+        return api(path, withAuth, true);
+      }
+      token = getToken();
     }
 
     if (withAuth && !token) {
@@ -36,9 +46,11 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
         throw new Error(`${path}: invalid IPC response`);
       }
       // On 401, re-read token and retry once (handles daemon token rotation on startup)
-      if (response.status === 401 && withAuth && !_retried && onTokenRefresh) {
-        await onTokenRefresh();
-        return api(path, withAuth, true);
+      if (response.status === 401 && withAuth && !_retried) {
+        const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+        if (refreshed) {
+          return api(path, withAuth, true);
+        }
       }
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`${path}: HTTP ${response.status}`);
@@ -50,9 +62,11 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
     const headers = { "X-Cortex-Request": "true" };
     if (withAuth) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(`${cortexBase}${path}`, { headers });
-    if (response.status === 401 && withAuth && !_retried && onTokenRefresh) {
-      await onTokenRefresh();
-      return api(path, withAuth, true);
+    if (response.status === 401 && withAuth && !_retried) {
+      const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+      if (refreshed) {
+        return api(path, withAuth, true);
+      }
     }
     if (!response.ok) {
       throw new Error(`${path}: HTTP ${response.status}`);
@@ -73,11 +87,14 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
 export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
   return async function postApi(path, body = {}, _retried = false) {
     const invoke = getInvoke();
-    const token = getToken();
+    let token = getToken();
 
     if (!token && !_retried) {
-      if (onTokenRefresh) await onTokenRefresh();
-      return postApi(path, body, true);
+      const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+      if (refreshed) {
+        return postApi(path, body, true);
+      }
+      token = getToken();
     }
 
     if (!token) {
@@ -94,9 +111,11 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
         throw new Error(`POST ${path}: invalid IPC response`);
       }
-      if (response.status === 401 && !_retried && onTokenRefresh) {
-        await onTokenRefresh();
-        return postApi(path, body, true);
+      if (response.status === 401 && !_retried) {
+        const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+        if (refreshed) {
+          return postApi(path, body, true);
+        }
       }
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`POST ${path}: HTTP ${response.status}`);
@@ -114,15 +133,59 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       },
       body: JSON.stringify(body),
     });
-    if (response.status === 401 && !_retried && onTokenRefresh) {
-      await onTokenRefresh();
-      return postApi(path, body, true);
+    if (response.status === 401 && !_retried) {
+      const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+      if (refreshed) {
+        return postApi(path, body, true);
+      }
     }
     if (!response.ok) {
       throw new Error(`POST ${path}: HTTP ${response.status}`);
     }
     return await response.json();
   };
+}
+
+const PANEL_LABELS = {
+  "/sessions": "Sessions",
+  "/locks": "Locks",
+  "/tasks": "Tasks",
+  "/feed": "Feed",
+  "/messages": "Messages",
+  "/activity": "Activity",
+  "/savings": "Savings",
+  "/conflicts": "Conflicts",
+};
+
+function panelLabelFromError(message) {
+  const path = String(message || "").split(":")[0];
+  const normalized = Object.keys(PANEL_LABELS).find((candidate) => path.startsWith(candidate));
+  return normalized ? PANEL_LABELS[normalized] : null;
+}
+
+export function isAuthFailure(message) {
+  const text = String(message || "");
+  return text.includes("HTTP 401") || text.includes("no auth token");
+}
+
+export function summarizeDashboardErrors(errors) {
+  const unique = [...new Set((errors || []).filter(Boolean))];
+  if (!unique.length) return "";
+
+  const authFailures = unique.filter(isAuthFailure);
+  if (authFailures.length !== unique.length) {
+    return unique.join("; ");
+  }
+
+  const panels = authFailures
+    .map(panelLabelFromError)
+    .filter(Boolean);
+
+  if (!panels.length) {
+    return "Protected Cortex panels could not authenticate. Refresh the token or restart the daemon from Control Center.";
+  }
+
+  return `${panels.join(", ")} could not authenticate. Refresh the token or restart the daemon from Control Center.`;
 }
 
 /**

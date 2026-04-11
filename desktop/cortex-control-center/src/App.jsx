@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Component } from "react";
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
 import { checkForUpdates, installUpdate } from "./updater.js";
-import { createApi, createPostApi, settledWithRethrow, settledCollectErrors } from "./api-client.js";
+import {
+  createApi,
+  createPostApi,
+  isAuthFailure,
+  settledWithRethrow,
+  settledCollectErrors,
+  summarizeDashboardErrors,
+} from "./api-client.js";
 import { CURRENCY_OPTIONS, USD_TO_CURRENCY_RATE, SAVINGS_OPERATION_LABELS } from "./constants.js";
+import {
+  buildKnownAgents,
+  isTransportSession,
+  normalizeTask,
+} from "./live-surface.js";
 
 class BrainErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
@@ -53,12 +65,124 @@ const PANELS = [
   { key: "about", label: "About", icon: "ℹ" },
 ];
 
+const PANEL_SEQUENCE = [
+  { key: "overview", label: "Overview", icon: "[]" },
+  { key: "analytics", label: "Analytics", icon: "/\\" },
+  { key: "agents", label: "Agents", icon: "()" },
+  { key: "work", label: "Work", icon: "||" },
+  { key: "memory", label: "Memory", icon: "{}" },
+  { key: "brain", label: "Brain", icon: "<>" },
+  { key: "about", label: "About", icon: "i" },
+];
+
 const EMPTY_DAEMON = {
   running: false,
   reachable: false,
   pid: null,
   message: "Checking daemon...",
 };
+
+const CORTEX_BASE_STORAGE_KEY = "cortex_base";
+const CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token";
+const LEGACY_CORTEX_AUTH_STORAGE_KEYS = ["cortex_token"];
+const CORTEX_OPERATOR_STORAGE_KEY = "cortex_operator";
+
+function clearLegacyBrowserAuthTokens() {
+  if (typeof window === "undefined") return;
+  try {
+    for (const key of LEGACY_CORTEX_AUTH_STORAGE_KEYS) {
+      window.sessionStorage.removeItem(key);
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
+}
+
+function readPersistedBrowserAuthToken() {
+  if (typeof window === "undefined") return "";
+  try {
+    const sessionToken = window.sessionStorage.getItem(CORTEX_AUTH_STORAGE_KEY) || "";
+    if (sessionToken) return sessionToken;
+
+    for (const key of LEGACY_CORTEX_AUTH_STORAGE_KEYS) {
+      const legacySessionToken = window.sessionStorage.getItem(key) || "";
+      if (legacySessionToken) {
+        window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, legacySessionToken);
+        clearLegacyBrowserAuthTokens();
+        return legacySessionToken;
+      }
+    }
+
+    const legacyToken = window.localStorage.getItem(CORTEX_AUTH_STORAGE_KEY) || "";
+    if (legacyToken) {
+      window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, legacyToken);
+      window.localStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
+      clearLegacyBrowserAuthTokens();
+      return legacyToken;
+    }
+
+    for (const key of LEGACY_CORTEX_AUTH_STORAGE_KEYS) {
+      const legacyLocalToken = window.localStorage.getItem(key) || "";
+      if (legacyLocalToken) {
+        window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, legacyLocalToken);
+        clearLegacyBrowserAuthTokens();
+        return legacyLocalToken;
+      }
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function readBrowserBootstrap() {
+  if (typeof window === "undefined") {
+    return { cortexBase: "", authToken: "", panel: "overview" };
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const requestedPanel = params.get("panel") || "";
+  const panel = PANEL_SEQUENCE.some((entry) => entry.key === requestedPanel) ? requestedPanel : "overview";
+  const cortexBase = params.get("cortexBase") || localStorage.getItem(CORTEX_BASE_STORAGE_KEY) || DEFAULT_CORTEX_BASE;
+  const authTokenFromParams = params.get("authToken") || "";
+  const authToken = authTokenFromParams || readPersistedBrowserAuthToken();
+
+  if (params.get("cortexBase")) {
+    localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
+  }
+  if (authTokenFromParams) {
+    try {
+      window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, authToken);
+      window.localStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+    params.delete("authToken");
+    const nextQuery = params.toString();
+    const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+  }
+
+  return { cortexBase, authToken, panel };
+}
+
+function persistBrowserAuthToken(token) {
+  if (typeof window === "undefined") return;
+  try {
+    if (token) {
+      window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, token);
+      window.localStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
+      clearLegacyBrowserAuthTokens();
+    } else {
+      window.sessionStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
+      window.localStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
+      clearLegacyBrowserAuthTokens();
+    }
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
+}
 
 function timeAgo(iso) {
   if (!iso) return "unknown";
@@ -75,11 +199,24 @@ function priorityRank(priority) {
 }
 
 async function readTauriInvoke() {
+  if (typeof window === "undefined" || !window.__TAURI_INTERNALS__) {
+    return null;
+  }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke;
   } catch {
     return null;
+  }
+}
+
+function formatDaemonEndpoint(cortexBase) {
+  try {
+    const url = new URL(cortexBase);
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    return `${url.hostname}:${port}`;
+  } catch {
+    return "127.0.0.1:7437";
   }
 }
 
@@ -137,6 +274,13 @@ function formatCompactNumber(value) {
   if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
   if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}K`;
   return Math.round(value).toString();
+}
+
+function formatSignedCompactNumber(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return "0";
+  const prefix = numeric > 0 ? "+" : numeric < 0 ? "-" : "";
+  return `${prefix}${formatCompactNumber(Math.abs(numeric))}`;
 }
 
 function buildLineGeometry(data, width, height, padding = 8) {
@@ -224,18 +368,19 @@ function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizonDays = 
         day: day + 1,
         daily: dailyValue,
         cumulative: cumulativeValue,
+        gain: cumulativeValue - startTotal,
       });
     }
     return {
       key: `sim-${simIndex}`,
       series,
-      final: cumulativeValue,
+      final: cumulativeValue - startTotal,
     };
   });
 
   const bandSeries = Array.from({ length: horizonDays }, (_, dayIndex) => {
     const values = runs
-      .map((run) => run.series[dayIndex]?.cumulative || startTotal)
+      .map((run) => run.series[dayIndex]?.gain || 0)
       .sort((left, right) => left - right);
     return {
       day: dayIndex + 1,
@@ -250,16 +395,20 @@ function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizonDays = 
   const samples = runs
     .filter((_, index) => index % Math.ceil(simulationCount / 14) === 0)
     .slice(0, 14)
-    .map((run) => run.series.map((point) => point.cumulative));
+    .map((run) => run.series.map((point) => point.gain));
 
   const endingValues = runs.map((run) => run.final).sort((left, right) => left - right);
   const summary = {
     startTotal,
-    p10: percentileFromSorted(endingValues, 0.1),
-    p50: percentileFromSorted(endingValues, 0.5),
-    p90: percentileFromSorted(endingValues, 0.9),
+    p10Gain: percentileFromSorted(endingValues, 0.1),
+    p50Gain: percentileFromSorted(endingValues, 0.5),
+    p90Gain: percentileFromSorted(endingValues, 0.9),
     avgDaily: recent.reduce((sum, value) => sum + value, 0) / recent.length,
   };
+
+  summary.p10Total = startTotal + summary.p10Gain;
+  summary.p50Total = startTotal + summary.p50Gain;
+  summary.p90Total = startTotal + summary.p90Gain;
 
   return { bandSeries, samples, summary, horizonDays, simulationCount };
 }
@@ -308,12 +457,13 @@ function MonteCarloProjectionChart({ projection, width = 820, height = 280 }) {
   if (!projection?.bandSeries?.length) return <div className="sparkline-empty">Not enough data for a projection yet</div>;
 
   const bandValues = projection.bandSeries.flatMap((point) => [point.p10, point.p25, point.p50, point.p75, point.p90]);
-  const minValue = Math.min(...bandValues, projection.summary.startTotal);
-  const maxValue = Math.max(...bandValues, projection.summary.startTotal);
+  const minValue = 0;
+  const maxValue = Math.max(...bandValues, 1);
+  const maxWithHeadroom = maxValue * 1.14;
   const padding = { top: 16, right: 18, bottom: 30, left: 18 };
   const innerWidth = width - padding.left - padding.right;
   const innerHeight = height - padding.top - padding.bottom;
-  const valueRange = maxValue - minValue || 1;
+  const valueRange = maxWithHeadroom - minValue || 1;
   const toX = (index) => padding.left + (index / (projection.bandSeries.length - 1)) * innerWidth;
   const toY = (value) => padding.top + innerHeight - ((value - minValue) / valueRange) * innerHeight;
   const areaPath = (upperKey, lowerKey) => {
@@ -330,9 +480,11 @@ function MonteCarloProjectionChart({ projection, width = 820, height = 280 }) {
   const linePath = (key) => projection.bandSeries.map((point, index) => `${index === 0 ? "M" : "L"} ${toX(index)} ${toY(point[key])}`).join(" ");
   const samplePaths = projection.samples.map((sample) => sample.map((value, index) => `${index === 0 ? "M" : "L"} ${toX(index)} ${toY(value)}`).join(" "));
   const endPoint = projection.bandSeries.at(-1);
+  const summaryX = width - padding.right - 138;
+  const summaryY = padding.top + 10;
 
   return (
-    <svg width={width} height={height} className="projection-chart" role="img" aria-label="30-day Monte Carlo projection for cumulative savings">
+    <svg width={width} height={height} className="projection-chart" role="img" aria-label="30-day Monte Carlo projection for cumulative savings gains">
       <defs>
         <linearGradient id="projectionBandWide" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#4f7cff" stopOpacity="0.24" />
@@ -352,6 +504,7 @@ function MonteCarloProjectionChart({ projection, width = 820, height = 280 }) {
           const x = padding.left + (index * innerWidth) / 5;
           return <line key={`x-${index}`} y1={padding.top} y2={height - padding.bottom} x1={x} x2={x} className="projection-grid-line projection-grid-line-vertical" />;
         })}
+        <line x1={padding.left} x2={width - padding.right} y1={toY(0)} y2={toY(0)} className="projection-baseline" />
       </g>
       <path d={areaPath("p90", "p10")} className="projection-band projection-band-wide" />
       <path d={areaPath("p75", "p25")} className="projection-band projection-band-core" />
@@ -363,19 +516,22 @@ function MonteCarloProjectionChart({ projection, width = 820, height = 280 }) {
         <>
           <circle cx={toX(projection.bandSeries.length - 1)} cy={toY(endPoint.p50)} r="9" className="projection-end-halo" />
           <circle cx={toX(projection.bandSeries.length - 1)} cy={toY(endPoint.p50)} r="3.5" className="projection-end-dot" />
-          <text x={toX(projection.bandSeries.length - 1) - 120} y={toY(endPoint.p90) - 14} className="projection-annotation projection-annotation-high">
-            p90 {formatCompactNumber(endPoint.p90)}
-          </text>
-          <text x={toX(projection.bandSeries.length - 1) - 120} y={toY(endPoint.p50) - 10} className="projection-annotation">
-            p50 {formatCompactNumber(endPoint.p50)}
-          </text>
-          <text x={toX(projection.bandSeries.length - 1) - 120} y={toY(endPoint.p10) + 20} className="projection-annotation projection-annotation-low">
-            p10 {formatCompactNumber(endPoint.p10)}
-          </text>
+          <g className="projection-summary" transform={`translate(${summaryX} ${summaryY})`}>
+            <rect width="120" height="58" rx="10" className="projection-summary-panel" />
+            <text x="12" y="18" className="projection-annotation projection-annotation-high">
+              p90 {formatSignedCompactNumber(endPoint.p90)}
+            </text>
+            <text x="12" y="34" className="projection-annotation">
+              p50 {formatSignedCompactNumber(endPoint.p50)}
+            </text>
+            <text x="12" y="50" className="projection-annotation projection-annotation-low">
+              p10 {formatSignedCompactNumber(endPoint.p10)}
+            </text>
+          </g>
         </>
       ) : null}
       <text x={padding.left} y={height - 8} className="projection-axis-label">today</text>
-      <text x={width - padding.right - 28} y={height - 8} className="projection-axis-label">+30d</text>
+      <text x={width - padding.right - 62} y={height - 8} className="projection-axis-label">+30d gain</text>
     </svg>
   );
 }
@@ -435,7 +591,18 @@ function AgentItem({ session }) {
   );
 }
 
-function TaskItem({ task }) {
+function TaskItem({
+  task,
+  selectedOperator = "",
+  completionDraft = "",
+  completionExpanded = false,
+  onClaim = null,
+  onAbandon = null,
+  onComplete = null,
+  onCompletionDraftChange = null,
+  onToggleComplete = null,
+  busyActionKey = "",
+}) {
   const detail = task.claimedBy
     ? `${task.claimedBy}${task.summary ? ` — ${task.summary}` : ""} · ${timeAgo(task.claimedAt || task.completedAt)}`
     : task.project || "—";
@@ -571,7 +738,8 @@ function isDaemonOfflineErrorMessage(message) {
 }
 
 export function App() {
-  const [panel, setPanel] = useState("overview");
+  const browserBootstrap = useMemo(() => readBrowserBootstrap(), []);
+  const [panel, setPanel] = useState(() => browserBootstrap.panel || "overview");
   const [daemonState, setDaemonState] = useState(EMPTY_DAEMON);
   const [stats, setStats] = useState({
     memories: "--",
@@ -601,7 +769,7 @@ export function App() {
   const [conflictPairs, setConflictPairs] = useState([]);
   const [conflictLoading, setConflictLoading] = useState(false);
   const [editorSetup, setEditorSetup] = useState(null);
-  const [cortexBase, setCortexBase] = useState(() => localStorage.getItem("cortex_base") || DEFAULT_CORTEX_BASE);
+  const [cortexBase, setCortexBase] = useState(() => browserBootstrap.cortexBase || DEFAULT_CORTEX_BASE);
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState(null);
   const [updateInstalling, setUpdateInstalling] = useState(false);
@@ -611,7 +779,7 @@ export function App() {
   const [analyticsMode, setAnalyticsMode] = useState(() => localStorage.getItem("cortex_analytics_mode") || "aggregate");
 
   const invokeRef = useRef(null);
-  const tokenRef = useRef("");
+  const tokenRef = useRef(browserBootstrap.authToken || "");
   const refreshAllRef = useRef(async () => {});
   const daemonTransitionRef = useRef(false);
 
@@ -646,16 +814,21 @@ export function App() {
       }
     }
 
-    return Array.from(deduped.values());
+    return Array.from(deduped.values()).filter((session) => !isTransportSession(session));
   }, [sessions]);
 
   const knownAgents = useMemo(() => {
-    const allAgents = new Set(normalizedSessions.map((session) => session.agent).filter(Boolean));
-    if (messageAgent.trim()) allAgents.add(messageAgent.trim());
-    return Array.from(allAgents).sort((a, b) => a.localeCompare(b));
+    const extras = messageAgent.trim() ? [messageAgent.trim()] : [];
+    return buildKnownAgents(normalizedSessions, extras);
   }, [normalizedSessions, messageAgent]);
 
   const currencyRate = USD_TO_CURRENCY_RATE[currency] ?? USD_TO_CURRENCY_RATE.USD;
+  const memoryLoad = useMemo(
+    () =>
+      (typeof stats.memories === "number" ? stats.memories : 0)
+      + (typeof stats.decisions === "number" ? stats.decisions : 0),
+    [stats]
+  );
 
   const currencyFormatter = useMemo(
     () =>
@@ -673,7 +846,10 @@ export function App() {
   );
 
   const refreshTokenForApi = useCallback(async () => {
-    if (!invokeRef.current) return;
+    if (!invokeRef.current) {
+      tokenRef.current = readPersistedBrowserAuthToken();
+      return;
+    }
     try {
       const token = await invokeRef.current("read_auth_token");
       tokenRef.current = token || "";
@@ -710,6 +886,7 @@ export function App() {
       try {
         const token = await call("read_auth_token");
         tokenRef.current = token || "";
+        persistBrowserAuthToken(tokenRef.current);
         return;
       } catch (err) {
         tokenRef.current = "";
@@ -751,7 +928,7 @@ export function App() {
         running: false,
         reachable: false,
         pid: null,
-        message: "Cannot reach daemon on :7437",
+        message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
       };
       setDaemonState(nextState);
     }
@@ -793,7 +970,7 @@ export function App() {
       },
       {
         fn: () => api("/tasks?status=all", true),
-        apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks : []),
+        apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks.map(normalizeTask) : []),
       },
     ]);
   }, [api]);
@@ -901,7 +1078,10 @@ export function App() {
     if (errors.length) {
       const unique = [...new Set(errors)];
       if (!unique.every((error) => isDaemonOfflineErrorMessage(error))) {
-        setFeedbackMessage(unique.join("; "));
+        setFeedbackMessage(summarizeDashboardErrors(unique));
+        if (!invokeRef.current && unique.every((error) => isAuthFailure(error))) {
+          setShowConnectionDialog(true);
+        }
       }
     }
   }, [
@@ -917,7 +1097,7 @@ export function App() {
   ]);
 
   useEffect(() => {
-    localStorage.setItem("cortex_base", cortexBase);
+    localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
     refreshAllRef.current();
   }, [cortexBase]);
 
@@ -956,18 +1136,34 @@ export function App() {
   }, [normalizedSessions, messageAgent]);
 
   useEffect(() => {
-    refreshMessages().catch(err => setFeedbackMessage(`Messages: ${err.message || err}`));
+    refreshMessages().catch((error) => {
+      const message = error?.message || String(error);
+      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      setFeedbackMessage(summarizeDashboardErrors([message]) || message);
+    });
   }, [refreshMessages]);
 
   useEffect(() => {
-    refreshActivity().catch(err => setFeedbackMessage(`Activity: ${err.message || err}`));
+    refreshActivity().catch((error) => {
+      const message = error?.message || String(error);
+      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      setFeedbackMessage(summarizeDashboardErrors([message]) || message);
+    });
   }, [refreshActivity]);
 
   useEffect(() => {
     if (panel !== "analytics") return;
-    refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`));
+    refreshSavings().catch((error) => {
+      const message = error?.message || String(error);
+      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      setFeedbackMessage(summarizeDashboardErrors([message]) || message);
+    });
     const timer = setInterval(() => {
-      refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`));
+      refreshSavings().catch((error) => {
+        const message = error?.message || String(error);
+        if (!message || isDaemonOfflineErrorMessage(message)) return;
+        setFeedbackMessage(summarizeDashboardErrors([message]) || message);
+      });
     }, ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
   }, [panel, refreshSavings]);
@@ -1163,10 +1359,54 @@ export function App() {
     [recallTrendSeries]
   );
 
+  const recentRecallWindow = useMemo(
+    () => recallTrendSeries.slice(-7),
+    [recallTrendSeries]
+  );
+
+  const recallWindowAverage = useMemo(() => {
+    if (!recentRecallWindow.length) return 0;
+    return Math.round(
+      recentRecallWindow.reduce((sum, point) => sum + Number(point.hitRatePct || 0), 0) / recentRecallWindow.length
+    );
+  }, [recentRecallWindow]);
+
+  const recallWindowSpread = useMemo(() => {
+    if (!recentRecallWindow.length) return 0;
+    const values = recentRecallWindow.map((point) => Number(point.hitRatePct || 0));
+    return Math.round(Math.max(...values) - Math.min(...values));
+  }, [recentRecallWindow]);
+
   const monteCarloProjection = useMemo(
     () => buildMonteCarloProjection(dailySeries, cumulativeSeries),
     [dailySeries, cumulativeSeries]
   );
+
+  const topFeedEntries = useMemo(
+    () => feedEntries.slice(0, 5),
+    [feedEntries]
+  );
+
+  const topActivityEntries = useMemo(
+    () => activityEntries.slice(0, 5),
+    [activityEntries]
+  );
+
+  const sidebarUtilityStats = useMemo(
+    () => [
+      { label: "Queue", value: pendingTasks.length, tone: pendingTasks.length ? "warning" : "calm" },
+      { label: "Locks", value: locks.length, tone: locks.length ? "cyan" : "calm" },
+      { label: "Recall", value: `${latestRecallHitRate || 0}%`, tone: latestRecallHitRate >= 85 ? "green" : "warning" },
+      { label: "Conflicts", value: conflictPairs.length, tone: conflictPairs.length ? "danger" : "calm" },
+    ],
+    [pendingTasks.length, locks.length, latestRecallHitRate, conflictPairs.length]
+  );
+
+  const reportSurfaceError = useCallback((error) => {
+    const message = error?.message || String(error);
+    if (!message || isDaemonOfflineErrorMessage(message)) return;
+    setFeedbackMessage(summarizeDashboardErrors([message]) || message);
+  }, []);
 
   const waitForDaemonReachable = useCallback(async () => {
     const started = Date.now();
@@ -1285,17 +1525,22 @@ export function App() {
 
       if (shouldStop) {
         setFeedbackMessage("Restarting daemon: stopping...");
-        const stopPromise = call("stop_daemon").catch(() => ({ failed: true }));
+        const stopPromise = call("stop_daemon")
+          .then((result) => ({ ok: true, result }))
+          .catch((error) => ({ ok: false, error: error?.message || String(error) }));
         const stopResult = await Promise.race([
           stopPromise,
           new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), DAEMON_STOP_HANG_TIMEOUT_MS)),
         ]);
+        let stopFailure = "";
         if (stopResult?.timedOut) {
           setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...");
+        } else if (!stopResult?.ok) {
+          stopFailure = stopResult?.error || "Existing daemon rejected shutdown.";
         }
         const stopped = await waitForDaemonOffline();
         if (!stopped) {
-          setFeedbackMessage("Daemon stop is still in progress. Continuing with start attempt...");
+          throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
         }
       } else {
         setFeedbackMessage("Daemon already stopped. Starting...");
@@ -1330,18 +1575,18 @@ export function App() {
   useEffect(() => {
     function handleKey(e) {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
-      const idx = PANELS.findIndex(p => p.key === panel);
+      const idx = PANEL_SEQUENCE.findIndex(p => p.key === panel);
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
-        setPanel(PANELS[(idx + 1) % PANELS.length].key);
+        setPanel(PANEL_SEQUENCE[(idx + 1) % PANEL_SEQUENCE.length].key);
       } else if (e.key === "ArrowUp" || e.key === "k") {
         e.preventDefault();
-        setPanel(PANELS[(idx - 1 + PANELS.length) % PANELS.length].key);
+        setPanel(PANEL_SEQUENCE[(idx - 1 + PANEL_SEQUENCE.length) % PANEL_SEQUENCE.length].key);
       } else {
         const num = parseInt(e.key);
-        if (num >= 1 && num <= PANELS.length) {
+        if (num >= 1 && num <= PANEL_SEQUENCE.length) {
           e.preventDefault();
-          setPanel(PANELS[num - 1].key);
+          setPanel(PANEL_SEQUENCE[num - 1].key);
         }
       }
     }
@@ -1360,7 +1605,7 @@ export function App() {
         </div>
 
         <nav className="sidebar-nav">
-          {PANELS.map((item, idx) => (
+          {PANEL_SEQUENCE.map((item, idx) => (
             <button
               key={item.key}
               type="button"
@@ -1373,6 +1618,28 @@ export function App() {
             </button>
           ))}
         </nav>
+
+        <div className="sidebar-utility">
+          <div className="sidebar-utility-header">
+            <span className="sidebar-utility-kicker">Mission status</span>
+            <span className={`sidebar-utility-pill ${daemonState.reachable ? "online" : "offline"}`}>
+              {daemonState.reachable ? "Live" : "Wait"}
+            </span>
+          </div>
+          <div className="sidebar-utility-grid">
+            {sidebarUtilityStats.map((item) => (
+              <div key={item.label} className={`sidebar-utility-card tone-${item.tone}`}>
+                <span className="sidebar-utility-label">{item.label}</span>
+                <strong className="sidebar-utility-value">{item.value}</strong>
+              </div>
+            ))}
+          </div>
+          <div className="sidebar-utility-note">
+            <span className="sidebar-utility-note-label">Focus</span>
+            <strong>{PANEL_SEQUENCE.find((item) => item.key === panel)?.label || "Overview"}</strong>
+            <p>{daemonState.message}</p>
+          </div>
+        </div>
 
         <div className="sidebar-footer">
           <div className="daemon-restart-row">
@@ -1433,7 +1700,7 @@ export function App() {
           <div className="topbar-left">
             <span className="topbar-path">CORTEX</span>
             <span className="topbar-sep">/</span>
-            <span className="topbar-current">{PANELS.find(p => p.key === panel)?.label.toUpperCase()}</span>
+            <span className="topbar-current">{PANEL_SEQUENCE.find(p => p.key === panel)?.label.toUpperCase()}</span>
           </div>
           <div className="topbar-right">
             <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
@@ -1462,8 +1729,10 @@ export function App() {
                 const port = fd.get("port")?.toString().trim() || "7437";
                 const token = fd.get("token")?.toString().trim();
                 setCortexBase(`http://${host}:${port}`);
-                if (token) tokenRef.current = token;
+                tokenRef.current = token || "";
+                persistBrowserAuthToken(token || "");
                 setShowConnectionDialog(false);
+                queueMicrotask(() => refreshAllRef.current());
               }}>
                 <label className="connection-field">
                   <span>Host</span>
@@ -1481,8 +1750,10 @@ export function App() {
                   <button type="button" className="btn-sm" onClick={() => {
                     setCortexBase(DEFAULT_CORTEX_BASE);
                     tokenRef.current = "";
+                    persistBrowserAuthToken("");
                     setShowConnectionDialog(false);
                     readAuthToken();
+                    queueMicrotask(() => refreshAllRef.current());
                   }}>Reset to Local</button>
                   <button type="submit" className="btn-sm btn-primary">Connect</button>
                 </div>
@@ -1493,11 +1764,220 @@ export function App() {
 
         {panel === "overview" ? (
           <section className="panel active">
+            <div className="panel-header overview-panel-header">
+              <div>
+                <h1>Overview</h1>
+                <p className="panel-subtitle">Command center for analytics, live agent traffic, and memory quality.</p>
+              </div>
+              <div className="surface-actions">
+                <button type="button" className="btn-sm" onClick={refreshAll}>
+                  Refresh
+                </button>
+                <button type="button" className="btn-sm btn-primary" onClick={handleSetupEditors}>
+                  Setup MCP
+                </button>
+              </div>
+            </div>
+
+            <div className="metrics overview-metrics">
+              <div className="metric" data-accent="cyan">
+                <span className="metric-value"><AnimatedNumber value={typeof stats.memories === "number" ? stats.memories : 0} /></span>
+                <span className="metric-label">Memories</span>
+                <span className="metric-icon">MEM</span>
+              </div>
+              <div className="metric" data-accent="blue">
+                <span className="metric-value"><AnimatedNumber value={typeof stats.decisions === "number" ? stats.decisions : 0} /></span>
+                <span className="metric-label">Decisions</span>
+                <span className="metric-icon">DEC</span>
+              </div>
+              <div className="metric" data-accent="purple">
+                <span className="metric-value"><AnimatedNumber value={typeof stats.events === "number" ? stats.events : 0} /></span>
+                <span className="metric-label">Events</span>
+                <span className="metric-icon">EVT</span>
+              </div>
+              <div className="metric" data-accent="green">
+                <span className="metric-value"><AnimatedNumber value={normalizedSessions.length} /></span>
+                <span className="metric-label">Active Agents</span>
+                <span className="metric-icon">AGT</span>
+              </div>
+              <div className="metric" data-accent="blue">
+                <span className="metric-value">{formatCompactNumber(Number(savings?.summary?.totalSaved || 0))}</span>
+                <span className="metric-label">Saved Tokens</span>
+                <span className="metric-icon">TOK</span>
+              </div>
+            </div>
+
+            <div className="system-strip">
+              <div className="sys-item">
+                <span className="sys-label">DAEMON</span>
+                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
+                  {daemonState.reachable ? "RUNNING" : "OFFLINE"}
+                </span>
+              </div>
+              <div className="sys-item">
+                <span className="sys-label">EMBEDDINGS</span>
+                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
+                  {daemonState.reachable ? "ONNX ACTIVE" : "OFFLINE"}
+                </span>
+              </div>
+              <div className="sys-item">
+                <span className="sys-label">HOST</span>
+                <span className="sys-value">
+                  {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
+                </span>
+              </div>
+              <div className="sys-item">
+                <span className="sys-label">LOCKS</span>
+                <span className="sys-value">{locks.length} ACTIVE</span>
+              </div>
+              <div className="sys-item">
+                <span className="sys-label">TASKS</span>
+                <span className="sys-value">{pendingTasks.length} PENDING</span>
+              </div>
+              <div className="sys-item sys-item-action" onClick={() => setPanel("memory")} title="Open memory health and conflict resolution">
+                <span className="sys-label">RECALL</span>
+                <span className={`sys-value ${latestRecallHitRate >= 85 ? "sys-ok" : ""}`}>{latestRecallHitRate || 0}%</span>
+              </div>
+            </div>
+
+            <div className="overview-dashboard-grid">
+              <div className="card overview-hero-card overview-span-2">
+                <div className="card-header">
+                  <h2>Mission Control</h2>
+                  <span className="badge">{formatCurrency(((savings?.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
+                </div>
+                <p className="chart-summary">
+                  Overview now behaves like a command deck instead of a spacer page: analytics, work, and memory quality are visible immediately.
+                </p>
+                <div className="overview-summary-grid">
+                  <div className="overview-summary-card">
+                    <span className="overview-summary-label">30d median gain</span>
+                    <strong>{formatSignedCompactNumber(Number(monteCarloProjection?.summary?.p50Gain || 0))}t</strong>
+                    <span>{monteCarloProjection ? `${monteCarloProjection.simulationCount} deterministic sims` : "Waiting for more history"}</span>
+                  </div>
+                  <div className="overview-summary-card">
+                    <span className="overview-summary-label">Current run-rate</span>
+                    <strong>{formatCompactNumber(Number(monteCarloProjection?.summary?.avgDaily || 0))}t/day</strong>
+                    <span>{bootSavingsMomentum === null ? "Momentum pending" : `${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs prior window`}</span>
+                  </div>
+                  <div className="overview-summary-card">
+                    <span className="overview-summary-label">Work in flight</span>
+                    <strong>{claimedTasks.length + pendingTasks.length}</strong>
+                    <span>{claimedTasks.length} claimed / {pendingTasks.length} pending</span>
+                  </div>
+                  <div className="overview-summary-card">
+                    <span className="overview-summary-label">Memory load</span>
+                    <strong>{memoryLoad}</strong>
+                    <span>{stats.memories} memories / {stats.decisions} decisions</span>
+                  </div>
+                </div>
+                <div className="overview-hero-actions">
+                  <button type="button" className="btn-sm btn-primary" onClick={() => setPanel("analytics")}>Open Analytics</button>
+                  <button type="button" className="btn-sm" onClick={() => setPanel("brain")}>Open Brain</button>
+                  <button type="button" className="btn-sm" onClick={() => setPanel("work")}>Open Work</button>
+                </div>
+              </div>
+
+              <div className="card overview-status-card">
+                <div className="card-header">
+                  <h2>Memory Health</h2>
+                  <span className="badge">{latestRecallHitRate || 0}%</span>
+                </div>
+                <div className="overview-status-list">
+                  <div className="overview-status-row">
+                    <span>Latest recall hit rate</span>
+                    <strong>{latestRecallHitRate || 0}%</strong>
+                  </div>
+                  <div className="overview-status-row">
+                    <span>7-day average</span>
+                    <strong>{recallWindowAverage || 0}%</strong>
+                  </div>
+                  <div className="overview-status-row">
+                    <span>Spread</span>
+                    <strong>{recallWindowSpread || 0} pts</strong>
+                  </div>
+                  <div className="overview-status-row">
+                    <span>Conflict pairs</span>
+                    <strong>{conflictPairs.length}</strong>
+                  </div>
+                </div>
+                <button type="button" className="btn-sm" onClick={() => setPanel("memory")}>
+                  Open Memory Surface
+                </button>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h2>Active Agents</h2>
+                  <span className="badge">{normalizedSessions.length}</span>
+                </div>
+                <ul className="item-list">
+                  {normalizedSessions.length ? normalizedSessions.map((session) => <AgentItem key={session.sessionId || session.agent} session={session} />) : <EmptyItem text="No agents online" />}
+                </ul>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h2>Recent Activity</h2>
+                  <span className="badge">{topActivityEntries.length}</span>
+                </div>
+                <ul className="item-list">
+                  {topActivityEntries.length ? topActivityEntries.map((entry) => <ActivityItem key={entry.id} entry={entry} />) : <EmptyItem text="No recent activity" />}
+                </ul>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h2>Recent Feed</h2>
+                  <span className="badge">{topFeedEntries.length}</span>
+                </div>
+                <ul className="item-list">
+                  {topFeedEntries.length ? topFeedEntries.map((entry) => <FeedItem key={entry.id} entry={entry} />) : <EmptyItem text="No feed entries" />}
+                </ul>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h2>Queue & Locks</h2>
+                  <span className="badge">{pendingTasks.length + locks.length}</span>
+                </div>
+                <div className="overview-dual-stack">
+                  <div>
+                    <div className="overview-stack-title">Work Queue</div>
+                    <ul className="item-list compact-list">
+                      {recentOverviewTasks.length ? recentOverviewTasks.map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="No active tasks" />}
+                    </ul>
+                  </div>
+                  <div>
+                    <div className="overview-stack-title">File Locks</div>
+                    <ul className="item-list compact-list">
+                      {locks.length ? locks.slice(0, 4).map((lock) => <LockItem key={lock.id || `${lock.path}:${lock.agent}`} lock={lock} />) : <EmptyItem text="No active locks" />}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {panel === "__legacy_overview" ? (
+          <section className="panel active">
             <div className="panel-header">
-              <h1>Overview</h1>
-              <button type="button" className="btn-sm" onClick={refreshAll}>
-                Refresh
-              </button>
+              <div>
+                <h1>Overview</h1>
+                <span className="panel-subtitle">Command center for live work, recall health, and the brain surface.</span>
+              </div>
+              <div className="surface-actions">
+                <button type="button" className="btn-sm" onClick={refreshAll}>
+                  Refresh
+                </button>
+                <button type="button" className="btn-sm" onClick={() => setPanel("analytics")}>
+                  Analytics
+                </button>
+                <button type="button" className="btn-sm btn-primary" onClick={() => setPanel("brain")}>
+                  Open Brain
+                </button>
+              </div>
             </div>
 
             <div className="metrics">
@@ -1574,6 +2054,443 @@ export function App() {
         ) : null}
 
         {panel === "agents" ? (
+          <section className="panel active">
+            <div className="panel-header">
+              <div>
+                <h1>Agents</h1>
+                <p className="panel-subtitle">Sessions, messages, and recent activity in one place.</p>
+              </div>
+              <div className="surface-actions">
+                <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={() => setPanel("brain")}>Brain View</button>
+              </div>
+            </div>
+            <div className="surface-grid agents-grid">
+              <div className="card agents-card-span-2">
+                <div className="card-header">
+                  <h2>Active Sessions</h2>
+                  <span className="badge">{normalizedSessions.length}</span>
+                </div>
+                <ul className="item-list">
+                  {normalizedSessions.length ? normalizedSessions.map((session) => <AgentItem key={session.sessionId || session.agent} session={session} />) : <EmptyItem text="No agents online" />}
+                </ul>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h2>Agent Messages</h2>
+                  <span className="badge">{messageEntries.length}</span>
+                </div>
+                <div className="surface-toolbar">
+                  <label className="feed-control">
+                    <span>Agent</span>
+                    <input
+                      type="text"
+                      list="message-agent-list"
+                      placeholder="factory-droid"
+                      value={messageAgent}
+                      onChange={(event) => setMessageAgent(event.target.value)}
+                    />
+                    <datalist id="message-agent-list">
+                      {knownAgents.map((agent) => (
+                        <option key={agent} value={agent} />
+                      ))}
+                    </datalist>
+                  </label>
+                  <div className="surface-actions">
+                    <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(reportSurfaceError)}>
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                <ul className="item-list">
+                  {!messageAgent.trim() ? (
+                    <EmptyItem text="Select an agent to view messages" />
+                  ) : messageEntries.length ? (
+                    messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
+                  ) : (
+                    <EmptyItem text={`No messages for ${messageAgent.trim()}`} />
+                  )}
+                </ul>
+              </div>
+
+              <div className="card">
+                <div className="card-header">
+                  <h2>Recent Activity</h2>
+                  <span className="badge">{activityEntries.length}</span>
+                </div>
+                <div className="surface-toolbar">
+                  <label className="feed-control">
+                    <span>Since</span>
+                    <select
+                      value={activitySince}
+                      onChange={(event) => setActivitySince(event.target.value)}
+                    >
+                      <option value="15m">15m</option>
+                      <option value="1h">1h</option>
+                      <option value="4h">4h</option>
+                      <option value="1d">1d</option>
+                    </select>
+                  </label>
+                  <div className="surface-actions">
+                    <button type="button" className="btn-sm" onClick={() => refreshActivity().catch(reportSurfaceError)}>
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                <ul className="item-list">
+                  {activityEntries.length ? (
+                    activityEntries.map((entry) => <ActivityItem key={entry.id} entry={entry} />)
+                  ) : (
+                    <EmptyItem text="No recent activity" />
+                  )}
+                </ul>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {panel === "work" ? (
+          <section className="panel active">
+            <div className="panel-header">
+              <div>
+                <h1>Work</h1>
+                <p className="panel-subtitle">Queue, locks, and shared feed live on the same operating surface.</p>
+              </div>
+              <div className="surface-actions">
+                <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={() => setPanel("agents")}>Agents</button>
+              </div>
+            </div>
+
+            <div className="surface-stat-grid">
+              <div className="surface-stat-card">
+                <span className="surface-stat-label">Pending</span>
+                <strong>{pendingTasks.length}</strong>
+              </div>
+              <div className="surface-stat-card">
+                <span className="surface-stat-label">Claimed</span>
+                <strong>{claimedTasks.length}</strong>
+              </div>
+              <div className="surface-stat-card">
+                <span className="surface-stat-label">Completed</span>
+                <strong>{completedTasks.length}</strong>
+              </div>
+              <div className="surface-stat-card">
+                <span className="surface-stat-label">Locks</span>
+                <strong>{locks.length}</strong>
+              </div>
+            </div>
+
+            <div className="work-grid">
+              <div className="task-columns work-task-columns">
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Pending</h2>
+                    <span className="badge">{pendingTasks.length}</span>
+                  </div>
+                  <ul className="item-list">
+                    {pendingTasks.length ? pendingTasks.map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="No pending tasks" />}
+                  </ul>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
+                    <h2>In Progress</h2>
+                    <span className="badge">{claimedTasks.length}</span>
+                  </div>
+                  <ul className="item-list">
+                    {claimedTasks.length ? claimedTasks.map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="Nothing in progress" />}
+                  </ul>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Done</h2>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span className="badge">{completedTasks.length}</span>
+                      {completedTasks.length > 0 ? (
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          onClick={async () => {
+                            try {
+                              const results = await Promise.allSettled(
+                                completedTasks.filter((task) => task?.taskId).map((task) => postApi("/tasks/delete", { taskId: task.taskId }))
+                              );
+                              const failed = results.filter((result) => result.status === "rejected");
+                              if (failed.length) {
+                                setFeedbackMessage(`${failed.length} task delete(s) failed: ${failed[0].reason}`);
+                              }
+                              await refreshAll();
+                            } catch (error) {
+                              reportSurfaceError(error);
+                            }
+                          }}
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <ul className="item-list">
+                    {completedTasks.length ? completedTasks.slice(0, 10).map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="No completed tasks" />}
+                  </ul>
+                </div>
+              </div>
+
+              <div className="work-side-stack">
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Locks</h2>
+                    <span className="badge">{locks.length}</span>
+                  </div>
+                  <ul className="item-list">
+                    {locks.length ? locks.map((lock) => <LockItem key={lock.id || `${lock.path}:${lock.agent}`} lock={lock} />) : <EmptyItem text="No active locks" />}
+                  </ul>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Shared Feed</h2>
+                    <span className="badge">{feedEntries.length}</span>
+                  </div>
+                  <div className="feed-toolbar work-feed-toolbar">
+                    <label className="feed-control">
+                      <span>Since</span>
+                      <select
+                        value={feedFilters.since}
+                        onChange={(event) =>
+                          setFeedFilters((current) => ({ ...current, since: event.target.value }))
+                        }
+                      >
+                        <option value="15m">15m</option>
+                        <option value="1h">1h</option>
+                        <option value="4h">4h</option>
+                        <option value="1d">1d</option>
+                      </select>
+                    </label>
+                    <label className="feed-control">
+                      <span>Kind</span>
+                      <select
+                        value={feedFilters.kind}
+                        onChange={(event) =>
+                          setFeedFilters((current) => ({ ...current, kind: event.target.value }))
+                        }
+                      >
+                        <option value="all">All</option>
+                        <option value="prompt">Prompt</option>
+                        <option value="completion">Completion</option>
+                        <option value="task_complete">Task Complete</option>
+                        <option value="system">System</option>
+                      </select>
+                    </label>
+                    <label className="feed-control">
+                      <span>Agent</span>
+                      <input
+                        type="text"
+                        placeholder="factory-droid"
+                        value={feedFilters.agent}
+                        onChange={(event) =>
+                          setFeedFilters((current) => ({ ...current, agent: event.target.value }))
+                        }
+                      />
+                    </label>
+                    <div className="surface-actions">
+                      <button type="button" className="btn-sm" onClick={() => refreshFeed().catch(reportSurfaceError)}>
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                  <ul className="item-list">
+                    {feedEntries.length ? feedEntries.map((entry) => <FeedItem key={entry.id} entry={entry} />) : <EmptyItem text="No feed entries" />}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {panel === "memory" ? (
+          <section className="panel active">
+            <div className="panel-header">
+              <div>
+                <h1>Memory</h1>
+                <p className="panel-subtitle">Search the brain, inspect recall health, and resolve conflicts without leaving the same tab.</p>
+              </div>
+              <div className="surface-actions">
+                <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh Conflicts</button>
+                <button type="button" className="btn-sm" onClick={() => setPanel("analytics")}>Analytics</button>
+              </div>
+            </div>
+
+            <div className="memory-layout">
+              <div className="card full">
+                <div className="card-header">
+                  <h2>Memory Explorer</h2>
+                  <span className="badge">{memoryResults.length}</span>
+                </div>
+                <form className="memory-search" onSubmit={handleMemorySearch}>
+                  <input
+                    type="text"
+                    className="memory-input"
+                    placeholder="Search the brain... (uses cortex_peek)"
+                    value={memoryQuery}
+                    onChange={(event) => setMemoryQuery(event.target.value)}
+                  />
+                  <button type="submit" className="btn-sm btn-primary" disabled={memorySearching}>
+                    {memorySearching ? "Searching..." : "Peek"}
+                  </button>
+                </form>
+                {memoryResults.length > 0 ? (
+                  <div className="memory-stats">
+                    <span className="badge">{memoryResults.length} matches</span>
+                    <span className="muted-inline">via cortex_peek -- click to expand full recall</span>
+                  </div>
+                ) : null}
+                <ul className="item-list">
+                  {memoryResults.length ? memoryResults.map((match, index) => (
+                    <li key={`${match.source}-${index}`} className="memory-item" onClick={() => !match.expanded && handleMemoryExpand(match.source)}>
+                      <div className="memory-header">
+                        <span className="memory-method">{match.method}</span>
+                        <span className="memory-relevance">{(match.relevance * 100).toFixed(0)}%</span>
+                      </div>
+                      <div className="memory-source">{match.source}</div>
+                      {match.expanded && match.excerpt ? (
+                        <div className="memory-excerpt">{match.excerpt}</div>
+                      ) : null}
+                      {!match.expanded ? <div className="memory-expand-hint">Click to expand</div> : null}
+                    </li>
+                  )) : memoryQuery ? <EmptyItem text="No matches -- try different keywords" /> : <EmptyItem text="Search to explore Cortex memories" />}
+                </ul>
+              </div>
+
+              <div className="memory-side-stack">
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Memory Health</h2>
+                    <span className="badge">{latestRecallHitRate || 0}%</span>
+                  </div>
+                  <div className="overview-status-list">
+                    <div className="overview-status-row">
+                      <span>Memories</span>
+                      <strong>{stats.memories}</strong>
+                    </div>
+                    <div className="overview-status-row">
+                      <span>Decisions</span>
+                      <strong>{stats.decisions}</strong>
+                    </div>
+                    <div className="overview-status-row">
+                      <span>7-day recall avg</span>
+                      <strong>{recallWindowAverage || 0}%</strong>
+                    </div>
+                    <div className="overview-status-row">
+                      <span>Open conflicts</span>
+                      <strong>{conflictPairs.length}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Conflict Radar</h2>
+                    <span className="badge">{conflictPairs.length}</span>
+                  </div>
+                  <ul className="item-list compact-list">
+                    {conflictPairs.length ? conflictPairs.slice(0, 4).map((pair) => (
+                      <li key={`${pair.left.id}-${pair.right.id}`}>
+                        <div className="item-meta">
+                          <span className="item-name">#{pair.left.id} vs #{pair.right.id}</span>
+                          <span className="muted-inline">{Math.round(((pair.left.confidence || 0.8) + (pair.right.confidence || 0.8)) * 50)}%</span>
+                        </div>
+                        <div className="item-detail">
+                          {pair.left.source_agent || "unknown"} / {pair.right.source_agent || "unknown"}
+                        </div>
+                      </li>
+                    )) : <EmptyItem text="No active conflicts" />}
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div className="memory-conflicts-section">
+              <div className="panel-header panel-header-inline">
+                <h2>Conflict Resolution</h2>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span className="badge">{conflictPairs.length} dispute{conflictPairs.length !== 1 ? "s" : ""}</span>
+                  <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh</button>
+                </div>
+              </div>
+              {conflictPairs.length === 0 ? (
+                <div className="card full">
+                  <ul className="item-list">
+                    <EmptyItem text="No active conflicts -- all decisions are in harmony" />
+                  </ul>
+                </div>
+              ) : (
+                conflictPairs.map((pair) => (
+                  <div key={`${pair.left.id}-${pair.right.id}`} className="conflict-pair">
+                    <div className="conflict-cards">
+                      <div className="card conflict-card">
+                        <div className="conflict-card-header">
+                          <span className="conflict-id">#{pair.left.id}</span>
+                          <span className="agent-indicator" style={{
+                            background: agentColor(pair.left.source_agent),
+                            boxShadow: `0 0 8px ${agentColor(pair.left.source_agent)}`,
+                          }} />
+                          <span className="item-name">{pair.left.source_agent || "unknown"}</span>
+                          <span className="muted-inline">{timeAgo(pair.left.created_at)}</span>
+                        </div>
+                        <p className="conflict-text">{pair.left.decision}</p>
+                        {pair.left.context ? <p className="conflict-context">{pair.left.context}</p> : null}
+                        <div className="conflict-meta">
+                          <span>Confidence: {((pair.left.confidence || 0.8) * 100).toFixed(0)}%</span>
+                        </div>
+                      </div>
+                      <div className="conflict-vs">VS</div>
+                      <div className="card conflict-card">
+                        <div className="conflict-card-header">
+                          <span className="conflict-id">#{pair.right.id}</span>
+                          <span className="agent-indicator" style={{
+                            background: agentColor(pair.right.source_agent),
+                            boxShadow: `0 0 8px ${agentColor(pair.right.source_agent)}`,
+                          }} />
+                          <span className="item-name">{pair.right.source_agent || "unknown"}</span>
+                          <span className="muted-inline">{timeAgo(pair.right.created_at)}</span>
+                        </div>
+                        <p className="conflict-text">{pair.right.decision}</p>
+                        {pair.right.context ? <p className="conflict-context">{pair.right.context}</p> : null}
+                        <div className="conflict-meta">
+                          <span>Confidence: {((pair.right.confidence || 0.8) * 100).toFixed(0)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="conflict-actions">
+                      <button className="btn-sm btn-primary" disabled={conflictLoading}
+                        onClick={() => handleResolveConflict(pair.left.id, "keep", pair.right.id)}>
+                        Keep Left
+                      </button>
+                      <button className="btn-sm btn-primary" disabled={conflictLoading}
+                        onClick={() => handleResolveConflict(pair.right.id, "keep", pair.left.id)}>
+                        Keep Right
+                      </button>
+                      <button className="btn-sm" disabled={conflictLoading}
+                        onClick={() => handleResolveConflict(pair.left.id, "merge", pair.right.id)}>
+                        Merge Both
+                      </button>
+                      <button className="btn-sm btn-danger" disabled={conflictLoading}
+                        onClick={() => handleResolveConflict(pair.left.id, "archive", pair.right.id)}>
+                        Archive Both
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {panel === "__legacy_agents" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>Agents</h1>
@@ -1706,7 +2623,7 @@ export function App() {
                 </label>
                 <div className="feed-actions">
                   <span className="badge">{feedEntries.length}</span>
-                  <button type="button" className="btn-sm" onClick={() => refreshFeed().catch(err => setFeedbackMessage(`Feed: ${err.message || err}`))}>
+                  <button type="button" className="btn-sm" onClick={() => refreshFeed().catch(reportSurfaceError)}>
                     Refresh Feed
                   </button>
                 </div>
@@ -1742,7 +2659,7 @@ export function App() {
                 </label>
                 <div className="surface-actions">
                   <span className="badge">{messageEntries.length}</span>
-                  <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(err => setFeedbackMessage(`Messages: ${err.message || err}`))}>
+                  <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(reportSurfaceError)}>
                     Refresh Messages
                   </button>
                 </div>
@@ -1781,7 +2698,7 @@ export function App() {
                 </label>
                 <div className="surface-actions">
                   <span className="badge">{activityEntries.length}</span>
-                  <button type="button" className="btn-sm" onClick={() => refreshActivity().catch(err => setFeedbackMessage(`Activity: ${err.message || err}`))}>
+                  <button type="button" className="btn-sm" onClick={() => refreshActivity().catch(reportSurfaceError)}>
                     Refresh Activity
                   </button>
                 </div>
@@ -1797,7 +2714,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "memory" ? (
+        {panel === "__legacy_memory" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>Memory Explorer</h1>
@@ -1876,7 +2793,7 @@ export function App() {
                     By Operation
                   </button>
                 </div>
-                <button type="button" className="btn-sm" onClick={() => refreshSavings().catch(err => setFeedbackMessage(`Savings: ${err.message || err}`))}>
+                <button type="button" className="btn-sm" onClick={() => refreshSavings().catch(reportSurfaceError)}>
                   Refresh
                 </button>
               </div>
@@ -1950,10 +2867,10 @@ export function App() {
                           <strong>{formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))}t</strong>
                         </div>
                         <div className="analytics-stat-chip">
-                          <span className="analytics-stat-chip-label">Median 30d projection</span>
+                          <span className="analytics-stat-chip-label">Median 30d gain</span>
                           <strong>
                             {monteCarloProjection
-                              ? `${formatCompactNumber(Number(monteCarloProjection.summary?.p50 || 0))}t`
+                              ? `${formatSignedCompactNumber(Number(monteCarloProjection.summary?.p50Gain || 0))}t`
                               : "Pending"}
                           </strong>
                         </div>
@@ -1972,22 +2889,22 @@ export function App() {
                           </span>
                         </div>
                         <p className="chart-summary">
-                          A deterministic Monte Carlo projection built from recent daily savings. It estimates the likely cumulative savings band if current memory growth and compression behavior continue.
+                          A deterministic Monte Carlo projection built from recent daily savings. It estimates the likely additional savings band over the next 30 days so the trajectory reads as future lift, not replayed lifetime totals.
                         </p>
                         <MonteCarloProjectionChart projection={monteCarloProjection} />
                         {monteCarloProjection ? (
                           <div className="analytics-stat-strip analytics-stat-strip-tight">
                             <div className="analytics-stat-chip">
                               <span className="analytics-stat-chip-label">p10</span>
-                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.p10 || 0))}t</strong>
+                              <strong>{formatSignedCompactNumber(Number(monteCarloProjection.summary?.p10Gain || 0))}t</strong>
                             </div>
                             <div className="analytics-stat-chip">
                               <span className="analytics-stat-chip-label">p50</span>
-                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.p50 || 0))}t</strong>
+                              <strong>{formatSignedCompactNumber(Number(monteCarloProjection.summary?.p50Gain || 0))}t</strong>
                             </div>
                             <div className="analytics-stat-chip">
                               <span className="analytics-stat-chip-label">p90</span>
-                              <strong>{formatCompactNumber(Number(monteCarloProjection.summary?.p90 || 0))}t</strong>
+                              <strong>{formatSignedCompactNumber(Number(monteCarloProjection.summary?.p90Gain || 0))}t</strong>
                             </div>
                             <div className="analytics-stat-chip">
                               <span className="analytics-stat-chip-label">Current run-rate</span>
@@ -1997,7 +2914,7 @@ export function App() {
                         ) : null}
                       </div>
 
-                      <div className="card analytics-chart-card">
+                      <div className="card analytics-chart-card analytics-health-card">
                         <div className="analytics-card-header-tight">
                           <div>
                             <span className="analytics-card-kicker">Live health</span>
@@ -2006,22 +2923,35 @@ export function App() {
                           <span className="badge">{latestRecallHitRate || 0}%</span>
                         </div>
                         <p className="chart-summary">
-                          Recall hit rate stays visible alongside economics so memory quality and compression are judged together.
+                          Recall quality is tracked as a health box because the current signal is usually flat. What matters here is whether it is stable, drifting, or falling behind token savings.
                         </p>
-                        <Sparkline
-                          data={recallTrendSeries.map((point) => Number(point.hitRatePct || 0))}
-                          width={520}
-                          height={110}
-                          color="var(--cyan)"
-                          className="sparkline-tall"
-                        />
-                        <div className="chart-legend">
-                          {recallTrendSeries.slice(-7).map((point) => (
+                        <div className="analytics-stat-strip analytics-stat-strip-tight">
+                          <div className="analytics-stat-chip">
+                            <span className="analytics-stat-chip-label">Latest</span>
+                            <strong>{latestRecallHitRate || 0}%</strong>
+                          </div>
+                          <div className="analytics-stat-chip">
+                            <span className="analytics-stat-chip-label">7-day avg</span>
+                            <strong>{recallWindowAverage || 0}%</strong>
+                          </div>
+                          <div className="analytics-stat-chip">
+                            <span className="analytics-stat-chip-label">Spread</span>
+                            <strong>{recallWindowSpread || 0} pts</strong>
+                          </div>
+                          <div className="analytics-stat-chip">
+                            <span className="analytics-stat-chip-label">Assessment</span>
+                            <strong>{recallWindowSpread <= 2 ? "Stable" : latestRecallHitRate >= 90 ? "Strong" : "Watch"}</strong>
+                          </div>
+                        </div>
+                        <div className="chart-legend analytics-quality-strip">
+                          {recentRecallWindow.length ? recentRecallWindow.map((point) => (
                             <span key={point.date} className="chart-day">
                               <span className="chart-day-label">{(point.date || "").slice(5)}</span>
                               <span className="chart-day-value">{Math.round(Number(point.hitRatePct || 0))}%</span>
                             </span>
-                          ))}
+                          )) : (
+                            <span className="sparkline-empty">Recall metrics will appear after recent boots.</span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2255,7 +3185,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "visualizer" ? (
+        {panel === "brain" ? (
           <section className="panel active brain-panel">
             <BrainErrorBoundary>
               <BrainVisualizer api={api} cortexBase={cortexBase} authToken={tokenRef.current} />
@@ -2269,7 +3199,7 @@ export function App() {
               <h1>Conflict Resolution</h1>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span className="badge">{conflictPairs.length} dispute{conflictPairs.length !== 1 ? "s" : ""}</span>
-                <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(err => setFeedbackMessage(`Conflicts: ${err.message || err}`))}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh</button>
               </div>
             </div>
             {conflictPairs.length === 0 ? (
@@ -2339,6 +3269,119 @@ export function App() {
         ) : null}
 
         {panel === "about" ? (
+          <section className="panel active">
+            <div className="panel-header">
+              <div>
+                <h1>About</h1>
+                <p className="panel-subtitle">Shipping surface, runtime contract, and contributor credits for Cortex Control Center.</p>
+              </div>
+            </div>
+            <div className="card full">
+              <div style={{ padding: "2rem", maxWidth: 760 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
+                  <img
+                    src={`${import.meta.env.BASE_URL}icons/icon.png`}
+                    alt="Cortex"
+                    style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                    onError={(event) => { event.currentTarget.style.display = "none"; event.currentTarget.nextSibling.style.display = "flex"; }}
+                  />
+                  <div style={{
+                    width: 64, height: 64, borderRadius: "50%",
+                    background: "linear-gradient(135deg, var(--cyan), var(--blue))",
+                    display: "none", alignItems: "center", justifyContent: "center",
+                    fontSize: "2rem", flexShrink: 0,
+                  }}>CC</div>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version 0.5.0</p>
+                  </div>
+                </div>
+
+                <p style={{ color: "var(--text-2)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
+                  A desktop command surface for the Cortex daemon. The app is built to be production-safe for shipped users first:
+                  auth-aware startup, daemon lifecycle control, live telemetry, and a brain view that can double as a showpiece.
+                </p>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "2rem" }}>
+                  {[
+                    ["Daemon", "Rust + Axum"],
+                    ["Desktop shell", "Tauri + React"],
+                    ["Embeddings", "ONNX (all-MiniLM-L6-v2)"],
+                    ["Storage", "SQLite (WAL)"],
+                    ["Transport", "HTTP + MCP stdio"],
+                    ["Port", "7437"],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{
+                      background: "var(--surface)", border: "1px solid var(--border)",
+                      borderRadius: 8, padding: "0.75rem 1rem",
+                    }}>
+                      <span style={{ color: "var(--text-3)", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
+                      <div style={{ marginTop: 4, fontWeight: 500 }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ marginBottom: "2rem" }}>
+                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>App Lifecycle</h3>
+                  <table className="about-lifecycle-table">
+                    <thead>
+                      <tr>
+                        <th>Action</th>
+                        <th>What happens</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>Start</td>
+                        <td>Launches the daemon sidecar and waits for a healthy API before reloading data.</td>
+                      </tr>
+                      <tr>
+                        <td>Stop</td>
+                        <td>Sends a graceful shutdown request, then tears down sidecar process handles.</td>
+                      </tr>
+                      <tr>
+                        <td>Restart</td>
+                        <td>Runs Stop then Start with timeout handling so the UI can recover when shutdown hangs.</td>
+                      </tr>
+                      <tr>
+                        <td>Close Window</td>
+                        <td>Minimizes to tray by default so Cortex keeps running in the background.</td>
+                      </tr>
+                      <tr>
+                        <td>Exit</td>
+                        <td>Fully quits the app process and attempts daemon shutdown.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginBottom: "2rem" }}>
+                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>Contributors</h3>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {[
+                      { handle: "AdityaVG13", role: "Creator & maintainer" },
+                      { handle: "Claude Code", role: "Core architecture & retrieval pipeline" },
+                      { handle: "Factory Droid", role: "Desktop app, reconnection & telemetry" },
+                      { handle: "Codex", role: "Desktop rewrite, auth hardening, analytics and brain UX" },
+                    ].map(({ handle, role }) => (
+                      <div key={handle} style={{
+                        display: "flex", alignItems: "center", gap: "0.75rem",
+                        background: "var(--surface)", border: "1px solid var(--border)",
+                        borderRadius: 8, padding: "0.625rem 1rem",
+                      }}>
+                        <span className="agent-indicator" style={{ background: "var(--cyan)", boxShadow: "0 0 8px var(--cyan)" }} />
+                        <span style={{ fontWeight: 500 }}>@{handle}</span>
+                        <span style={{ color: "var(--text-3)", fontSize: "0.875rem", marginLeft: "auto" }}>{role}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {panel === "__legacy_about" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>About</h1>

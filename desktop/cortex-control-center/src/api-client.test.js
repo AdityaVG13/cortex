@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   createApi,
   createPostApi,
+  isAuthFailure,
   settledWithRethrow,
   settledCollectErrors,
+  summarizeDashboardErrors,
 } from "./api-client.js";
 
 // -- Helpers ------------------------------------------------------------------
@@ -122,6 +124,27 @@ describe("createApi - api()", () => {
     const api = createApi(makeDeps({ token: "" }));
     const result = await api("/health", false);
     expect(result).toEqual({ status: "ok" });
+  });
+
+  it("does not retry GET 401 when refresh returns the same token", async () => {
+    let token = "stale-token";
+    const onTokenRefresh = vi.fn(async () => {
+      token = "stale-token";
+    });
+    const invoke = vi.fn(() =>
+      Promise.resolve({ status: 401, body: '{"error":"Unauthorized"}' })
+    );
+    const api = createApi(
+      makeDeps({
+        getToken: () => token,
+        invoke,
+        onTokenRefresh,
+      })
+    );
+
+    await expect(api("/sessions", true)).rejects.toThrow("/sessions: HTTP 401");
+    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -301,6 +324,28 @@ describe("createPostApi - postApi()", () => {
       })
     );
   });
+
+  it("does not retry POST 401 when refresh returns the same token", async () => {
+    let token = "stale-token";
+    const onTokenRefresh = vi.fn(async () => {
+      token = "stale-token";
+    });
+    const invoke = vi.fn(() =>
+      Promise.resolve({ status: 401, body: '{"error":"Unauthorized"}' })
+    );
+
+    const postApi = createPostApi(
+      makeDeps({
+        getToken: () => token,
+        invoke,
+        onTokenRefresh,
+      })
+    );
+
+    await expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow("POST /resolve: HTTP 401");
+    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
 });
 
 // =============================================================================
@@ -387,5 +432,43 @@ describe("settledCollectErrors", () => {
       () => Promise.reject(42),
     ]);
     expect(errors).toEqual(["raw string", "42"]);
+  });
+});
+
+describe("summarizeDashboardErrors", () => {
+  it("collapses protected endpoint auth failures into one message", () => {
+    expect(
+      summarizeDashboardErrors([
+        "/sessions: HTTP 401",
+        "/locks: HTTP 401",
+        "/tasks?status=all: HTTP 401",
+        "/feed?since=1h: HTTP 401",
+      ])
+    ).toBe(
+      "Sessions, Locks, Tasks, Feed could not authenticate. Refresh the token or restart the daemon from Control Center."
+    );
+  });
+
+  it("falls back to the original joined output for mixed failures", () => {
+    expect(
+      summarizeDashboardErrors([
+        "/sessions: HTTP 401",
+        "/health: HTTP 500",
+      ])
+    ).toBe("/sessions: HTTP 401; /health: HTTP 500");
+  });
+});
+
+describe("isAuthFailure", () => {
+  it("matches http auth failures", () => {
+    expect(isAuthFailure("/sessions: HTTP 401")).toBe(true);
+  });
+
+  it("matches missing token failures", () => {
+    expect(isAuthFailure("POST /resolve: no auth token")).toBe(true);
+  });
+
+  it("ignores unrelated errors", () => {
+    expect(isAuthFailure("/health: HTTP 500")).toBe(false);
   });
 });

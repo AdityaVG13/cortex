@@ -10,6 +10,8 @@
  */
 
 const path = require('path');
+const http = require('http');
+const https = require('https');
 const { spawnSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
@@ -32,36 +34,94 @@ const isTeamMode = cortexUrl && cortexUrl.trim().length > 0;
 /**
  * Health check a daemon endpoint
  */
+function isCortexHealthResponse(data) {
+  return Boolean(
+    data &&
+    typeof data === 'object' &&
+    (data.status === 'ok' || data.status === 'degraded') &&
+    data.runtime &&
+    typeof data.runtime === 'object' &&
+    data.stats &&
+    typeof data.stats === 'object'
+  );
+}
+
 function healthCheck(url, timeoutMs = 5000) {
-  const timeoutSecs = Math.max(1, Math.ceil(timeoutMs / 1000));
-  try {
-    const result = spawnSync('curl', ['-sf', '--connect-timeout', String(timeoutSecs), '--max-time', String(timeoutSecs), `${url}/health`], {
-      encoding: 'utf8',
-      timeout: timeoutMs
+  return new Promise((resolve) => {
+    let target;
+    try {
+      target = new URL(`${url.replace(/\/+$/, '')}/health`);
+    } catch (e) {
+      resolve({ ok: false, error: `Invalid health URL: ${e.message}` });
+      return;
+    }
+
+    const transport = target.protocol === 'https:' ? https : http;
+    let settled = false;
+    const finish = (result) => {
+      if (!settled) {
+        settled = true;
+        resolve(result);
+      }
+    };
+
+    const request = transport.request(
+      target,
+      {
+        method: 'GET',
+        headers: {
+          'X-Cortex-Request': 'true'
+        }
+      },
+      (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          body += chunk;
+        });
+        response.on('end', () => {
+          if (response.statusCode >= 200 && response.statusCode < 300 && body) {
+            try {
+              const data = JSON.parse(body);
+              if (!isCortexHealthResponse(data)) {
+                finish({ ok: false, error: 'Invalid Cortex health response' });
+                return;
+              }
+              const stats = data.stats || {};
+              finish({
+                ok: true,
+                status: data.status,
+                memories: stats.memories,
+                decisions: stats.decisions
+              });
+            } catch (e) {
+              finish({ ok: false, error: `Invalid health response: ${e.message}` });
+            }
+            return;
+          }
+
+          finish({
+            ok: false,
+            error: body.trim() || `HTTP ${response.statusCode || 'unknown'}`
+          });
+        });
+      }
+    );
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Health check timed out after ${timeoutMs}ms`));
     });
-    if (result.error) {
-      return { ok: false, error: result.error.message };
-    }
-    if (result.status === 0 && result.stdout) {
-      const data = JSON.parse(result.stdout);
-      const stats = data.stats || {};
-      return {
-        ok: true,
-        status: data.status,
-        memories: stats.memories,
-        decisions: stats.decisions
-      };
-    }
-    return { ok: false, error: (result.stderr || '').trim() || `curl exited with ${result.status}` };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
+    request.on('error', (err) => {
+      finish({ ok: false, error: err.message });
+    });
+    request.end();
+  });
 }
 
 /**
  * Get health status for local daemon
  */
-function getLocalHealth() {
+async function getLocalHealth() {
   // Resolve port from daemon (cortex paths --json)
   let port = DEFAULT_DAEMON_PORT;
   try {
@@ -84,9 +144,9 @@ function getLocalHealth() {
 /**
  * Solo mode: ensure local daemon is running
  */
-function ensureLocalDaemon() {
+async function ensureLocalDaemon() {
   // Check if already healthy
-  const health = getLocalHealth();
+  const health = await getLocalHealth();
   if (health.ok) {
     return { started: false, health };
   }
@@ -105,7 +165,7 @@ function ensureLocalDaemon() {
       return {
         started: false,
         error: result.error.message,
-        health: getLocalHealth()
+        health: await getLocalHealth()
       };
     }
 
@@ -113,24 +173,23 @@ function ensureLocalDaemon() {
       return {
         started: false,
         error: result.stderr || 'ensure-daemon failed',
-        health: getLocalHealth()
+        health: await getLocalHealth()
       };
     }
 
     // Check health again
-    const newHealth = getLocalHealth();
+    const newHealth = await getLocalHealth();
     return { started: true, health: newHealth };
   } catch (e) {
-    return { started: false, error: e.message, health: getLocalHealth() };
+    return { started: false, error: e.message, health: await getLocalHealth() };
   }
 }
 
 /**
  * Team mode: just check remote server
  */
-function checkTeamServer() {
-  const health = healthCheck(cortexUrl.trim());
-  return health;
+async function checkTeamServer() {
+  return healthCheck(cortexUrl.trim());
 }
 
 /**
@@ -160,31 +219,43 @@ function buildStatusLine(health, mode) {
   return `Brain: ${parts.join(' ')} | Cortex`;
 }
 
-// Main
-let result;
+(async () => {
+  let result;
 
-if (isTeamMode) {
-  console.error(`[cortex-plugin] Team mode: connecting to ${cortexUrl}`);
-  const health = checkTeamServer();
-  result = { mode: 'team', health, url: cortexUrl };
-  const status = buildStatusLine(health, 'team');
+  if (isTeamMode) {
+    console.error(`[cortex-plugin] Team mode: connecting to ${cortexUrl}`);
+    const health = await checkTeamServer();
+    result = { mode: 'team', health, url: cortexUrl };
+    const status = buildStatusLine(health, 'team');
 
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: status
+      }
+    }) + '\n');
+  } else {
+    console.error('[cortex-plugin] Solo mode: ensuring local daemon');
+    const { started, health, error } = await ensureLocalDaemon();
+    result = { mode: 'solo', started, health, error };
+    const status = buildStatusLine(health, 'solo');
+
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: status
+      }
+    }) + '\n');
+  }
+
+  return result;
+})().catch((err) => {
+  console.error(`[cortex-plugin] SessionStart hook failed: ${err && err.stack ? err.stack : err}`);
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: status
+      additionalContext: 'Brain: UNAVAILABLE | Cortex'
     }
   }) + '\n');
-} else {
-  console.error('[cortex-plugin] Solo mode: ensuring local daemon');
-  const { started, health, error } = ensureLocalDaemon();
-  result = { mode: 'solo', started, health, error };
-  const status = buildStatusLine(health, 'solo');
-
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext: status
-    }
-  }) + '\n');
-}
+  process.exit(1);
+});
