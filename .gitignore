@@ -45,6 +45,7 @@ docs.zip
 
 # Rust build outputs
 daemon-rs/target/
+daemon-rs/target-*/
 
 # Desktop app build outputs
 desktop/cortex-control-center/dist/
