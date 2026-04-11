@@ -26,6 +26,17 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - **Commit:** `145766b` | **Agent:** D4 (GLM-4.7)
 - `schema_migrations` table, named migration runner on startup, `cortex doctor` CLI for schema verification.
 
+## Phase 3B: TTL / Hard Expiration -- DONE
+- **Commit:** `4b617a3` | **Agent:** CX (Codex)
+- Added explicit TTL expiration coverage for stored decisions so `ttl_seconds` produces an `expires_at` timestamp while entries without TTL remain persistent.
+- Hardened recall coverage to ensure expired memories and decisions are filtered out of active search results once their TTL has passed.
+- Added shared expired-row cleanup in the Rust DB layer and wired it into the daemon's startup / 6-hour maintenance loop so expired rows are eventually deleted instead of bloating the SQLite file.
+
+## Phase 3C.3: Clippy CI Gate + Warning Cleanup -- DONE
+- **Commits:** `fdd3f25` (warning cleanup), `8b6ed2c` (CI gate) | **Agent:** CX (Codex)
+- Fixed the current `cargo clippy --all-targets` warning set so the daemon crate is clean under strict warning enforcement.
+- Added a dedicated GitHub Actions clippy job that runs `rtk cargo clippy --all-targets -- -D warnings` alongside the existing Rust checks, turning warnings into a CI failure.
+
 ## Phase 5A: Startup Integrity Gate -- DONE
 - **Commits:** `3576c5c` (5A.1), `a82d747` (5A.2-5A.3) | **Agent:** CC
 - **Branch:** `feat/v050-phase-5a`
@@ -40,6 +51,16 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - **Commit:** `980f66b` | **Agent:** CC
 - **Branch:** `feat/v050-phase-5bc`
 - WAL checkpoint every 10s (was 60s), startup WAL recovery, `PRAGMA synchronous` verification.
+
+## Phase 5E: Storage Compression + Retention Policy -- DONE
+- **Commits:** `b4878f0` (5E.1), `cb3459d` (5E.2), `2a619f5` (5E.3), `513b708` (5E.4), `c4d35e1` (5E.5), `5fbfb39` (5E.6), `1cb0db5` (5E.7) | **Agent:** CX (Codex)
+- Startup now keeps only the 3 most recent `~/.cortex/backups/*.db` files by modified time and logs the retention cleanup count.
+- Added schema-version-gated cleanup for legacy `~/.cortex/bridge-backups/` once `PRAGMA user_version >= 5`.
+- Added startup log rotation for oversized `.cortex` log files, keeping only one `.1` generation per tracked log.
+- Restored MCP write-buffer draining and compaction so `write_buffer.jsonl` is truncated after successful replay instead of growing forever.
+- Replaced the old stale-daemon kill path with dead-process detection that removes stale `cortex.pid` / `cortex.lock` files without killing live processes.
+- Added `cortex cleanup --dry-run` / `cortex cleanup` to preview or execute backup, log, bridge-backup, and stale PID cleanup with one-line actionable output.
+- Added `/health` storage metrics: `storage_bytes`, `backup_count`, and `log_bytes`.
 
 ## Phase 7A: MCP Proxy Session Re-registration -- DONE
 - **Commit:** `7081dc1` | **Agent:** D4
@@ -68,6 +89,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added daemon regression tests covering both the stale-ack fallback path and the normal "after ack, skip self entries" unread path.
 - Fixed Cortex Control Center POST requests to refresh and retry once after missing/stale auth tokens, matching the existing GET behavior during daemon token rotation.
 - Added desktop regression tests covering POST token refresh before first call and retry-after-401 flows for both IPC and browser fallback.
+
+## Phase 7F: Duplicate Serve Startup Lock Guard -- DONE
+- **Commit:** `286d781` | **Agent:** CX (Codex)
+- Fixed direct `cortex serve` startup so the daemon acquires the singleton lock before state initialization, preventing a second launch from rotating `~/.cortex/cortex.token` and then dying on port bind.
+- Kept stale PID / lock recovery in the startup path by folding the existing dead-process cleanup into the pre-start lock acquisition instead of removing stale-file cleanup entirely.
+- Added a daemon regression test covering duplicate runtime lock acquisition so a second `serve` attempt fails before mutating shared auth state.
 
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
@@ -204,4 +231,4 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 
 ---
 
-*Last updated: 2026-04-10*
+*Last updated: 2026-04-11*
