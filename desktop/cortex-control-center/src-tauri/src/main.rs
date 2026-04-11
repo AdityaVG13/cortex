@@ -23,6 +23,8 @@ const TRAY_ID: &str = "cortex-tray";
 const TRAY_SHOW_ID: &str = "tray_show";
 const TRAY_HIDE_ID: &str = "tray_hide";
 const TRAY_QUIT_ID: &str = "tray_quit";
+const DEV_DAEMON_TARGET_DIR: &str = "target-control-center-dev";
+const RELEASE_DAEMON_TARGET_DIR: &str = "target-control-center-release";
 const DEFAULT_DAEMON_PORT: u16 = 7437;
 const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 400;
 const DAEMON_CONNECT_TIMEOUT_MS: u64 = 1_200;
@@ -183,23 +185,38 @@ fn cortex_binary_name() -> &'static str {
 }
 
 fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> {
-    let release_path = home
-        .join("cortex")
-        .join("daemon-rs")
+    let daemon_root = home.join("cortex").join("daemon-rs");
+    let release_path = daemon_root
         .join("target")
         .join("release")
         .join(cortex_binary_name());
-    let debug_path = home
-        .join("cortex")
-        .join("daemon-rs")
+    let isolated_release_path = daemon_root
+        .join(RELEASE_DAEMON_TARGET_DIR)
+        .join("release")
+        .join(cortex_binary_name());
+    let debug_path = daemon_root
         .join("target")
+        .join("debug")
+        .join(cortex_binary_name());
+    let isolated_debug_path = daemon_root
+        .join(DEV_DAEMON_TARGET_DIR)
         .join("debug")
         .join(cortex_binary_name());
 
     if prefer_debug {
-        vec![debug_path, release_path]
+        vec![
+            isolated_debug_path,
+            debug_path,
+            isolated_release_path,
+            release_path,
+        ]
     } else {
-        vec![release_path, debug_path]
+        vec![
+            isolated_release_path,
+            release_path,
+            isolated_debug_path,
+            debug_path,
+        ]
     }
 }
 
@@ -956,7 +973,7 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
 #[tauri::command]
 fn setup_editors() -> Result<Vec<EditorDetection>, String> {
     let cortex_exe = cortex_exe_path().ok_or(
-    "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/target/{debug,release}/",
+    "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/{target-control-center-dev,target-control-center-release,target}/{debug,release}/",
   )?;
     let exe_str = cortex_exe.to_string_lossy().to_string();
 
@@ -1090,15 +1107,35 @@ mod tests {
     #[test]
     fn workspace_binary_candidates_prefers_debug_for_dev_builds() {
         let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), true);
-        assert!(candidates[0].to_string_lossy().contains("target\\debug"));
-        assert!(candidates[1].to_string_lossy().contains("target\\release"));
+        assert!(
+            candidates[0]
+                .to_string_lossy()
+                .contains("target-control-center-dev\\debug")
+        );
+        assert!(candidates[1].to_string_lossy().contains("target\\debug"));
+        assert!(
+            candidates[2]
+                .to_string_lossy()
+                .contains("target-control-center-release\\release")
+        );
+        assert!(candidates[3].to_string_lossy().contains("target\\release"));
     }
 
     #[test]
     fn workspace_binary_candidates_prefers_release_for_packaged_builds() {
         let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), false);
-        assert!(candidates[0].to_string_lossy().contains("target\\release"));
-        assert!(candidates[1].to_string_lossy().contains("target\\debug"));
+        assert!(
+            candidates[0]
+                .to_string_lossy()
+                .contains("target-control-center-release\\release")
+        );
+        assert!(candidates[1].to_string_lossy().contains("target\\release"));
+        assert!(
+            candidates[2]
+                .to_string_lossy()
+                .contains("target-control-center-dev\\debug")
+        );
+        assert!(candidates[3].to_string_lossy().contains("target\\debug"));
     }
 
     #[test]
