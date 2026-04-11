@@ -32,6 +32,9 @@ pub struct PreCacheEntry {
 #[derive(Clone, Debug)]
 pub struct DaemonEvent {
     pub event_type: String,
+    // Event payloads are retained on the bus for future internal consumers,
+    // but the public SSE stream currently redacts them before emission.
+    #[allow(dead_code)]
     pub data: Value,
 }
 

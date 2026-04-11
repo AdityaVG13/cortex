@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
 const DEV_DAEMON_TARGET_DIR: &str = "target-control-center-dev";
@@ -98,8 +99,14 @@ fn copy_sidecar_binary() {
 
     for src in candidates {
         if src.exists() {
-            let _ = fs::copy(&src, &dest);
-            println!("cargo:warning=Copied sidecar binary from {}", src.display());
+            if let Err(err) = copy_if_changed(&src, &dest) {
+                println!(
+                    "cargo:warning=Failed to copy Cortex sidecar from {} to {}: {}",
+                    src.display(),
+                    dest.display(),
+                    err
+                );
+            }
             return;
         }
     }
@@ -107,4 +114,18 @@ fn copy_sidecar_binary() {
     println!(
     "cargo:warning=Cortex sidecar binary not found. Expected one of: CORTEX_SIDECAR_BIN, <repo>/daemon-rs/{DEV_DAEMON_TARGET_DIR}/debug/cortex{ext}, <repo>/daemon-rs/{RELEASE_DAEMON_TARGET_DIR}/release/cortex{ext}, <repo>/daemon-rs/target/release/cortex{ext}, ~/.cortex/bin/cortex{ext}, ~/cortex/daemon-rs/target/release/cortex{ext}"
   );
+}
+
+fn copy_if_changed(src: &PathBuf, dest: &PathBuf) -> io::Result<()> {
+    let needs_copy = match fs::read(dest) {
+        Ok(existing) => existing != fs::read(src)?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => true,
+        Err(err) => return Err(err),
+    };
+
+    if needs_copy {
+        fs::copy(src, dest)?;
+    }
+
+    Ok(())
 }
