@@ -1557,6 +1557,13 @@ async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Res
     }
 }
 
+/// Hold the singleton daemon lock before startup so duplicate `serve`
+/// invocations cannot rotate the shared auth token and then die on bind.
+fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, String> {
+    let _ = auth::cleanup_stale_pid_lock(paths);
+    auth::acquire_daemon_lock(paths)
+}
+
 async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
@@ -1719,7 +1726,17 @@ pub(crate) async fn run_daemon(
     paths: auth::CortexPaths,
     extra_shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    let _ = auth::cleanup_stale_pid_lock(&paths);
+    let _daemon_lock = match acquire_runtime_lock(&paths) {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!("[cortex] FATAL: {err}");
+            eprintln!(
+                "[cortex] Reuse the existing daemon instead of launching a second `cortex serve`."
+            );
+            std::process::exit(1);
+        }
+    };
+
     let db_path = paths.db.clone();
     eprintln!(
         "[cortex] Starting Cortex v{} (Rust)...",
@@ -2159,5 +2176,22 @@ mod tests {
         assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 4);
 
         let _ = fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn acquire_runtime_lock_rejects_duplicate_serve_startup() {
+        let home_dir = temp_test_dir("runtime_lock");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437));
+
+        let first_lock = acquire_runtime_lock(&paths).unwrap();
+        let err = acquire_runtime_lock(&paths).unwrap_err();
+
+        assert!(err.contains("another cortex instance"));
+
+        drop(first_lock);
+        let _ = fs::remove_dir_all(&home_dir);
     }
 }
