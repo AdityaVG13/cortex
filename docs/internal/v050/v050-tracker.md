@@ -107,6 +107,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Removed the redundant first-run Messages / Activity refresh race in Cortex Control Center so those panels stop issuing duplicate protected requests during the initial dashboard hydrate.
 - Cleared transient desktop auth warnings after the next successful protected refresh so stale sidebar messages like "Activity could not authenticate" do not linger once the daemon and token are healthy again.
 
+## Phase 7I: Desktop Dev Build Target Isolation -- DONE
+- **Commit:** `eebcca2` | **Agent:** CX (Codex)
+- Moved Control Center daemon builds off the shared `daemon-rs/target/{debug,release}` paths so `npm run dev` and `tauri build` stop failing when a live Cortex process has the workspace executable locked on Windows.
+- Taught the Tauri sidecar copy step and desktop runtime binary discovery to prefer the new isolated control-center targets first, so dev/release app builds still launch the freshly-built daemon instead of an older shared binary.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
