@@ -8,7 +8,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 use super::{ensure_auth, json_response, truncate_chars};
-use crate::auth::CortexPaths;
 use crate::state::RuntimeState;
 
 const STORAGE_LOG_FILES: &[&str] = &[
@@ -98,8 +97,7 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "unavailable"
     };
 
-    let paths = CortexPaths::resolve();
-    let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&paths.home);
+    let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&state.home);
     let executable = std::env::current_exe()
         .ok()
         .map(|path| path.display().to_string())
@@ -121,15 +119,15 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
             "decisions": decisions,
             "embeddings": embeddings_count,
             "events": events,
-            "home": paths.home.display().to_string()
+            "home": state.home.display().to_string()
         },
         "runtime": {
             "version": env!("CARGO_PKG_VERSION"),
             "mode": if state.team_mode { "team" } else { "solo" },
-            "port": paths.port,
+            "port": state.port,
             "db_path": state.db_path.display().to_string(),
-            "token_path": paths.token.display().to_string(),
-            "pid_path": paths.pid.display().to_string(),
+            "token_path": state.token_path.display().to_string(),
+            "pid_path": state.pid_path.display().to_string(),
             "executable": executable
         }
     })

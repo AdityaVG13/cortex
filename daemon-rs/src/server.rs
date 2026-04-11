@@ -512,12 +512,18 @@ mod tests {
     use tower::ServiceExt;
 
     async fn build_state(team_mode: bool) -> RuntimeState {
+        let mut home_dir = std::env::temp_dir();
         let mut db_path = std::env::temp_dir();
         let suffix = if team_mode { "team" } else { "solo" };
+        home_dir.push(format!(
+            "cortex-api-parity-home-{suffix}-{}",
+            uuid::Uuid::new_v4()
+        ));
         db_path.push(format!(
             "cortex-api-parity-{suffix}-{}.db",
             uuid::Uuid::new_v4()
         ));
+        std::fs::create_dir_all(&home_dir).unwrap();
 
         let conn = crate::db::open(&db_path).unwrap();
         crate::db::configure(&conn).unwrap();
@@ -533,7 +539,11 @@ mod tests {
         }
         drop(conn);
 
-        let (state, _shutdown_rx) = crate::state::initialize(&db_path, false).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let db_str = db_path.to_string_lossy().to_string();
+        let paths =
+            crate::auth::CortexPaths::resolve_with_overrides(Some(&home_str), Some(&db_str), None);
+        let (state, _shutdown_rx) = crate::state::initialize(&paths, false).unwrap();
         let _ = std::fs::remove_file(db_path);
         state
     }

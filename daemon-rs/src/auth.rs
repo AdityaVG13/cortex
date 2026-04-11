@@ -186,26 +186,39 @@ pub fn cortex_dir() -> PathBuf {
     PathBuf::from(home).join(CORTEX_DIR_NAME)
 }
 
-/// Generate a fresh UUID token, write it to `~/.cortex/cortex.token`, and
+/// Generate a fresh UUID token, write it to the resolved token path, and
 /// return the token string.
-pub fn generate_token() -> String {
+pub fn generate_token_for(paths: &CortexPaths) -> String {
     let token = Uuid::new_v4().simple().to_string();
-    let dir = cortex_dir();
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("[cortex] WARNING: cannot create {}: {e}", dir.display());
+    if let Err(e) = fs::create_dir_all(paths.token.parent().unwrap_or(&paths.home)) {
+        eprintln!(
+            "[cortex] WARNING: cannot create {}: {e}",
+            paths.token.parent().unwrap_or(&paths.home).display()
+        );
     }
-    if let Err(e) = fs::write(dir.join("cortex.token"), &token) {
+    if let Err(e) = fs::write(&paths.token, &token) {
         eprintln!("[cortex] WARNING: cannot write token: {e}");
     }
     token
 }
 
-/// Read existing shared token from `~/.cortex/cortex.token`.
-pub fn read_token() -> Option<String> {
-    fs::read_to_string(cortex_dir().join("cortex.token"))
+/// Generate a fresh UUID token, write it to `~/.cortex/cortex.token`, and
+/// return the token string.
+pub fn generate_token() -> String {
+    generate_token_for(&CortexPaths::resolve())
+}
+
+/// Read an existing token from the resolved token path.
+pub fn read_token_from(paths: &CortexPaths) -> Option<String> {
+    fs::read_to_string(&paths.token)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+/// Read existing shared token from `~/.cortex/cortex.token`.
+pub fn read_token() -> Option<String> {
+    read_token_from(&CortexPaths::resolve())
 }
 
 /// Generate an in-memory token without mutating shared auth files.
@@ -400,6 +413,23 @@ mod tests {
         assert_eq!(cleaned, Some(999999));
         assert!(!paths.pid.exists());
         assert!(!paths.lock.exists());
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn token_helpers_respect_overridden_home() {
+        let home_dir = temp_test_dir("token_home");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(54967));
+
+        let token = generate_token_for(&paths);
+
+        assert_eq!(read_token_from(&paths).as_deref(), Some(token.as_str()));
+        assert_eq!(paths.token, home_dir.join("cortex.token"));
+        assert!(paths.token.exists());
 
         let _ = fs::remove_dir_all(&home_dir);
     }

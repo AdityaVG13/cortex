@@ -1744,8 +1744,7 @@ pub(crate) async fn run_daemon(
     );
     eprintln!("[cortex] DB: {}", db_path.display());
 
-    let (state, shutdown_rx) =
-        state::initialize(&db_path, true).expect("Failed to initialize state");
+    let (state, shutdown_rx) = state::initialize(&paths, true).expect("Failed to initialize state");
 
     if let Some(parent) = paths.pid.parent() {
         std::fs::create_dir_all(parent).ok();

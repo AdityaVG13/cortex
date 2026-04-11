@@ -7,6 +7,8 @@ use rusqlite::Connection;
 use serde_json::Value;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
+use crate::auth::CortexPaths;
+
 // ─── Supporting types (ported from embedded_daemon.rs) ───────────────────────
 
 /// A single entry in the per-session recall history, recording what was queried
@@ -50,7 +52,7 @@ pub struct RuntimeState {
     /// SQLite read connection -- used by recall, peek, health, digest, boot.
     /// Separate from `db` so reads never block on writes (WAL mode).
     pub db_read: Arc<Mutex<Connection>>,
-    /// Auth token written to `~/.cortex/cortex.token` at startup.
+    /// Auth token loaded from or written to the resolved runtime token path.
     pub token: Arc<String>,
     /// Broadcast channel for SSE events; clone the sender to fan-out.
     pub events: broadcast::Sender<DaemonEvent>,
@@ -75,6 +77,12 @@ pub struct RuntimeState {
     /// Absolute path of the SQLite database file.
     #[allow(dead_code)]
     pub db_path: std::path::PathBuf,
+    /// Absolute path of the runtime auth token file.
+    pub token_path: std::path::PathBuf,
+    /// Absolute path of the runtime PID file.
+    pub pid_path: std::path::PathBuf,
+    /// Active HTTP port for this daemon instance.
+    pub port: u16,
     /// In-process ONNX embedding engine (None if model not downloaded yet).
     pub embedding_engine: Option<Arc<crate::embeddings::EmbeddingEngine>>,
     /// Per-IP sliding-window rate limiter.
@@ -123,9 +131,10 @@ impl RuntimeState {
 /// `with_graceful_shutdown` so the server exits cleanly when the `/shutdown`
 /// endpoint fires.
 pub fn initialize(
-    db_path: &std::path::Path,
+    paths: &CortexPaths,
     allow_token_rotation: bool,
 ) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
+    let db_path = &paths.db;
     // 1. Open and configure the database.
     let conn = crate::db::open(db_path)
         .map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
@@ -170,7 +179,7 @@ pub fn initialize(
                         .map_err(|e| format!("Failed to open repaired DB: {e}"))?;
                     crate::db::configure(&conn)
                         .map_err(|e| format!("Failed to configure repaired DB: {e}"))?;
-                    return initialize_with_conn(conn, db_path, allow_token_rotation);
+                    return initialize_with_conn(conn, paths, allow_token_rotation);
                 }
                 Err(e) => {
                     eprintln!(
@@ -188,7 +197,7 @@ pub fn initialize(
                     })?;
                     crate::db::configure(&conn).ok();
                     crate::db::initialize_schema(&conn).ok();
-                    let (state, rx) = initialize_with_conn(conn, db_path, allow_token_rotation)?;
+                    let (state, rx) = initialize_with_conn(conn, paths, allow_token_rotation)?;
                     // Signal degraded mode so /health reflects corruption.
                     state
                         .db_corrupted
@@ -201,12 +210,12 @@ pub fn initialize(
         }
     }
 
-    initialize_with_conn(conn, db_path, allow_token_rotation)
+    initialize_with_conn(conn, paths, allow_token_rotation)
 }
 
 fn initialize_with_conn(
     conn: Connection,
-    db_path: &std::path::Path,
+    paths: &CortexPaths,
     allow_token_rotation: bool,
 ) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
     // Rebuild FTS indexes only when they appear empty for non-empty source data.
@@ -217,8 +226,8 @@ fn initialize_with_conn(
     }
 
     // Open a separate read-only connection for concurrent reads.
-    let read_conn =
-        crate::db::open(db_path).map_err(|e| format!("Failed to open read connection: {e}"))?;
+    let read_conn = crate::db::open(&paths.db)
+        .map_err(|e| format!("Failed to open read connection: {e}"))?;
     crate::db::configure(&read_conn)
         .map_err(|e| format!("Failed to configure read connection: {e}"))?;
     read_conn
@@ -266,20 +275,19 @@ fn initialize_with_conn(
 
     // Auth token.
     let token = if team_mode {
-        crate::auth::read_token().unwrap_or_else(crate::auth::generate_ephemeral_token)
+        crate::auth::read_token_from(paths).unwrap_or_else(crate::auth::generate_ephemeral_token)
     } else if allow_token_rotation {
-        crate::auth::generate_token()
+        crate::auth::generate_token_for(paths)
     } else {
-        crate::auth::read_token().unwrap_or_else(crate::auth::generate_ephemeral_token)
+        crate::auth::read_token_from(paths).unwrap_or_else(crate::auth::generate_ephemeral_token)
     };
 
     // Channels.
     let (events_tx, _) = broadcast::channel::<DaemonEvent>(256);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-    let resolved_paths = crate::auth::CortexPaths::resolve();
-    let home = resolved_paths.home.clone();
-    let models_dir = resolved_paths.models.clone();
+    let home = paths.home.clone();
+    let models_dir = paths.models.clone();
     let embedding_engine = crate::embeddings::EmbeddingEngine::load(&models_dir).map(Arc::new);
 
     if embedding_engine.is_some() {
@@ -293,7 +301,7 @@ fn initialize_with_conn(
         );
     }
 
-    let write_buffer_path = home.join("write_buffer.jsonl");
+    let write_buffer_path = paths.write_buffer.clone();
 
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
@@ -307,7 +315,10 @@ fn initialize_with_conn(
         served_content: Arc::new(Mutex::new(HashMap::<String, HashMap<u32, i64>>::new())),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         home,
-        db_path: db_path.to_path_buf(),
+        db_path: paths.db.clone(),
+        token_path: paths.token.clone(),
+        pid_path: paths.pid.clone(),
+        port: paths.port,
         embedding_engine,
         rate_limiter: crate::rate_limit::RateLimiter::new(),
         team_mode,
