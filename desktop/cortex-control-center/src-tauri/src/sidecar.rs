@@ -159,7 +159,6 @@ impl SidecarDaemon {
                 }
             }
         }
-        self.cleanup_active_runtime_copy();
         Ok(SidecarStatus {
             running: false,
             pid: None,
@@ -173,7 +172,6 @@ impl SidecarDaemon {
         };
         if exited {
             self.child = None;
-            self.cleanup_active_runtime_copy();
         }
     }
 
@@ -215,16 +213,14 @@ impl SidecarDaemon {
         Some(runtime_path)
     }
 
-    fn cleanup_active_runtime_copy(&mut self) {
-        if let Some(path) = self.runtime_copy_path.take() {
-            let _ = fs::remove_file(path);
-        }
-    }
 }
 
 impl Drop for SidecarDaemon {
     fn drop(&mut self) {
         let _ = self.stop();
+        if let Some(runtime_copy_dir) = self.runtime_copy_dir.take() {
+            let _ = fs::remove_dir_all(runtime_copy_dir);
+        }
     }
 }
 
@@ -290,7 +286,10 @@ fn copy_if_changed(src: &Path, dest: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cleanup_stale_runtime_copies, is_workspace_daemon_binary, runtime_copy_path};
+    use super::{
+        cleanup_stale_runtime_copies, copy_if_changed, is_workspace_daemon_binary,
+        runtime_copy_path,
+    };
     use std::fs;
     use std::path::Path;
 
@@ -348,5 +347,29 @@ mod tests {
         let _ = fs::remove_file(active);
         let _ = fs::remove_file(unrelated);
         let _ = fs::remove_dir(runtime_dir);
+    }
+
+    #[test]
+    fn copy_if_changed_refreshes_existing_runtime_copy() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "cortex_sidecar_refresh_test_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let source = temp_root.join("source.exe");
+        let dest = temp_root.join("runtime.exe");
+        fs::write(&source, b"first").expect("write source");
+
+        copy_if_changed(&source, &dest).expect("initial copy");
+        assert_eq!(fs::read(&dest).expect("read dest"), b"first");
+
+        fs::write(&source, b"second").expect("rewrite source");
+        copy_if_changed(&source, &dest).expect("refresh copy");
+        assert_eq!(fs::read(&dest).expect("read refreshed dest"), b"second");
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(dest);
+        let _ = fs::remove_dir(temp_root);
     }
 }

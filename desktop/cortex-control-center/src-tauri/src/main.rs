@@ -40,9 +40,13 @@ struct DaemonState {
 
 impl DaemonState {
     fn new(exe_path: Option<PathBuf>) -> Self {
-        let runtime_copy_dir = default_cortex_dir()
-            .ok()
-            .map(|dir| dir.join("runtime").join("control-center-dev"));
+        let runtime_copy_dir = if cfg!(debug_assertions) {
+            default_cortex_dir()
+                .ok()
+                .map(|dir| runtime_copy_dir_for_session(&dir))
+        } else {
+            None
+        };
         let daemon = match exe_path {
             Some(path) => SidecarDaemon::with_exe_path(path, runtime_copy_dir),
             None => SidecarDaemon::default(),
@@ -126,6 +130,13 @@ struct ResolvedCortexPaths {
 
 fn default_cortex_dir() -> Result<PathBuf, String> {
     Ok(cortex_home()?.join(".cortex"))
+}
+
+fn runtime_copy_dir_for_session(cortex_dir: &Path) -> PathBuf {
+    cortex_dir
+        .join("runtime")
+        .join("control-center-dev")
+        .join(format!("session-{}", std::process::id()))
 }
 
 fn token_path() -> Result<PathBuf, String> {
@@ -1102,8 +1113,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_error_detail, interpret_shutdown_response, is_cortex_health_response,
-        workspace_binary_candidates, FetchCortexResponse,
+        default_cortex_dir, extract_error_detail, interpret_shutdown_response,
+        is_cortex_health_response, runtime_copy_dir_for_session, workspace_binary_candidates,
+        FetchCortexResponse,
     };
     use std::path::Path;
 
@@ -1131,6 +1143,16 @@ mod tests {
             .to_string_lossy()
             .contains("target-control-center-dev\\debug"));
         assert!(candidates[3].to_string_lossy().contains("target\\debug"));
+    }
+
+    #[test]
+    fn runtime_copy_dir_is_scoped_to_the_control_center_session() {
+        let cortex_dir = default_cortex_dir().expect("cortex dir");
+        let path = runtime_copy_dir_for_session(&cortex_dir);
+        let pid = std::process::id().to_string();
+
+        assert!(path.starts_with(cortex_dir.join("runtime").join("control-center-dev")));
+        assert!(path.to_string_lossy().contains(&format!("session-{pid}")));
     }
 
     #[test]
