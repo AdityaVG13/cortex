@@ -96,6 +96,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Kept stale PID / lock recovery in the startup path by folding the existing dead-process cleanup into the pre-start lock acquisition instead of removing stale-file cleanup entirely.
 - Added a daemon regression test covering duplicate runtime lock acquisition so a second `serve` attempt fails before mutating shared auth state.
 
+## Phase 7G: Desktop + Plugin Lifecycle Hardening -- DONE
+- **Commit:** `0b0b0fc` | **Agent:** CX (Codex)
+- Fixed Cortex Control Center auth handling so protected panels stop retrying forever on the same stale token, surface one combined panel-auth error, and keep the new live-session work surface normalized in the desktop app.
+- Replaced the desktop daemon reachability check with a real Cortex `/health` probe, preserved managed sidecar state on failed/timed-out stops, and added regression coverage for the stricter health-signature checks.
+- Scrubbed `/events` payloads down to safe metadata only, made MCP bridge teardown explicitly end sessions, and tightened the Claude plugin startup path so it validates real Cortex health responses and registers as `claude-code` instead of a generic `mcp` agent.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
