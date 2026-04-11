@@ -117,6 +117,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Marked the daemon event payload bus field as intentionally retained-but-redacted so Control Center dev builds stop emitting the noisy unused-field warning on every startup.
 - Added a Tauri dev watcher ignore for `src-tauri/binaries/` and stopped the sidecar copy step from rewriting identical binaries, so desktop dev runs no longer self-trigger a redundant rebuild just because the sidecar artifact was refreshed.
 
+## Phase 7K: Desktop Dev Runtime Copy Launcher -- DONE
+- **Commit:** `b02cd31` | **Agent:** CX (Codex)
+- Changed the Control Center sidecar launcher so debug desktop sessions no longer spawn Cortex directly from the workspace `daemon-rs` build output, which was still locking the dev target binary while the app was open on Windows.
+- Added a managed runtime-copy path under the user's Cortex runtime directory plus stale-copy cleanup, so debug sessions can relaunch Cortex from a disposable copy while packaged release behavior stays unchanged.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
