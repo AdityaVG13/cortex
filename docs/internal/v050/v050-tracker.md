@@ -127,6 +127,18 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Scoped each debug Control Center runtime-copy directory to the current app session instead of sharing one global temp folder, so one desktop window can no longer delete another session's managed daemon copy during cleanup.
 - Added regression coverage for the session-scoped runtime path so the Windows dev-only launcher keeps the build-unlock behavior from 7K without introducing cross-session temp-copy collisions.
 
+## Phase 7M: Runtime Auth Token-Path Isolation -- DONE
+- **Commit:** `5567cec` | **Agent:** CX (Codex)
+- Fixed daemon startup so auth token generation and reads use the resolved runtime home path instead of the shared default `~/.cortex/cortex.token`.
+- Prevented override-home daemons, benchmark temp-home runs, and the app-managed desktop daemon from clobbering each other's auth state.
+- Unblocked `tests/recall_benchmark.rs` from hanging on token waits; it now reaches the real benchmark-threshold assertion instead of deadlocking.
+
+## Phase 7N: Control Center Live-Surface Stabilization -- DONE
+- **Commit:** `7cca348` | **Agent:** CX (Codex)
+- Finished the modern Work surface wiring around the real daemon endpoints, including persisted operator selection plus claim, complete, unlock, message, and feed-ack flows.
+- Added the mock-backed `expect-cli` smoke harness and the faster work-scoped smoke path so desktop verification can be rerun without the slower full browser pass every iteration.
+- Stabilized the shell and renderer surfaces by replacing glyph-dependent icons with deterministic inline SVGs, reflecting offline state cleanly after Stop, auto-collapsing the sidebar on narrow viewports, and making the Brain legend/layout pass the overview smoke on mobile.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
