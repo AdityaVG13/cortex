@@ -40,8 +40,11 @@ struct DaemonState {
 
 impl DaemonState {
     fn new(exe_path: Option<PathBuf>) -> Self {
+        let runtime_copy_dir = default_cortex_dir()
+            .ok()
+            .map(|dir| dir.join("runtime").join("control-center-dev"));
         let daemon = match exe_path {
-            Some(path) => SidecarDaemon::with_exe_path(path),
+            Some(path) => SidecarDaemon::with_exe_path(path, runtime_copy_dir),
             None => SidecarDaemon::default(),
         };
         Self {
@@ -1107,34 +1110,26 @@ mod tests {
     #[test]
     fn workspace_binary_candidates_prefers_debug_for_dev_builds() {
         let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), true);
-        assert!(
-            candidates[0]
-                .to_string_lossy()
-                .contains("target-control-center-dev\\debug")
-        );
+        assert!(candidates[0]
+            .to_string_lossy()
+            .contains("target-control-center-dev\\debug"));
         assert!(candidates[1].to_string_lossy().contains("target\\debug"));
-        assert!(
-            candidates[2]
-                .to_string_lossy()
-                .contains("target-control-center-release\\release")
-        );
+        assert!(candidates[2]
+            .to_string_lossy()
+            .contains("target-control-center-release\\release"));
         assert!(candidates[3].to_string_lossy().contains("target\\release"));
     }
 
     #[test]
     fn workspace_binary_candidates_prefers_release_for_packaged_builds() {
         let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), false);
-        assert!(
-            candidates[0]
-                .to_string_lossy()
-                .contains("target-control-center-release\\release")
-        );
+        assert!(candidates[0]
+            .to_string_lossy()
+            .contains("target-control-center-release\\release"));
         assert!(candidates[1].to_string_lossy().contains("target\\release"));
-        assert!(
-            candidates[2]
-                .to_string_lossy()
-                .contains("target-control-center-dev\\debug")
-        );
+        assert!(candidates[2]
+            .to_string_lossy()
+            .contains("target-control-center-dev\\debug"));
         assert!(candidates[3].to_string_lossy().contains("target\\debug"));
     }
 
