@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, Component } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, Component } from "react";
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
 import { checkForUpdates, installUpdate } from "./updater.js";
 import {
@@ -12,9 +12,16 @@ import {
 import { CURRENCY_OPTIONS, USD_TO_CURRENCY_RATE, SAVINGS_OPERATION_LABELS } from "./constants.js";
 import {
   buildKnownAgents,
+  canClaimTask,
+  canFinalizeTask,
+  canUnlockLock,
+  filterFeedEntries,
   isTransportSession,
+  nextFeedAckId,
   normalizeTask,
+  sameAgent,
 } from "./live-surface.js";
+import { AppIcon } from "./ui-icons.jsx";
 
 class BrainErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
@@ -22,7 +29,7 @@ class BrainErrorBoundary extends Component {
   render() {
     if (this.state.crashed) return (
       <div className="brain-loading">
-        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
         <p>Brain visualizer crashed: {this.state.error}</p>
         <button className="btn-sm btn-primary" onClick={() => this.setState({ crashed: false })} style={{ marginTop: 12 }}>Retry</button>
       </div>
@@ -42,6 +49,7 @@ const DAEMON_START_POLL_INTERVAL_MS = 750;
 const DAEMON_STOP_HANG_TIMEOUT_MS = 5000;
 const DAEMON_STOP_WAIT_TIMEOUT_MS = 15000;
 const SAVINGS_USD_PER_MILLION = 15;
+const SIDEBAR_COLLAPSE_BREAKPOINT_PX = 1100;
 
 const FEED_KIND_LABEL = {
   prompt: "Prompt",
@@ -51,28 +59,28 @@ const FEED_KIND_LABEL = {
 };
 
 const PANELS = [
-  { key: "overview", label: "Overview", icon: "◈" },
-  { key: "memory", label: "Memory", icon: "⬡" },
-  { key: "analytics", label: "Analytics", icon: "△" },
-  { key: "agents", label: "Agents", icon: "◉" },
-  { key: "tasks", label: "Tasks", icon: "▣" },
-  { key: "feed", label: "Feed", icon: "◫" },
-  { key: "messages", label: "Messages", icon: "◧" },
-  { key: "activity", label: "Activity", icon: "◍" },
-  { key: "locks", label: "Locks", icon: "◎" },
-  { key: "visualizer", label: "Brain", icon: "◬" },
-  { key: "conflicts", label: "Conflicts", icon: "⚡" },
-  { key: "about", label: "About", icon: "ℹ" },
+  { key: "overview", label: "Overview", icon: "overview" },
+  { key: "memory", label: "Memory", icon: "memory" },
+  { key: "analytics", label: "Analytics", icon: "analytics" },
+  { key: "agents", label: "Agents", icon: "agents" },
+  { key: "tasks", label: "Tasks", icon: "tasks" },
+  { key: "feed", label: "Feed", icon: "feed" },
+  { key: "messages", label: "Messages", icon: "messages" },
+  { key: "activity", label: "Activity", icon: "activity" },
+  { key: "locks", label: "Locks", icon: "locks" },
+  { key: "visualizer", label: "Brain", icon: "brain" },
+  { key: "conflicts", label: "Conflicts", icon: "conflicts" },
+  { key: "about", label: "About", icon: "about" },
 ];
 
 const PANEL_SEQUENCE = [
-  { key: "overview", label: "Overview", icon: "[]" },
-  { key: "analytics", label: "Analytics", icon: "/\\" },
-  { key: "agents", label: "Agents", icon: "()" },
-  { key: "work", label: "Work", icon: "||" },
-  { key: "memory", label: "Memory", icon: "{}" },
-  { key: "brain", label: "Brain", icon: "<>" },
-  { key: "about", label: "About", icon: "i" },
+  { key: "overview", label: "Overview", icon: "overview" },
+  { key: "analytics", label: "Analytics", icon: "analytics" },
+  { key: "agents", label: "Agents", icon: "agents" },
+  { key: "work", label: "Work", icon: "work" },
+  { key: "memory", label: "Memory", icon: "memory" },
+  { key: "brain", label: "Brain", icon: "brain" },
+  { key: "about", label: "About", icon: "about" },
 ];
 
 const EMPTY_DAEMON = {
@@ -86,7 +94,6 @@ const CORTEX_BASE_STORAGE_KEY = "cortex_base";
 const CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token";
 const LEGACY_CORTEX_AUTH_STORAGE_KEYS = ["cortex_token"];
 const CORTEX_OPERATOR_STORAGE_KEY = "cortex_operator";
-
 function clearLegacyBrowserAuthTokens() {
   if (typeof window === "undefined") return;
   try {
@@ -543,7 +550,7 @@ function ComingSoon({ title, description }) {
         <h1>{title}</h1>
       </div>
       <div className="coming-soon">
-        <div className="coming-icon">◬</div>
+        <div className="coming-icon"><AppIcon name="brain" size={64} /></div>
         <h2>COMING SOON</h2>
         <p>{description}</p>
       </div>
@@ -591,6 +598,27 @@ function AgentItem({ session }) {
   );
 }
 
+function OperatorSelector({ value, knownAgents, onChange, label = "Operator", placeholder = "codex" }) {
+  const datalistId = useId();
+  return (
+    <label className="feed-control">
+      <span>{label}</span>
+      <input
+        type="text"
+        list={datalistId}
+        placeholder={placeholder}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <datalist id={datalistId}>
+        {knownAgents.map((agent) => (
+          <option key={agent} value={agent} />
+        ))}
+      </datalist>
+    </label>
+  );
+}
+
 function TaskItem({
   task,
   selectedOperator = "",
@@ -599,10 +627,18 @@ function TaskItem({
   onClaim = null,
   onAbandon = null,
   onComplete = null,
+  onDelete = null,
   onCompletionDraftChange = null,
   onToggleComplete = null,
   busyActionKey = "",
 }) {
+  const operator = String(selectedOperator || "").trim();
+  const claimBusy = busyActionKey === `claim:${task.taskId}`;
+  const abandonBusy = busyActionKey === `abandon:${task.taskId}`;
+  const completeBusy = busyActionKey === `complete:${task.taskId}`;
+  const deleteBusy = busyActionKey === `delete:${task.taskId}`;
+  const operatorOwnsTask = canFinalizeTask(task, operator);
+  const files = Array.isArray(task.files) ? task.files.slice(0, 4) : [];
   const detail = task.claimedBy
     ? `${task.claimedBy}${task.summary ? ` — ${task.summary}` : ""} · ${timeAgo(task.claimedAt || task.completedAt)}`
     : task.project || "—";
@@ -615,15 +651,95 @@ function TaskItem({
         <span className="item-name">{task.title}</span>
       </div>
       <div className="item-detail">{detail}</div>
+      {task.description ? <div className="item-detail">{task.description}</div> : null}
+      {files.length ? (
+        <div className="feed-files">
+          {files.map((file) => (
+            <span key={`${task.taskId}-${file}`} className="lock-path">
+              {file}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="task-actions">
+        {canClaimTask(task, operator) && onClaim ? (
+          <button
+            type="button"
+            className="btn-sm btn-primary"
+            disabled={claimBusy}
+            onClick={() => onClaim(task)}
+          >
+            {claimBusy ? "Claiming..." : "Claim"}
+          </button>
+        ) : null}
+        {task.status === "claimed" && operatorOwnsTask && onToggleComplete ? (
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={completeBusy}
+            onClick={() => onToggleComplete(task.taskId)}
+          >
+            {completionExpanded ? "Cancel Complete" : "Complete"}
+          </button>
+        ) : null}
+        {task.status === "claimed" && operatorOwnsTask && onAbandon ? (
+          <button
+            type="button"
+            className="btn-sm btn-danger"
+            disabled={abandonBusy}
+            onClick={() => onAbandon(task)}
+          >
+            {abandonBusy ? "Abandoning..." : "Abandon"}
+          </button>
+        ) : null}
+        {task.status === "claimed" && !operatorOwnsTask && task.claimedBy ? (
+          <span className="surface-inline-hint">Held by {task.claimedBy}</span>
+        ) : null}
+        {task.status === "completed" && onDelete ? (
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={deleteBusy}
+            onClick={() => onDelete(task)}
+          >
+            {deleteBusy ? "Deleting..." : "Delete"}
+          </button>
+        ) : null}
+      </div>
+      {completionExpanded && operatorOwnsTask && onComplete && onCompletionDraftChange ? (
+        <div className="task-complete-panel">
+          <textarea
+            value={completionDraft}
+            onChange={(event) => onCompletionDraftChange(task.taskId, event.target.value)}
+            placeholder="Optional completion summary for the task feed"
+            rows={3}
+          />
+          <div className="surface-actions">
+            <button type="button" className="btn-sm" onClick={() => onToggleComplete?.(task.taskId)}>
+              Keep Open
+            </button>
+            <button
+              type="button"
+              className="btn-sm btn-primary"
+              disabled={completeBusy}
+              onClick={() => onComplete(task, completionDraft)}
+            >
+              {completeBusy ? "Completing..." : "Confirm Complete"}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }
 
-function LockItem({ lock }) {
+function LockItem({ lock, selectedOperator = "", onUnlock = null, busyActionKey = "" }) {
   const expiryMinutes = Math.max(
     0,
     Math.ceil((new Date(lock.expiresAt).getTime() - Date.now()) / 60000)
   );
+  const unlockBusy = busyActionKey === `unlock:${lock.path}`;
+  const unlockable = canUnlockLock(lock, selectedOperator);
 
   return (
     <li>
@@ -632,6 +748,18 @@ function LockItem({ lock }) {
         <span className="lock-agent">{lock.agent}</span>
         <span className="lock-expiry">{expiryMinutes}m remaining</span>
       </div>
+      {unlockable && onUnlock ? (
+        <div className="task-actions">
+          <button
+            type="button"
+            className="btn-sm"
+            disabled={unlockBusy}
+            onClick={() => onUnlock(lock)}
+          >
+            {unlockBusy ? "Unlocking..." : "Unlock"}
+          </button>
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -673,7 +801,7 @@ function MessageItem({ entry }) {
           <span className="agent-indicator" style={{ background: fromColor, boxShadow: `0 0 6px ${fromColor}`, display: "inline-block", width: 6, height: 6, borderRadius: "50%", marginRight: 6, verticalAlign: "middle" }} />
           {entry.from || "unknown"}
         </span>
-        <span className="msg-arrow">→</span>
+        <span className="msg-arrow"><AppIcon name="outbound" /></span>
         <span className="msg-to">{entry.to || "unknown"}</span>
         <span className="muted-inline">{timeAgo(entry.timestamp)}</span>
       </div>
@@ -752,7 +880,14 @@ export function App() {
   const [feedEntries, setFeedEntries] = useState([]);
   const [messageEntries, setMessageEntries] = useState([]);
   const [activityEntries, setActivityEntries] = useState([]);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX;
+  });
+  const [isNarrowViewport, setIsNarrowViewport] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX;
+  });
   const [savings, setSavings] = useState(null);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [memoryResults, setMemoryResults] = useState([]);
@@ -763,7 +898,19 @@ export function App() {
     agent: "",
     unread: false,
   });
-  const [messageAgent, setMessageAgent] = useState("");
+  const [selectedOperator, setSelectedOperator] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      return window.localStorage.getItem(CORTEX_OPERATOR_STORAGE_KEY) || "";
+    } catch {
+      return "";
+    }
+  });
+  const [messageTarget, setMessageTarget] = useState("");
+  const [messageDraft, setMessageDraft] = useState("");
+  const [taskCompletionDrafts, setTaskCompletionDrafts] = useState({});
+  const [completionTaskId, setCompletionTaskId] = useState("");
+  const [busyActionKey, setBusyActionKey] = useState("");
   const [activitySince, setActivitySince] = useState("1h");
   const [feedbackMessage, setFeedbackMessage] = useState("Checking daemon...");
   const [conflictPairs, setConflictPairs] = useState([]);
@@ -820,9 +967,16 @@ export function App() {
   }, [sessions]);
 
   const knownAgents = useMemo(() => {
-    const extras = messageAgent.trim() ? [messageAgent.trim()] : [];
+    const extras = [
+      selectedOperator.trim(),
+      messageTarget.trim(),
+      ...tasks.map((task) => task?.claimedBy),
+      ...locks.map((lock) => lock?.agent),
+      ...feedEntries.map((entry) => entry?.agent),
+      ...messageEntries.flatMap((entry) => [entry?.from, entry?.to]),
+    ].filter(Boolean);
     return buildKnownAgents(normalizedSessions, extras);
-  }, [normalizedSessions, messageAgent]);
+  }, [feedEntries, locks, messageEntries, messageTarget, normalizedSessions, selectedOperator, tasks]);
 
   const currencyRate = USD_TO_CURRENCY_RATE[currency] ?? USD_TO_CURRENCY_RATE.USD;
   const memoryLoad = useMemo(
@@ -858,6 +1012,22 @@ export function App() {
         return fallback;
       }
       return current;
+    });
+  }, []);
+
+  const clearDisconnectedData = useCallback(() => {
+    setSessions([]);
+    setLocks([]);
+    setTasks([]);
+    setFeedEntries([]);
+    setMessageEntries([]);
+    setActivityEntries([]);
+    setConflictPairs([]);
+    setSavings(null);
+    setStats({
+      memories: "--",
+      decisions: "--",
+      events: "--",
     });
   }, []);
 
@@ -996,29 +1166,31 @@ export function App() {
     const query = new URLSearchParams();
     query.set("since", feedFilters.since);
     if (feedFilters.kind !== "all") query.set("kind", feedFilters.kind);
-    if (feedFilters.agent.trim()) query.set("agent", feedFilters.agent.trim());
-    if (feedFilters.unread && feedFilters.agent.trim()) query.set("unread", "true");
+    if (feedFilters.unread && selectedOperator.trim()) {
+      query.set("agent", selectedOperator.trim());
+      query.set("unread", "true");
+    }
 
     const feedResult = await api(`/feed?${query.toString()}`, true);
     const entries = Array.isArray(feedResult?.entries) ? [...feedResult.entries].reverse() : [];
-    setFeedEntries(entries);
+    setFeedEntries(filterFeedEntries(entries, feedFilters.agent));
     clearTransientFeedback();
-  }, [api, clearTransientFeedback, feedFilters]);
+  }, [api, clearTransientFeedback, feedFilters, selectedOperator]);
 
   const refreshMessages = useCallback(async () => {
-    const targetAgent = messageAgent.trim();
-    if (!targetAgent) {
+    const operator = selectedOperator.trim();
+    if (!operator) {
       setMessageEntries([]);
       return;
     }
 
     const query = new URLSearchParams();
-    query.set("agent", targetAgent);
+    query.set("agent", operator);
     const result = await api(`/messages?${query.toString()}`, true);
     const entries = Array.isArray(result?.messages) ? [...result.messages].reverse() : [];
     setMessageEntries(entries);
     clearTransientFeedback();
-  }, [api, clearTransientFeedback, messageAgent]);
+  }, [api, clearTransientFeedback, selectedOperator]);
 
   const refreshActivity = useCallback(async () => {
     const query = new URLSearchParams();
@@ -1099,7 +1271,9 @@ export function App() {
     ]);
     if (errors.length) {
       const unique = [...new Set(errors)];
-      if (!unique.every((error) => isDaemonOfflineErrorMessage(error))) {
+      if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
+        clearDisconnectedData();
+      } else {
         setFeedbackMessage(summarizeDashboardErrors(unique));
         if (!invokeRef.current && unique.every((error) => isAuthFailure(error))) {
           setShowConnectionDialog(true);
@@ -1119,6 +1293,7 @@ export function App() {
     refreshActivity,
     refreshSavings,
     refreshConflicts,
+    clearDisconnectedData,
   ]);
 
   useEffect(() => {
@@ -1133,6 +1308,28 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("cortex_analytics_mode", analyticsMode);
   }, [analyticsMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const syncViewport = () => {
+      setIsNarrowViewport(window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX);
+    };
+    syncViewport();
+    window.addEventListener("resize", syncViewport);
+    return () => window.removeEventListener("resize", syncViewport);
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (selectedOperator.trim()) {
+        localStorage.setItem(CORTEX_OPERATOR_STORAGE_KEY, selectedOperator.trim());
+      } else {
+        localStorage.removeItem(CORTEX_OPERATOR_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+  }, [selectedOperator]);
 
   useEffect(() => {
     refreshAllRef.current = refreshAll;
@@ -1155,10 +1352,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (messageAgent.trim()) return;
-    const defaultAgent = normalizedSessions.find((session) => session.agent)?.agent;
-    if (defaultAgent) setMessageAgent(defaultAgent);
-  }, [normalizedSessions, messageAgent]);
+    if (selectedOperator.trim()) return;
+    const defaultAgent = knownAgents[0];
+    if (defaultAgent) setSelectedOperator(defaultAgent);
+  }, [knownAgents, selectedOperator]);
+
+  useEffect(() => {
+    if (messageTarget.trim()) return;
+    const fallbackTarget = knownAgents.find((agent) => !sameAgent(agent, selectedOperator));
+    if (fallbackTarget) setMessageTarget(fallbackTarget);
+  }, [knownAgents, messageTarget, selectedOperator]);
 
   useEffect(() => {
     if (skipInitialMessagesRefreshRef.current) {
@@ -1441,6 +1644,159 @@ export function App() {
     setFeedbackMessage(summarizeDashboardErrors([message]) || message);
   }, []);
 
+  const handleTaskClaim = useCallback(async (task) => {
+    const operator = selectedOperator.trim();
+    if (!operator) {
+      setFeedbackMessage("Select an operator before claiming tasks.");
+      return;
+    }
+
+    setBusyActionKey(`claim:${task.taskId}`);
+    try {
+      await postApi("/tasks/claim", { taskId: task.taskId, agent: operator });
+      setFeedbackMessage(`Claimed ${task.title}.`);
+      await refreshCoreData();
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperator]);
+
+  const handleTaskAbandon = useCallback(async (task) => {
+    const operator = selectedOperator.trim();
+    if (!operator) {
+      setFeedbackMessage("Select an operator before abandoning tasks.");
+      return;
+    }
+
+    setBusyActionKey(`abandon:${task.taskId}`);
+    try {
+      await postApi("/tasks/abandon", { taskId: task.taskId, agent: operator });
+      setFeedbackMessage(`Returned ${task.title} to pending.`);
+      setCompletionTaskId("");
+      await refreshCoreData();
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperator]);
+
+  const handleTaskComplete = useCallback(async (task, summary) => {
+    const operator = selectedOperator.trim();
+    if (!operator) {
+      setFeedbackMessage("Select an operator before completing tasks.");
+      return;
+    }
+
+    setBusyActionKey(`complete:${task.taskId}`);
+    try {
+      await postApi("/tasks/complete", {
+        taskId: task.taskId,
+        agent: operator,
+        summary: summary.trim() || undefined,
+      });
+      setFeedbackMessage(`Completed ${task.title}.`);
+      setCompletionTaskId("");
+      setTaskCompletionDrafts((current) => ({ ...current, [task.taskId]: "" }));
+      await Promise.all([refreshCoreData(), refreshFeed()]);
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [postApi, refreshCoreData, refreshFeed, reportSurfaceError, selectedOperator]);
+
+  const handleTaskDelete = useCallback(async (task) => {
+    setBusyActionKey(`delete:${task.taskId}`);
+    try {
+      await postApi("/tasks/delete", { taskId: task.taskId });
+      setFeedbackMessage(`Deleted ${task.title}.`);
+      await refreshCoreData();
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [postApi, refreshCoreData, reportSurfaceError]);
+
+  const handleUnlock = useCallback(async (lock) => {
+    const operator = selectedOperator.trim();
+    if (!operator) {
+      setFeedbackMessage("Select an operator before unlocking files.");
+      return;
+    }
+
+    setBusyActionKey(`unlock:${lock.path}`);
+    try {
+      await postApi("/unlock", { path: lock.path, agent: operator });
+      setFeedbackMessage(`Unlocked ${lock.path}.`);
+      await refreshCoreData();
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperator]);
+
+  const handleSendMessage = useCallback(async (event) => {
+    event?.preventDefault();
+    const operator = selectedOperator.trim();
+    const recipient = messageTarget.trim();
+    const message = messageDraft.trim();
+
+    if (!operator) {
+      setFeedbackMessage("Select an operator before sending messages.");
+      return;
+    }
+    if (!recipient) {
+      setFeedbackMessage("Choose a recipient before sending a message.");
+      return;
+    }
+    if (!message) {
+      setFeedbackMessage("Write a message before sending it.");
+      return;
+    }
+
+    setBusyActionKey("message:send");
+    try {
+      await postApi("/message", { from: operator, to: recipient, message });
+      setMessageDraft("");
+      setFeedbackMessage(`Sent message from ${operator} to ${recipient}.`);
+      await refreshMessages();
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [messageDraft, messageTarget, postApi, refreshMessages, reportSurfaceError, selectedOperator]);
+
+  const handleFeedAck = useCallback(async () => {
+    const operator = selectedOperator.trim();
+    const lastSeenId = nextFeedAckId(feedEntries, operator);
+
+    if (!operator) {
+      setFeedbackMessage("Select an operator before acknowledging feed entries.");
+      return;
+    }
+    if (!lastSeenId) {
+      setFeedbackMessage("No visible teammate feed entries to acknowledge.");
+      return;
+    }
+
+    setBusyActionKey("feed:ack");
+    try {
+      await postApi("/feed/ack", { agent: operator, lastSeenId });
+      setFeedbackMessage(`Acknowledged the visible feed for ${operator}.`);
+      await refreshFeed();
+    } catch (error) {
+      reportSurfaceError(error);
+    } finally {
+      setBusyActionKey("");
+    }
+  }, [feedEntries, postApi, refreshFeed, reportSurfaceError, selectedOperator]);
+
   const waitForDaemonReachable = useCallback(async () => {
     const started = Date.now();
     while (Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS) {
@@ -1535,9 +1891,22 @@ export function App() {
     try {
       const result = await call("stop_daemon");
       setFeedbackMessage(result.message || "Daemon stop requested.");
+      const offline = await waitForDaemonOffline();
       tokenRef.current = "";
-      daemonTransitionRef.current = false;
-      await refreshAll();
+      persistBrowserAuthToken("");
+      if (offline) {
+        clearDisconnectedData();
+        setDaemonState({
+          running: false,
+          reachable: false,
+          pid: null,
+          message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+        });
+        setFeedbackMessage(result.message || "Stopped Cortex daemon.");
+      } else {
+        setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...");
+        await refreshAll();
+      }
     } catch (error) {
       setFeedbackMessage(`Stop failed: ${error.message || error}`);
     } finally {
@@ -1627,9 +1996,11 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [panel]);
 
+  const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport;
+
   return (
-    <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
+    <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside className={`sidebar ${effectiveSidebarCollapsed ? "collapsed" : ""}`}>
         <div className="sidebar-header">
           <div className="logo">
             <span>Cortex</span>
@@ -1646,7 +2017,7 @@ export function App() {
               onClick={() => setPanel(item.key)}
               data-key={idx + 1}
             >
-              <span style={{ opacity: 0.5, fontSize: "12px" }}>{item.icon}</span>
+              <span style={{ opacity: 0.5, fontSize: "12px" }}><AppIcon name={item.icon} /></span>
               {item.label}
             </button>
           ))}
@@ -1682,7 +2053,7 @@ export function App() {
               onClick={handleRestartDaemon}
               disabled={restartingDaemon}
             >
-              {restartingDaemon ? "Restarting... ⟳" : "Restart"}
+              {restartingDaemon ? "Restarting..." : "Restart"}
             </button>
           </div>
           <div className="daemon-controls-grid">
@@ -1723,7 +2094,7 @@ export function App() {
           )}
           <p className="sidebar-status">{feedbackMessage}</p>
           <button type="button" className="btn-sidebar-collapse" onClick={() => setSidebarCollapsed(c => !c)}>
-            {sidebarCollapsed ? "▶" : "◀"}
+            <AppIcon name={effectiveSidebarCollapsed ? "chevron-right" : "chevron-left"} size={16} />
           </button>
         </div>
       </aside>
@@ -1816,27 +2187,27 @@ export function App() {
               <div className="metric" data-accent="cyan">
                 <span className="metric-value"><AnimatedNumber value={typeof stats.memories === "number" ? stats.memories : 0} /></span>
                 <span className="metric-label">Memories</span>
-                <span className="metric-icon">MEM</span>
+                <span className="metric-icon"><AppIcon name="memory" /></span>
               </div>
               <div className="metric" data-accent="blue">
                 <span className="metric-value"><AnimatedNumber value={typeof stats.decisions === "number" ? stats.decisions : 0} /></span>
                 <span className="metric-label">Decisions</span>
-                <span className="metric-icon">DEC</span>
+                <span className="metric-icon"><AppIcon name="decision" /></span>
               </div>
               <div className="metric" data-accent="purple">
                 <span className="metric-value"><AnimatedNumber value={typeof stats.events === "number" ? stats.events : 0} /></span>
                 <span className="metric-label">Events</span>
-                <span className="metric-icon">EVT</span>
+                <span className="metric-icon"><AppIcon name="event" /></span>
               </div>
               <div className="metric" data-accent="green">
                 <span className="metric-value"><AnimatedNumber value={normalizedSessions.length} /></span>
                 <span className="metric-label">Active Agents</span>
-                <span className="metric-icon">AGT</span>
+                <span className="metric-icon"><AppIcon name="agents" /></span>
               </div>
               <div className="metric" data-accent="blue">
                 <span className="metric-value">{formatCompactNumber(Number(savings?.summary?.totalSaved || 0))}</span>
                 <span className="metric-label">Saved Tokens</span>
-                <span className="metric-icon">TOK</span>
+                <span className="metric-icon"><AppIcon name="token" /></span>
               </div>
             </div>
 
@@ -2017,17 +2388,17 @@ export function App() {
               <div className="metric" data-accent="cyan">
                 <span className="metric-value"><AnimatedNumber value={typeof stats.memories === "number" ? stats.memories : 0} /></span>
                 <span className="metric-label">Memories</span>
-                <span className="metric-icon">⬡</span>
+                <span className="metric-icon"><AppIcon name="memory" /></span>
               </div>
               <div className="metric" data-accent="blue">
                 <span className="metric-value"><AnimatedNumber value={typeof stats.decisions === "number" ? stats.decisions : 0} /></span>
                 <span className="metric-label">Decisions</span>
-                <span className="metric-icon">◆</span>
+                <span className="metric-icon"><AppIcon name="decision" /></span>
               </div>
               <div className="metric" data-accent="purple">
                 <span className="metric-value"><AnimatedNumber value={typeof stats.events === "number" ? stats.events : 0} /></span>
                 <span className="metric-label">Events</span>
-                <span className="metric-icon">◍</span>
+                <span className="metric-icon"><AppIcon name="event" /></span>
               </div>
             </div>
 
@@ -2109,43 +2480,33 @@ export function App() {
                 </ul>
               </div>
 
-              <div className="card">
-                <div className="card-header">
-                  <h2>Agent Messages</h2>
-                  <span className="badge">{messageEntries.length}</span>
-                </div>
-                <div className="surface-toolbar">
-                  <label className="feed-control">
-                    <span>Agent</span>
-                    <input
-                      type="text"
-                      list="message-agent-list"
-                      placeholder="factory-droid"
-                      value={messageAgent}
-                      onChange={(event) => setMessageAgent(event.target.value)}
-                    />
-                    <datalist id="message-agent-list">
-                      {knownAgents.map((agent) => (
-                        <option key={agent} value={agent} />
-                      ))}
-                    </datalist>
-                  </label>
-                  <div className="surface-actions">
-                    <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(reportSurfaceError)}>
-                      Refresh
-                    </button>
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Operator Inbox</h2>
+                    <span className="badge">{messageEntries.length}</span>
                   </div>
+                  <div className="surface-toolbar">
+                    <OperatorSelector
+                      value={selectedOperator}
+                      knownAgents={knownAgents}
+                      onChange={setSelectedOperator}
+                    />
+                    <div className="surface-actions">
+                      <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(reportSurfaceError)}>
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                  <ul className="item-list">
+                    {!selectedOperator.trim() ? (
+                      <EmptyItem text="Select an operator to view the inbox" />
+                    ) : messageEntries.length ? (
+                      messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
+                    ) : (
+                      <EmptyItem text={`No inbox messages for ${selectedOperator.trim()}`} />
+                    )}
+                  </ul>
                 </div>
-                <ul className="item-list">
-                  {!messageAgent.trim() ? (
-                    <EmptyItem text="Select an agent to view messages" />
-                  ) : messageEntries.length ? (
-                    messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
-                  ) : (
-                    <EmptyItem text={`No messages for ${messageAgent.trim()}`} />
-                  )}
-                </ul>
-              </div>
 
               <div className="card">
                 <div className="card-header">
@@ -2188,11 +2549,23 @@ export function App() {
             <div className="panel-header">
               <div>
                 <h1>Work</h1>
-                <p className="panel-subtitle">Queue, locks, and shared feed live on the same operating surface.</p>
+                <p className="panel-subtitle">Queue, inbox, locks, and shared feed run through the same live operator surface.</p>
               </div>
               <div className="surface-actions">
                 <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
                 <button type="button" className="btn-sm" onClick={() => setPanel("agents")}>Agents</button>
+              </div>
+            </div>
+
+            <div className="surface-toolbar work-operator-toolbar">
+              <OperatorSelector
+                value={selectedOperator}
+                knownAgents={knownAgents}
+                onChange={setSelectedOperator}
+              />
+              <div className="surface-actions">
+                <span className="badge">{selectedOperator.trim() || "Unset"}</span>
+                <span className="surface-inline-hint">Live actions use the selected operator label.</span>
               </div>
             </div>
 
@@ -2223,7 +2596,15 @@ export function App() {
                     <span className="badge">{pendingTasks.length}</span>
                   </div>
                   <ul className="item-list">
-                    {pendingTasks.length ? pendingTasks.map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="No pending tasks" />}
+                    {pendingTasks.length ? pendingTasks.map((task) => (
+                      <TaskItem
+                        key={task.taskId}
+                        task={task}
+                        selectedOperator={selectedOperator}
+                        onClaim={handleTaskClaim}
+                        busyActionKey={busyActionKey}
+                      />
+                    )) : <EmptyItem text="No pending tasks" />}
                   </ul>
                 </div>
 
@@ -2233,7 +2614,24 @@ export function App() {
                     <span className="badge">{claimedTasks.length}</span>
                   </div>
                   <ul className="item-list">
-                    {claimedTasks.length ? claimedTasks.map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="Nothing in progress" />}
+                    {claimedTasks.length ? claimedTasks.map((task) => (
+                      <TaskItem
+                        key={task.taskId}
+                        task={task}
+                        selectedOperator={selectedOperator}
+                        completionDraft={taskCompletionDrafts[task.taskId] || ""}
+                        completionExpanded={completionTaskId === task.taskId}
+                        onAbandon={handleTaskAbandon}
+                        onComplete={handleTaskComplete}
+                        onCompletionDraftChange={(taskId, value) => {
+                          setTaskCompletionDrafts((current) => ({ ...current, [taskId]: value }));
+                        }}
+                        onToggleComplete={(taskId) => {
+                          setCompletionTaskId((current) => (current === taskId ? "" : taskId));
+                        }}
+                        busyActionKey={busyActionKey}
+                      />
+                    )) : <EmptyItem text="Nothing in progress" />}
                   </ul>
                 </div>
 
@@ -2267,7 +2665,15 @@ export function App() {
                     </div>
                   </div>
                   <ul className="item-list">
-                    {completedTasks.length ? completedTasks.slice(0, 10).map((task) => <TaskItem key={task.taskId} task={task} />) : <EmptyItem text="No completed tasks" />}
+                    {completedTasks.length ? completedTasks.slice(0, 10).map((task) => (
+                      <TaskItem
+                        key={task.taskId}
+                        task={task}
+                        selectedOperator={selectedOperator}
+                        onDelete={handleTaskDelete}
+                        busyActionKey={busyActionKey}
+                      />
+                    )) : <EmptyItem text="No completed tasks" />}
                   </ul>
                 </div>
               </div>
@@ -2275,11 +2681,77 @@ export function App() {
               <div className="work-side-stack">
                 <div className="card">
                   <div className="card-header">
+                    <h2>Operator Inbox</h2>
+                    <span className="badge">{messageEntries.length}</span>
+                  </div>
+                  <div className="surface-toolbar">
+                    <OperatorSelector
+                      value={selectedOperator}
+                      knownAgents={knownAgents}
+                      onChange={setSelectedOperator}
+                    />
+                    <label className="feed-control">
+                      <span>Recipient</span>
+                      <input
+                        type="text"
+                        list="message-recipient-list"
+                        placeholder="factory-droid"
+                        value={messageTarget}
+                        onChange={(event) => setMessageTarget(event.target.value)}
+                      />
+                      <datalist id="message-recipient-list">
+                        {knownAgents
+                          .filter((agent) => !sameAgent(agent, selectedOperator))
+                          .map((agent) => (
+                            <option key={agent} value={agent} />
+                          ))}
+                      </datalist>
+                    </label>
+                    <div className="surface-actions">
+                      <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(reportSurfaceError)}>
+                        Refresh Inbox
+                      </button>
+                    </div>
+                  </div>
+                  <form className="surface-compose" onSubmit={handleSendMessage}>
+                    <textarea
+                      value={messageDraft}
+                      onChange={(event) => setMessageDraft(event.target.value)}
+                      placeholder={selectedOperator.trim() ? `Message from ${selectedOperator.trim()}` : "Select an operator to send messages"}
+                      rows={3}
+                    />
+                    <div className="surface-actions">
+                      <button type="submit" className="btn-sm btn-primary" disabled={busyActionKey === "message:send"}>
+                        {busyActionKey === "message:send" ? "Sending..." : "Send Message"}
+                      </button>
+                    </div>
+                  </form>
+                  <ul className="item-list compact-list">
+                    {!selectedOperator.trim() ? (
+                      <EmptyItem text="Select an operator to view the inbox" />
+                    ) : messageEntries.length ? (
+                      messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
+                    ) : (
+                      <EmptyItem text={`No inbox messages for ${selectedOperator.trim()}`} />
+                    )}
+                  </ul>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
                     <h2>Locks</h2>
                     <span className="badge">{locks.length}</span>
                   </div>
                   <ul className="item-list">
-                    {locks.length ? locks.map((lock) => <LockItem key={lock.id || `${lock.path}:${lock.agent}`} lock={lock} />) : <EmptyItem text="No active locks" />}
+                    {locks.length ? locks.map((lock) => (
+                      <LockItem
+                        key={lock.id || `${lock.path}:${lock.agent}`}
+                        lock={lock}
+                        selectedOperator={selectedOperator}
+                        onUnlock={handleUnlock}
+                        busyActionKey={busyActionKey}
+                      />
+                    )) : <EmptyItem text="No active locks" />}
                   </ul>
                 </div>
 
@@ -2330,6 +2802,14 @@ export function App() {
                       />
                     </label>
                     <div className="surface-actions">
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        disabled={busyActionKey === "feed:ack" || !selectedOperator.trim()}
+                        onClick={() => handleFeedAck().catch(reportSurfaceError)}
+                      >
+                        {busyActionKey === "feed:ack" ? "Acking..." : "Acknowledge Visible"}
+                      </button>
                       <button type="button" className="btn-sm" onClick={() => refreshFeed().catch(reportSurfaceError)}>
                         Refresh
                       </button>
@@ -2536,7 +3016,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "tasks" ? (
+        {panel === "__legacy_tasks" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>Task Board</h1>
@@ -2597,7 +3077,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "feed" ? (
+        {panel === "__legacy_feed" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>Shared Feed</h1>
@@ -2668,7 +3148,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "messages" ? (
+        {panel === "__legacy_messages" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>Messages</h1>
@@ -2676,20 +3156,20 @@ export function App() {
             <div className="card full">
               <div className="surface-toolbar">
                 <label className="feed-control">
-                  <span>Agent</span>
-                  <input
-                    type="text"
-                    list="message-agent-list"
-                    placeholder="factory-droid"
-                    value={messageAgent}
-                    onChange={(event) => setMessageAgent(event.target.value)}
-                  />
-                  <datalist id="message-agent-list">
-                    {knownAgents.map((agent) => (
-                      <option key={agent} value={agent} />
-                    ))}
-                  </datalist>
-                </label>
+                    <span>Recipient</span>
+                    <input
+                      type="text"
+                      list="message-recipient-list"
+                      placeholder="factory-droid"
+                      value={messageTarget}
+                      onChange={(event) => setMessageTarget(event.target.value)}
+                    />
+                    <datalist id="message-recipient-list">
+                      {knownAgents.map((agent) => (
+                        <option key={agent} value={agent} />
+                      ))}
+                    </datalist>
+                  </label>
                 <div className="surface-actions">
                   <span className="badge">{messageEntries.length}</span>
                   <button type="button" className="btn-sm" onClick={() => refreshMessages().catch(reportSurfaceError)}>
@@ -2698,19 +3178,19 @@ export function App() {
                 </div>
               </div>
               <ul className="item-list">
-                {!messageAgent.trim() ? (
-                  <EmptyItem text="Select an agent to view messages" />
+                {!selectedOperator.trim() ? (
+                  <EmptyItem text="Select an operator to view the inbox" />
                 ) : messageEntries.length ? (
                   messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
                 ) : (
-                  <EmptyItem text={`No messages for ${messageAgent.trim()}`} />
+                  <EmptyItem text={`No inbox messages for ${selectedOperator.trim()}`} />
                 )}
               </ul>
             </div>
           </section>
         ) : null}
 
-        {panel === "activity" ? (
+        {panel === "__legacy_activity" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>Activity</h1>
@@ -2843,7 +3323,7 @@ export function App() {
                         ? "Collecting enough history for a momentum read."
                         : `${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs previous 4-day window`}
                     </span>
-                    <span className="metric-icon">↓</span>
+                    <span className="metric-icon"><AppIcon name="savings" /></span>
                   </div>
                   <div className="metric" data-accent="green">
                     <span className="metric-kicker">Efficiency</span>
@@ -2852,7 +3332,7 @@ export function App() {
                     <span className="metric-footnote">
                       Avg saved per boot {formatCompactNumber(Number(savings.summary?.avgSavedPerBoot || 0))} tokens
                     </span>
-                    <span className="metric-icon">◎</span>
+                    <span className="metric-icon"><AppIcon name="efficiency" /></span>
                   </div>
                   <div className="metric" data-accent="blue">
                     <span className="metric-kicker">Throughput</span>
@@ -2861,7 +3341,7 @@ export function App() {
                     <span className="metric-footnote">
                       Avg boot prompt {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} tokens served
                     </span>
-                    <span className="metric-icon">⟳</span>
+                    <span className="metric-icon"><AppIcon name="refresh" /></span>
                   </div>
                   <div className="metric" data-accent="purple">
                     <span className="metric-kicker">Compiled context</span>
@@ -2870,7 +3350,7 @@ export function App() {
                     <span className="metric-footnote">
                       Baseline replay pressure {formatCompactNumber(Number(savings.summary?.totalBaseline || 0))} tokens
                     </span>
-                    <span className="metric-icon">→</span>
+                    <span className="metric-icon"><AppIcon name="outbound" /></span>
                   </div>
                   <div className="metric" data-accent="green">
                     <span className="metric-kicker">Economic value</span>
@@ -3205,7 +3685,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "locks" ? (
+        {panel === "__legacy_locks" ? (
           <section className="panel active">
             <div className="panel-header">
               <h1>File Locks</h1>
@@ -3433,7 +3913,7 @@ export function App() {
                     background: "linear-gradient(135deg, var(--cyan), var(--blue))",
                     display: "none", alignItems: "center", justifyContent: "center",
                     fontSize: "2rem", flexShrink: 0,
-                  }}>◈</div>
+                  }}><AppIcon name="overview" size={28} /></div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
                     <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version 0.4.0</p>

@@ -2,6 +2,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState } from "re
 import ForceGraph3D from "react-force-graph-3d";
 import * as THREE from "three";
 import { AGENT_COLORS, getAgentColor, truncate } from "./constants.js";
+import { AppIcon } from "./ui-icons.jsx";
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -16,7 +17,7 @@ class GraphErrorBoundary extends Component {
     if (this.state.hasError) {
       return this.props.fallback || (
         <div className="brain-loading">
-          <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+          <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
           <p>3D renderer crashed: {this.state.error}</p>
           <p style={{ fontSize: 12, color: "#546580", marginTop: 8 }}>Showing 2D fallback instead.</p>
         </div>
@@ -220,7 +221,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
   if (error) {
     return (
       <div className="brain-loading">
-        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
         <p>Error: {error}</p>
         <button className="btn-sm btn-primary" onClick={() => { setError(null); setLoading(true); fetchBrainData(); }} style={{ marginTop: 12 }}>Retry</button>
       </div>
@@ -230,7 +231,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
   if (loading) {
     return (
       <div className="brain-loading">
-        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
         <p>Loading brain topology... ({graphData.nodes.length} nodes)</p>
       </div>
     );
@@ -239,7 +240,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
   if (graphData.nodes.length === 0) {
     return (
       <div className="brain-loading">
-        <div className="coming-icon" style={{ fontSize: 48 }}>◬</div>
+        <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
         <p>No memories found in brain.</p>
       </div>
     );
@@ -277,7 +278,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
         </div>
         {selectedNode && (
           <div className="brain-detail" style={{ position: "fixed" }}>
-            <button className="brain-detail-close" onClick={() => setSelectedNode(null)}>✕</button>
+            <button className="brain-detail-close" onClick={() => setSelectedNode(null)}><AppIcon name="close" size={12} /></button>
             <div className="brain-detail-type">
               <span className="memory-method">{selectedNode.group}</span>
               <span className="memory-method">{selectedNode.type}</span>
@@ -295,19 +296,28 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
   // 3D Graph
   return (
     <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
-      <div className="brain-hud">
+      <div className="brain-hud brain-hud-primary">
+        <div className="brain-hud-copy">
+          <span className="brain-mode">Neural topology</span>
+          <strong className="brain-title">Cortex Brain Map</strong>
+          <p>Click any node to pin details. Drag to inspect clusters. Auto-rotate is display mode only.</p>
+        </div>
+      </div>
+
+      <div className="brain-hud brain-hud-secondary">
         <span className="brain-stat"><span className="brain-label">NODES</span> {graphData.nodes.length}</span>
         <span className="brain-stat"><span className="brain-label">LINKS</span> {graphData.links.length}</span>
         <span className="brain-stat"><span className="brain-label">MEM</span> {memoryCt}</span>
         <span className="brain-stat"><span className="brain-label">DEC</span> {decisionCt}</span>
-        <button className={`brain-toggle ${autoRotate ? "active" : ""}`} onClick={() => setAutoRotate(r => !r)}>
-          {autoRotate ? "⟳ AUTO" : "⊘ MANUAL"}
+        <button className={`brain-toggle ${autoRotate ? "active" : ""}`} onClick={() => setAutoRotate(r => !r)} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {autoRotate ? <AppIcon name="refresh" size={14} /> : <AppIcon name="activity" size={14} />}
+          <span>{autoRotate ? "AUTO" : "MANUAL"}</span>
         </button>
       </div>
 
       {selectedNode && (
         <div className="brain-detail">
-          <button className="brain-detail-close" onClick={() => setSelectedNode(null)}>✕</button>
+          <button className="brain-detail-close" onClick={() => setSelectedNode(null)}><AppIcon name="close" size={12} /></button>
           <div className="brain-detail-type">
             <span className="memory-method">{selectedNode.group}</span>
             <span className="memory-method">{selectedNode.type}</span>

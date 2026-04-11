@@ -1,0 +1,66 @@
+.nav-item:not(.active) {
+  color: #7f8fa6;
+}
+
+.work-operator-toolbar {
+  margin-bottom: 14px;
+  align-items: end;
+}
+
+.surface-inline-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.task-complete-panel,
+.surface-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-complete-panel {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.task-complete-panel textarea,
+.surface-compose textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 84px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-deep);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.5;
+  padding: 12px 14px;
+}
+
+.task-complete-panel textarea:focus,
+.surface-compose textarea:focus {
+  outline: none;
+  border-color: rgba(0, 212, 255, 0.35);
+  box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.12);
+}
+
+.surface-compose {
+  margin-bottom: 14px;
+}
+
+.surface-compose .surface-actions {
+  justify-content: flex-end;
+}

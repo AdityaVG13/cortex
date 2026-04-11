@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildKnownAgents,
+  canClaimTask,
+  canFinalizeTask,
+  canUnlockLock,
   filterFeedEntries,
   isTransportSession,
+  nextFeedAckId,
   normalizeTask,
   sameAgent,
 } from "./live-surface.js";
@@ -89,5 +93,43 @@ describe("filterFeedEntries", () => {
 
   it("filters entries by agent name", () => {
     expect(filterFeedEntries(entries, "cla")).toEqual([{ id: "2", agent: "Claude" }]);
+  });
+});
+
+describe("task actions", () => {
+  it("requires an operator to claim a pending task", () => {
+    expect(canClaimTask({ taskId: "a", status: "pending" }, "Codex")).toBe(true);
+    expect(canClaimTask({ taskId: "a", status: "pending" }, "")).toBe(false);
+  });
+
+  it("only allows the claiming operator to complete or abandon claimed tasks", () => {
+    const task = { taskId: "a", status: "claimed", claimedBy: "Codex" };
+    expect(canFinalizeTask(task, "Codex")).toBe(true);
+    expect(canFinalizeTask(task, "Claude")).toBe(false);
+  });
+});
+
+describe("lock actions", () => {
+  it("only allows the lock holder to unlock a path", () => {
+    const lock = { path: "src/App.jsx", agent: "Codex" };
+    expect(canUnlockLock(lock, "Codex")).toBe(true);
+    expect(canUnlockLock(lock, "Claude")).toBe(false);
+  });
+});
+
+describe("nextFeedAckId", () => {
+  it("acks the newest visible entry from another agent", () => {
+    const entries = [
+      { id: "feed-3", agent: "Claude" },
+      { id: "feed-2", agent: "Codex" },
+      { id: "feed-1", agent: "Factory Droid" },
+    ];
+
+    expect(nextFeedAckId(entries, "Codex")).toBe("feed-3");
+  });
+
+  it("returns blank when there is no operator or nothing to ack", () => {
+    expect(nextFeedAckId([{ id: "feed-1", agent: "Codex" }], "Codex")).toBe("");
+    expect(nextFeedAckId([{ id: "feed-1", agent: "Claude" }], "")).toBe("");
   });
 });

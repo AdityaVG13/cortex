@@ -7,13 +7,18 @@
   "scripts": {
     "web:dev": "vite",
     "web:build": "vite build",
+    "web:preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
     "build:daemon": "cargo build --release --manifest-path ../../daemon-rs/Cargo.toml",
     "build:daemon:dev": "cargo build --manifest-path ../../daemon-rs/Cargo.toml",
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "mock:cortex": "node scripts/mock-cortex-server.mjs",
+    "expect:smoke": "npm run web:build && node scripts/run-expect-smoke.mjs",
+    "expect:smoke:work": "npm run web:build && node scripts/run-expect-smoke.mjs --scope work",
+    "expect:smoke:ci": "npm run web:build && node scripts/run-expect-smoke.mjs --ci"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -27,7 +32,14 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-react": "^5.1.0",
+    "expect-cli": "^0.0.25",
     "vite": "^7.1.0",
     "vitest": "^4.1.2"
+  },
+  "overrides": {
+    "@effect/atom-react": "4.0.0-beta.35",
+    "@effect/platform-node": "4.0.0-beta.35",
+    "@effect/platform-node-shared": "4.0.0-beta.35",
+    "effect": "4.0.0-beta.35"
   }
 }

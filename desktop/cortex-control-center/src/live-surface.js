@@ -54,3 +54,24 @@ export function filterFeedEntries(entries = [], agentFilter = "") {
 
   return entries.filter((entry) => String(entry?.agent || "").toLowerCase().includes(needle));
 }
+
+export function canClaimTask(task, operator = "") {
+  return normalizeTask(task).status === "pending" && String(operator || "").trim().length > 0;
+}
+
+export function canFinalizeTask(task, operator = "") {
+  const normalized = normalizeTask(task);
+  return normalized.status === "claimed" && sameAgent(normalized.claimedBy, operator);
+}
+
+export function canUnlockLock(lock, operator = "") {
+  return Boolean(lock?.path) && sameAgent(lock?.agent, operator);
+}
+
+export function nextFeedAckId(entries = [], operator = "") {
+  const operatorName = String(operator || "").trim();
+  if (!operatorName) return "";
+
+  const candidate = entries.find((entry) => entry?.id && !sameAgent(entry?.agent, operatorName));
+  return candidate?.id || "";
+}
