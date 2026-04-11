@@ -102,6 +102,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Replaced the desktop daemon reachability check with a real Cortex `/health` probe, preserved managed sidecar state on failed/timed-out stops, and added regression coverage for the stricter health-signature checks.
 - Scrubbed `/events` payloads down to safe metadata only, made MCP bridge teardown explicitly end sessions, and tightened the Claude plugin startup path so it validates real Cortex health responses and registers as `claude-code` instead of a generic `mcp` agent.
 
+## Phase 7H: Desktop Auth Banner Cleanup -- DONE
+- **Commit:** `4d108a6` | **Agent:** CX (Codex)
+- Removed the redundant first-run Messages / Activity refresh race in Cortex Control Center so those panels stop issuing duplicate protected requests during the initial dashboard hydrate.
+- Cleared transient desktop auth warnings after the next successful protected refresh so stale sidebar messages like "Activity could not authenticate" do not linger once the daemon and token are healthy again.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
