@@ -197,6 +197,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Fixed app quit / exit handling to send a real daemon shutdown to the active Cortex port before flushing state, so closing the Control Center no longer leaves an externally attached daemon process behind.
 - Reused the same blocking reachability wait path for both async transitions and final app shutdown, keeping stop/quit behavior aligned instead of having two different shutdown code paths.
 
+## Phase 7Y: Shutdown Auth-Retry Hardening -- DONE
+- **Commit:** `d57aaf3` | **Agent:** CX (Codex)
+- Unified blocking token-wait logic in the Control Center Tauri layer so shutdown paths can reuse the same auth-token settling behavior as the existing async read flow.
+- Added a one-time `/shutdown` retry after auth rejection using the refreshed on-disk token, which hardens app-driven stop / restart / quit against daemon token rotation races.
+- Verified the Tauri crate with `rtk cargo check` and `rtk cargo test` after the shutdown retry change.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
