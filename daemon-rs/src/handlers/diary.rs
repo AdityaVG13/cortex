@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
@@ -166,11 +166,7 @@ fn extract_section(content: &str, header: &str) -> Option<String> {
     let rest = &content[start..];
     let end = rest.find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
     let text = rest[..end].trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// Escape any user-provided `##` headers to prevent document structure breakage.

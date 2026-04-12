@@ -358,11 +358,7 @@ async fn session_end(
     }
 }
 
-async fn shutdown_daemon(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-) -> bool {
+async fn shutdown_daemon(client: &reqwest::Client, base_url: &str, api_key: Option<&str>) -> bool {
     let mut req = client
         .post(format!("{base_url}/shutdown"))
         .header("content-type", "application/json")
@@ -554,7 +550,9 @@ pub async fn run(
                         )
                         .await;
                         if restarted {
-                            eprintln!("[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}");
+                            eprintln!(
+                                "[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}"
+                            );
                         }
                     }
                 }
@@ -816,7 +814,10 @@ pub async fn run(
             }
         }
 
-        if options.allow_respawn && should_count_failure && consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+        if options.allow_respawn
+            && should_count_failure
+            && consecutive_failures >= MAX_CONSECUTIVE_FAILURES
+        {
             let in_cooldown = last_respawn_attempt_at
                 .map(|t| t.elapsed() < std::time::Duration::from_secs(RESPAWN_COOLDOWN_SECS))
                 .unwrap_or(false);

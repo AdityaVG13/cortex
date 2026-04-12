@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 use std::collections::{HashMap, HashSet};
 
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 /// Record pairwise co-occurrences for every unique pair in `sources`.
 /// Sources that are blank or appear only once are ignored.

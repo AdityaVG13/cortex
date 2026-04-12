@@ -11,7 +11,7 @@
 //! Designed for teams of 10+ agents doing hundreds of stores/day.
 //! Target: keep DB under 500MB regardless of usage volume.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -84,9 +84,11 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
         let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
         eprintln!(
             "[compaction] Pruned: {} events, {} archived texts, {} expired rows, {} crystal embeddings, {} feedback rows. Saved {}KB",
-            result.events_pruned, result.archived_text_stripped,
+            result.events_pruned,
+            result.archived_text_stripped,
             result.expired_pruned,
-            result.crystal_embeddings_pruned, result.feedback_aggregated,
+            result.crystal_embeddings_pruned,
+            result.feedback_aggregated,
             saved_kb
         );
     }

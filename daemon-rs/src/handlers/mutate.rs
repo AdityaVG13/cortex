@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -110,7 +110,7 @@ pub async fn handle_resolve(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing fields: keepId, action" }),
-            )
+            );
         }
     };
     let action = match body.action {
@@ -119,7 +119,7 @@ pub async fn handle_resolve(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing fields: keepId, action" }),
-            )
+            );
         }
     };
 
@@ -216,7 +216,7 @@ pub async fn handle_conflicts(State(state): State<RuntimeState>, headers: Header
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": format!("Query failed: {e}") }),
-            )
+            );
         }
     };
 

@@ -11,8 +11,8 @@
 //! at checkpoints (consolidation). Research shows 22.7% token reduction
 //! with no loss in task accuracy (Focus Architecture, SWE-bench).
 
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 /// Start a new focus session. Returns the session ID.
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {

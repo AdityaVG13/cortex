@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use chrono::{Duration, TimeZone, Utc};
 use regex::Regex;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{ensure_auth, json_response, now_iso};
@@ -462,7 +462,7 @@ pub async fn handle_lock(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: path, agent" }),
-            )
+            );
         }
     };
     let agent = match body.agent {
@@ -471,7 +471,7 @@ pub async fn handle_lock(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: path, agent" }),
-            )
+            );
         }
     };
 
@@ -604,7 +604,7 @@ pub async fn handle_unlock(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: path, agent" }),
-            )
+            );
         }
     };
     let agent = match body.agent {
@@ -613,7 +613,7 @@ pub async fn handle_unlock(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: path, agent" }),
-            )
+            );
         }
     };
 
@@ -704,7 +704,7 @@ pub async fn handle_post_activity(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, description" }),
-            )
+            );
         }
     };
     let description = match body.description {
@@ -713,7 +713,7 @@ pub async fn handle_post_activity(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, description" }),
-            )
+            );
         }
     };
 
@@ -797,7 +797,7 @@ pub async fn handle_get_activity(
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": format!("Get activity failed: {err}") }),
-            )
+            );
         }
     };
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -845,7 +845,7 @@ pub async fn handle_post_message(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: from, to, message" }),
-            )
+            );
         }
     };
     let to = match body.to {
@@ -854,7 +854,7 @@ pub async fn handle_post_message(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: from, to, message" }),
-            )
+            );
         }
     };
     let message = match body.message {
@@ -863,7 +863,7 @@ pub async fn handle_post_message(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: from, to, message" }),
-            )
+            );
         }
     };
 
@@ -911,7 +911,7 @@ pub async fn handle_get_messages(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing parameter: agent" }),
-            )
+            );
         }
     };
 
@@ -943,7 +943,7 @@ pub async fn handle_session_start(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required field: agent" }),
-            )
+            );
         }
     };
     if !is_valid_agent_label(&agent) {
@@ -1148,7 +1148,7 @@ pub async fn handle_session_end(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required field: agent" }),
-            )
+            );
         }
     };
 
@@ -1214,7 +1214,7 @@ pub async fn handle_create_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required field: title" }),
-            )
+            );
         }
     };
 
@@ -1316,7 +1316,7 @@ pub async fn handle_claim_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: taskId, agent" }),
-            )
+            );
         }
     };
     let agent = match body.agent {
@@ -1325,7 +1325,7 @@ pub async fn handle_claim_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: taskId, agent" }),
-            )
+            );
         }
     };
 
@@ -1425,7 +1425,7 @@ pub async fn handle_complete_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: taskId, agent" }),
-            )
+            );
         }
     };
     let agent = match body.agent {
@@ -1434,7 +1434,7 @@ pub async fn handle_complete_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: taskId, agent" }),
-            )
+            );
         }
     };
 
@@ -1596,7 +1596,7 @@ pub async fn handle_delete_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required field: taskId" }),
-            )
+            );
         }
     };
 
@@ -1675,7 +1675,7 @@ pub async fn handle_abandon_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: taskId, agent" }),
-            )
+            );
         }
     };
     let agent = match body.agent {
@@ -1684,7 +1684,7 @@ pub async fn handle_abandon_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: taskId, agent" }),
-            )
+            );
         }
     };
 
@@ -1767,7 +1767,7 @@ pub async fn handle_next_task(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing parameter: agent" }),
-            )
+            );
         }
     };
     let capability = query.capability.unwrap_or_else(|| "any".to_string());
@@ -1812,7 +1812,7 @@ pub async fn handle_next_task(
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": format!("Get next task failed: {err}") }),
-            )
+            );
         }
     };
 

@@ -16,8 +16,7 @@
 
 const SERVICE_NAME: &str = "CortexDaemon";
 const DISPLAY_NAME: &str = "Cortex Memory Daemon";
-const DESCRIPTION: &str =
-    "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
+const DESCRIPTION: &str = "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
 
 fn daemon_health_url() -> String {
     let port = crate::auth::CortexPaths::resolve().port;

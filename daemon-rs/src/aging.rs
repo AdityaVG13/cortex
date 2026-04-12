@@ -12,7 +12,7 @@
 //! to avoid depending on an LLM for the background job.
 
 use crate::handlers::feedback;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// Age tier boundaries in days.
 const FRESH_DAYS: i64 = 3;

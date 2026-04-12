@@ -17,7 +17,7 @@
 //! Runs as a background job (like aging). No LLM dependency -- pure embeddings
 //! + extractive text synthesis. The same zero-runtime-dep architecture.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 
 use crate::embeddings::{self, EmbeddingEngine};
@@ -171,7 +171,10 @@ pub fn run_crystallize_pass(
     if result.crystals_created > 0 || result.crystals_updated > 0 {
         eprintln!(
             "[crystallize] Pass complete: {} clusters, {} created, {} updated, {} entries consolidated",
-            result.clusters_found, result.crystals_created, result.crystals_updated, result.entries_consolidated
+            result.clusters_found,
+            result.crystals_created,
+            result.crystals_updated,
+            result.entries_consolidated
         );
     }
 

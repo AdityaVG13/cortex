@@ -3,11 +3,11 @@ use crate::handlers;
 use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
+use axum::Json;
+use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::routing::{get, post};
-use axum::Json;
-use axum::Router;
 use serde_json::Value;
 use std::path::Path;
 use tower_http::cors::CorsLayer;
@@ -323,7 +323,7 @@ async fn handle_focus_start(
             return handlers::json_error(
                 axum::http::StatusCode::BAD_REQUEST,
                 "Missing field: label",
-            )
+            );
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
@@ -348,7 +348,7 @@ async fn handle_focus_end(
             return handlers::json_error(
                 axum::http::StatusCode::BAD_REQUEST,
                 "Missing field: label",
-            )
+            );
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
@@ -380,7 +380,9 @@ pub async fn run(
             let team_mode = detect_team_mode_for_tls(db_path);
             if team_mode {
                 eprintln!("[cortex] TLS configuration error: {e}");
-                eprintln!("[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY");
+                eprintln!(
+                    "[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
+                );
                 std::process::exit(1);
             } else {
                 eprintln!("[cortex] TLS certificate error: {e}");

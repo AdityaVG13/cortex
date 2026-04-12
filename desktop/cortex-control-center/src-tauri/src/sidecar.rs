@@ -212,7 +212,6 @@ impl SidecarDaemon {
         cleanup_stale_runtime_copies(runtime_dir, &runtime_path);
         Some(runtime_path)
     }
-
 }
 
 impl Drop for SidecarDaemon {

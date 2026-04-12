@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 use chrono::{Duration, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{forget_keyword, resolve_decision};
-use super::recall::{execute_unified_recall, unfold_source, RecallContext};
+use super::recall::{RecallContext, execute_unified_recall, unfold_source};
 use super::store::{persist_decision_embedding, store_decision_with_input_embedding};
 use super::{estimate_tokens, now_iso};
 use crate::state::RuntimeState;
@@ -483,7 +483,7 @@ async fn mcp_dispatch(
                 _ => {
                     return Err(
                         "Missing required argument: sources (array of source strings)".to_string(),
-                    )
+                    );
                 }
             };
             if sources.is_empty() {
@@ -851,11 +851,7 @@ fn extract_section(content: &str, header: &str) -> Option<String> {
     let rest = &content[start..];
     let end = rest.find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
     let text = rest[..end].trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn sanitize_markdown(input: &str) -> String {

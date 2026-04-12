@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::{NaiveDateTime, Timelike, Utc};
 use rusqlite::params;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use super::{ensure_auth, json_response, truncate_chars};
@@ -379,7 +379,7 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": e.to_string() }),
-            )
+            );
         }
     };
 
@@ -524,7 +524,7 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
             return json_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "error": e.to_string() }),
-            )
+            );
         }
     };
 

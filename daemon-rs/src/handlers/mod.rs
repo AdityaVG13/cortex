@@ -15,9 +15,9 @@ pub mod store;
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
+use axum::Json;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{Duration, Utc};
 use serde_json::Value;
 use std::net::IpAddr;
@@ -143,7 +143,7 @@ pub fn ensure_admin(
             return Err(json_response(
                 StatusCode::FORBIDDEN,
                 serde_json::json!({ "error": "Admin endpoints require team mode" }),
-            ))
+            ));
         }
     };
     let role: String = conn

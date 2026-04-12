@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::{self, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_stream::wrappers::BroadcastStream;
 
 use super::now_iso;
@@ -63,8 +63,16 @@ mod tests {
         let payload = scrub_event_payload("task");
         let object = payload.as_object().expect("payload object");
 
-        assert_eq!(object.get("type").and_then(|value| value.as_str()), Some("task"));
-        assert!(object.get("timestamp").and_then(|value| value.as_str()).is_some());
+        assert_eq!(
+            object.get("type").and_then(|value| value.as_str()),
+            Some("task")
+        );
+        assert!(
+            object
+                .get("timestamp")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
         assert_eq!(object.len(), 2);
     }
 }

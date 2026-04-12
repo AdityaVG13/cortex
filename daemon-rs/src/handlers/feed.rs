@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use chrono::{Duration, Utc};
 use regex::Regex;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::{ensure_auth, json_response, now_iso};
@@ -356,7 +356,7 @@ pub async fn handle_post_feed(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, kind, summary" }),
-            )
+            );
         }
     };
     let kind = match body.kind {
@@ -365,7 +365,7 @@ pub async fn handle_post_feed(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, kind, summary" }),
-            )
+            );
         }
     };
     let summary = match body.summary {
@@ -374,7 +374,7 @@ pub async fn handle_post_feed(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, kind, summary" }),
-            )
+            );
         }
     };
 
@@ -562,7 +562,7 @@ pub async fn handle_feed_ack(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, lastSeenId" }),
-            )
+            );
         }
     };
     let last_seen_id = match body.last_seen_id {
@@ -571,7 +571,7 @@ pub async fn handle_feed_ack(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing required fields: agent, lastSeenId" }),
-            )
+            );
         }
     };
 

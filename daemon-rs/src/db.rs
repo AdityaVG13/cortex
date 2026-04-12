@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Result of an auto-repair attempt.
 #[derive(Debug)]
@@ -110,7 +110,10 @@ pub fn set_schema_user_version(conn: &Connection, version: i32) -> rusqlite::Res
     Ok(())
 }
 
-fn sync_schema_user_version(conn: &Connection, applied_versions: &HashSet<String>) -> rusqlite::Result<i32> {
+fn sync_schema_user_version(
+    conn: &Connection,
+    applied_versions: &HashSet<String>,
+) -> rusqlite::Result<i32> {
     let version = applied_versions
         .iter()
         .map(|entry| migration_user_version(entry))
@@ -1431,7 +1434,7 @@ pub fn archive_entries(conn: &Connection, table: &str, ids: &[i64]) -> rusqlite:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::{params, Connection};
+    use rusqlite::{Connection, params};
 
     #[test]
     fn test_open_configure_schema() {

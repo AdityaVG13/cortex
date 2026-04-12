@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use rusqlite::Connection;
 use serde_json::Value;
-use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio::sync::{Mutex, broadcast, oneshot};
 
 use crate::auth::CortexPaths;
 
@@ -226,8 +226,8 @@ fn initialize_with_conn(
     }
 
     // Open a separate read-only connection for concurrent reads.
-    let read_conn = crate::db::open(&paths.db)
-        .map_err(|e| format!("Failed to open read connection: {e}"))?;
+    let read_conn =
+        crate::db::open(&paths.db).map_err(|e| format!("Failed to open read connection: {e}"))?;
     crate::db::configure(&read_conn)
         .map_err(|e| format!("Failed to configure read connection: {e}"))?;
     read_conn
