@@ -209,6 +209,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Changed `cortex setup` to stop starting the daemon as part of setup verification; it now configures tools, reports daemon availability, and only performs the live round-trip check when a daemon is already running.
 - Updated the release smoke script and README CLI reference to match the new contract, while keeping `plugin mcp` owner-mode spawning and owned-proxy respawn as the only intentional non-app daemon owners.
 
+## Phase 7AA: Daemon Housekeeping Isolation -- DONE
+- **Commit:** `066cc62` | **Agent:** CX (Codex)
+- Isolated the low-risk daemon housekeeping pass into its own commit so the `0.5.0` metadata bump, sidecar cleanup, and import/format-only Rust churn are reviewable separately from the still-dirty recall-quality work.
+- Left the functional recall/benchmark cluster unstaged on purpose, since `tests/recall_benchmark.rs` still fails its current MRR regression gate and should not be mixed into release-ready lifecycle work.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
