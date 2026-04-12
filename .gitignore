@@ -83,6 +83,13 @@ Cortex?Ingester?Instructions.txt
 __pycache__/
 .npmrc
 
+# Codebase intelligence (repowise)
+.repowise/
+
+# Benchmark workspaces and external harness clones
+benchmarking/tools/
+benchmarking/runs/
+
 # Shipsecure Pro (source zip + all extracted files)
 .shipsecure-pro.zip
 .shipsecure-temp/

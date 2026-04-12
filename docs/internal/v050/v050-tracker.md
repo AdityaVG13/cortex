@@ -179,6 +179,13 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Moved local-daemon ownership into `cortex plugin mcp` solo mode only when that plugin session actually had to start the daemon, and taught owned plugin sessions to shut the daemon back down on exit instead of leaving detached `ensure-daemon` processes behind.
 - Extended Control Center `Setup MCP` coverage to Codex alongside Claude Code and Cursor, so the app can now rewrite Codex MCP config to the stable installed `~/.cortex/bin/cortex(.exe)` path rather than leaving editor clients pinned to workspace build outputs.
 
+## Phase 7V: MCP Wizard Expansion + Analytics Warmup -- DONE
+- **Commit:** `e70e67e` | **Agent:** CX (Codex)
+- Reworked `Setup MCP` into a preview-first wizard that detects supported client config paths before writing anything, instead of blindly mutating every known editor config on click.
+- Expanded supported setup targets to Claude Desktop, Gemini CLI, and Droid in addition to Claude Code, Cursor, and Codex, while surfacing a manual MCP snippet for any other client outside the curated list.
+- Pre-warmed the Analytics surface and removed the topbar height-transition path so Overview-to-Analytics no longer combines a cold analytics mount with topbar layout animation in the same interaction.
+- Cleaned stale local `cortex.exe` MCP client processes during verification after finding orphaned attach-only sessions still running even though no standalone daemon should have been left behind.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
