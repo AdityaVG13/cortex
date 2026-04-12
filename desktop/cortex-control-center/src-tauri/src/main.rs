@@ -1018,6 +1018,13 @@ fn cortex_exe_path() -> Option<PathBuf> {
     find_cortex_binary()
 }
 
+fn cortex_mcp_registration(cortex_exe: &str) -> serde_json::Value {
+    serde_json::json!({
+      "command": cortex_exe,
+      "args": ["mcp"]
+    })
+}
+
 fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
     let home = cortex_home().map_err(|e| e.to_string())?;
     let cursor_dir = home.join(".cursor");
@@ -1057,13 +1064,7 @@ fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
     servers
         .as_object_mut()
         .ok_or("Invalid mcpServers format")?
-        .insert(
-            "cortex".into(),
-            serde_json::json!({
-              "command": cortex_exe,
-              "args": ["mcp"]
-            }),
-        );
+        .insert("cortex".into(), cortex_mcp_registration(cortex_exe));
 
     let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&mcp_path, out).map_err(|e| e.to_string())?;
@@ -1115,13 +1116,7 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
     servers
         .as_object_mut()
         .ok_or("Invalid mcpServers format")?
-        .insert(
-            "cortex".into(),
-            serde_json::json!({
-              "command": cortex_exe,
-              "args": ["mcp"]
-            }),
-        );
+        .insert("cortex".into(), cortex_mcp_registration(cortex_exe));
 
     let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(&settings_path, out).map_err(|e| e.to_string())?;
@@ -1131,6 +1126,64 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
         detected: true,
         registered: true,
         message: format!("{action} in {}", settings_path.display()),
+    })
+}
+
+fn register_codex_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
+    let home = cortex_home().map_err(|e| e.to_string())?;
+    let codex_dir = home.join(".codex");
+    if !codex_dir.exists() {
+        return Ok(EditorDetection {
+            name: "Codex".into(),
+            detected: false,
+            registered: false,
+            message: "Codex not detected (~/.codex/ not found)".into(),
+        });
+    }
+
+    let config_path = codex_dir.join("config.toml");
+    let mut config: toml::Value = if config_path.exists() {
+        let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        toml::from_str(&content).unwrap_or_else(|_| toml::Value::Table(Default::default()))
+    } else {
+        toml::Value::Table(Default::default())
+    };
+
+    let root = config
+        .as_table_mut()
+        .ok_or("Invalid config.toml format")?;
+    let servers = root
+        .entry("mcp_servers")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or("Invalid [mcp_servers] format")?;
+
+    let action = match servers
+        .get("cortex")
+        .and_then(|value| value.get("command"))
+        .and_then(|value| value.as_str())
+    {
+        Some(existing) if existing == cortex_exe => "Already registered",
+        Some(_) => "Updated registration",
+        None => "Registered",
+    };
+
+    let mut server = toml::map::Map::new();
+    server.insert("command".into(), toml::Value::String(cortex_exe.to_string()));
+    server.insert(
+        "args".into(),
+        toml::Value::Array(vec![toml::Value::String("mcp".into())]),
+    );
+    servers.insert("cortex".into(), toml::Value::Table(server));
+
+    let out = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    fs::write(&config_path, out).map_err(|e| e.to_string())?;
+
+    Ok(EditorDetection {
+        name: "Codex".into(),
+        detected: true,
+        registered: true,
+        message: format!("{action} in {}", config_path.display()),
     })
 }
 
@@ -1153,6 +1206,15 @@ fn setup_editors() -> Result<Vec<EditorDetection>, String> {
         Ok(r) => results.push(r),
         Err(e) => results.push(EditorDetection {
             name: "Cursor".into(),
+            detected: true,
+            registered: false,
+            message: format!("Registration failed: {e}"),
+        }),
+    }
+    match register_codex_mcp(&exe_str) {
+        Ok(r) => results.push(r),
+        Err(e) => results.push(EditorDetection {
+            name: "Codex".into(),
             detected: true,
             registered: false,
             message: format!("Registration failed: {e}"),
@@ -1185,6 +1247,18 @@ fn detect_editors() -> Result<Vec<EditorDetection>, String> {
         detected: cursor_detected,
         registered: false,
         message: if cursor_detected {
+            "Detected".into()
+        } else {
+            "Not installed".into()
+        },
+    });
+
+    let codex_detected = home.join(".codex").exists();
+    results.push(EditorDetection {
+        name: "Codex".into(),
+        detected: codex_detected,
+        registered: false,
+        message: if codex_detected {
             "Detected".into()
         } else {
             "Not installed".into()

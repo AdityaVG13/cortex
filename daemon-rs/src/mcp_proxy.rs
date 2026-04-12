@@ -13,7 +13,7 @@
 //! Resilience:
 //! - Plugin mode requires daemon connectivity (no standalone fallback)
 //! - Team mode uses explicit API key injection from CLI args
-//! - Auto-respawn: if daemon dies mid-session, proxy detects and restarts it
+//! - Owner-managed sessions can respawn and stop the daemon they created
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -29,6 +29,12 @@ const SESSION_HEARTBEAT_SECS: u64 = 15;
 const SESSION_RESTART_ATTEMPTS: u32 = 4;
 const SESSION_RESTART_DELAY_MS: u64 = 250;
 const HEARTBEAT_RECOVERY_FAILURES: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProxyRuntimeOptions {
+    pub allow_respawn: bool,
+    pub shutdown_on_exit: bool,
+}
 
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
@@ -352,11 +358,50 @@ async fn session_end(
     }
 }
 
+async fn shutdown_daemon(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> bool {
+    let mut req = client
+        .post(format!("{base_url}/shutdown"))
+        .header("content-type", "application/json")
+        .header("x-cortex-request", "true")
+        .body("{}");
+
+    if let Some(auth) = build_auth_header(api_key) {
+        req = req.header("authorization", auth);
+    }
+
+    match req.send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
+}
+
+async fn finalize_proxy_session(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    agent: &str,
+    options: ProxyRuntimeOptions,
+) {
+    let _ = session_end(client, base_url, api_key, agent).await;
+    if options.shutdown_on_exit {
+        if shutdown_daemon(client, base_url, api_key).await {
+            eprintln!("[cortex-mcp] Stopped owned daemon for '{agent}'");
+        } else {
+            eprintln!("[cortex-mcp] Warning: failed to stop owned daemon for '{agent}'");
+        }
+    }
+}
+
 /// Run MCP proxy over stdio -> HTTP.
 pub async fn run(
     base_url: &str,
     api_key: Option<&str>,
     agent: Option<&str>,
+    options: ProxyRuntimeOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let base_url = base_url.trim_end_matches('/');
     let mut rpc_base_url = base_url.to_string();
@@ -530,12 +575,14 @@ pub async fn run(
         let line = match lines.next_line().await {
             Ok(Some(line)) => line,
             Ok(None) => {
-                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
+                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
+                    .await;
                 eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
                 return Ok(());
             }
             Err(e) => {
-                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
+                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
+                    .await;
                 eprintln!("[cortex-mcp] Stdin read error: {e}");
                 return Err(e.into());
             }
@@ -555,7 +602,14 @@ pub async fn run(
                     "id": null
                 });
                 if !write_value(&mut stdout, &err).await? {
-                    let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
+                    finalize_proxy_session(
+                        &client,
+                        &rpc_base_url,
+                        api_key,
+                        &agent_display,
+                        options,
+                    )
+                    .await;
                     eprintln!("[cortex-mcp] Stdout closed while returning parse error");
                     return Ok(());
                 }
@@ -755,13 +809,14 @@ pub async fn run(
                 "id": id
             });
             if !write_value(&mut stdout, &err_resp).await? {
-                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
+                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
+                    .await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon error");
                 return Ok(());
             }
         }
 
-        if should_count_failure && consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+        if options.allow_respawn && should_count_failure && consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
             let in_cooldown = last_respawn_attempt_at
                 .map(|t| t.elapsed() < std::time::Duration::from_secs(RESPAWN_COOLDOWN_SECS))
                 .unwrap_or(false);
@@ -811,7 +866,8 @@ pub async fn run(
 
         if let Some(body) = response_body {
             if !write_raw_line(&mut stdout, &body).await? {
-                let _ = session_end(&client, &rpc_base_url, api_key, &agent_display).await;
+                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
+                    .await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon response");
                 return Ok(());
             }

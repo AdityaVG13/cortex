@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "cortex-control-center"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "rusqlite",
  "serde",
@@ -397,6 +397,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-updater",
+ "toml 0.8.2",
 ]
 
 [[package]]

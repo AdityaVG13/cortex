@@ -2,8 +2,8 @@
 /**
  * Cortex Plugin - SessionStart Hook
  *
- * Ensures daemon is running before MCP server connects.
- * - Solo mode: starts local daemon
+ * Reports daemon status before MCP server connects.
+ * - Solo mode: checks local daemon health without starting it
  * - Team mode: health-checks remote server
  *
  * Output: JSON on stdout for Claude Code to consume.
@@ -142,50 +142,6 @@ async function getLocalHealth() {
 }
 
 /**
- * Solo mode: ensure local daemon is running
- */
-async function ensureLocalDaemon() {
-  // Check if already healthy
-  const health = await getLocalHealth();
-  if (health.ok) {
-    return { started: false, health };
-  }
-
-  // Not running, start it
-  console.error('[cortex-plugin] Starting local daemon...');
-
-  try {
-    const result = spawnSync(binaryPath, ['plugin', 'ensure-daemon', '--agent', 'claude-code'], {
-      encoding: 'utf8',
-      timeout: 15000,
-      env: { ...process.env }
-    });
-
-    if (result.error) {
-      return {
-        started: false,
-        error: result.error.message,
-        health: await getLocalHealth()
-      };
-    }
-
-    if (result.status !== 0) {
-      return {
-        started: false,
-        error: result.stderr || 'ensure-daemon failed',
-        health: await getLocalHealth()
-      };
-    }
-
-    // Check health again
-    const newHealth = await getLocalHealth();
-    return { started: true, health: newHealth };
-  } catch (e) {
-    return { started: false, error: e.message, health: await getLocalHealth() };
-  }
-}
-
-/**
  * Team mode: just check remote server
  */
 async function checkTeamServer() {
@@ -206,6 +162,8 @@ function buildStatusLine(health, mode) {
     if (counts.length > 0) {
       parts.push(`(${counts.join(', ')})`);
     }
+  } else if (mode === 'solo') {
+    parts.push('STANDBY');
   } else {
     parts.push('UNAVAILABLE');
   }
@@ -235,9 +193,9 @@ function buildStatusLine(health, mode) {
       }
     }) + '\n');
   } else {
-    console.error('[cortex-plugin] Solo mode: ensuring local daemon');
-    const { started, health, error } = await ensureLocalDaemon();
-    result = { mode: 'solo', started, health, error };
+    console.error('[cortex-plugin] Solo mode: checking local daemon');
+    const health = await getLocalHealth();
+    result = { mode: 'solo', health };
     const status = buildStatusLine(health, 'solo');
 
     process.stdout.write(JSON.stringify({

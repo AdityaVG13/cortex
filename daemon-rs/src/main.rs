@@ -41,6 +41,11 @@ const STARTUP_LOG_FILES: &[&str] = &[
     "rust-daemon.err.log",
 ];
 
+#[derive(Clone, Copy, Debug, Default)]
+struct EnsureDaemonResult {
+    spawned: bool,
+}
+
 // ── Backup rotation helpers ───────────────────────────────────────────────
 
 /// Check if a backup should be created (>24h since last backup).
@@ -118,15 +123,11 @@ fn cleanup_bridge_backups(home: &Path, schema_version: i32) -> bool {
 
     match std::fs::remove_dir_all(&bridge_backup_dir) {
         Ok(()) => {
-            eprintln!(
-                "[cortex] Removed legacy bridge-backups for schema version {schema_version}"
-            );
+            eprintln!("[cortex] Removed legacy bridge-backups for schema version {schema_version}");
             true
         }
         Err(e) => {
-            eprintln!(
-                "[cortex] Warning: failed to remove legacy bridge-backups: {e}"
-            );
+            eprintln!("[cortex] Warning: failed to remove legacy bridge-backups: {e}");
             false
         }
     }
@@ -251,10 +252,7 @@ fn run_backup_cleanup(backup_dir: &Path, dry_run: bool) -> Vec<String> {
                 .and_then(|name| name.to_str())
                 .unwrap_or_default()
         );
-        lines.push(format!(
-            "DELETE {target} ({})",
-            format_cleanup_bytes(size)
-        ));
+        lines.push(format!("DELETE {target} ({})", format_cleanup_bytes(size)));
         if !dry_run {
             let _ = std::fs::remove_file(path);
         }
@@ -305,10 +303,7 @@ fn run_bridge_backup_cleanup(home: &Path, schema_version: i32, dry_run: bool) ->
     }
 
     let size = path_size_bytes(&bridge_dir);
-    let line = format!(
-        "DELETE bridge-backups/ ({})",
-        format_cleanup_bytes(size)
-    );
+    let line = format!("DELETE bridge-backups/ ({})", format_cleanup_bytes(size));
     if !dry_run {
         let _ = std::fs::remove_dir_all(&bridge_dir);
     }
@@ -320,9 +315,7 @@ fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String
         return Vec::new();
     };
 
-    let mut lines = vec![format!(
-        "DELETE cortex.pid (process {pid} not running)"
-    )];
+    let mut lines = vec![format!("DELETE cortex.pid (process {pid} not running)")];
     if paths.lock.exists() {
         lines.push("DELETE cortex.lock".to_string());
     }
@@ -395,12 +388,12 @@ async fn main() {
 
         // ── MCP stdio transport ─────────────────────────────────────
         "mcp" => {
-            if let Err(e) = ensure_daemon(&paths, None, false).await {
+            if let Err(e) = ensure_daemon(&paths, None, false, false).await {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
             let base_url = format!("http://127.0.0.1:{}", paths.port);
-            if let Err(e) = mcp_proxy::run(&base_url, None, None).await {
+            if let Err(e) = mcp_proxy::run(&base_url, None, None, Default::default()).await {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
@@ -420,18 +413,41 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true).await {
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, true).await {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
                 }
                 "mcp" => {
-                    let base_url = parse_flag_value(&args[3..], "--url")
+                    let override_url = parse_flag_value(&args[3..], "--url");
+                    let base_url = override_url
+                        .clone()
                         .unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
                     let api_key = parse_flag_value(&args[3..], "--api-key");
                     let agent = parse_flag_value(&args[3..], "--agent");
+                    let local_owner_mode = override_url.is_none() && api_key.is_none();
+                    let ensure = if local_owner_mode {
+                        match ensure_daemon(&paths, agent.as_deref(), false, true).await {
+                            Ok(result) => result,
+                            Err(e) => {
+                                eprintln!("[cortex-plugin] {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        EnsureDaemonResult::default()
+                    };
                     if let Err(e) =
-                        mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await
+                        mcp_proxy::run(
+                            &base_url,
+                            api_key.as_deref(),
+                            agent.as_deref(),
+                            mcp_proxy::ProxyRuntimeOptions {
+                                allow_respawn: ensure.spawned,
+                                shutdown_on_exit: ensure.spawned,
+                            },
+                        )
+                        .await
                     {
                         eprintln!("[cortex-plugin] {e}");
                         std::process::exit(1);
@@ -1108,10 +1124,10 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!();
     eprintln!("Daemon:");
     eprintln!("  serve              HTTP daemon on :7437");
-    eprintln!("  mcp                MCP stdio (proxy to daemon)");
+    eprintln!("  mcp                MCP stdio (attach to an existing daemon)");
     eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
     eprintln!("  plugin ensure-daemon [--agent <name>]");
-    eprintln!("  plugin mcp [--url <base>] [--api-key <key>]");
+    eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
     eprintln!();
     eprintln!("Hooks:");
     eprintln!("  hook-boot [AGENT]  SessionStart hook (default: claude-opus)");
@@ -1122,7 +1138,9 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
-    eprintln!("  cleanup [--dry-run]  Cleanup backups, logs, legacy bridge data, and stale PID files");
+    eprintln!(
+        "  cleanup [--dry-run]  Cleanup backups, logs, legacy bridge data, and stale PID files"
+    );
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
     eprintln!();
@@ -1172,7 +1190,11 @@ fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool) {
     let mut lines = Vec::new();
     lines.extend(run_backup_cleanup(&paths.home.join("backups"), dry_run));
     lines.extend(run_log_cleanup(&paths.home, dry_run));
-    lines.extend(run_bridge_backup_cleanup(&paths.home, schema_version, dry_run));
+    lines.extend(run_bridge_backup_cleanup(
+        &paths.home,
+        schema_version,
+        dry_run,
+    ));
     lines.extend(run_stale_pid_cleanup(paths, dry_run));
 
     if lines.is_empty() {
@@ -1568,20 +1590,19 @@ async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
     emit_port: bool,
-) -> Result<(), String> {
+    allow_spawn: bool,
+) -> Result<EnsureDaemonResult, String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
 
     let lock = auth::acquire_daemon_lock(paths);
-    let mut should_spawn = false;
+    let mut result = EnsureDaemonResult::default();
 
     match lock {
         Ok(_guard) => {
-            if !daemon_healthy(paths.port).await {
-                should_spawn = true;
-            }
-
-            if should_spawn {
+            if daemon_healthy(paths.port).await {
+                // already healthy
+            } else if allow_spawn {
                 spawn_daemon(paths)?;
                 if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await
                 {
@@ -1590,12 +1611,24 @@ async fn ensure_daemon(
                         paths.port, DAEMON_STARTUP_WAIT_SECS
                     ));
                 }
+                result.spawned = true;
+            } else {
+                return Err(format!(
+                    "daemon is not healthy on port {} and this client is attach-only. Start Cortex from Control Center or the Claude plugin.",
+                    paths.port
+                ));
             }
         }
         Err(_) => {
             if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
+                if allow_spawn {
+                    return Err(format!(
+                        "daemon lock is held and daemon is not healthy on port {}",
+                        paths.port
+                    ));
+                }
                 return Err(format!(
-                    "daemon lock is held and daemon is not healthy on port {}",
+                    "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or the Claude plugin.",
                     paths.port
                 ));
             }
@@ -1611,7 +1644,7 @@ async fn ensure_daemon(
     if emit_port {
         println!("{}", paths.port);
     }
-    Ok(())
+    Ok(result)
 }
 
 // ── Admin CLI helpers ───────────────────────────────────────────────────────
@@ -1761,9 +1794,7 @@ pub(crate) async fn run_daemon(
         pid_path.display()
     );
     let cleaned_backups = cleanup_backup_retention(&backup_dir);
-    eprintln!(
-        "[cortex] Cleaned {cleaned_backups} old backups, kept {BACKUP_RETENTION_COUNT}"
-    );
+    eprintln!("[cortex] Cleaned {cleaned_backups} old backups, kept {BACKUP_RETENTION_COUNT}");
     let rotated_logs = rotate_startup_logs(&paths.home);
     if rotated_logs > 0 {
         eprintln!("[cortex] Rotated {rotated_logs} oversized log files");
