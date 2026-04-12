@@ -220,39 +220,43 @@ fn auth_token_ready() -> bool {
     matches!(read_auth_token_once(), Ok(token) if !token.is_empty())
 }
 
-async fn read_auth_token_with_retry() -> Result<String, String> {
+fn read_auth_token_with_retry_blocking(timeout: Duration) -> Result<String, String> {
     let path = token_path()?;
     if !is_cortex_reachable_with_port(daemon_port(), DAEMON_REACHABILITY_TIMEOUT_MS) {
         return read_auth_token_once();
     }
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let started = std::time::Instant::now();
-        let mut last_error = format!("Auth token not ready at {}", path.display());
+    let started = std::time::Instant::now();
+    let mut last_error = format!("Auth token not ready at {}", path.display());
 
-        loop {
-            match fs::read_to_string(&path) {
-                Ok(token) => {
-                    let trimmed = token.trim();
-                    if !trimmed.is_empty() {
-                        return Ok(trimmed.to_string());
-                    }
-                    last_error = format!("Auth token file is empty at {}", path.display());
+    loop {
+        match fs::read_to_string(&path) {
+            Ok(token) => {
+                let trimmed = token.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    last_error = format!("Auth token file not found at {}", path.display());
-                }
-                Err(err) => {
-                    last_error = format!("Failed to read token at {}: {err}", path.display());
-                }
+                last_error = format!("Auth token file is empty at {}", path.display());
             }
-
-            if started.elapsed() >= Duration::from_millis(AUTH_TOKEN_WAIT_MS) {
-                return Err(last_error);
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                last_error = format!("Auth token file not found at {}", path.display());
             }
-
-            std::thread::sleep(Duration::from_millis(AUTH_TOKEN_POLL_MS));
+            Err(err) => {
+                last_error = format!("Failed to read token at {}: {err}", path.display());
+            }
         }
+
+        if started.elapsed() >= timeout {
+            return Err(last_error);
+        }
+
+        std::thread::sleep(Duration::from_millis(AUTH_TOKEN_POLL_MS));
+    }
+}
+
+async fn read_auth_token_with_retry() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_auth_token_with_retry_blocking(Duration::from_millis(AUTH_TOKEN_WAIT_MS))
     })
     .await
     .map_err(|err| format!("Auth token wait task failed: {err}"))?
@@ -718,14 +722,30 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
 /// regardless of who spawned it). Returns Ok(()) on success or if connection
 /// fails (daemon already gone).
 fn send_http_shutdown() -> Result<(), String> {
-    let token = token_path()
-        .ok()
-        .and_then(|p| fs::read_to_string(p).ok())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let token = read_auth_token_once().unwrap_or_default();
+    let initial = send_cortex_request("POST", "/shutdown", &token, Some("{}"));
+    if matches!(
+        initial,
+        Ok(FetchCortexResponse {
+            status: 401 | 403,
+            ..
+        })
+    ) {
+        if let Ok(refreshed_token) =
+            read_auth_token_with_retry_blocking(Duration::from_millis(AUTH_TOKEN_WAIT_MS))
+        {
+            if !refreshed_token.is_empty() && refreshed_token != token {
+                return interpret_shutdown_response(send_cortex_request(
+                    "POST",
+                    "/shutdown",
+                    &refreshed_token,
+                    Some("{}"),
+                ));
+            }
+        }
+    }
 
-    interpret_shutdown_response(send_cortex_request("POST", "/shutdown", &token, Some("{}")))
+    interpret_shutdown_response(initial)
 }
 
 fn interpret_shutdown_response(
