@@ -52,4 +52,6 @@ Important constraints:
 - The runner uses an isolated benchmark daemon by default.
 - It does not point AMB at the live app daemon, so benchmark data never mixes with real user memory.
 - Every run writes `run-manifest.json` into its run directory with the Cortex git commit, benchmark tool commits, dataset/mode settings, and whether oracle mode was used.
+- Every scored run also records the answer/judge provider selected from `OMB_ANSWER_LLM` / `OMB_JUDGE_LLM`, or auto-detected from available API keys.
 - `--oracle` is allowed only as a diagnostic ceiling. It should not be treated as a headline score.
+- A real scored run still needs one configured model provider key: `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, or `GROQ_API_KEY`.

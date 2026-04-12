@@ -70,6 +70,34 @@ def _load_lock_summary() -> dict[str, str]:
     return {tool["name"]: tool["commit"] for tool in payload.get("tools", [])}
 
 
+def _configure_llm_environment() -> str:
+    explicit_answer = os.environ.get("OMB_ANSWER_LLM")
+    explicit_judge = os.environ.get("OMB_JUDGE_LLM")
+
+    if explicit_answer and explicit_judge:
+        return explicit_answer
+
+    provider = ""
+    gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if gemini_key:
+        provider = "gemini"
+        os.environ["GOOGLE_API_KEY"] = gemini_key
+    elif os.environ.get("OPENAI_API_KEY"):
+        provider = "openai"
+    elif os.environ.get("GROQ_API_KEY"):
+        provider = "groq"
+
+    if not provider:
+        raise RuntimeError(
+            "No answer/judge model key is configured. Set GEMINI_API_KEY, GOOGLE_API_KEY, "
+            "OPENAI_API_KEY, or GROQ_API_KEY for fair benchmark runs."
+        )
+
+    os.environ.setdefault("OMB_ANSWER_LLM", provider)
+    os.environ.setdefault("OMB_JUDGE_LLM", provider)
+    return provider
+
+
 def _write_run_manifest(run_dir: Path, payload: dict) -> None:
     (run_dir / "run-manifest.json").write_text(
         json.dumps(payload, indent=2),
@@ -232,6 +260,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
     _assert_amb_environment()
     _register_provider()
     from memory_bench.dataset import get_dataset
+    from memory_bench.llm import get_answer_llm
     from memory_bench.modes import get_mode
     from memory_bench.runner import EvalRunner
     from memory_bench.memory import get_memory_provider
@@ -239,6 +268,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
     namespace = args.run_name or f"{args.dataset}-{args.split}-{run_dir.name}"
     with IsolatedCortexDaemon(run_dir) as daemon:
         os.environ.update(daemon.export_env(namespace))
+        llm_provider = _configure_llm_environment()
         _write_run_manifest(
             run_dir,
             {
@@ -256,6 +286,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 "query_id": args.query_id,
                 "doc_limit": args.doc_limit,
                 "namespace": namespace,
+                "llm_provider": llm_provider,
                 "legitimacy": {
                     "isolated_daemon": True,
                     "uses_live_app_daemon": False,
@@ -269,7 +300,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
         )
 
         dataset = get_dataset(args.dataset)
-        mode = get_mode(args.mode)
+        mode = get_mode(args.mode, llm=get_answer_llm())
         memory = get_memory_provider("cortex-http")
         runner = EvalRunner(output_dir=run_dir / "outputs")
 
