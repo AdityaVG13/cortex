@@ -220,6 +220,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Restored the Rust recall benchmark gate to green by eliminating the shared-agent cross-query anti-echo regression that had been dragging `tests/recall_benchmark.rs` down to `0.650` MRR despite healthy ingest and FTS matches.
 - Added an explicit regression test for the shared-agent cross-query case and re-verified the daemon crate with `rtk cargo test`, `rtk cargo check`, and the targeted benchmark suite.
 
+## Phase 7AC: Isolated Benchmark Runner Hardening -- DONE
+- **Commit:** `dffeb8d` | **Agent:** CX (Codex)
+- Hardened the tracked AMB Cortex runner so scored runs explicitly pick an answer/judge provider from configured env or the actually available API keys, instead of silently falling back onto AMB defaults.
+- Recorded the selected LLM provider in each scored run manifest and passed the resolved answer model directly into the AMB mode builder, closing the accidental Groq default path that could skew or block fair runs.
+- Expanded the tracked benchmark config/README so the isolated-run contract and required benchmark credentials are explicit before we record any headline score.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
@@ -355,4 +361,4 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 
 ---
 
-*Last updated: 2026-04-11*
+*Last updated: 2026-04-12*
