@@ -188,18 +188,20 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
   const memoryCt = useMemo(() => graphData.nodes.filter(n => n.group === "memory").length, [graphData]);
   const decisionCt = useMemo(() => graphData.nodes.filter(n => n.group === "decision").length, [graphData]);
   const nodeThreeObject = useCallback((node) => {
-    const color = getAgentColor(node.agent);
+    const color = new THREE.Color(getAgentColor(node.agent));
+    const baseColor = color.clone().multiplyScalar(0.7);
+    const coreColor = color.clone().multiplyScalar(1.22);
     const radius = Math.max(1.6, (node.val || 3) * 0.45);
 
     const group = new THREE.Group();
     const core = new THREE.Mesh(
       new THREE.SphereGeometry(radius, 18, 18),
       new THREE.MeshStandardMaterial({
-        color,
-        emissive: color,
-        emissiveIntensity: 0.9,
-        metalness: 0.12,
-        roughness: 0.32,
+        color: baseColor,
+        emissive: baseColor,
+        emissiveIntensity: 0.22,
+        metalness: 0.05,
+        roughness: 0.48,
       })
     );
     group.add(core);
@@ -209,12 +211,24 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.22,
+        opacity: 0.18,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
     );
     group.add(glow);
+
+    const nucleus = new THREE.Mesh(
+      new THREE.SphereGeometry(radius * 0.45, 18, 18),
+      new THREE.MeshStandardMaterial({
+        color: coreColor,
+        emissive: coreColor,
+        emissiveIntensity: 0.45,
+        metalness: 0.25,
+        roughness: 0.2,
+      })
+    );
+    group.add(nucleus);
     return group;
   }, []);
 
