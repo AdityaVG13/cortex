@@ -39,3 +39,17 @@ powershell -ExecutionPolicy Bypass -File benchmarking\setup-benchmarks.ps1
 ```
 
 That will clone or update the pinned suites into `benchmarking/tools/` without polluting git history, because `benchmarking/tools/` is ignored.
+
+## Cortex Adapter
+
+The first tracked adapter lives in `benchmarking/adapters/` and is driven by:
+
+- `python benchmarking\run_amb_cortex.py smoke`
+- `python benchmarking\run_amb_cortex.py run --dataset longmemeval --split s --query-limit 20`
+
+Important constraints:
+
+- The runner uses an isolated benchmark daemon by default.
+- It does not point AMB at the live app daemon, so benchmark data never mixes with real user memory.
+- Every run writes `run-manifest.json` into its run directory with the Cortex git commit, benchmark tool commits, dataset/mode settings, and whether oracle mode was used.
+- `--oracle` is allowed only as a diagnostic ceiling. It should not be treated as a headline score.
