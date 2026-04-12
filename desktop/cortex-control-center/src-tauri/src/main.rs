@@ -190,19 +190,23 @@ fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
 
 async fn wait_for_reachability(port: u16, target: bool, timeout: Duration) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
-        let started = std::time::Instant::now();
-        loop {
-            if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) == target {
-                return true;
-            }
-            if started.elapsed() >= timeout {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(DAEMON_WAIT_POLL_MS));
-        }
+        wait_for_reachability_blocking(port, target, timeout)
     })
     .await
     .unwrap_or(false)
+}
+
+fn wait_for_reachability_blocking(port: u16, target: bool, timeout: Duration) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) == target {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(DAEMON_WAIT_POLL_MS));
+    }
 }
 
 fn read_auth_token_once() -> Result<String, String> {
@@ -561,7 +565,13 @@ fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 fn shutdown_daemon<R: Runtime>(app: &tauri::AppHandle<R>) {
     let daemon_state = app.state::<DaemonState>();
+    let port = daemon_port();
     let _ = daemon_state.stop();
+    if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+        let _ = send_http_shutdown();
+        let _ =
+            wait_for_reachability_blocking(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS));
+    }
     let _ = flush_cortex_db_on_shutdown();
 }
 
@@ -634,12 +644,7 @@ fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn quit_app(app: tauri::AppHandle, daemon_state: State<DaemonState>) -> Result<(), String> {
-    // Kill our own sidecar child if we spawned it
-    let _ = daemon_state.stop();
-    // Don't HTTP shutdown external daemons on quit -- Claude or other tools
-    // may still be using it. Only the Stop button does that explicitly.
-    let _ = flush_cortex_db_on_shutdown();
+fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
     let lifecycle = app.state::<LifecycleState>();
     lifecycle.request_quit();
     app.exit(0);
@@ -661,7 +666,7 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
     let message = describe_daemon_state(managed, reachable, auth_token_ready, pid, port);
 
     Ok(DaemonCommandResult {
-        running: managed,
+        running: managed || reachable,
         reachable,
         managed,
         auth_token_ready,
@@ -677,7 +682,7 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
     if !already_managed && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         let auth_token_ready = auth_token_ready();
         return Ok(DaemonCommandResult {
-            running: false,
+            running: true,
             reachable: true,
             managed: false,
             auth_token_ready,
