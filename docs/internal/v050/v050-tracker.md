@@ -144,6 +144,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Hardened long-lived Control Center and plugin recovery paths so stale token rotation, delayed auth-token writes, daemon restarts, and externally managed daemon states no longer strand clients on stale auth or partial-disconnect failures.
 - Tightened daemon-state truthfulness end to end by surfacing `managed` / `authTokenReady` status from Tauri, validating real `/health` payload shape in the MCP proxy and mock harness, and fixing Work-surface operator canonicalization plus 375px mobile overflow/accessibility smoke blockers.
 
+## Phase 7P: Control Center Runtime Truth + Motion Polish -- DONE
+- **Commit:** `2840688` | **Agent:** CX (Codex)
+- Added automatic recovery retries plus smoother panel/topbar transitions so long-lived desktop sessions recover more cleanly during daemon startup, token rotation, and panel changes without the shell feeling as snappy or misleading.
+- Surfaced live daemon/runtime truth in the shell by normalizing app/daemon `0.5.0` version metadata, showing precise runtime-version mismatch recovery guidance, and disabling invalid Start/Stop actions when the live daemon state makes them nonsensical.
+- Fixed the Monte Carlo projection chart to scale correctly at `375x812`, and hardened debug binary selection so the Control Center prefers the freshest available workspace daemon build instead of blindly reusing a stale isolated target.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
