@@ -150,6 +150,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Surfaced live daemon/runtime truth in the shell by normalizing app/daemon `0.5.0` version metadata, showing precise runtime-version mismatch recovery guidance, and disabling invalid Start/Stop actions when the live daemon state makes them nonsensical.
 - Fixed the Monte Carlo projection chart to scale correctly at `375x812`, and hardened debug binary selection so the Control Center prefers the freshest available workspace daemon build instead of blindly reusing a stale isolated target.
 
+## Phase 7Q: Runtime Ownership + Stable MCP Binary Paths -- DONE
+- **Commit:** `0211aac` | **Agent:** CX (Codex)
+- Stopped long-lived desktop and plugin sessions from pinning workspace daemon build artifacts by making daemon lifecycle respawns launch from a disposable runtime copy when the current executable lives under the repo `daemon-rs/` tree.
+- Changed Control Center editor setup and CLI `cortex setup` to refresh and register a stable `~/.cortex/bin/cortex(.exe)` path instead of wiring MCP clients to workspace `target*/cortex` outputs during dev.
+- Updated MCP registration flows to rewrite stale Cortex entries in place, so rerunning setup repairs existing editor configs instead of leaving older workspace-binary commands untouched.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
