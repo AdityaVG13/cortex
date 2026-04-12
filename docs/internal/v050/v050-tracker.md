@@ -186,6 +186,17 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Pre-warmed the Analytics surface and removed the topbar height-transition path so Overview-to-Analytics no longer combines a cold analytics mount with topbar layout animation in the same interaction.
 - Cleaned stale local `cortex.exe` MCP client processes during verification after finding orphaned attach-only sessions still running even though no standalone daemon should have been left behind.
 
+## Phase 7W: Panel Stutter Removal -- DONE
+- **Commit:** `628f15b` | **Agent:** CX (Codex)
+- Replaced the shared panel slide animation with a short opacity-only fade so top-of-surface switches stop dragging the header row in from the side when entering Analytics, Memory, or Brain.
+- Removed the extra transform work from the common panel stage, which eliminated the visible stutter the Control Center still had after the earlier analytics warmup pass.
+
+## Phase 7X: Daemon Exit Ownership Tightening -- DONE
+- **Commit:** `a463994` | **Agent:** CX (Codex)
+- Fixed Control Center daemon truthfulness so `running` now reflects any live Cortex on the configured port, not only the child process the app personally spawned.
+- Fixed app quit / exit handling to send a real daemon shutdown to the active Cortex port before flushing state, so closing the Control Center no longer leaves an externally attached daemon process behind.
+- Reused the same blocking reachability wait path for both async transitions and final app shutdown, keeping stop/quit behavior aligned instead of having two different shutdown code paths.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
