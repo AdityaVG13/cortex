@@ -3,6 +3,8 @@
 //!
 //! Used by both the CLI (`ensure_daemon`) and the MCP proxy (auto-respawn).
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -20,7 +22,11 @@ pub async fn daemon_healthy(port: u16) -> bool {
         Err(_) => return false,
     };
 
-    let response = match client.get(format!("http://127.0.0.1:{port}/health")).send().await {
+    let response = match client
+        .get(format!("http://127.0.0.1:{port}/health"))
+        .send()
+        .await
+    {
         Ok(response) => response,
         Err(_) => return false,
     };
@@ -65,7 +71,9 @@ pub async fn wait_for_health(port: u16, timeout: Duration) -> bool {
 /// Spawn the daemon as a detached background process.
 pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
-    let mut cmd = Command::new(exe);
+    let spawn_exe =
+        prepare_spawn_executable(paths, &exe).map_err(|e| format!("prepare spawn copy: {e}"))?;
+    let mut cmd = Command::new(spawn_exe);
     cmd.arg("serve")
         .env("CORTEX_HOME", &paths.home)
         .env("CORTEX_DB", &paths.db)
@@ -100,6 +108,65 @@ pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
 
     cmd.spawn().map_err(|e| format!("spawn daemon: {e}"))?;
     Ok(())
+}
+
+fn prepare_spawn_executable(paths: &CortexPaths, source: &Path) -> std::io::Result<PathBuf> {
+    if !is_workspace_daemon_binary(source) {
+        return Ok(source.to_path_buf());
+    }
+
+    let runtime_dir = paths.home.join("runtime").join("daemon-lifecycle");
+    fs::create_dir_all(&runtime_dir)?;
+    cleanup_stale_runtime_copies(&runtime_dir);
+
+    let runtime_path = runtime_copy_path(&runtime_dir, source);
+    fs::copy(source, &runtime_path)?;
+    Ok(runtime_path)
+}
+
+fn is_workspace_daemon_binary(path: &Path) -> bool {
+    path.ancestors().any(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case("daemon-rs"))
+            .unwrap_or(false)
+    })
+}
+
+fn runtime_copy_path(runtime_dir: &Path, source: &Path) -> PathBuf {
+    let extension = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default();
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    runtime_dir.join(format!(
+        "cortex-daemon-run-{}-{}{}",
+        std::process::id(),
+        unique,
+        extension
+    ))
+}
+
+fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
+    let Ok(entries) = fs::read_dir(runtime_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("cortex-daemon-run-") {
+            continue;
+        }
+        let _ = fs::remove_file(path);
+    }
 }
 
 /// Attempt to respawn the daemon and wait for it to become healthy.
@@ -155,6 +222,9 @@ mod tests {
             r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#
         ));
         assert!(!is_cortex_health_payload(200, "<html>ok</html>"));
-        assert!(!is_cortex_health_payload(500, r#"{"status":"ok","runtime":{}}"#));
+        assert!(!is_cortex_health_payload(
+            500,
+            r#"{"status":"ok","runtime":{}}"#
+        ));
     }
 }

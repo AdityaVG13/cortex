@@ -86,7 +86,7 @@ pub async fn run_setup() {
     let init_result = step_init().await;
     print_step(1, "Initialize", &init_result);
 
-    let cortex_exe = current_exe_path();
+    let cortex_exe = stable_mcp_binary_path();
 
     // Step 2: Detect
     let detected = step_detect();
@@ -412,6 +412,52 @@ fn current_exe_path() -> String {
         .unwrap_or_else(|_| "cortex".to_string())
 }
 
+fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
+    let needs_copy = match fs::read(dest) {
+        Ok(existing) => existing != fs::read(src).map_err(|e| format!("Cannot read {}: {e}", src.display()))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(err) => return Err(format!("Cannot read {}: {err}", dest.display())),
+    };
+
+    if needs_copy {
+        fs::copy(src, dest)
+            .map_err(|e| format!("Cannot copy {} to {}: {e}", src.display(), dest.display()))?;
+    }
+
+    Ok(())
+}
+
+fn stable_mcp_binary_path() -> String {
+    let current = PathBuf::from(current_exe_path());
+    let installed = auth::cortex_dir().join("bin").join(if cfg!(windows) {
+        "cortex.exe"
+    } else {
+        "cortex"
+    });
+
+    if current == installed {
+        return installed.to_string_lossy().to_string();
+    }
+
+    if let Some(parent) = installed.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            eprintln!(
+                "  [!!] Failed to create stable MCP binary dir {}: {}",
+                parent.display(),
+                err
+            );
+            return current.to_string_lossy().to_string();
+        }
+    }
+
+    if let Err(err) = copy_if_changed(&current, &installed) {
+        eprintln!("  [!!] Failed to refresh stable MCP binary: {err}");
+        return current.to_string_lossy().to_string();
+    }
+
+    installed.to_string_lossy().to_string()
+}
+
 fn arg_value(args: &[String], key: &str) -> Option<String> {
     for (idx, arg) in args.iter().enumerate() {
         if arg == key {
@@ -678,12 +724,16 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    // Check if cortex is already configured
-    if mcp_servers.get("cortex").is_some() {
-        return Ok("Already configured (skipped)".into());
-    }
-
     let exe_path = PathBuf::from(cortex_exe).to_string_lossy().to_string();
+    let action = match mcp_servers
+        .get("cortex")
+        .and_then(|value| value.get("command"))
+        .and_then(|value| value.as_str())
+    {
+        Some(existing) if existing == exe_path => "Already configured",
+        Some(_) => "Updated configuration",
+        None => "Configured",
+    };
 
     // Add cortex entry
     mcp_servers
@@ -703,7 +753,7 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
     fs::write(config_path, output)
         .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
 
-    Ok(format!("Configured at {}", config_path.display()))
+    Ok(format!("{action} at {}", config_path.display()))
 }
 
 fn run_mcp_add(program: &str, args: &[&str], cortex_exe: &str) -> Result<(), String> {

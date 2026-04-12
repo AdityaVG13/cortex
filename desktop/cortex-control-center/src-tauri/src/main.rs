@@ -452,6 +452,48 @@ fn newest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
     newest.map(|(_, path)| path)
 }
 
+fn installed_plugin_binary_path(home: &Path) -> PathBuf {
+    home.join(".cortex").join("bin").join(cortex_binary_name())
+}
+
+fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
+    let needs_copy = match fs::read(dest) {
+        Ok(existing) => existing != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(err) => return Err(format!("read {}: {err}", dest.display())),
+    };
+
+    if needs_copy {
+        fs::copy(src, dest).map_err(|e| {
+            format!(
+                "copy {} -> {}: {e}",
+                src.display(),
+                dest.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn ensure_editor_binary_path() -> Result<PathBuf, String> {
+    let home = cortex_home()?;
+    let source = find_cortex_binary().ok_or_else(|| {
+        "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/{target-control-center-dev,target-control-center-release,target}/{debug,release}/".to_string()
+    })?;
+    let installed = installed_plugin_binary_path(&home);
+
+    if source != installed {
+        if let Some(parent) = installed.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        copy_if_changed(&source, &installed)?;
+    }
+
+    Ok(installed)
+}
+
 fn find_cortex_binary() -> Option<PathBuf> {
     let sidecar_candidate = env::current_exe().ok().and_then(|exe| {
         exe.parent()
@@ -1002,14 +1044,15 @@ fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    if servers.get("cortex").is_some() {
-        return Ok(EditorDetection {
-            name: "Cursor".into(),
-            detected: true,
-            registered: true,
-            message: "Already registered".into(),
-        });
-    }
+    let action = match servers
+        .get("cortex")
+        .and_then(|value| value.get("command"))
+        .and_then(|value| value.as_str())
+    {
+        Some(existing) if existing == cortex_exe => "Already registered",
+        Some(_) => "Updated registration",
+        None => "Registered",
+    };
 
     servers
         .as_object_mut()
@@ -1029,7 +1072,7 @@ fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
         name: "Cursor".into(),
         detected: true,
         registered: true,
-        message: format!("Registered in {}", mcp_path.display()),
+        message: format!("{action} in {}", mcp_path.display()),
     })
 }
 
@@ -1059,14 +1102,15 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    if servers.get("cortex").is_some() {
-        return Ok(EditorDetection {
-            name: "Claude Code".into(),
-            detected: true,
-            registered: true,
-            message: "Already registered".into(),
-        });
-    }
+    let action = match servers
+        .get("cortex")
+        .and_then(|value| value.get("command"))
+        .and_then(|value| value.as_str())
+    {
+        Some(existing) if existing == cortex_exe => "Already registered",
+        Some(_) => "Updated registration",
+        None => "Registered",
+    };
 
     servers
         .as_object_mut()
@@ -1086,15 +1130,13 @@ fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String>
         name: "Claude Code".into(),
         detected: true,
         registered: true,
-        message: format!("Registered in {}", settings_path.display()),
+        message: format!("{action} in {}", settings_path.display()),
     })
 }
 
 #[tauri::command]
 fn setup_editors() -> Result<Vec<EditorDetection>, String> {
-    let cortex_exe = cortex_exe_path().ok_or(
-    "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/{target-control-center-dev,target-control-center-release,target}/{debug,release}/",
-  )?;
+    let cortex_exe = ensure_editor_binary_path()?;
     let exe_str = cortex_exe.to_string_lossy().to_string();
 
     let mut results = vec![];
