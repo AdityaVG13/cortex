@@ -167,6 +167,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Reworked 3D brain node materials so each node reads as its agent/provider color at default zoom instead of collapsing into a uniform bright wash.
 - Added a brighter inner nucleus and toned the outer shell/glow balance so the color identity remains visible without having to zoom all the way into the graph.
 
+## Phase 7T: Analytics Transition Smoothing + MCP Setup Visibility -- DONE
+- **Commit:** `d29736e` | **Agent:** CX (Codex)
+- Kept the Control Center topbar mounted across panel changes, collapsing it with CSS instead of inserting/removing it at the Overview boundary, which removes one of the big layout churn sources during surface switches.
+- Deferred analytics hydration by one paint and kept the Analytics panel mounted after first visit, so the Overview-to-Analytics transition no longer tries to mount the full savings surface, polling loop, and card animations in the same frame.
+- Made `Setup MCP` visibly actionable by adding an in-flight state, a clearer completion summary, and a per-editor results panel that shows which editors were detected, configured, or need attention.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
