@@ -214,6 +214,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Isolated the low-risk daemon housekeeping pass into its own commit so the `0.5.0` metadata bump, sidecar cleanup, and import/format-only Rust churn are reviewable separately from the still-dirty recall-quality work.
 - Left the functional recall/benchmark cluster unstaged on purpose, since `tests/recall_benchmark.rs` still fails its current MRR regression gate and should not be mixed into release-ready lifecycle work.
 
+## Phase 7AB: Recall Cross-Query Dedup Hardening -- DONE
+- **Commit:** `7f2b7ce` | **Agent:** CX (Codex)
+- Scoped served-result suppression by `agent + normalized query` instead of `agent` alone, so one recall query no longer suppresses valid results from later different queries under the same long-lived client session.
+- Restored the Rust recall benchmark gate to green by eliminating the shared-agent cross-query anti-echo regression that had been dragging `tests/recall_benchmark.rs` down to `0.650` MRR despite healthy ingest and FTS matches.
+- Added an explicit regression test for the shared-agent cross-query case and re-verified the daemon crate with `rtk cargo test`, `rtk cargo check`, and the targeted benchmark suite.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
