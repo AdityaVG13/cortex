@@ -363,7 +363,7 @@ async fn main() {
         "serve" => {
             #[cfg(unix)]
             async fn sigterm_future() {
-                use tokio::signal::unix::{signal, SignalKind};
+                use tokio::signal::unix::{SignalKind, signal};
                 let mut sigterm =
                     signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
                 sigterm.recv().await;
@@ -413,7 +413,7 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, true).await {
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, false).await {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
@@ -437,17 +437,16 @@ async fn main() {
                     } else {
                         EnsureDaemonResult::default()
                     };
-                    if let Err(e) =
-                        mcp_proxy::run(
-                            &base_url,
-                            api_key.as_deref(),
-                            agent.as_deref(),
-                            mcp_proxy::ProxyRuntimeOptions {
-                                allow_respawn: ensure.spawned,
-                                shutdown_on_exit: ensure.spawned,
-                            },
-                        )
-                        .await
+                    if let Err(e) = mcp_proxy::run(
+                        &base_url,
+                        api_key.as_deref(),
+                        agent.as_deref(),
+                        mcp_proxy::ProxyRuntimeOptions {
+                            allow_respawn: ensure.spawned,
+                            shutdown_on_exit: ensure.spawned,
+                        },
+                    )
+                    .await
                     {
                         eprintln!("[cortex-plugin] {e}");
                         std::process::exit(1);
@@ -674,7 +673,9 @@ async fn main() {
                     let username = match args.get(3) {
                         Some(u) => u.clone(),
                         None => {
-                            eprintln!("Usage: cortex user add <username> [--role member|admin] [--display-name \"...\"]");
+                            eprintln!(
+                                "Usage: cortex user add <username> [--role member|admin] [--display-name \"...\"]"
+                            );
                             std::process::exit(1);
                         }
                     };
@@ -1010,7 +1011,9 @@ async fn main() {
                         i += 1;
                     }
                     let Some(to) = to_user else {
-                        eprintln!("Usage: cortex admin assign-owner [--from <user>] --to <user> [--table <table>]");
+                        eprintln!(
+                            "Usage: cortex admin assign-owner [--from <user>] --to <user> [--table <table>]"
+                        );
                         std::process::exit(1);
                     };
                     let mut body = serde_json::json!({ "to_user": to });
@@ -1126,7 +1129,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  serve              HTTP daemon on :7437");
     eprintln!("  mcp                MCP stdio (attach to an existing daemon)");
     eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
-    eprintln!("  plugin ensure-daemon [--agent <name>]");
+    eprintln!("  plugin ensure-daemon [--agent <name>]  Verify/attach to a healthy daemon only");
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
     eprintln!();
     eprintln!("Hooks:");
@@ -1172,8 +1175,12 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  cortex doctor      Validate DB schema, migrations, integrity, and FTS state");
     eprintln!("  HTTP 403           Add header: X-Cortex-Request: true");
     eprintln!("  HTTP 401           Use Authorization: Bearer <token> from ~/.cortex/cortex.token");
-    eprintln!("  MCP not visible    Restart the client after `codex mcp add ...`; new MCP servers do not hot-attach mid-session");
-    eprintln!("  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually");
+    eprintln!(
+        "  MCP not visible    Restart the client after `codex mcp add ...`; new MCP servers do not hot-attach mid-session"
+    );
+    eprintln!(
+        "  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually"
+    );
     eprintln!("  More help          See Info/connecting.md for full connection and auth examples");
     std::process::exit(code);
 }
@@ -1444,7 +1451,9 @@ fn run_import_cli(args: &[String]) {
     }
 
     let Some(file_path) = file_path else {
-        eprintln!("Usage: cortex import --file <path> [--user <username>] [--visibility private|team|shared]");
+        eprintln!(
+            "Usage: cortex import --file <path> [--user <username>] [--visibility private|team|shared]"
+        );
         std::process::exit(1);
     };
     if !matches!(visibility.as_str(), "private" | "team" | "shared") {
@@ -1614,7 +1623,7 @@ async fn ensure_daemon(
                 result.spawned = true;
             } else {
                 return Err(format!(
-                    "daemon is not healthy on port {} and this client is attach-only. Start Cortex from Control Center or the Claude plugin.",
+                    "daemon is not healthy on port {} and this client is attach-only. Start Cortex from Control Center or run `cortex plugin mcp`.",
                     paths.port
                 ));
             }
@@ -1628,7 +1637,7 @@ async fn ensure_daemon(
                     ));
                 }
                 return Err(format!(
-                    "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or the Claude plugin.",
+                    "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or run `cortex plugin mcp`.",
                     paths.port
                 ));
             }

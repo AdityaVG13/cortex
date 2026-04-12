@@ -98,16 +98,20 @@ run_cortex paths --json | "${PYTHON_CMD[@]}" -c "import sys,json; d=json.load(sy
   || { echo "FAIL: cortex paths --json invalid"; exit 1; }
 echo "PASS: paths --json"
 
-# 3. Ensure daemon starts (REQUIRES 1B)
-run_cortex plugin ensure-daemon --agent smoke-test || { echo "FAIL: ensure-daemon"; exit 1; }
-echo "PASS: ensure-daemon"
+# 3. Serve starts the daemon
+run_cortex serve --home "${SMOKE_CORTEX_HOME}" --port "${SMOKE_PORT}" &
+DAEMON_PID=$!
 
 # 4. Health check
 wait_for_health "http://127.0.0.1:${SMOKE_PORT}/health" \
   || { echo "FAIL: health check"; exit 1; }
 echo "PASS: health check"
 
-# 5. Store + recall round-trip via MCP (REQUIRES 1B + 1C)
+# 5. ensure-daemon attaches to the already-running daemon
+run_cortex plugin ensure-daemon --agent smoke-test || { echo "FAIL: ensure-daemon attach"; exit 1; }
+echo "PASS: ensure-daemon attach"
+
+# 6. Store + recall round-trip via MCP (REQUIRES 1B + 1C)
 STORE_RESPONSE="$(
   echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cortex_store","arguments":{"decision":"smoke test memory","context":"release verification"}},"id":1}' \
     | run_cortex plugin mcp --url "http://127.0.0.1:${SMOKE_PORT}"
@@ -117,7 +121,7 @@ echo "${STORE_RESPONSE}" \
   || { echo "FAIL: store via MCP"; echo "Store response: ${STORE_RESPONSE}"; exit 1; }
 echo "PASS: store"
 
-# 6. Recall what we just stored
+# 7. Recall what we just stored
 RECALL_RESPONSE="$(
   echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cortex_recall","arguments":{"query":"smoke test","budget":100}},"id":2}' \
     | run_cortex plugin mcp --url "http://127.0.0.1:${SMOKE_PORT}"
@@ -126,8 +130,10 @@ echo "${RECALL_RESPONSE}" \
   | "${PYTHON_CMD[@]}" -c "import sys,json; d=json.load(sys.stdin); assert 'result' in d" \
   || { echo "FAIL: recall via MCP"; echo "Recall response: ${RECALL_RESPONSE}"; exit 1; }
 echo "PASS: recall"
+kill "${DAEMON_PID}" 2>/dev/null || true
+kill_port_process "${SMOKE_PORT}"
 
-# 7. Custom port works (REQUIRES 1D + 1E)
+# 8. Custom port works (REQUIRES 1D + 1E)
 CUSTOM_HOME="${SMOKE_ROOT}/custom-home"
 mkdir -p "${CUSTOM_HOME}/.cortex"
 "${CORTEX_BIN}" serve --home "${CUSTOM_HOME}/.cortex" --port 9999 &
@@ -136,7 +142,7 @@ wait_for_health "http://127.0.0.1:9999/health" && echo "PASS: custom port" || ec
 kill $DAEMON_PID 2>/dev/null
 kill_port_process 9999
 
-# 8. Legacy migration works (~/cortex -> ~/.cortex)
+# 9. Legacy migration works (~/cortex -> ~/.cortex)
 MIGRATION_ROOT="$(mktemp -d)"
 MIGRATION_HOME="${MIGRATION_ROOT}/home"
 mkdir -p "${MIGRATION_HOME}/cortex"
@@ -153,26 +159,31 @@ conn.commit()
 conn.close()
 PY
 MIGRATION_PORT=9997
-HOME="${MIGRATION_HOME}" USERPROFILE="${MIGRATION_HOME}" "${CORTEX_BIN}" plugin ensure-daemon --agent smoke-migration --home "${MIGRATION_HOME}/.cortex" --port "${MIGRATION_PORT}" \
-  || { echo "FAIL: legacy migration ensure-daemon"; exit 1; }
+HOME="${MIGRATION_HOME}" USERPROFILE="${MIGRATION_HOME}" "${CORTEX_BIN}" serve --home "${MIGRATION_HOME}/.cortex" --port "${MIGRATION_PORT}" &
+MIGRATION_PID=$!
+wait_for_health "http://127.0.0.1:${MIGRATION_PORT}/health" || { echo "FAIL: legacy migration health"; exit 1; }
 test -f "${MIGRATION_HOME}/.cortex/cortex.db" || { echo "FAIL: migrated db missing at ~/.cortex/cortex.db"; exit 1; }
 echo "PASS: legacy migration"
+kill "${MIGRATION_PID}" 2>/dev/null || true
 kill_port_process "${MIGRATION_PORT}"
 rm -rf "${MIGRATION_ROOT}" || true
 
-# 9. Concurrent ensure-daemon startup is safe
+# 10. Concurrent ensure-daemon attach is safe once daemon is already healthy
 CONCURRENCY_ROOT="$(mktemp -d)"
 CONCURRENCY_HOME="${CONCURRENCY_ROOT}/home"
 mkdir -p "${CONCURRENCY_HOME}"
 CONCURRENCY_PORT=9996
+HOME="${CONCURRENCY_HOME}" USERPROFILE="${CONCURRENCY_HOME}" "${CORTEX_BIN}" serve --home "${CONCURRENCY_HOME}/.cortex" --port "${CONCURRENCY_PORT}" &
+CONCURRENCY_DAEMON_PID=$!
+wait_for_health "http://127.0.0.1:${CONCURRENCY_PORT}/health" || { echo "FAIL: concurrency daemon health"; exit 1; }
 HOME="${CONCURRENCY_HOME}" USERPROFILE="${CONCURRENCY_HOME}" "${CORTEX_BIN}" plugin ensure-daemon --agent smoke-concurrency-A --home "${CONCURRENCY_HOME}/.cortex" --port "${CONCURRENCY_PORT}" > /tmp/cortex-concurrency-a.log 2>&1 &
 PID_A=$!
 HOME="${CONCURRENCY_HOME}" USERPROFILE="${CONCURRENCY_HOME}" "${CORTEX_BIN}" plugin ensure-daemon --agent smoke-concurrency-B --home "${CONCURRENCY_HOME}/.cortex" --port "${CONCURRENCY_PORT}" > /tmp/cortex-concurrency-b.log 2>&1 &
 PID_B=$!
 wait "$PID_A" || { echo "FAIL: concurrent ensure-daemon A"; cat /tmp/cortex-concurrency-a.log; exit 1; }
 wait "$PID_B" || { echo "FAIL: concurrent ensure-daemon B"; cat /tmp/cortex-concurrency-b.log; exit 1; }
-wait_for_health "http://127.0.0.1:${CONCURRENCY_PORT}/health" || { echo "FAIL: concurrent daemon health"; exit 1; }
-echo "PASS: concurrent startup lock"
+echo "PASS: concurrent attach check"
+kill "${CONCURRENCY_DAEMON_PID}" 2>/dev/null || true
 kill_port_process "${CONCURRENCY_PORT}"
 rm -f /tmp/cortex-concurrency-a.log /tmp/cortex-concurrency-b.log
 rm -rf "${CONCURRENCY_ROOT}" || true

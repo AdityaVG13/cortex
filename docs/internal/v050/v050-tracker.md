@@ -203,6 +203,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added a one-time `/shutdown` retry after auth rejection using the refreshed on-disk token, which hardens app-driven stop / restart / quit against daemon token rotation races.
 - Verified the Tauri crate with `rtk cargo check` and `rtk cargo test` after the shutdown retry change.
 
+## Phase 7Z: Strict Single-Owner CLI Enforcement -- DONE
+- **Commit:** `PENDING` | **Agent:** CX (Codex)
+- Changed `cortex plugin ensure-daemon` from a spawn-or-attach helper into a strict attach/check command, so it no longer leaves a daemon running without a durable owner process.
+- Changed `cortex setup` to stop starting the daemon as part of setup verification; it now configures tools, reports daemon availability, and only performs the live round-trip check when a daemon is already running.
+- Updated the release smoke script and README CLI reference to match the new contract, while keeping `plugin mcp` owner-mode spawning and owned-proxy respawn as the only intentional non-app daemon owners.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.

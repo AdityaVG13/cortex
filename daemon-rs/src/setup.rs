@@ -5,8 +5,8 @@
 //!   1. Init: create ~/.cortex/, generate token, check ONNX model
 //!   2. Detect: scan for installed AI tools
 //!   3. Configure: write MCP config for each detected tool
-//!   4. Daemon: start the daemon, verify health
-//!   5. Verify: store a test memory, recall it, confirm round-trip
+//!   4. Daemon: verify whether a daemon is already available
+//!   5. Verify: if a daemon is already running, store a test memory and confirm round-trip
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -114,9 +114,9 @@ pub async fn run_setup() {
         );
     }
 
-    // Step 4: Start daemon
-    let daemon_result = step_daemon(&cortex_exe).await;
-    print_step(4, "Start daemon", &daemon_result);
+    // Step 4: Check daemon availability
+    let daemon_result = step_daemon().await;
+    print_step(4, "Daemon availability", &daemon_result);
 
     // Step 5: Verify
     let verify_result = step_verify().await;
@@ -133,7 +133,7 @@ pub async fn run_setup() {
     eprintln!("  Daemon:         {}", daemon_base_url());
     eprintln!("  Health check:   curl {}", daemon_url("/health"));
     eprintln!();
-    eprintln!("  Cortex is ready. Your AI now has persistent memory.");
+    eprintln!("  Cortex is configured. Start it from Control Center or `cortex plugin mcp` when you want a live daemon.");
     eprintln!();
 }
 
@@ -414,7 +414,9 @@ fn current_exe_path() -> String {
 
 fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
     let needs_copy = match fs::read(dest) {
-        Ok(existing) => existing != fs::read(src).map_err(|e| format!("Cannot read {}: {e}", src.display()))?,
+        Ok(existing) => {
+            existing != fs::read(src).map_err(|e| format!("Cannot read {}: {e}", src.display()))?
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(format!("Cannot read {}: {err}", dest.display())),
     };
@@ -806,38 +808,17 @@ fn summarize_configs(results: &[(&str, StepResult)]) -> StepResult {
     }
 }
 
-// ─── Step 4: Start daemon ───────────────────────────────────────────────────
+// ─── Step 4: Check daemon availability ──────────────────────────────────────
 
-async fn step_daemon(cortex_exe: &str) -> StepResult {
+async fn step_daemon() -> StepResult {
     let port = daemon_port();
-    // Check if daemon is already running
     if is_daemon_healthy().await {
         return StepResult::Ok(format!("Daemon already running on :{port}"));
     }
 
-    // Start daemon in background
-    let spawn_result = Command::new(cortex_exe)
-        .arg("serve")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-
-    match spawn_result {
-        Ok(_child) => {
-            // Wait for daemon to become healthy (up to 10 seconds)
-            for i in 0..20 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                if is_daemon_healthy().await {
-                    return StepResult::Ok(format!("Started on :{port} (took ~{}s)", (i + 1) / 2));
-                }
-            }
-            StepResult::Warn(
-                "Daemon started but health check timed out. It may still be initializing.".into(),
-            )
-        }
-        Err(e) => StepResult::Fail(format!("Cannot start daemon: {e}")),
-    }
+    StepResult::Warn(format!(
+        "No daemon is running on :{port}. Start Cortex from Control Center or run `cortex plugin mcp` to continue."
+    ))
 }
 
 async fn is_daemon_healthy() -> bool {
@@ -860,6 +841,13 @@ async fn is_daemon_healthy() -> bool {
 // ─── Step 5: Verify ─────────────────────────────────────────────────────────
 
 async fn step_verify() -> StepResult {
+    if !is_daemon_healthy().await {
+        return StepResult::Warn(
+            "Skipped live verification because no daemon is currently running. Start Cortex from Control Center or `cortex plugin mcp`, then rerun setup if you want a round-trip check."
+                .into(),
+        );
+    }
+
     let token = match auth::read_token() {
         Some(t) => t,
         None => return StepResult::Fail("No auth token found".into()),
@@ -894,7 +882,7 @@ async fn step_verify() -> StepResult {
             return StepResult::Warn(format!(
                 "Store returned {}: daemon is running but store failed",
                 r.status()
-            ))
+            ));
         }
         Err(e) => return StepResult::Fail(format!("Cannot reach daemon: {e}")),
     }
