@@ -3,9 +3,9 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::{NaiveDateTime, TimeZone, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
 use super::ensure_auth_with_caller;
@@ -18,6 +18,8 @@ use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState};
 
 const MAX_RECALL_HISTORY: usize = 50;
 const PRECACHE_TTL_MS: i64 = 5 * 60 * 1000;
+const SEMANTIC_SIM_FLOOR: f64 = 0.3;
+const SEMANTIC_SCALE_BASE: f64 = 0.55;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -63,6 +65,16 @@ struct SearchCandidate {
     owner_id: Option<i64>,
     visibility: Option<String>,
 }
+
+#[derive(Clone)]
+struct SemanticCandidate {
+    source: String,
+    excerpt: String,
+    relevance: f64,
+}
+
+type MemorySemanticRow = (Vec<u8>, String, String, Option<i64>, Option<String>);
+type DecisionSemanticRow = (Vec<u8>, String, Option<String>, Option<i64>, Option<String>);
 
 // ─── Visibility context ─────────────────────────────────────────────────────
 
@@ -194,7 +206,7 @@ pub async fn handle_budget_recall(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({ "error": "Missing query parameter: q" }),
-            )
+            );
         }
     };
 
@@ -257,7 +269,7 @@ pub async fn handle_peek(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({"error": "Missing query parameter: q"}),
-            )
+            );
         }
     };
     let k = query.k.unwrap_or(10);
@@ -304,7 +316,7 @@ pub async fn execute_unified_recall(
     // Check pre-cache
     if budget > 0 {
         if let Some(cached) = get_pre_cached(state, agent, query_text).await {
-            let deduped_cached = dedup_and_mark_served(state, agent, cached).await;
+            let deduped_cached = dedup_and_mark_served(state, agent, query_text, cached).await;
             emit_recall_query_event(
                 state,
                 agent,
@@ -399,7 +411,7 @@ pub async fn execute_unified_recall(
     }
 
     // Dedup and budget accounting
-    let results = dedup_and_mark_served(state, agent, results).await;
+    let results = dedup_and_mark_served(state, agent, query_text, results).await;
     let spent: usize = results
         .iter()
         .map(|item| {
@@ -456,6 +468,22 @@ fn run_recall_with_engine(
     ctx: &RecallContext,
     degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
+    let query_vector = engine.and_then(|engine| engine.embed(query_text));
+    if engine.is_some() {
+        update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
+    }
+
+    run_recall_with_query_vector(conn, query_text, k, query_vector.as_deref(), ctx)
+}
+
+#[allow(clippy::type_complexity)]
+fn run_recall_with_query_vector(
+    conn: &mut Connection,
+    query_text: &str,
+    k: usize,
+    query_vector: Option<&[f32]>,
+    ctx: &RecallContext,
+) -> Result<Vec<RecallItem>, String> {
     let extracted = extract_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
         query_text.to_string()
@@ -469,37 +497,35 @@ fn run_recall_with_engine(
     // ── Crystal search (highest priority, always runs when engine available) ──
     // Crystals bypass Tier 2 early-exit: they represent consolidated knowledge
     // and should always surface regardless of FTS confidence.
-    const SIM_FLOOR: f64 = 0.3;
-    const SCALE_BASE: f64 = 0.55;
     let scale_sim = |sim: f32| -> f64 {
-        SCALE_BASE + (sim as f64 - SIM_FLOOR) * ((1.0 - SCALE_BASE) / (1.0 - SIM_FLOOR))
+        SEMANTIC_SCALE_BASE
+            + (sim as f64 - SEMANTIC_SIM_FLOOR)
+                * ((1.0 - SEMANTIC_SCALE_BASE) / (1.0 - SEMANTIC_SIM_FLOOR))
     };
 
     // crystal results keyed by source -- inserted into final merged map after fusion
     let mut crystal_items: HashMap<String, RecallItem> = HashMap::new();
 
-    if let Some(engine) = engine {
-        if let Some(query_vec) = engine.embed(query_text) {
-            for (crystal_id, label, text, relevance) in crate::crystallize::search_crystals_filtered(
-                conn,
-                &query_vec,
-                3,
-                ctx.caller_id,
-                ctx.team_mode,
-            ) {
-                let source = format!("crystal::{crystal_id}::{label}");
-                crystal_items.insert(
-                    source.clone(),
-                    RecallItem {
-                        source,
-                        relevance: scale_sim(relevance as f32),
-                        excerpt: text.chars().take(300).collect(),
-                        method: "crystal".to_string(),
-                        tokens: None,
-                        entropy: None,
-                    },
-                );
-            }
+    if let Some(query_vec) = query_vector {
+        for (crystal_id, label, text, relevance) in crate::crystallize::search_crystals_filtered(
+            conn,
+            query_vec,
+            3,
+            ctx.caller_id,
+            ctx.team_mode,
+        ) {
+            let source = format!("crystal::{crystal_id}::{label}");
+            crystal_items.insert(
+                source.clone(),
+                RecallItem {
+                    source,
+                    relevance: scale_sim(relevance as f32),
+                    excerpt: text.chars().take(300).collect(),
+                    method: "crystal".to_string(),
+                    tokens: None,
+                    entropy: None,
+                },
+            );
         }
     }
 
@@ -551,123 +577,16 @@ fn run_recall_with_engine(
         && kw_candidates[0].relevance >= TIER2_CONFIDENCE
         && (kw_candidates[0].relevance - kw_candidates[1].relevance) >= TIER2_GAP;
 
-    // If engine unavailable, flag degraded mode regardless of Tier 2 status
-    let embed_available = engine.is_some();
-
     // ── Semantic search (skipped on Tier 2 early exit or no engine) ──────────
     // Produces a ranked list of (source, score) pairs for RRF.
     // Also accumulates per-source metadata (score, ts) for compound scoring.
-    struct SemEntry {
-        relevance: f64,
-        excerpt: String,
-    }
-    let mut sem_map: HashMap<String, SemEntry> = HashMap::new();
-
-    if !tier2_resolved {
-        if let Some(engine) = engine {
-            if let Some(query_vec) = engine.embed(query_text) {
-                // Memory embeddings
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT e.target_id, e.vector, m.text, m.source, m.owner_id, m.visibility \
-                     FROM embeddings e \
-                     JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
-                     AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))"
-                ) {
-                    let rows: Vec<(Vec<u8>, String, String, Option<i64>, Option<String>)> = stmt
-                        .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|r| r.ok())
-                        .collect();
-
-                    for (blob, text, source, owner_id, visibility) in rows {
-                        if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                            continue;
-                        }
-                        let existing_vec = crate::embeddings::blob_to_vector(&blob);
-                        let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
-                        if sim > SIM_FLOOR as f32 {
-                            let scaled = scale_sim(sim);
-                            let entry = sem_map.entry(source).or_insert(SemEntry {
-                                relevance: scaled,
-                                excerpt: text.chars().take(200).collect(),
-                            });
-                            if scaled > entry.relevance {
-                                *entry = SemEntry {
-                                    relevance: scaled,
-                                    excerpt: text.chars().take(200).collect(),
-                                };
-                            }
-                        }
-                    }
-                }
-
-                // Decision embeddings
-                if let Ok(mut stmt) = conn.prepare(
-                    "SELECT e.target_id, e.vector, d.decision, d.context, d.owner_id, d.visibility \
-                     FROM embeddings e \
-                     JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
-                     AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))"
-                ) {
-                    let rows: Vec<(Vec<u8>, String, Option<String>, Option<i64>, Option<String>)> = stmt
-                        .query_map([], |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)))
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|r| r.ok())
-                        .collect();
-
-                    for (blob, decision, context, owner_id, visibility) in rows {
-                        if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                            continue;
-                        }
-                        let existing_vec = crate::embeddings::blob_to_vector(&blob);
-                        let sim = crate::embeddings::cosine_similarity(&query_vec, &existing_vec);
-                        if sim > SIM_FLOOR as f32 {
-                            let source = context.unwrap_or_else(|| {
-                                format!("decision::{}", decision.chars().take(40).collect::<String>())
-                            });
-                            let scaled = scale_sim(sim);
-                            let excerpt = decision.chars().take(200).collect();
-                            let entry = sem_map.entry(source).or_insert(SemEntry {
-                                relevance: scaled,
-                                excerpt,
-                            });
-                            if scaled > entry.relevance {
-                                entry.relevance = scaled;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // engine.embed() returned None -- ONNX inference failed
-                if let Some(flag) = degraded_flag {
-                    if flag
-                        .compare_exchange(
-                            false,
-                            true,
-                            std::sync::atomic::Ordering::Relaxed,
-                            std::sync::atomic::Ordering::Relaxed,
-                        )
-                        .is_ok()
-                    {
-                        eprintln!("[recall] Semantic search unavailable, using keyword fallback");
-                    }
-                }
-            }
-        } else if !embed_available {
-            // No engine configured -- log once on first degraded transition
-            if let Some(flag) = degraded_flag {
-                let _ = flag.compare_exchange(
-                    false,
-                    true,
-                    std::sync::atomic::Ordering::Relaxed,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-            }
-        }
-    }
+    let semantic_candidates = if tier2_resolved {
+        Vec::new()
+    } else {
+        query_vector
+            .map(|query_vec| collect_semantic_candidates(conn, query_vec, ctx))
+            .unwrap_or_default()
+    };
 
     // ── RRF fusion ────────────────────────────────────────────────────────────
     // Assign stable integer indices to each unique source across both lists,
@@ -695,18 +614,15 @@ fn run_recall_with_engine(
         .collect();
 
     // Build ranked list for semantic results (sorted by relevance desc)
-    let mut sem_sorted: Vec<(&String, f64)> =
-        sem_map.iter().map(|(src, e)| (src, e.relevance)).collect();
-    sem_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let sem_list: Vec<(i64, f64)> = sem_sorted
+    let sem_list: Vec<(i64, f64)> = semantic_candidates
         .iter()
-        .map(|(src, rel)| (get_idx(src), *rel))
+        .map(|candidate| (get_idx(&candidate.source), candidate.relevance))
         .collect();
 
     let fused = rrf_fuse(&[kw_list, sem_list], 60.0);
 
     // ── Compound scoring + merge into RecallItem map ──────────────────────────
-    // For each fused entry: look up metadata from kw_candidates or sem_map,
+    // For each fused entry: look up metadata from keyword or semantic candidates,
     // determine method label, then apply compound_score().
     let mut merged: HashMap<String, RecallItem> = HashMap::new();
 
@@ -719,10 +635,10 @@ fn run_recall_with_engine(
         // Prefer keyword candidate metadata (has score + ts); fall back to sem
         let (excerpt, importance, ts_ms, method) =
             if let Some(kw) = kw_candidates.iter().find(|c| c.source == source) {
-                let in_sem = sem_map.contains_key(&source);
+                let in_sem = semantic_candidates.iter().any(|sem| sem.source == source);
                 let method = if in_sem { "hybrid" } else { "keyword" };
                 (kw.excerpt.clone(), kw.score, kw.ts, method)
-            } else if let Some(sem) = sem_map.get(&source) {
+            } else if let Some(sem) = semantic_candidates.iter().find(|sem| sem.source == source) {
                 (sem.excerpt.clone(), 1.0_f64, 0_i64, "semantic")
             } else {
                 continue;
@@ -814,16 +730,15 @@ fn run_budget_recall(
     run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx, None)
 }
 
-fn run_budget_recall_with_engine(
+fn run_budget_recall_with_query_vector(
     conn: &mut Connection,
     query_text: &str,
     token_budget: usize,
     k: usize,
-    engine: Option<&crate::embeddings::EmbeddingEngine>,
+    query_vector: Option<&[f32]>,
     ctx: &RecallContext,
-    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
-    let raw = run_recall_with_engine(conn, query_text, k, engine, ctx, degraded_flag)?;
+    let raw = run_recall_with_query_vector(conn, query_text, k, query_vector, ctx)?;
     if raw.is_empty() {
         return Ok(vec![]);
     }
@@ -863,6 +778,56 @@ fn run_budget_recall_with_engine(
     }
 
     Ok(budgeted)
+}
+
+fn run_budget_recall_with_engine(
+    conn: &mut Connection,
+    query_text: &str,
+    token_budget: usize,
+    k: usize,
+    engine: Option<&crate::embeddings::EmbeddingEngine>,
+    ctx: &RecallContext,
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<Vec<RecallItem>, String> {
+    let query_vector = engine.and_then(|engine| engine.embed(query_text));
+    if engine.is_some() {
+        update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
+    }
+
+    run_budget_recall_with_query_vector(
+        conn,
+        query_text,
+        token_budget,
+        k,
+        query_vector.as_deref(),
+        ctx,
+    )
+}
+
+fn update_semantic_search_health(
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    semantic_available: bool,
+    log_unavailable: bool,
+) {
+    if let Some(flag) = degraded_flag {
+        if semantic_available {
+            flag.store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+
+        let transitioned = flag
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok();
+
+        if log_unavailable && transitioned {
+            eprintln!("[recall] Semantic search unavailable, using keyword fallback");
+        }
+    }
 }
 
 // ─── Search helpers ──────────────────────────────────────────────────────────
@@ -1438,6 +1403,128 @@ fn search_decisions_fallback(
     Ok(ranked)
 }
 
+fn collect_semantic_candidates(
+    conn: &Connection,
+    query_vector: &[f32],
+    ctx: &RecallContext,
+) -> Vec<SemanticCandidate> {
+    let scale_sim = |sim: f32| -> f64 {
+        SEMANTIC_SCALE_BASE
+            + (sim as f64 - SEMANTIC_SIM_FLOOR)
+                * ((1.0 - SEMANTIC_SCALE_BASE) / (1.0 - SEMANTIC_SIM_FLOOR))
+    };
+
+    let mut candidates: HashMap<String, SemanticCandidate> = HashMap::new();
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility \
+         FROM embeddings e \
+         JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))",
+    ) {
+        let rows: Vec<MemorySemanticRow> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (blob, text, source, owner_id, visibility) in rows {
+            if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                continue;
+            }
+            let existing_vec = crate::embeddings::blob_to_vector(&blob);
+            let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+            if sim <= SEMANTIC_SIM_FLOOR as f32 {
+                continue;
+            }
+
+            let scaled = scale_sim(sim);
+            let entry = candidates.entry(source.clone()).or_insert(SemanticCandidate {
+                source,
+                excerpt: text.chars().take(200).collect(),
+                relevance: scaled,
+            });
+            if scaled > entry.relevance {
+                *entry = SemanticCandidate {
+                    source: entry.source.clone(),
+                    excerpt: text.chars().take(200).collect(),
+                    relevance: scaled,
+                };
+            }
+        }
+    }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility \
+         FROM embeddings e \
+         JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
+    ) {
+        let rows: Vec<DecisionSemanticRow> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (blob, decision, context, owner_id, visibility) in rows {
+            if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                continue;
+            }
+            let existing_vec = crate::embeddings::blob_to_vector(&blob);
+            let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+            if sim <= SEMANTIC_SIM_FLOOR as f32 {
+                continue;
+            }
+
+            let source = context.unwrap_or_else(|| {
+                format!("decision::{}", decision.chars().take(40).collect::<String>())
+            });
+            let scaled = scale_sim(sim);
+            let excerpt = decision.chars().take(200).collect::<String>();
+            let entry = candidates.entry(source.clone()).or_insert(SemanticCandidate {
+                source,
+                excerpt: excerpt.clone(),
+                relevance: scaled,
+            });
+            if scaled > entry.relevance {
+                *entry = SemanticCandidate {
+                    source: entry.source.clone(),
+                    excerpt,
+                    relevance: scaled,
+                };
+            }
+        }
+    }
+
+    let mut sorted: Vec<SemanticCandidate> = candidates.into_values().collect();
+    sorted.sort_by(|a, b| {
+        b.relevance
+            .partial_cmp(&a.relevance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    sorted
+}
+
 // ─── Text / keyword utilities ────────────────────────────────────────────────
 
 fn normalize_text(input: &str) -> String {
@@ -1723,6 +1810,7 @@ const SERVED_TTL_MS: i64 = 60_000; // 60 seconds
 async fn dedup_and_mark_served(
     state: &RuntimeState,
     agent: &str,
+    query: &str,
     results: Vec<RecallItem>,
 ) -> Vec<RecallItem> {
     if results.is_empty() {
@@ -1732,7 +1820,7 @@ async fn dedup_and_mark_served(
     let now = Utc::now().timestamp_millis();
     let mut served = state.served_content.lock().await;
     let map = served
-        .entry(agent.to_string())
+        .entry(served_content_scope(agent, query))
         .or_insert_with(HashMap::<u32, i64>::new);
 
     // Evict expired entries
@@ -1749,6 +1837,15 @@ async fn dedup_and_mark_served(
     }
 
     filtered
+}
+
+fn served_content_scope(agent: &str, query: &str) -> String {
+    let normalized_query = query
+        .split_whitespace()
+        .map(|segment| segment.to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{agent}::{normalized_query}")
 }
 
 // ─── Recall pattern tracking / pre-cache ─────────────────────────────────────
@@ -1863,9 +1960,9 @@ async fn predict_and_cache(
             .into_iter()
             .filter(|(query, _)| query != current_query)
             .max_by(|a, b| {
-                a.1 .0
-                    .cmp(&b.1 .0)
-                    .then_with(|| a.1 .1.cmp(&b.1 .1))
+                a.1.0
+                    .cmp(&b.1.0)
+                    .then_with(|| a.1.1.cmp(&b.1.1))
                     .then_with(|| b.0.cmp(&a.0))
             })
             .map(|(query, _)| query)
@@ -1943,7 +2040,7 @@ pub async fn handle_unfold(
             return json_response(
                 StatusCode::BAD_REQUEST,
                 json!({"error": "Missing query parameter: sources (comma-separated)"}),
-            )
+            );
         }
     };
 
@@ -2172,6 +2269,8 @@ fn compound_score(rrf: f64, importance: f64, created_at: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handlers::store::{persist_decision_embedding, store_decision_with_input_embedding};
+    use rusqlite::params;
 
     // ── is_visible tests ───────────────────────────────────────────
 
@@ -2200,6 +2299,52 @@ mod tests {
         crate::db::initialize_schema(&conn).unwrap();
         crate::db::run_pending_migrations(&conn);
         conn
+    }
+
+    fn insert_memory_with_embedding(
+        conn: &rusqlite::Connection,
+        text: &str,
+        source: &str,
+        vector: &[f32],
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            params![text, source],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model)
+             VALUES ('memory', ?1, ?2, 'test-model')",
+            params![id, crate::embeddings::vector_to_blob(vector)],
+        )
+        .unwrap();
+        id
+    }
+
+    fn store_decision_with_embedding(
+        conn: &mut rusqlite::Connection,
+        decision: &str,
+        context: &str,
+        vector: &[f32],
+    ) {
+        let (_, new_id) = store_decision_with_input_embedding(
+            conn,
+            decision,
+            Some(context.to_string()),
+            None,
+            "tester".to_string(),
+            None,
+            None,
+            Some(vector),
+            None,
+        )
+        .unwrap();
+
+        if let Some(id) = new_id {
+            persist_decision_embedding(conn, id, vector).unwrap();
+        }
     }
 
     #[test]
@@ -2246,6 +2391,194 @@ mod tests {
 
         assert!(sources.contains(&"active-decision"));
         assert!(!sources.contains(&"expired-decision"));
+    }
+
+    #[test]
+    fn store_then_keyword_recall_ranks_expected_entry_first() {
+        let mut conn = test_conn();
+        insert_memory_with_embedding(
+            &conn,
+            "Run a WAL checkpoint before daily backup rotation during daemon startup.",
+            "memory::wal-checkpoint",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Use rtk cargo clippy -- -D warnings so CI fails on every warning.",
+            "decision::clippy-gate",
+            &[0.0, 1.0, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Use the expect skill for screenshot QA and breakpoint comparisons on the dashboard.",
+            "decision::expect-skill",
+            &[0.0, 0.0, 1.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Keep three recent backups and delete older cortex database snapshots on startup.",
+            "decision::backup-retention",
+            &[0.0, 0.0, 0.0, 1.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Truncate write_buffer.jsonl after buffered entries flush into SQLite.",
+            "decision::write-buffer",
+            &[0.0, 0.0, 0.0, 0.0, 1.0],
+        );
+
+        let results = run_budget_recall(&mut conn, "write buffer", 400, 5, &solo_ctx()).unwrap();
+
+        assert!(!results.is_empty());
+        assert_eq!(
+            results[0].source,
+            "decision::write-buffer",
+            "unexpected keyword ranking: {:?}",
+            results
+                .iter()
+                .map(|item| item.source.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(matches!(results[0].method.as_str(), "keyword" | "hybrid"));
+    }
+
+    #[test]
+    fn store_then_semantic_recall_keeps_expected_entry_in_top_three() {
+        let mut conn = test_conn();
+        insert_memory_with_embedding(
+            &conn,
+            "Run a WAL checkpoint before daily backup rotation during daemon startup.",
+            "memory::wal-checkpoint",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Use rtk cargo clippy -- -D warnings so CI fails on every warning.",
+            "decision::clippy-gate",
+            &[0.0, 1.0, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Use the expect skill for screenshot QA and breakpoint comparisons on the dashboard.",
+            "decision::expect-skill",
+            &[0.0, 0.0, 1.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Keep three recent backups and delete older cortex database snapshots on startup.",
+            "decision::backup-retention",
+            &[0.0, 0.0, 0.0, 1.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "Truncate write_buffer.jsonl after buffered entries flush into SQLite.",
+            "decision::write-buffer",
+            &[0.0, 0.0, 0.0, 0.0, 1.0],
+        );
+
+        let results = run_budget_recall_with_engine(
+            &mut conn,
+            "aurora lattice signal",
+            400,
+            5,
+            None,
+            &solo_ctx(),
+            None,
+        )
+        .unwrap();
+        assert!(results.is_empty(), "keyword-only path should not match");
+
+        let embedding_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(embedding_count, 5);
+
+        let expect_context: String = conn
+            .query_row(
+                "SELECT context FROM decisions WHERE context = 'decision::expect-skill'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(expect_context, "decision::expect-skill");
+
+        let expect_blob: Vec<u8> = conn
+            .query_row(
+                "SELECT e.vector
+                 FROM embeddings e
+                 JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id
+                 WHERE d.context = 'decision::expect-skill'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let expect_similarity = crate::embeddings::cosine_similarity(
+            &[0.0, 0.0, 1.0, 0.0, 0.0],
+            &crate::embeddings::blob_to_vector(&expect_blob),
+        );
+        assert!(expect_similarity > 0.99);
+
+        let decision_embedding_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM embeddings e
+                 JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(decision_embedding_rows, 4);
+
+        let mut manual_semantic_ranking: Vec<(String, f32)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT e.vector, d.context
+                     FROM embeddings e
+                     JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id
+                     WHERE d.status = 'active'",
+                )
+                .unwrap();
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .unwrap()
+            .filter_map(|row| row.ok())
+            .filter_map(|(blob, context)| {
+                let similarity = crate::embeddings::cosine_similarity(
+                    &[0.0, 0.0, 1.0, 0.0, 0.0],
+                    &crate::embeddings::blob_to_vector(&blob),
+                );
+                (similarity > 0.3).then_some((context.unwrap_or_default(), similarity))
+            })
+            .collect()
+        };
+        manual_semantic_ranking
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        assert!(
+            manual_semantic_ranking
+                .iter()
+                .any(|(source, _)| source == "decision::expect-skill"),
+            "expected semantic candidates to include target, got {:?}",
+            manual_semantic_ranking
+        );
+        let position = manual_semantic_ranking
+            .iter()
+            .position(|(source, _)| source == "decision::expect-skill")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected semantic target to be recalled, got {:?}",
+                    manual_semantic_ranking
+                )
+            });
+        assert!(
+            position < 3,
+            "expected top-3 semantic rank, got {}",
+            position + 1
+        );
+        assert_eq!(
+            manual_semantic_ranking[position].0,
+            "decision::expect-skill"
+        );
     }
 
     #[test]
