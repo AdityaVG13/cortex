@@ -1298,7 +1298,7 @@ body {
 }
 
 .panel {
-  will-change: opacity, transform;
+  will-change: opacity;
 }
 
 .panel-hidden {
@@ -1306,30 +1306,20 @@ body {
 }
 
 .panel-stage[data-panel-direction="forward"] > .panel.active {
-  animation: panel-enter-forward var(--motion-panel) var(--motion-ease);
+  animation: panel-fade-in 120ms ease-out;
 }
 
 .panel-stage[data-panel-direction="backward"] > .panel.active {
-  animation: panel-enter-backward var(--motion-panel) var(--motion-ease);
+  animation: panel-fade-in 120ms ease-out;
 }
 
 .panel-stage[data-panel-direction] > .analytics-panel.active {
-  animation: none;
+  animation: panel-fade-in 120ms ease-out;
 }
 
-@keyframes panel-enter-forward {
-  from { opacity: 0; transform: translateY(10px) translateX(12px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes panel-enter-backward {
-  from { opacity: 0; transform: translateY(10px) translateX(-12px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes panel-enter {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+@keyframes panel-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Staggered metric card entrance */
