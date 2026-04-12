@@ -1,32 +1,41 @@
 # Benchmarking Workspace
 
-This folder is the staging area for external benchmark harnesses, Cortex adapters, and run outputs.
+This directory is the reproducible home for external benchmark harnesses, Cortex adapters, configs, and saved benchmark outputs.
 
-Layout:
+It intentionally separates:
 
-- `tools/` stores cloned third-party benchmark repos. It is ignored by git so we can refresh upstream copies without polluting the repo history.
-- `runs/` stores local benchmark outputs and scratch artifacts. It is also ignored by git.
-- `setup-benchmarks.ps1` clones or updates the benchmark harnesses we want to evaluate Cortex against before we start recording formal results.
+- `benchmark/`: existing in-repo Cortex recall/metric scripts
+- `benchmarking/`: external benchmark suites plus the glue needed to run Cortex against them
 
-Current benchmark tool plan:
+## Layout
 
-- `vectorize-io/agent-memory-benchmark`
-  - Primary evaluation harness for LongMemEval-style and decision-memory runs.
-- `snap-research/locomo`
-  - Official LoCoMo benchmark/dataset repository.
+- `benchmarks.lock.json`: pinned external benchmark repos and their target commits
+- `setup-benchmarks.ps1`: clone/update the external suites into `benchmarking/tools/`
+- `tools/`: ignored local clones of external benchmark repos
+- `adapters/`: tracked Cortex adapters and harness glue
+- `configs/`: tracked benchmark configs and run manifests
+- `results/`: tracked summary outputs we want to keep in git
+- `runs/`: ignored raw run logs, temp files, datasets, and scratch outputs
 
-Next expected additions:
+## Current External Suites
 
-- `adapters/`
-  - Cortex-specific benchmark adapters and runner glue.
-- `manifests/`
-  - Frozen benchmark versions, run metadata, and environment notes for reproducibility.
+- `agent-memory-benchmark`: primary harness for baseline adapter work
+- `LongMemEval`: long-context memory evaluation
+- `locomo`: long conversation memory benchmark
+- `MemoryAgentBench`: agent-memory benchmark suite
 
-Usage:
+## Deferred / unresolved
+
+- `MemBench` does not need a separate clone right now because AMB already has first-class support for it.
+- `DMR` is still unresolved as a standalone canonical repo.
+- Until we confirm a better upstream source, treat DMR coverage as something we may implement through the AMB adapter layer instead of cloning an unknown repo.
+
+## Setup
+
+From repo root:
 
 ```powershell
-cd C:\Users\aditya\cortex\benchmarking
-.\setup-benchmarks.ps1
+powershell -ExecutionPolicy Bypass -File benchmarking\setup-benchmarks.ps1
 ```
 
-After setup completes, we can add the Cortex adapter and run the benchmark plan from `docs/internal/CORTEX-EVOLUTION-PLAN.md`.
+That will clone or update the pinned suites into `benchmarking/tools/` without polluting git history, because `benchmarking/tools/` is ignored.

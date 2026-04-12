@@ -1,0 +1,41 @@
+{
+  "tools": [
+    {
+      "name": "agent-memory-benchmark",
+      "url": "https://github.com/vectorize-io/agent-memory-benchmark.git",
+      "commit": "c85ad25ef611e207a18be94189e489480b7645ed",
+      "local_path": "benchmarking/tools/agent-memory-benchmark",
+      "status": "active",
+      "purpose": "Primary external harness for adapter-based Cortex benchmarking."
+    },
+    {
+      "name": "LongMemEval",
+      "url": "https://github.com/xiaowu0162/LongMemEval.git",
+      "commit": "982fbd7045c9977e9119b5424cab0d7790d19413",
+      "local_path": "benchmarking/tools/LongMemEval",
+      "status": "active",
+      "purpose": "Long-term memory benchmark suite."
+    },
+    {
+      "name": "locomo",
+      "url": "https://github.com/snap-research/locomo.git",
+      "commit": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "local_path": "benchmarking/tools/locomo",
+      "status": "active",
+      "purpose": "Long conversation memory benchmark assets and evaluation code."
+    },
+    {
+      "name": "MemoryAgentBench",
+      "url": "https://github.com/HUST-AI-HYZ/MemoryAgentBench.git",
+      "commit": "569241d877899d5c36d7d3b789de6c2489ea6cba",
+      "local_path": "benchmarking/tools/MemoryAgentBench",
+      "status": "active",
+      "purpose": "Agent memory benchmark suite."
+    }
+  ],
+  "notes": [
+    "MemBench is already supported inside agent-memory-benchmark and does not need a separate clone right now.",
+    "DMR is not pinned yet because the canonical standalone repo still needs confirmation.",
+    "Use AMB as the first integration target; treat DMR coverage as adapter-level work until we confirm a better upstream harness."
+  ]
+}

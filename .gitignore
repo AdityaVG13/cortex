@@ -87,8 +87,10 @@ __pycache__/
 .repowise/
 
 # Benchmark workspaces and external harness clones
-benchmarking/tools/
-benchmarking/runs/
+benchmarking/tools/*
+!benchmarking/tools/.gitkeep
+benchmarking/runs/*
+!benchmarking/runs/.gitkeep
 
 # Shipsecure Pro (source zip + all extracted files)
 .shipsecure-pro.zip
