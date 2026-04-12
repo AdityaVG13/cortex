@@ -987,6 +987,9 @@ export function App() {
   const [restartingDaemon, setRestartingDaemon] = useState(false);
   const [restartError, setRestartError] = useState("");
   const [hasVisitedBrain, setHasVisitedBrain] = useState(() => browserBootstrap.panel === "brain");
+  const [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(() => browserBootstrap.panel === "analytics");
+  const [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics");
+  const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
   const [currency, setCurrency] = useState(() => localStorage.getItem("cortex_currency") || "USD");
   const [analyticsMode, setAnalyticsMode] = useState(() => localStorage.getItem("cortex_analytics_mode") || "aggregate");
 
@@ -1056,6 +1059,16 @@ export function App() {
     ].filter(Boolean);
     return buildKnownAgents(normalizedSessions, extras);
   }, [feedEntries, locks, messageEntries, messageTarget, normalizedSessions, selectedOperator, tasks]);
+
+  const editorSetupSummary = useMemo(() => {
+    const results = Array.isArray(editorSetup) ? editorSetup : [];
+    return {
+      results,
+      detected: results.filter((entry) => entry.detected).length,
+      registered: results.filter((entry) => entry.registered).length,
+      failed: results.filter((entry) => entry.detected && !entry.registered).length,
+    };
+  }, [editorSetup]);
 
   const selectedOperatorName = useMemo(
     () => resolveAgentName(selectedOperator, knownAgents),
@@ -1378,13 +1391,24 @@ export function App() {
   }, [postApi, refreshConflicts]);
 
   const handleSetupEditors = useCallback(async () => {
+    setIsSettingUpEditors(true);
     try {
       const result = await call("setup_editors");
       setEditorSetup(result);
-      const registered = result.filter(e => e.registered).length;
-      setFeedbackMessage(`Registered Cortex MCP in ${registered} editor(s)`);
+      const detected = result.filter((entry) => entry.detected).length;
+      const registered = result.filter((entry) => entry.registered).length;
+      const failed = result.filter((entry) => entry.detected && !entry.registered).length;
+      if (!detected) {
+        setFeedbackMessage("Setup MCP found no supported editors on this machine.");
+      } else if (failed) {
+        setFeedbackMessage(`Setup MCP finished with ${failed} issue(s). Review editor details in Overview.`);
+      } else {
+        setFeedbackMessage(`Setup MCP configured ${registered} editor(s).`);
+      }
     } catch (err) {
       setFeedbackMessage(`Editor setup: ${String(err)}`);
+    } finally {
+      setIsSettingUpEditors(false);
     }
   }, [call]);
 
@@ -1515,6 +1539,29 @@ export function App() {
     if (panel === "brain") {
       setHasVisitedBrain(true);
     }
+    if (panel === "analytics") {
+      setHasVisitedAnalytics(true);
+    }
+  }, [panel]);
+
+  useEffect(() => {
+    if (panel !== "analytics") {
+      setAnalyticsReady(false);
+      return;
+    }
+
+    let frameOne = 0;
+    let frameTwo = 0;
+    frameOne = requestAnimationFrame(() => {
+      frameTwo = requestAnimationFrame(() => {
+        setAnalyticsReady(true);
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(frameOne);
+      cancelAnimationFrame(frameTwo);
+    };
   }, [panel]);
 
   useEffect(() => {
@@ -1578,7 +1625,7 @@ export function App() {
   }, [refreshActivity]);
 
   useEffect(() => {
-    if (panel !== "analytics") return;
+    if (panel !== "analytics" || !analyticsReady) return;
     refreshSavings().catch((error) => {
       const message = error?.message || String(error);
       if (!message || isDaemonOfflineErrorMessage(message)) return;
@@ -1592,7 +1639,7 @@ export function App() {
       });
     }, ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [panel, refreshSavings]);
+  }, [analyticsReady, panel, refreshSavings]);
 
   useEffect(() => {
     let stream = null;
@@ -2382,28 +2429,26 @@ export function App() {
       </aside>
 
       <main className="content">
-        {panel !== "overview" ? (
-          <div className="topbar">
-            <div className="topbar-left">
-              <span className="topbar-path">CORTEX</span>
-              <span className="topbar-sep">/</span>
-              <span className="topbar-current">{PANEL_SEQUENCE.find(p => p.key === panel)?.label.toUpperCase()}</span>
-            </div>
-            <div className="topbar-right">
-              <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
-              <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
-              <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
-              <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
-              <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
-                <span className="topbar-label">HOST</span>
-                {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
-              </span>
-              <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
-                {daemonStatusBadge.label}
-              </span>
-            </div>
+        <div className={`topbar ${panel === "overview" ? "topbar-hidden" : ""}`} aria-hidden={panel === "overview" ? true : undefined}>
+          <div className="topbar-left">
+            <span className="topbar-path">CORTEX</span>
+            <span className="topbar-sep">/</span>
+            <span className="topbar-current">{PANEL_SEQUENCE.find(p => p.key === panel)?.label.toUpperCase()}</span>
           </div>
-        ) : null}
+          <div className="topbar-right">
+            <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
+            <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
+            <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
+            <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
+            <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
+              <span className="topbar-label">HOST</span>
+              {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
+            </span>
+            <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
+              {daemonStatusBadge.label}
+            </span>
+          </div>
+        </div>
 
         {showConnectionDialog && (
           <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
@@ -2462,8 +2507,13 @@ export function App() {
                 <button type="button" className="btn-sm" onClick={refreshAll}>
                   Refresh
                 </button>
-                <button type="button" className="btn-sm btn-primary" onClick={handleSetupEditors}>
-                  Setup MCP
+                <button
+                  type="button"
+                  className="btn-sm btn-primary"
+                  onClick={handleSetupEditors}
+                  disabled={isSettingUpEditors}
+                >
+                  {isSettingUpEditors ? "Setting Up..." : "Setup MCP"}
                 </button>
               </div>
             </div>
@@ -2523,11 +2573,50 @@ export function App() {
                 <span className="sys-label">TASKS</span>
                 <span className="sys-value">{pendingTasks.length} PENDING</span>
               </div>
-                    <div className="sys-item sys-item-action" onClick={() => changePanel("memory")} title="Open memory health and conflict resolution">
+              <div
+                className={`sys-item sys-item-action ${isSettingUpEditors ? "sys-item-disabled" : ""}`}
+                onClick={isSettingUpEditors ? undefined : handleSetupEditors}
+                title="Auto-register Cortex MCP in detected editors"
+              >
+                <span className="sys-label">MCP</span>
+                <span className="sys-value">
+                  {isSettingUpEditors ? "WORKING" : editorSetup ? `${editorSetupSummary.registered} EDITORS` : "SETUP"}
+                </span>
+              </div>
+              <div className="sys-item sys-item-action" onClick={() => changePanel("memory")} title="Open memory health and conflict resolution">
                 <span className="sys-label">RECALL</span>
                 <span className={`sys-value ${latestRecallHitRate >= 85 ? "sys-ok" : ""}`}>{latestRecallHitRate || 0}%</span>
               </div>
             </div>
+
+            {editorSetupSummary.results.length ? (
+              <div className="editor-setup-panel">
+                <div className="editor-setup-header">
+                  <div>
+                    <span className="editor-setup-kicker">MCP Registration</span>
+                    <h2>Editor setup results</h2>
+                  </div>
+                  <span className="badge">
+                    {editorSetupSummary.registered}/{editorSetupSummary.detected || editorSetupSummary.results.length}
+                  </span>
+                </div>
+                <div className="editor-setup-grid">
+                  {editorSetupSummary.results.map((entry) => {
+                    const tone = !entry.detected ? "idle" : entry.registered ? "ok" : "warn";
+                    const stateLabel = !entry.detected ? "Not detected" : entry.registered ? "Configured" : "Needs attention";
+                    return (
+                      <div key={entry.name} className={`editor-setup-item ${tone}`}>
+                        <div className="editor-setup-item-head">
+                          <span className="editor-setup-name">{entry.name}</span>
+                          <span className="editor-setup-state">{stateLabel}</span>
+                        </div>
+                        <p>{entry.message || "No detail provided."}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
 
             <div className="overview-dashboard-grid">
               <div className="card overview-hero-card overview-span-2">
@@ -3555,8 +3644,11 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "analytics" ? (
-          <section className="panel active">
+        {panel === "analytics" || hasVisitedAnalytics ? (
+          <section
+            className={`panel analytics-panel ${panel === "analytics" ? "active" : "panel-hidden"}`}
+            aria-hidden={panel === "analytics" ? undefined : true}
+          >
             <div className="analytics-panel-header">
               <div className="analytics-header-copy">
                 <span className="analytics-kicker">Cortex / Analytics</span>
@@ -3596,7 +3688,11 @@ export function App() {
                 </button>
               </div>
             </div>
-            {savings ? (
+            {!analyticsReady ? (
+              <div className="card full analytics-loading-card">
+                <EmptyItem text="Preparing analytics surface..." />
+              </div>
+            ) : savings ? (
               <>
                 <div className="analytics-metrics-grid">
                   <div className="metric metric-featured" data-accent="cyan">
