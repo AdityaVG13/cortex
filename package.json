@@ -11,7 +11,10 @@
     "test": "cd daemon-rs && cargo test",
     "desktop:install": "npm --prefix desktop/cortex-control-center install",
     "desktop:dev": "npm --prefix desktop/cortex-control-center run dev",
-    "desktop:build": "npm --prefix desktop/cortex-control-center run build"
+    "desktop:build": "npm --prefix desktop/cortex-control-center run build",
+    "desktop:expect": "npm --prefix desktop/cortex-control-center run expect:smoke",
+    "desktop:expect:work": "npm --prefix desktop/cortex-control-center run expect:smoke:work",
+    "desktop:expect:ci": "npm --prefix desktop/cortex-control-center run expect:smoke:ci"
   },
   "keywords": [
     "ai",

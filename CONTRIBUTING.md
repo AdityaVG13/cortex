@@ -62,6 +62,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cd desktop/cortex-control-center
 npm test
 npm run build
+npm run expect:smoke
 ```
 
 ### Root convenience scripts
@@ -72,6 +73,7 @@ From the repo root:
 npm run test
 npm run build
 npm run desktop:build
+npm run desktop:expect
 ```
 
 ## Pull Request Guidelines

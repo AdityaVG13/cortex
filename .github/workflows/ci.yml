@@ -150,3 +150,53 @@ jobs:
       - name: Run desktop tests
         run: npm test
         working-directory: desktop/cortex-control-center
+
+      - name: Install Expect agent
+        if: vars.EXPECT_CLI_ENABLED == 'true'
+        env:
+          EXPECT_CLI_AGENT: ${{ vars.EXPECT_CLI_AGENT }}
+        run: |
+          case "${EXPECT_CLI_AGENT}" in
+            codex)
+              npm install -g @openai/codex
+              ;;
+            claude)
+              npm install -g @anthropic-ai/claude-code
+              ;;
+            gemini)
+              npm install -g @google/gemini-cli
+              ;;
+            copilot)
+              npm install -g @github/copilot
+              ;;
+            opencode)
+              npm install -g opencode-ai
+              ;;
+            droid)
+              npm install -g droid
+              ;;
+            cursor)
+              echo "EXPECT_CLI_AGENT=cursor is not installable on hosted runners; use a self-hosted runner or pick a CLI-installable agent."
+              exit 1
+              ;;
+            "")
+              echo "EXPECT_CLI_ENABLED=true but EXPECT_CLI_AGENT is unset."
+              exit 1
+              ;;
+            *)
+              echo "Unsupported EXPECT_CLI_AGENT=${EXPECT_CLI_AGENT}"
+              exit 1
+              ;;
+          esac
+
+      - name: Run desktop browser smoke
+        if: vars.EXPECT_CLI_ENABLED == 'true'
+        env:
+          EXPECT_CLI_AGENT: ${{ vars.EXPECT_CLI_AGENT }}
+          EXPECT_CLI_TIMEOUT: "600000"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: npm run expect:smoke:ci
+        working-directory: desktop/cortex-control-center
