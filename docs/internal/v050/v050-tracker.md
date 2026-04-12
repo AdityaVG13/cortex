@@ -139,6 +139,11 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Added the mock-backed `expect-cli` smoke harness and the faster work-scoped smoke path so desktop verification can be rerun without the slower full browser pass every iteration.
 - Stabilized the shell and renderer surfaces by replacing glyph-dependent icons with deterministic inline SVGs, reflecting offline state cleanly after Stop, auto-collapsing the sidebar on narrow viewports, and making the Brain legend/layout pass the overview smoke on mobile.
 
+## Phase 7O: Control Center Lifecycle Recovery Hardening -- DONE
+- **Commit:** `6930a2c` | **Agent:** CX (Codex)
+- Hardened long-lived Control Center and plugin recovery paths so stale token rotation, delayed auth-token writes, daemon restarts, and externally managed daemon states no longer strand clients on stale auth or partial-disconnect failures.
+- Tightened daemon-state truthfulness end to end by surfacing `managed` / `authTokenReady` status from Tauri, validating real `/health` payload shape in the MCP proxy and mock harness, and fixing Work-surface operator canonicalization plus 375px mobile overflow/accessibility smoke blockers.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
