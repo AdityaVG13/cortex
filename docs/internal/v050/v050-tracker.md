@@ -156,6 +156,17 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Changed Control Center editor setup and CLI `cortex setup` to refresh and register a stable `~/.cortex/bin/cortex(.exe)` path instead of wiring MCP clients to workspace `target*/cortex` outputs during dev.
 - Updated MCP registration flows to rewrite stale Cortex entries in place, so rerunning setup repairs existing editor configs instead of leaving older workspace-binary commands untouched.
 
+## Phase 7R: Control Center Panel Recovery Cleanup -- DONE
+- **Commit:** `090baef` | **Agent:** CX (Codex)
+- Stabilized the recall-quality headline so undersampled live days no longer drag the primary metric off a one-query miss spike, while still preserving the live daily trend in the strip below.
+- Removed the animated hidden-topbar path on Overview and kept the Brain panel mounted after first visit, which cuts the worst panel-switch hitch from re-entering Brain and from Overview-to-surface swaps.
+- Gated Brain resize/auto-rotate work behind active visibility so the 3D surface stops doing background animation work while another panel is in focus.
+
+## Phase 7S: Brain Agent-Color Readability -- DONE
+- **Commit:** `69344ca` | **Agent:** CX (Codex)
+- Reworked 3D brain node materials so each node reads as its agent/provider color at default zoom instead of collapsing into a uniform bright wash.
+- Added a brighter inner nucleus and toned the outer shell/glow balance so the color identity remains visible without having to zoom all the way into the graph.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
