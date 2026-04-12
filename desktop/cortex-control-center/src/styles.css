@@ -1100,28 +1100,6 @@ body {
   padding: 10px 0 18px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
-  max-height: 120px;
-  opacity: 1;
-  overflow: hidden;
-  transform: translateY(0);
-  transition:
-    max-height var(--motion-panel) var(--motion-ease),
-    opacity var(--motion-base) ease,
-    margin-bottom var(--motion-base) ease,
-    padding var(--motion-base) ease,
-    border-color var(--motion-base) ease,
-    transform var(--motion-panel) var(--motion-ease);
-}
-
-.topbar-hidden {
-  max-height: 0;
-  opacity: 0;
-  margin-bottom: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-bottom-color: transparent;
-  transform: translateY(-8px);
-  pointer-events: none;
 }
 
 .topbar-left {
@@ -1303,6 +1281,10 @@ body {
   will-change: opacity, transform;
 }
 
+.panel-hidden {
+  display: none;
+}
+
 .panel-stage[data-panel-direction="forward"] > .panel.active {
   animation: panel-enter-forward var(--motion-panel) var(--motion-ease);
 }
@@ -1475,16 +1457,6 @@ body {
 @keyframes shimmer {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 0.6; }
-}
-
-/* Topbar subtle entrance */
-.topbar:not(.topbar-hidden) {
-  animation: topbar-enter 0.3s ease-out;
-}
-
-@keyframes topbar-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 /* Coming soon floating icon */
@@ -1889,6 +1861,13 @@ body {
   font-size: 13px;
   line-height: 1.65;
   margin-bottom: 14px;
+}
+
+.analytics-inline-note {
+  margin: 12px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .analytics-secondary-grid {

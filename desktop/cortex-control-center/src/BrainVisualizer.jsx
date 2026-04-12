@@ -27,7 +27,7 @@ class GraphErrorBoundary extends Component {
   }
 }
 
-export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "" }) {
+export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -42,6 +42,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
   });
 
   useEffect(() => {
+    if (!active) return undefined;
     function onResize() {
       setDimensions({
         width: Math.max(window.innerWidth - 260, 400),
@@ -50,11 +51,11 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
     }
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, []);
+  }, [active]);
 
   // Auto-rotation
   useEffect(() => {
-    if (!graphRef.current || !autoRotate) {
+    if (!active || !graphRef.current || !autoRotate) {
       if (rotationRef.current) {
         cancelAnimationFrame(rotationRef.current);
         rotationRef.current = null;
@@ -82,7 +83,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
 
     rotationRef.current = requestAnimationFrame(rotate);
     return () => { if (rotationRef.current) cancelAnimationFrame(rotationRef.current); };
-  }, [autoRotate, graphData]);
+  }, [active, autoRotate, graphData]);
 
   const fetchBrainData = useCallback(async () => {
     try {

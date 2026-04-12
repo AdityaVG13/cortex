@@ -105,6 +105,7 @@ const EMPTY_HEALTH_META = {
 };
 
 const CONTROL_CENTER_VERSION = "0.5.0";
+const RECALL_HEADLINE_MIN_QUERIES = 20;
 const CORTEX_BASE_STORAGE_KEY = "cortex_base";
 const CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token";
 const LEGACY_CORTEX_AUTH_STORAGE_KEYS = ["cortex_token"];
@@ -985,6 +986,7 @@ export function App() {
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [restartingDaemon, setRestartingDaemon] = useState(false);
   const [restartError, setRestartError] = useState("");
+  const [hasVisitedBrain, setHasVisitedBrain] = useState(() => browserBootstrap.panel === "brain");
   const [currency, setCurrency] = useState(() => localStorage.getItem("cortex_currency") || "USD");
   const [analyticsMode, setAnalyticsMode] = useState(() => localStorage.getItem("cortex_analytics_mode") || "aggregate");
 
@@ -1510,6 +1512,12 @@ export function App() {
   }, [panel]);
 
   useEffect(() => {
+    if (panel === "brain") {
+      setHasVisitedBrain(true);
+    }
+  }, [panel]);
+
+  useEffect(() => {
     refreshAllRef.current = refreshAll;
   }, [refreshAll]);
 
@@ -1772,14 +1780,45 @@ export function App() {
     return Math.round(((recentAverage - previousAverage) / previousAverage) * 100);
   }, [dailySeries]);
 
-  const latestRecallHitRate = useMemo(
-    () => Math.round(Number(recallTrendSeries.at(-1)?.hitRatePct || 0)),
-    [recallTrendSeries]
-  );
-
   const recentRecallWindow = useMemo(
     () => recallTrendSeries.slice(-7),
     [recallTrendSeries]
+  );
+
+  const latestRecallPoint = useMemo(
+    () => recallTrendSeries.at(-1) || null,
+    [recallTrendSeries]
+  );
+
+  const stableRecallHeadlinePoint = useMemo(() => {
+    if (!latestRecallPoint) return null;
+    if (Number(latestRecallPoint.queries || 0) >= RECALL_HEADLINE_MIN_QUERIES) {
+      return latestRecallPoint;
+    }
+    return [...recentRecallWindow]
+      .reverse()
+      .find((point) => Number(point?.queries || 0) >= RECALL_HEADLINE_MIN_QUERIES)
+      || latestRecallPoint;
+  }, [latestRecallPoint, recentRecallWindow]);
+
+  const latestRecallHitRate = useMemo(
+    () => Math.round(Number(stableRecallHeadlinePoint?.hitRatePct || latestRecallPoint?.hitRatePct || 0)),
+    [latestRecallPoint, stableRecallHeadlinePoint]
+  );
+
+  const latestRecallSampleSize = useMemo(
+    () => Number(latestRecallPoint?.queries || 0),
+    [latestRecallPoint]
+  );
+
+  const recallHeadlineUsesFallback = useMemo(
+    () => Boolean(
+      latestRecallPoint
+        && stableRecallHeadlinePoint
+        && stableRecallHeadlinePoint !== latestRecallPoint
+        && latestRecallSampleSize < RECALL_HEADLINE_MIN_QUERIES
+    ),
+    [latestRecallPoint, latestRecallSampleSize, stableRecallHeadlinePoint]
   );
 
   const recallWindowAverage = useMemo(() => {
@@ -2343,26 +2382,28 @@ export function App() {
       </aside>
 
       <main className="content">
-        <div className={`topbar ${panel === "overview" ? "topbar-hidden" : ""}`}>
-          <div className="topbar-left">
-            <span className="topbar-path">CORTEX</span>
-            <span className="topbar-sep">/</span>
-            <span className="topbar-current">{PANEL_SEQUENCE.find(p => p.key === panel)?.label.toUpperCase()}</span>
+        {panel !== "overview" ? (
+          <div className="topbar">
+            <div className="topbar-left">
+              <span className="topbar-path">CORTEX</span>
+              <span className="topbar-sep">/</span>
+              <span className="topbar-current">{PANEL_SEQUENCE.find(p => p.key === panel)?.label.toUpperCase()}</span>
+            </div>
+            <div className="topbar-right">
+              <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
+              <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
+              <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
+              <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
+              <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
+                <span className="topbar-label">HOST</span>
+                {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
+              </span>
+              <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
+                {daemonStatusBadge.label}
+              </span>
+            </div>
           </div>
-          <div className="topbar-right">
-            <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
-            <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
-            <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
-            <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
-            <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
-              <span className="topbar-label">HOST</span>
-              {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
-            </span>
-            <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
-              {daemonStatusBadge.label}
-            </span>
-          </div>
-        </div>
+        ) : null}
 
         {showConnectionDialog && (
           <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
@@ -2409,7 +2450,7 @@ export function App() {
           </div>
         )}
 
-        <div key={panel} className="panel-stage" data-panel-direction={panelMotionDirection}>
+        <div className="panel-stage" data-panel-direction={panelMotionDirection}>
         {panel === "overview" ? (
           <section className="panel active">
             <div className="panel-header overview-panel-header">
@@ -3700,6 +3741,12 @@ export function App() {
                             <strong>{recallWindowSpread <= 2 ? "Stable" : latestRecallHitRate >= 90 ? "Strong" : "Watch"}</strong>
                           </div>
                         </div>
+                        {recallHeadlineUsesFallback ? (
+                          <p className="analytics-inline-note">
+                            Headline is pinned to the last full sample day until live recall reaches {RECALL_HEADLINE_MIN_QUERIES} queries.
+                            Today&apos;s live sample is {Math.round(Number(latestRecallPoint?.hitRatePct || 0))}% on {latestRecallSampleSize} queries.
+                          </p>
+                        ) : null}
                         <div className="chart-legend analytics-quality-strip">
                           {recentRecallWindow.length ? recentRecallWindow.map((point) => (
                             <span key={point.date} className="chart-day">
@@ -3942,10 +3989,18 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "brain" ? (
-          <section className="panel active brain-panel">
+        {panel === "brain" || hasVisitedBrain ? (
+          <section
+            className={`panel brain-panel ${panel === "brain" ? "active" : "panel-hidden"}`}
+            aria-hidden={panel === "brain" ? undefined : true}
+          >
             <BrainErrorBoundary>
-              <BrainVisualizer api={api} cortexBase={cortexBase} authToken={tokenRef.current} />
+              <BrainVisualizer
+                api={api}
+                cortexBase={cortexBase}
+                authToken={tokenRef.current}
+                active={panel === "brain"}
+              />
             </BrainErrorBoundary>
           </section>
         ) : null}
