@@ -173,6 +173,12 @@ Compressed record of all completed v0.5.0 work. Each entry includes commit hash,
 - Deferred analytics hydration by one paint and kept the Analytics panel mounted after first visit, so the Overview-to-Analytics transition no longer tries to mount the full savings surface, polling loop, and card animations in the same frame.
 - Made `Setup MCP` visibly actionable by adding an in-flight state, a clearer completion summary, and a per-editor results panel that shows which editors were detected, configured, or need attention.
 
+## Phase 7U: Single-Owner Daemon MCP Enforcement -- DONE
+- **Commit:** `1f02bd0` | **Agent:** CX (Codex)
+- Changed generic `cortex mcp` sessions to attach to an already-running daemon instead of auto-spawning or auto-respawning one, so app-connected MCP clients stop creating extra background daemons of their own.
+- Moved local-daemon ownership into `cortex plugin mcp` solo mode only when that plugin session actually had to start the daemon, and taught owned plugin sessions to shut the daemon back down on exit instead of leaving detached `ensure-daemon` processes behind.
+- Extended Control Center `Setup MCP` coverage to Codex alongside Claude Code and Cursor, so the app can now rewrite Codex MCP config to the stable installed `~/.cortex/bin/cortex(.exe)` path rather than leaving editor clients pinned to workspace build outputs.
+
 ## Phase 6A: Public README + Research Redesign -- DONE
 - **Commit:** `8a6fdcc` | **Agent:** CX (Codex)
 - Rebuilt `README.md` into a stronger landing page with clearer product framing, proof-driven sections, benchmark-backed metrics, sharper nav, and proper `Research` / `Code of Conduct` surfacing in repo-controlled navigation.
