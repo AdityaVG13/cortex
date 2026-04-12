@@ -2857,6 +2857,52 @@ body {
   }
 }
 
+@media (max-width: 720px) {
+  .content {
+    padding: 20px 14px;
+  }
+
+  .panel-header,
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .panel-header .panel-subtitle {
+    display: block;
+    margin-left: 0;
+    margin-top: 6px;
+    max-width: 100%;
+  }
+
+  .surface-toolbar,
+  .feed-toolbar,
+  .work-feed-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .surface-actions,
+  .feed-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .work-operator-toolbar .surface-inline-hint {
+    width: 100%;
+  }
+
+  .surface-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-top,
+  .item-meta {
+    flex-wrap: wrap;
+  }
+}
+
 /* ─── Collapsible Sidebar ───────────────────────────────────────────────── */
 
 .sidebar {

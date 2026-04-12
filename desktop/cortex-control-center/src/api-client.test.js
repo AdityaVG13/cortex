@@ -126,7 +126,7 @@ describe("createApi - api()", () => {
     expect(result).toEqual({ status: "ok" });
   });
 
-  it("does not retry GET 401 when refresh returns the same token", async () => {
+  it("polls for a rotated GET token but does not reissue the request when refresh returns the same token", async () => {
     let token = "stale-token";
     const onTokenRefresh = vi.fn(async () => {
       token = "stale-token";
@@ -143,7 +143,7 @@ describe("createApi - api()", () => {
     );
 
     await expect(api("/sessions", true)).rejects.toThrow("/sessions: HTTP 401");
-    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(onTokenRefresh).toHaveBeenCalledTimes(4);
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
@@ -325,7 +325,7 @@ describe("createPostApi - postApi()", () => {
     );
   });
 
-  it("does not retry POST 401 when refresh returns the same token", async () => {
+  it("polls for a rotated POST token but does not reissue the request when refresh returns the same token", async () => {
     let token = "stale-token";
     const onTokenRefresh = vi.fn(async () => {
       token = "stale-token";
@@ -343,7 +343,7 @@ describe("createPostApi - postApi()", () => {
     );
 
     await expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow("POST /resolve: HTTP 401");
-    expect(onTokenRefresh).toHaveBeenCalledTimes(1);
+    expect(onTokenRefresh).toHaveBeenCalledTimes(4);
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 });

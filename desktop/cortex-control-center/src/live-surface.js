@@ -16,6 +16,14 @@ export function sameAgent(left, right) {
   return normalizedLeft.length > 0 && normalizedLeft === normalizedRight;
 }
 
+export function resolveAgentName(agent, knownAgents = []) {
+  const trimmed = String(agent || "").trim();
+  if (!trimmed) return "";
+
+  const canonical = knownAgents.find((knownAgent) => sameAgent(knownAgent, trimmed));
+  return canonical ? String(canonical).trim() : trimmed;
+}
+
 function stripAgentModel(agent) {
   return String(agent || "")
     .replace(/\s*\([^)]*\)\s*$/, "")
@@ -32,20 +40,35 @@ export function isTransportSession(session) {
 }
 
 export function buildKnownAgents(sessions = [], extras = []) {
-  const allAgents = new Set();
+  const allAgents = new Map();
+
+  const registerAgent = (value) => {
+    const agent = String(value || "").trim();
+    if (!agent) return;
+    const key = agent.toLowerCase();
+    const existing = allAgents.get(key);
+    if (!existing) {
+      allAgents.set(key, agent);
+      return;
+    }
+
+    const existingHasModel = /\([^)]+\)/.test(existing);
+    const currentHasModel = /\([^)]+\)/.test(agent);
+    if (currentHasModel && !existingHasModel) {
+      allAgents.set(key, agent);
+    }
+  };
 
   for (const session of sessions) {
     if (isTransportSession(session)) continue;
-    const agent = String(session?.agent || "").trim();
-    if (agent) allAgents.add(agent);
+    registerAgent(session?.agent);
   }
 
   for (const extra of extras) {
-    const agent = String(extra || "").trim();
-    if (agent) allAgents.add(agent);
+    registerAgent(extra);
   }
 
-  return Array.from(allAgents).sort((left, right) => left.localeCompare(right));
+  return Array.from(allAgents.values()).sort((left, right) => left.localeCompare(right));
 }
 
 export function filterFeedEntries(entries = [], agentFilter = "") {

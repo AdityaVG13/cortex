@@ -139,6 +139,13 @@ function buildFixture() {
       storage_bytes: 12_914_688,
       backup_count: 3,
       log_bytes: 412_672,
+      runtime: {
+        exe_path: "C:/Users/aditya/cortex/.cortex/runtime/mock/cortexd.exe",
+        pid_path: "C:/Users/aditya/cortex/.cortex/cortex.pid",
+        token_path: "C:/Users/aditya/cortex/.cortex/cortex.token",
+        port: 7437,
+        version: "0.5.0",
+      },
       stats: {
         memories: 239,
         decisions: 61,

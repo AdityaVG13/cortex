@@ -33,6 +33,8 @@ const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
 const DAEMON_START_WAIT_MS: u64 = 3_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
+const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
+const AUTH_TOKEN_POLL_MS: u64 = 100;
 
 struct DaemonState {
     daemon: Mutex<SidecarDaemon>,
@@ -88,6 +90,13 @@ struct LifecycleState {
     explicit_quit: AtomicBool,
 }
 
+#[derive(Clone, Copy)]
+struct RequestTimeouts {
+    connect: Duration,
+    read: Duration,
+    write: Duration,
+}
+
 impl Default for LifecycleState {
     fn default() -> Self {
         Self {
@@ -107,9 +116,12 @@ impl LifecycleState {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DaemonCommandResult {
     running: bool,
     reachable: bool,
+    managed: bool,
+    auth_token_ready: bool,
     pid: Option<u32>,
     message: String,
 }
@@ -162,9 +174,11 @@ fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
         "/health",
         "",
         None,
-        Duration::from_millis(timeout_ms),
-        Duration::from_millis(timeout_ms),
-        Duration::from_millis(timeout_ms),
+        RequestTimeouts {
+            connect: Duration::from_millis(timeout_ms),
+            read: Duration::from_millis(timeout_ms),
+            write: Duration::from_millis(timeout_ms),
+        },
     );
 
     matches!(
@@ -188,6 +202,84 @@ async fn wait_for_reachability(port: u16, target: bool, timeout: Duration) -> bo
     })
     .await
     .unwrap_or(false)
+}
+
+fn read_auth_token_once() -> Result<String, String> {
+    let path = token_path()?;
+    let token = fs::read_to_string(&path)
+        .map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
+    Ok(token.trim().to_string())
+}
+
+fn auth_token_ready() -> bool {
+    matches!(read_auth_token_once(), Ok(token) if !token.is_empty())
+}
+
+async fn read_auth_token_with_retry() -> Result<String, String> {
+    let path = token_path()?;
+    if !is_cortex_reachable_with_port(daemon_port(), DAEMON_REACHABILITY_TIMEOUT_MS) {
+        return read_auth_token_once();
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let mut last_error = format!("Auth token not ready at {}", path.display());
+
+        loop {
+            match fs::read_to_string(&path) {
+                Ok(token) => {
+                    let trimmed = token.trim();
+                    if !trimmed.is_empty() {
+                        return Ok(trimmed.to_string());
+                    }
+                    last_error = format!("Auth token file is empty at {}", path.display());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    last_error = format!("Auth token file not found at {}", path.display());
+                }
+                Err(err) => {
+                    last_error = format!("Failed to read token at {}: {err}", path.display());
+                }
+            }
+
+            if started.elapsed() >= Duration::from_millis(AUTH_TOKEN_WAIT_MS) {
+                return Err(last_error);
+            }
+
+            std::thread::sleep(Duration::from_millis(AUTH_TOKEN_POLL_MS));
+        }
+    })
+    .await
+    .map_err(|err| format!("Auth token wait task failed: {err}"))?
+}
+
+fn describe_daemon_state(
+    managed: bool,
+    reachable: bool,
+    auth_token_ready: bool,
+    pid: Option<u32>,
+    port: u16,
+) -> String {
+    if managed && reachable && auth_token_ready {
+        format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
+    } else if managed && reachable {
+        format!(
+            "Cortex daemon running (pid {}) and reachable, waiting for auth token.",
+            pid.unwrap_or_default()
+        )
+    } else if managed {
+        format!(
+            "Cortex daemon running (pid {}) but not reachable on :{} yet.",
+            pid.unwrap_or_default(),
+            port
+        )
+    } else if reachable && auth_token_ready {
+        "Cortex daemon reachable (external process).".to_string()
+    } else if reachable {
+        "Cortex daemon reachable (external process), waiting for auth token.".to_string()
+    } else {
+        "Cortex daemon is offline.".to_string()
+    }
 }
 
 fn cortex_binary_name() -> &'static str {
@@ -396,6 +488,10 @@ fn hide_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+fn hide_to_tray_on_close() -> bool {
+    !cfg!(debug_assertions)
+}
+
 fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     let lifecycle = app.state::<LifecycleState>();
     lifecycle.request_quit();
@@ -497,26 +593,17 @@ fn hide_to_tray(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
-    let (running, pid) = state.status()?;
+    let (managed, pid) = state.status()?;
     let port = daemon_port();
     let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
-    let message = if running && reachable {
-        format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
-    } else if running {
-        format!(
-            "Cortex daemon running (pid {}) but not reachable on :{} yet.",
-            pid.unwrap_or_default(),
-            port
-        )
-    } else if reachable {
-        "Cortex daemon reachable (external process).".to_string()
-    } else {
-        "Cortex daemon is offline.".to_string()
-    };
+    let auth_token_ready = reachable && auth_token_ready();
+    let message = describe_daemon_state(managed, reachable, auth_token_ready, pid, port);
 
     Ok(DaemonCommandResult {
-        running,
+        running: managed,
         reachable,
+        managed,
+        auth_token_ready,
         pid,
         message,
     })
@@ -525,18 +612,21 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 #[tauri::command]
 async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
-    let (already_running, current_pid) = state.status()?;
-    if !already_running && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+    let (already_managed, current_pid) = state.status()?;
+    if !already_managed && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+        let auth_token_ready = auth_token_ready();
         return Ok(DaemonCommandResult {
             running: false,
             reachable: true,
+            managed: false,
+            auth_token_ready,
             pid: None,
-            message: "Cortex daemon reachable (external process).".to_string(),
+            message: describe_daemon_state(false, true, auth_token_ready, None, port),
         });
     }
 
-    let (running, pid) = if already_running {
-        (already_running, current_pid)
+    let (managed, pid) = if already_managed {
+        (already_managed, current_pid)
     } else {
         state.start()?
     };
@@ -545,19 +635,14 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
     } else {
         wait_for_reachability(port, true, Duration::from_millis(DAEMON_START_WAIT_MS)).await
     };
-    let message = if reachable {
-        format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
-    } else {
-        format!(
-            "Cortex daemon started (pid {}) but :{} is not reachable yet.",
-            pid.unwrap_or_default(),
-            port
-        )
-    };
+    let auth_token_ready = reachable && auth_token_ready();
+    let message = describe_daemon_state(managed, reachable, auth_token_ready, pid, port);
 
     Ok(DaemonCommandResult {
-        running,
+        running: managed,
         reachable,
+        managed,
+        auth_token_ready,
         pid,
         message,
     })
@@ -648,17 +733,16 @@ async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResul
     Ok(DaemonCommandResult {
         running: false,
         reachable,
+        managed: false,
+        auth_token_ready: reachable && auth_token_ready(),
         pid: None,
         message,
     })
 }
 
 #[tauri::command]
-fn read_auth_token() -> Result<String, String> {
-    let path = token_path()?;
-    let token = fs::read_to_string(&path)
-        .map_err(|err| format!("Failed to read token at {}: {err}", path.display()))?;
-    Ok(token.trim().to_string())
+async fn read_auth_token() -> Result<String, String> {
+    read_auth_token_with_retry().await
 }
 
 // ─── HTTP Proxy (bypasses WebView2 mixed-content restrictions) ──────────────
@@ -689,9 +773,11 @@ fn send_cortex_request(
         path,
         auth_token,
         body,
-        Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),
-        Duration::from_millis(DAEMON_READ_TIMEOUT_MS),
-        Duration::from_millis(DAEMON_WRITE_TIMEOUT_MS),
+        RequestTimeouts {
+            connect: Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),
+            read: Duration::from_millis(DAEMON_READ_TIMEOUT_MS),
+            write: Duration::from_millis(DAEMON_WRITE_TIMEOUT_MS),
+        },
     )
 }
 
@@ -701,9 +787,7 @@ fn send_cortex_request_with_port(
     path: &str,
     auth_token: &str,
     body: Option<&str>,
-    connect_timeout: Duration,
-    read_timeout: Duration,
-    write_timeout: Duration,
+    timeouts: RequestTimeouts,
 ) -> Result<FetchCortexResponse, String> {
     use std::io::{Read, Write};
 
@@ -712,13 +796,13 @@ fn send_cortex_request_with_port(
     }
 
     let mut stream =
-        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), connect_timeout)
+        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect)
             .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
     stream
-        .set_read_timeout(Some(read_timeout))
+        .set_read_timeout(Some(timeouts.read))
         .map_err(|e| format!("Cannot set read timeout: {e}"))?;
     stream
-        .set_write_timeout(Some(write_timeout))
+        .set_write_timeout(Some(timeouts.write))
         .map_err(|e| format!("Cannot set write timeout: {e}"))?;
 
     let mut request =
@@ -1072,9 +1156,11 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let lifecycle = window.app_handle().state::<LifecycleState>();
-                if !lifecycle.is_quit_requested() {
+                // In `tauri dev`, let the window close normally so the dev runner can
+                // restart without force-killing the WebView2 host.
+                if hide_to_tray_on_close() && !lifecycle.is_quit_requested() {
                     api.prevent_close();
-                    hide_main_window(&window.app_handle());
+                    hide_main_window(window.app_handle());
                 }
             }
         })
@@ -1096,7 +1182,7 @@ fn main() {
     app.run(|app_handle, event| match event {
         tauri::RunEvent::ExitRequested { api, .. } => {
             let lifecycle = app_handle.state::<LifecycleState>();
-            if !lifecycle.is_quit_requested() {
+            if hide_to_tray_on_close() && !lifecycle.is_quit_requested() {
                 api.prevent_exit();
                 hide_main_window(app_handle);
             } else {

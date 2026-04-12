@@ -99,6 +99,59 @@ fn build_auth_header(api_key: Option<&str>) -> Option<String> {
     read_auth_token().map(|token| format!("Bearer {token}"))
 }
 
+fn is_cortex_health_response(status: reqwest::StatusCode, body: &str) -> bool {
+    if !status.is_success() {
+        return false;
+    }
+
+    let Ok(json) = serde_json::from_str::<Value>(body.trim()) else {
+        return false;
+    };
+
+    let health_status = json.get("status").and_then(|value| value.as_str());
+    let runtime = json.get("runtime").and_then(|value| value.as_object());
+    let stats = json.get("stats").and_then(|value| value.as_object());
+
+    matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
+}
+
+async fn health_check_ready(client: &reqwest::Client, health_url: &str) -> bool {
+    let response = match client.get(health_url).send().await {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+
+    let status = response.status();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+
+    is_cortex_health_response(status, &body)
+}
+
+fn is_auth_recovery_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+}
+
+async fn recover_solo_auth(
+    client: &reqwest::Client,
+    health_url: &str,
+    base_url: &str,
+    agent: &str,
+    model: Option<&str>,
+) -> bool {
+    if !health_check_ready(client, health_url).await {
+        return false;
+    }
+
+    if !session_start(client, base_url, None, agent, model).await {
+        eprintln!("[cortex-mcp] Auth recovered but session re-registration did not succeed yet");
+    }
+
+    true
+}
+
 fn persist_write_buffer(
     buffer_path: &std::path::Path,
     remaining: &[String],
@@ -291,15 +344,24 @@ pub async fn run(
     let mut healthy = false;
     for attempt in 1..=HEALTH_CHECK_ATTEMPTS {
         match client.get(&health_url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                healthy = true;
-                break;
-            }
             Ok(resp) => {
-                eprintln!(
-                    "[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: HTTP {}",
-                    resp.status()
-                );
+                let status = resp.status();
+                match resp.text().await {
+                    Ok(body) if is_cortex_health_response(status, &body) => {
+                        healthy = true;
+                        break;
+                    }
+                    Ok(_) => {
+                        eprintln!(
+                            "[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: HTTP {status} was not a valid Cortex health payload"
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: failed reading body: {e}"
+                        );
+                    }
+                }
             }
             Err(e) => {
                 eprintln!(
@@ -453,6 +515,7 @@ pub async fn run(
         let mut response_body: Option<String> = None;
         let mut should_count_failure = false;
         let request_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut attempted_auth_recovery = false;
 
         for attempt in 1..=REQUEST_ATTEMPTS {
             let now = tokio::time::Instant::now();
@@ -503,6 +566,46 @@ pub async fn run(
                             break;
                         }
                     };
+
+                    if api_key.is_none() && is_auth_recovery_status(status) {
+                        last_err = if body.trim().is_empty() {
+                            format!("daemon returned auth HTTP {status}")
+                        } else {
+                            format!("daemon returned auth HTTP {status}: {}", body.trim())
+                        };
+
+                        if attempt < REQUEST_ATTEMPTS {
+                            if !attempted_auth_recovery {
+                                attempted_auth_recovery = true;
+                                let recovered = recover_solo_auth(
+                                    &client,
+                                    &health_url,
+                                    &rpc_base_url,
+                                    &agent_display,
+                                    agent_model.as_deref(),
+                                )
+                                .await;
+                                if recovered {
+                                    eprintln!(
+                                        "[cortex-mcp] Auth rejected request (attempt {attempt}/{REQUEST_ATTEMPTS}); refreshed token and retrying"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "[cortex-mcp] Auth rejected request (attempt {attempt}/{REQUEST_ATTEMPTS}); daemon looks live but auth recovery is still settling"
+                                    );
+                                }
+                            } else {
+                                eprintln!(
+                                    "[cortex-mcp] Auth still rejected request (attempt {attempt}/{REQUEST_ATTEMPTS}); retrying once more before surfacing the error"
+                                );
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                150 * attempt as u64,
+                            ))
+                            .await;
+                            continue;
+                        }
+                    }
 
                     if is_retryable_status(status) {
                         last_err = if body.trim().is_empty() {

@@ -3,11 +3,34 @@
  * Pure functions that accept deps as params -- testable without React.
  */
 
+const TOKEN_REFRESH_ATTEMPTS = 4;
+const TOKEN_REFRESH_DELAY_MS = 250;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAuthStatus(status) {
+  return status === 401 || status === 403;
+}
+
 async function refreshTokenIfChanged(onTokenRefresh, getToken, previousToken) {
   if (!onTokenRefresh) return false;
-  await onTokenRefresh();
-  const nextToken = getToken();
-  return Boolean(nextToken) && nextToken !== previousToken;
+
+  const requiresRotation = Boolean(previousToken);
+  for (let attempt = 1; attempt <= TOKEN_REFRESH_ATTEMPTS; attempt += 1) {
+    await onTokenRefresh(previousToken, attempt);
+    const nextToken = getToken();
+    const ready = Boolean(nextToken) && (!requiresRotation || nextToken !== previousToken);
+    if (ready) {
+      return true;
+    }
+    if (attempt < TOKEN_REFRESH_ATTEMPTS) {
+      await wait(TOKEN_REFRESH_DELAY_MS * attempt);
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -46,7 +69,7 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
         throw new Error(`${path}: invalid IPC response`);
       }
       // On 401, re-read token and retry once (handles daemon token rotation on startup)
-      if (response.status === 401 && withAuth && !_retried) {
+      if (isAuthStatus(response.status) && withAuth && !_retried) {
         const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
         if (refreshed) {
           return api(path, withAuth, true);
@@ -62,7 +85,7 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
     const headers = { "X-Cortex-Request": "true" };
     if (withAuth) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(`${cortexBase}${path}`, { headers });
-    if (response.status === 401 && withAuth && !_retried) {
+    if (isAuthStatus(response.status) && withAuth && !_retried) {
       const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
       if (refreshed) {
         return api(path, withAuth, true);
@@ -111,7 +134,7 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
         throw new Error(`POST ${path}: invalid IPC response`);
       }
-      if (response.status === 401 && !_retried) {
+      if (isAuthStatus(response.status) && !_retried) {
         const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
         if (refreshed) {
           return postApi(path, body, true);
@@ -133,7 +156,7 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       },
       body: JSON.stringify(body),
     });
-    if (response.status === 401 && !_retried) {
+    if (isAuthStatus(response.status) && !_retried) {
       const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
       if (refreshed) {
         return postApi(path, body, true);
@@ -165,7 +188,7 @@ function panelLabelFromError(message) {
 
 export function isAuthFailure(message) {
   const text = String(message || "");
-  return text.includes("HTTP 401") || text.includes("no auth token");
+  return text.includes("HTTP 401") || text.includes("HTTP 403") || text.includes("no auth token");
 }
 
 export function summarizeDashboardErrors(errors) {

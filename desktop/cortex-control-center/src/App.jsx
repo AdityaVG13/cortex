@@ -19,6 +19,7 @@ import {
   isTransportSession,
   nextFeedAckId,
   normalizeTask,
+  resolveAgentName,
   sameAgent,
 } from "./live-surface.js";
 import { AppIcon } from "./ui-icons.jsx";
@@ -86,6 +87,8 @@ const PANEL_SEQUENCE = [
 const EMPTY_DAEMON = {
   running: false,
   reachable: false,
+  managed: false,
+  authTokenReady: false,
   pid: null,
   message: "Checking daemon...",
 };
@@ -666,6 +669,7 @@ function TaskItem({
           <button
             type="button"
             className="btn-sm btn-primary"
+            aria-label={`Claim task ${task.title}`}
             disabled={claimBusy}
             onClick={() => onClaim(task)}
           >
@@ -676,6 +680,7 @@ function TaskItem({
           <button
             type="button"
             className="btn-sm"
+            aria-label={`${completionExpanded ? "Cancel completion for" : "Complete task"} ${task.title}`}
             disabled={completeBusy}
             onClick={() => onToggleComplete(task.taskId)}
           >
@@ -686,6 +691,7 @@ function TaskItem({
           <button
             type="button"
             className="btn-sm btn-danger"
+            aria-label={`Abandon task ${task.title}`}
             disabled={abandonBusy}
             onClick={() => onAbandon(task)}
           >
@@ -699,6 +705,7 @@ function TaskItem({
           <button
             type="button"
             className="btn-sm"
+            aria-label={`Delete task ${task.title}`}
             disabled={deleteBusy}
             onClick={() => onDelete(task)}
           >
@@ -715,12 +722,18 @@ function TaskItem({
             rows={3}
           />
           <div className="surface-actions">
-            <button type="button" className="btn-sm" onClick={() => onToggleComplete?.(task.taskId)}>
+            <button
+              type="button"
+              className="btn-sm"
+              aria-label={`Keep task ${task.title} open`}
+              onClick={() => onToggleComplete?.(task.taskId)}
+            >
               Keep Open
             </button>
             <button
               type="button"
               className="btn-sm btn-primary"
+              aria-label={`Confirm complete task ${task.title}`}
               disabled={completeBusy}
               onClick={() => onComplete(task, completionDraft)}
             >
@@ -865,6 +878,11 @@ function isDaemonOfflineErrorMessage(message) {
   );
 }
 
+function isReachableHealthPayload(health) {
+  const status = String(health?.status || "").toLowerCase();
+  return (status === "ok" || status === "degraded") && Boolean(health?.runtime) && Boolean(health?.stats);
+}
+
 export function App() {
   const browserBootstrap = useMemo(() => readBrowserBootstrap(), []);
   const [panel, setPanel] = useState(() => browserBootstrap.panel || "overview");
@@ -978,6 +996,15 @@ export function App() {
     return buildKnownAgents(normalizedSessions, extras);
   }, [feedEntries, locks, messageEntries, messageTarget, normalizedSessions, selectedOperator, tasks]);
 
+  const selectedOperatorName = useMemo(
+    () => resolveAgentName(selectedOperator, knownAgents),
+    [knownAgents, selectedOperator],
+  );
+  const messageTargetName = useMemo(
+    () => resolveAgentName(messageTarget, knownAgents),
+    [knownAgents, messageTarget],
+  );
+
   const currencyRate = USD_TO_CURRENCY_RATE[currency] ?? USD_TO_CURRENCY_RATE.USD;
   const memoryLoad = useMemo(
     () =>
@@ -1005,9 +1032,12 @@ export function App() {
     setFeedbackMessage((current) => {
       const text = String(current || "");
       if (
+        text === "Checking daemon..." ||
         text.includes("could not authenticate") ||
         text.startsWith("Auth token read failed:") ||
-        text.includes(": HTTP 401")
+        text.startsWith("Waiting for daemon auth token") ||
+        text.includes(": HTTP 401") ||
+        text.includes(": HTTP 403")
       ) {
         return fallback;
       }
@@ -1034,12 +1064,14 @@ export function App() {
   const refreshTokenForApi = useCallback(async () => {
     if (!invokeRef.current) {
       tokenRef.current = readPersistedBrowserAuthToken();
-      return;
+      return tokenRef.current;
     }
     try {
       const token = await invokeRef.current("read_auth_token");
       tokenRef.current = token || "";
+      persistBrowserAuthToken(tokenRef.current);
     } catch { /* ignore */ }
+    return tokenRef.current;
   }, []);
 
   const api = useCallback(
@@ -1067,29 +1099,36 @@ export function App() {
     return invokeRef.current(command, args);
   }, []);
 
-  const readAuthToken = useCallback(async () => {
+  const readAuthToken = useCallback(async ({ suppressFeedback = false } = {}) => {
+    if (!invokeRef.current) {
+      tokenRef.current = readPersistedBrowserAuthToken();
+      return tokenRef.current;
+    }
+
     if (invokeRef.current) {
       try {
         const token = await call("read_auth_token");
         tokenRef.current = token || "";
         persistBrowserAuthToken(tokenRef.current);
-        return;
+        return tokenRef.current;
       } catch (err) {
         tokenRef.current = "";
+        persistBrowserAuthToken("");
         const message = err?.message || String(err);
-        if (!daemonTransitionRef.current || !isDaemonOfflineErrorMessage(message)) {
+        if (!suppressFeedback && (!daemonTransitionRef.current || !isDaemonOfflineErrorMessage(message))) {
           setFeedbackMessage(`Auth token read failed: ${message}`);
         }
       }
     }
+    return tokenRef.current;
   }, [call]);
 
   const refreshDaemonState = useCallback(async () => {
     if (invokeRef.current) {
       try {
-        const state = await call("daemon_status");
+        const state = { ...EMPTY_DAEMON, ...(await call("daemon_status")) };
         setDaemonState(state);
-        return;
+        return state;
       } catch {
         // fallback to HTTP health
       }
@@ -1101,22 +1140,28 @@ export function App() {
     } catch {
       // daemon unreachable is an expected state, not an error
     }
-    if (health?.status === "ok") {
+    if (isReachableHealthPayload(health)) {
       const nextState = {
         running: true,
         reachable: true,
+        managed: false,
+        authTokenReady: Boolean(tokenRef.current),
         pid: null,
         message: `Connected -- ${health.stats?.memories ?? 0} memories`,
       };
       setDaemonState(nextState);
+      return nextState;
     } else {
       const nextState = {
         running: false,
         reachable: false,
+        managed: false,
+        authTokenReady: false,
         pid: null,
         message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
       };
       setDaemonState(nextState);
+      return nextState;
     }
   }, [api, call]);
 
@@ -1166,8 +1211,8 @@ export function App() {
     const query = new URLSearchParams();
     query.set("since", feedFilters.since);
     if (feedFilters.kind !== "all") query.set("kind", feedFilters.kind);
-    if (feedFilters.unread && selectedOperator.trim()) {
-      query.set("agent", selectedOperator.trim());
+    if (feedFilters.unread && selectedOperatorName) {
+      query.set("agent", selectedOperatorName);
       query.set("unread", "true");
     }
 
@@ -1175,10 +1220,10 @@ export function App() {
     const entries = Array.isArray(feedResult?.entries) ? [...feedResult.entries].reverse() : [];
     setFeedEntries(filterFeedEntries(entries, feedFilters.agent));
     clearTransientFeedback();
-  }, [api, clearTransientFeedback, feedFilters, selectedOperator]);
+  }, [api, clearTransientFeedback, feedFilters, selectedOperatorName]);
 
   const refreshMessages = useCallback(async () => {
-    const operator = selectedOperator.trim();
+    const operator = selectedOperatorName;
     if (!operator) {
       setMessageEntries([]);
       return;
@@ -1190,7 +1235,7 @@ export function App() {
     const entries = Array.isArray(result?.messages) ? [...result.messages].reverse() : [];
     setMessageEntries(entries);
     clearTransientFeedback();
-  }, [api, clearTransientFeedback, selectedOperator]);
+  }, [api, clearTransientFeedback, selectedOperatorName]);
 
   const refreshActivity = useCallback(async () => {
     const query = new URLSearchParams();
@@ -1212,6 +1257,25 @@ export function App() {
     setConflictPairs(Array.isArray(result?.pairs) ? result.pairs : []);
     clearTransientFeedback();
   }, [api, clearTransientFeedback]);
+
+  const refreshProtectedData = useCallback(
+    () => settledCollectErrors([
+      refreshCoreData,
+      refreshFeed,
+      refreshMessages,
+      refreshActivity,
+      refreshSavings,
+      refreshConflicts,
+    ]),
+    [
+      refreshCoreData,
+      refreshFeed,
+      refreshMessages,
+      refreshActivity,
+      refreshSavings,
+      refreshConflicts,
+    ]
+  );
 
   const handleResolveConflict = useCallback(async (keepId, action, supersededId) => {
     setConflictLoading(true);
@@ -1242,37 +1306,50 @@ export function App() {
     } catch {
       invokeRef.current = null;
     }
-    await readAuthToken();
+
+    const nextDaemonState = await refreshDaemonState();
+    await refreshHealth();
 
     if (daemonTransitionRef.current) {
-      const transitionErrors = await settledCollectErrors([
-        refreshDaemonState,
-        refreshHealth,
-      ]);
-      if (
-        transitionErrors.length &&
-        !transitionErrors.every((error) => isDaemonOfflineErrorMessage(error))
-      ) {
-        const unique = [...new Set(transitionErrors)];
-        setFeedbackMessage(unique.join("; "));
-      }
       return;
     }
 
-    const errors = await settledCollectErrors([
-      refreshDaemonState,
-      refreshHealth,
-      refreshCoreData,
-      refreshFeed,
-      refreshMessages,
-      refreshActivity,
-      refreshSavings,
-      refreshConflicts,
-    ]);
+    if (invokeRef.current && nextDaemonState?.managed && !nextDaemonState?.reachable) {
+      clearDisconnectedData();
+      setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
+      return;
+    }
+
+    if (!nextDaemonState?.reachable) {
+      if (invokeRef.current) {
+        tokenRef.current = "";
+        persistBrowserAuthToken("");
+      }
+      clearDisconnectedData();
+      clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
+      return;
+    }
+
+    const authToken = await readAuthToken({ suppressFeedback: true });
+    if (invokeRef.current && !authToken) {
+      clearDisconnectedData();
+      setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
+      return;
+    }
+
+    let errors = await refreshProtectedData();
+    if (invokeRef.current && errors.length && errors.every((error) => isAuthFailure(error))) {
+      const refreshedToken = await readAuthToken({ suppressFeedback: true });
+      if (refreshedToken) {
+        errors = await refreshProtectedData();
+      }
+    }
+
     if (errors.length) {
       const unique = [...new Set(errors)];
       if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
         clearDisconnectedData();
+        clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
       } else {
         setFeedbackMessage(summarizeDashboardErrors(unique));
         if (!invokeRef.current && unique.every((error) => isAuthFailure(error))) {
@@ -1287,13 +1364,9 @@ export function App() {
     readAuthToken,
     refreshDaemonState,
     refreshHealth,
-    refreshCoreData,
-    refreshFeed,
-    refreshMessages,
-    refreshActivity,
-    refreshSavings,
-    refreshConflicts,
+    refreshProtectedData,
     clearDisconnectedData,
+    cortexBase,
   ]);
 
   useEffect(() => {
@@ -1321,15 +1394,15 @@ export function App() {
 
   useEffect(() => {
     try {
-      if (selectedOperator.trim()) {
-        localStorage.setItem(CORTEX_OPERATOR_STORAGE_KEY, selectedOperator.trim());
+      if (selectedOperatorName) {
+        localStorage.setItem(CORTEX_OPERATOR_STORAGE_KEY, selectedOperatorName);
       } else {
         localStorage.removeItem(CORTEX_OPERATOR_STORAGE_KEY);
       }
     } catch {
       // Ignore storage failures in restricted browser contexts.
     }
-  }, [selectedOperator]);
+  }, [selectedOperatorName]);
 
   useEffect(() => {
     refreshAllRef.current = refreshAll;
@@ -1645,7 +1718,7 @@ export function App() {
   }, []);
 
   const handleTaskClaim = useCallback(async (task) => {
-    const operator = selectedOperator.trim();
+    const operator = selectedOperatorName;
     if (!operator) {
       setFeedbackMessage("Select an operator before claiming tasks.");
       return;
@@ -1661,10 +1734,10 @@ export function App() {
     } finally {
       setBusyActionKey("");
     }
-  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperator]);
+  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperatorName]);
 
   const handleTaskAbandon = useCallback(async (task) => {
-    const operator = selectedOperator.trim();
+    const operator = selectedOperatorName;
     if (!operator) {
       setFeedbackMessage("Select an operator before abandoning tasks.");
       return;
@@ -1681,10 +1754,10 @@ export function App() {
     } finally {
       setBusyActionKey("");
     }
-  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperator]);
+  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperatorName]);
 
   const handleTaskComplete = useCallback(async (task, summary) => {
-    const operator = selectedOperator.trim();
+    const operator = selectedOperatorName;
     if (!operator) {
       setFeedbackMessage("Select an operator before completing tasks.");
       return;
@@ -1706,7 +1779,7 @@ export function App() {
     } finally {
       setBusyActionKey("");
     }
-  }, [postApi, refreshCoreData, refreshFeed, reportSurfaceError, selectedOperator]);
+  }, [postApi, refreshCoreData, refreshFeed, reportSurfaceError, selectedOperatorName]);
 
   const handleTaskDelete = useCallback(async (task) => {
     setBusyActionKey(`delete:${task.taskId}`);
@@ -1722,7 +1795,7 @@ export function App() {
   }, [postApi, refreshCoreData, reportSurfaceError]);
 
   const handleUnlock = useCallback(async (lock) => {
-    const operator = selectedOperator.trim();
+    const operator = selectedOperatorName;
     if (!operator) {
       setFeedbackMessage("Select an operator before unlocking files.");
       return;
@@ -1738,12 +1811,12 @@ export function App() {
     } finally {
       setBusyActionKey("");
     }
-  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperator]);
+  }, [postApi, refreshCoreData, reportSurfaceError, selectedOperatorName]);
 
   const handleSendMessage = useCallback(async (event) => {
     event?.preventDefault();
-    const operator = selectedOperator.trim();
-    const recipient = messageTarget.trim();
+    const operator = selectedOperatorName;
+    const recipient = messageTargetName;
     const message = messageDraft.trim();
 
     if (!operator) {
@@ -1770,10 +1843,10 @@ export function App() {
     } finally {
       setBusyActionKey("");
     }
-  }, [messageDraft, messageTarget, postApi, refreshMessages, reportSurfaceError, selectedOperator]);
+  }, [messageDraft, messageTargetName, postApi, refreshMessages, reportSurfaceError, selectedOperatorName]);
 
   const handleFeedAck = useCallback(async () => {
-    const operator = selectedOperator.trim();
+    const operator = selectedOperatorName;
     const lastSeenId = nextFeedAckId(feedEntries, operator);
 
     if (!operator) {
@@ -1795,19 +1868,19 @@ export function App() {
     } finally {
       setBusyActionKey("");
     }
-  }, [feedEntries, postApi, refreshFeed, reportSurfaceError, selectedOperator]);
+  }, [feedEntries, postApi, refreshFeed, reportSurfaceError, selectedOperatorName]);
 
   const waitForDaemonReachable = useCallback(async () => {
     const started = Date.now();
     while (Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS) {
       try {
         if (invokeRef.current) {
-          const state = await call("daemon_status");
+          const state = { ...EMPTY_DAEMON, ...(await call("daemon_status")) };
           setDaemonState(state);
           if (state?.reachable) return true;
         } else {
           const health = await api("/health");
-          if (health?.status === "ok") return true;
+          if (isReachableHealthPayload(health)) return true;
         }
       } catch {
         // continue polling until timeout
@@ -1876,7 +1949,7 @@ export function App() {
         setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
       }
       daemonTransitionRef.current = false;
-      await readAuthToken();
+      await readAuthToken({ suppressFeedback: true });
       await refreshAll();
     } catch (error) {
       setFeedbackMessage(`Start failed: ${error.message || error}`);
@@ -1899,6 +1972,8 @@ export function App() {
         setDaemonState({
           running: false,
           reachable: false,
+          managed: false,
+          authTokenReady: false,
           pid: null,
           message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
         });
@@ -1960,7 +2035,7 @@ export function App() {
       }
 
       daemonTransitionRef.current = false;
-      await readAuthToken();
+      await readAuthToken({ suppressFeedback: true });
       await refreshAll();
       setFeedbackMessage("Daemon restarted successfully.");
     } catch (error) {
@@ -2093,7 +2168,13 @@ export function App() {
             </div>
           )}
           <p className="sidebar-status">{feedbackMessage}</p>
-          <button type="button" className="btn-sidebar-collapse" onClick={() => setSidebarCollapsed(c => !c)}>
+          <button
+            type="button"
+            className="btn-sidebar-collapse"
+            aria-label={effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setSidebarCollapsed(c => !c)}
+          >
             <AppIcon name={effectiveSidebarCollapsed ? "chevron-right" : "chevron-left"} size={16} />
           </button>
         </div>
@@ -2156,7 +2237,7 @@ export function App() {
                     tokenRef.current = "";
                     persistBrowserAuthToken("");
                     setShowConnectionDialog(false);
-                    readAuthToken();
+                    readAuthToken({ suppressFeedback: true });
                     queueMicrotask(() => refreshAllRef.current());
                   }}>Reset to Local</button>
                   <button type="submit" className="btn-sm btn-primary">Connect</button>

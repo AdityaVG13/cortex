@@ -9,6 +9,7 @@ import {
   isTransportSession,
   nextFeedAckId,
   normalizeTask,
+  resolveAgentName,
   sameAgent,
 } from "./live-surface.js";
 
@@ -53,6 +54,15 @@ describe("buildKnownAgents", () => {
         ["Factory Droid", "Claude"],
       ),
     ).toEqual(["Claude", "Codex", "Factory Droid"]);
+  });
+
+  it("deduplicates agent names case-insensitively", () => {
+    expect(
+      buildKnownAgents(
+        [{ agent: "Codex" }],
+        ["codex", "CLAUDE", "Claude"],
+      ),
+    ).toEqual(["CLAUDE", "Codex"]);
   });
 
   it("skips generic MCP transport sessions", () => {
@@ -131,5 +141,15 @@ describe("nextFeedAckId", () => {
   it("returns blank when there is no operator or nothing to ack", () => {
     expect(nextFeedAckId([{ id: "feed-1", agent: "Codex" }], "Codex")).toBe("");
     expect(nextFeedAckId([{ id: "feed-1", agent: "Claude" }], "")).toBe("");
+  });
+});
+
+describe("resolveAgentName", () => {
+  it("returns the canonical known agent when casing differs", () => {
+    expect(resolveAgentName("codex", ["Codex", "Claude"])).toBe("Codex");
+  });
+
+  it("falls back to the trimmed raw value when no known agent matches", () => {
+    expect(resolveAgentName("Factory Droid", ["Codex", "Claude"])).toBe("Factory Droid");
   });
 });
