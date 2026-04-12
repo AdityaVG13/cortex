@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, Component } from "react";
+import { startTransition, useCallback, useEffect, useId, useMemo, useRef, useState, Component } from "react";
 import { BrainVisualizer } from "./BrainVisualizer.jsx";
 import { checkForUpdates, installUpdate } from "./updater.js";
 import {
@@ -84,6 +84,10 @@ const PANEL_SEQUENCE = [
   { key: "about", label: "About", icon: "about" },
 ];
 
+function panelIndex(panelKey) {
+  return PANEL_SEQUENCE.findIndex((entry) => entry.key === panelKey);
+}
+
 const EMPTY_DAEMON = {
   running: false,
   reachable: false,
@@ -93,10 +97,19 @@ const EMPTY_DAEMON = {
   message: "Checking daemon...",
 };
 
+const EMPTY_HEALTH_META = {
+  status: "unknown",
+  degraded: false,
+  dbCorrupted: false,
+  runtimeVersion: "",
+};
+
+const CONTROL_CENTER_VERSION = "0.5.0";
 const CORTEX_BASE_STORAGE_KEY = "cortex_base";
 const CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token";
 const LEGACY_CORTEX_AUTH_STORAGE_KEYS = ["cortex_token"];
 const CORTEX_OPERATOR_STORAGE_KEY = "cortex_operator";
+const CORTEX_PANEL_STORAGE_KEY = "cortex_panel";
 function clearLegacyBrowserAuthTokens() {
   if (typeof window === "undefined") return;
   try {
@@ -152,14 +165,30 @@ function readBrowserBootstrap() {
   }
 
   const params = new URLSearchParams(window.location.search);
-  const requestedPanel = params.get("panel") || "";
+  let storedPanel = "";
+  let storedBase = DEFAULT_CORTEX_BASE;
+  try {
+    storedPanel = window.localStorage.getItem(CORTEX_PANEL_STORAGE_KEY) || "";
+    storedBase = window.localStorage.getItem(CORTEX_BASE_STORAGE_KEY) || DEFAULT_CORTEX_BASE;
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
+
+  const requestedPanel = params.get("panel") || storedPanel || "";
   const panel = PANEL_SEQUENCE.some((entry) => entry.key === requestedPanel) ? requestedPanel : "overview";
-  const cortexBase = params.get("cortexBase") || localStorage.getItem(CORTEX_BASE_STORAGE_KEY) || DEFAULT_CORTEX_BASE;
+  const cortexBase = params.get("cortexBase") || storedBase || DEFAULT_CORTEX_BASE;
   const authTokenFromParams = params.get("authToken") || "";
   const authToken = authTokenFromParams || readPersistedBrowserAuthToken();
 
-  if (params.get("cortexBase")) {
-    localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
+  try {
+    if (params.get("panel")) {
+      window.localStorage.setItem(CORTEX_PANEL_STORAGE_KEY, panel);
+    }
+    if (params.get("cortexBase")) {
+      window.localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
+    }
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
   }
   if (authTokenFromParams) {
     try {
@@ -442,7 +471,13 @@ function Sparkline({
   });
 
   return (
-    <svg width={width} height={height} className={`sparkline ${className}`}>
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      className={`sparkline ${className}`}
+    >
       <defs>
         <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.22" />
@@ -494,7 +529,15 @@ function MonteCarloProjectionChart({ projection, width = 820, height = 280 }) {
   const summaryY = padding.top + 10;
 
   return (
-    <svg width={width} height={height} className="projection-chart" role="img" aria-label="30-day Monte Carlo projection for cumulative savings gains">
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="xMidYMid meet"
+      className="projection-chart"
+      role="img"
+      aria-label="30-day Monte Carlo projection for cumulative savings gains"
+    >
       <defs>
         <linearGradient id="projectionBandWide" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#4f7cff" stopOpacity="0.24" />
@@ -886,7 +929,9 @@ function isReachableHealthPayload(health) {
 export function App() {
   const browserBootstrap = useMemo(() => readBrowserBootstrap(), []);
   const [panel, setPanel] = useState(() => browserBootstrap.panel || "overview");
+  const [panelMotionDirection, setPanelMotionDirection] = useState("forward");
   const [daemonState, setDaemonState] = useState(EMPTY_DAEMON);
+  const [healthMeta, setHealthMeta] = useState(EMPTY_HEALTH_META);
   const [stats, setStats] = useState({
     memories: "--",
     decisions: "--",
@@ -947,8 +992,22 @@ export function App() {
   const tokenRef = useRef(browserBootstrap.authToken || "");
   const refreshAllRef = useRef(async () => {});
   const daemonTransitionRef = useRef(false);
+  const recoveryRetryTimerRef = useRef(null);
   const skipInitialMessagesRefreshRef = useRef(true);
   const skipInitialActivityRefreshRef = useRef(true);
+
+  const changePanel = useCallback((nextPanel) => {
+    if (!PANEL_SEQUENCE.some((entry) => entry.key === nextPanel) || nextPanel === panel) {
+      return;
+    }
+
+    const currentIndex = panelIndex(panel);
+    const nextIndex = panelIndex(nextPanel);
+    setPanelMotionDirection(
+      currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex ? "backward" : "forward"
+    );
+    startTransition(() => setPanel(nextPanel));
+  }, [panel]);
 
   const normalizedSessions = useMemo(() => {
     if (!Array.isArray(sessions)) return [];
@@ -1043,6 +1102,26 @@ export function App() {
       }
       return current;
     });
+  }, []);
+
+  const clearRecoveryRetry = useCallback(() => {
+    if (typeof window === "undefined" || !recoveryRetryTimerRef.current) {
+      return;
+    }
+
+    window.clearTimeout(recoveryRetryTimerRef.current);
+    recoveryRetryTimerRef.current = null;
+  }, []);
+
+  const scheduleRecoveryRetry = useCallback((delay = 1000) => {
+    if (typeof window === "undefined" || recoveryRetryTimerRef.current) {
+      return;
+    }
+
+    recoveryRetryTimerRef.current = window.setTimeout(() => {
+      recoveryRetryTimerRef.current = null;
+      refreshAllRef.current();
+    }, delay);
   }, []);
 
   const clearDisconnectedData = useCallback(() => {
@@ -1173,6 +1252,7 @@ export function App() {
       // daemon unreachable -- show dashes
     }
     if (!health?.stats) {
+      setHealthMeta(EMPTY_HEALTH_META);
       setStats({
         memories: "--",
         decisions: "--",
@@ -1182,6 +1262,12 @@ export function App() {
     }
 
     const next = health.stats;
+    setHealthMeta({
+      status: String(health?.status || "unknown").toLowerCase(),
+      degraded: Boolean(health?.degraded),
+      dbCorrupted: Boolean(health?.db_corrupted),
+      runtimeVersion: String(health?.runtime?.version || ""),
+    });
     setStats({
       memories: next.memories ?? 0,
       decisions: next.decisions ?? 0,
@@ -1317,10 +1403,12 @@ export function App() {
     if (invokeRef.current && nextDaemonState?.managed && !nextDaemonState?.reachable) {
       clearDisconnectedData();
       setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
+      scheduleRecoveryRetry(1000);
       return;
     }
 
     if (!nextDaemonState?.reachable) {
+      clearRecoveryRetry();
       if (invokeRef.current) {
         tokenRef.current = "";
         persistBrowserAuthToken("");
@@ -1334,6 +1422,7 @@ export function App() {
     if (invokeRef.current && !authToken) {
       clearDisconnectedData();
       setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
+      scheduleRecoveryRetry(1000);
       return;
     }
 
@@ -1350,16 +1439,23 @@ export function App() {
       if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
         clearDisconnectedData();
         clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
+        scheduleRecoveryRetry(1000);
+      } else if (invokeRef.current && unique.every((error) => isAuthFailure(error))) {
+        setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
+        scheduleRecoveryRetry(1000);
       } else {
+        clearRecoveryRetry();
         setFeedbackMessage(summarizeDashboardErrors(unique));
         if (!invokeRef.current && unique.every((error) => isAuthFailure(error))) {
           setShowConnectionDialog(true);
         }
       }
     } else {
+      clearRecoveryRetry();
       clearTransientFeedback();
     }
   }, [
+    clearRecoveryRetry,
     clearTransientFeedback,
     readAuthToken,
     refreshDaemonState,
@@ -1367,6 +1463,7 @@ export function App() {
     refreshProtectedData,
     clearDisconnectedData,
     cortexBase,
+    scheduleRecoveryRetry,
   ]);
 
   useEffect(() => {
@@ -1405,8 +1502,20 @@ export function App() {
   }, [selectedOperatorName]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(CORTEX_PANEL_STORAGE_KEY, panel);
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+  }, [panel]);
+
+  useEffect(() => {
     refreshAllRef.current = refreshAll;
   }, [refreshAll]);
+
+  useEffect(() => () => {
+    clearRecoveryRetry();
+  }, [clearRecoveryRetry]);
 
   useEffect(() => {
     // Call refreshAll directly on mount -- refreshAllRef.current isn't assigned
@@ -1710,6 +1819,56 @@ export function App() {
     ],
     [pendingTasks.length, locks.length, latestRecallHitRate, conflictPairs.length]
   );
+
+  const runtimeVersionMismatch = useMemo(
+    () => Boolean(healthMeta.runtimeVersion) && healthMeta.runtimeVersion !== CONTROL_CENTER_VERSION,
+    [healthMeta.runtimeVersion]
+  );
+
+  const daemonStatusBadge = useMemo(() => {
+    if (!daemonState.reachable) {
+      return {
+        className: "offline",
+        label: "○ OFFLINE",
+        title: daemonState.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+      };
+    }
+    if (healthMeta.dbCorrupted) {
+      return {
+        className: "warning",
+        label: "▲ DB WARN",
+        title: "Database integrity checks are failing. Restart Cortex to trigger repair.",
+      };
+    }
+    if (healthMeta.degraded) {
+      return {
+        className: "warning",
+        label: "▲ DEGRADED",
+        title: "Semantic search is in fallback mode. Restart Cortex if this persists.",
+      };
+    }
+    return {
+      className: "online",
+      label: "● ONLINE",
+      title: daemonState.message || "Cortex daemon reachable.",
+    };
+  }, [cortexBase, daemonState.message, daemonState.reachable, healthMeta.dbCorrupted, healthMeta.degraded]);
+
+  const daemonRecoveryHint = useMemo(() => {
+    if (!daemonState.reachable) {
+      return "";
+    }
+    if (healthMeta.dbCorrupted) {
+      return "Database integrity checks are failing. Restart Cortex to trigger repair and inspect the daemon if it stays degraded.";
+    }
+    if (runtimeVersionMismatch) {
+      return `Connected to daemon v${healthMeta.runtimeVersion}. Restart from Control Center to switch to v${CONTROL_CENTER_VERSION}.`;
+    }
+    if (healthMeta.degraded) {
+      return "Semantic search is using keyword fallback right now. Restart Cortex if this state does not clear.";
+    }
+    return "";
+  }, [daemonState.reachable, healthMeta.dbCorrupted, healthMeta.degraded, healthMeta.runtimeVersion, runtimeVersionMismatch]);
 
   const reportSurfaceError = useCallback((error) => {
     const message = error?.message || String(error);
@@ -2055,23 +2214,25 @@ export function App() {
       const idx = PANEL_SEQUENCE.findIndex(p => p.key === panel);
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
-        setPanel(PANEL_SEQUENCE[(idx + 1) % PANEL_SEQUENCE.length].key);
+        changePanel(PANEL_SEQUENCE[(idx + 1) % PANEL_SEQUENCE.length].key);
       } else if (e.key === "ArrowUp" || e.key === "k") {
         e.preventDefault();
-        setPanel(PANEL_SEQUENCE[(idx - 1 + PANEL_SEQUENCE.length) % PANEL_SEQUENCE.length].key);
+        changePanel(PANEL_SEQUENCE[(idx - 1 + PANEL_SEQUENCE.length) % PANEL_SEQUENCE.length].key);
       } else {
         const num = parseInt(e.key);
         if (num >= 1 && num <= PANEL_SEQUENCE.length) {
           e.preventDefault();
-          setPanel(PANEL_SEQUENCE[num - 1].key);
+          changePanel(PANEL_SEQUENCE[num - 1].key);
         }
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [panel]);
+  }, [changePanel, panel]);
 
   const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport;
+  const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.reachable);
+  const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -2089,7 +2250,7 @@ export function App() {
               key={item.key}
               type="button"
               className={`nav-item ${panel === item.key ? "active" : ""}`}
-              onClick={() => setPanel(item.key)}
+              onClick={() => changePanel(item.key)}
               data-key={idx + 1}
             >
               <span style={{ opacity: 0.5, fontSize: "12px" }}><AppIcon name={item.icon} /></span>
@@ -2117,6 +2278,7 @@ export function App() {
             <span className="sidebar-utility-note-label">Focus</span>
             <strong>{PANEL_SEQUENCE.find((item) => item.key === panel)?.label || "Overview"}</strong>
             <p>{daemonState.message}</p>
+            {daemonRecoveryHint ? <p className="sidebar-utility-alert">{daemonRecoveryHint}</p> : null}
           </div>
         </div>
 
@@ -2126,14 +2288,14 @@ export function App() {
               type="button"
               className="btn-ctrl btn-restart"
               onClick={handleRestartDaemon}
-              disabled={restartingDaemon}
+              disabled={restartingDaemon || !invokeRef.current}
             >
               {restartingDaemon ? "Restarting..." : "Restart"}
             </button>
           </div>
           <div className="daemon-controls-grid">
-            <button type="button" className="btn-ctrl btn-primary" onClick={handleStartDaemon}>Start</button>
-            <button type="button" className="btn-ctrl" onClick={handleStopDaemon}>Stop</button>
+            <button type="button" className="btn-ctrl btn-primary" onClick={handleStartDaemon} disabled={!canStartDaemon}>Start</button>
+            <button type="button" className="btn-ctrl" onClick={handleStopDaemon} disabled={!canStopDaemon}>Stop</button>
             <button type="button" className="btn-ctrl btn-danger" onClick={async () => {
               if (invokeRef.current) {
                 try { await call("quit_app"); } catch { /* app is exiting */ }
@@ -2196,8 +2358,8 @@ export function App() {
               <span className="topbar-label">HOST</span>
               {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
             </span>
-            <span className={`topbar-status ${daemonState.reachable ? "online" : "offline"}`}>
-              {daemonState.reachable ? "● ONLINE" : "○ OFFLINE"}
+            <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
+              {daemonStatusBadge.label}
             </span>
           </div>
         </div>
@@ -2247,6 +2409,7 @@ export function App() {
           </div>
         )}
 
+        <div key={panel} className="panel-stage" data-panel-direction={panelMotionDirection}>
         {panel === "overview" ? (
           <section className="panel active">
             <div className="panel-header overview-panel-header">
@@ -2319,7 +2482,7 @@ export function App() {
                 <span className="sys-label">TASKS</span>
                 <span className="sys-value">{pendingTasks.length} PENDING</span>
               </div>
-              <div className="sys-item sys-item-action" onClick={() => setPanel("memory")} title="Open memory health and conflict resolution">
+                    <div className="sys-item sys-item-action" onClick={() => changePanel("memory")} title="Open memory health and conflict resolution">
                 <span className="sys-label">RECALL</span>
                 <span className={`sys-value ${latestRecallHitRate >= 85 ? "sys-ok" : ""}`}>{latestRecallHitRate || 0}%</span>
               </div>
@@ -2357,9 +2520,9 @@ export function App() {
                   </div>
                 </div>
                 <div className="overview-hero-actions">
-                  <button type="button" className="btn-sm btn-primary" onClick={() => setPanel("analytics")}>Open Analytics</button>
-                  <button type="button" className="btn-sm" onClick={() => setPanel("brain")}>Open Brain</button>
-                  <button type="button" className="btn-sm" onClick={() => setPanel("work")}>Open Work</button>
+                  <button type="button" className="btn-sm btn-primary" onClick={() => changePanel("analytics")}>Open Analytics</button>
+                  <button type="button" className="btn-sm" onClick={() => changePanel("brain")}>Open Brain</button>
+                  <button type="button" className="btn-sm" onClick={() => changePanel("work")}>Open Work</button>
                 </div>
               </div>
 
@@ -2386,7 +2549,7 @@ export function App() {
                     <strong>{conflictPairs.length}</strong>
                   </div>
                 </div>
-                <button type="button" className="btn-sm" onClick={() => setPanel("memory")}>
+                    <button type="button" className="btn-sm" onClick={() => changePanel("memory")}>
                   Open Memory Surface
                 </button>
               </div>
@@ -2456,10 +2619,10 @@ export function App() {
                 <button type="button" className="btn-sm" onClick={refreshAll}>
                   Refresh
                 </button>
-                <button type="button" className="btn-sm" onClick={() => setPanel("analytics")}>
+                  <button type="button" className="btn-sm" onClick={() => changePanel("analytics")}>
                   Analytics
                 </button>
-                <button type="button" className="btn-sm btn-primary" onClick={() => setPanel("brain")}>
+                  <button type="button" className="btn-sm btn-primary" onClick={() => changePanel("brain")}>
                   Open Brain
                 </button>
               </div>
@@ -2547,7 +2710,7 @@ export function App() {
               </div>
               <div className="surface-actions">
                 <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
-                <button type="button" className="btn-sm" onClick={() => setPanel("brain")}>Brain View</button>
+                  <button type="button" className="btn-sm" onClick={() => changePanel("brain")}>Brain View</button>
               </div>
             </div>
             <div className="surface-grid agents-grid">
@@ -2634,7 +2797,7 @@ export function App() {
               </div>
               <div className="surface-actions">
                 <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
-                <button type="button" className="btn-sm" onClick={() => setPanel("agents")}>Agents</button>
+                <button type="button" className="btn-sm" onClick={() => changePanel("agents")}>Agents</button>
               </div>
             </div>
 
@@ -2914,7 +3077,7 @@ export function App() {
               </div>
               <div className="surface-actions">
                 <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh Conflicts</button>
-                <button type="button" className="btn-sm" onClick={() => setPanel("analytics")}>Analytics</button>
+                <button type="button" className="btn-sm" onClick={() => changePanel("analytics")}>Analytics</button>
               </div>
             </div>
 
@@ -3887,7 +4050,7 @@ export function App() {
                   }}>CC</div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version 0.5.0</p>
+          <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version {CONTROL_CENTER_VERSION}</p>
                   </div>
                 </div>
 
@@ -3997,7 +4160,7 @@ export function App() {
                   }}><AppIcon name="overview" size={28} /></div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version 0.4.0</p>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version {CONTROL_CENTER_VERSION}</p>
                   </div>
                 </div>
 
@@ -4104,6 +4267,7 @@ export function App() {
             </div>
           </section>
         ) : null}
+        </div>
       </main>
     </div>
   );

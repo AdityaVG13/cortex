@@ -26,6 +26,9 @@ const REQUEST_ATTEMPTS: u32 = 3;
 const MAX_CONSECUTIVE_FAILURES: u32 = 2;
 const RESPAWN_COOLDOWN_SECS: u64 = 15;
 const SESSION_HEARTBEAT_SECS: u64 = 15;
+const SESSION_RESTART_ATTEMPTS: u32 = 4;
+const SESSION_RESTART_DELAY_MS: u64 = 250;
+const HEARTBEAT_RECOVERY_FAILURES: u32 = 2;
 
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
@@ -145,11 +148,44 @@ async fn recover_solo_auth(
         return false;
     }
 
-    if !session_start(client, base_url, None, agent, model).await {
+    if !session_start_with_retry(
+        client,
+        base_url,
+        None,
+        agent,
+        model,
+        SESSION_RESTART_ATTEMPTS,
+        SESSION_RESTART_DELAY_MS,
+    )
+    .await
+    {
         eprintln!("[cortex-mcp] Auth recovered but session re-registration did not succeed yet");
+        return false;
     }
 
     true
+}
+
+async fn session_start_with_retry(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    agent: &str,
+    model: Option<&str>,
+    attempts: u32,
+    delay_ms: u64,
+) -> bool {
+    for attempt in 1..=attempts.max(1) {
+        if session_start(client, base_url, api_key, agent, model).await {
+            return true;
+        }
+
+        if attempt < attempts {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms * attempt as u64)).await;
+        }
+    }
+
+    false
 }
 
 fn persist_write_buffer(
@@ -390,12 +426,14 @@ pub async fn run(
         .await;
     }
 
-    let _ = session_start(
+    let _ = session_start_with_retry(
         &client,
         &rpc_base_url,
         api_key,
         &agent_display,
         agent_model.as_deref(),
+        SESSION_RESTART_ATTEMPTS,
+        SESSION_RESTART_DELAY_MS,
     )
     .await;
 
@@ -416,6 +454,8 @@ pub async fn run(
                     return;
                 }
             };
+            let heartbeat_health_url = format!("{heartbeat_base_url}/health");
+            let mut consecutive_heartbeat_failures = 0u32;
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(SESSION_HEARTBEAT_SECS)).await;
@@ -428,14 +468,19 @@ pub async fn run(
                 )
                 .await
                 {
-                    SessionHeartbeatOutcome::Renewed => {}
+                    SessionHeartbeatOutcome::Renewed => {
+                        consecutive_heartbeat_failures = 0;
+                    }
                     SessionHeartbeatOutcome::MissingSession => {
-                        let restarted = session_start(
+                        consecutive_heartbeat_failures = 0;
+                        let restarted = session_start_with_retry(
                             &hb_client,
                             &heartbeat_base_url,
                             heartbeat_api_key.as_deref(),
                             &heartbeat_agent,
                             heartbeat_model.as_deref(),
+                            SESSION_RESTART_ATTEMPTS,
+                            SESSION_RESTART_DELAY_MS,
                         )
                         .await;
                         if restarted {
@@ -443,18 +488,28 @@ pub async fn run(
                         }
                     }
                     SessionHeartbeatOutcome::Failed => {
-                        let restarted = session_start(
+                        consecutive_heartbeat_failures += 1;
+                        if consecutive_heartbeat_failures < HEARTBEAT_RECOVERY_FAILURES {
+                            continue;
+                        }
+
+                        consecutive_heartbeat_failures = 0;
+                        if !health_check_ready(&hb_client, &heartbeat_health_url).await {
+                            continue;
+                        }
+
+                        let restarted = session_start_with_retry(
                             &hb_client,
                             &heartbeat_base_url,
                             heartbeat_api_key.as_deref(),
                             &heartbeat_agent,
                             heartbeat_model.as_deref(),
+                            SESSION_RESTART_ATTEMPTS,
+                            SESSION_RESTART_DELAY_MS,
                         )
                         .await;
                         if restarted {
-                            eprintln!(
-                                "[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}"
-                            );
+                            eprintln!("[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}");
                         }
                     }
                 }

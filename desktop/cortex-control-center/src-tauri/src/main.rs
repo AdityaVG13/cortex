@@ -433,6 +433,25 @@ fn resolve_daemon_port() -> u16 {
     resolved_cortex_paths().port.unwrap_or(DEFAULT_DAEMON_PORT)
 }
 
+fn newest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+
+    for candidate in candidates {
+        let Ok(metadata) = fs::metadata(candidate) else {
+            continue;
+        };
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        match &newest {
+            Some((current, _)) if &modified <= current => {}
+            _ => newest = Some((modified, candidate.clone())),
+        }
+    }
+
+    newest.map(|(_, path)| path)
+}
+
 fn find_cortex_binary() -> Option<PathBuf> {
     let sidecar_candidate = env::current_exe().ok().and_then(|exe| {
         exe.parent()
@@ -446,7 +465,10 @@ fn find_cortex_binary() -> Option<PathBuf> {
         if cfg!(debug_assertions) {
             // In dev builds prefer workspace binaries so the app does not
             // silently launch an older installed or copied sidecar daemon.
-            candidates.extend(workspace_binary_candidates(&home, true));
+            let workspace_candidates = workspace_binary_candidates(&home, true);
+            if let Some(candidate) = newest_existing_path(&workspace_candidates) {
+                return Some(candidate);
+            }
             candidates.push(plugin_path);
             if let Some(sidecar) = sidecar_candidate.clone() {
                 candidates.push(sidecar);
