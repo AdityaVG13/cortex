@@ -6,6 +6,7 @@ mod sidecar;
 use rusqlite::Connection;
 use serde::Serialize;
 use sidecar::SidecarDaemon;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
@@ -458,19 +459,16 @@ fn installed_plugin_binary_path(home: &Path) -> PathBuf {
 
 fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
     let needs_copy = match fs::read(dest) {
-        Ok(existing) => existing != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?,
+        Ok(existing) => {
+            existing != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(format!("read {}: {err}", dest.display())),
     };
 
     if needs_copy {
-        fs::copy(src, dest).map_err(|e| {
-            format!(
-                "copy {} -> {}: {e}",
-                src.display(),
-                dest.display()
-            )
-        })?;
+        fs::copy(src, dest)
+            .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dest.display()))?;
     }
 
     Ok(())
@@ -485,8 +483,7 @@ fn ensure_editor_binary_path() -> Result<PathBuf, String> {
 
     if source != installed {
         if let Some(parent) = installed.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
         }
         copy_if_changed(&source, &installed)?;
     }
@@ -1007,11 +1004,29 @@ fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
 // ─── MCP Auto-Registration ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EditorDetection {
+    id: String,
     name: String,
     detected: bool,
     registered: bool,
+    config_path: Option<String>,
+    command_path: Option<String>,
     message: String,
+}
+
+#[derive(Clone, Copy)]
+enum EditorConfigKind {
+    Json,
+    Toml,
+}
+
+#[derive(Clone)]
+struct EditorTarget {
+    id: &'static str,
+    name: &'static str,
+    config_kind: EditorConfigKind,
+    config_path: PathBuf,
 }
 
 fn cortex_exe_path() -> Option<PathBuf> {
@@ -1024,30 +1039,172 @@ fn cortex_mcp_registration(cortex_exe: &str) -> serde_json::Value {
       "args": ["mcp"]
     })
 }
+fn editor_targets(home: &Path) -> Vec<EditorTarget> {
+    vec![
+        EditorTarget {
+            id: "claude-code",
+            name: "Claude Code",
+            config_kind: EditorConfigKind::Json,
+            config_path: home.join(".claude").join("settings.json"),
+        },
+        EditorTarget {
+            id: "claude-desktop",
+            name: "Claude Desktop",
+            config_kind: EditorConfigKind::Json,
+            config_path: home
+                .join("AppData")
+                .join("Roaming")
+                .join("Claude")
+                .join("claude_desktop_config.json"),
+        },
+        EditorTarget {
+            id: "cursor",
+            name: "Cursor",
+            config_kind: EditorConfigKind::Json,
+            config_path: home.join(".cursor").join("mcp.json"),
+        },
+        EditorTarget {
+            id: "codex",
+            name: "Codex",
+            config_kind: EditorConfigKind::Toml,
+            config_path: home.join(".codex").join("config.toml"),
+        },
+        EditorTarget {
+            id: "gemini",
+            name: "Gemini CLI",
+            config_kind: EditorConfigKind::Json,
+            config_path: home.join(".gemini").join("settings.json"),
+        },
+        EditorTarget {
+            id: "droid",
+            name: "Droid",
+            config_kind: EditorConfigKind::Json,
+            config_path: home.join(".factory").join("mcp.json"),
+        },
+    ]
+}
 
-fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
-    let home = cortex_home().map_err(|e| e.to_string())?;
-    let cursor_dir = home.join(".cursor");
-    if !cursor_dir.exists() {
-        return Ok(EditorDetection {
-            name: "Cursor".into(),
-            detected: false,
-            registered: false,
-            message: "Cursor not detected (~/.cursor/ not found)".into(),
-        });
+fn editor_detected(target: &EditorTarget) -> bool {
+    target.config_path.exists()
+        || target
+            .config_path
+            .parent()
+            .map(|path| path.exists())
+            .unwrap_or(false)
+}
+
+fn editor_command_path(cortex_exe: Option<&str>) -> Option<String> {
+    cortex_exe.map(|path| path.to_string())
+}
+
+fn editor_detection(
+    target: &EditorTarget,
+    detected: bool,
+    registered: bool,
+    cortex_exe: Option<&str>,
+    message: String,
+) -> EditorDetection {
+    EditorDetection {
+        id: target.id.into(),
+        name: target.name.into(),
+        detected,
+        registered,
+        config_path: Some(target.config_path.display().to_string()),
+        command_path: editor_command_path(cortex_exe),
+        message,
+    }
+}
+
+fn json_registration_for(target: &EditorTarget, cortex_exe: &str) -> serde_json::Value {
+    let mut registration = cortex_mcp_registration(cortex_exe);
+    if let Some(object) = registration.as_object_mut() {
+        match target.id {
+            "gemini" => {
+                object.insert("trust".into(), serde_json::Value::Bool(true));
+            }
+            "droid" => {
+                object.insert("disabled".into(), serde_json::Value::Bool(false));
+            }
+            _ => {}
+        }
+    }
+    registration
+}
+
+fn read_json_config(config_path: &Path) -> Result<serde_json::Value, String> {
+    if config_path.exists() {
+        let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+        Ok(serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({})))
+    } else {
+        Ok(serde_json::json!({}))
+    }
+}
+
+fn read_toml_config(config_path: &Path) -> Result<toml::Value, String> {
+    if config_path.exists() {
+        let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+        Ok(toml::from_str(&content).unwrap_or_else(|_| toml::Value::Table(Default::default())))
+    } else {
+        Ok(toml::Value::Table(Default::default()))
+    }
+}
+
+fn is_editor_registered(target: &EditorTarget, cortex_exe: &str) -> Result<bool, String> {
+    if !target.config_path.exists() {
+        return Ok(false);
     }
 
-    let mcp_path = cursor_dir.join("mcp.json");
-    let mut config: serde_json::Value = if mcp_path.exists() {
-        let content = fs::read_to_string(&mcp_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+    match target.config_kind {
+        EditorConfigKind::Json => {
+            let config = read_json_config(&target.config_path)?;
+            Ok(config
+                .get("mcpServers")
+                .and_then(|value| value.get("cortex"))
+                .and_then(|value| value.get("command"))
+                .and_then(|value| value.as_str())
+                .map(|value| value == cortex_exe)
+                .unwrap_or(false))
+        }
+        EditorConfigKind::Toml => {
+            let config = read_toml_config(&target.config_path)?;
+            Ok(config
+                .get("mcp_servers")
+                .and_then(|value| value.get("cortex"))
+                .and_then(|value| value.get("command"))
+                .and_then(|value| value.as_str())
+                .map(|value| value == cortex_exe)
+                .unwrap_or(false))
+        }
+    }
+}
 
+fn register_json_editor(
+    target: &EditorTarget,
+    cortex_exe: &str,
+) -> Result<EditorDetection, String> {
+    if !editor_detected(target) {
+        return Ok(editor_detection(
+            target,
+            false,
+            false,
+            Some(cortex_exe),
+            format!(
+                "{} not detected ({})",
+                target.name,
+                target.config_path.display()
+            ),
+        ));
+    }
+
+    let mut config = read_json_config(&target.config_path)?;
     let servers = config
         .as_object_mut()
-        .ok_or("Invalid mcp.json format")?
+        .ok_or_else(|| {
+            format!(
+                "Invalid JSON config format in {}",
+                target.config_path.display()
+            )
+        })?
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
@@ -1056,219 +1213,185 @@ fn register_cursor_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
         .and_then(|value| value.get("command"))
         .and_then(|value| value.as_str())
     {
-        Some(existing) if existing == cortex_exe => "Already registered",
-        Some(_) => "Updated registration",
-        None => "Registered",
+        Some(existing) if existing == cortex_exe => "Already configured",
+        Some(_) => "Updated configuration",
+        None => "Configured",
     };
 
     servers
         .as_object_mut()
-        .ok_or("Invalid mcpServers format")?
-        .insert("cortex".into(), cortex_mcp_registration(cortex_exe));
+        .ok_or_else(|| {
+            format!(
+                "Invalid mcpServers format in {}",
+                target.config_path.display()
+            )
+        })?
+        .insert("cortex".into(), json_registration_for(target, cortex_exe));
 
+    if let Some(parent) = target.config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&mcp_path, out).map_err(|e| e.to_string())?;
+    fs::write(&target.config_path, out).map_err(|e| e.to_string())?;
 
-    Ok(EditorDetection {
-        name: "Cursor".into(),
-        detected: true,
-        registered: true,
-        message: format!("{action} in {}", mcp_path.display()),
-    })
+    Ok(editor_detection(
+        target,
+        true,
+        true,
+        Some(cortex_exe),
+        format!("{action} in {}", target.config_path.display()),
+    ))
 }
 
-fn register_claude_code_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
-    let home = cortex_home().map_err(|e| e.to_string())?;
-    let claude_dir = home.join(".claude");
-    if !claude_dir.exists() {
-        return Ok(EditorDetection {
-            name: "Claude Code".into(),
-            detected: false,
-            registered: false,
-            message: "Claude Code not detected (~/.claude/ not found)".into(),
-        });
+fn register_toml_editor(
+    target: &EditorTarget,
+    cortex_exe: &str,
+) -> Result<EditorDetection, String> {
+    if !editor_detected(target) {
+        return Ok(editor_detection(
+            target,
+            false,
+            false,
+            Some(cortex_exe),
+            format!(
+                "{} not detected ({})",
+                target.name,
+                target.config_path.display()
+            ),
+        ));
     }
 
-    let settings_path = claude_dir.join("settings.json");
-    let mut config: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    let servers = config
-        .as_object_mut()
-        .ok_or("Invalid settings.json format")?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-
-    let action = match servers
-        .get("cortex")
-        .and_then(|value| value.get("command"))
-        .and_then(|value| value.as_str())
-    {
-        Some(existing) if existing == cortex_exe => "Already registered",
-        Some(_) => "Updated registration",
-        None => "Registered",
-    };
-
-    servers
-        .as_object_mut()
-        .ok_or("Invalid mcpServers format")?
-        .insert("cortex".into(), cortex_mcp_registration(cortex_exe));
-
-    let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&settings_path, out).map_err(|e| e.to_string())?;
-
-    Ok(EditorDetection {
-        name: "Claude Code".into(),
-        detected: true,
-        registered: true,
-        message: format!("{action} in {}", settings_path.display()),
-    })
-}
-
-fn register_codex_mcp(cortex_exe: &str) -> Result<EditorDetection, String> {
-    let home = cortex_home().map_err(|e| e.to_string())?;
-    let codex_dir = home.join(".codex");
-    if !codex_dir.exists() {
-        return Ok(EditorDetection {
-            name: "Codex".into(),
-            detected: false,
-            registered: false,
-            message: "Codex not detected (~/.codex/ not found)".into(),
-        });
-    }
-
-    let config_path = codex_dir.join("config.toml");
-    let mut config: toml::Value = if config_path.exists() {
-        let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-        toml::from_str(&content).unwrap_or_else(|_| toml::Value::Table(Default::default()))
-    } else {
-        toml::Value::Table(Default::default())
-    };
-
-    let root = config
-        .as_table_mut()
-        .ok_or("Invalid config.toml format")?;
+    let mut config = read_toml_config(&target.config_path)?;
+    let root = config.as_table_mut().ok_or_else(|| {
+        format!(
+            "Invalid TOML config format in {}",
+            target.config_path.display()
+        )
+    })?;
     let servers = root
         .entry("mcp_servers")
         .or_insert_with(|| toml::Value::Table(Default::default()))
         .as_table_mut()
-        .ok_or("Invalid [mcp_servers] format")?;
+        .ok_or_else(|| {
+            format!(
+                "Invalid [mcp_servers] format in {}",
+                target.config_path.display()
+            )
+        })?;
 
     let action = match servers
         .get("cortex")
         .and_then(|value| value.get("command"))
         .and_then(|value| value.as_str())
     {
-        Some(existing) if existing == cortex_exe => "Already registered",
-        Some(_) => "Updated registration",
-        None => "Registered",
+        Some(existing) if existing == cortex_exe => "Already configured",
+        Some(_) => "Updated configuration",
+        None => "Configured",
     };
 
     let mut server = toml::map::Map::new();
-    server.insert("command".into(), toml::Value::String(cortex_exe.to_string()));
+    server.insert(
+        "command".into(),
+        toml::Value::String(cortex_exe.to_string()),
+    );
     server.insert(
         "args".into(),
         toml::Value::Array(vec![toml::Value::String("mcp".into())]),
     );
     servers.insert("cortex".into(), toml::Value::Table(server));
 
+    if let Some(parent) = target.config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let out = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&config_path, out).map_err(|e| e.to_string())?;
+    fs::write(&target.config_path, out).map_err(|e| e.to_string())?;
 
-    Ok(EditorDetection {
-        name: "Codex".into(),
-        detected: true,
-        registered: true,
-        message: format!("{action} in {}", config_path.display()),
-    })
+    Ok(editor_detection(
+        target,
+        true,
+        true,
+        Some(cortex_exe),
+        format!("{action} in {}", target.config_path.display()),
+    ))
+}
+
+fn register_editor(target: &EditorTarget, cortex_exe: &str) -> Result<EditorDetection, String> {
+    match target.config_kind {
+        EditorConfigKind::Json => register_json_editor(target, cortex_exe),
+        EditorConfigKind::Toml => register_toml_editor(target, cortex_exe),
+    }
 }
 
 #[tauri::command]
-fn setup_editors() -> Result<Vec<EditorDetection>, String> {
+fn setup_editors(editor_ids: Option<Vec<String>>) -> Result<Vec<EditorDetection>, String> {
     let cortex_exe = ensure_editor_binary_path()?;
     let exe_str = cortex_exe.to_string_lossy().to_string();
+    let home = cortex_home()?;
+    let targets = editor_targets(&home);
+    let requested_ids = editor_ids
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let use_selection = !requested_ids.is_empty();
+    let mut results = Vec::new();
 
-    let mut results = vec![];
-    match register_claude_code_mcp(&exe_str) {
-        Ok(r) => results.push(r),
-        Err(e) => results.push(EditorDetection {
-            name: "Claude Code".into(),
-            detected: true,
-            registered: false,
-            message: format!("Registration failed: {e}"),
-        }),
+    for target in targets {
+        let detected = editor_detected(&target);
+        if use_selection && !requested_ids.contains(target.id) {
+            continue;
+        }
+        if !use_selection && !detected {
+            continue;
+        }
+
+        match register_editor(&target, &exe_str) {
+            Ok(result) => results.push(result),
+            Err(err) => results.push(editor_detection(
+                &target,
+                detected,
+                false,
+                Some(&exe_str),
+                format!("Configuration failed: {err}"),
+            )),
+        }
     }
-    match register_cursor_mcp(&exe_str) {
-        Ok(r) => results.push(r),
-        Err(e) => results.push(EditorDetection {
-            name: "Cursor".into(),
-            detected: true,
-            registered: false,
-            message: format!("Registration failed: {e}"),
-        }),
-    }
-    match register_codex_mcp(&exe_str) {
-        Ok(r) => results.push(r),
-        Err(e) => results.push(EditorDetection {
-            name: "Codex".into(),
-            detected: true,
-            registered: false,
-            message: format!("Registration failed: {e}"),
-        }),
-    }
+
     Ok(results)
 }
 
 #[tauri::command]
 fn detect_editors() -> Result<Vec<EditorDetection>, String> {
     let home = cortex_home()?;
-    let has_exe = cortex_exe_path().is_some();
-    let mut results = vec![];
+    let cortex_exe = cortex_exe_path();
+    let cortex_exe_string = cortex_exe
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    let mut results = Vec::new();
 
-    let claude_detected = home.join(".claude").exists();
-    results.push(EditorDetection {
-        name: "Claude Code".into(),
-        detected: claude_detected,
-        registered: false,
-        message: if claude_detected {
-            "Detected".into()
+    for target in editor_targets(&home) {
+        let detected = editor_detected(&target);
+        let registered = if let Some(ref exe) = cortex_exe_string {
+            is_editor_registered(&target, exe).unwrap_or(false)
         } else {
-            "Not installed".into()
-        },
-    });
-
-    let cursor_detected = home.join(".cursor").exists();
-    results.push(EditorDetection {
-        name: "Cursor".into(),
-        detected: cursor_detected,
-        registered: false,
-        message: if cursor_detected {
-            "Detected".into()
+            false
+        };
+        let message = if cortex_exe_string.is_none() {
+            "cortex.exe not found -- build daemon first".into()
+        } else if registered {
+            format!("Configured in {}", target.config_path.display())
+        } else if detected {
+            format!("Detected at {}", target.config_path.display())
         } else {
-            "Not installed".into()
-        },
-    });
+            format!("Not detected ({})", target.config_path.display())
+        };
 
-    let codex_detected = home.join(".codex").exists();
-    results.push(EditorDetection {
-        name: "Codex".into(),
-        detected: codex_detected,
-        registered: false,
-        message: if codex_detected {
-            "Detected".into()
-        } else {
-            "Not installed".into()
-        },
-    });
-
-    if !has_exe {
-        for r in &mut results {
-            r.message = "cortex.exe not found -- build daemon first".into();
-        }
+        results.push(editor_detection(
+            &target,
+            detected,
+            registered,
+            cortex_exe_string.as_deref(),
+            message,
+        ));
     }
 
     Ok(results)

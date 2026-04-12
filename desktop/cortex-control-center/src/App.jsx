@@ -980,8 +980,11 @@ export function App() {
   const [conflictPairs, setConflictPairs] = useState([]);
   const [conflictLoading, setConflictLoading] = useState(false);
   const [editorSetup, setEditorSetup] = useState(null);
+  const [editorDetections, setEditorDetections] = useState([]);
+  const [selectedEditorIds, setSelectedEditorIds] = useState([]);
   const [cortexBase, setCortexBase] = useState(() => browserBootstrap.cortexBase || DEFAULT_CORTEX_BASE);
   const [showConnectionDialog, setShowConnectionDialog] = useState(false);
+  const [showEditorSetupWizard, setShowEditorSetupWizard] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState(null);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [restartingDaemon, setRestartingDaemon] = useState(false);
@@ -1069,6 +1072,38 @@ export function App() {
       failed: results.filter((entry) => entry.detected && !entry.registered).length,
     };
   }, [editorSetup]);
+
+  const editorDetectionSummary = useMemo(() => {
+    const results = Array.isArray(editorDetections) ? editorDetections : [];
+    return {
+      results,
+      detected: results.filter((entry) => entry.detected).length,
+      registered: results.filter((entry) => entry.registered).length,
+    };
+  }, [editorDetections]);
+
+  const setupCommandPath = useMemo(() => {
+    const current = editorDetectionSummary.results.find((entry) => entry.commandPath)?.commandPath;
+    const previous = editorSetupSummary.results.find((entry) => entry.commandPath)?.commandPath;
+    return current || previous || "C:\\Users\\<you>\\.cortex\\bin\\cortex.exe";
+  }, [editorDetectionSummary.results, editorSetupSummary.results]);
+
+  const manualMcpSnippet = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          mcpServers: {
+            cortex: {
+              command: setupCommandPath,
+              args: ["mcp"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    [setupCommandPath],
+  );
 
   const selectedOperatorName = useMemo(
     () => resolveAgentName(selectedOperator, knownAgents),
@@ -1390,27 +1425,61 @@ export function App() {
     }
   }, [postApi, refreshConflicts]);
 
-  const handleSetupEditors = useCallback(async () => {
+  const openEditorSetupWizard = useCallback(async () => {
     setIsSettingUpEditors(true);
     try {
-      const result = await call("setup_editors");
+      const result = await call("detect_editors");
+      setEditorDetections(result);
+      setSelectedEditorIds(result.filter((entry) => entry.detected).map((entry) => entry.id));
+      setShowEditorSetupWizard(true);
+      const detected = result.filter((entry) => entry.detected).length;
+      if (!detected) {
+        setFeedbackMessage("Setup MCP found no supported clients. Use the manual snippet for other MCP-capable tools.");
+      } else {
+        setFeedbackMessage(`Setup MCP found ${detected} supported client(s). Review and apply the selections.`);
+      }
+    } catch (err) {
+      setFeedbackMessage(`MCP setup scan: ${String(err)}`);
+    } finally {
+      setIsSettingUpEditors(false);
+    }
+  }, [call]);
+
+  const toggleEditorSelection = useCallback((editorId) => {
+    setSelectedEditorIds((current) =>
+      current.includes(editorId)
+        ? current.filter((id) => id !== editorId)
+        : [...current, editorId],
+    );
+  }, []);
+
+  const applyEditorSetup = useCallback(async () => {
+    if (!selectedEditorIds.length) {
+      setFeedbackMessage("Select at least one detected client before applying MCP setup.");
+      return;
+    }
+
+    setIsSettingUpEditors(true);
+    try {
+      const result = await call("setup_editors", { editorIds: selectedEditorIds });
       setEditorSetup(result);
+      setShowEditorSetupWizard(false);
       const detected = result.filter((entry) => entry.detected).length;
       const registered = result.filter((entry) => entry.registered).length;
       const failed = result.filter((entry) => entry.detected && !entry.registered).length;
       if (!detected) {
-        setFeedbackMessage("Setup MCP found no supported editors on this machine.");
+        setFeedbackMessage("Setup MCP found no supported clients on this machine.");
       } else if (failed) {
-        setFeedbackMessage(`Setup MCP finished with ${failed} issue(s). Review editor details in Overview.`);
+        setFeedbackMessage(`Setup MCP finished with ${failed} issue(s). Review client details in Overview.`);
       } else {
-        setFeedbackMessage(`Setup MCP configured ${registered} editor(s).`);
+        setFeedbackMessage(`Setup MCP configured ${registered} client(s).`);
       }
     } catch (err) {
       setFeedbackMessage(`Editor setup: ${String(err)}`);
     } finally {
       setIsSettingUpEditors(false);
     }
-  }, [call]);
+  }, [call, selectedEditorIds]);
 
   const refreshAll = useCallback(async () => {
     try {
@@ -1545,8 +1614,22 @@ export function App() {
   }, [panel]);
 
   useEffect(() => {
-    if (panel !== "analytics") {
-      setAnalyticsReady(false);
+    if (hasVisitedAnalytics) return;
+
+    const warmupTimer = window.setTimeout(() => {
+      startTransition(() => {
+        setHasVisitedAnalytics(true);
+        setAnalyticsReady(true);
+      });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(warmupTimer);
+    };
+  }, [hasVisitedAnalytics]);
+
+  useEffect(() => {
+    if (panel !== "analytics" || analyticsReady) {
       return;
     }
 
@@ -1562,7 +1645,7 @@ export function App() {
       cancelAnimationFrame(frameOne);
       cancelAnimationFrame(frameTwo);
     };
-  }, [panel]);
+  }, [analyticsReady, panel]);
 
   useEffect(() => {
     refreshAllRef.current = refreshAll;
@@ -2450,6 +2533,69 @@ export function App() {
           </div>
         </div>
 
+        {showEditorSetupWizard && (
+          <div className="connection-overlay" onClick={() => !isSettingUpEditors && setShowEditorSetupWizard(false)}>
+            <div className="connection-dialog editor-setup-dialog" onClick={(e) => e.stopPropagation()}>
+              <div className="editor-setup-dialog-header">
+                <div>
+                  <span className="editor-setup-kicker">Shared MCP Registration</span>
+                  <h2>Setup MCP</h2>
+                </div>
+                <span className="badge">
+                  {editorDetectionSummary.detected}/{editorDetectionSummary.results.length}
+                </span>
+              </div>
+              <p className="connection-subtitle">
+                Choose which supported clients should receive the shared Cortex attach-only MCP entry. Every client points at the same
+                app-owned daemon command.
+              </p>
+              <div className="editor-setup-choice-list">
+                {editorDetectionSummary.results.map((entry) => {
+                  const tone = !entry.detected ? "idle" : entry.registered ? "ok" : "warn";
+                  const stateLabel = !entry.detected ? "Not detected" : entry.registered ? "Configured" : "Detected";
+                  const selected = selectedEditorIds.includes(entry.id);
+                  return (
+                    <label key={entry.id} className={`editor-setup-choice ${tone} ${!entry.detected ? "disabled" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={!entry.detected || isSettingUpEditors}
+                        onChange={() => toggleEditorSelection(entry.id)}
+                      />
+                      <div className="editor-setup-choice-body">
+                        <div className="editor-setup-item-head">
+                          <span className="editor-setup-name">{entry.name}</span>
+                          <span className="editor-setup-state">{stateLabel}</span>
+                        </div>
+                        {entry.configPath ? <code>{entry.configPath}</code> : null}
+                        <p>{entry.message || "No detail provided."}</p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="editor-setup-manual">
+                <span className="editor-setup-kicker">Manual Fallback</span>
+                <p>If a client is missing from the supported list, register this MCP server manually or paste it into that AI’s setup flow:</p>
+                <pre>{manualMcpSnippet}</pre>
+              </div>
+              <div className="connection-actions">
+                <button type="button" className="btn-sm" onClick={() => setShowEditorSetupWizard(false)} disabled={isSettingUpEditors}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-sm btn-primary"
+                  onClick={applyEditorSetup}
+                  disabled={isSettingUpEditors || !selectedEditorIds.length}
+                >
+                  {isSettingUpEditors ? "Applying..." : `Apply to ${selectedEditorIds.length} Client${selectedEditorIds.length === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showConnectionDialog && (
           <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
             <div className="connection-dialog" onClick={e => e.stopPropagation()}>
@@ -2510,7 +2656,7 @@ export function App() {
                 <button
                   type="button"
                   className="btn-sm btn-primary"
-                  onClick={handleSetupEditors}
+                  onClick={openEditorSetupWizard}
                   disabled={isSettingUpEditors}
                 >
                   {isSettingUpEditors ? "Setting Up..." : "Setup MCP"}
@@ -2575,8 +2721,8 @@ export function App() {
               </div>
               <div
                 className={`sys-item sys-item-action ${isSettingUpEditors ? "sys-item-disabled" : ""}`}
-                onClick={isSettingUpEditors ? undefined : handleSetupEditors}
-                title="Auto-register Cortex MCP in detected editors"
+                  onClick={isSettingUpEditors ? undefined : openEditorSetupWizard}
+                  title="Preview and register Cortex MCP in supported clients"
               >
                 <span className="sys-label">MCP</span>
                 <span className="sys-value">
@@ -2801,7 +2947,7 @@ export function App() {
                 <span className="sys-label">TASKS</span>
                 <span className="sys-value">{pendingTasks.length} PENDING</span>
               </div>
-              <div className="sys-item sys-item-action" onClick={handleSetupEditors} title="Auto-register Cortex MCP in detected editors">
+              <div className="sys-item sys-item-action" onClick={openEditorSetupWizard} title="Preview and register Cortex MCP in supported clients">
                 <span className="sys-label">MCP</span>
                 <span className="sys-value">{editorSetup ? `${editorSetup.filter(e => e.registered).length} EDITORS` : "SETUP"}</span>
               </div>

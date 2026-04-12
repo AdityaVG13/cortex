@@ -1103,11 +1103,8 @@ body {
   max-height: 120px;
   overflow: hidden;
   transition:
-    opacity 0.18s ease,
-    max-height 0.18s ease,
-    padding 0.18s ease,
-    margin-bottom 0.18s ease,
-    border-color 0.18s ease;
+    opacity 0.12s ease,
+    border-color 0.12s ease;
 }
 
 .topbar-hidden {
@@ -2181,6 +2178,96 @@ body {
   color: var(--text-2);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.editor-setup-dialog {
+  width: min(720px, 94vw);
+  max-height: min(82vh, 860px);
+  overflow: auto;
+}
+
+.editor-setup-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.editor-setup-choice-list {
+  display: grid;
+  gap: 12px;
+}
+
+.editor-setup-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.editor-setup-choice.ok {
+  border-color: rgba(72, 232, 178, 0.24);
+}
+
+.editor-setup-choice.warn {
+  border-color: rgba(255, 171, 0, 0.26);
+}
+
+.editor-setup-choice.idle {
+  border-color: rgba(90, 111, 138, 0.22);
+}
+
+.editor-setup-choice.disabled {
+  opacity: 0.72;
+}
+
+.editor-setup-choice input {
+  margin-top: 2px;
+}
+
+.editor-setup-choice-body {
+  min-width: 0;
+}
+
+.editor-setup-choice-body code {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--cyan);
+  word-break: break-all;
+}
+
+.editor-setup-choice-body p {
+  margin: 0;
+}
+
+.editor-setup-manual {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.editor-setup-manual p {
+  margin: 0 0 10px;
+  color: var(--text-2);
+}
+
+.editor-setup-manual pre {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--cyan);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 1500px) {
