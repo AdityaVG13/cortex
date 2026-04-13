@@ -1978,6 +1978,13 @@ pub(crate) async fn run_daemon(
     let _daemon_lock = match acquire_runtime_lock(&paths) {
         Ok(lock) => lock,
         Err(err) => {
+            if daemon_healthy(paths.port).await {
+                eprintln!(
+                    "[cortex] Daemon already healthy on port {}; exiting cleanly.",
+                    paths.port
+                );
+                return;
+            }
             eprintln!("[cortex] FATAL: {err}");
             eprintln!(
                 "[cortex] Reuse the existing daemon instead of launching a second `cortex serve`."

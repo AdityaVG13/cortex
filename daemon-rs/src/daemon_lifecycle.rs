@@ -39,10 +39,10 @@ pub async fn daemon_healthy(port: u16) -> bool {
         Err(_) => return false,
     };
 
-    is_cortex_health_payload(status, &body)
+    is_cortex_health_payload(status, &body, Some(port))
 }
 
-fn is_cortex_health_payload(status: u16, body: &str) -> bool {
+fn is_cortex_health_payload(status: u16, body: &str, expected_port: Option<u16>) -> bool {
     if !(200..300).contains(&status) {
         return false;
     }
@@ -54,6 +54,16 @@ fn is_cortex_health_payload(status: u16, body: &str) -> bool {
     let health_status = json.get("status").and_then(|value| value.as_str());
     let runtime = json.get("runtime").and_then(|value| value.as_object());
     let stats = json.get("stats").and_then(|value| value.as_object());
+    let runtime_port = runtime
+        .and_then(|runtime| runtime.get("port"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+
+    if let Some(expected_port) = expected_port {
+        if runtime_port != Some(expected_port) {
+            return false;
+        }
+    }
 
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
@@ -239,25 +249,42 @@ mod tests {
     fn cortex_health_payload_accepts_expected_shapes() {
         assert!(is_cortex_health_payload(
             200,
-            r#"{"status":"ok","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+            r#"{"status":"ok","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#,
+            Some(7437),
         ));
         assert!(is_cortex_health_payload(
             200,
-            r#"{"status":"degraded","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+            r#"{"status":"degraded","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#,
+            Some(7437),
         ));
     }
 
     #[test]
     fn cortex_health_payload_rejects_non_cortex_bodies() {
-        assert!(!is_cortex_health_payload(200, r#"{"status":"ok"}"#));
         assert!(!is_cortex_health_payload(
             200,
-            r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#
+            r#"{"status":"ok"}"#,
+            Some(7437)
         ));
-        assert!(!is_cortex_health_payload(200, "<html>ok</html>"));
+        assert!(!is_cortex_health_payload(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#,
+            Some(7437),
+        ));
+        assert!(!is_cortex_health_payload(
+            200,
+            "<html>ok</html>",
+            Some(7437)
+        ));
         assert!(!is_cortex_health_payload(
             500,
-            r#"{"status":"ok","runtime":{}}"#
+            r#"{"status":"ok","runtime":{}}"#,
+            Some(7437),
+        ));
+        assert!(!is_cortex_health_payload(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0","port":9000},"stats":{"memories":1}}"#,
+            Some(7437),
         ));
     }
 }

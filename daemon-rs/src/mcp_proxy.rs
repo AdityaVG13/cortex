@@ -196,7 +196,17 @@ fn build_auth_header(api_key: Option<&str>) -> Option<String> {
     read_auth_token().map(|token| format!("Bearer {token}"))
 }
 
-fn is_cortex_health_response(status: reqwest::StatusCode, body: &str) -> bool {
+fn expected_port_from_url(url: &str) -> Option<u16> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.port_or_known_default())
+}
+
+fn is_cortex_health_response(
+    status: reqwest::StatusCode,
+    body: &str,
+    expected_port: Option<u16>,
+) -> bool {
     if !status.is_success() {
         return false;
     }
@@ -208,6 +218,16 @@ fn is_cortex_health_response(status: reqwest::StatusCode, body: &str) -> bool {
     let health_status = json.get("status").and_then(|value| value.as_str());
     let runtime = json.get("runtime").and_then(|value| value.as_object());
     let stats = json.get("stats").and_then(|value| value.as_object());
+    let runtime_port = runtime
+        .and_then(|runtime| runtime.get("port"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+
+    if let Some(expected_port) = expected_port {
+        if runtime_port != Some(expected_port) {
+            return false;
+        }
+    }
 
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
@@ -224,7 +244,7 @@ async fn health_check_ready(client: &reqwest::Client, health_url: &str) -> bool 
         Err(_) => return false,
     };
 
-    is_cortex_health_response(status, &body)
+    is_cortex_health_response(status, &body, expected_port_from_url(health_url))
 }
 
 fn is_auth_recovery_status(status: reqwest::StatusCode) -> bool {
@@ -514,7 +534,13 @@ pub async fn run(
             Ok(resp) => {
                 let status = resp.status();
                 match resp.text().await {
-                    Ok(body) if is_cortex_health_response(status, &body) => {
+                    Ok(body)
+                        if is_cortex_health_response(
+                            status,
+                            &body,
+                            expected_port_from_url(&health_url),
+                        ) =>
+                    {
                         healthy = true;
                         break;
                     }
@@ -1187,5 +1213,26 @@ mod tests {
         assert_eq!(startup_idle_timeout().as_secs(), 75);
 
         std::env::remove_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn is_cortex_health_response_validates_expected_port() {
+        let body =
+            r#"{"status":"ok","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#;
+        assert!(is_cortex_health_response(
+            reqwest::StatusCode::OK,
+            body,
+            Some(7437)
+        ));
+        assert!(!is_cortex_health_response(
+            reqwest::StatusCode::OK,
+            body,
+            Some(9000)
+        ));
+        assert!(is_cortex_health_response(
+            reqwest::StatusCode::OK,
+            body,
+            None
+        ));
     }
 }
