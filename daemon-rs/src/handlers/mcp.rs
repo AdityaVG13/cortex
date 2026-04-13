@@ -576,6 +576,10 @@ async fn mcp_dispatch(
     args: &Value,
     source: Option<&SourceIdentity>,
 ) -> Result<Value, String> {
+    if state.team_mode && caller_id.is_none() {
+        return Err("Team mode MCP calls require a caller-scoped ctx_ API key".to_string());
+    }
+
     match tool_name {
         "cortex_boot" => {
             let profile = args
