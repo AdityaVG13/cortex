@@ -106,6 +106,7 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
       const nodeIds = new Set();
       const linkSet = new Set();
       const MAX_LINKS = 300;
+      const backendLinks = Array.isArray(dumpRes.graph?.links) ? dumpRes.graph.links : null;
 
       for (const mem of (dumpRes.memories || [])) {
         const id = `mem-${mem.id}`;
@@ -137,35 +138,59 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
           status: dec.status || "active",
           val: 3 + Math.min((dec.score || 1) * 2, 6),
         });
-
-        if (dec.disputes_id && nodeIds.has(`dec-${dec.disputes_id}`)) {
-          links.push({ source: id, target: `dec-${dec.disputes_id}`, type: "conflict" });
-        }
       }
 
-      // Keyword links (capped)
-      const keywordMap = new Map();
-      for (const node of nodes) {
-        const words = [...new Set(
-          (node.label + " " + (node.fullText || "")).toLowerCase()
-            .split(/\W+/)
-            .filter(w => w.length > 5)
-        )];
-        for (const word of words) {
-          if (!keywordMap.has(word)) keywordMap.set(word, []);
-          keywordMap.get(word).push(node.id);
+      if (backendLinks) {
+        for (const link of backendLinks) {
+          if (links.length >= MAX_LINKS) break;
+          if (!nodeIds.has(link.source) || !nodeIds.has(link.target)) continue;
+          const key = [link.source, link.target, link.type || "persisted"].sort().join("|");
+          if (linkSet.has(key)) continue;
+          linkSet.add(key);
+          links.push({
+            source: link.source,
+            target: link.target,
+            type: link.type || "persisted",
+            weight: link.weight || 1,
+          });
         }
-      }
+      } else {
+        // Legacy fallback for older daemons that do not emit persisted graph links yet.
+        for (const dec of (dumpRes.decisions || [])) {
+          const source = `dec-${dec.id}`;
+          if (dec.disputes_id && nodeIds.has(`dec-${dec.disputes_id}`)) {
+            const target = `dec-${dec.disputes_id}`;
+            const key = [source, target, "conflict"].sort().join("|");
+            if (!linkSet.has(key)) {
+              linkSet.add(key);
+              links.push({ source, target, type: "conflict", weight: 1 });
+            }
+          }
+        }
 
-      for (const [, ids] of keywordMap) {
-        if (links.length >= MAX_LINKS) break;
-        if (ids.length >= 2 && ids.length <= 4) {
-          for (let i = 0; i < ids.length - 1 && links.length < MAX_LINKS; i++) {
-            for (let j = i + 1; j < ids.length && links.length < MAX_LINKS; j++) {
-              const key = [ids[i], ids[j]].sort().join("|");
-              if (!linkSet.has(key)) {
-                linkSet.add(key);
-                links.push({ source: ids[i], target: ids[j], type: "semantic" });
+        const keywordMap = new Map();
+        for (const node of nodes) {
+          const words = [...new Set(
+            (node.label + " " + (node.fullText || "")).toLowerCase()
+              .split(/\W+/)
+              .filter(w => w.length > 5)
+          )];
+          for (const word of words) {
+            if (!keywordMap.has(word)) keywordMap.set(word, []);
+            keywordMap.get(word).push(node.id);
+          }
+        }
+
+        for (const [, ids] of keywordMap) {
+          if (links.length >= MAX_LINKS) break;
+          if (ids.length >= 2 && ids.length <= 4) {
+            for (let i = 0; i < ids.length - 1 && links.length < MAX_LINKS; i++) {
+              for (let j = i + 1; j < ids.length && links.length < MAX_LINKS; j++) {
+                const key = [ids[i], ids[j], "semantic"].sort().join("|");
+                if (!linkSet.has(key)) {
+                  linkSet.add(key);
+                  links.push({ source: ids[i], target: ids[j], type: "semantic", weight: 1 });
+                }
               }
             }
           }

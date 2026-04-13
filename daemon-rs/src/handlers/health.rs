@@ -4,8 +4,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::{NaiveDateTime, Timelike, Utc};
 use rusqlite::params;
-use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashSet};
 
 use super::{ensure_auth, json_response, truncate_chars};
 use crate::state::RuntimeState;
@@ -798,11 +798,119 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
         })
         .unwrap_or_default();
 
+    let mut source_nodes: BTreeMap<String, String> = BTreeMap::new();
+    for memory in &memories {
+        let Some(id) = memory.get("id").and_then(|value| value.as_i64()) else {
+            continue;
+        };
+        let Some(source) = memory
+            .get("source")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        source_nodes
+            .entry(source.to_string())
+            .or_insert_with(|| format!("mem-{id}"));
+    }
+    for decision in &decisions {
+        let Some(id) = decision.get("id").and_then(|value| value.as_i64()) else {
+            continue;
+        };
+        let Some(source) = decision
+            .get("context")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        source_nodes
+            .entry(source.to_string())
+            .or_insert_with(|| format!("dec-{id}"));
+    }
+
+    let mut seen_links: HashSet<String> = HashSet::new();
+    let mut graph_links: Vec<Value> = Vec::new();
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT source_a, source_b, count, last_seen
+         FROM co_occurrence
+         ORDER BY count DESC, last_seen DESC
+         LIMIT 240",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        }) {
+            for row in rows.flatten() {
+                let (source_a, source_b, count, last_seen) = row;
+                let Some(node_a) = source_nodes.get(&source_a) else {
+                    continue;
+                };
+                let Some(node_b) = source_nodes.get(&source_b) else {
+                    continue;
+                };
+                if node_a == node_b {
+                    continue;
+                }
+                let (left, right) = if node_a <= node_b {
+                    (node_a.clone(), node_b.clone())
+                } else {
+                    (node_b.clone(), node_a.clone())
+                };
+                let key = format!("{left}|{right}|co_occurrence");
+                if !seen_links.insert(key) {
+                    continue;
+                }
+                graph_links.push(json!({
+                    "source": left,
+                    "target": right,
+                    "type": "co_occurrence",
+                    "weight": count,
+                    "lastSeen": last_seen,
+                }));
+            }
+        }
+    }
+
+    for decision in &decisions {
+        let Some(id) = decision.get("id").and_then(|value| value.as_i64()) else {
+            continue;
+        };
+        let Some(disputes_id) = decision.get("disputes_id").and_then(|value| value.as_i64()) else {
+            continue;
+        };
+        let left = format!("dec-{id}");
+        let right = format!("dec-{disputes_id}");
+        let (source, target) = if left <= right { (left, right) } else { (right, left) };
+        let key = format!("{source}|{target}|conflict");
+        if !seen_links.insert(key) {
+            continue;
+        }
+        graph_links.push(json!({
+            "source": source,
+            "target": target,
+            "type": "conflict",
+            "weight": 1,
+        }));
+    }
+
     json_response(
         StatusCode::OK,
         json!({
             "memories": memories,
             "decisions": decisions,
+            "graph": {
+                "links": graph_links,
+                "nodeCount": memories.len() + decisions.len(),
+            }
         }),
     )
 }
