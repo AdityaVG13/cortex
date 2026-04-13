@@ -72,62 +72,109 @@ pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
+fn is_local_web_origin(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value.starts_with("http://127.0.0.1")
+        || value.starts_with("https://127.0.0.1")
+        || value.starts_with("http://localhost")
+        || value.starts_with("https://localhost")
+        || value.starts_with("http://[::1]")
+        || value.starts_with("https://[::1]")
+        || value.starts_with("tauri://localhost")
+        || value.starts_with("https://tauri.localhost")
+}
+
+fn is_local_request_context(headers: &HeaderMap) -> bool {
+    let origin_ok = header_text(headers, "origin")
+        .map(|value| is_local_web_origin(&value))
+        .unwrap_or(true);
+    let referer_ok = header_text(headers, "referer")
+        .map(|value| is_local_web_origin(&value))
+        .unwrap_or(true);
+    origin_ok && referer_ok
+}
+
 #[allow(clippy::result_large_err)]
 /// Validate the Bearer token on protected endpoints.  Returns `Err(Response)`
 /// when the caller should short-circuit with a 401.
 /// Also enforces SSRF protection (X-Cortex-Request header).
 pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
-    ensure_ssrf_protection(headers)?;
+    let _candidate = match extract_auth_token(headers) {
+        Some(candidate) if token_matches_state(&candidate, state) => candidate,
+        _ => {
+            return Err(json_response(
+                StatusCode::UNAUTHORIZED,
+                serde_json::json!({ "error": "Unauthorized" }),
+            ));
+        }
+    };
 
-    match extract_auth_token(headers).as_deref() {
-        Some(candidate) if token_matches_state(candidate, state) => Ok(()),
-        _ => Err(json_response(
-            StatusCode::UNAUTHORIZED,
-            serde_json::json!({ "error": "Unauthorized" }),
-        )),
+    if let Err(resp) = ensure_ssrf_protection(headers) {
+        if !is_local_request_context(headers) {
+            return Err(resp);
+        }
     }
+
+    Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 /// Auth + caller identity in one pass. Returns Ok(Some(user_id)) in team mode,
 /// Ok(None) in solo mode. Err(Response) if unauthorized. Avoids double argon2.
-#[allow(clippy::result_large_err)]
 pub fn ensure_auth_with_caller(
     headers: &HeaderMap,
     state: &RuntimeState,
 ) -> Result<Option<i64>, Response> {
-    ensure_ssrf_protection(headers)?;
-    match extract_auth_token(headers).as_deref() {
-        Some(candidate) => {
-            if candidate == state.token.as_str() {
-                return Ok(None);
-            }
-            if state.team_mode && candidate.starts_with("ctx_") {
-                let hashes = match state.team_api_key_hashes.read() {
-                    Ok(hashes) => hashes,
-                    Err(_) => {
-                        eprintln!("[cortex] team_api_key_hashes read lock poisoned during auth");
-                        return Err(json_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            serde_json::json!({ "error": "Team auth cache unavailable" }),
-                        ));
-                    }
-                };
-                for (user_id, hash) in hashes.iter() {
-                    if crate::auth::verify_api_key_argon2id(candidate, hash) {
-                        return Ok(Some(*user_id));
-                    }
-                }
-            }
-            Err(json_response(
+    let candidate = match extract_auth_token(headers) {
+        Some(candidate) => candidate,
+        None => {
+            return Err(json_response(
                 StatusCode::UNAUTHORIZED,
                 serde_json::json!({ "error": "Unauthorized" }),
-            ))
+            ));
         }
-        _ => Err(json_response(
+    };
+
+    let caller = if candidate == state.token.as_str() {
+        None
+    } else if state.team_mode && candidate.starts_with("ctx_") {
+        let hashes = match state.team_api_key_hashes.read() {
+            Ok(hashes) => hashes,
+            Err(poisoned) => {
+                eprintln!("[cortex] recovering poisoned team_api_key_hashes lock during auth");
+                poisoned.into_inner()
+            }
+        };
+        let mut matched = None;
+        for (user_id, hash) in hashes.iter() {
+            if crate::auth::verify_api_key_argon2id(&candidate, hash) {
+                matched = Some(*user_id);
+                break;
+            }
+        }
+        match matched {
+            Some(user_id) => Some(user_id),
+            None => {
+                return Err(json_response(
+                    StatusCode::UNAUTHORIZED,
+                    serde_json::json!({ "error": "Unauthorized" }),
+                ));
+            }
+        }
+    } else {
+        return Err(json_response(
             StatusCode::UNAUTHORIZED,
             serde_json::json!({ "error": "Unauthorized" }),
-        )),
+        ));
+    };
+
+    if let Err(resp) = ensure_ssrf_protection(headers) {
+        if !is_local_request_context(headers) {
+            return Err(resp);
+        }
     }
+
+    Ok(caller)
 }
 
 /// Require team-mode admin/owner role. Caller must lock `state.db` first and
@@ -178,9 +225,11 @@ pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
     }
     let hashes = match state.team_api_key_hashes.read() {
         Ok(hashes) => hashes,
-        Err(_) => {
-            eprintln!("[cortex] team_api_key_hashes read lock poisoned while resolving caller");
-            return None;
+        Err(poisoned) => {
+            eprintln!(
+                "[cortex] recovering poisoned team_api_key_hashes lock while resolving caller"
+            );
+            poisoned.into_inner()
         }
     };
     hashes
@@ -201,9 +250,11 @@ fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
     }
     let hashes = match state.team_api_key_hashes.read() {
         Ok(hashes) => hashes,
-        Err(_) => {
-            eprintln!("[cortex] team_api_key_hashes read lock poisoned while matching auth token");
-            return false;
+        Err(poisoned) => {
+            eprintln!(
+                "[cortex] recovering poisoned team_api_key_hashes lock while matching auth token"
+            );
+            poisoned.into_inner()
         }
     };
     hashes

@@ -64,6 +64,12 @@ fn resolve_mcp_caller(state: &RuntimeState) -> Option<i64> {
 /// This function blocks until stdin is closed (i.e. the Claude Code session ends).
 pub async fn run(state: RuntimeState) {
     let caller_id = resolve_mcp_caller(&state);
+    if state.team_mode && caller_id.is_none() {
+        eprintln!(
+            "[cortex-mcp] Team mode requires a valid ctx_ API key (CORTEX_API_KEY or cortex.token). Refusing to start anonymous stdio session."
+        );
+        return;
+    }
     eprintln!(
         "[cortex-mcp] MCP stdio transport started (caller_id: {})",
         caller_id
@@ -98,7 +104,7 @@ pub async fn run(state: RuntimeState) {
 
                 let has_id = msg.get("id").is_some();
 
-                let response = handle_mcp_message_with_caller(&state, &msg, caller_id).await;
+                let response = handle_mcp_message_with_caller(&state, &msg, caller_id, None).await;
 
                 if has_id {
                     if let Some(resp) = response {

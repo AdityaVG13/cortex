@@ -330,7 +330,10 @@ async fn upsert_mcp_session(
     }
 
     let owner_id = if state.team_mode {
-        caller_id.or(state.default_owner_id)
+        let caller_id = caller_id.ok_or_else(|| {
+            "Team mode requires a caller-scoped API key for MCP session operations".to_string()
+        })?;
+        Some(caller_id)
     } else {
         None
     };
@@ -579,14 +582,15 @@ async fn mcp_dispatch(
                 .get("profile")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let agent = arg_str(args, &["agent", "source_agent"])
+            let raw_agent = arg_str(args, &["agent", "source_agent"])
                 .map(str::to_string)
                 .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
             let model = source_model_for_tool(source, args);
             let _budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             let profile_str = profile.unwrap_or_else(|| "full".to_string());
+            let (agent, _expires_at) =
+                upsert_mcp_session(state, caller_id, &raw_agent, model, "MCP boot session").await?;
             let ctx = RecallContext::from_caller(caller_id, state);
-            let _ = upsert_mcp_session(state, caller_id, &agent, model, "MCP boot session").await;
 
             // Clear served content for this agent on boot
             clear_served_scope_for_boot(state, &agent, &ctx).await;
@@ -603,7 +607,7 @@ async fn mcp_dispatch(
                 |row| row.get::<_, String>(0),
             ) {
                 if state.team_mode {
-                    if let Some(owner_id) = ctx.caller_id.or(state.default_owner_id) {
+                    if let Some(owner_id) = ctx.caller_id {
                         let _ = conn.execute(
                             "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, datetime('now')) \
                              ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",

@@ -186,10 +186,22 @@ async fn handle_mcp_rpc(
 ) -> Json<Value> {
     let caller_id = match handlers::ensure_auth_with_caller(&headers, &state) {
         Ok(caller_id) => caller_id,
-        Err(_) => {
+        Err(resp) => {
+            let (message, hint) = match resp.status() {
+                axum::http::StatusCode::FORBIDDEN => (
+                    "Missing X-Cortex-Request header",
+                    Some("Include header X-Cortex-Request: true"),
+                ),
+                axum::http::StatusCode::UNAUTHORIZED => ("Unauthorized", None),
+                _ => ("Auth failed", None),
+            };
             return Json(serde_json::json!({
                 "jsonrpc": "2.0",
-                "error": { "code": -32600, "message": "Unauthorized" },
+                "error": {
+                    "code": -32600,
+                    "message": message,
+                    "hint": hint
+                },
                 "id": msg.get("id")
             }));
         }

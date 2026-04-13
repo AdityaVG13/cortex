@@ -30,15 +30,8 @@ pub async fn handle_boot(
         Ok(id) => id,
         Err(resp) => return resp,
     };
-    let agent = query
-        .agent
-        .or_else(|| {
-            headers
-                .get("x-source-agent")
-                .and_then(|h| h.to_str().ok())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+    let source = super::resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("mcp"));
+    let agent = source.agent;
     let has_source_agent_header = headers.get("x-source-agent").is_some();
     super::register_agent_presence_from_headers(&state, &headers, caller_id).await;
     if !has_source_agent_header {
@@ -82,7 +75,12 @@ pub async fn handle_boot(
         [],
         |row| row.get::<_, String>(0),
     ) {
-        if let Some(owner_id) = current_owner_id(&conn) {
+        let feed_ack_owner = if state.team_mode {
+            caller_id.or(state.default_owner_id)
+        } else {
+            None
+        };
+        if let Some(owner_id) = feed_ack_owner {
             let _ = conn.execute(
                 "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, datetime('now')) \
                  ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
