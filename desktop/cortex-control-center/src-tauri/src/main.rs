@@ -1132,6 +1132,32 @@ fn cortex_mcp_registration(target: &EditorTarget, cortex_exe: &str) -> serde_jso
       "args": editor_args(target)
     })
 }
+
+fn claude_desktop_config_path(home: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        home.join("AppData")
+            .join("Roaming")
+            .join("Claude")
+            .join("claude_desktop_config.json")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library")
+            .join("Application Support")
+            .join("Claude")
+            .join("claude_desktop_config.json")
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        home.join(".config")
+            .join("Claude")
+            .join("claude_desktop_config.json")
+    }
+}
+
 fn editor_targets(home: &Path) -> Vec<EditorTarget> {
     vec![
         EditorTarget {
@@ -1147,11 +1173,7 @@ fn editor_targets(home: &Path) -> Vec<EditorTarget> {
             name: "Claude Desktop",
             agent_name: "claude",
             config_kind: EditorConfigKind::Json,
-            config_path: home
-                .join("AppData")
-                .join("Roaming")
-                .join("Claude")
-                .join("claude_desktop_config.json"),
+            config_path: claude_desktop_config_path(home),
             fallback_config_paths: Vec::new(),
         },
         EditorTarget {
@@ -1722,5 +1744,33 @@ mod tests {
         let _ = fs::remove_file(gemini_legacy);
         let _ = fs::remove_dir_all(temp_root.join(".gemini"));
         let _ = fs::remove_dir(temp_root);
+    }
+
+    #[test]
+    fn claude_desktop_uses_platform_specific_config_path() {
+        let home = Path::new("/tmp/cortex-home");
+        let expected = if cfg!(windows) {
+            home.join("AppData")
+                .join("Roaming")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        } else if cfg!(target_os = "macos") {
+            home.join("Library")
+                .join("Application Support")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        } else {
+            home.join(".config")
+                .join("Claude")
+                .join("claude_desktop_config.json")
+        };
+
+        let targets = editor_targets(home);
+        let claude_desktop = targets
+            .iter()
+            .find(|target| target.id == "claude-desktop")
+            .unwrap();
+
+        assert_eq!(claude_desktop.config_path, expected);
     }
 }
