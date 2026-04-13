@@ -5,11 +5,7 @@
 You are an AI connecting to a Cortex persistent brain. Run this now:
 
 ```bash
-TOKEN=$(cat ~/.cortex/cortex.token)
-curl -s \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Cortex-Request: true" \
-  "http://localhost:7437/boot?agent=YOUR_NAME"
+cortex boot --agent YOUR_NAME --json
 ```
 
 Replace `YOUR_NAME` with your agent ID (e.g., `cursor`, `claude`, `gemini`, `codex`).
@@ -39,14 +35,10 @@ Cortex is a persistent memory daemon running on `localhost:7437`. It stores deci
 ### Claude Code (MCP -- automatic)
 Already connected via MCP. Use `cortex_boot`, `cortex_recall`, `cortex_store` tools directly.
 
-### Any CLI tool (curl)
+### Any CLI tool (recommended)
 At session start, run:
 ```bash
-TOKEN=$(cat ~/.cortex/cortex.token)
-curl -s \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "X-Cortex-Request: true" \
-  "http://localhost:7437/boot?agent=YOUR_NAME"
+cortex boot --agent YOUR_NAME --json
 ```
 
 Store decisions with:
@@ -65,21 +57,21 @@ Most agents can be configured to read a file or call a URL at startup. Point you
 ### Codex CLI (MCP)
 Register the MCP sidecar:
 ```bash
-codex mcp add cortex -- /path/to/cortex.exe mcp
+codex mcp add cortex -- /path/to/cortex.exe mcp --agent codex
 ```
 Then restart Codex. Newly-added MCP servers do not hot-attach to the current session.
 
 ### Cline / Cursor / other MCP clients
 Register the MCP sidecar with the command syntax your client expects. For Codex use the command above. For other clients, point the MCP server at:
 ```bash
-/path/to/cortex.exe mcp
+/path/to/cortex.exe mcp --agent cursor
 ```
-Or use HTTP directly via terminal commands.
+For Gemini, use `--agent gemini`. For Cline, use `--agent cline`. The proxy also tries to infer the parent client automatically, but explicit `--agent` is the stable path.
 
 ### Aider / Any CLI tool
 Run before starting work:
 ```bash
-curl -s "http://localhost:7437/boot?agent=aider" | python -c "import json,sys; print(json.load(sys.stdin)['bootPrompt'])"
+cortex boot --agent aider
 ```
 Use the output as context for your session.
 
