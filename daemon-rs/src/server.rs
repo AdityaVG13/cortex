@@ -4,7 +4,7 @@ use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
@@ -183,35 +183,39 @@ async fn handle_mcp_rpc(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
     Json(msg): Json<Value>,
-) -> Json<Value> {
+) -> axum::response::Response {
     let caller_id = match handlers::ensure_auth_with_caller(&headers, &state) {
         Ok(caller_id) => caller_id,
         Err(resp) => {
             let (message, hint) = match resp.status() {
-                axum::http::StatusCode::FORBIDDEN => (
+                StatusCode::FORBIDDEN => (
                     "Missing X-Cortex-Request header",
                     Some("Include header X-Cortex-Request: true"),
                 ),
-                axum::http::StatusCode::UNAUTHORIZED => ("Unauthorized", None),
+                StatusCode::UNAUTHORIZED => ("Unauthorized", None),
                 _ => ("Auth failed", None),
             };
-            return Json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32600,
-                    "message": message,
-                    "hint": hint
-                },
-                "id": msg.get("id")
-            }));
+            let status = resp.status();
+            return handlers::json_response(
+                status,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": message,
+                        "hint": hint
+                    },
+                    "id": msg.get("id")
+                }),
+            );
         }
     };
     let source = handlers::resolve_source_identity(&headers, "mcp");
     handlers::register_agent_presence_from_headers(&state, &headers, caller_id).await;
 
     match handle_mcp_message_with_caller(&state, &msg, caller_id, Some(&source)).await {
-        Some(resp) => Json(resp),
-        None => Json(serde_json::json!({})),
+        Some(resp) => handlers::json_response(StatusCode::OK, resp),
+        None => handlers::json_response(StatusCode::OK, serde_json::json!({})),
     }
 }
 
