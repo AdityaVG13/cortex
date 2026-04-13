@@ -363,7 +363,7 @@ async fn main() {
         "serve" => {
             #[cfg(unix)]
             async fn sigterm_future() {
-                use tokio::signal::unix::{SignalKind, signal};
+                use tokio::signal::unix::{signal, SignalKind};
                 let mut sigterm =
                     signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
                 sigterm.recv().await;
@@ -388,14 +388,33 @@ async fn main() {
 
         // ── MCP stdio transport ─────────────────────────────────────
         "mcp" => {
-            if let Err(e) = ensure_daemon(&paths, None, false, false).await {
+            let agent = parse_flag_value(&args[2..], "--agent");
+            let ensure = match ensure_daemon(&paths, agent.as_deref(), false, true).await {
+                Ok(result) => result,
+                Err(e) => {
+                    eprintln!("[cortex-mcp] {e}");
+                    std::process::exit(1);
+                }
+            };
+            std::env::set_var("CORTEX_HOME", &paths.home);
+            std::env::set_var("CORTEX_DB", &paths.db);
+            std::env::set_var("CORTEX_PORT", paths.port.to_string());
+            if let Err(e) = mcp_proxy::run(
+                &format!("http://127.0.0.1:{}", paths.port),
+                None,
+                agent.as_deref(),
+                mcp_proxy::ProxyRuntimeOptions {
+                    allow_respawn: true,
+                    shutdown_on_exit: false,
+                },
+            )
+            .await
+            {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
-            let base_url = format!("http://127.0.0.1:{}", paths.port);
-            if let Err(e) = mcp_proxy::run(&base_url, None, None, Default::default()).await {
-                eprintln!("[cortex-mcp] {e}");
-                std::process::exit(1);
+            if ensure.spawned {
+                eprintln!("[cortex-mcp] Started a local daemon for this session");
             }
         }
 
@@ -437,6 +456,11 @@ async fn main() {
                     } else {
                         EnsureDaemonResult::default()
                     };
+                    if local_owner_mode {
+                        std::env::set_var("CORTEX_HOME", &paths.home);
+                        std::env::set_var("CORTEX_DB", &paths.db);
+                        std::env::set_var("CORTEX_PORT", paths.port.to_string());
+                    }
                     if let Err(e) = mcp_proxy::run(
                         &base_url,
                         api_key.as_deref(),
@@ -1127,7 +1151,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!();
     eprintln!("Daemon:");
     eprintln!("  serve              HTTP daemon on :7437");
-    eprintln!("  mcp                MCP stdio (attach to an existing daemon)");
+    eprintln!("  mcp                MCP stdio (auto-start/attach to the local daemon)");
     eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
     eprintln!("  plugin ensure-daemon [--agent <name>]  Verify/attach to a healthy daemon only");
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
@@ -1608,11 +1632,12 @@ async fn ensure_daemon(
     let mut result = EnsureDaemonResult::default();
 
     match lock {
-        Ok(_guard) => {
+        Ok(guard) => {
             if daemon_healthy(paths.port).await {
                 // already healthy
             } else if allow_spawn {
                 spawn_daemon(paths)?;
+                drop(guard);
                 if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await
                 {
                     return Err(format!(
@@ -1623,7 +1648,7 @@ async fn ensure_daemon(
                 result.spawned = true;
             } else {
                 return Err(format!(
-                    "daemon is not healthy on port {} and this client is attach-only. Start Cortex from Control Center or run `cortex plugin mcp`.",
+                    "daemon is not healthy on port {} and this client cannot start it automatically. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
                     paths.port
                 ));
             }
@@ -1637,7 +1662,7 @@ async fn ensure_daemon(
                     ));
                 }
                 return Err(format!(
-                    "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or run `cortex plugin mcp`.",
+                    "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
                     paths.port
                 ));
             }

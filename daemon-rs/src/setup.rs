@@ -33,6 +33,7 @@ fn daemon_url(path: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct DetectedTool {
     pub name: &'static str,
+    pub agent_name: &'static str,
     pub config_path: Option<PathBuf>,
     pub config_method: ConfigMethod,
 }
@@ -133,7 +134,7 @@ pub async fn run_setup() {
     eprintln!("  Daemon:         {}", daemon_base_url());
     eprintln!("  Health check:   curl {}", daemon_url("/health"));
     eprintln!();
-    eprintln!("  Cortex is configured. Start it from Control Center or `cortex plugin mcp` when you want a live daemon.");
+    eprintln!("  Cortex is configured. Start it from Control Center or let your client run `cortex mcp --agent <name>` when you want a live daemon.");
     eprintln!();
 }
 
@@ -518,6 +519,7 @@ fn step_detect() -> Vec<DetectedTool> {
     if let Some(config_path) = find_claude_desktop_config() {
         found.push(DetectedTool {
             name: "Claude Desktop",
+            agent_name: "claude",
             config_path: Some(config_path),
             config_method: ConfigMethod::JsonMerge,
         });
@@ -527,6 +529,7 @@ fn step_detect() -> Vec<DetectedTool> {
     if command_exists("claude") {
         found.push(DetectedTool {
             name: "Claude Code",
+            agent_name: "claude",
             config_path: None,
             config_method: ConfigMethod::CliCommand {
                 program: "claude",
@@ -538,6 +541,7 @@ fn step_detect() -> Vec<DetectedTool> {
     if command_exists("codex") {
         found.push(DetectedTool {
             name: "Codex CLI",
+            agent_name: "codex",
             config_path: None,
             config_method: ConfigMethod::CliCommand {
                 program: "codex",
@@ -550,6 +554,7 @@ fn step_detect() -> Vec<DetectedTool> {
     if let Some(config_path) = find_cursor_config() {
         found.push(DetectedTool {
             name: "Cursor",
+            agent_name: "cursor",
             config_path: Some(config_path),
             config_method: ConfigMethod::JsonMerge,
         });
@@ -559,6 +564,7 @@ fn step_detect() -> Vec<DetectedTool> {
     if let Some(config_path) = find_windsurf_config() {
         found.push(DetectedTool {
             name: "Windsurf",
+            agent_name: "windsurf",
             config_path: Some(config_path),
             config_method: ConfigMethod::JsonMerge,
         });
@@ -679,18 +685,19 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
             let Some(config_path) = &tool.config_path else {
                 return StepResult::Fail("No config path".into());
             };
-            match merge_mcp_config(config_path, cortex_exe) {
+            match merge_mcp_config(config_path, cortex_exe, tool.agent_name) {
                 Ok(action) => StepResult::Ok(action),
                 Err(e) => StepResult::Warn(format!("Auto-config failed: {e}. Configure manually.")),
             }
         }
         ConfigMethod::CliCommand { program, args } => {
-            match run_mcp_add(program, args, cortex_exe) {
+            match run_mcp_add(program, args, cortex_exe, tool.agent_name) {
                 Ok(()) => StepResult::Ok("Registered via CLI".into()),
                 Err(e) => StepResult::Warn(format!(
-                    "CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp",
+                    "CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp --agent {}",
                     program,
-                    args.join(" ")
+                    args.join(" "),
+                    tool.agent_name
                 )),
             }
         }
@@ -703,7 +710,11 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
 /// Merge a Cortex MCP server entry into a JSON config file.
 /// Reads existing config, adds/updates the "cortex" entry under "mcpServers",
 /// writes back. Preserves all existing config.
-fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, String> {
+fn merge_mcp_config(
+    config_path: &Path,
+    cortex_exe: &str,
+    agent_name: &str,
+) -> Result<String, String> {
     // Read existing config or start fresh
     let mut config: serde_json::Value = if config_path.exists() {
         let content = fs::read_to_string(config_path)
@@ -745,7 +756,7 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
             "cortex".to_string(),
             serde_json::json!({
                 "command": exe_path,
-                "args": ["mcp"]
+                "args": ["mcp", "--agent", agent_name]
             }),
         );
 
@@ -758,10 +769,15 @@ fn merge_mcp_config(config_path: &Path, cortex_exe: &str) -> Result<String, Stri
     Ok(format!("{action} at {}", config_path.display()))
 }
 
-fn run_mcp_add(program: &str, args: &[&str], cortex_exe: &str) -> Result<(), String> {
+fn run_mcp_add(
+    program: &str,
+    args: &[&str],
+    cortex_exe: &str,
+    agent_name: &str,
+) -> Result<(), String> {
     let output = Command::new(program)
         .args(args)
-        .args([cortex_exe, "mcp"])
+        .args([cortex_exe, "mcp", "--agent", agent_name])
         .output()
         .map_err(|e| format!("Failed to run {program} CLI: {e}"))?;
 
@@ -817,7 +833,7 @@ async fn step_daemon() -> StepResult {
     }
 
     StepResult::Warn(format!(
-        "No daemon is running on :{port}. Start Cortex from Control Center or run `cortex plugin mcp` to continue."
+        "No daemon is running on :{port}. Start Cortex from Control Center or let your client launch `cortex mcp --agent <name>`."
     ))
 }
 
@@ -843,7 +859,7 @@ async fn is_daemon_healthy() -> bool {
 async fn step_verify() -> StepResult {
     if !is_daemon_healthy().await {
         return StepResult::Warn(
-            "Skipped live verification because no daemon is currently running. Start Cortex from Control Center or `cortex plugin mcp`, then rerun setup if you want a round-trip check."
+            "Skipped live verification because no daemon is currently running. Start Cortex from Control Center or `cortex mcp --agent <name>`, then rerun setup if you want a round-trip check."
                 .into(),
         );
     }
@@ -905,5 +921,38 @@ async fn step_verify() -> StepResult {
             r.status()
         )),
         Err(e) => StepResult::Warn(format!("Recall failed: {e}. Store succeeded.")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_setup_{name}_{unique}"))
+    }
+
+    #[test]
+    fn merge_mcp_config_preserves_explicit_agent_args() {
+        let root = temp_test_dir("json_merge");
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("mcp.json");
+
+        merge_mcp_config(&config_path, "/tmp/cortex", "cursor").unwrap();
+
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            config["mcpServers"]["cortex"]["args"],
+            serde_json::json!(["mcp", "--agent", "cursor"])
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
