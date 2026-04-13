@@ -406,7 +406,7 @@ async fn main() {
                 mcp_proxy::ProxyRuntimeOptions {
                     allow_respawn: true,
                     shutdown_on_exit: false,
-                    shutdown_on_idle_startup: ensure.spawned,
+                    shutdown_on_idle_startup: false,
                 },
             )
             .await
@@ -424,6 +424,14 @@ async fn main() {
                 println!("{}", paths.to_json());
             } else {
                 eprintln!("Usage: cortex paths --json");
+                std::process::exit(1);
+            }
+        }
+
+        "boot" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            if let Err(e) = run_boot_cli(&paths, &remaining).await {
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }
@@ -467,9 +475,9 @@ async fn main() {
                         api_key.as_deref(),
                         agent.as_deref(),
                         mcp_proxy::ProxyRuntimeOptions {
-                            allow_respawn: ensure.spawned,
+                            allow_respawn: local_owner_mode,
                             shutdown_on_exit: ensure.spawned,
-                            shutdown_on_idle_startup: ensure.spawned,
+                            shutdown_on_idle_startup: false,
                         },
                     )
                     .await
@@ -1155,6 +1163,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  serve              HTTP daemon on :7437");
     eprintln!("  mcp                MCP stdio (auto-start/attach to the local daemon)");
     eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
+    eprintln!("  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]");
     eprintln!("  plugin ensure-daemon [--agent <name>]  Verify/attach to a healthy daemon only");
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
     eprintln!();
@@ -1199,6 +1208,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!();
     eprintln!("Troubleshooting:");
     eprintln!("  cortex doctor      Validate DB schema, migrations, integrity, and FTS state");
+    eprintln!("  cortex boot        Preferred local boot path (auto-adds auth + SSRF headers)");
     eprintln!("  HTTP 403           Add header: X-Cortex-Request: true");
     eprintln!("  HTTP 401           Use Authorization: Bearer <token> from ~/.cortex/cortex.token");
     eprintln!(
@@ -1582,36 +1592,167 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String> {
+    let Some(idx) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+
+    let raw = args
+        .get(idx + 1)
+        .ok_or_else(|| format!("missing value for {flag}"))?;
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| format!("invalid value for {flag}: '{raw}'"))?;
+    if value == 0 {
+        return Err(format!("{flag} must be >= 1"));
+    }
+    Ok(Some(value))
+}
+
 use daemon_lifecycle::{daemon_healthy, spawn_daemon, wait_for_health};
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
+const DEFAULT_BOOT_BUDGET: usize = 600;
 
-async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
+async fn recover_unhealthy_locked_daemon(
+    paths: &auth::CortexPaths,
+    result: &mut EnsureDaemonResult,
+) -> Result<bool, String> {
+    let _ = auth::cleanup_stale_pid_lock(paths);
+
+    let guard = match auth::acquire_daemon_lock(paths) {
+        Ok(guard) => guard,
+        Err(_) => return Ok(false),
+    };
+
+    if daemon_healthy(paths.port).await {
+        drop(guard);
+        return Ok(true);
+    }
+
+    spawn_daemon(paths)?;
+    drop(guard);
+
+    if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
+        return Err(format!(
+            "daemon lock was recovered but daemon did not become healthy on port {} within {}s",
+            paths.port, DAEMON_STARTUP_WAIT_SECS
+        ));
+    }
+
+    result.spawned = true;
+    Ok(true)
+}
+
+fn read_auth_token_from_path(token_path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(token_path).ok().and_then(|token| {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn resolve_boot_auth_header(token_path: &std::path::Path, api_key: Option<&str>) -> Option<String> {
+    if let Some(api_key) = api_key {
+        let trimmed = api_key.trim();
+        if !trimmed.is_empty() {
+            return Some(format!("Bearer {trimmed}"));
+        }
+    }
+    read_auth_token_from_path(token_path).map(|token| format!("Bearer {token}"))
+}
+
+async fn request_boot_payload(
+    base_url: &str,
+    token_path: &std::path::Path,
+    api_key: Option<&str>,
+    agent: &str,
+    budget: usize,
+) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("create boot client: {e}"))?;
 
     let mut req = client
-        .get(format!("http://127.0.0.1:{port}/boot"))
-        .query(&[("agent", agent), ("budget", "200")])
-        .header("x-cortex-request", "true");
+        .get(format!("{}/boot", base_url.trim_end_matches('/')))
+        .query(&[
+            ("agent".to_string(), agent.to_string()),
+            ("budget".to_string(), budget.to_string()),
+        ])
+        .header("x-cortex-request", "true")
+        .header("x-source-agent", agent);
 
-    if let Ok(token) = std::fs::read_to_string(token_path) {
-        let token = token.trim();
-        if !token.is_empty() {
-            req = req.header("Authorization", format!("Bearer {token}"));
-        }
+    if let Some(auth) = resolve_boot_auth_header(token_path, api_key) {
+        req = req.header("Authorization", auth);
     }
 
     let resp = req
         .send()
         .await
         .map_err(|e| format!("boot request failed: {e}"))?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("boot returned {}", resp.status()))
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("read boot response failed: {e}"))?;
+    if !status.is_success() {
+        let detail = body.trim();
+        return if detail.is_empty() {
+            Err(format!("boot returned {status}"))
+        } else {
+            Err(format!("boot returned {status}: {detail}"))
+        };
     }
+
+    serde_json::from_str::<serde_json::Value>(&body)
+        .map_err(|e| format!("parse boot response failed: {e}"))
+}
+
+async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), String> {
+    let agent = parse_flag_value(args, "--agent").unwrap_or_else(|| "cli".to_string());
+    let agent = agent.trim();
+    if agent.is_empty() {
+        return Err("agent cannot be empty".to_string());
+    }
+
+    let budget = parse_flag_usize(args, "--budget")?.unwrap_or(DEFAULT_BOOT_BUDGET);
+    let json_output = args.iter().any(|arg| arg == "--json");
+    let override_url = parse_flag_value(args, "--url");
+    let api_key = parse_flag_value(args, "--api-key");
+    let local_owner_mode = override_url.is_none() && api_key.is_none();
+
+    if local_owner_mode {
+        let _ = ensure_daemon(paths, None, false, true).await?;
+    }
+
+    let base_url = override_url.unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
+    let payload =
+        request_boot_payload(&base_url, &paths.token, api_key.as_deref(), agent, budget).await?;
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload)
+                .map_err(|e| format!("serialize boot response failed: {e}"))?
+        );
+    } else {
+        let boot_prompt = payload
+            .get("bootPrompt")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "boot response missing bootPrompt".to_string())?;
+        println!("{boot_prompt}");
+    }
+    Ok(())
+}
+
+async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
+    let base_url = format!("http://127.0.0.1:{port}");
+    request_boot_payload(&base_url, token_path, None, agent, 200)
+        .await
+        .map(|_| ())
 }
 
 /// Hold the singleton daemon lock before startup so duplicate `serve`
@@ -1675,6 +1816,19 @@ async fn ensure_daemon(
         Err(_) => {
             if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                 if allow_spawn {
+                    if recover_unhealthy_locked_daemon(paths, &mut result).await? {
+                        if let Some(agent) = agent {
+                            if let Err(e) = boot_agent(paths.port, &paths.token, agent).await {
+                                eprintln!(
+                                    "[cortex-plugin] Warning: boot call failed for agent '{agent}': {e}"
+                                );
+                            }
+                        }
+                        if emit_port {
+                            println!("{}", paths.port);
+                        }
+                        return Ok(result);
+                    }
                     return Err(format!(
                         "daemon lock is held and daemon is not healthy on port {}",
                         paths.port
@@ -2275,6 +2429,51 @@ mod tests {
         assert!(err.contains("another cortex instance"));
 
         drop(first_lock);
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn parse_flag_usize_validates_and_parses_values() {
+        let args = vec![
+            "--agent".to_string(),
+            "codex".to_string(),
+            "--budget".to_string(),
+            "900".to_string(),
+        ];
+        assert_eq!(parse_flag_usize(&args, "--budget").unwrap(), Some(900));
+
+        let missing_value = vec!["--budget".to_string()];
+        assert!(parse_flag_usize(&missing_value, "--budget")
+            .unwrap_err()
+            .contains("missing value"));
+
+        let invalid_value = vec!["--budget".to_string(), "abc".to_string()];
+        assert!(parse_flag_usize(&invalid_value, "--budget")
+            .unwrap_err()
+            .contains("invalid value"));
+
+        let zero_value = vec!["--budget".to_string(), "0".to_string()];
+        assert!(parse_flag_usize(&zero_value, "--budget")
+            .unwrap_err()
+            .contains("must be >= 1"));
+    }
+
+    #[test]
+    fn resolve_boot_auth_header_prefers_api_key_and_falls_back_to_token_file() {
+        let home_dir = temp_test_dir("boot_auth");
+        fs::create_dir_all(&home_dir).unwrap();
+        let token_path = home_dir.join("cortex.token");
+        fs::write(&token_path, "local-token").unwrap();
+
+        let explicit = resolve_boot_auth_header(&token_path, Some("ctx_remote"));
+        assert_eq!(explicit, Some("Bearer ctx_remote".to_string()));
+
+        let fallback = resolve_boot_auth_header(&token_path, None);
+        assert_eq!(fallback, Some("Bearer local-token".to_string()));
+
+        fs::write(&token_path, "   ").unwrap();
+        assert_eq!(resolve_boot_auth_header(&token_path, None), None);
+
         let _ = fs::remove_dir_all(&home_dir);
     }
 }
