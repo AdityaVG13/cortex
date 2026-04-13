@@ -492,6 +492,7 @@ pub async fn run(
     let mut rpc_base_url = base_url.to_string();
     let mut rpc_url = format!("{rpc_base_url}/mcp-rpc");
     let mut health_url = format!("{rpc_base_url}/health");
+    let (rpc_base_tx, mut rpc_base_rx) = tokio::sync::watch::channel(rpc_base_url.clone());
     let (agent_display, agent_model) = resolve_agent_identity(agent);
 
     let client = reqwest::Client::builder()
@@ -570,6 +571,7 @@ pub async fn run(
     // Spawn background heartbeat to keep sessions visible and recover after daemon restarts.
     {
         let heartbeat_base_url = rpc_base_url.clone();
+        let heartbeat_base_tx = rpc_base_tx.clone();
         let heartbeat_agent = agent_display.clone();
         let heartbeat_model = agent_model.clone();
         let heartbeat_api_key = api_key.map(String::from);
@@ -586,8 +588,8 @@ pub async fn run(
             };
             let mut heartbeat_base_url = heartbeat_base_url;
             let mut heartbeat_health_url = format!("{heartbeat_base_url}/health");
-            let heartbeat_can_refresh_local = heartbeat_base_url.starts_with("http://127.0.0.1:")
-                || heartbeat_base_url.starts_with("http://localhost:");
+            let resolved_local_base = format!("http://127.0.0.1:{}", CortexPaths::resolve().port);
+            let heartbeat_can_refresh_local = heartbeat_base_url == resolved_local_base;
             let mut consecutive_heartbeat_failures = 0u32;
 
             loop {
@@ -622,6 +624,7 @@ pub async fn run(
                             if refreshed_base != heartbeat_base_url {
                                 heartbeat_base_url = refreshed_base;
                                 heartbeat_health_url = format!("{heartbeat_base_url}/health");
+                                let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
                                 restarted = session_start_with_retry(
                                     &hb_client,
                                     &heartbeat_base_url,
@@ -652,6 +655,7 @@ pub async fn run(
                                 if refreshed_base != heartbeat_base_url {
                                     heartbeat_base_url = refreshed_base;
                                     heartbeat_health_url = format!("{heartbeat_base_url}/health");
+                                    let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
                                 }
                             }
                             if !health_check_ready(&hb_client, &heartbeat_health_url).await {
@@ -817,6 +821,14 @@ pub async fn run(
         };
 
         let has_id = msg.get("id").is_some();
+        if rpc_base_rx.has_changed().unwrap_or(false) {
+            let refreshed_base = rpc_base_rx.borrow_and_update().clone();
+            if refreshed_base != rpc_base_url {
+                rpc_base_url = refreshed_base;
+                rpc_url = format!("{rpc_base_url}/mcp-rpc");
+                health_url = format!("{rpc_base_url}/health");
+            }
+        }
 
         // Retry loop for daemon requests
         let mut last_err = String::new();
@@ -1047,6 +1059,7 @@ pub async fn run(
                 rpc_base_url = format!("http://127.0.0.1:{}", paths.port);
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
                 health_url = format!("{rpc_base_url}/health");
+                let _ = rpc_base_tx.send(rpc_base_url.clone());
                 let _ = session_start(
                     &client,
                     &rpc_base_url,

@@ -1612,6 +1612,7 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
 use daemon_lifecycle::{daemon_healthy, spawn_daemon, wait_for_health};
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
+const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 
 async fn recover_unhealthy_locked_daemon(
     paths: &auth::CortexPaths,
@@ -1757,13 +1758,21 @@ async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Res
 
 /// Hold the singleton daemon lock before startup so duplicate `serve`
 /// invocations cannot rotate the shared auth token and then die on bind.
+fn daemon_lock_wait_timeout() -> Duration {
+    let secs = std::env::var("CORTEX_DAEMON_LOCK_WAIT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_DAEMON_LOCK_WAIT_SECS);
+    Duration::from_secs(secs.max(1))
+}
+
 fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, String> {
     let _ = auth::cleanup_stale_pid_lock(paths);
     if std::env::var("CORTEX_WAIT_FOR_DAEMON_LOCK")
         .ok()
         .is_some_and(|value| value == "1")
     {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + daemon_lock_wait_timeout();
         loop {
             match auth::acquire_daemon_lock(paths) {
                 Ok(lock) => return Ok(lock),

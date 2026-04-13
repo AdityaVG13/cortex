@@ -11,6 +11,8 @@ use std::time::Duration;
 use crate::auth::CortexPaths;
 
 const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
+const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
+const RUNTIME_COPY_STALE_SECS: u64 = 600;
 
 /// Check if the daemon responds to /health within 2s.
 pub async fn daemon_healthy(port: u16) -> bool {
@@ -154,6 +156,7 @@ fn runtime_copy_path(runtime_dir: &Path, source: &Path) -> PathBuf {
 }
 
 fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
+    let now = std::time::SystemTime::now();
     let Ok(entries) = fs::read_dir(runtime_dir) else {
         return;
     };
@@ -166,13 +169,41 @@ fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
         if !name.starts_with("cortex-daemon-run-") {
             continue;
         }
-        let _ = fs::remove_file(path);
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .map(|age| age.as_secs() >= RUNTIME_COPY_STALE_SECS)
+            .unwrap_or(false);
+        if stale {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
 /// Attempt to respawn the daemon and wait for it to become healthy.
 /// Returns true if the daemon is healthy after respawn.
 pub async fn try_respawn(paths: &CortexPaths) -> bool {
+    let respawn_lock = match crate::auth::acquire_daemon_lock(paths) {
+        Ok(lock) => lock,
+        Err(_) => {
+            eprintln!(
+                "[cortex-lifecycle] Respawn already in progress; waiting for daemon health on port {}",
+                paths.port
+            );
+            return wait_for_health(
+                paths.port,
+                Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS),
+            )
+            .await;
+        }
+    };
+
+    if daemon_healthy(paths.port).await {
+        return true;
+    }
+
     eprintln!(
         "[cortex-lifecycle] Daemon appears dead on port {}; attempting respawn",
         paths.port
@@ -183,6 +214,7 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
         return false;
     }
 
+    drop(respawn_lock);
     let healthy =
         wait_for_health(paths.port, Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS)).await;
     if healthy {
