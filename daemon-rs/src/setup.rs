@@ -42,6 +42,8 @@ pub struct DetectedTool {
 pub enum ConfigMethod {
     /// Write MCP server entry to a JSON config file
     JsonMerge,
+    /// Write MCP server entry to a TOML config file
+    TomlMerge,
     /// Run a CLI command (e.g., `claude mcp add`)
     CliCommand {
         program: &'static str,
@@ -515,18 +517,15 @@ async fn step_init() -> StepResult {
 fn step_detect() -> Vec<DetectedTool> {
     let mut found = Vec::new();
 
-    // Claude Desktop
-    if let Some(config_path) = find_claude_desktop_config() {
+    // Claude Code
+    if let Some(config_path) = find_claude_code_config() {
         found.push(DetectedTool {
-            name: "Claude Desktop",
+            name: "Claude Code",
             agent_name: "claude",
             config_path: Some(config_path),
             config_method: ConfigMethod::JsonMerge,
         });
-    }
-
-    // Claude Code
-    if command_exists("claude") {
+    } else if command_exists("claude") {
         found.push(DetectedTool {
             name: "Claude Code",
             agent_name: "claude",
@@ -538,7 +537,25 @@ fn step_detect() -> Vec<DetectedTool> {
         });
     }
 
-    if command_exists("codex") {
+    // Claude Desktop
+    if let Some(config_path) = find_claude_desktop_config() {
+        found.push(DetectedTool {
+            name: "Claude Desktop",
+            agent_name: "claude",
+            config_path: Some(config_path),
+            config_method: ConfigMethod::JsonMerge,
+        });
+    }
+
+    // Codex
+    if let Some(config_path) = find_codex_config() {
+        found.push(DetectedTool {
+            name: "Codex CLI",
+            agent_name: "codex",
+            config_path: Some(config_path),
+            config_method: ConfigMethod::TomlMerge,
+        });
+    } else if command_exists("codex") {
         found.push(DetectedTool {
             name: "Codex CLI",
             agent_name: "codex",
@@ -574,10 +591,17 @@ fn step_detect() -> Vec<DetectedTool> {
 }
 
 fn find_claude_desktop_config() -> Option<PathBuf> {
-    let candidates = claude_desktop_config_paths();
-    candidates
-        .into_iter()
-        .find(|path| path.exists() || path.parent().is_some_and(|p| p.exists()))
+    find_first_config_path(claude_desktop_config_paths())
+}
+
+fn find_claude_code_config() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    find_existing_config(home.join(".claude").join("settings.json"))
+}
+
+fn find_codex_config() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    find_existing_config(home.join(".codex").join("config.toml"))
 }
 
 fn claude_desktop_config_paths() -> Vec<PathBuf> {
@@ -628,17 +652,19 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
 
 fn find_cursor_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    let path = home.join(".cursor").join("mcp.json");
-    if path.exists() || path.parent().is_some_and(|p| p.exists()) {
-        Some(path)
-    } else {
-        None
-    }
+    find_existing_config(home.join(".cursor").join("mcp.json"))
 }
 
 fn find_windsurf_config() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    let path = home.join(".windsurf").join("mcp.json");
+    find_existing_config(home.join(".windsurf").join("mcp.json"))
+}
+
+fn find_first_config_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
+    paths.into_iter().find_map(find_existing_config)
+}
+
+fn find_existing_config(path: PathBuf) -> Option<PathBuf> {
     if path.exists() || path.parent().is_some_and(|p| p.exists()) {
         Some(path)
     } else {
@@ -690,6 +716,15 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
                 Err(e) => StepResult::Warn(format!("Auto-config failed: {e}. Configure manually.")),
             }
         }
+        ConfigMethod::TomlMerge => {
+            let Some(config_path) = &tool.config_path else {
+                return StepResult::Fail("No config path".into());
+            };
+            match merge_toml_config(config_path, cortex_exe, tool.agent_name) {
+                Ok(action) => StepResult::Ok(action),
+                Err(e) => StepResult::Warn(format!("Auto-config failed: {e}. Configure manually.")),
+            }
+        }
         ConfigMethod::CliCommand { program, args } => {
             match run_mcp_add(program, args, cortex_exe, tool.agent_name) {
                 Ok(()) => StepResult::Ok("Registered via CLI".into()),
@@ -715,22 +750,16 @@ fn merge_mcp_config(
     cortex_exe: &str,
     agent_name: &str,
 ) -> Result<String, String> {
-    // Read existing config or start fresh
-    let mut config: serde_json::Value = if config_path.exists() {
+    let original: serde_json::Value = if config_path.exists() {
         let content = fs::read_to_string(config_path)
             .map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
         serde_json::from_str(&content)
             .map_err(|e| format!("Invalid JSON in {}: {e}", config_path.display()))?
     } else {
-        // Create parent directory if needed
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
-        }
         serde_json::json!({})
     };
+    let mut config = original.clone();
 
-    // Ensure mcpServers exists
     let mcp_servers = config
         .as_object_mut()
         .ok_or("Config is not a JSON object")?
@@ -738,33 +767,94 @@ fn merge_mcp_config(
         .or_insert_with(|| serde_json::json!({}));
 
     let exe_path = PathBuf::from(cortex_exe).to_string_lossy().to_string();
-    let action = match mcp_servers
-        .get("cortex")
-        .and_then(|value| value.get("command"))
-        .and_then(|value| value.as_str())
-    {
-        Some(existing) if existing == exe_path => "Already configured",
-        Some(_) => "Updated configuration",
-        None => "Configured",
-    };
-
-    // Add cortex entry
+    let desired_registration = serde_json::json!({
+        "command": exe_path,
+        "args": ["mcp", "--agent", agent_name]
+    });
     mcp_servers
         .as_object_mut()
         .ok_or("mcpServers is not a JSON object")?
-        .insert(
-            "cortex".to_string(),
-            serde_json::json!({
-                "command": exe_path,
-                "args": ["mcp", "--agent", agent_name]
-            }),
-        );
+        .insert("cortex".to_string(), desired_registration);
 
-    // Write back with pretty formatting
-    let output =
-        serde_json::to_string_pretty(&config).map_err(|e| format!("JSON serialize failed: {e}"))?;
-    fs::write(config_path, output)
-        .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+    let action = if config == original {
+        "Already configured"
+    } else if config_path.exists() {
+        "Updated configuration"
+    } else {
+        "Configured"
+    };
+
+    if config != original {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+        }
+        let output = serde_json::to_string_pretty(&config)
+            .map_err(|e| format!("JSON serialize failed: {e}"))?;
+        fs::write(config_path, output)
+            .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+    }
+
+    Ok(format!("{action} at {}", config_path.display()))
+}
+
+fn merge_toml_config(
+    config_path: &Path,
+    cortex_exe: &str,
+    agent_name: &str,
+) -> Result<String, String> {
+    let original: toml::Value = if config_path.exists() {
+        let content = fs::read_to_string(config_path)
+            .map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
+        toml::from_str(&content)
+            .map_err(|e| format!("Invalid TOML in {}: {e}", config_path.display()))?
+    } else {
+        toml::Value::Table(Default::default())
+    };
+    let mut config = original.clone();
+
+    let root = config.as_table_mut().ok_or("Config is not a TOML table")?;
+    let servers = root
+        .entry("mcp_servers")
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    let servers_table = servers
+        .as_table_mut()
+        .ok_or("mcp_servers is not a TOML table")?;
+
+    let mut server = toml::map::Map::new();
+    server.insert(
+        "command".into(),
+        toml::Value::String(PathBuf::from(cortex_exe).to_string_lossy().to_string()),
+    );
+    server.insert(
+        "args".into(),
+        toml::Value::Array(
+            ["mcp", "--agent", agent_name]
+                .into_iter()
+                .map(|value| toml::Value::String(value.to_string()))
+                .collect(),
+        ),
+    );
+    servers_table.insert("cortex".into(), toml::Value::Table(server));
+
+    let action = if config == original {
+        "Already configured"
+    } else if config_path.exists() {
+        "Updated configuration"
+    } else {
+        "Configured"
+    };
+
+    if config != original {
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+        }
+        let output =
+            toml::to_string_pretty(&config).map_err(|e| format!("TOML serialize failed: {e}"))?;
+        fs::write(config_path, output)
+            .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+    }
 
     Ok(format!("{action} at {}", config_path.display()))
 }
@@ -952,6 +1042,87 @@ mod tests {
             config["mcpServers"]["cortex"]["args"],
             serde_json::json!(["mcp", "--agent", "cursor"])
         );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_mcp_config_is_idempotent_for_existing_registration() {
+        let root = temp_test_dir("json_merge_idempotent");
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("mcp.json");
+
+        merge_mcp_config(&config_path, "/tmp/cortex", "cursor").unwrap();
+        let first = fs::read_to_string(&config_path).unwrap();
+        merge_mcp_config(&config_path, "/tmp/cortex", "cursor").unwrap();
+        let second = fs::read_to_string(&config_path).unwrap();
+
+        assert_eq!(first, second);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn merge_toml_config_writes_mcp_servers_without_clobbering_other_values() {
+        let root = temp_test_dir("toml_merge");
+        fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+title = "Codex"
+
+[other]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        merge_toml_config(&config_path, "/tmp/cortex", "codex").unwrap();
+
+        let config: toml::Value =
+            toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            config
+                .get("mcp_servers")
+                .and_then(|value| value.get("cortex"))
+                .and_then(|value| value.get("args"))
+                .and_then(|value| value.as_array())
+                .map(|values| values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()),
+            Some(vec!["mcp", "--agent", "codex"])
+        );
+        assert_eq!(
+            config
+                .get("other")
+                .and_then(|value| value.get("enabled"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn path_detection_helpers_accept_existing_parent_directories() {
+        let root = temp_test_dir("path_detection");
+        let claude = root.join(".claude").join("settings.json");
+        let codex = root.join(".codex").join("config.toml");
+        let cursor = root.join(".cursor").join("mcp.json");
+
+        fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+
+        assert!(find_existing_config(claude).is_some());
+        assert!(find_existing_config(codex).is_some());
+        assert!(find_existing_config(cursor).is_some());
+        assert!(find_first_config_path(vec![
+            root.join(".missing"),
+            root.join(".cursor").join("mcp.json"),
+        ])
+        .is_some());
 
         let _ = fs::remove_dir_all(&root);
     }
