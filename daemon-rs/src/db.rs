@@ -2,7 +2,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Result of an auto-repair attempt.
 #[derive(Debug)]
@@ -314,16 +314,30 @@ pub fn run_pending_migrations(conn: &Connection) -> usize {
             continue;
         }
 
-        if let Err(e) = apply_migration(conn, version) {
+        // Apply + record in one transaction so we never leave a migration half-recorded.
+        // `BEGIN IMMEDIATE` prevents concurrent writers from racing this step.
+        let tx = match conn.unchecked_transaction() {
+            Ok(tx) => tx,
+            Err(e) => {
+                eprintln!("[db] failed to start migration transaction for {version} ({name}): {e}");
+                break;
+            }
+        };
+        if let Err(e) = apply_migration(&tx, version) {
             eprintln!("[db] migration {version} ({name}) failed: {e}");
+            drop(tx);
             break;
         }
-
-        if let Err(e) = conn.execute(
+        if let Err(e) = tx.execute(
             "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
             params![version, name],
         ) {
             eprintln!("[db] failed to record migration {version} ({name}): {e}");
+            drop(tx);
+            break;
+        }
+        if let Err(e) = tx.commit() {
+            eprintln!("[db] failed to commit migration {version} ({name}): {e}");
             break;
         }
 
@@ -1434,7 +1448,7 @@ pub fn archive_entries(conn: &Connection, table: &str, ids: &[i64]) -> rusqlite:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::{Connection, params};
+    use rusqlite::{params, Connection};
 
     #[test]
     fn test_open_configure_schema() {
