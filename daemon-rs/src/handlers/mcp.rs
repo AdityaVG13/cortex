@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 use chrono::{Duration, Utc};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
+use super::diary::{write_diary_entry, DiaryRequest};
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{forget_keyword, resolve_decision};
-use super::recall::{RecallContext, execute_unified_recall, unfold_source};
+use super::recall::{
+    execute_semantic_recall, execute_unified_recall, unfold_source, RecallContext,
+};
 use super::store::{persist_decision_embedding, store_decision_with_input_embedding};
-use super::{estimate_tokens, now_iso};
+use super::{estimate_tokens, now_iso, SourceIdentity};
 use crate::state::RuntimeState;
 
 // ─── JSON-RPC helpers ─────────────────────────────────────────────────────────
@@ -55,6 +58,232 @@ fn wrap_mcp_tool_result_verbose(state: &RuntimeState, data: Value) -> Value {
             "text": decorated.to_string()
         }]
     })
+}
+
+fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn arg_f64(args: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(|value| value.as_f64()))
+}
+
+fn arg_i64(args: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
+}
+
+fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
+    keys.iter()
+        .find_map(|key| args.get(*key).and_then(|value| value.as_u64()))
+        .map(|value| value as usize)
+}
+
+fn source_agent_for_tool(source: Option<&SourceIdentity>, fallback: &str) -> String {
+    source
+        .map(|identity| identity.agent.clone())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn source_model_for_tool<'a>(
+    source: Option<&'a SourceIdentity>,
+    args: &'a Value,
+) -> Option<&'a str> {
+    source
+        .and_then(|identity| identity.model.as_deref())
+        .or_else(|| arg_str(args, &["model"]))
+}
+
+fn can_view_last_call(
+    owner_id: Option<i64>,
+    visibility: Option<&str>,
+    ctx: &RecallContext,
+) -> bool {
+    if !ctx.team_mode {
+        return true;
+    }
+    let Some(caller_id) = ctx.caller_id else {
+        return false;
+    };
+    let Some(owner_id) = owner_id else {
+        return false;
+    };
+    owner_id == caller_id || matches!(visibility, Some("shared") | Some("team"))
+}
+
+fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = match conn.prepare(&pragma) {
+        Ok(stmt) => stmt,
+        Err(_) => return false,
+    };
+    let rows = match stmt.query_map([], |row| row.get::<_, String>(1)) {
+        Ok(rows) => rows,
+        Err(_) => return false,
+    };
+    let found = rows.flatten().any(|name| name == column);
+    found
+}
+
+fn fetch_last_call(
+    conn: &rusqlite::Connection,
+    kind: Option<&str>,
+    agent_filter: Option<&str>,
+    ctx: &RecallContext,
+) -> Result<Value, String> {
+    let normalized_kind = kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("any");
+    let agent_filter = agent_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase);
+
+    let owner_scoped_entries = table_has_column(conn, "memories", "owner_id")
+        && table_has_column(conn, "memories", "visibility")
+        && table_has_column(conn, "decisions", "owner_id")
+        && table_has_column(conn, "decisions", "visibility");
+
+    let sql = if owner_scoped_entries {
+        "
+            SELECT kind, id, created_at, source_agent, summary, detail, owner_id, visibility
+            FROM (
+              SELECT 'memory' AS kind, id, created_at, source_agent,
+                     substr(text, 1, 240) AS summary,
+                     json_object('text', text, 'source', source, 'type', type) AS detail,
+                     owner_id, visibility
+              FROM memories
+              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              UNION ALL
+              SELECT 'decision' AS kind, id, created_at, source_agent,
+                     substr(decision, 1, 240) AS summary,
+                     json_object('decision', decision, 'context', context, 'type', type) AS detail,
+                     owner_id, visibility
+              FROM decisions
+              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              UNION ALL
+              SELECT 'event' AS kind, id, created_at, source_agent,
+                     substr(COALESCE(data, type), 1, 240) AS summary,
+                     json_object('type', type, 'data', data) AS detail,
+                     NULL AS owner_id, NULL AS visibility
+              FROM events
+            )
+            WHERE (?1 = 'any' OR kind = ?1)
+            ORDER BY CAST(strftime('%s', created_at) AS INTEGER) DESC, id DESC
+            LIMIT 32
+        "
+    } else {
+        "
+            SELECT kind, id, created_at, source_agent, summary, detail, owner_id, visibility
+            FROM (
+              SELECT 'memory' AS kind, id, created_at, source_agent,
+                     substr(text, 1, 240) AS summary,
+                     json_object('text', text, 'source', source, 'type', type) AS detail,
+                     NULL AS owner_id, NULL AS visibility
+              FROM memories
+              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              UNION ALL
+              SELECT 'decision' AS kind, id, created_at, source_agent,
+                     substr(decision, 1, 240) AS summary,
+                     json_object('decision', decision, 'context', context, 'type', type) AS detail,
+                     NULL AS owner_id, NULL AS visibility
+              FROM decisions
+              WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))
+              UNION ALL
+              SELECT 'event' AS kind, id, created_at, source_agent,
+                     substr(COALESCE(data, type), 1, 240) AS summary,
+                     json_object('type', type, 'data', data) AS detail,
+                     NULL AS owner_id, NULL AS visibility
+              FROM events
+            )
+            WHERE (?1 = 'any' OR kind = ?1)
+            ORDER BY CAST(strftime('%s', created_at) AS INTEGER) DESC, id DESC
+            LIMIT 32
+        "
+    };
+
+    let mut stmt = conn.prepare(sql).map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![normalized_kind], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        })
+        .map_err(|err| err.to_string())?;
+
+    for row in rows.flatten() {
+        let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) = row;
+        if let Some(filter) = agent_filter.as_deref() {
+            let current = source_agent
+                .as_deref()
+                .map(str::to_lowercase)
+                .unwrap_or_default();
+            if current != filter {
+                continue;
+            }
+        }
+        if row_kind != "event" && !can_view_last_call(owner_id, visibility.as_deref(), ctx) {
+            continue;
+        }
+        return Ok(json!({
+            "found": true,
+            "kind": row_kind,
+            "id": id,
+            "createdAt": created_at,
+            "sourceAgent": source_agent,
+            "summary": summary,
+            "detail": serde_json::from_str::<Value>(&detail).unwrap_or(Value::String(detail)),
+        }));
+    }
+
+    Ok(json!({ "found": false }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fetch_last_call;
+    use crate::db;
+    use crate::handlers::recall::RecallContext;
+
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::configure(&conn).unwrap();
+        db::initialize_schema(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn fetch_last_call_supports_solo_schema_without_owner_columns() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, created_at)
+             VALUES (?1, ?2, ?3, 'active', datetime('now'))",
+            rusqlite::params!["semantic recall added", "thread focus", "codex"],
+        )
+        .unwrap();
+
+        let payload = fetch_last_call(&conn, Some("decision"), None, &RecallContext::solo()).unwrap();
+
+        assert_eq!(payload["found"].as_bool(), Some(true));
+        assert_eq!(payload["kind"].as_str(), Some("decision"));
+        assert_eq!(payload["sourceAgent"].as_str(), Some("codex"));
+        assert_eq!(
+            payload["detail"]["decision"].as_str(),
+            Some("semantic recall added")
+        );
+    }
 }
 
 async fn upsert_mcp_session(
@@ -162,6 +391,20 @@ pub fn mcp_tools() -> Vec<Value> {
                 "properties": {
                     "query": { "type": "string", "description": "Search query text" },
                     "budget": { "type": "number", "description": "Token budget. 0=headlines only, 200=balanced, 500+=full detail" },
+                    "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "cortex_semantic_recall",
+            "description": "Semantic-only recall path that skips keyword fusion. Use when you want pure embedding retrieval.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query text" },
+                    "budget": { "type": "number", "description": "Token budget for returned excerpts" },
+                    "k": { "type": "number", "description": "Maximum results to return (default 10)" },
                     "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" }
                 },
                 "required": ["query"]
@@ -278,6 +521,17 @@ pub fn mcp_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "cortex_lastCall",
+            "description": "Fetch the latest memory, decision, or event added to Cortex, with optional kind/agent filters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "description": "Filter by kind: any, memory, decision, or event" },
+                    "agent": { "type": "string", "description": "Optional source agent filter" }
+                }
+            }
+        }),
+        json!({
             "name": "cortex_reconnect",
             "description": "Re-register this MCP agent session after a daemon restart or transient disconnect. Safe to call mid-session.",
             "inputSchema": {
@@ -298,6 +552,7 @@ async fn mcp_dispatch(
     caller_id: Option<i64>,
     tool_name: &str,
     args: &Value,
+    source: Option<&SourceIdentity>,
 ) -> Result<Value, String> {
     match tool_name {
         "cortex_boot" => {
@@ -305,13 +560,10 @@ async fn mcp_dispatch(
                 .get("profile")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let agent = args
-                .get("agent")
-                .and_then(|v| v.as_str())
-                .or_else(|| args.get("source_agent").and_then(|v| v.as_str()))
-                .unwrap_or("mcp")
-                .to_string();
-            let model = args.get("model").and_then(|v| v.as_str());
+            let agent = arg_str(args, &["agent", "source_agent"])
+                .map(str::to_string)
+                .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
+            let model = source_model_for_tool(source, args);
             let _budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             let profile_str = profile.unwrap_or_else(|| "full".to_string());
             let _ = upsert_mcp_session(state, caller_id, &agent, model, "MCP boot session").await;
@@ -367,10 +619,12 @@ async fn mcp_dispatch(
         }
 
         "cortex_reconnect" => {
-            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
-            let model = args.get("model").and_then(|v| v.as_str());
+            let agent = arg_str(args, &["agent"])
+                .map(str::to_string)
+                .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
+            let model = source_model_for_tool(source, args);
             let (display_agent, expires_at) =
-                upsert_mcp_session(state, caller_id, agent, model, "MCP reconnect").await?;
+                upsert_mcp_session(state, caller_id, &agent, model, "MCP reconnect").await?;
             state.emit(
                 "session",
                 json!({"action": "reconnected", "agent": display_agent}),
@@ -395,44 +649,37 @@ async fn mcp_dispatch(
         }
 
         "cortex_recall" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
+            let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
-            let budget = args
-                .get("budget")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
-                .unwrap_or(200);
-            let agent = args
-                .get("source_agent")
-                .and_then(|v| v.as_str())
-                .or_else(|| args.get("agent").and_then(|v| v.as_str()))
-                .unwrap_or("mcp");
+            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
+            let agent = arg_str(args, &["agent", "source_agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
 
             let ctx = RecallContext::from_caller(caller_id, state);
             execute_unified_recall(state, query, budget, 10, agent, &ctx).await
         }
 
+        "cortex_semantic_recall" => {
+            let query = arg_str(args, &["query", "q"])
+                .ok_or_else(|| "Missing required argument: query".to_string())?;
+            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or(10);
+            let agent = arg_str(args, &["agent", "source_agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+
+            let ctx = RecallContext::from_caller(caller_id, state);
+            execute_semantic_recall(state, query, budget, k, agent, &ctx).await
+        }
+
         "cortex_store" => {
-            let decision = args
-                .get("decision")
-                .and_then(|v| v.as_str())
+            let decision = arg_str(args, &["decision", "d"])
                 .ok_or_else(|| "Missing required argument: decision".to_string())?;
-            let context = args
-                .get("context")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let entry_type = args
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let source_agent = args
-                .get("source_agent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("mcp")
-                .to_string();
-            let confidence = args.get("confidence").and_then(|v| v.as_f64());
+            let context = arg_str(args, &["context", "c"]).map(str::to_string);
+            let entry_type = arg_str(args, &["type", "t"]).map(str::to_string);
+            let source_agent =
+                source_agent_for_tool(source, arg_str(args, &["source_agent"]).unwrap_or("mcp"));
+            let confidence = arg_f64(args, &["confidence", "conf"]);
+            let ttl_seconds = arg_i64(args, &["ttl_seconds", "ttl"]);
             let decision_embedding = state
                 .embedding_engine
                 .as_ref()
@@ -446,7 +693,7 @@ async fn mcp_dispatch(
                 entry_type,
                 source_agent.clone(),
                 confidence,
-                None,
+                ttl_seconds,
                 decision_embedding.as_deref(),
                 caller_id,
             )
@@ -459,7 +706,13 @@ async fn mcp_dispatch(
             // Auto-append to active focus session (sawtooth pattern)
             crate::focus::focus_append(&conn, &source_agent, decision);
 
-            Ok(entry)
+            Ok(json!({
+                "stored": true,
+                "id": new_id,
+                "sourceAgent": source_agent,
+                "kind": entry.get("kind").cloned().unwrap_or(Value::Null),
+                "action": entry.get("action").cloned().unwrap_or_else(|| json!("stored")),
+            }))
         }
 
         "cortex_health" => Ok(build_health_payload(state).await),
@@ -591,7 +844,8 @@ async fn mcp_dispatch(
                 .get("label")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
-            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let agent = arg_str(args, &["agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let conn = state.db.lock().await;
             crate::focus::focus_start(&conn, label, agent)
         }
@@ -601,13 +855,15 @@ async fn mcp_dispatch(
                 .get("label")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
-            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let agent = arg_str(args, &["agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let conn = state.db.lock().await;
             crate::focus::focus_end(&conn, label, agent, caller_id)
         }
 
         "cortex_focus_status" => {
-            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let agent = arg_str(args, &["agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let conn = state.db.lock().await;
 
             let current = crate::focus::focus_current(&conn, agent);
@@ -644,96 +900,27 @@ async fn mcp_dispatch(
         }
 
         "cortex_diary" => {
-            use std::fs;
+            let body = DiaryRequest {
+                accomplished: arg_str(args, &["accomplished", "done"]).map(str::to_string),
+                next_steps: arg_str(args, &["nextSteps", "next_steps", "next"]).map(str::to_string),
+                decisions: arg_str(args, &["decisions", "dec"]).map(str::to_string),
+                key_decisions: arg_str(args, &["keyDecisions"]).map(str::to_string),
+                pending: arg_str(args, &["pending", "pend"]).map(str::to_string),
+                known_issues: arg_str(args, &["knownIssues", "known_issues", "issues"])
+                    .map(str::to_string),
+            };
+            let source_agent = source_agent_for_tool(source, "mcp");
+            let path = write_diary_entry(state, &body, &source_agent).await?;
 
-            let state_path = state.home.join(".claude").join("state.md");
+            Ok(json!({ "written": true, "agent": source_agent, "path": path }))
+        }
 
-            if let Some(parent) = state_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create directory: {e}"))?;
-            }
-
-            let existing = fs::read_to_string(&state_path).unwrap_or_default();
-            let permanent = extract_permanent_sections(&existing);
-            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-
-            let mut lines: Vec<String> = vec![format!("# Session State — {today}"), String::new()];
-
-            if !permanent.is_empty() {
-                lines.push("## DO NOT REMOVE".to_string());
-                lines.push(permanent);
-                lines.push(String::new());
-            }
-
-            if let Some(text) = args.get("accomplished").and_then(|v| v.as_str()) {
-                let safe = sanitize_markdown(text);
-                if !safe.is_empty() {
-                    lines.push("## What Was Done This Session".to_string());
-                    lines.push(safe);
-                    lines.push(String::new());
-                }
-            }
-
-            let next_steps = args
-                .get("nextSteps")
-                .and_then(|v| v.as_str())
-                .or_else(|| args.get("next_steps").and_then(|v| v.as_str()));
-            if let Some(text) = next_steps {
-                let safe = sanitize_markdown(text);
-                if !safe.is_empty() {
-                    lines.push("## Next Session".to_string());
-                    lines.push(safe);
-                    lines.push(String::new());
-                }
-            }
-
-            if let Some(text) = args.get("pending").and_then(|v| v.as_str()) {
-                let safe = sanitize_markdown(text);
-                if !safe.is_empty() {
-                    lines.push("## Pending".to_string());
-                    lines.push(safe);
-                    lines.push(String::new());
-                }
-            }
-
-            let known_issues = args
-                .get("knownIssues")
-                .and_then(|v| v.as_str())
-                .or_else(|| args.get("known_issues").and_then(|v| v.as_str()));
-            if let Some(text) = known_issues {
-                let safe = sanitize_markdown(text);
-                if !safe.is_empty() {
-                    lines.push("## Known Issues".to_string());
-                    lines.push(safe);
-                    lines.push(String::new());
-                }
-            }
-
-            let decisions_text = args
-                .get("decisions")
-                .and_then(|v| v.as_str())
-                .or_else(|| args.get("keyDecisions").and_then(|v| v.as_str()));
-            if let Some(text) = decisions_text {
-                let safe = sanitize_markdown(text);
-                if !safe.is_empty() {
-                    lines.push("## Key Decisions".to_string());
-                    lines.push(safe);
-                    lines.push(String::new());
-                }
-            } else {
-                let existing_decisions = extract_section(&existing, "## Key Decisions");
-                if let Some(content) = existing_decisions {
-                    lines.push("## Key Decisions".to_string());
-                    lines.push(content);
-                    lines.push(String::new());
-                }
-            }
-
-            let content = lines.join("\n");
-            fs::write(&state_path, &content)
-                .map_err(|e| format!("Failed to write state.md: {e}"))?;
-
-            Ok(json!({ "written": true }))
+        "cortex_lastCall" => {
+            let kind = arg_str(args, &["kind"]);
+            let agent_filter = arg_str(args, &["agent", "source_agent"]);
+            let ctx = RecallContext::from_caller(caller_id, state);
+            let conn = state.db.lock().await;
+            fetch_last_call(&conn, kind, agent_filter, &ctx)
         }
 
         _ => Err(format!("Unknown tool: {tool_name}")),
@@ -746,6 +933,7 @@ pub async fn handle_mcp_message_with_caller(
     state: &RuntimeState,
     msg: &Value,
     caller_id: Option<i64>,
+    source: Option<&SourceIdentity>,
 ) -> Option<Value> {
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
     let method = msg
@@ -803,7 +991,7 @@ pub async fn handle_mcp_message_with_caller(
                 .cloned()
                 .unwrap_or_else(|| json!({}));
 
-            match mcp_dispatch(state, caller_id, tool_name, &args).await {
+            match mcp_dispatch(state, caller_id, tool_name, &args, source).await {
                 Ok(result) => {
                     let wrapped = if tool_name == "cortex_health" || tool_name == "cortex_digest" {
                         wrap_mcp_tool_result_verbose(state, result)
@@ -837,36 +1025,4 @@ pub async fn handle_mcp_message_with_caller(
             }
         }
     }
-}
-
-// ─── Diary helpers (duplicated from handlers/diary.rs to avoid pub re-export) ─
-
-fn extract_permanent_sections(content: &str) -> String {
-    extract_section(content, "## DO NOT REMOVE").unwrap_or_default()
-}
-
-fn extract_section(content: &str, header: &str) -> Option<String> {
-    let idx = content.find(header)?;
-    let start = idx + header.len();
-    let rest = &content[start..];
-    let end = rest.find("\n## ").map(|i| i + 1).unwrap_or(rest.len());
-    let text = rest[..end].trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
-}
-
-fn sanitize_markdown(input: &str) -> String {
-    input
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if trimmed.chars().all(|c| c == '-') && trimmed.len() >= 3 {
-                return line.to_string();
-            }
-            if trimmed.starts_with("##") {
-                return format!("<!-- {line} -->");
-            }
-            line.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }

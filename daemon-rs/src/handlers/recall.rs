@@ -3,13 +3,13 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::{NaiveDateTime, TimeZone, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 use super::ensure_auth_with_caller;
-use super::{estimate_tokens, json_response, now_iso, truncate_chars};
+use super::{estimate_tokens, json_response, now_iso, resolve_source_identity, truncate_chars};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState};
@@ -162,15 +162,7 @@ pub async fn handle_recall(
     let q = query.q.unwrap_or_default();
     let k = query.k.unwrap_or(10);
     let budget = query.budget.unwrap_or(200);
-    let agent = query
-        .agent
-        .or_else(|| {
-            headers
-                .get("x-source-agent")
-                .and_then(|h| h.to_str().ok())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "http".to_string());
+    let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
 
     if q.trim().is_empty() {
         return json_response(
@@ -185,6 +177,37 @@ pub async fn handle_recall(
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Recall failed: {err}") }),
+        ),
+    }
+}
+
+pub async fn handle_semantic_recall(
+    State(state): State<RuntimeState>,
+    Query(query): Query<RecallQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let q = query.q.unwrap_or_default();
+    let k = query.k.unwrap_or(10);
+    let budget = query.budget.unwrap_or(200);
+    let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
+
+    if q.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Missing query parameter: q" }),
+        );
+    }
+
+    let ctx = RecallContext::from_caller(caller_id, &state);
+    match execute_semantic_recall(&state, q.trim(), budget, k, &agent, &ctx).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Semantic recall failed: {err}") }),
         ),
     }
 }
@@ -446,6 +469,57 @@ pub async fn execute_unified_recall(
     });
 
     Ok(payload)
+}
+
+pub async fn execute_semantic_recall(
+    state: &RuntimeState,
+    query_text: &str,
+    budget: usize,
+    k: usize,
+    agent: &str,
+    ctx: &RecallContext,
+) -> Result<Value, String> {
+    let query_vector = state
+        .embedding_engine
+        .as_ref()
+        .and_then(|engine| engine.embed(query_text));
+    let semantic_available = query_vector.is_some();
+    let budgeted = {
+        let conn = state.db.lock().await;
+        let results = run_semantic_recall_with_query_vector(&conn, k, query_vector.as_deref(), ctx);
+        apply_semantic_budget(results, budget)
+    };
+    let spent: usize = budgeted
+        .iter()
+        .map(|item| {
+            item.tokens
+                .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+        })
+        .sum();
+    let saved = budget as i64 - spent as i64;
+
+    emit_recall_query_event(
+        state,
+        agent,
+        json!({
+            "query": query_text,
+            "mode": "semantic",
+            "k": k,
+            "budget": budget,
+            "results": budgeted.len(),
+            "semantic_available": semantic_available,
+        }),
+    )
+    .await;
+
+    Ok(json!({
+        "results": budgeted.into_iter().map(recall_to_json).collect::<Vec<_>>(),
+        "mode": "semantic",
+        "budget": budget,
+        "spent": spent,
+        "saved": saved,
+        "semanticAvailable": semantic_available,
+    }))
 }
 
 // ─── Core recall ─────────────────────────────────────────────────────────────
@@ -728,6 +802,78 @@ fn run_budget_recall(
     ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
     run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx, None)
+}
+
+fn run_semantic_recall_with_query_vector(
+    conn: &Connection,
+    k: usize,
+    query_vector: Option<&[f32]>,
+    ctx: &RecallContext,
+) -> Vec<RecallItem> {
+    let mut ranked: Vec<RecallItem> = query_vector
+        .map(|query_vec| collect_semantic_candidates(conn, query_vec, ctx))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|candidate| RecallItem {
+            source: candidate.source,
+            relevance: round4(candidate.relevance),
+            excerpt: candidate.excerpt,
+            method: "semantic".to_string(),
+            tokens: None,
+            entropy: None,
+        })
+        .collect();
+
+    for item in &mut ranked {
+        let h = shannon_entropy(&item.excerpt);
+        item.entropy = Some(round4(h));
+        item.relevance = round4(item.relevance * (1.0 + (h - 3.5) * 0.10));
+    }
+
+    ranked.sort_by(|a, b| {
+        b.relevance
+            .partial_cmp(&a.relevance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    ranked.truncate(k);
+    bump_retrievals_batch(conn, &ranked);
+    ranked
+}
+
+fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize) -> Vec<RecallItem> {
+    if token_budget == 0 {
+        return raw
+            .into_iter()
+            .map(|mut item| {
+                item.excerpt.clear();
+                item.tokens = Some(estimate_tokens(&item.source));
+                item
+            })
+            .collect();
+    }
+
+    let mut spent = 0usize;
+    let mut budgeted = Vec::new();
+    for (idx, mut item) in raw.into_iter().enumerate() {
+        let remaining = token_budget.saturating_sub(spent);
+        if remaining <= 10 {
+            break;
+        }
+
+        let max_chars = if idx == 0 {
+            ((remaining as f64 * 3.8) as usize).min(280)
+        } else if idx <= 2 {
+            ((remaining as f64 * 3.8) as usize).min(140)
+        } else {
+            ((remaining as f64 * 3.8) as usize).min(80)
+        };
+        item.excerpt = truncate_chars(&item.excerpt, max_chars);
+        let tokens = estimate_tokens(&format!("{}{}", item.source, item.excerpt));
+        item.tokens = Some(tokens);
+        spent += tokens;
+        budgeted.push(item);
+    }
+    budgeted
 }
 
 fn run_budget_recall_with_query_vector(
@@ -1960,9 +2106,9 @@ async fn predict_and_cache(
             .into_iter()
             .filter(|(query, _)| query != current_query)
             .max_by(|a, b| {
-                a.1.0
-                    .cmp(&b.1.0)
-                    .then_with(|| a.1.1.cmp(&b.1.1))
+                a.1 .0
+                    .cmp(&b.1 .0)
+                    .then_with(|| a.1 .1.cmp(&b.1 .1))
                     .then_with(|| b.0.cmp(&a.0))
             })
             .map(|(query, _)| query)
