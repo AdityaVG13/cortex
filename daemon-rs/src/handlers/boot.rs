@@ -51,7 +51,20 @@ pub async fn handle_boot(
     // Clear served content for this agent on boot
     {
         let mut served = state.served_content.lock().await;
-        served.remove(&agent);
+        let scope_prefix = if state.team_mode {
+            match caller_id.or(state.default_owner_id) {
+                Some(owner_id) => format!("team:{owner_id}::{agent}::"),
+                None => format!("team:none::{agent}::"),
+            }
+        } else {
+            format!("solo::{agent}::")
+        };
+        // Clear current scoped keys plus legacy pre-scope keys.
+        served.retain(|key, _| {
+            !key.starts_with(&scope_prefix)
+                && !key.starts_with(&format!("{agent}::"))
+                && key != &agent
+        });
     }
 
     let conn = state.db.lock().await;

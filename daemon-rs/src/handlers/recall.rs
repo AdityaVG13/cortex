@@ -80,6 +80,7 @@ type DecisionSemanticRow = (Vec<u8>, String, Option<String>, Option<i64>, Option
 
 /// Caller identity + team mode flag, threaded through the recall pipeline
 /// so visibility filtering can gate results without changing SQL queries.
+#[derive(Clone, Copy)]
 pub struct RecallContext {
     pub caller_id: Option<i64>,
     pub team_mode: bool,
@@ -104,6 +105,7 @@ impl RecallContext {
     }
 
     /// Solo-mode context where everything is visible (no filtering).
+    #[allow(dead_code)]
     pub fn solo() -> Self {
         Self {
             caller_id: None,
@@ -287,7 +289,7 @@ pub async fn handle_peek(
         Err(resp) => return resp,
     };
     let q = match &query.q {
-        Some(q) if !q.is_empty() => q.clone(),
+        Some(q) if !q.trim().is_empty() => q.trim().to_string(),
         _ => {
             return json_response(
                 StatusCode::BAD_REQUEST,
@@ -336,10 +338,14 @@ pub async fn execute_unified_recall(
     agent: &str,
     ctx: &RecallContext,
 ) -> Result<Value, String> {
+    let recall_scope = recall_scope_key(agent, ctx);
+    let scope_prefix = recall_owner_scope(ctx);
+
     // Check pre-cache
     if budget > 0 {
-        if let Some(cached) = get_pre_cached(state, agent, query_text).await {
-            let deduped_cached = dedup_and_mark_served(state, agent, query_text, cached).await;
+        if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await
+        {
+            let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
             emit_recall_query_event(
                 state,
                 agent,
@@ -387,14 +393,15 @@ pub async fn execute_unified_recall(
     drop(conn);
 
     // Record recall pattern for prediction
-    record_recall_pattern(state, agent, query_text).await;
+    record_recall_pattern(state, &recall_scope, query_text).await;
 
     // Fire-and-forget pre-cache warming
     let state_clone = state.clone();
-    let agent_owned = agent.to_string();
+    let scope_owned = recall_scope.clone();
     let query_owned = query_text.to_string();
+    let ctx_owned = *ctx;
     tokio::spawn(async move {
-        let _ = predict_and_cache(state_clone, &agent_owned, &query_owned).await;
+        let _ = predict_and_cache(state_clone, &scope_owned, &query_owned, ctx_owned).await;
     });
 
     // Headlines mode (budget == 0)
@@ -434,7 +441,7 @@ pub async fn execute_unified_recall(
     }
 
     // Dedup and budget accounting
-    let results = dedup_and_mark_served(state, agent, query_text, results).await;
+    let results = dedup_and_mark_served(state, agent, query_text, ctx, results).await;
     let spent: usize = results
         .iter()
         .map(|item| {
@@ -1957,6 +1964,7 @@ async fn dedup_and_mark_served(
     state: &RuntimeState,
     agent: &str,
     query: &str,
+    ctx: &RecallContext,
     results: Vec<RecallItem>,
 ) -> Vec<RecallItem> {
     if results.is_empty() {
@@ -1966,7 +1974,7 @@ async fn dedup_and_mark_served(
     let now = Utc::now().timestamp_millis();
     let mut served = state.served_content.lock().await;
     let map = served
-        .entry(served_content_scope(agent, query))
+        .entry(served_content_scope(agent, query, ctx))
         .or_insert_with(HashMap::<u32, i64>::new);
 
     // Evict expired entries
@@ -1985,21 +1993,35 @@ async fn dedup_and_mark_served(
     filtered
 }
 
-fn served_content_scope(agent: &str, query: &str) -> String {
+fn recall_owner_scope(ctx: &RecallContext) -> String {
+    if !ctx.team_mode {
+        return "solo".to_string();
+    }
+    match ctx.caller_id {
+        Some(owner_id) => format!("team:{owner_id}"),
+        None => "team:none".to_string(),
+    }
+}
+
+fn recall_scope_key(agent: &str, ctx: &RecallContext) -> String {
+    format!("{}::{agent}", recall_owner_scope(ctx))
+}
+
+fn served_content_scope(agent: &str, query: &str, ctx: &RecallContext) -> String {
     let normalized_query = query
         .split_whitespace()
         .map(|segment| segment.to_ascii_lowercase())
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{agent}::{normalized_query}")
+    format!("{}::{agent}::{normalized_query}", recall_owner_scope(ctx))
 }
 
 // ─── Recall pattern tracking / pre-cache ─────────────────────────────────────
 
-async fn record_recall_pattern(state: &RuntimeState, agent: &str, query: &str) {
+async fn record_recall_pattern(state: &RuntimeState, scope_key: &str, query: &str) {
     let mut history = state.recall_history.lock().await;
     let entries = history
-        .entry(agent.to_string())
+        .entry(scope_key.to_string())
         .or_insert_with(Vec::<RecallHistoryEntry>::new);
     entries.push(RecallHistoryEntry {
         query: query.to_string(),
@@ -2019,12 +2041,18 @@ async fn record_recall_pattern(state: &RuntimeState, agent: &str, query: &str) {
 /// LRU ordering is maintained by `predict_and_cache` (max 100 entries, oldest evicted).
 const JACCARD_FUZZY_THRESHOLD: f64 = 0.6;
 
-async fn get_pre_cached(state: &RuntimeState, agent: &str, query: &str) -> Option<Vec<RecallItem>> {
+async fn get_pre_cached(
+    state: &RuntimeState,
+    scope_key: &str,
+    scope_prefix: &str,
+    query: &str,
+) -> Option<Vec<RecallItem>> {
     let mut cache = state.pre_cache.lock().await;
     let now = Utc::now().timestamp_millis();
+    let scope_prefix = format!("{scope_prefix}::");
 
     // Tier 0: exact match for this agent
-    if let Some(entry) = cache.get(agent) {
+    if let Some(entry) = cache.get(scope_key) {
         if entry.query == query && entry.expires_at > now {
             return deserialize_cache_entry(&entry.results);
         }
@@ -2032,17 +2060,20 @@ async fn get_pre_cached(state: &RuntimeState, agent: &str, query: &str) -> Optio
 
     // Evict expired entry for this agent
     if cache
-        .get(agent)
+        .get(scope_key)
         .map(|e| e.expires_at <= now)
         .unwrap_or(false)
     {
-        cache.remove(agent);
+        cache.remove(scope_key);
     }
 
-    // Tier 1: fuzzy Jaccard match across all cached entries (any agent)
+    // Tier 1: fuzzy Jaccard match across scoped entries (same owner in team mode).
     let mut best_score = 0.0_f64;
     let mut best_key: Option<String> = None;
     for (key, entry) in cache.iter() {
+        if !key.starts_with(&scope_prefix) {
+            continue;
+        }
         if entry.expires_at <= now {
             continue;
         }
@@ -2082,12 +2113,13 @@ fn deserialize_cache_entry(results: &serde_json::Value) -> Option<Vec<RecallItem
 
 async fn predict_and_cache(
     state: RuntimeState,
-    agent: &str,
+    scope_key: &str,
     current_query: &str,
+    predict_ctx: RecallContext,
 ) -> Result<(), String> {
     let predicted_query = {
         let history = state.recall_history.lock().await;
-        let entries = match history.get(agent) {
+        let entries = match history.get(scope_key) {
             Some(entries) if entries.len() >= 3 => entries,
             _ => return Ok(()),
         };
@@ -2119,7 +2151,6 @@ async fn predict_and_cache(
         _ => return Ok(()),
     };
 
-    let predict_ctx = RecallContext::solo();
     let mut conn = state.db.lock().await;
     let results = run_budget_recall(&mut conn, &predicted_query, 200, 5, &predict_ctx)?;
     drop(conn);
@@ -2150,7 +2181,7 @@ async fn predict_and_cache(
     }
 
     cache.insert(
-        agent.to_string(),
+        scope_key.to_string(),
         PreCacheEntry {
             query: predicted_query,
             results: results_json,
@@ -2166,6 +2197,8 @@ async fn predict_and_cache(
 pub struct UnfoldQuery {
     pub sources: Option<String>,
 }
+
+const MAX_UNFOLD_SOURCES: usize = 50;
 
 /// Unfold specific items by source string. Returns full text for each requested
 /// source without re-running search. Designed for progressive disclosure:
@@ -2201,8 +2234,14 @@ pub async fn handle_unfold(
             json!({"error": "No valid sources provided"}),
         );
     }
+    if requested.len() > MAX_UNFOLD_SOURCES {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({"error": format!("Too many sources (max {MAX_UNFOLD_SOURCES})")}),
+        );
+    }
 
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let mut results: Vec<Value> = Vec::new();
     let mut total_tokens = 0usize;
 
@@ -2302,20 +2341,22 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
 
     let stripped = source.strip_prefix("memory::").unwrap_or(source);
-    if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
-        "SELECT text, type, owner_id, visibility FROM memories WHERE source LIKE ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
-        params![format!("%{stripped}%")],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        },
-    ) {
-        if is_visible(owner_id, visibility.as_deref(), ctx) {
-            return Some(json!({"text": text, "type": ty}));
+    if stripped != source {
+        if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
+            "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
+            params![stripped],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        ) {
+            if is_visible(owner_id, visibility.as_deref(), ctx) {
+                return Some(json!({"text": text, "type": ty}));
+            }
         }
     }
 
@@ -2769,6 +2810,40 @@ mod tests {
         let ctx = team_ctx(1);
         assert!(!is_visible(None, Some("shared"), &ctx));
         assert!(!is_visible(None, None, &ctx));
+    }
+
+    #[test]
+    fn recall_scopes_are_owner_isolated_in_team_mode() {
+        let a = team_ctx(101);
+        let b = team_ctx(202);
+        assert_ne!(recall_scope_key("codex", &a), recall_scope_key("codex", &b));
+        assert_ne!(
+            served_content_scope("codex", "fix migration race", &a),
+            served_content_scope("codex", "fix migration race", &b)
+        );
+    }
+
+    #[test]
+    fn unfold_source_memory_requires_exact_source_match() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            params!["alpha", "memory::alpha"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            params!["alphabet", "memory::alphabet"],
+        )
+        .unwrap();
+
+        let exact = unfold_source(&conn, "memory::alpha", &solo_ctx())
+            .and_then(|v| v["text"].as_str().map(|s| s.to_string()))
+            .unwrap();
+        assert_eq!(exact, "alpha");
+        assert!(unfold_source(&conn, "memory::alp", &solo_ctx()).is_none());
     }
 
     // ── existing tests ─────────────────────────────────────────────
