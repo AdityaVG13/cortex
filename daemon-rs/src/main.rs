@@ -406,6 +406,7 @@ async fn main() {
                 mcp_proxy::ProxyRuntimeOptions {
                     allow_respawn: true,
                     shutdown_on_exit: false,
+                    shutdown_on_idle_startup: ensure.spawned,
                 },
             )
             .await
@@ -468,6 +469,7 @@ async fn main() {
                         mcp_proxy::ProxyRuntimeOptions {
                             allow_respawn: ensure.spawned,
                             shutdown_on_exit: ensure.spawned,
+                            shutdown_on_idle_startup: ensure.spawned,
                         },
                     )
                     .await
@@ -1616,6 +1618,23 @@ async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Res
 /// invocations cannot rotate the shared auth token and then die on bind.
 fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, String> {
     let _ = auth::cleanup_stale_pid_lock(paths);
+    if std::env::var("CORTEX_WAIT_FOR_DAEMON_LOCK")
+        .ok()
+        .is_some_and(|value| value == "1")
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match auth::acquire_daemon_lock(paths) {
+                Ok(lock) => return Ok(lock),
+                Err(err) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(err);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
     auth::acquire_daemon_lock(paths)
 }
 

@@ -16,6 +16,7 @@
 //! - Owner-managed sessions can respawn and stop the daemon they created
 
 use serde_json::Value;
+use sysinfo::{ProcessesToUpdate, System};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::auth::CortexPaths;
@@ -29,11 +30,14 @@ const SESSION_HEARTBEAT_SECS: u64 = 15;
 const SESSION_RESTART_ATTEMPTS: u32 = 4;
 const SESSION_RESTART_DELAY_MS: u64 = 250;
 const HEARTBEAT_RECOVERY_FAILURES: u32 = 2;
+const STARTUP_IDLE_TIMEOUT_SECS: u64 = 20;
+const ORPHAN_CHECK_SECS: u64 = 15;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProxyRuntimeOptions {
     pub allow_respawn: bool,
     pub shutdown_on_exit: bool,
+    pub shutdown_on_idle_startup: bool,
 }
 
 /// Read the auth token from ~/.cortex/cortex.token.
@@ -69,11 +73,94 @@ fn detect_team_mode(api_key: Option<&str>) -> bool {
     api_key.is_some()
 }
 
+fn startup_idle_timeout() -> std::time::Duration {
+    let secs = std::env::var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(STARTUP_IDLE_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs.max(1))
+}
+
 fn env_trimmed(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn detect_agent_hint(value: &str) -> Option<&'static str> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    if value.contains("codex") {
+        return Some("codex");
+    }
+    if value.contains("cursor") {
+        return Some("cursor");
+    }
+    if value.contains("gemini") {
+        return Some("gemini");
+    }
+    if value.contains("claude") {
+        return Some("claude-code");
+    }
+    if value.contains("cline") {
+        return Some("cline");
+    }
+    None
+}
+
+fn infer_agent_from_process_tree() -> Option<String> {
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let current_pid = sysinfo::get_current_pid().ok()?;
+    let mut next_pid = Some(current_pid);
+    let mut depth = 0usize;
+
+    while let Some(pid) = next_pid {
+        let process = system.process(pid)?;
+        let candidates = [
+            process.name().to_string_lossy().into_owned(),
+            process
+                .exe()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            process
+                .cmd()
+                .iter()
+                .map(|part| part.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ];
+
+        for candidate in candidates {
+            if let Some(agent) = detect_agent_hint(&candidate) {
+                return Some(agent.to_string());
+            }
+        }
+
+        next_pid = process.parent();
+        depth += 1;
+        if depth >= 6 {
+            break;
+        }
+    }
+
+    None
+}
+
+fn current_parent_pid() -> Option<sysinfo::Pid> {
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let current_pid = sysinfo::get_current_pid().ok()?;
+    system.process(current_pid)?.parent()
+}
+
+fn process_is_alive(pid: sysinfo::Pid) -> bool {
+    let mut system = System::new_all();
+    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).is_some()
 }
 
 fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
@@ -86,6 +173,7 @@ fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
                 .filter(|v| !v.is_empty())
         })
         .or_else(|| env_trimmed("CORTEX_AGENT_NAME"))
+        .or_else(infer_agent_from_process_tree)
         .unwrap_or_else(|| "mcp".to_string());
 
     if !agent.contains('(') {
@@ -380,10 +468,11 @@ async fn finalize_proxy_session(
     base_url: &str,
     api_key: Option<&str>,
     agent: &str,
+    saw_client_message: bool,
     options: ProxyRuntimeOptions,
 ) {
     let _ = session_end(client, base_url, api_key, agent).await;
-    if options.shutdown_on_exit {
+    if options.shutdown_on_exit || (options.shutdown_on_idle_startup && !saw_client_message) {
         if shutdown_daemon(client, base_url, api_key).await {
             eprintln!("[cortex-mcp] Stopped owned daemon for '{agent}'");
         } else {
@@ -562,33 +651,113 @@ pub async fn run(
 
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);
-    let mut lines = reader.lines();
     let mut stdout = tokio::io::stdout();
+    let (stdin_tx, mut stdin_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<Option<String>, String>>();
+    tokio::spawn(async move {
+        let mut lines = reader.lines();
+        loop {
+            let next = match lines.next_line().await {
+                Ok(Some(line)) => Ok(Some(line)),
+                Ok(None) => Ok(None),
+                Err(err) => Err(err.to_string()),
+            };
+            let should_stop = matches!(next, Ok(None) | Err(_));
+            if stdin_tx.send(next).is_err() || should_stop {
+                break;
+            }
+        }
+    });
 
     let mut consecutive_failures: u32 = 0;
     let mut respawn_attempts: u32 = 0;
     let mut last_respawn_attempt_at: Option<std::time::Instant> = None;
+    let startup_timeout = startup_idle_timeout();
+    let parent_pid = current_parent_pid();
+    let mut saw_client_message = false;
+    let mut orphan_check = tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_SECS));
+    orphan_check.tick().await;
 
     loop {
-        let line = match lines.next_line().await {
-            Ok(Some(line)) => line,
-            Ok(None) => {
-                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
-                    .await;
-                eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
-                return Ok(());
+        let line = if !saw_client_message {
+            let startup_sleep = tokio::time::sleep(startup_timeout);
+            tokio::pin!(startup_sleep);
+            tokio::select! {
+                _ = orphan_check.tick() => {
+                    if let Some(parent_pid) = parent_pid {
+                        if !process_is_alive(parent_pid) {
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                                .await;
+                            eprintln!("[cortex-mcp] Proxy session ended (parent process exited before handshake)");
+                            return Ok(());
+                        }
+                    }
+                    continue;
+                }
+                _ = &mut startup_sleep => {
+                    finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                        .await;
+                    eprintln!(
+                        "[cortex-mcp] Proxy session ended (no client handshake within {}s)",
+                        startup_timeout.as_secs()
+                    );
+                    return Ok(());
+                }
+                result = stdin_rx.recv() => {
+                    match result {
+                        Some(Ok(Some(line))) => line,
+                        Some(Ok(None)) | None => {
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                                .await;
+                            eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
+                            return Ok(());
+                        }
+                        Some(Err(e)) => {
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                                .await;
+                            eprintln!("[cortex-mcp] Stdin read error: {e}");
+                            return Err(std::io::Error::other(e).into());
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
-                    .await;
-                eprintln!("[cortex-mcp] Stdin read error: {e}");
-                return Err(e.into());
+        } else {
+            tokio::select! {
+                _ = orphan_check.tick() => {
+                    if let Some(parent_pid) = parent_pid {
+                        if !process_is_alive(parent_pid) {
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                                .await;
+                            eprintln!("[cortex-mcp] Proxy session ended (parent process exited)");
+                            return Ok(());
+                        }
+                    }
+                    continue;
+                }
+                result = stdin_rx.recv() => {
+                    match result {
+                        Some(Ok(Some(line))) => line,
+                        Some(Ok(None)) | None => {
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                                .await;
+                            eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
+                            return Ok(());
+                        }
+                        Some(Err(e)) => {
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                                .await;
+                            eprintln!("[cortex-mcp] Stdin read error: {e}");
+                            return Err(std::io::Error::other(e).into());
+                        }
+                    }
+                }
             }
         };
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
+        saw_client_message = true;
 
         let msg: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
@@ -605,6 +774,7 @@ pub async fn run(
                         &rpc_base_url,
                         api_key,
                         &agent_display,
+                        saw_client_message,
                         options,
                     )
                     .await;
@@ -807,8 +977,15 @@ pub async fn run(
                 "id": id
             });
             if !write_value(&mut stdout, &err_resp).await? {
-                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
-                    .await;
+                finalize_proxy_session(
+                    &client,
+                    &rpc_base_url,
+                    api_key,
+                    &agent_display,
+                    saw_client_message,
+                    options,
+                )
+                .await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon error");
                 return Ok(());
             }
@@ -867,8 +1044,15 @@ pub async fn run(
 
         if let Some(body) = response_body {
             if !write_raw_line(&mut stdout, &body).await? {
-                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, options)
-                    .await;
+                finalize_proxy_session(
+                    &client,
+                    &rpc_base_url,
+                    api_key,
+                    &agent_display,
+                    saw_client_message,
+                    options,
+                )
+                .await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon response");
                 return Ok(());
             }
@@ -936,5 +1120,13 @@ mod tests {
         assert_eq!(fs::read_to_string(&buffer_path).unwrap(), "");
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn detect_agent_hint_matches_known_clients() {
+        assert_eq!(detect_agent_hint("Codex.exe"), Some("codex"));
+        assert_eq!(detect_agent_hint("cursor-agent"), Some("cursor"));
+        assert_eq!(detect_agent_hint("Gemini CLI"), Some("gemini"));
+        assert_eq!(detect_agent_hint("Claude Code"), Some("claude-code"));
     }
 }

@@ -91,6 +91,43 @@ fn direct_mcp_can_start_daemon_and_keep_it_running() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+#[test]
+fn direct_mcp_cleans_up_unused_owned_daemon_when_stdin_closes_immediately() {
+    let home_dir = unique_temp_dir("mcp_idle");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn idle cortex mcp");
+
+    wait_for_exit(&mut child, Duration::from_secs(10));
+
+    let shutdown_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < shutdown_deadline {
+        if !health_ok(port) {
+            let _ = fs::remove_dir_all(&home_dir);
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    panic!("owned daemon remained healthy after idle MCP wrapper exit");
+}
+
 fn write_json_line(stdin: &mut std::process::ChildStdin, value: Value) {
     let mut line = serde_json::to_vec(&value).expect("serialize request");
     line.push(b'\n');

@@ -78,6 +78,7 @@ pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
         .env("CORTEX_HOME", &paths.home)
         .env("CORTEX_DB", &paths.db)
         .env("CORTEX_PORT", paths.port.to_string())
+        .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
