@@ -3,11 +3,11 @@ use crate::handlers;
 use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue};
 use axum::routing::{get, post};
+use axum::Json;
+use axum::Router;
 use serde_json::Value;
 use std::path::Path;
 use tower_http::cors::CorsLayer;
@@ -47,6 +47,10 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         .route("/dump", get(handlers::health::handle_dump))
         .route("/store", post(handlers::store::handle_store))
         .route("/recall", get(handlers::recall::handle_recall))
+        .route(
+            "/recall/semantic",
+            get(handlers::recall::handle_semantic_recall),
+        )
         .route("/peek", get(handlers::recall::handle_peek))
         .route("/unfold", get(handlers::recall::handle_unfold))
         .route("/boot", get(handlers::boot::handle_boot))
@@ -180,24 +184,20 @@ async fn handle_mcp_rpc(
     headers: HeaderMap,
     Json(msg): Json<Value>,
 ) -> Json<Value> {
-    if let Err(_resp) = ensure_auth(&headers, &state) {
-        return Json(serde_json::json!({
-            "jsonrpc": "2.0",
-            "error": { "code": -32600, "message": "Unauthorized" },
-            "id": msg.get("id")
-        }));
-    }
-
     let caller_id = match handlers::ensure_auth_with_caller(&headers, &state) {
         Ok(caller_id) => caller_id,
         Err(_) => {
-            eprintln!("[cortex] Failed to resolve MCP caller after auth succeeded");
-            None
+            return Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32600, "message": "Unauthorized" },
+                "id": msg.get("id")
+            }));
         }
     };
+    let source = handlers::resolve_source_identity(&headers, "mcp");
     handlers::register_agent_presence_from_headers(&state, &headers, caller_id).await;
 
-    match handle_mcp_message_with_caller(&state, &msg, caller_id).await {
+    match handle_mcp_message_with_caller(&state, &msg, caller_id, Some(&source)).await {
         Some(resp) => Json(resp),
         None => Json(serde_json::json!({})),
     }

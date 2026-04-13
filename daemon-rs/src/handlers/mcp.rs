@@ -98,6 +98,24 @@ fn source_model_for_tool<'a>(
         .or_else(|| arg_str(args, &["model"]))
 }
 
+fn recall_owner_scope(ctx: &RecallContext) -> String {
+    if !ctx.team_mode {
+        return "solo".to_string();
+    }
+    match ctx.caller_id {
+        Some(owner_id) => format!("team:{owner_id}"),
+        None => "team:none".to_string(),
+    }
+}
+
+async fn clear_served_scope_for_boot(state: &RuntimeState, agent: &str, ctx: &RecallContext) {
+    let scope_prefix = format!("{}::{agent}::", recall_owner_scope(ctx));
+    let mut served = state.served_content.lock().await;
+    served.retain(|key, _| {
+        !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != agent
+    });
+}
+
 fn can_view_last_call(
     owner_id: Option<i64>,
     visibility: Option<&str>,
@@ -274,7 +292,8 @@ mod tests {
         )
         .unwrap();
 
-        let payload = fetch_last_call(&conn, Some("decision"), None, &RecallContext::solo()).unwrap();
+        let payload =
+            fetch_last_call(&conn, Some("decision"), None, &RecallContext::solo()).unwrap();
 
         assert_eq!(payload["found"].as_bool(), Some(true));
         assert_eq!(payload["kind"].as_str(), Some("decision"));
@@ -566,13 +585,11 @@ async fn mcp_dispatch(
             let model = source_model_for_tool(source, args);
             let _budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             let profile_str = profile.unwrap_or_else(|| "full".to_string());
+            let ctx = RecallContext::from_caller(caller_id, state);
             let _ = upsert_mcp_session(state, caller_id, &agent, model, "MCP boot session").await;
 
             // Clear served content for this agent on boot
-            {
-                let mut served = state.served_content.lock().await;
-                served.remove(&agent);
-            }
+            clear_served_scope_for_boot(state, &agent, &ctx).await;
 
             let conn = state.db.lock().await;
 
@@ -586,7 +603,7 @@ async fn mcp_dispatch(
                 |row| row.get::<_, String>(0),
             ) {
                 if state.team_mode {
-                    if let Some(owner_id) = state.default_owner_id {
+                    if let Some(owner_id) = ctx.caller_id.or(state.default_owner_id) {
                         let _ = conn.execute(
                             "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, datetime('now')) \
                              ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
@@ -723,6 +740,7 @@ async fn mcp_dispatch(
         }
 
         "cortex_unfold" => {
+            const MAX_UNFOLD_SOURCES: usize = 50;
             let sources: Vec<String> = match args.get("sources") {
                 Some(Value::Array(arr)) => arr
                     .iter()
@@ -742,9 +760,12 @@ async fn mcp_dispatch(
             if sources.is_empty() {
                 return Err("sources array is empty".to_string());
             }
+            if sources.len() > MAX_UNFOLD_SOURCES {
+                return Err(format!("Too many sources (max {MAX_UNFOLD_SOURCES})"));
+            }
             let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
             let ctx = RecallContext::from_caller(caller_id, state);
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             let mut results: Vec<Value> = Vec::new();
             let mut total_tokens = 0usize;
             let mut found_sources: Vec<String> = Vec::new();
@@ -794,9 +815,11 @@ async fn mcp_dispatch(
                     }));
                 }
             }
+            drop(conn);
 
             // Implicit positive feedback: unfolding = "this result was useful"
             if !found_sources.is_empty() {
+                let conn = state.db.lock().await;
                 super::feedback::record_unfold_feedback(
                     &conn,
                     &found_sources,
