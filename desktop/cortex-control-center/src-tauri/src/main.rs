@@ -3,12 +3,15 @@
 
 mod sidecar;
 
+use fs2::FileExt;
 use rusqlite::Connection;
 use serde::Serialize;
 use sidecar::SidecarDaemon;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,6 +39,7 @@ const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
+const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 
 struct DaemonState {
     daemon: Mutex<SidecarDaemon>,
@@ -91,6 +95,10 @@ struct LifecycleState {
     explicit_quit: AtomicBool,
 }
 
+struct AppInstanceGuard {
+    lock_file: File,
+}
+
 #[derive(Clone, Copy)]
 struct RequestTimeouts {
     connect: Duration,
@@ -114,6 +122,44 @@ impl LifecycleState {
     fn is_quit_requested(&self) -> bool {
         self.explicit_quit.load(Ordering::SeqCst)
     }
+}
+
+impl AppInstanceGuard {
+    fn acquire() -> Result<Option<Self>, String> {
+        let lock_path = control_center_lock_path()?;
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+        }
+        let mut lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|err| format!("Failed to open {}: {err}", lock_path.display()))?;
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = lock_file.set_len(0);
+                let _ = writeln!(lock_file, "pid={}", std::process::id());
+                Ok(Some(Self { lock_file }))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(err) => Err(format!("Failed to lock {}: {err}", lock_path.display())),
+        }
+    }
+}
+
+impl Drop for AppInstanceGuard {
+    fn drop(&mut self) {
+        let _ = self.lock_file.unlock();
+    }
+}
+
+fn control_center_lock_path() -> Result<PathBuf, String> {
+    Ok(default_cortex_dir()?
+        .join("runtime")
+        .join(CONTROL_CENTER_LOCK_FILE))
 }
 
 #[derive(Serialize)]
@@ -1050,18 +1096,40 @@ enum EditorConfigKind {
 struct EditorTarget {
     id: &'static str,
     name: &'static str,
+    agent_name: &'static str,
     config_kind: EditorConfigKind,
     config_path: PathBuf,
+    fallback_config_paths: Vec<PathBuf>,
 }
 
 fn cortex_exe_path() -> Option<PathBuf> {
     find_cortex_binary()
 }
 
-fn cortex_mcp_registration(cortex_exe: &str) -> serde_json::Value {
+fn editor_args(target: &EditorTarget) -> [&'static str; 3] {
+    ["mcp", "--agent", target.agent_name]
+}
+
+fn editor_path_detected(path: &Path) -> bool {
+    path.exists() || path.parent().map(|parent| parent.exists()).unwrap_or(false)
+}
+
+fn editor_config_path(target: &EditorTarget) -> PathBuf {
+    if target.config_path.exists() {
+        return target.config_path.clone();
+    }
+    for path in &target.fallback_config_paths {
+        if path.exists() {
+            return path.clone();
+        }
+    }
+    target.config_path.clone()
+}
+
+fn cortex_mcp_registration(target: &EditorTarget, cortex_exe: &str) -> serde_json::Value {
     serde_json::json!({
       "command": cortex_exe,
-      "args": ["mcp"]
+      "args": editor_args(target)
     })
 }
 fn editor_targets(home: &Path) -> Vec<EditorTarget> {
@@ -1069,53 +1137,64 @@ fn editor_targets(home: &Path) -> Vec<EditorTarget> {
         EditorTarget {
             id: "claude-code",
             name: "Claude Code",
+            agent_name: "claude",
             config_kind: EditorConfigKind::Json,
             config_path: home.join(".claude").join("settings.json"),
+            fallback_config_paths: Vec::new(),
         },
         EditorTarget {
             id: "claude-desktop",
             name: "Claude Desktop",
+            agent_name: "claude",
             config_kind: EditorConfigKind::Json,
             config_path: home
                 .join("AppData")
                 .join("Roaming")
                 .join("Claude")
                 .join("claude_desktop_config.json"),
+            fallback_config_paths: Vec::new(),
         },
         EditorTarget {
             id: "cursor",
             name: "Cursor",
+            agent_name: "cursor",
             config_kind: EditorConfigKind::Json,
             config_path: home.join(".cursor").join("mcp.json"),
+            fallback_config_paths: Vec::new(),
         },
         EditorTarget {
             id: "codex",
             name: "Codex",
+            agent_name: "codex",
             config_kind: EditorConfigKind::Toml,
             config_path: home.join(".codex").join("config.toml"),
+            fallback_config_paths: Vec::new(),
         },
         EditorTarget {
             id: "gemini",
             name: "Gemini CLI",
+            agent_name: "gemini",
             config_kind: EditorConfigKind::Json,
-            config_path: home.join(".gemini").join("settings.json"),
+            config_path: home.join(".gemini").join("settings").join("mcp.json"),
+            fallback_config_paths: vec![home.join(".gemini").join("settings.json")],
         },
         EditorTarget {
             id: "droid",
             name: "Droid",
+            agent_name: "droid",
             config_kind: EditorConfigKind::Json,
             config_path: home.join(".factory").join("mcp.json"),
+            fallback_config_paths: Vec::new(),
         },
     ]
 }
 
 fn editor_detected(target: &EditorTarget) -> bool {
-    target.config_path.exists()
+    editor_path_detected(&target.config_path)
         || target
-            .config_path
-            .parent()
-            .map(|path| path.exists())
-            .unwrap_or(false)
+            .fallback_config_paths
+            .iter()
+            .any(|path| editor_path_detected(path))
 }
 
 fn editor_command_path(cortex_exe: Option<&str>) -> Option<String> {
@@ -1129,19 +1208,20 @@ fn editor_detection(
     cortex_exe: Option<&str>,
     message: String,
 ) -> EditorDetection {
+    let config_path = editor_config_path(target);
     EditorDetection {
         id: target.id.into(),
         name: target.name.into(),
         detected,
         registered,
-        config_path: Some(target.config_path.display().to_string()),
+        config_path: Some(config_path.display().to_string()),
         command_path: editor_command_path(cortex_exe),
         message,
     }
 }
 
 fn json_registration_for(target: &EditorTarget, cortex_exe: &str) -> serde_json::Value {
-    let mut registration = cortex_mcp_registration(cortex_exe);
+    let mut registration = cortex_mcp_registration(target, cortex_exe);
     if let Some(object) = registration.as_object_mut() {
         match target.id {
             "gemini" => {
@@ -1174,97 +1254,130 @@ fn read_toml_config(config_path: &Path) -> Result<toml::Value, String> {
     }
 }
 
-fn is_editor_registered(target: &EditorTarget, cortex_exe: &str) -> Result<bool, String> {
-    if !target.config_path.exists() {
+fn json_args_match(config: &serde_json::Value, expected_args: &[&str]) -> bool {
+    config
+        .get("args")
+        .and_then(|value| value.as_array())
+        .map(|args| {
+            args.len() == expected_args.len()
+                && args
+                    .iter()
+                    .zip(expected_args.iter())
+                    .all(|(value, expected)| value.as_str() == Some(*expected))
+        })
+        .unwrap_or(false)
+}
+
+fn toml_args_match(config: &toml::Value, expected_args: &[&str]) -> bool {
+    config
+        .get("args")
+        .and_then(|value| value.as_array())
+        .map(|args| {
+            args.len() == expected_args.len()
+                && args
+                    .iter()
+                    .zip(expected_args.iter())
+                    .all(|(value, expected)| value.as_str() == Some(*expected))
+        })
+        .unwrap_or(false)
+}
+
+fn is_editor_registered_at_path(
+    target: &EditorTarget,
+    cortex_exe: &str,
+    config_path: &Path,
+) -> Result<bool, String> {
+    if !config_path.exists() {
         return Ok(false);
     }
+    let expected_args = editor_args(target);
 
     match target.config_kind {
         EditorConfigKind::Json => {
-            let config = read_json_config(&target.config_path)?;
+            let config = read_json_config(config_path)?;
             Ok(config
                 .get("mcpServers")
                 .and_then(|value| value.get("cortex"))
-                .and_then(|value| value.get("command"))
-                .and_then(|value| value.as_str())
-                .map(|value| value == cortex_exe)
+                .map(|value| {
+                    value
+                        .get("command")
+                        .and_then(|command| command.as_str())
+                        .map(|command| command == cortex_exe)
+                        .unwrap_or(false)
+                        && json_args_match(value, &expected_args)
+                })
                 .unwrap_or(false))
         }
         EditorConfigKind::Toml => {
-            let config = read_toml_config(&target.config_path)?;
+            let config = read_toml_config(config_path)?;
             Ok(config
                 .get("mcp_servers")
                 .and_then(|value| value.get("cortex"))
-                .and_then(|value| value.get("command"))
-                .and_then(|value| value.as_str())
-                .map(|value| value == cortex_exe)
+                .map(|value| {
+                    value
+                        .get("command")
+                        .and_then(|command| command.as_str())
+                        .map(|command| command == cortex_exe)
+                        .unwrap_or(false)
+                        && toml_args_match(value, &expected_args)
+                })
                 .unwrap_or(false))
         }
     }
+}
+
+fn is_editor_registered(target: &EditorTarget, cortex_exe: &str) -> Result<bool, String> {
+    let config_path = editor_config_path(target);
+    is_editor_registered_at_path(target, cortex_exe, &config_path)
 }
 
 fn register_json_editor(
     target: &EditorTarget,
     cortex_exe: &str,
 ) -> Result<EditorDetection, String> {
+    let config_path = editor_config_path(target);
     if !editor_detected(target) {
         return Ok(editor_detection(
             target,
             false,
             false,
             Some(cortex_exe),
-            format!(
-                "{} not detected ({})",
-                target.name,
-                target.config_path.display()
-            ),
+            format!("{} not detected ({})", target.name, config_path.display()),
         ));
     }
 
-    let mut config = read_json_config(&target.config_path)?;
+    let mut config = read_json_config(&config_path)?;
     let servers = config
         .as_object_mut()
-        .ok_or_else(|| {
-            format!(
-                "Invalid JSON config format in {}",
-                target.config_path.display()
-            )
-        })?
+        .ok_or_else(|| format!("Invalid JSON config format in {}", config_path.display()))?
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
-    let action = match servers
-        .get("cortex")
-        .and_then(|value| value.get("command"))
-        .and_then(|value| value.as_str())
-    {
-        Some(existing) if existing == cortex_exe => "Already configured",
-        Some(_) => "Updated configuration",
-        None => "Configured",
+    let action = if is_editor_registered_at_path(target, cortex_exe, &config_path)? {
+        "Already configured"
+    } else if config_path.exists() {
+        "Updated configuration"
+    } else {
+        "Configured"
     };
 
     servers
         .as_object_mut()
-        .ok_or_else(|| {
-            format!(
-                "Invalid mcpServers format in {}",
-                target.config_path.display()
-            )
-        })?
+        .ok_or_else(|| format!("Invalid mcpServers format in {}", config_path.display()))?
         .insert("cortex".into(), json_registration_for(target, cortex_exe));
 
-    if let Some(parent) = target.config_path.parent() {
+    if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let out = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&target.config_path, out).map_err(|e| e.to_string())?;
+    fs::write(&config_path, out).map_err(|e| e.to_string())?;
 
     Ok(editor_detection(
         target,
         true,
         true,
         Some(cortex_exe),
-        format!("{action} in {}", target.config_path.display()),
+        format!("{action} in {}", config_path.display()),
     ))
 }
 
@@ -1272,47 +1385,35 @@ fn register_toml_editor(
     target: &EditorTarget,
     cortex_exe: &str,
 ) -> Result<EditorDetection, String> {
+    let config_path = editor_config_path(target);
     if !editor_detected(target) {
         return Ok(editor_detection(
             target,
             false,
             false,
             Some(cortex_exe),
-            format!(
-                "{} not detected ({})",
-                target.name,
-                target.config_path.display()
-            ),
+            format!("{} not detected ({})", target.name, config_path.display()),
         ));
     }
 
-    let mut config = read_toml_config(&target.config_path)?;
-    let root = config.as_table_mut().ok_or_else(|| {
-        format!(
-            "Invalid TOML config format in {}",
-            target.config_path.display()
-        )
-    })?;
+    let mut config = read_toml_config(&config_path)?;
+    let root = config
+        .as_table_mut()
+        .ok_or_else(|| format!("Invalid TOML config format in {}", config_path.display()))?;
     let servers = root
         .entry("mcp_servers")
         .or_insert_with(|| toml::Value::Table(Default::default()))
         .as_table_mut()
-        .ok_or_else(|| {
-            format!(
-                "Invalid [mcp_servers] format in {}",
-                target.config_path.display()
-            )
-        })?;
+        .ok_or_else(|| format!("Invalid [mcp_servers] format in {}", config_path.display()))?;
 
-    let action = match servers
-        .get("cortex")
-        .and_then(|value| value.get("command"))
-        .and_then(|value| value.as_str())
-    {
-        Some(existing) if existing == cortex_exe => "Already configured",
-        Some(_) => "Updated configuration",
-        None => "Configured",
+    let action = if is_editor_registered_at_path(target, cortex_exe, &config_path)? {
+        "Already configured"
+    } else if config_path.exists() {
+        "Updated configuration"
+    } else {
+        "Configured"
     };
+    let args = editor_args(target);
 
     let mut server = toml::map::Map::new();
     server.insert(
@@ -1321,22 +1422,26 @@ fn register_toml_editor(
     );
     server.insert(
         "args".into(),
-        toml::Value::Array(vec![toml::Value::String("mcp".into())]),
+        toml::Value::Array(
+            args.into_iter()
+                .map(|value| toml::Value::String(value.to_string()))
+                .collect(),
+        ),
     );
     servers.insert("cortex".into(), toml::Value::Table(server));
 
-    if let Some(parent) = target.config_path.parent() {
+    if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let out = toml::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(&target.config_path, out).map_err(|e| e.to_string())?;
+    fs::write(&config_path, out).map_err(|e| e.to_string())?;
 
     Ok(editor_detection(
         target,
         true,
         true,
         Some(cortex_exe),
-        format!("{action} in {}", target.config_path.display()),
+        format!("{action} in {}", config_path.display()),
     ))
 }
 
@@ -1423,6 +1528,17 @@ fn detect_editors() -> Result<Vec<EditorDetection>, String> {
 }
 
 fn main() {
+    let _instance_guard = match AppInstanceGuard::acquire() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            eprintln!("Cortex Control Center is already running.");
+            return;
+        }
+        Err(err) => {
+            eprintln!("Failed to initialize Cortex Control Center: {err}");
+            return;
+        }
+    };
     let exe_path = find_cortex_binary();
 
     let app = tauri::Builder::default()
@@ -1485,10 +1601,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_cortex_dir, extract_error_detail, interpret_shutdown_response,
-        is_cortex_health_response, runtime_copy_dir_for_session, workspace_binary_candidates,
-        FetchCortexResponse,
+        default_cortex_dir, editor_args, editor_config_path, editor_targets, extract_error_detail,
+        interpret_shutdown_response, is_cortex_health_response, runtime_copy_dir_for_session,
+        workspace_binary_candidates, FetchCortexResponse,
     };
+    use std::fs;
     use std::path::Path;
 
     #[test]
@@ -1568,5 +1685,42 @@ mod tests {
             503,
             r#"{"status":"ok","runtime":{}}"#
         ));
+    }
+
+    #[test]
+    fn editor_registration_uses_explicit_agent_args() {
+        let home = Path::new("C:/Users/aditya");
+        let targets = editor_targets(home);
+        let cursor = targets.iter().find(|target| target.id == "cursor").unwrap();
+        let claude = targets
+            .iter()
+            .find(|target| target.id == "claude-code")
+            .unwrap();
+
+        assert_eq!(editor_args(cursor), ["mcp", "--agent", "cursor"]);
+        assert_eq!(editor_args(claude), ["mcp", "--agent", "claude"]);
+    }
+
+    #[test]
+    fn gemini_prefers_nested_mcp_config_when_present() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "cortex_control_center_editor_test_{}",
+            std::process::id()
+        ));
+        let gemini_nested = temp_root.join(".gemini").join("settings").join("mcp.json");
+        let gemini_legacy = temp_root.join(".gemini").join("settings.json");
+        fs::create_dir_all(gemini_nested.parent().unwrap()).expect("create gemini settings dir");
+        fs::write(&gemini_nested, "{}").expect("write nested gemini config");
+        fs::write(&gemini_legacy, "{}").expect("write legacy gemini config");
+
+        let targets = editor_targets(&temp_root);
+        let gemini = targets.iter().find(|target| target.id == "gemini").unwrap();
+
+        assert_eq!(editor_config_path(gemini), gemini_nested);
+
+        let _ = fs::remove_file(gemini_nested);
+        let _ = fs::remove_file(gemini_legacy);
+        let _ = fs::remove_dir_all(temp_root.join(".gemini"));
+        let _ = fs::remove_dir(temp_root);
     }
 }
