@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
-use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::Json;
 use chrono::{Duration, TimeZone, Utc};
 use regex::Regex;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{ensure_auth, json_response, now_iso};
+use super::{ensure_auth, json_response, now_iso, resolve_caller_id};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 
@@ -128,12 +128,11 @@ pub struct NextTaskQuery {
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
-fn owner_id_from_state(state: &RuntimeState) -> Option<i64> {
-    if state.team_mode {
-        state.default_owner_id
-    } else {
-        None
+fn owner_id_from_headers(headers: &HeaderMap, state: &RuntimeState) -> Option<i64> {
+    if !state.team_mode {
+        return None;
     }
+    resolve_caller_id(headers, state).or(state.default_owner_id)
 }
 
 fn parse_duration_to_seconds(raw: &str) -> i64 {
@@ -190,6 +189,17 @@ fn redact_secrets(text: &str) -> String {
     Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+")
         .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
         .unwrap_or(hashes)
+}
+
+fn is_unique_constraint(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(code, _) => {
+            code.code == rusqlite::ErrorCode::ConstraintViolation
+                && (code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                    || code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY)
+        }
+        _ => false,
+    }
 }
 
 // ─── Cleanup helpers ────────────────────────────────────────────────────────
@@ -476,7 +486,7 @@ pub async fn handle_lock(
     };
 
     let ttl = body.ttl.unwrap_or(300).max(1);
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let _ = clean_expired_locks(&conn, owner_id);
 
@@ -516,10 +526,17 @@ pub async fn handle_lock(
     let expires_at = (now + Duration::seconds(ttl)).to_rfc3339();
     if let Some((lock_id, holder, holder_expires)) = existing {
         if holder == agent {
-            let _ = conn.execute(
-                "UPDATE locks SET expires_at = ?1 WHERE path = ?2",
-                params![expires_at.clone(), path],
-            );
+            let _ = if let Some(owner_id) = owner_id {
+                conn.execute(
+                    "UPDATE locks SET expires_at = ?1 WHERE owner_id = ?2 AND path = ?3",
+                    params![expires_at.clone(), owner_id, path.clone()],
+                )
+            } else {
+                conn.execute(
+                    "UPDATE locks SET expires_at = ?1 WHERE path = ?2",
+                    params![expires_at.clone(), path.clone()],
+                )
+            };
             checkpoint_wal_best_effort(&conn);
             return json_response(
                 StatusCode::OK,
@@ -580,10 +597,22 @@ pub async fn handle_lock(
                 json!({ "locked": true, "lockId": lock_id, "expiresAt": expires_at }),
             )
         }
-        Err(err) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": format!("Lock failed: {err}") }),
-        ),
+        Err(err) => {
+            if is_unique_constraint(&err) {
+                json_response(
+                    StatusCode::CONFLICT,
+                    json!({
+                        "error": "file_already_locked",
+                        "message": "Another lock was acquired for this path while your request was in flight"
+                    }),
+                )
+            } else {
+                json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "error": format!("Lock failed: {err}") }),
+                )
+            }
+        }
     }
 }
 
@@ -617,7 +646,7 @@ pub async fn handle_unlock(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let _ = clean_expired_locks(&conn, owner_id);
     let holder = if let Some(owner_id) = owner_id {
@@ -675,7 +704,7 @@ pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap)
         return resp;
     }
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let _ = clean_expired_locks(&conn, owner_id);
     match fetch_locks(&conn, owner_id) {
@@ -721,7 +750,7 @@ pub async fn handle_post_activity(
     let id = Uuid::new_v4().to_string();
     let conn = state.db.lock().await;
     let _ = clean_old_activities(&conn);
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let insert = if let Some(owner_id) = owner_id {
         conn.execute(
             "INSERT INTO activities (id, agent, description, files_json, timestamp, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -774,7 +803,7 @@ pub async fn handle_get_activity(
 
     let since_secs = parse_duration_to_seconds(query.since.as_deref().unwrap_or("1h"));
     let cutoff = (Utc::now() - Duration::seconds(since_secs)).to_rfc3339();
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
 
     let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
@@ -870,7 +899,7 @@ pub async fn handle_post_message(
     let id = Uuid::new_v4().to_string();
     let conn = state.db.lock().await;
     let _ = clean_old_messages(&conn, &to);
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let insert = if let Some(owner_id) = owner_id {
         conn.execute(
             "INSERT INTO messages (id, sender, recipient, message, timestamp, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -915,7 +944,7 @@ pub async fn handle_get_messages(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     match fetch_messages_for_agent(&conn, &agent, owner_id) {
         Ok(messages) => json_response(StatusCode::OK, json!({ "messages": messages })),
@@ -954,7 +983,7 @@ pub async fn handle_session_start(
     }
 
     let ttl = body.ttl.unwrap_or(SESSION_TTL_SECONDS).max(1);
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let now = Utc::now();
     let session_id = Uuid::new_v4().to_string();
     let started_at = now.to_rfc3339();
@@ -1047,7 +1076,7 @@ pub async fn handle_session_heartbeat(
         );
     }
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let _ = clean_expired_sessions(&conn, owner_id);
     let exists = if let Some(owner_id) = owner_id {
@@ -1152,7 +1181,7 @@ pub async fn handle_session_end(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let deleted = if let Some(owner_id) = owner_id {
         conn.execute(
@@ -1185,7 +1214,7 @@ pub async fn handle_sessions(State(state): State<RuntimeState>, headers: HeaderM
         return resp;
     }
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let _ = clean_expired_sessions(&conn, owner_id);
     match fetch_sessions(&conn, owner_id) {
@@ -1223,7 +1252,7 @@ pub async fn handle_create_task(
     let _ = clean_old_tasks(&conn);
     let files_json =
         serde_json::to_string(&body.files.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let insert = if let Some(owner_id) = owner_id {
         conn.execute(
             "INSERT INTO tasks (task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary, owner_id, visibility)
@@ -1289,7 +1318,7 @@ pub async fn handle_get_tasks(
     }
     let status_filter = query.status.unwrap_or_else(|| "pending".to_string());
     let project_filter = query.project;
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     match fetch_tasks(&conn, &status_filter, project_filter.as_deref(), owner_id) {
         Ok(tasks) => json_response(StatusCode::OK, json!({ "tasks": tasks })),
@@ -1329,7 +1358,7 @@ pub async fn handle_claim_task(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let row = if let Some(owner_id) = owner_id {
         conn.query_row(
@@ -1438,7 +1467,7 @@ pub async fn handle_complete_task(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let row = if let Some(owner_id) = owner_id {
         conn.query_row(
@@ -1600,7 +1629,7 @@ pub async fn handle_delete_task(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
 
     let title = if let Some(owner_id) = owner_id {
@@ -1688,7 +1717,7 @@ pub async fn handle_abandon_task(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let row = if let Some(owner_id) = owner_id {
         conn.query_row(
@@ -1771,7 +1800,7 @@ pub async fn handle_next_task(
         }
     };
     let capability = query.capability.unwrap_or_else(|| "any".to_string());
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
 
     let sql = if owner_id.is_some() {
