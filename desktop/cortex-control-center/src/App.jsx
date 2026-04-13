@@ -1,5 +1,4 @@
-import { startTransition, useCallback, useEffect, useId, useMemo, useRef, useState, Component } from "react";
-import { BrainVisualizer } from "./BrainVisualizer.jsx";
+import { startTransition, useCallback, useEffect, useId, useMemo, useRef, useState, Component, lazy, Suspense } from "react";
 import { checkForUpdates, installUpdate } from "./updater.js";
 import {
   createApi,
@@ -23,6 +22,10 @@ import {
   sameAgent,
 } from "./live-surface.js";
 import { AppIcon } from "./ui-icons.jsx";
+
+const LazyBrainVisualizer = lazy(() =>
+  import("./BrainVisualizer.jsx").then((module) => ({ default: module.BrainVisualizer })),
+);
 
 class BrainErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { crashed: false, error: "" }; }
@@ -1984,9 +1987,9 @@ export function App() {
       { label: "Queue", value: pendingTasks.length, tone: pendingTasks.length ? "warning" : "calm" },
       { label: "Locks", value: locks.length, tone: locks.length ? "cyan" : "calm" },
       { label: "Recall", value: `${latestRecallHitRate || 0}%`, tone: latestRecallHitRate >= 85 ? "green" : "warning" },
-      { label: "Conflicts", value: conflictPairs.length, tone: conflictPairs.length ? "danger" : "calm" },
+      { label: "Agents", value: normalizedSessions.length, tone: normalizedSessions.length ? "cyan" : "calm" },
     ],
-    [pendingTasks.length, locks.length, latestRecallHitRate, conflictPairs.length]
+    [pendingTasks.length, locks.length, latestRecallHitRate, normalizedSessions.length]
   );
 
   const runtimeVersionMismatch = useMemo(
@@ -4237,12 +4240,21 @@ export function App() {
             aria-hidden={panel === "brain" ? undefined : true}
           >
             <BrainErrorBoundary>
-              <BrainVisualizer
-                api={api}
-                cortexBase={cortexBase}
-                authToken={tokenRef.current}
-                active={panel === "brain"}
-              />
+              <Suspense
+                fallback={(
+                  <div className="brain-loading">
+                    <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
+                    <p>Loading brain visualizer…</p>
+                  </div>
+                )}
+              >
+                <LazyBrainVisualizer
+                  api={api}
+                  cortexBase={cortexBase}
+                  authToken={tokenRef.current}
+                  active={panel === "brain"}
+                />
+              </Suspense>
             </BrainErrorBoundary>
           </section>
         ) : null}

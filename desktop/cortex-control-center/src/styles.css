@@ -2419,9 +2419,20 @@ body {
   justify-content: center;
   height: 60vh;
   gap: 16px;
+  padding: 24px 20px;
+  box-sizing: border-box;
   color: var(--text-3);
   font-family: var(--font-mono);
   font-size: 13px;
+  text-align: center;
+}
+
+.brain-loading p {
+  margin: 0;
+  max-width: min(100%, 32rem);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .brain-hud {
@@ -2442,6 +2453,17 @@ body {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .brain-panel {
+    margin: -20px -20px 0;
+  }
+
+  .brain-loading {
+    min-height: 50vh;
+    padding: 24px 16px;
+  }
 }
 
 .brain-label {
