@@ -30,7 +30,7 @@ const SESSION_HEARTBEAT_SECS: u64 = 15;
 const SESSION_RESTART_ATTEMPTS: u32 = 4;
 const SESSION_RESTART_DELAY_MS: u64 = 250;
 const HEARTBEAT_RECOVERY_FAILURES: u32 = 2;
-const STARTUP_IDLE_TIMEOUT_SECS: u64 = 20;
+const STARTUP_IDLE_TIMEOUT_SECS: u64 = 60;
 const ORPHAN_CHECK_SECS: u64 = 15;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -491,7 +491,7 @@ pub async fn run(
     let base_url = base_url.trim_end_matches('/');
     let mut rpc_base_url = base_url.to_string();
     let mut rpc_url = format!("{rpc_base_url}/mcp-rpc");
-    let health_url = format!("{rpc_base_url}/health");
+    let mut health_url = format!("{rpc_base_url}/health");
     let (agent_display, agent_model) = resolve_agent_identity(agent);
 
     let client = reqwest::Client::builder()
@@ -584,7 +584,10 @@ pub async fn run(
                     return;
                 }
             };
-            let heartbeat_health_url = format!("{heartbeat_base_url}/health");
+            let mut heartbeat_base_url = heartbeat_base_url;
+            let mut heartbeat_health_url = format!("{heartbeat_base_url}/health");
+            let heartbeat_can_refresh_local = heartbeat_base_url.starts_with("http://127.0.0.1:")
+                || heartbeat_base_url.starts_with("http://localhost:");
             let mut consecutive_heartbeat_failures = 0u32;
 
             loop {
@@ -603,7 +606,7 @@ pub async fn run(
                     }
                     SessionHeartbeatOutcome::MissingSession => {
                         consecutive_heartbeat_failures = 0;
-                        let restarted = session_start_with_retry(
+                        let mut restarted = session_start_with_retry(
                             &hb_client,
                             &heartbeat_base_url,
                             heartbeat_api_key.as_deref(),
@@ -613,6 +616,24 @@ pub async fn run(
                             SESSION_RESTART_DELAY_MS,
                         )
                         .await;
+                        if !restarted && heartbeat_can_refresh_local {
+                            let refreshed_base =
+                                format!("http://127.0.0.1:{}", CortexPaths::resolve().port);
+                            if refreshed_base != heartbeat_base_url {
+                                heartbeat_base_url = refreshed_base;
+                                heartbeat_health_url = format!("{heartbeat_base_url}/health");
+                                restarted = session_start_with_retry(
+                                    &hb_client,
+                                    &heartbeat_base_url,
+                                    heartbeat_api_key.as_deref(),
+                                    &heartbeat_agent,
+                                    heartbeat_model.as_deref(),
+                                    SESSION_RESTART_ATTEMPTS,
+                                    SESSION_RESTART_DELAY_MS,
+                                )
+                                .await;
+                            }
+                        }
                         if restarted {
                             eprintln!("[cortex-mcp] Re-registered session for {heartbeat_agent}");
                         }
@@ -625,7 +646,17 @@ pub async fn run(
 
                         consecutive_heartbeat_failures = 0;
                         if !health_check_ready(&hb_client, &heartbeat_health_url).await {
-                            continue;
+                            if heartbeat_can_refresh_local {
+                                let refreshed_base =
+                                    format!("http://127.0.0.1:{}", CortexPaths::resolve().port);
+                                if refreshed_base != heartbeat_base_url {
+                                    heartbeat_base_url = refreshed_base;
+                                    heartbeat_health_url = format!("{heartbeat_base_url}/health");
+                                }
+                            }
+                            if !health_check_ready(&hb_client, &heartbeat_health_url).await {
+                                continue;
+                            }
                         }
 
                         let restarted = session_start_with_retry(
@@ -1015,6 +1046,7 @@ pub async fn run(
                 paths = CortexPaths::resolve();
                 rpc_base_url = format!("http://127.0.0.1:{}", paths.port);
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
+                health_url = format!("{rpc_base_url}/health");
                 let _ = session_start(
                     &client,
                     &rpc_base_url,
@@ -1128,5 +1160,19 @@ mod tests {
         assert_eq!(detect_agent_hint("cursor-agent"), Some("cursor"));
         assert_eq!(detect_agent_hint("Gemini CLI"), Some("gemini"));
         assert_eq!(detect_agent_hint("Claude Code"), Some("claude-code"));
+    }
+
+    #[test]
+    fn startup_idle_timeout_respects_env_override_and_floor() {
+        std::env::remove_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS");
+        assert_eq!(startup_idle_timeout().as_secs(), STARTUP_IDLE_TIMEOUT_SECS);
+
+        std::env::set_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS", "0");
+        assert_eq!(startup_idle_timeout().as_secs(), 1);
+
+        std::env::set_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS", "75");
+        assert_eq!(startup_idle_timeout().as_secs(), 75);
+
+        std::env::remove_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS");
     }
 }
