@@ -15,14 +15,20 @@ pub mod store;
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
-use axum::Json;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Json;
 use chrono::{Duration, Utc};
 use serde_json::Value;
 use std::net::IpAddr;
 
 use crate::state::RuntimeState;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceIdentity {
+    pub agent: String,
+    pub model: Option<String>,
+}
 
 /// Build an Axum JSON response with CORS / cache headers applied.
 pub fn json_response(status: StatusCode, body: Value) -> Response {
@@ -58,7 +64,10 @@ pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
         Some(value) if !value.is_empty() => Ok(()),
         _ => Err(json_response(
             StatusCode::FORBIDDEN,
-            serde_json::json!({ "error": "Missing X-Cortex-Request header" }),
+            serde_json::json!({
+                "error": "Missing X-Cortex-Request header",
+                "hint": "Include header X-Cortex-Request: true on all Cortex HTTP requests"
+            }),
         )),
     }
 }
@@ -70,16 +79,7 @@ pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
 pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
     ensure_ssrf_protection(headers)?;
 
-    let header = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "));
-
-    match token {
+    match extract_auth_token(headers).as_deref() {
         Some(candidate) if token_matches_state(candidate, state) => Ok(()),
         _ => Err(json_response(
             StatusCode::UNAUTHORIZED,
@@ -96,20 +96,22 @@ pub fn ensure_auth_with_caller(
     state: &RuntimeState,
 ) -> Result<Option<i64>, Response> {
     ensure_ssrf_protection(headers)?;
-    let header = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "));
-    match token {
+    match extract_auth_token(headers).as_deref() {
         Some(candidate) => {
             if candidate == state.token.as_str() {
                 return Ok(None);
             }
             if state.team_mode && candidate.starts_with("ctx_") {
-                let hashes = state.team_api_key_hashes.read().unwrap();
+                let hashes = match state.team_api_key_hashes.read() {
+                    Ok(hashes) => hashes,
+                    Err(_) => {
+                        eprintln!("[cortex] team_api_key_hashes read lock poisoned during auth");
+                        return Err(json_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            serde_json::json!({ "error": "Team auth cache unavailable" }),
+                        ));
+                    }
+                };
                 for (user_id, hash) in hashes.iter() {
                     if crate::auth::verify_api_key_argon2id(candidate, hash) {
                         return Ok(Some(*user_id));
@@ -170,20 +172,20 @@ pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
     if !state.team_mode {
         return None;
     }
-    let header = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let token = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "))?;
+    let token = extract_auth_token(headers)?;
     if !token.starts_with("ctx_") {
         return None;
     }
-    let hashes = state.team_api_key_hashes.read().unwrap();
+    let hashes = match state.team_api_key_hashes.read() {
+        Ok(hashes) => hashes,
+        Err(_) => {
+            eprintln!("[cortex] team_api_key_hashes read lock poisoned while resolving caller");
+            return None;
+        }
+    };
     hashes
         .iter()
-        .find(|(_, hash)| crate::auth::verify_api_key_argon2id(token, hash))
+        .find(|(_, hash)| crate::auth::verify_api_key_argon2id(&token, hash))
         .map(|(user_id, _)| *user_id)
 }
 
@@ -197,7 +199,13 @@ fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
     if !candidate.starts_with("ctx_") {
         return false;
     }
-    let hashes = state.team_api_key_hashes.read().unwrap();
+    let hashes = match state.team_api_key_hashes.read() {
+        Ok(hashes) => hashes,
+        Err(_) => {
+            eprintln!("[cortex] team_api_key_hashes read lock poisoned while matching auth token");
+            return false;
+        }
+    };
     hashes
         .iter()
         .any(|(_, hash)| crate::auth::verify_api_key_argon2id(candidate, hash))
@@ -290,6 +298,61 @@ fn normalize_agent_label(raw_agent: &str, raw_model: Option<&str>) -> Option<Str
     Some(agent)
 }
 
+fn header_text(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn parse_auth_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let without_prefix = trimmed
+        .strip_prefix("Authorization:")
+        .or_else(|| trimmed.strip_prefix("authorization:"))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+
+    without_prefix
+        .strip_prefix("Bearer ")
+        .or_else(|| without_prefix.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            if without_prefix.contains(' ') {
+                None
+            } else {
+                Some(without_prefix.to_string())
+            }
+        })
+}
+
+pub fn extract_auth_token(headers: &HeaderMap) -> Option<String> {
+    header_text(headers, "authorization")
+        .and_then(|raw| parse_auth_token(&raw))
+        .or_else(|| header_text(headers, "x-cortex-auth").and_then(|raw| parse_auth_token(&raw)))
+        .or_else(|| header_text(headers, "x-auth-header").and_then(|raw| parse_auth_token(&raw)))
+}
+
+pub fn resolve_source_identity(headers: &HeaderMap, fallback_agent: &str) -> SourceIdentity {
+    let model = header_text(headers, "x-source-model");
+    let fallback = fallback_agent.trim();
+    let fallback = if fallback.is_empty() {
+        "unknown"
+    } else {
+        fallback
+    };
+    let agent = header_text(headers, "x-source-agent")
+        .and_then(|raw| normalize_agent_label(&raw, model.as_deref()))
+        .or_else(|| normalize_agent_label(fallback, model.as_deref()))
+        .unwrap_or_else(|| fallback.to_string());
+
+    SourceIdentity { agent, model }
+}
+
 /// Track active agent presence in `sessions` when source headers are provided.
 /// Safe best-effort helper -- failures are intentionally ignored by callers.
 pub async fn register_agent_presence_from_headers(
@@ -297,19 +360,10 @@ pub async fn register_agent_presence_from_headers(
     headers: &HeaderMap,
     caller_id: Option<i64>,
 ) {
-    let raw_agent = match headers.get("x-source-agent").and_then(|v| v.to_str().ok()) {
-        Some(v) => v,
-        None => return,
-    };
-    let raw_model = headers
-        .get("x-source-model")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
-
-    let Some(agent) = normalize_agent_label(raw_agent, raw_model) else {
+    if headers.get("x-source-agent").is_none() {
         return;
-    };
+    }
+    let source = resolve_source_identity(headers, "mcp");
 
     let owner_id = if state.team_mode {
         caller_id.or(state.default_owner_id)
@@ -319,7 +373,9 @@ pub async fn register_agent_presence_from_headers(
     let now = now_iso();
     let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
     let session_id = format!("session-{}", uuid::Uuid::new_v4());
-    let description = raw_model
+    let description = source
+        .model
+        .as_deref()
         .map(|model| format!("Connected via MCP · {model}"))
         .unwrap_or_else(|| "Connected via MCP".to_string());
 
@@ -334,7 +390,7 @@ pub async fn register_agent_presence_from_headers(
                files_json = excluded.files_json,
                last_heartbeat = excluded.last_heartbeat,
                expires_at = excluded.expires_at",
-            rusqlite::params![agent, owner_id, session_id, description, now, expires_at],
+            rusqlite::params![source.agent, owner_id, session_id, description, now, expires_at],
         );
     } else {
         let _ = conn.execute(
@@ -346,7 +402,7 @@ pub async fn register_agent_presence_from_headers(
                files_json = excluded.files_json,
                last_heartbeat = excluded.last_heartbeat,
                expires_at = excluded.expires_at",
-            rusqlite::params![agent, session_id, description, now, expires_at],
+            rusqlite::params![source.agent, session_id, description, now, expires_at],
         );
     }
 }
