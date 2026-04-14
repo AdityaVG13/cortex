@@ -220,7 +220,28 @@ fn daemon_port() -> u16 {
 
 fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
     let expected_paths = resolved_cortex_paths();
-    let response = send_cortex_request_with_port(
+    let readiness_response = send_cortex_request_with_port(
+        port,
+        "GET",
+        "/readiness",
+        "",
+        None,
+        RequestTimeouts {
+            connect: Duration::from_millis(timeout_ms),
+            read: Duration::from_millis(timeout_ms),
+            write: Duration::from_millis(timeout_ms),
+        },
+    );
+
+    if let Ok(resp) = readiness_response {
+        if let Some(ready) =
+            cortex_readiness_state(resp.status, &resp.body, Some(port), Some(&expected_paths))
+        {
+            return ready;
+        }
+    }
+
+    let health_response = send_cortex_request_with_port(
         port,
         "GET",
         "/health",
@@ -234,7 +255,7 @@ fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
     );
 
     matches!(
-        response,
+        health_response,
         Ok(resp) if is_cortex_health_response(resp.status, &resp.body, Some(port), Some(&expected_paths))
     )
 }
@@ -1158,6 +1179,63 @@ fn health_path_field_matches(value: Option<&serde_json::Value>, expected: Option
         .is_some_and(|actual| actual == expected)
 }
 
+fn cortex_readiness_state(
+    status: u16,
+    body: &str,
+    expected_port: Option<u16>,
+    expected_paths: Option<&ResolvedCortexPaths>,
+) -> Option<bool> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return None;
+    };
+
+    let ready = json.get("ready").and_then(|value| value.as_bool())?;
+    let runtime = json.get("runtime").and_then(|value| value.as_object())?;
+    let stats = json.get("stats").and_then(|value| value.as_object())?;
+    let runtime_port = runtime
+        .get("port")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+
+    if let Some(expected_port) = expected_port {
+        if runtime_port != Some(expected_port) {
+            return None;
+        }
+    }
+
+    if let Some(paths) = expected_paths {
+        if !health_path_field_matches(stats.get("home"), paths.home.as_deref()) {
+            return None;
+        }
+        if !health_path_field_matches(runtime.get("token_path"), paths.token.as_deref()) {
+            return None;
+        }
+        if !health_path_field_matches(runtime.get("db_path"), paths.db.as_deref()) {
+            return None;
+        }
+        if !health_path_field_matches(runtime.get("pid_path"), paths.pid.as_deref()) {
+            return None;
+        }
+    }
+
+    if ready && !(200..300).contains(&status) {
+        return None;
+    }
+    if !ready && !(status == 503 || (200..300).contains(&status)) {
+        return None;
+    }
+
+    let readiness_status = json.get("status").and_then(|value| value.as_str());
+    let expected_status = if ready { "ready" } else { "starting" };
+    if let Some(readiness_status) = readiness_status {
+        if readiness_status != expected_status {
+            return None;
+        }
+    }
+
+    Some(ready)
+}
+
 fn is_cortex_health_response(
     status: u16,
     body: &str,
@@ -1889,10 +1967,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_cortex_dir, editor_args, editor_config_path, editor_targets, extract_error_detail,
-        interpret_shutdown_response, is_cortex_health_response, parse_truthy_flag,
-        runtime_copy_dir_for_session, workspace_binary_candidates, FetchCortexResponse,
-        ResolvedCortexPaths,
+        cortex_readiness_state, default_cortex_dir, editor_args, editor_config_path,
+        editor_targets, extract_error_detail, interpret_shutdown_response,
+        is_cortex_health_response, parse_truthy_flag, runtime_copy_dir_for_session,
+        workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1992,6 +2070,50 @@ mod tests {
             None,
             None
         ));
+    }
+
+    #[test]
+    fn cortex_readiness_probe_accepts_ready_and_starting_payloads() {
+        assert_eq!(
+            cortex_readiness_state(
+                200,
+                r#"{"status":"ready","ready":true,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                Some(7437),
+                None
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            cortex_readiness_state(
+                503,
+                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                Some(7437),
+                None
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn cortex_readiness_probe_rejects_invalid_payloads() {
+        assert_eq!(
+            cortex_readiness_state(
+                200,
+                r#"{"status":"ready","runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                Some(7437),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            cortex_readiness_state(
+                500,
+                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                Some(7437),
+                None
+            ),
+            None
+        );
     }
 
     #[test]
