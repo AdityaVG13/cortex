@@ -276,11 +276,16 @@ fn copy_if_changed(src: &Path, dest: &Path) -> io::Result<()> {
 
 fn build_start_command(spawn_path: &Path) -> Command {
     let mut command = Command::new(spawn_path);
+    let owner_pid = std::process::id().to_string();
     command
         .arg("serve")
         // Match the CLI daemon lifecycle: allow a short handoff window while the
         // previous daemon releases cortex.lock during restart.
         .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
+        // Explicitly tag sidecar ownership so daemon startup policy can enforce
+        // control-center as the preferred owner.
+        .env("CORTEX_DAEMON_OWNER", "control-center")
+        .env("CORTEX_DAEMON_OWNER_PID", owner_pid)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -395,5 +400,20 @@ mod tests {
             .find(|(key, _)| key.to_string_lossy() == "CORTEX_WAIT_FOR_DAEMON_LOCK")
             .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()));
         assert_eq!(wait_env.as_deref(), Some("1"));
+
+        let owner_env = command
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == "CORTEX_DAEMON_OWNER")
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()));
+        assert_eq!(owner_env.as_deref(), Some("control-center"));
+
+        let owner_pid_env = command
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == "CORTEX_DAEMON_OWNER_PID")
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()));
+        assert!(owner_pid_env
+            .as_deref()
+            .and_then(|value| value.parse::<u32>().ok())
+            .is_some());
     }
 }

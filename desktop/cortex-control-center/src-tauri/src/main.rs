@@ -182,8 +182,10 @@ fn cortex_home() -> Result<PathBuf, String> {
 
 #[derive(Clone, Debug, Default)]
 struct ResolvedCortexPaths {
+    home: Option<PathBuf>,
     token: Option<PathBuf>,
     db: Option<PathBuf>,
+    pid: Option<PathBuf>,
     port: Option<u16>,
 }
 
@@ -215,6 +217,7 @@ fn daemon_port() -> u16 {
 }
 
 fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
+    let expected_paths = resolved_cortex_paths();
     let response = send_cortex_request_with_port(
         port,
         "GET",
@@ -230,7 +233,7 @@ fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
 
     matches!(
         response,
-        Ok(resp) if is_cortex_health_response(resp.status, &resp.body)
+        Ok(resp) if is_cortex_health_response(resp.status, &resp.body, Some(port), Some(&expected_paths))
     )
 }
 
@@ -407,12 +410,20 @@ fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
         .transpose()?;
 
     Ok(ResolvedCortexPaths {
+        home: json
+            .get("home")
+            .and_then(|value| value.as_str())
+            .map(PathBuf::from),
         token: json
             .get("token")
             .and_then(|value| value.as_str())
             .map(PathBuf::from),
         db: json
             .get("db")
+            .and_then(|value| value.as_str())
+            .map(PathBuf::from),
+        pid: json
+            .get("pid")
             .and_then(|value| value.as_str())
             .map(PathBuf::from),
         port,
@@ -458,8 +469,10 @@ fn fallback_cortex_paths() -> ResolvedCortexPaths {
     };
 
     ResolvedCortexPaths {
+        home: cortex_dir.clone(),
         token: cortex_dir.as_ref().map(|dir| dir.join("cortex.token")),
         db: cortex_dir.as_ref().map(|dir| dir.join("cortex.db")),
+        pid: cortex_dir.as_ref().map(|dir| dir.join("cortex.pid")),
         port,
     }
 }
@@ -988,7 +1001,35 @@ fn send_cortex_request_with_port(
     }
 }
 
-fn is_cortex_health_response(status: u16, body: &str) -> bool {
+fn normalize_runtime_path(value: &str) -> String {
+    let mut normalized = value.trim().replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    #[cfg(windows)]
+    {
+        normalized = normalized.to_ascii_lowercase();
+    }
+    normalized
+}
+
+fn health_path_field_matches(value: Option<&serde_json::Value>, expected: Option<&Path>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let expected = normalize_runtime_path(&expected.to_string_lossy());
+    value
+        .and_then(|field| field.as_str())
+        .map(normalize_runtime_path)
+        .is_some_and(|actual| actual == expected)
+}
+
+fn is_cortex_health_response(
+    status: u16,
+    body: &str,
+    expected_port: Option<u16>,
+    expected_paths: Option<&ResolvedCortexPaths>,
+) -> bool {
     if !(200..300).contains(&status) {
         return false;
     }
@@ -1000,6 +1041,37 @@ fn is_cortex_health_response(status: u16, body: &str) -> bool {
     let health_status = json.get("status").and_then(|value| value.as_str());
     let runtime = json.get("runtime").and_then(|value| value.as_object());
     let stats = json.get("stats").and_then(|value| value.as_object());
+    let runtime_port = runtime
+        .and_then(|runtime| runtime.get("port"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+
+    if let Some(expected_port) = expected_port {
+        if runtime_port != Some(expected_port) {
+            return false;
+        }
+    }
+
+    if let Some(paths) = expected_paths {
+        if !health_path_field_matches(stats.and_then(|obj| obj.get("home")), paths.home.as_deref())
+        {
+            return false;
+        }
+        if !health_path_field_matches(
+            runtime.and_then(|obj| obj.get("token_path")),
+            paths.token.as_deref(),
+        ) {
+            return false;
+        }
+        if !health_path_field_matches(runtime.and_then(|obj| obj.get("db_path")), paths.db.as_deref())
+        {
+            return false;
+        }
+        if !health_path_field_matches(runtime.and_then(|obj| obj.get("pid_path")), paths.pid.as_deref())
+        {
+            return false;
+        }
+    }
 
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
@@ -1625,10 +1697,10 @@ mod tests {
     use super::{
         default_cortex_dir, editor_args, editor_config_path, editor_targets, extract_error_detail,
         interpret_shutdown_response, is_cortex_health_response, runtime_copy_dir_for_session,
-        workspace_binary_candidates, FetchCortexResponse,
+        workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
     };
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn workspace_binary_candidates_prefers_debug_for_dev_builds() {
@@ -1687,25 +1759,61 @@ mod tests {
     fn cortex_health_probe_accepts_healthy_response_shape() {
         assert!(is_cortex_health_response(
             200,
-            r#"{"status":"ok","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+            r#"{"status":"ok","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#,
+            None,
+            None
         ));
         assert!(is_cortex_health_response(
             200,
-            r#"{"status":"degraded","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#
+            r#"{"status":"degraded","runtime":{"version":"0.5.0"},"stats":{"memories":1}}"#,
+            None,
+            None
         ));
     }
 
     #[test]
     fn cortex_health_probe_rejects_non_cortex_responses() {
-        assert!(!is_cortex_health_response(200, "<html>ok</html>"));
-        assert!(!is_cortex_health_response(200, r#"{"status":"ok"}"#));
+        assert!(!is_cortex_health_response(200, "<html>ok</html>", None, None));
         assert!(!is_cortex_health_response(
             200,
-            r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#
+            r#"{"status":"ok"}"#,
+            None,
+            None
+        ));
+        assert!(!is_cortex_health_response(
+            200,
+            r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#,
+            None,
+            None
         ));
         assert!(!is_cortex_health_response(
             503,
-            r#"{"status":"ok","runtime":{}}"#
+            r#"{"status":"ok","runtime":{}}"#,
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn cortex_health_probe_rejects_identity_mismatch() {
+        let expected = ResolvedCortexPaths {
+            home: Some(PathBuf::from("C:/Users/aditya/.cortex")),
+            token: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.token")),
+            db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
+            pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
+            port: Some(7437),
+        };
+        assert!(!is_cortex_health_response(
+            200,
+            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/other/cortex.token","db_path":"C:/Users/aditya/.cortex/cortex.db","pid_path":"C:/Users/aditya/.cortex/cortex.pid"},"stats":{"home":"C:/Users/aditya/.cortex","memories":1}}"#,
+            Some(7437),
+            Some(&expected)
+        ));
+        assert!(is_cortex_health_response(
+            200,
+            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/Users/aditya/.cortex/cortex.token","db_path":"C:/Users/aditya/.cortex/cortex.db","pid_path":"C:/Users/aditya/.cortex/cortex.pid"},"stats":{"home":"C:/Users/aditya/.cortex","memories":1}}"#,
+            Some(7437),
+            Some(&expected)
         ));
     }
 
