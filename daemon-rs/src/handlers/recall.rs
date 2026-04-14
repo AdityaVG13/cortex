@@ -2277,18 +2277,7 @@ pub async fn handle_unfold(
 
 /// Look up the full text of a single source string (team visibility applied when `ctx.team_mode`).
 pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Option<Value> {
-    if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
-        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
-        params![source],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        },
-    ) {
+    if let Some((text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, source) {
         if is_visible(owner_id, visibility.as_deref(), ctx) {
             return Some(json!({"text": text, "type": ty}));
         }
@@ -2296,18 +2285,9 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
 
     if let Some(id_str) = source.strip_prefix("decision::") {
         if let Ok(id) = id_str.parse::<i64>() {
-            if let Ok((decision, context, owner_id, visibility)) = conn.query_row(
-                "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))",
-                params![id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                },
-            ) {
+            if let Some((decision, context, owner_id, visibility)) =
+                query_decision_by_id_for_unfold(conn, id)
+            {
                 if is_visible(owner_id, visibility.as_deref(), ctx) {
                     let full = match context {
                         Some(c) => format!("{decision}\n\nContext: {c}"),
@@ -2319,18 +2299,9 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
         }
     }
 
-    if let Ok((decision, context, owner_id, visibility)) = conn.query_row(
-        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
-        params![source],
-        |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        },
-    ) {
+    if let Some((decision, context, owner_id, visibility)) =
+        query_decision_by_context_for_unfold(conn, source)
+    {
         if is_visible(owner_id, visibility.as_deref(), ctx) {
             let full = match context {
                 Some(c) => format!("{decision}\n\nContext: {c}"),
@@ -2342,18 +2313,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
 
     let stripped = source.strip_prefix("memory::").unwrap_or(source);
     if stripped != source {
-        if let Ok((text, ty, owner_id, visibility)) = conn.query_row(
-            "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY score DESC LIMIT 1",
-            params![stripped],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            },
-        ) {
+        if let Some((text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, stripped) {
             if is_visible(owner_id, visibility.as_deref(), ctx) {
                 return Some(json!({"text": text, "type": ty}));
             }
@@ -2361,6 +2321,121 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
 
     None
+}
+
+fn query_memory_for_unfold(
+    conn: &Connection,
+    source: &str,
+) -> Option<(String, String, Option<i64>, Option<String>)> {
+    let sql_with_visibility =
+        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
+         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+         ORDER BY score DESC LIMIT 1";
+    match conn.query_row(sql_with_visibility, params![source], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    }) {
+        Ok(row) => Some(row),
+        Err(err) if is_missing_team_visibility_columns(&err) => conn
+            .query_row(
+                "SELECT text, type FROM memories WHERE source = ?1 \
+                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                 ORDER BY score DESC LIMIT 1",
+                params![source],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        None,
+                        None,
+                    ))
+                },
+            )
+            .ok(),
+        Err(_) => None,
+    }
+}
+
+fn query_decision_by_id_for_unfold(
+    conn: &Connection,
+    id: i64,
+) -> Option<(String, Option<String>, Option<i64>, Option<String>)> {
+    let sql_with_visibility =
+        "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
+         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))";
+    match conn.query_row(sql_with_visibility, params![id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    }) {
+        Ok(row) => Some(row),
+        Err(err) if is_missing_team_visibility_columns(&err) => conn
+            .query_row(
+                "SELECT decision, context FROM decisions WHERE id = ?1 \
+                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        None,
+                        None,
+                    ))
+                },
+            )
+            .ok(),
+        Err(_) => None,
+    }
+}
+
+fn query_decision_by_context_for_unfold(
+    conn: &Connection,
+    source: &str,
+) -> Option<(String, Option<String>, Option<i64>, Option<String>)> {
+    let sql_with_visibility =
+        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
+         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+         ORDER BY score DESC LIMIT 1";
+    match conn.query_row(sql_with_visibility, params![source], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    }) {
+        Ok(row) => Some(row),
+        Err(err) if is_missing_team_visibility_columns(&err) => conn
+            .query_row(
+                "SELECT decision, context FROM decisions WHERE context = ?1 \
+                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                 ORDER BY score DESC LIMIT 1",
+                params![source],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        None,
+                        None,
+                    ))
+                },
+            )
+            .ok(),
+        Err(_) => None,
+    }
+}
+
+fn is_missing_team_visibility_columns(err: &rusqlite::Error) -> bool {
+    let normalized = err.to_string().to_ascii_lowercase();
+    normalized.contains("no such column")
+        && (normalized.contains("owner_id") || normalized.contains("visibility"))
 }
 
 // ─── Jaccard keyword similarity ──────────────────────────────────────────────
@@ -2844,6 +2919,71 @@ mod tests {
             .unwrap();
         assert_eq!(exact, "alpha");
         assert!(unfold_source(&conn, "memory::alp", &solo_ctx()).is_none());
+    }
+
+    #[test]
+    fn unfold_source_legacy_schema_decision_id_lookup_works() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'active', 1.0, datetime('now'), datetime('now'))",
+            params!["ship fix", "decision::ship-fix"],
+        )
+        .unwrap();
+
+        let id = conn.last_insert_rowid();
+        let out = unfold_source(&conn, &format!("decision::{id}"), &solo_ctx())
+            .and_then(|v| v["text"].as_str().map(|s| s.to_string()))
+            .unwrap();
+
+        assert!(out.contains("ship fix"));
+        assert!(out.contains("Context: decision::ship-fix"));
+    }
+
+    #[test]
+    fn unfold_source_legacy_schema_team_mode_denies_without_acl_columns() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            params!["legacy", "memory::legacy"],
+        )
+        .unwrap();
+
+        assert!(unfold_source(&conn, "memory::legacy", &team_ctx(1)).is_none());
+    }
+
+    #[test]
+    fn unfold_source_team_schema_shared_visible_private_hidden() {
+        let conn = test_conn();
+        conn.execute("ALTER TABLE memories ADD COLUMN owner_id INTEGER", [])
+            .unwrap();
+        conn.execute(
+            "ALTER TABLE memories ADD COLUMN visibility TEXT
+             CHECK (visibility IN ('private', 'team', 'shared'))",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, owner_id, visibility, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, 10, 'private', datetime('now'), datetime('now'))",
+            params!["secret", "memory::private-note"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, owner_id, visibility, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, 10, 'shared', datetime('now'), datetime('now'))",
+            params!["shared", "memory::shared-note"],
+        )
+        .unwrap();
+
+        assert!(unfold_source(&conn, "memory::private-note", &team_ctx(99)).is_none());
+
+        let shared = unfold_source(&conn, "memory::shared-note", &team_ctx(99))
+            .and_then(|v| v["text"].as_str().map(|s| s.to_string()))
+            .unwrap();
+        assert_eq!(shared, "shared");
     }
 
     // ── existing tests ─────────────────────────────────────────────
