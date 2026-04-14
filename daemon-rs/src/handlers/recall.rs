@@ -85,6 +85,7 @@ type MemorySemanticRow = (
     Option<i64>,
     Option<String>,
     Option<f64>,
+    Option<f64>,
     Option<String>,
     Option<String>,
 );
@@ -95,9 +96,16 @@ type DecisionSemanticRow = (
     Option<i64>,
     Option<String>,
     Option<f64>,
+    Option<f64>,
     Option<String>,
     Option<String>,
 );
+
+fn blend_importance(score: Option<f64>, trust_score: Option<f64>) -> f64 {
+    let score = score.unwrap_or(1.0).clamp(0.0, 1.0);
+    let trust = trust_score.unwrap_or(score).clamp(0.0, 1.0);
+    round4((score * 0.65) + (trust * 0.35))
+}
 
 // ─── Visibility context ─────────────────────────────────────────────────────
 
@@ -1242,7 +1250,7 @@ fn search_memories(
     if term_groups.is_empty() {
         let mut stmt = conn
             .prepare(
-                "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at, compressed_text, age_tier \
+                "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier \
                  FROM memories WHERE status = 'active' \
                  AND (expires_at IS NULL OR expires_at > datetime('now')) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
@@ -1252,22 +1260,24 @@ fn search_memories(
         let rows = stmt
             .query_map([limit as i64], |row| {
                 let text: String = row.get(1)?;
-                let compressed: Option<String> = row.get(8)?;
+                let compressed: Option<String> = row.get(9)?;
                 let age_tier: String = row
-                    .get::<_, Option<String>>(9)?
+                    .get::<_, Option<String>>(10)?
                     .unwrap_or_else(|| "fresh".to_string());
                 let display = crate::aging::get_display_text(&text, &compressed, &age_tier);
+                let effective_score =
+                    blend_importance(row.get::<_, Option<f64>>(4)?, row.get::<_, Option<f64>>(5)?);
                 Ok(SearchCandidate {
                     source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
                         format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
                     excerpt: query_focused_excerpt(&display, query_text, 220),
-                    relevance: round4(0.5 * row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0)),
+                    relevance: round4(0.5 * effective_score),
                     matched_keywords: 0,
-                    score: row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0),
+                    score: effective_score,
                     ts: parse_timestamp_ms(
-                        &row.get::<_, Option<String>>(6)?
-                            .or(row.get::<_, Option<String>>(7)?)
+                        &row.get::<_, Option<String>>(7)?
+                            .or(row.get::<_, Option<String>>(8)?)
                             .unwrap_or_default(),
                     ),
                     owner_id: None,
@@ -1291,7 +1301,7 @@ fn search_memories(
         // bm25() returns negative values (more negative = better match), so ORDER BY ASC.
         let mut stmt = conn
             .prepare(
-                "SELECT m.id, m.text, m.source, m.tags, m.score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility \
+                "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility \
                  FROM memories_fts fts \
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
@@ -1309,13 +1319,14 @@ fn search_memories(
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<i64>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -1328,6 +1339,7 @@ fn search_memories(
                 source,
                 tags,
                 score,
+                trust_score,
                 retrievals,
                 last_accessed,
                 created_at,
@@ -1340,7 +1352,7 @@ fn search_memories(
             if !source_matches_prefix(&source_key, source_prefix) {
                 continue;
             }
-            let score = score.unwrap_or(1.0).max(0.0);
+            let effective_score = blend_importance(score, trust_score);
             let ts_source = last_accessed
                 .clone()
                 .or(created_at.clone())
@@ -1367,7 +1379,7 @@ fn search_memories(
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
             let keyword_weight = matched as f64 / keyword_terms.len().max(1) as f64;
             let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-            let score_weight = score.clamp(0.0, 1.0);
+            let score_weight = effective_score.clamp(0.0, 1.0);
             let ranking = (keyword_weight * 0.40)
                 + (score_weight * 0.25)
                 + (recency_weight * 0.20)
@@ -1378,7 +1390,7 @@ fn search_memories(
                 excerpt: query_focused_excerpt(&display, query_text, 280),
                 relevance: round4(ranking),
                 matched_keywords: matched,
-                score,
+                score: effective_score,
                 ts,
                 owner_id: row_owner_id,
                 visibility: row_visibility,
@@ -1416,7 +1428,7 @@ fn search_memories_fallback(
 ) -> Result<Vec<SearchCandidate>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at \
+            "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at \
              FROM memories WHERE status = 'active' \
              AND (expires_at IS NULL OR expires_at > datetime('now'))",
         )
@@ -1430,9 +1442,10 @@ fn search_memories_fallback(
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<f64>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<f64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -1441,12 +1454,13 @@ fn search_memories_fallback(
     let mut ranked = Vec::new();
 
     for row in rows.flatten() {
-        let (id, text, source, tags, score, retrievals, last_accessed, created_at) = row;
+        let (id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at) =
+            row;
         let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
         if !source_matches_prefix(&source_key, source_prefix) {
             continue;
         }
-        let score = score.unwrap_or(1.0).max(0.0);
+        let effective_score = blend_importance(score, trust_score);
         let ts_source = last_accessed
             .clone()
             .or(created_at.clone())
@@ -1457,9 +1471,9 @@ fn search_memories_fallback(
             ranked.push(SearchCandidate {
                 source: source_key,
                 excerpt: query_focused_excerpt(&text, query_text, 220),
-                relevance: round4(0.5 * score),
+                relevance: round4(0.5 * effective_score),
                 matched_keywords: 0,
-                score,
+                score: effective_score,
                 ts,
                 owner_id: None,
                 visibility: None,
@@ -1487,7 +1501,7 @@ fn search_memories_fallback(
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-        let score_weight = score.clamp(0.0, 1.0);
+        let score_weight = effective_score.clamp(0.0, 1.0);
         let ranking = (keyword_weight * 0.40)
             + (score_weight * 0.25)
             + (recency_weight * 0.20)
@@ -1498,7 +1512,7 @@ fn search_memories_fallback(
             excerpt: query_focused_excerpt(&text, query_text, 260),
             relevance: round4(ranking),
             matched_keywords: matched,
-            score,
+            score: effective_score,
             ts,
             owner_id: None,
             visibility: None,
@@ -1538,7 +1552,7 @@ fn search_decisions(
     if term_groups.is_empty() {
         let mut stmt = conn
             .prepare(
-                "SELECT id, decision, context, score, retrievals, last_accessed, created_at \
+                "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at \
                  FROM decisions WHERE status = 'active' \
                  AND (expires_at IS NULL OR expires_at > datetime('now')) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
@@ -1547,17 +1561,19 @@ fn search_decisions(
 
         let rows = stmt
             .query_map([limit as i64], |row| {
+                let effective_score =
+                    blend_importance(row.get::<_, Option<f64>>(3)?, row.get::<_, Option<f64>>(4)?);
                 Ok(SearchCandidate {
                     source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
                         format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
                     excerpt: query_focused_excerpt(&row.get::<_, String>(1)?, query_text, 220),
-                    relevance: round4(0.5 * row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0)),
+                    relevance: round4(0.5 * effective_score),
                     matched_keywords: 0,
-                    score: row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0),
+                    score: effective_score,
                     ts: parse_timestamp_ms(
-                        &row.get::<_, Option<String>>(5)?
-                            .or(row.get::<_, Option<String>>(6)?)
+                        &row.get::<_, Option<String>>(6)?
+                            .or(row.get::<_, Option<String>>(7)?)
                             .unwrap_or_default(),
                     ),
                     owner_id: None,
@@ -1580,7 +1596,7 @@ fn search_decisions(
         // context is the source/label string and lower priority.
         let mut stmt = conn
             .prepare(
-                "SELECT d.id, d.decision, d.context, d.score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility \
+                "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility \
                  FROM decisions_fts fts \
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
@@ -1597,13 +1613,14 @@ fn search_decisions(
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<f64>>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<i64>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -1615,6 +1632,7 @@ fn search_decisions(
                 decision,
                 context,
                 score,
+                trust_score,
                 retrievals,
                 last_accessed,
                 created_at,
@@ -1627,7 +1645,7 @@ fn search_decisions(
             if !source_matches_prefix(&source_key, source_prefix) {
                 continue;
             }
-            let score = score.unwrap_or(1.0).max(0.0);
+            let effective_score = blend_importance(score, trust_score);
             let ts_source = last_accessed
                 .clone()
                 .or(created_at.clone())
@@ -1653,7 +1671,7 @@ fn search_decisions(
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
             let keyword_weight = matched as f64 / keyword_terms.len().max(1) as f64;
             let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-            let score_weight = score.clamp(0.0, 1.0);
+            let score_weight = effective_score.clamp(0.0, 1.0);
             let ranking = (keyword_weight * 0.40)
                 + (score_weight * 0.25)
                 + (recency_weight * 0.20)
@@ -1664,7 +1682,7 @@ fn search_decisions(
                 excerpt: query_focused_excerpt(&display, query_text, 280),
                 relevance: round4(ranking),
                 matched_keywords: matched,
-                score,
+                score: effective_score,
                 ts,
                 owner_id: row_owner_id,
                 visibility: row_visibility,
@@ -1702,7 +1720,7 @@ fn search_decisions_fallback(
 ) -> Result<Vec<SearchCandidate>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, decision, context, score, retrievals, last_accessed, created_at \
+            "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at \
              FROM decisions WHERE status = 'active' \
              AND (expires_at IS NULL OR expires_at > datetime('now'))",
         )
@@ -1715,9 +1733,10 @@ fn search_decisions_fallback(
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<f64>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
-                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<f64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
                 row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -1726,12 +1745,13 @@ fn search_decisions_fallback(
     let mut ranked = Vec::new();
 
     for row in rows.flatten() {
-        let (id, decision, context, score, retrievals, last_accessed, created_at) = row;
+        let (id, decision, context, score, trust_score, retrievals, last_accessed, created_at) =
+            row;
         let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
         if !source_matches_prefix(&source_key, source_prefix) {
             continue;
         }
-        let score = score.unwrap_or(1.0).max(0.0);
+        let effective_score = blend_importance(score, trust_score);
         let ts_source = last_accessed
             .clone()
             .or(created_at.clone())
@@ -1742,9 +1762,9 @@ fn search_decisions_fallback(
             ranked.push(SearchCandidate {
                 source: source_key,
                 excerpt: query_focused_excerpt(&decision, query_text, 220),
-                relevance: round4(0.5 * score),
+                relevance: round4(0.5 * effective_score),
                 matched_keywords: 0,
-                score,
+                score: effective_score,
                 ts,
                 owner_id: None,
                 visibility: None,
@@ -1770,7 +1790,7 @@ fn search_decisions_fallback(
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
         let keyword_weight = matched as f64 / tokens.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-        let score_weight = score.clamp(0.0, 1.0);
+        let score_weight = effective_score.clamp(0.0, 1.0);
         let ranking = (keyword_weight * 0.40)
             + (score_weight * 0.25)
             + (recency_weight * 0.20)
@@ -1781,7 +1801,7 @@ fn search_decisions_fallback(
             excerpt: query_focused_excerpt(&decision, query_text, 260),
             relevance: round4(ranking),
             matched_keywords: matched,
-            score,
+            score: effective_score,
             ts,
             owner_id: None,
             visibility: None,
@@ -1831,7 +1851,7 @@ fn collect_semantic_candidates(
     let mut candidates: HashMap<String, SemanticCandidate> = HashMap::new();
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.last_accessed, m.created_at \
+        "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))",
@@ -1847,6 +1867,7 @@ fn collect_semantic_candidates(
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
             })
             .ok()
@@ -1855,7 +1876,18 @@ fn collect_semantic_candidates(
             .filter_map(|r| r.ok())
             .collect();
 
-        for (blob, text, source, owner_id, visibility, score, last_accessed, created_at) in rows {
+        for (
+            blob,
+            text,
+            source,
+            owner_id,
+            visibility,
+            score,
+            trust_score,
+            last_accessed,
+            created_at,
+        ) in rows
+        {
             if !is_visible(owner_id, visibility.as_deref(), ctx) {
                 continue;
             }
@@ -1883,7 +1915,7 @@ fn collect_semantic_candidates(
                 }
             }
             let excerpt = query_focused_excerpt(&text, query_text, 280);
-            let importance = score.unwrap_or(1.0).clamp(0.0, 1.0);
+            let importance = blend_importance(score, trust_score);
             let ts_source = last_accessed
                 .as_deref()
                 .or(created_at.as_deref())
@@ -1909,7 +1941,7 @@ fn collect_semantic_candidates(
     }
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.last_accessed, d.created_at \
+        "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
@@ -1925,6 +1957,7 @@ fn collect_semantic_candidates(
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
             })
             .ok()
@@ -1933,7 +1966,18 @@ fn collect_semantic_candidates(
             .filter_map(|r| r.ok())
             .collect();
 
-        for (blob, decision, context, owner_id, visibility, score, last_accessed, created_at) in rows {
+        for (
+            blob,
+            decision,
+            context,
+            owner_id,
+            visibility,
+            score,
+            trust_score,
+            last_accessed,
+            created_at,
+        ) in rows
+        {
             if !is_visible(owner_id, visibility.as_deref(), ctx) {
                 continue;
             }
@@ -1964,7 +2008,7 @@ fn collect_semantic_candidates(
                 }
             }
             let excerpt = query_focused_excerpt(&decision, query_text, 280);
-            let importance = score.unwrap_or(1.0).clamp(0.0, 1.0);
+            let importance = blend_importance(score, trust_score);
             let ts_source = last_accessed
                 .as_deref()
                 .or(created_at.as_deref())
@@ -2908,11 +2952,14 @@ fn days_since(created_at: &str) -> f64 {
 }
 
 /// Normalize importance score to 0.0-1.0 range.
-/// Scores are typically 0-100 from spaced repetition; we normalize by dividing by 100.
-/// Also clamps to stay within bounds.
+/// Legacy records may use 0-100, while current records use 0-1.
 fn normalize(importance: f64) -> f64 {
-    let normalized = importance / 100.0;
-    normalized.clamp(0.0, 1.0)
+    let clamped = importance.clamp(0.0, 100.0);
+    if clamped <= 1.0 {
+        clamped
+    } else {
+        clamped / 100.0
+    }
 }
 
 /// Calculate compound score combining RRF rank, importance, and recency.
@@ -3059,6 +3106,37 @@ mod tests {
 
         assert!(sources.contains(&"active-decision"));
         assert!(!sources.contains(&"expired-decision"));
+    }
+
+    #[test]
+    fn search_decisions_prefers_higher_trust_for_same_keyword_signal() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES ('daemon lock lease renewal flow', 'decision::low-trust', 'active', 0.7, 0.2, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES ('daemon lock lease renewal flow', 'decision::high-trust', 'active', 0.7, 0.9, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let ranked = search_decisions(&conn, "daemon lock lease", 10, None).unwrap();
+        let high_idx = ranked
+            .iter()
+            .position(|item| item.source == "decision::high-trust")
+            .expect("high trust row should be present");
+        let low_idx = ranked
+            .iter()
+            .position(|item| item.source == "decision::low-trust")
+            .expect("low trust row should be present");
+        assert!(
+            high_idx < low_idx,
+            "high-trust decision should rank ahead of low-trust when text signal is equal"
+        );
     }
 
     #[test]
@@ -3593,12 +3671,27 @@ mod tests {
         assert!((normalize(0.0) - 0.0).abs() < f64::EPSILON);
         assert!((normalize(50.0) - 0.5).abs() < f64::EPSILON);
         assert!((normalize(100.0) - 1.0).abs() < f64::EPSILON);
+        assert!((normalize(0.6) - 0.6).abs() < f64::EPSILON);
 
         // Clamp above 100
         assert_eq!(normalize(150.0), 1.0);
 
         // Clamp below 0
         assert_eq!(normalize(-10.0), 0.0);
+    }
+
+    #[test]
+    fn test_blend_importance_uses_trust_when_available() {
+        let low_trust = blend_importance(Some(0.6), Some(0.2));
+        let high_trust = blend_importance(Some(0.6), Some(0.9));
+        assert!(
+            high_trust > low_trust,
+            "higher trust should raise effective importance"
+        );
+        assert_eq!(
+            blend_importance(Some(0.42), None),
+            blend_importance(Some(0.42), Some(0.42))
+        );
     }
 
     #[test]
