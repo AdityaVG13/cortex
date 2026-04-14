@@ -54,19 +54,39 @@ function resolveRoute(config) {
 
 const PLATFORM = process.platform;
 const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
-const { binaryPath, source: binarySource } = resolveCortexBinary({
-  pluginData: PLUGIN_DATA,
-  binaryName,
-  ensureBundled: () => require('./prepare-runtime.cjs')
-});
-
 // User config from Claude Code
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
 const cortexApiKey = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
 const pluginAgent = (process.env.CORTEX_PLUGIN_AGENT || 'claude-code').trim() || 'claude-code';
 const dryRun = isTruthy(process.env.CORTEX_PLUGIN_DRY_RUN);
+const allowBundledBinary = isTruthy(process.env.CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY);
 
 const route = resolveRoute({ cortexUrl });
+
+let binaryPath = '';
+let binarySource = '';
+try {
+  const resolved = resolveCortexBinary({
+    pluginData: PLUGIN_DATA,
+    binaryName,
+    ensureBundled: () => require('./prepare-runtime.cjs'),
+    allowBundled: route.mode !== 'local' || allowBundledBinary,
+    rejectTempCandidates: route.mode === 'local' && !allowBundledBinary
+  });
+  binaryPath = resolved.binaryPath;
+  binarySource = resolved.source;
+} catch (error) {
+  crashLog(
+    `BINARY RESOLUTION FAILED: ${error && error.message ? error.message : error}`
+  );
+  if (route.mode === 'local') {
+    console.error(
+      '[cortex-plugin] Local attach mode requires an app-managed binary. Start Control Center or set CORTEX_APP_BINARY. ' +
+      'Set CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY=1 only if you explicitly accept bundled fallback.'
+    );
+  }
+  process.exit(1);
+}
 
 const args = ['plugin', 'mcp', '--agent', pluginAgent];
 if (route.mode === 'remote') {

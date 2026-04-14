@@ -38,16 +38,36 @@ function resolveRoute(config) {
 
 const PLATFORM = process.platform;
 const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
-const { binaryPath, source: binarySource } = resolveCortexBinary({
-  pluginData: PLUGIN_DATA,
-  binaryName,
-  ensureBundled: () => require('./prepare-runtime.cjs')
-});
 const DEFAULT_DAEMON_PORT = 7437;
 
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
 const route = resolveRoute({ cortexUrl });
-console.error(`[cortex-plugin] SessionStart binary: ${binaryPath} (${binarySource})`);
+const allowBundledBinary = normalizeOption(process.env.CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY)
+  .toLowerCase();
+const allowBundled =
+  allowBundledBinary === '1' ||
+  allowBundledBinary === 'true' ||
+  allowBundledBinary === 'yes' ||
+  allowBundledBinary === 'on';
+
+let binaryPath = '';
+let binarySource = '';
+let binaryResolutionError = '';
+try {
+  const resolved = resolveCortexBinary({
+    pluginData: PLUGIN_DATA,
+    binaryName,
+    ensureBundled: () => require('./prepare-runtime.cjs'),
+    allowBundled: route.mode !== 'solo' || allowBundled,
+    rejectTempCandidates: route.mode === 'solo' && !allowBundled
+  });
+  binaryPath = resolved.binaryPath;
+  binarySource = resolved.source;
+  console.error(`[cortex-plugin] SessionStart binary: ${binaryPath} (${binarySource})`);
+} catch (error) {
+  binaryResolutionError = error && error.message ? error.message : String(error);
+  console.error(`[cortex-plugin] SessionStart binary resolution blocked: ${binaryResolutionError}`);
+}
 
 function isCortexHealthResponse(data) {
   if (!data || typeof data !== 'object') return false;
@@ -221,6 +241,15 @@ function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
 }
 
 async function getLocalHealth() {
+  if (!binaryPath) {
+    return {
+      ok: false,
+      error:
+        binaryResolutionError ||
+        'No app-managed Cortex binary available for local attach mode.'
+    };
+  }
+
   let port = DEFAULT_DAEMON_PORT;
   let bind = '127.0.0.1';
   const expectedIdentity = {};

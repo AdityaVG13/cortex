@@ -12,10 +12,17 @@ Cortex daemon endpoint.
 1. Explicit binary override (`CORTEX_APP_BINARY`, `CORTEX_DAEMON_BINARY`, `CORTEX_PLUGIN_CORTEX_BINARY`)
 2. App-managed canonical install (`~/.cortex/bin/cortex[.exe]`)
 3. Common workspace dev/release builds (`~/cortex/daemon-rs/target*`)
-4. Bundled plugin runtime binary (`CLAUDE_PLUGIN_DATA/bin/cortex[.exe]`)
+4. Bundled plugin runtime binary (`CLAUDE_PLUGIN_DATA/bin/cortex[.exe]`) -- remote/app routes and explicit opt-in only in local mode
 
 This keeps plugin tooling aligned with the app daemon in development and avoids
 relying on stale bundled binaries when a canonical app-managed binary exists.
+
+## Local Attach Safety Gate
+- In local attach mode, plugin scripts reject temporary/bundled runtime binaries by default.
+- If no app-managed binary is found, the plugin fails fast with startup guidance instead of launching stale fallback runtimes.
+- Explicit override for advanced users:
+  - `CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY=1`
+  - Use only when intentionally running without app-managed binaries.
 
 ## Supported Environment Inputs
 - `CLAUDE_PLUGIN_OPTION_CORTEX_URL`
@@ -30,6 +37,8 @@ relying on stale bundled binaries when a canonical app-managed binary exists.
   - Optional explicit binary override for plugin bridge/hook execution.
 - `CORTEX_WORKSPACE_ROOT`
   - Optional workspace root used to discover dev/release daemon builds.
+- `CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY=1`
+  - Optional escape hatch to permit bundled plugin binaries in local attach mode.
 
 ## Route Matrix
 - Plugin URL set -> route `remote` -> pass `--url` and optional `--api-key`
@@ -41,6 +50,7 @@ relying on stale bundled binaries when a canonical app-managed binary exists.
 - SessionStart probes `/readiness` first and falls back to `/health` for older daemons.
 - Plugin MCP bridge does not request local daemon spawn.
 - If local daemon is unavailable, plugin fails fast with attach-only guidance.
+- If local mode resolves only temporary/bundled binaries, plugin blocks fallback by default and surfaces app-managed-binary guidance.
 
 ## Lockstep Requirement
 Plugin-bundled daemon versions and app daemon versions should ship in lockstep.

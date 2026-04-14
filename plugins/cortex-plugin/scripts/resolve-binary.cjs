@@ -10,6 +10,7 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 function normalizeOption(value) {
@@ -19,6 +20,27 @@ function normalizeOption(value) {
 
 function fileExists(filePath) {
   return !!filePath && fs.existsSync(filePath);
+}
+
+function normalizedPath(value) {
+  if (typeof value !== 'string') return '';
+  let normalized = path.resolve(value).replace(/\\/g, '/');
+  if (process.platform === 'win32') normalized = normalized.toLowerCase();
+  return normalized;
+}
+
+function isLikelyTempPath(candidatePath) {
+  if (!candidatePath) return false;
+  const tempRoots = [process.env.TEMP, process.env.TMP, os.tmpdir()]
+    .map(normalizeOption)
+    .filter(Boolean)
+    .map(normalizedPath);
+  if (tempRoots.length === 0) return false;
+  const normalizedCandidate = normalizedPath(candidatePath);
+  return tempRoots.some((root) => {
+    if (!root) return false;
+    return normalizedCandidate === root || normalizedCandidate.startsWith(`${root}/`);
+  });
 }
 
 function resolveCanonicalUserHome() {
@@ -36,7 +58,13 @@ function workspaceBinaryCandidates(workspaceRoot, binaryName) {
   ];
 }
 
-function resolveCortexBinary({ pluginData, binaryName, ensureBundled }) {
+function resolveCortexBinary({
+  pluginData,
+  binaryName,
+  ensureBundled,
+  allowBundled = true,
+  rejectTempCandidates = false
+}) {
   const envOverrides = [
     ['CORTEX_APP_BINARY', normalizeOption(process.env.CORTEX_APP_BINARY)],
     ['CORTEX_DAEMON_BINARY', normalizeOption(process.env.CORTEX_DAEMON_BINARY)],
@@ -44,7 +72,7 @@ function resolveCortexBinary({ pluginData, binaryName, ensureBundled }) {
   ];
 
   for (const [name, candidate] of envOverrides) {
-    if (fileExists(candidate)) {
+    if (fileExists(candidate) && !(rejectTempCandidates && isLikelyTempPath(candidate))) {
       return { binaryPath: candidate, source: `env:${name}` };
     }
   }
@@ -52,22 +80,33 @@ function resolveCortexBinary({ pluginData, binaryName, ensureBundled }) {
   const userHome = resolveCanonicalUserHome();
   if (userHome) {
     const canonicalInstall = path.join(userHome, '.cortex', 'bin', binaryName);
-    if (fileExists(canonicalInstall)) {
+    if (fileExists(canonicalInstall) && !(rejectTempCandidates && isLikelyTempPath(canonicalInstall))) {
       return { binaryPath: canonicalInstall, source: 'canonical-install' };
     }
 
     const workspaceRoot =
       normalizeOption(process.env.CORTEX_WORKSPACE_ROOT) || path.join(userHome, 'cortex');
     for (const candidate of workspaceBinaryCandidates(workspaceRoot, binaryName)) {
-      if (fileExists(candidate)) {
+      if (fileExists(candidate) && !(rejectTempCandidates && isLikelyTempPath(candidate))) {
         return { binaryPath: candidate, source: 'workspace-build' };
       }
     }
   }
 
+  if (!allowBundled) {
+    throw new Error(
+      'No app-managed Cortex binary found. Install/start Cortex Control Center or set CORTEX_APP_BINARY.'
+    );
+  }
+
   const bundled = path.join(pluginData, 'bin', binaryName);
   if (!fileExists(bundled) && typeof ensureBundled === 'function') {
     ensureBundled();
+  }
+  if (rejectTempCandidates && isLikelyTempPath(bundled)) {
+    throw new Error(
+      'Refusing temporary bundled Cortex binary for local attach mode. Install/start Cortex Control Center or set CORTEX_APP_BINARY.'
+    );
   }
   return { binaryPath: bundled, source: 'plugin-bundled' };
 }
