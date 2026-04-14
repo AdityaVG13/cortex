@@ -13,7 +13,7 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[test]
-fn direct_mcp_can_start_daemon_and_keep_it_running() {
+fn direct_mcp_stops_owned_daemon_after_client_exit() {
     let home_dir = unique_temp_dir("mcp_transport");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -82,12 +82,11 @@ fn direct_mcp_can_start_daemon_and_keep_it_running() {
 
     drop(child.stdin.take());
     wait_for_exit(&mut child, RESPONSE_TIMEOUT);
-    assert!(
-        health_ok(port),
-        "daemon should stay healthy after MCP client exit"
+    wait_for_daemon_shutdown(
+        port,
+        Duration::from_secs(5),
+        "owned daemon remained healthy after MCP session exit",
     );
-
-    shutdown_daemon(port, &home_dir);
     let _ = fs::remove_dir_all(&home_dir);
 }
 
@@ -116,16 +115,57 @@ fn direct_mcp_cleans_up_unused_owned_daemon_when_stdin_closes_immediately() {
 
     wait_for_exit(&mut child, Duration::from_secs(10));
 
-    let shutdown_deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < shutdown_deadline {
-        if !health_ok(port) {
-            let _ = fs::remove_dir_all(&home_dir);
-            return;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
+    wait_for_daemon_shutdown(
+        port,
+        Duration::from_secs(5),
+        "owned daemon remained healthy after idle MCP wrapper exit",
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
 
-    panic!("owned daemon remained healthy after idle MCP wrapper exit");
+#[test]
+fn direct_mcp_does_not_stop_preexisting_daemon() {
+    let home_dir = unique_temp_dir("mcp_existing_daemon");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex serve");
+
+    wait_for_health(port, &mut daemon);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex mcp");
+
+    wait_for_exit(&mut child, Duration::from_secs(10));
+
+    assert!(
+        health_ok(port),
+        "preexisting daemon should remain healthy after mcp wrapper exits"
+    );
+
+    shutdown_daemon(port, &home_dir);
+    wait_for_exit(&mut daemon, Duration::from_secs(10));
+    let _ = fs::remove_dir_all(&home_dir);
 }
 
 fn write_json_line(stdin: &mut std::process::ChildStdin, value: Value) {
@@ -210,6 +250,17 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) {
 
     let stderr = read_stderr(child);
     panic!("cortex mcp did not exit after stdin closed\n{stderr}");
+}
+
+fn wait_for_daemon_shutdown(port: u16, timeout: Duration, panic_msg: &str) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !health_ok(port) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    panic!("{panic_msg}");
 }
 
 fn health_ok(port: u16) -> bool {

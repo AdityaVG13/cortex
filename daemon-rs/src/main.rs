@@ -404,9 +404,9 @@ async fn main() {
                 None,
                 agent.as_deref(),
                 mcp_proxy::ProxyRuntimeOptions {
-                    allow_respawn: true,
-                    shutdown_on_exit: false,
-                    shutdown_on_idle_startup: false,
+                    allow_respawn: ensure.spawned,
+                    shutdown_on_exit: ensure.spawned,
+                    shutdown_on_idle_startup: ensure.spawned,
                 },
             )
             .await
