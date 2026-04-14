@@ -578,6 +578,57 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+#[test]
+fn mcp_local_mode_refuses_spawn_when_control_center_lock_is_active() {
+    let home_dir = unique_temp_dir("mcp_control_center_lock");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let runtime_dir = home_dir.join("runtime");
+    fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    let control_center_lock = runtime_dir.join("control-center.lock");
+    fs::write(&control_center_lock, "owner=control-center").expect("seed control center lock");
+    let mut perms = fs::metadata(&control_center_lock)
+        .expect("read control center lock metadata")
+        .permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&control_center_lock, perms).expect("mark control center lock readonly");
+
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run cortex mcp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "mcp should fail when control-center lock is active and daemon is unavailable"
+    );
+    assert!(
+        stderr.contains("cannot start it automatically")
+            || stderr.contains("another process still holds the daemon lock"),
+        "expected ownership-policy rejection in stderr, got: {stderr}"
+    );
+    assert!(
+        !health_ok(port),
+        "daemon should not be auto-spawned while control-center lock is active"
+    );
+
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 #[derive(Debug, Clone)]
 struct CapturedRequest {
     path: String,
@@ -636,13 +687,21 @@ fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
                                 "application/json",
                                 &wrong_identity_health,
                             ),
-                            "/mcp-rpc" => {
-                                write_mock_http_response(&mut stream, 401, "text/plain", "Unauthorized")
-                            }
+                            "/mcp-rpc" => write_mock_http_response(
+                                &mut stream,
+                                401,
+                                "text/plain",
+                                "Unauthorized",
+                            ),
                             "/session/end" => {
                                 write_mock_http_response(&mut stream, 200, "application/json", "{}")
                             }
-                            _ => write_mock_http_response(&mut stream, 404, "text/plain", "Not Found"),
+                            _ => write_mock_http_response(
+                                &mut stream,
+                                404,
+                                "text/plain",
+                                "Not Found",
+                            ),
                         }
                     }
                 }
@@ -716,7 +775,9 @@ fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
 
     let captured_requests = captured.lock().expect("lock captured requests");
     assert!(
-        captured_requests.iter().any(|request| request.path == "/health"),
+        captured_requests
+            .iter()
+            .any(|request| request.path == "/health"),
         "expected health probes against adversarial listener"
     );
     assert!(
