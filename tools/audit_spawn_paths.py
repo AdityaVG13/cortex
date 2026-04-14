@@ -108,6 +108,17 @@ def gather_findings() -> dict[str, list[Finding]]:
         kind="plugin_spawn_primitive",
         pattern=re.compile(r"\bspawn\s*\("),
     )
+    owner_token_env = scan(
+        rust_runtime + plugin_scripts,
+        kind="owner_token_env_reference",
+        pattern=re.compile(r"CORTEX_DAEMON_OWNER_TOKEN|DAEMON_OWNER_TOKEN_ENV"),
+    )
+    owner_token_validation = scan(
+        rust_runtime,
+        kind="owner_token_validation_callsite",
+        pattern=re.compile(r"\bvalidate_spawned_owner_claim\s*\("),
+        skip_when=re.compile(r"\bfn\s+validate_spawned_owner_claim\s*\("),
+    )
 
     return {
         "spawn_definition": spawn_def,
@@ -116,6 +127,8 @@ def gather_findings() -> dict[str, list[Finding]]:
         "ensure_daemon_callsite": ensure_call,
         "allow_spawn_flag": allow_spawn,
         "plugin_spawn_primitive": plugin_spawn,
+        "owner_token_env_reference": owner_token_env,
+        "owner_token_validation_callsite": owner_token_validation,
     }
 
 
@@ -145,6 +158,8 @@ def print_markdown_report(findings: dict[str, list[Finding]]) -> None:
         "ensure_daemon_callsite",
         "allow_spawn_flag",
         "plugin_spawn_primitive",
+        "owner_token_env_reference",
+        "owner_token_validation_callsite",
     ):
         rows = findings[section]
         print(f"## {section}")

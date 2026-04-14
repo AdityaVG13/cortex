@@ -335,6 +335,7 @@ dependencies = [
  "dirs",
  "fs2",
  "futures-util",
+ "hmac",
  "hyper-util",
  "libc",
  "ndarray 0.16.1",
@@ -346,6 +347,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tokenizers",
  "tokio",
@@ -807,6 +809,15 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "hmac-sha256"
@@ -2007,6 +2018,17 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
