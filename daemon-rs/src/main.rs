@@ -1788,7 +1788,10 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
     Ok(Some(value))
 }
 
-use daemon_lifecycle::{daemon_healthy, spawn_daemon, wait_for_health};
+use daemon_lifecycle::{
+    daemon_healthy, spawn_daemon, validate_spawned_owner_claim, wait_for_health,
+    DAEMON_OWNER_TOKEN_ENV,
+};
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
@@ -2038,6 +2041,13 @@ fn daemon_owner_tag_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn daemon_owner_token_from_env() -> Option<String> {
+    std::env::var(DAEMON_OWNER_TOKEN_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn spawn_parent_pid_from_env() -> Option<u32> {
     std::env::var(SPAWN_PARENT_PID_ENV)
         .ok()
@@ -2061,6 +2071,22 @@ fn spawned_owner_requires_parent_pid(owner_tag: Option<&str>) -> bool {
     owner_tag
         .map(|owner| should_watch_spawn_parent(Some(owner)))
         .unwrap_or(false)
+}
+
+fn validate_spawned_owner_runtime_claim(
+    paths: &auth::CortexPaths,
+    owner_tag: Option<&str>,
+    parent_pid: Option<u32>,
+    owner_token: Option<&str>,
+) -> Result<(), String> {
+    if spawned_owner_requires_parent_pid(owner_tag) && parent_pid.is_none() {
+        return Err(format!(
+            "owner '{}' requires {} linkage",
+            owner_tag.unwrap_or("unknown"),
+            SPAWN_PARENT_PID_ENV
+        ));
+    }
+    validate_spawned_owner_claim(paths, owner_tag, parent_pid, owner_token)
 }
 
 async fn ensure_daemon(
@@ -2280,12 +2306,14 @@ pub(crate) async fn run_daemon(
 
     let daemon_owner = daemon_owner_tag_from_env();
     let parent_pid = spawn_parent_pid_from_env();
-    if spawned_owner_requires_parent_pid(daemon_owner.as_deref()) && parent_pid.is_none() {
-        eprintln!(
-            "[cortex] FATAL: owner '{}' requires {} linkage; refusing to run detached",
-            daemon_owner.as_deref().unwrap_or("unknown"),
-            SPAWN_PARENT_PID_ENV
-        );
+    let owner_token = daemon_owner_token_from_env();
+    if let Err(reason) = validate_spawned_owner_runtime_claim(
+        &paths,
+        daemon_owner.as_deref(),
+        parent_pid,
+        owner_token.as_deref(),
+    ) {
+        eprintln!("[cortex] FATAL: invalid spawned owner claim ({reason}); refusing startup");
         std::process::exit(1);
     }
     if should_watch_spawn_parent(daemon_owner.as_deref()) {
@@ -2822,6 +2850,51 @@ mod tests {
         assert!(spawned_owner_requires_parent_pid(Some("plugin-claude")));
         assert!(!spawned_owner_requires_parent_pid(Some("control-center")));
         assert!(!spawned_owner_requires_parent_pid(None));
+    }
+
+    #[test]
+    fn spawned_owner_runtime_claim_requires_parent_linkage_for_plugin_owner() {
+        let home_dir = temp_test_dir("owner_runtime_parent");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let err = validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), None, None)
+            .unwrap_err();
+        assert!(err.contains(SPAWN_PARENT_PID_ENV));
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn spawned_owner_runtime_claim_rejects_missing_owner_token_when_parent_set() {
+        let home_dir = temp_test_dir("owner_runtime_token");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let err =
+            validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), Some(4242), None)
+                .unwrap_err();
+        assert!(err.contains("missing ownership token"));
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn spawned_owner_runtime_claim_allows_unspawned_control_center_mode() {
+        let home_dir = temp_test_dir("owner_runtime_unspawned");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        validate_spawned_owner_runtime_claim(&paths, Some("control-center"), None, None)
+            .expect("direct control-center owner mode should remain compatible");
+
+        let _ = std::fs::remove_dir_all(&home_dir);
     }
 
     #[test]
