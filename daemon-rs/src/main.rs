@@ -1649,6 +1649,20 @@ fn env_trimmed(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn parse_truthy_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn env_flag_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|value| parse_truthy_flag(&value))
+        .unwrap_or(false)
+}
+
 fn normalize_option(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1819,6 +1833,9 @@ fn plugin_local_spawn_allowed(
             "Plugin local daemon spawn is restricted to Claude-only mode. Pass --agent claude-code."
                 .to_string(),
         );
+    }
+    if !env_flag_truthy("CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN") {
+        return Ok(false);
     }
     Ok(local_spawn_allowed(paths))
 }
@@ -3117,6 +3134,17 @@ mod tests {
         assert_eq!(resolve_boot_auth_header(&token_path, None, false), None);
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn parse_truthy_flag_accepts_expected_values() {
+        assert!(parse_truthy_flag("1"));
+        assert!(parse_truthy_flag("true"));
+        assert!(parse_truthy_flag("YES"));
+        assert!(parse_truthy_flag(" on "));
+        assert!(!parse_truthy_flag("0"));
+        assert!(!parse_truthy_flag("false"));
+        assert!(!parse_truthy_flag(""));
     }
 
     #[test]

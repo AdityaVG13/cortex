@@ -45,7 +45,7 @@ function resolveRoute(config) {
   const disableLocalSpawn = isTruthy(process.env.CORTEX_DEV_DISABLE_LOCAL_SPAWN);
   const allowLocalSpawnRaw = process.env.CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN;
   const allowLocalSpawn =
-    allowLocalSpawnRaw === undefined ? true : isTruthy(allowLocalSpawnRaw);
+    allowLocalSpawnRaw === undefined ? false : isTruthy(allowLocalSpawnRaw);
 
   if (explicitUrl) {
     return { mode: 'remote', url: explicitUrl, reason: 'explicit plugin URL', allowLocalSpawn: false };
@@ -62,10 +62,7 @@ function resolveRoute(config) {
   }
 
   if (disableLocalSpawn || !allowLocalSpawn) {
-    return {
-      error:
-        'Local plugin daemon spawn is disabled by policy. Configure Cortex Server URL or re-enable local spawn.'
-    };
+    return { mode: 'local', url: '', reason: 'local attach-only', allowLocalSpawn: false };
   }
 
   return { mode: 'local', url: '', reason: 'local fallback', allowLocalSpawn: true };

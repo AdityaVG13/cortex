@@ -142,6 +142,7 @@ fn plugin_owned_mcp_recovers_after_daemon_interruption_and_cleans_up_on_exit() {
             "--port",
             &port.to_string(),
         ])
+        .env("CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -245,6 +246,7 @@ fn plugin_mcp_local_owner_mode_stops_spawned_daemon_on_exit() {
             "--port",
             &port.to_string(),
         ])
+        .env("CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
