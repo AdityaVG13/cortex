@@ -18,13 +18,13 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[test]
-fn direct_mcp_stops_owned_daemon_after_client_exit() {
+fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
     let home_dir = unique_temp_dir("mcp_transport");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
     let home = home_dir.to_string_lossy().to_string();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+    let output = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args([
             "mcp",
             "--agent",
@@ -34,68 +34,28 @@ fn direct_mcp_stops_owned_daemon_after_client_exit() {
             "--port",
             &port.to_string(),
         ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn_tracked("spawn cortex mcp");
+        .output()
+        .expect("run cortex mcp");
 
-    wait_for_health(port, &mut child);
-
-    let stdout = child.stdout.take().expect("child stdout");
-    let responses = spawn_stdout_reader(stdout);
-    let stdin = child.stdin.as_mut().expect("child stdin");
-
-    write_json_line(
-        stdin,
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": { "name": "ci", "version": "1.0.0" }
-            }
-        }),
-    );
-    let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert_eq!(initialize["jsonrpc"], "2.0");
-    assert_eq!(initialize["id"], 1);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        initialize.get("result").is_some(),
-        "missing initialize result: {initialize}"
+        !output.status.success(),
+        "cli mcp must fail when no daemon is already running"
     );
-
-    write_json_line(
-        stdin,
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list"
-        }),
-    );
-    let tools = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert_eq!(tools["jsonrpc"], "2.0");
-    assert_eq!(tools["id"], 2);
     assert!(
-        tools["result"]["tools"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty()),
-        "expected tools/list to return tools: {tools}"
+        stderr.contains("cannot start it automatically")
+            || stderr.contains("another process still holds the daemon lock"),
+        "expected ownership-policy rejection in stderr, got: {stderr}"
     );
-
-    drop(child.stdin.take());
-    wait_for_exit(&mut child, RESPONSE_TIMEOUT);
-    wait_for_daemon_shutdown(
-        port,
-        Duration::from_secs(5),
-        "owned daemon remained healthy after MCP session exit",
-    );
+    assert!(!health_ok(port), "cli mcp must not auto-spawn daemon");
     let _ = fs::remove_dir_all(&home_dir);
 }
 
 #[test]
-fn direct_mcp_cleans_up_unused_owned_daemon_when_stdin_closes_immediately() {
+fn direct_mcp_still_refuses_auto_spawn_when_stdin_closes_immediately() {
     let home_dir = unique_temp_dir("mcp_idle");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -117,45 +77,7 @@ fn direct_mcp_cleans_up_unused_owned_daemon_when_stdin_closes_immediately() {
         .spawn_tracked("spawn idle cortex mcp");
 
     wait_for_exit(&mut child, Duration::from_secs(10));
-
-    wait_for_daemon_shutdown(
-        port,
-        Duration::from_secs(5),
-        "owned daemon remained healthy after idle MCP wrapper exit",
-    );
-    let _ = fs::remove_dir_all(&home_dir);
-}
-
-#[test]
-fn direct_mcp_force_kill_cleans_up_owned_daemon() {
-    let home_dir = unique_temp_dir("mcp_force_kill");
-    fs::create_dir_all(&home_dir).expect("create temp home");
-    let port = reserve_port();
-    let home = home_dir.to_string_lossy().to_string();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
-        .args([
-            "mcp",
-            "--agent",
-            "codex",
-            "--home",
-            &home,
-            "--port",
-            &port.to_string(),
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn_tracked("spawn cortex mcp");
-
-    wait_for_health(port, &mut child);
-    child.kill().expect("kill cortex mcp wrapper");
-    wait_for_exit(&mut child, Duration::from_secs(10));
-    wait_for_daemon_shutdown(
-        port,
-        Duration::from_secs(12),
-        "owned daemon remained healthy after force-killing MCP wrapper",
-    );
+    assert!(!health_ok(port), "cli mcp must not auto-spawn daemon");
     let _ = fs::remove_dir_all(&home_dir);
 }
 
@@ -203,7 +125,7 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
 }
 
 #[test]
-fn owned_mcp_recovers_after_daemon_interruption_and_cleans_up_on_exit() {
+fn plugin_owned_mcp_recovers_after_daemon_interruption_and_cleans_up_on_exit() {
     let home_dir = unique_temp_dir("mcp_recovery");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -211,9 +133,10 @@ fn owned_mcp_recovers_after_daemon_interruption_and_cleans_up_on_exit() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args([
+            "plugin",
             "mcp",
             "--agent",
-            "codex",
+            "claude-code",
             "--home",
             &home,
             "--port",

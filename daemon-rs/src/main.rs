@@ -391,22 +391,16 @@ async fn main() {
             let remaining = &args[2..];
             let agent = parse_flag_value(remaining, "--agent");
             let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
-            let allow_spawn = local_owner_mode && local_spawn_allowed(&paths);
+            // CLI MCP never spawns the daemon. Control Center is primary owner,
+            // and plugin Claude-only mode is the only non-app fallback spawner.
+            let allow_spawn = false;
             if let Err(e) = ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
             {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
             let ensure = if local_owner_mode {
-                match ensure_daemon(
-                    &paths,
-                    agent.as_deref(),
-                    false,
-                    allow_spawn,
-                    Some(OWNER_TAG_CLI_MCP),
-                )
-                .await
-                {
+                match ensure_daemon(&paths, agent.as_deref(), false, allow_spawn, None).await {
                     Ok(result) => result,
                     Err(e) => {
                         eprintln!("[cortex-mcp] {e}");
@@ -427,11 +421,7 @@ async fn main() {
                     allow_respawn: allow_spawn,
                     shutdown_on_exit: ensure.spawned,
                     shutdown_on_idle_startup: ensure.spawned,
-                    respawn_owner: if allow_spawn {
-                        Some(OWNER_TAG_CLI_MCP)
-                    } else {
-                        None
-                    },
+                    respawn_owner: None,
                 },
             )
             .await
@@ -1804,8 +1794,6 @@ const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
 const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
-const OWNER_TAG_CLI_MCP: &str = "cli-mcp";
-const OWNER_TAG_CLI_BOOT: &str = "cli-boot";
 const OWNER_TAG_PLUGIN_CLAUDE: &str = "plugin-claude";
 
 fn local_spawn_allowed(paths: &auth::CortexPaths) -> bool {
@@ -1953,8 +1941,8 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
     ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), paths)?;
 
     if local_owner_mode {
-        let allow_spawn = local_spawn_allowed(paths);
-        let _ = ensure_daemon(paths, None, false, allow_spawn, Some(OWNER_TAG_CLI_BOOT)).await?;
+        // Boot CLI does not own daemon lifecycle and must not auto-spawn.
+        let _ = ensure_daemon(paths, None, false, false, None).await?;
     }
 
     let local_target_identity_valid = if local_owner_mode {

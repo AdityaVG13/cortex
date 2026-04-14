@@ -21,6 +21,8 @@ const PRECACHE_TTL_MS: i64 = 5 * 60 * 1000;
 const SEMANTIC_SIM_FLOOR: f64 = 0.3;
 const SEMANTIC_SCALE_BASE: f64 = 0.55;
 const MAX_SEMANTIC_RRF_CANDIDATES: usize = 120;
+const MIN_BUDGET_HEADROOM_TOKENS: usize = 8;
+const MIN_EXCERPT_CHARS: usize = 24;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -562,7 +564,7 @@ pub async fn execute_semantic_recall(
             ctx,
             source_prefix,
         );
-        apply_semantic_budget(results, budget)
+        apply_semantic_budget(results, budget, query_text)
     };
     let spent: usize = budgeted
         .iter()
@@ -959,7 +961,82 @@ fn run_semantic_recall_with_query_vector(
     ranked
 }
 
-fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize) -> Vec<RecallItem> {
+fn budget_rank_char_cap(token_budget: usize, rank_idx: usize) -> usize {
+    if token_budget <= 220 {
+        match rank_idx {
+            0 => 180,
+            1 => 120,
+            2 => 90,
+            _ => 70,
+        }
+    } else if token_budget <= 400 {
+        match rank_idx {
+            0 => 260,
+            1 => 170,
+            2 => 130,
+            _ => 95,
+        }
+    } else if token_budget <= 800 {
+        match rank_idx {
+            0 => 320,
+            1 => 210,
+            2 => 160,
+            _ => 120,
+        }
+    } else {
+        match rank_idx {
+            0 => 420,
+            1 => 260,
+            2 => 200,
+            _ => 150,
+        }
+    }
+}
+
+fn fit_excerpt_to_remaining_budget(
+    source: &str,
+    excerpt: &str,
+    query_text: &str,
+    char_cap: usize,
+    remaining_tokens: usize,
+) -> Option<(String, usize)> {
+    if remaining_tokens <= MIN_BUDGET_HEADROOM_TOKENS {
+        return None;
+    }
+
+    let source_only_tokens = estimate_tokens(source);
+    if source_only_tokens > remaining_tokens {
+        return None;
+    }
+    if excerpt.is_empty() {
+        return Some((String::new(), source_only_tokens));
+    }
+
+    let total_chars = excerpt.chars().count();
+    let min_chars = MIN_EXCERPT_CHARS.min(total_chars.max(1));
+    let mut chars = char_cap.min(total_chars).max(min_chars);
+
+    loop {
+        let clipped = query_focused_excerpt(excerpt, query_text, chars);
+        let tokens = estimate_tokens(&format!("{source}{clipped}"));
+        if tokens <= remaining_tokens {
+            return Some((clipped, tokens));
+        }
+        if chars <= min_chars {
+            break;
+        }
+        let next = ((chars as f64) * 0.72) as usize;
+        chars = next.max(min_chars).min(chars.saturating_sub(1));
+    }
+
+    Some((String::new(), source_only_tokens))
+}
+
+fn apply_semantic_budget(
+    raw: Vec<RecallItem>,
+    token_budget: usize,
+    query_text: &str,
+) -> Vec<RecallItem> {
     if token_budget == 0 {
         return raw
             .into_iter()
@@ -1000,18 +1077,17 @@ fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize) -> Vec<Recal
             break;
         }
 
-        let max_chars = if idx == 0 {
-            ((remaining as f64 * 3.8) as usize).min(280)
-        } else if idx <= 2 {
-            ((remaining as f64 * 3.8) as usize).min(140)
-        } else {
-            ((remaining as f64 * 3.8) as usize).min(80)
-        };
-        item.excerpt = truncate_chars(&item.excerpt, max_chars);
-        let tokens = estimate_tokens(&format!("{}{}", item.source, item.excerpt));
-        item.tokens = Some(tokens);
-        spent += tokens;
-        budgeted.push(item);
+        let cap = budget_rank_char_cap(token_budget, idx)
+            .min((remaining as f64 * 3.6) as usize)
+            .max(MIN_EXCERPT_CHARS);
+        if let Some((excerpt, tokens)) =
+            fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
+        {
+            item.excerpt = excerpt;
+            item.tokens = Some(tokens);
+            spent += tokens;
+            budgeted.push(item);
+        }
     }
     budgeted
 }
@@ -1025,7 +1101,21 @@ fn run_budget_recall_with_query_vector(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
-    let raw = run_recall_with_query_vector(conn, query_text, k, query_vector, ctx, source_prefix)?;
+    let retrieval_depth = if token_budget <= 220 {
+        (k.max(10) * 3).min(30)
+    } else if token_budget <= 400 {
+        (k.max(10) * 2).min(28)
+    } else {
+        k.max(12)
+    };
+    let raw = run_recall_with_query_vector(
+        conn,
+        query_text,
+        retrieval_depth,
+        query_vector,
+        ctx,
+        source_prefix,
+    )?;
     if raw.is_empty() {
         return Ok(vec![]);
     }
@@ -1064,30 +1154,22 @@ fn run_budget_recall_with_query_vector(
             break;
         }
 
-        let max_chars = if idx == 0 {
-            ((remaining as f64 * 3.8) as usize).min(400)
-        } else if idx <= 2 {
-            ((remaining as f64 * 3.8) as usize).min(150)
-        } else {
-            ((remaining as f64 * 3.8) as usize).min(60)
-        };
-
-        let original = item.excerpt.clone();
-        let mut excerpt = truncate_chars(&original, max_chars);
-        if excerpt.chars().count() < original.chars().count() {
-            excerpt.push_str("...");
+        let cap = budget_rank_char_cap(token_budget, idx)
+            .min((remaining as f64 * 3.6) as usize)
+            .max(MIN_EXCERPT_CHARS);
+        if let Some((excerpt, tokens)) =
+            fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
+        {
+            spent += tokens;
+            budgeted.push(RecallItem {
+                source: item.source,
+                relevance: item.relevance,
+                excerpt,
+                method: item.method,
+                tokens: Some(tokens),
+                entropy: item.entropy,
+            });
         }
-        let tokens = estimate_tokens(&format!("{}{}", item.source, excerpt));
-        spent += tokens;
-
-        budgeted.push(RecallItem {
-            source: item.source,
-            relevance: item.relevance,
-            excerpt,
-            method: item.method,
-            tokens: Some(tokens),
-            entropy: item.entropy,
-        });
     }
 
     Ok(budgeted)
@@ -3596,6 +3678,103 @@ mod tests {
         assert!(
             excerpt.contains("Business Administration"),
             "excerpt should preserve local factual span"
+        );
+    }
+
+    #[test]
+    fn test_fit_excerpt_to_remaining_budget_keeps_query_focus() {
+        let prefix = "x".repeat(220);
+        let text = format!(
+            "{prefix} daemon ownership lock arbitration prevents split-brain after parent death."
+        );
+        let (excerpt, tokens) = fit_excerpt_to_remaining_budget(
+            "memory::daemon-lock",
+            &text,
+            "daemon ownership lock",
+            220,
+            40,
+        )
+        .expect("expected source + excerpt to fit");
+        assert!(tokens <= 40, "tokens should fit remaining budget");
+        assert!(
+            excerpt.to_ascii_lowercase().contains("daemon")
+                || excerpt.to_ascii_lowercase().contains("ownership"),
+            "budgeted excerpt should preserve query-bearing span"
+        );
+    }
+
+    #[test]
+    fn test_run_budget_recall_enforces_total_token_cap() {
+        let mut conn = test_conn();
+        for idx in 0..8 {
+            let source = format!("memory::daemon-lock-{idx}");
+            let text = format!(
+                "{} daemon ownership lock handoff requires pid start-time checks and stale lock recovery.",
+                "warmup ".repeat(18)
+            );
+            conn.execute(
+                "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+                 VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+                params![text, source],
+            )
+            .unwrap();
+        }
+
+        let results = run_budget_recall(
+            &mut conn,
+            "daemon ownership lock",
+            200,
+            10,
+            &solo_ctx(),
+            None,
+        )
+        .expect("budget recall should succeed");
+        let spent: usize = results
+            .iter()
+            .map(|item| {
+                item.tokens
+                    .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+            })
+            .sum();
+
+        assert!(!results.is_empty(), "expected at least one recall result");
+        assert!(
+            spent <= 200,
+            "total tokens should not exceed budget: {spent}"
+        );
+    }
+
+    #[test]
+    fn test_run_budget_recall_keeps_late_query_span_when_clipped() {
+        let mut conn = test_conn();
+        let text = format!(
+            "{} ownership lock handoff after sleep wake requires parent liveness gating.",
+            "prefix ".repeat(40)
+        );
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, 'memory::sleep-wake-lock', 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            params![text],
+        )
+        .unwrap();
+
+        let results = run_budget_recall(
+            &mut conn,
+            "ownership lock handoff",
+            90,
+            5,
+            &solo_ctx(),
+            None,
+        )
+        .expect("budget recall should succeed");
+        assert!(!results.is_empty(), "expected low-budget result");
+        assert!(
+            results[0]
+                .excerpt
+                .to_ascii_lowercase()
+                .contains("ownership")
+                || results[0].excerpt.to_ascii_lowercase().contains("lock"),
+            "top result should keep query-bearing span under clipping"
         );
     }
 

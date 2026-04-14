@@ -21,6 +21,7 @@ const ACTIVE_SESSION_WINDOW_SECONDS: i64 = 75;
 const MAX_ACTIVITIES: i64 = 1000;
 const MAX_MESSAGES_PER_AGENT: i64 = 100;
 const MAX_TASKS: i64 = 500;
+const SESSION_FRESHNESS_IDLE_SECONDS: i64 = 24 * 60 * 60;
 
 // ─── Request / query types ──────────────────────────────────────────────────
 
@@ -262,6 +263,61 @@ fn clean_expired_sessions(
         )?;
     }
     Ok(())
+}
+
+fn session_freshness_idle_seconds() -> i64 {
+    std::env::var("CORTEX_SESSION_FRESHNESS_IDLE_SECS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(SESSION_FRESHNESS_IDLE_SECONDS)
+        .max(60)
+}
+
+fn last_session_heartbeat_ms(
+    conn: &rusqlite::Connection,
+    owner_id: Option<i64>,
+) -> rusqlite::Result<Option<i64>> {
+    let last: Option<String> = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT MAX(last_heartbeat) FROM sessions WHERE owner_id = ?1",
+            params![owner_id],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row("SELECT MAX(last_heartbeat) FROM sessions", [], |row| {
+            row.get(0)
+        })?
+    };
+    Ok(last.as_deref().map(parse_timestamp_ms))
+}
+
+fn should_run_session_freshen(
+    conn: &rusqlite::Connection,
+    owner_id: Option<i64>,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    let Ok(last_heartbeat_ms) = last_session_heartbeat_ms(conn, owner_id) else {
+        return true;
+    };
+    let Some(last_heartbeat_ms) = last_heartbeat_ms else {
+        return false;
+    };
+    if last_heartbeat_ms <= 0 {
+        return true;
+    }
+    let idle_secs = (now.timestamp_millis() - last_heartbeat_ms) / 1000;
+    idle_secs >= session_freshness_idle_seconds()
+}
+
+fn run_session_freshen(conn: &rusqlite::Connection, state: &RuntimeState, owner_id: Option<i64>) {
+    let _ = clean_expired_sessions(conn, owner_id);
+    let _ = crate::db::delete_expired_entries(conn);
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;");
+
+    let quick_ok = crate::db::quick_check(conn);
+    state
+        .db_corrupted
+        .store(!quick_ok, std::sync::atomic::Ordering::SeqCst);
 }
 
 fn clean_old_tasks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
@@ -995,6 +1051,8 @@ pub async fn handle_session_start(
         serde_json::to_string(&body.files.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
 
     let conn = state.db.lock().await;
+    let _ = clean_expired_sessions(&conn, owner_id);
+    let should_freshen = should_run_session_freshen(&conn, owner_id, now);
     let write = if let Some(owner_id) = owner_id {
         conn.execute(
             "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
@@ -1043,6 +1101,9 @@ pub async fn handle_session_start(
     };
     match write {
         Ok(_) => {
+            if should_freshen {
+                run_session_freshen(&conn, &state, owner_id);
+            }
             checkpoint_wal_best_effort(&conn);
             state.emit(
                 "session",
@@ -1050,7 +1111,11 @@ pub async fn handle_session_start(
             );
             json_response(
                 StatusCode::OK,
-                json!({ "sessionId": session_id, "heartbeatInterval": 60 }),
+                json!({
+                    "sessionId": session_id,
+                    "heartbeatInterval": 60,
+                    "freshened": should_freshen
+                }),
             )
         }
         Err(err) => json_response(

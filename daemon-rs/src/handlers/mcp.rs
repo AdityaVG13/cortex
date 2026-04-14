@@ -416,6 +416,7 @@ pub fn mcp_tools() -> Vec<Value> {
                 "properties": {
                     "query": { "type": "string", "description": "Search query text" },
                     "budget": { "type": "number", "description": "Token budget. 0=headlines only, 200=balanced, 500+=full detail" },
+                    "k": { "type": "number", "description": "Retrieval depth hint (default adapts to budget for low-token recall)" },
                     "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" }
                 },
                 "required": ["query"]
@@ -680,18 +681,33 @@ async fn mcp_dispatch(
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or_else(|| {
+                if budget <= 220 {
+                    16
+                } else if budget <= 400 {
+                    12
+                } else {
+                    10
+                }
+            });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            execute_unified_recall(state, query, budget, 10, agent, &ctx, None).await
+            execute_unified_recall(state, query, budget, k, agent, &ctx, None).await
         }
 
         "cortex_semantic_recall" => {
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or(10);
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or_else(|| {
+                if budget <= 220 {
+                    14
+                } else {
+                    10
+                }
+            });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
 
