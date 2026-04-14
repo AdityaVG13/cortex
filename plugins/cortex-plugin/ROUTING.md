@@ -31,13 +31,6 @@ relying on stale bundled binaries when a canonical app-managed binary exists.
 - `CORTEX_WORKSPACE_ROOT`
   - Optional workspace root used to discover dev/release daemon builds.
 
-## Deprecated / Ignored for Routing
-- `CORTEX_DEV_PREFER_APP`
-- `CORTEX_DEV_DISABLE_LOCAL_SPAWN`
-- `CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN`
-
-These no longer affect plugin routing behavior.
-
 ## Route Matrix
 - Plugin URL set -> route `remote` -> pass `--url` and optional `--api-key`
 - No plugin URL, app URL set -> route `remote` -> pass `--url`

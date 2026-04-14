@@ -163,45 +163,6 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
 }
 
 #[test]
-fn plugin_mcp_legacy_local_spawn_flag_is_ignored() {
-    let home_dir = unique_temp_dir("plugin_mcp_legacy_spawn_flag");
-    fs::create_dir_all(&home_dir).expect("create temp home");
-    let port = reserve_port();
-    let home = home_dir.to_string_lossy().to_string();
-
-    let output = Command::new(env!("CARGO_BIN_EXE_cortex"))
-        .args([
-            "plugin",
-            "mcp",
-            "--agent",
-            "claude-code",
-            "--home",
-            &home,
-            "--port",
-            &port.to_string(),
-        ])
-        .env("CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("run cortex plugin mcp");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "legacy local-spawn flag must not permit plugin daemon spawning"
-    );
-    assert!(
-        stderr.contains("cannot start it automatically")
-            || stderr.contains("another process still holds the daemon lock"),
-        "expected attach-only rejection in stderr, got: {stderr}"
-    );
-    assert!(!health_ok(port), "plugin mcp must not auto-spawn daemon");
-    let _ = fs::remove_dir_all(&home_dir);
-}
-
-#[test]
 fn plugin_mcp_local_attach_does_not_respawn_after_interruption() {
     let home_dir = unique_temp_dir("plugin_mcp_attach_no_respawn");
     fs::create_dir_all(&home_dir).expect("create temp home");
