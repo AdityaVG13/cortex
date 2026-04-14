@@ -44,11 +44,6 @@ const STARTUP_LOG_FILES: &[&str] = &[
     "rust-daemon.err.log",
 ];
 
-#[derive(Clone, Copy, Debug, Default)]
-struct EnsureDaemonResult {
-    spawned: bool,
-}
-
 // ── Backup rotation helpers ───────────────────────────────────────────────
 
 /// Check if a backup should be created (>24h since last backup).
@@ -391,25 +386,20 @@ async fn main() {
             let remaining = &args[2..];
             let agent = parse_flag_value(remaining, "--agent");
             let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
-            // MCP clients are attach-only; daemon lifecycle is owned by
-            // Control Center / service commands.
-            let allow_spawn = false;
             if let Err(e) = ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
             {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
-            let ensure = if local_owner_mode {
-                match ensure_daemon(&paths, agent.as_deref(), false, allow_spawn, None).await {
-                    Ok(result) => result,
+            if local_owner_mode {
+                match ensure_daemon(&paths, agent.as_deref(), false).await {
+                    Ok(()) => {}
                     Err(e) => {
                         eprintln!("[cortex-mcp] {e}");
                         std::process::exit(1);
                     }
                 }
-            } else {
-                EnsureDaemonResult::default()
-            };
+            }
             if local_owner_mode {
                 apply_path_env(&paths);
             }
@@ -418,9 +408,9 @@ async fn main() {
                 api_key.as_deref(),
                 agent.as_deref(),
                 mcp_proxy::ProxyRuntimeOptions {
-                    allow_respawn: allow_spawn,
-                    shutdown_on_exit: ensure.spawned,
-                    shutdown_on_idle_startup: ensure.spawned,
+                    allow_respawn: false,
+                    shutdown_on_exit: false,
+                    shutdown_on_idle_startup: false,
                     respawn_owner: None,
                 },
             )
@@ -428,9 +418,6 @@ async fn main() {
             {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
-            }
-            if ensure.spawned {
-                eprintln!("[cortex-mcp] Started a local daemon for this session");
             }
         }
 
@@ -456,8 +443,7 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, false, None).await
-                    {
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true).await {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
@@ -467,26 +453,21 @@ async fn main() {
                     let (base_url, api_key, local_owner_mode) =
                         resolve_client_target(remaining, &paths);
                     let agent = parse_flag_value(remaining, "--agent");
-                    let allow_spawn = false;
                     if let Err(e) =
                         ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
                     {
                         eprintln!("[cortex-plugin] {e}");
                         std::process::exit(1);
                     }
-                    let ensure = if local_owner_mode {
-                        match ensure_daemon(&paths, agent.as_deref(), false, allow_spawn, None)
-                            .await
-                        {
-                            Ok(result) => result,
+                    if local_owner_mode {
+                        match ensure_daemon(&paths, agent.as_deref(), false).await {
+                            Ok(()) => {}
                             Err(e) => {
                                 eprintln!("[cortex-plugin] {e}");
                                 std::process::exit(1);
                             }
                         }
-                    } else {
-                        EnsureDaemonResult::default()
-                    };
+                    }
                     if local_owner_mode {
                         apply_path_env(&paths);
                     }
@@ -495,8 +476,8 @@ async fn main() {
                         api_key.as_deref(),
                         agent.as_deref(),
                         mcp_proxy::ProxyRuntimeOptions {
-                            allow_respawn: allow_spawn,
-                            shutdown_on_exit: ensure.spawned,
+                            allow_respawn: false,
+                            shutdown_on_exit: false,
                             shutdown_on_idle_startup: false,
                             respawn_owner: None,
                         },
@@ -1772,7 +1753,7 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
 }
 
 use daemon_lifecycle::{
-    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload, spawn_daemon,
+    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload,
     validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
     SPAWN_PARENT_START_TIME_ENV,
 };
@@ -1781,38 +1762,6 @@ const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
 const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
-
-async fn recover_unhealthy_locked_daemon(
-    paths: &auth::CortexPaths,
-    result: &mut EnsureDaemonResult,
-    owner_tag: Option<&str>,
-) -> Result<bool, String> {
-    let _ = auth::cleanup_stale_pid_lock(paths);
-
-    let guard = match auth::acquire_daemon_lock(paths) {
-        Ok(guard) => guard,
-        Err(_) => return Ok(false),
-    };
-
-    if daemon_healthy(paths).await {
-        drop(guard);
-        return Ok(true);
-    }
-
-    apply_path_env(paths);
-    spawn_daemon(paths, owner_tag)?;
-    drop(guard);
-
-    if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
-        return Err(format!(
-            "daemon lock was recovered but daemon did not become healthy on port {} within {}s",
-            paths.port, DAEMON_STARTUP_WAIT_SECS
-        ));
-    }
-
-    result.spawned = true;
-    Ok(true)
-}
 
 fn read_auth_token_from_path(token_path: &std::path::Path) -> Option<String> {
     std::fs::read_to_string(token_path).ok().and_then(|token| {
@@ -1904,7 +1853,7 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
 
     if local_owner_mode {
         // Boot CLI does not own daemon lifecycle and must not auto-spawn.
-        let _ = ensure_daemon(paths, None, false, false, None).await?;
+        ensure_daemon(paths, None, false).await?;
     }
 
     let local_target_identity_valid = if local_owner_mode {
@@ -2173,30 +2122,16 @@ async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
     emit_port: bool,
-    allow_spawn: bool,
-    owner_tag: Option<&str>,
-) -> Result<EnsureDaemonResult, String> {
+) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
 
     let lock = auth::acquire_daemon_lock(paths);
-    let mut result = EnsureDaemonResult::default();
 
     match lock {
-        Ok(guard) => {
+        Ok(_guard) => {
             if daemon_healthy(paths).await {
                 // already healthy
-            } else if allow_spawn {
-                apply_path_env(paths);
-                spawn_daemon(paths, owner_tag)?;
-                drop(guard);
-                if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
-                    return Err(format!(
-                        "daemon did not become healthy on port {} within {}s",
-                        paths.port, DAEMON_STARTUP_WAIT_SECS
-                    ));
-                }
-                result.spawned = true;
             } else {
                 return Err(format!(
                     "daemon is not healthy on port {} and this client cannot start it automatically. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
@@ -2206,25 +2141,6 @@ async fn ensure_daemon(
         }
         Err(_) => {
             if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
-                if allow_spawn {
-                    if recover_unhealthy_locked_daemon(paths, &mut result, owner_tag).await? {
-                        if let Some(agent) = agent {
-                            if let Err(e) = boot_agent(paths, agent).await {
-                                eprintln!(
-                                    "[cortex-plugin] Warning: boot call failed for agent '{agent}': {e}"
-                                );
-                            }
-                        }
-                        if emit_port {
-                            println!("{}", paths.port);
-                        }
-                        return Ok(result);
-                    }
-                    return Err(format!(
-                        "daemon lock is held and daemon is not healthy on port {}",
-                        paths.port
-                    ));
-                }
                 return Err(format!(
                     "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
                     paths.port
@@ -2242,7 +2158,7 @@ async fn ensure_daemon(
     if emit_port {
         println!("{}", paths.port);
     }
-    Ok(result)
+    Ok(())
 }
 
 // ── Admin CLI helpers ───────────────────────────────────────────────────────
