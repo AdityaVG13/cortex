@@ -175,17 +175,30 @@ fn infer_agent_from_process_tree() -> Option<String> {
     None
 }
 
-fn current_parent_pid() -> Option<sysinfo::Pid> {
+#[derive(Clone, Copy, Debug)]
+struct ParentProcessRef {
+    pid: sysinfo::Pid,
+    start_time: u64,
+}
+
+fn current_parent_process() -> Option<ParentProcessRef> {
     let mut system = System::new_all();
     system.refresh_processes(ProcessesToUpdate::All, true);
     let current_pid = sysinfo::get_current_pid().ok()?;
-    system.process(current_pid)?.parent()
+    let parent_pid = system.process(current_pid)?.parent()?;
+    let parent = system.process(parent_pid)?;
+    Some(ParentProcessRef {
+        pid: parent_pid,
+        start_time: parent.start_time(),
+    })
 }
 
-fn process_is_alive(pid: sysinfo::Pid) -> bool {
+fn process_is_alive(parent: ParentProcessRef) -> bool {
     let mut system = System::new_all();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system.process(pid).is_some()
+    system.refresh_processes(ProcessesToUpdate::Some(&[parent.pid]), true);
+    system
+        .process(parent.pid)
+        .is_some_and(|process| process.start_time() == parent.start_time)
 }
 
 fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
@@ -896,7 +909,7 @@ pub async fn run(
     let mut respawn_attempts: u32 = 0;
     let mut last_respawn_attempt_at: Option<std::time::Instant> = None;
     let startup_timeout = startup_idle_timeout();
-    let parent_pid = current_parent_pid();
+    let parent_process = current_parent_process();
     let mut saw_client_message = false;
     let mut orphan_check = tokio::time::interval(std::time::Duration::from_secs(ORPHAN_CHECK_SECS));
     orphan_check.tick().await;
@@ -907,8 +920,8 @@ pub async fn run(
             tokio::pin!(startup_sleep);
             tokio::select! {
                 _ = orphan_check.tick() => {
-                    if let Some(parent_pid) = parent_pid {
-                        if !process_is_alive(parent_pid) {
+                    if let Some(parent_process) = parent_process {
+                        if !process_is_alive(parent_process) {
                             finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (parent process exited before handshake)");
@@ -947,8 +960,8 @@ pub async fn run(
         } else {
             tokio::select! {
                 _ = orphan_check.tick() => {
-                    if let Some(parent_pid) = parent_pid {
-                        if !process_is_alive(parent_pid) {
+                    if let Some(parent_process) = parent_process {
+                        if !process_is_alive(parent_process) {
                             finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (parent process exited)");

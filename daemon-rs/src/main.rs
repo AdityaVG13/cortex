@@ -33,6 +33,9 @@ use std::time::Duration;
 const BACKUP_RETENTION_COUNT: usize = 3;
 const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
 const LOG_ROTATION_BYTES: u64 = 1024 * 1024;
+const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
+const SPAWN_PARENT_PID_ENV: &str = "CORTEX_SPAWN_PARENT_PID";
+const ORPHAN_WATCH_INTERVAL_SECS: u64 = 2;
 const STARTUP_LOG_FILES: &[&str] = &[
     "daemon.log",
     "daemon.err.log",
@@ -2040,6 +2043,32 @@ fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, Stri
     auth::acquire_daemon_lock(paths)
 }
 
+fn daemon_owner_tag_from_env() -> Option<String> {
+    std::env::var("CORTEX_DAEMON_OWNER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn spawn_parent_pid_from_env() -> Option<u32> {
+    std::env::var(SPAWN_PARENT_PID_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+}
+
+fn should_watch_spawn_parent(owner_tag: Option<&str>) -> bool {
+    owner_tag
+        .map(|owner| !owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
+        .unwrap_or(true)
+}
+
+fn process_pid_alive(pid: u32) -> bool {
+    let mut system = sysinfo::System::new_all();
+    let target = sysinfo::Pid::from_u32(pid);
+    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
+    system.process(target).is_some()
+}
+
 async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
@@ -2254,6 +2283,30 @@ pub(crate) async fn run_daemon(
     eprintln!("[cortex] DB: {}", db_path.display());
 
     let (state, shutdown_rx) = state::initialize(&paths, true).expect("Failed to initialize state");
+
+    let daemon_owner = daemon_owner_tag_from_env();
+    if should_watch_spawn_parent(daemon_owner.as_deref()) {
+        if let Some(parent_pid) = spawn_parent_pid_from_env() {
+            let shutdown_tx = state.shutdown_tx.clone();
+            tokio::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(Duration::from_secs(ORPHAN_WATCH_INTERVAL_SECS));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    if !process_pid_alive(parent_pid) {
+                        eprintln!(
+                            "[cortex] Spawn parent process {parent_pid} exited; shutting down daemon"
+                        );
+                        if let Some(tx) = shutdown_tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+    }
 
     if let Some(parent) = paths.pid.parent() {
         std::fs::create_dir_all(parent).ok();

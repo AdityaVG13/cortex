@@ -139,12 +139,14 @@ pub fn spawn_daemon(paths: &CortexPaths, owner_tag: Option<&str>) -> Result<(), 
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let spawn_exe =
         prepare_spawn_executable(paths, &exe).map_err(|e| format!("prepare spawn copy: {e}"))?;
+    let launcher_pid = std::process::id().to_string();
     let mut cmd = Command::new(spawn_exe);
     cmd.arg("serve")
         .env("CORTEX_HOME", &paths.home)
         .env("CORTEX_DB", &paths.db)
         .env("CORTEX_PORT", paths.port.to_string())
         .env("CORTEX_BIND", &paths.bind)
+        .env("CORTEX_SPAWN_PARENT_PID", launcher_pid)
         .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
