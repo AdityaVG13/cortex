@@ -36,6 +36,12 @@ function isTruthy(value) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
+function resolveCanonicalCortexHome() {
+  const userHome = process.env.USERPROFILE || process.env.HOME || '';
+  if (!userHome) return '';
+  return path.join(userHome, '.cortex');
+}
+
 function resolveRoute(config) {
   const explicitUrl = normalizeOption(config.cortexUrl);
   const devAppUrl =
@@ -126,6 +132,14 @@ const childEnv = {
   CORTEX_DAEMON_OWNER_LOCAL_SPAWN: route.allowLocalSpawn ? '1' : '0',
   CORTEX_DAEMON_OWNER_PARENT_PID: String(process.pid)
 };
+
+if (route.mode === 'local') {
+  const canonicalHome = resolveCanonicalCortexHome();
+  if (canonicalHome) {
+    childEnv.CORTEX_HOME = canonicalHome;
+  }
+  delete childEnv.CORTEX_DB;
+}
 
 const child = spawn(binaryPath, args, {
   stdio: 'inherit',

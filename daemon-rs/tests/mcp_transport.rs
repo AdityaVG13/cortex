@@ -55,6 +55,44 @@ fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
 }
 
 #[test]
+fn plugin_mcp_refuses_auto_spawn_without_opt_in() {
+    let home_dir = unique_temp_dir("plugin_mcp_no_autospawn");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "plugin",
+            "mcp",
+            "--agent",
+            "claude-code",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run cortex plugin mcp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "plugin mcp must fail when no daemon is already running and local spawn opt-in is absent"
+    );
+    assert!(
+        stderr.contains("cannot start it automatically")
+            || stderr.contains("another process still holds the daemon lock"),
+        "expected ownership-policy rejection in stderr, got: {stderr}"
+    );
+    assert!(!health_ok(port), "plugin mcp must not auto-spawn daemon");
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
+#[test]
 fn direct_mcp_still_refuses_auto_spawn_when_stdin_closes_immediately() {
     let home_dir = unique_temp_dir("mcp_idle");
     fs::create_dir_all(&home_dir).expect("create temp home");
