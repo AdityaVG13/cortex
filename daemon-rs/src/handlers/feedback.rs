@@ -170,6 +170,7 @@ pub fn compute_boost(conn: &Connection, result_source: &str) -> f64 {
 pub fn compute_boosts(
     conn: &Connection,
     sources: &[String],
+    query_vector: Option<&[f32]>,
 ) -> std::collections::HashMap<String, f64> {
     let mut boosts = std::collections::HashMap::new();
     if sources.is_empty() {
@@ -187,7 +188,7 @@ pub fn compute_boosts(
         .join(", ");
 
     let sql = format!(
-        "SELECT result_source, signal, julianday('now') - julianday(created_at) AS age_days \
+        "SELECT result_source, signal, query_embedding, julianday('now') - julianday(created_at) AS age_days \
          FROM recall_feedback WHERE result_source IN ({placeholders})"
     );
 
@@ -200,8 +201,13 @@ pub fn compute_boosts(
         if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
             let source: String = row.get(0)?;
             let signal: f64 = row.get(1)?;
-            let age_days: f64 = row.get::<_, f64>(2)?.max(0.0);
-            Ok((source, signal * (-decay_lambda * age_days).exp()))
+            let query_blob: Option<Vec<u8>> = row.get(2)?;
+            let age_days: f64 = row.get::<_, f64>(3)?.max(0.0);
+            let query_weight = query_similarity_weight(query_vector, query_blob.as_deref());
+            Ok((
+                source,
+                signal * query_weight * (-decay_lambda * age_days).exp(),
+            ))
         }) {
             for row in rows.flatten() {
                 *boosts.entry(row.0).or_insert(0.0) += row.1;
@@ -215,6 +221,22 @@ pub fn compute_boosts(
     }
 
     boosts
+}
+
+fn query_similarity_weight(current_query: Option<&[f32]>, stored_blob: Option<&[u8]>) -> f64 {
+    let Some(current_query) = current_query else {
+        return 1.0;
+    };
+    let Some(stored_blob) = stored_blob else {
+        return 0.6;
+    };
+    let stored_vec = embeddings::blob_to_vector(stored_blob);
+    if stored_vec.is_empty() {
+        return 0.6;
+    }
+    let sim = embeddings::cosine_similarity(current_query, &stored_vec).clamp(0.0, 1.0);
+    // Keep a non-zero floor so sparse historic signal still contributes lightly.
+    0.2 + (sim as f64 * 0.8)
 }
 
 /// Check if a source has enough recent positive feedback to be immune from aging.
@@ -384,10 +406,45 @@ mod tests {
             "memory::b".to_string(),
             "memory::c".to_string(),
         ];
-        let boosts = compute_boosts(&conn, &sources);
+        let boosts = compute_boosts(&conn, &sources, None);
         assert!(boosts["memory::a"] > 0.0);
         assert!(boosts["memory::b"] < 0.0);
         assert!(!boosts.contains_key("memory::c"), "No feedback = no entry");
+    }
+
+    #[test]
+    fn test_compute_boosts_prefers_similar_query_embeddings() {
+        let conn = setup_test_db();
+        let source = "memory::ranked";
+        let similar = vec![1.0_f32, 0.0, 0.0];
+        let dissimilar = vec![0.0_f32, 1.0, 0.0];
+        let similar_blob = embeddings::vector_to_blob(&similar);
+        let dissimilar_blob = embeddings::vector_to_blob(&dissimilar);
+
+        conn.execute(
+            "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, signal, agent) \
+             VALUES ('similar', ?1, ?2, 'memory', 0.1, 'test')",
+            params![similar_blob, source],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, signal, agent) \
+             VALUES ('dissimilar', ?1, ?2, 'memory', 0.1, 'test')",
+            params![dissimilar_blob, source],
+        )
+        .unwrap();
+
+        let scoped = compute_boosts(&conn, &[source.to_string()], Some(&similar));
+        let baseline = compute_boosts(&conn, &[source.to_string()], None);
+
+        assert!(
+            scoped[source] < baseline[source],
+            "dissimilar feedback should be down-weighted for current query"
+        );
+        assert!(
+            scoped[source] > 0.0,
+            "similar feedback should still contribute positive boost"
+        );
     }
 
     #[test]

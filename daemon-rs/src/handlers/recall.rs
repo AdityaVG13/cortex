@@ -20,6 +20,7 @@ const MAX_RECALL_HISTORY: usize = 50;
 const PRECACHE_TTL_MS: i64 = 5 * 60 * 1000;
 const SEMANTIC_SIM_FLOOR: f64 = 0.3;
 const SEMANTIC_SCALE_BASE: f64 = 0.55;
+const MAX_SEMANTIC_RRF_CANDIDATES: usize = 120;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -71,10 +72,30 @@ struct SemanticCandidate {
     source: String,
     excerpt: String,
     relevance: f64,
+    importance: f64,
+    ts: i64,
 }
 
-type MemorySemanticRow = (Vec<u8>, String, String, Option<i64>, Option<String>);
-type DecisionSemanticRow = (Vec<u8>, String, Option<String>, Option<i64>, Option<String>);
+type MemorySemanticRow = (
+    Vec<u8>,
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+);
+type DecisionSemanticRow = (
+    Vec<u8>,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<f64>,
+    Option<String>,
+    Option<String>,
+);
 
 // ─── Visibility context ─────────────────────────────────────────────────────
 
@@ -493,7 +514,13 @@ pub async fn execute_semantic_recall(
     let semantic_available = query_vector.is_some();
     let budgeted = {
         let conn = state.db.lock().await;
-        let results = run_semantic_recall_with_query_vector(&conn, k, query_vector.as_deref(), ctx);
+        let results = run_semantic_recall_with_query_vector(
+            &conn,
+            query_text,
+            k,
+            query_vector.as_deref(),
+            ctx,
+        );
         apply_semantic_budget(results, budget)
     };
     let spent: usize = budgeted
@@ -565,7 +592,7 @@ fn run_recall_with_query_vector(
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
 ) -> Result<Vec<RecallItem>, String> {
-    let extracted = extract_keywords(query_text);
+    let extracted = extract_search_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
         query_text.to_string()
     } else {
@@ -614,8 +641,8 @@ fn run_recall_with_query_vector(
     // Run FTS5 first. If the top result is confident (score >= 0.93) with a
     // meaningful gap from #2 (delta >= 0.08), return immediately without
     // spending cycles on embedding inference. Target: 40%+ queries resolved here.
-    const TIER2_CONFIDENCE: f64 = 0.93;
-    const TIER2_GAP: f64 = 0.08;
+    const TIER2_CONFIDENCE: f64 = 0.78;
+    const TIER2_GAP: f64 = 0.10;
 
     let raw_k = if ctx.team_mode { k.max(10) * 5 } else { 20 };
     let mut fts_limit = raw_k.max(20);
@@ -654,9 +681,22 @@ fn run_recall_with_query_vector(
     };
 
     // Tier 2 early exit: high-confidence keyword result with no close competitor
-    let tier2_resolved = kw_candidates.len() >= 2
-        && kw_candidates[0].relevance >= TIER2_CONFIDENCE
-        && (kw_candidates[0].relevance - kw_candidates[1].relevance) >= TIER2_GAP;
+    let required_keyword_hits = if extracted.is_empty() {
+        1_i64
+    } else {
+        ((extracted.len() as f64) * 0.6).ceil() as i64
+    };
+    let tier2_resolved = if let Some(top) = kw_candidates.first() {
+        let gap = kw_candidates
+            .get(1)
+            .map(|next| top.relevance - next.relevance)
+            .unwrap_or(top.relevance);
+        top.relevance >= TIER2_CONFIDENCE
+            && top.matched_keywords >= required_keyword_hits
+            && gap >= TIER2_GAP
+    } else {
+        false
+    };
 
     // ── Semantic search (skipped on Tier 2 early exit or no engine) ──────────
     // Produces a ranked list of (source, score) pairs for RRF.
@@ -665,7 +705,7 @@ fn run_recall_with_query_vector(
         Vec::new()
     } else {
         query_vector
-            .map(|query_vec| collect_semantic_candidates(conn, query_vec, ctx))
+            .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx))
             .unwrap_or_default()
     };
 
@@ -720,7 +760,7 @@ fn run_recall_with_query_vector(
                 let method = if in_sem { "hybrid" } else { "keyword" };
                 (kw.excerpt.clone(), kw.score, kw.ts, method)
             } else if let Some(sem) = semantic_candidates.iter().find(|sem| sem.source == source) {
-                (sem.excerpt.clone(), 1.0_f64, 0_i64, "semantic")
+                (sem.excerpt.clone(), sem.importance, sem.ts, "semantic")
             } else {
                 continue;
             };
@@ -770,7 +810,8 @@ fn run_recall_with_query_vector(
         .map(|mut item| {
             let h = shannon_entropy(&item.excerpt);
             item.entropy = Some(round4(h));
-            item.relevance = round4(item.relevance * (1.0 + (h - 3.5) * 0.15));
+            let boost = ((h - 3.5).max(0.0) * 0.08).min(0.12);
+            item.relevance = round4(item.relevance * (1.0 + boost));
             item
         })
         .collect();
@@ -780,7 +821,7 @@ fn run_recall_with_query_vector(
     // penalize results that were consistently ignored. Graceful no-op when
     // no feedback data exists (cold start).
     let sources: Vec<String> = ranked.iter().map(|r| r.source.clone()).collect();
-    let boosts = super::feedback::compute_boosts(conn, &sources);
+    let boosts = super::feedback::compute_boosts(conn, &sources, query_vector);
     if !boosts.is_empty() {
         for item in &mut ranked {
             if let Some(&boost) = boosts.get(&item.source) {
@@ -813,12 +854,13 @@ fn run_budget_recall(
 
 fn run_semantic_recall_with_query_vector(
     conn: &Connection,
+    query_text: &str,
     k: usize,
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
 ) -> Vec<RecallItem> {
     let mut ranked: Vec<RecallItem> = query_vector
-        .map(|query_vec| collect_semantic_candidates(conn, query_vec, ctx))
+        .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx))
         .unwrap_or_default()
         .into_iter()
         .map(|candidate| RecallItem {
@@ -834,7 +876,8 @@ fn run_semantic_recall_with_query_vector(
     for item in &mut ranked {
         let h = shannon_entropy(&item.excerpt);
         item.entropy = Some(round4(h));
-        item.relevance = round4(item.relevance * (1.0 + (h - 3.5) * 0.10));
+        let boost = ((h - 3.5).max(0.0) * 0.05).min(0.08);
+        item.relevance = round4(item.relevance * (1.0 + boost));
     }
 
     ranked.sort_by(|a, b| {
@@ -990,9 +1033,10 @@ fn search_memories(
     query_text: &str,
     limit: usize,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let tokens = extract_search_keywords_with_synonyms(query_text);
+    let keyword_terms = extract_search_keywords(query_text);
+    let term_groups = build_search_term_groups(query_text);
 
-    if tokens.is_empty() {
+    if term_groups.is_empty() {
         let mut stmt = conn
             .prepare(
                 "SELECT id, text, source, tags, score, retrievals, last_accessed, created_at, compressed_text, age_tier \
@@ -1014,7 +1058,7 @@ fn search_memories(
                     source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
                         format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
-                    excerpt: truncate_chars(&display, 200),
+                    excerpt: query_focused_excerpt(&display, query_text, 220),
                     relevance: round4(0.5 * row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0)),
                     matched_keywords: 0,
                     score: row.get::<_, Option<f64>>(4)?.unwrap_or(1.0).max(0.0),
@@ -1032,11 +1076,7 @@ fn search_memories(
         return Ok(rows.flatten().collect());
     }
 
-    let fts_query = tokens
-        .iter()
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" OR ");
+    let fts_query = build_fts_query(&term_groups);
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         // Field-boosted BM25: memories_fts columns are (text, source, tags).
@@ -1109,18 +1149,14 @@ fn search_memories(
                 tags.unwrap_or_default().to_lowercase(),
             ];
             let mut matched = 0_i64;
-            for token in &tokens {
+            for token in &keyword_terms {
                 if haystacks.iter().any(|h| h.contains(token)) {
                     matched += 1;
                 }
             }
-            if matched == 0 {
-                matched = 1;
-            }
-
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-            let keyword_weight = matched as f64 / tokens.len() as f64;
+            let keyword_weight = matched as f64 / keyword_terms.len().max(1) as f64;
             let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
             let score_weight = score.clamp(0.0, 1.0);
             let ranking = (keyword_weight * 0.40)
@@ -1130,7 +1166,7 @@ fn search_memories(
 
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: truncate_chars(&display, 200),
+                excerpt: query_focused_excerpt(&display, query_text, 280),
                 relevance: round4(ranking),
                 matched_keywords: matched,
                 score,
@@ -1207,7 +1243,7 @@ fn search_memories_fallback(
         if tokens.is_empty() {
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: truncate_chars(&text, 200),
+                excerpt: query_focused_excerpt(&text, query_text, 220),
                 relevance: round4(0.5 * score),
                 matched_keywords: 0,
                 score,
@@ -1246,7 +1282,7 @@ fn search_memories_fallback(
 
         ranked.push(SearchCandidate {
             source: source_key,
-            excerpt: truncate_chars(&text, 200),
+            excerpt: query_focused_excerpt(&text, query_text, 260),
             relevance: round4(ranking),
             matched_keywords: matched,
             score,
@@ -1282,9 +1318,10 @@ fn search_decisions(
     query_text: &str,
     limit: usize,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let tokens = extract_search_keywords_with_synonyms(query_text);
+    let keyword_terms = extract_search_keywords(query_text);
+    let term_groups = build_search_term_groups(query_text);
 
-    if tokens.is_empty() {
+    if term_groups.is_empty() {
         let mut stmt = conn
             .prepare(
                 "SELECT id, decision, context, score, retrievals, last_accessed, created_at \
@@ -1300,7 +1337,7 @@ fn search_decisions(
                     source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
                         format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
-                    excerpt: truncate_chars(&row.get::<_, String>(1)?, 200),
+                    excerpt: query_focused_excerpt(&row.get::<_, String>(1)?, query_text, 220),
                     relevance: round4(0.5 * row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0)),
                     matched_keywords: 0,
                     score: row.get::<_, Option<f64>>(3)?.unwrap_or(1.0).max(0.0),
@@ -1318,11 +1355,7 @@ fn search_decisions(
         return Ok(rows.flatten().collect());
     }
 
-    let fts_query = tokens
-        .iter()
-        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(" OR ");
+    let fts_query = build_fts_query(&term_groups);
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         // Field-boosted BM25: decisions_fts columns are (decision, context).
@@ -1391,18 +1424,14 @@ fn search_decisions(
                 context.unwrap_or_default().to_lowercase(),
             ];
             let mut matched = 0_i64;
-            for token in &tokens {
+            for token in &keyword_terms {
                 if haystacks.iter().any(|h| h.contains(token)) {
                     matched += 1;
                 }
             }
-            if matched == 0 {
-                matched = 1;
-            }
-
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-            let keyword_weight = matched as f64 / tokens.len() as f64;
+            let keyword_weight = matched as f64 / keyword_terms.len().max(1) as f64;
             let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
             let score_weight = score.clamp(0.0, 1.0);
             let ranking = (keyword_weight * 0.40)
@@ -1412,7 +1441,7 @@ fn search_decisions(
 
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: truncate_chars(&display, 200),
+                excerpt: query_focused_excerpt(&display, query_text, 280),
                 relevance: round4(ranking),
                 matched_keywords: matched,
                 score,
@@ -1488,7 +1517,7 @@ fn search_decisions_fallback(
         if tokens.is_empty() {
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: truncate_chars(&decision, 200),
+                excerpt: query_focused_excerpt(&decision, query_text, 220),
                 relevance: round4(0.5 * score),
                 matched_keywords: 0,
                 score,
@@ -1525,7 +1554,7 @@ fn search_decisions_fallback(
 
         ranked.push(SearchCandidate {
             source: source_key,
-            excerpt: truncate_chars(&decision, 200),
+            excerpt: query_focused_excerpt(&decision, query_text, 260),
             relevance: round4(ranking),
             matched_keywords: matched,
             score,
@@ -1559,6 +1588,7 @@ fn search_decisions_fallback(
 fn collect_semantic_candidates(
     conn: &Connection,
     query_vector: &[f32],
+    query_text: &str,
     ctx: &RecallContext,
 ) -> Vec<SemanticCandidate> {
     let scale_sim = |sim: f32| -> f64 {
@@ -1566,11 +1596,17 @@ fn collect_semantic_candidates(
             + (sim as f64 - SEMANTIC_SIM_FLOOR)
                 * ((1.0 - SEMANTIC_SCALE_BASE) / (1.0 - SEMANTIC_SIM_FLOOR))
     };
+    let keyword_terms = extract_search_keywords(query_text);
+    let semantic_floor = if keyword_terms.len() >= 3 {
+        SEMANTIC_SIM_FLOOR + 0.12
+    } else {
+        SEMANTIC_SIM_FLOOR
+    };
 
     let mut candidates: HashMap<String, SemanticCandidate> = HashMap::new();
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility \
+        "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))",
@@ -1583,6 +1619,9 @@ fn collect_semantic_candidates(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             })
             .ok()
@@ -1591,34 +1630,58 @@ fn collect_semantic_candidates(
             .filter_map(|r| r.ok())
             .collect();
 
-        for (blob, text, source, owner_id, visibility) in rows {
+        for (blob, text, source, owner_id, visibility, score, last_accessed, created_at) in rows {
             if !is_visible(owner_id, visibility.as_deref(), ctx) {
                 continue;
             }
             let existing_vec = crate::embeddings::blob_to_vector(&blob);
             let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
-            if sim <= SEMANTIC_SIM_FLOOR as f32 {
+            if sim <= semantic_floor as f32 {
                 continue;
             }
 
-            let scaled = scale_sim(sim);
+            let mut scaled = scale_sim(sim);
+            if !keyword_terms.is_empty() {
+                let haystack = text.to_lowercase();
+                let overlap = keyword_terms
+                    .iter()
+                    .filter(|term| haystack.contains(term.as_str()))
+                    .count();
+                if overlap == 0 {
+                    scaled *= 0.82;
+                } else {
+                    let ratio = overlap as f64 / keyword_terms.len().max(1) as f64;
+                    scaled *= 1.0 + ratio * 0.08;
+                }
+            }
+            let excerpt = query_focused_excerpt(&text, query_text, 280);
+            let importance = score.unwrap_or(1.0).clamp(0.0, 1.0);
+            let ts_source = last_accessed
+                .as_deref()
+                .or(created_at.as_deref())
+                .unwrap_or_default();
+            let ts = parse_timestamp_ms(ts_source);
             let entry = candidates.entry(source.clone()).or_insert(SemanticCandidate {
                 source,
-                excerpt: text.chars().take(200).collect(),
+                excerpt: excerpt.clone(),
                 relevance: scaled,
+                importance,
+                ts,
             });
             if scaled > entry.relevance {
                 *entry = SemanticCandidate {
                     source: entry.source.clone(),
-                    excerpt: text.chars().take(200).collect(),
+                    excerpt,
                     relevance: scaled,
+                    importance,
+                    ts,
                 };
             }
         }
     }
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility \
+        "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
@@ -1631,6 +1694,9 @@ fn collect_semantic_candidates(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             })
             .ok()
@@ -1639,31 +1705,54 @@ fn collect_semantic_candidates(
             .filter_map(|r| r.ok())
             .collect();
 
-        for (blob, decision, context, owner_id, visibility) in rows {
+        for (blob, decision, context, owner_id, visibility, score, last_accessed, created_at) in rows {
             if !is_visible(owner_id, visibility.as_deref(), ctx) {
                 continue;
             }
             let existing_vec = crate::embeddings::blob_to_vector(&blob);
             let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
-            if sim <= SEMANTIC_SIM_FLOOR as f32 {
+            if sim <= semantic_floor as f32 {
                 continue;
             }
 
             let source = context.unwrap_or_else(|| {
                 format!("decision::{}", decision.chars().take(40).collect::<String>())
             });
-            let scaled = scale_sim(sim);
-            let excerpt = decision.chars().take(200).collect::<String>();
+            let mut scaled = scale_sim(sim);
+            if !keyword_terms.is_empty() {
+                let haystack = decision.to_lowercase();
+                let overlap = keyword_terms
+                    .iter()
+                    .filter(|term| haystack.contains(term.as_str()))
+                    .count();
+                if overlap == 0 {
+                    scaled *= 0.82;
+                } else {
+                    let ratio = overlap as f64 / keyword_terms.len().max(1) as f64;
+                    scaled *= 1.0 + ratio * 0.08;
+                }
+            }
+            let excerpt = query_focused_excerpt(&decision, query_text, 280);
+            let importance = score.unwrap_or(1.0).clamp(0.0, 1.0);
+            let ts_source = last_accessed
+                .as_deref()
+                .or(created_at.as_deref())
+                .unwrap_or_default();
+            let ts = parse_timestamp_ms(ts_source);
             let entry = candidates.entry(source.clone()).or_insert(SemanticCandidate {
                 source,
                 excerpt: excerpt.clone(),
                 relevance: scaled,
+                importance,
+                ts,
             });
             if scaled > entry.relevance {
                 *entry = SemanticCandidate {
                     source: entry.source.clone(),
                     excerpt,
                     relevance: scaled,
+                    importance,
+                    ts,
                 };
             }
         }
@@ -1675,6 +1764,7 @@ fn collect_semantic_candidates(
             .partial_cmp(&a.relevance)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    sorted.truncate(MAX_SEMANTIC_RRF_CANDIDATES);
     sorted
 }
 
@@ -1773,23 +1863,108 @@ fn coding_synonyms(word: &str) -> Option<&'static str> {
 /// Like `extract_search_keywords` but also expands coding synonyms.
 /// Each token that has a known synonym produces both the original and the expanded form.
 /// Deduplicates the final list while preserving order.
+#[cfg(test)]
 fn extract_search_keywords_with_synonyms(text: &str) -> Vec<String> {
+    build_search_term_groups(text)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+fn build_search_term_groups(text: &str) -> Vec<Vec<String>> {
     let base = extract_search_keywords(text);
-    let mut seen = HashSet::new();
-    let mut result = Vec::with_capacity(base.len() * 2);
+    let mut groups = Vec::with_capacity(base.len());
     for word in base {
-        if seen.insert(word.clone()) {
-            if let Some(expanded) = coding_synonyms(&word) {
-                // Insert expanded form first (higher signal), then original
-                let exp_str = expanded.to_string();
-                if seen.insert(exp_str.clone()) {
-                    result.push(exp_str);
-                }
+        let mut group = Vec::with_capacity(2);
+        let mut seen = HashSet::new();
+        if let Some(expanded) = coding_synonyms(&word) {
+            let expanded = expanded.to_string();
+            if seen.insert(expanded.clone()) {
+                group.push(expanded);
             }
-            result.push(word);
+        }
+        if seen.insert(word.clone()) {
+            group.push(word);
+        }
+        if !group.is_empty() {
+            groups.push(group);
         }
     }
-    result
+    groups
+}
+
+fn build_fts_query(groups: &[Vec<String>]) -> String {
+    groups
+        .iter()
+        .map(|group| {
+            let alternates = group
+                .iter()
+                .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            if group.len() > 1 {
+                format!("({alternates})")
+            } else {
+                alternates
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> String {
+    if max_chars == 0 || text.is_empty() {
+        return String::new();
+    }
+
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text.to_string();
+    }
+
+    let lower_text = text.to_lowercase();
+    let mut terms = extract_keywords(query_text);
+    if terms.is_empty() {
+        terms = extract_search_keywords(query_text);
+    }
+    if terms.is_empty() {
+        return truncate_chars(text, max_chars);
+    }
+
+    terms.sort_by_key(|t| std::cmp::Reverse(t.len()));
+
+    let mut hit_byte_idx = None;
+    for term in terms {
+        if let Some(idx) = lower_text.find(&term) {
+            hit_byte_idx = Some(idx);
+            break;
+        }
+    }
+
+    let Some(byte_idx) = hit_byte_idx else {
+        return truncate_chars(text, max_chars);
+    };
+
+    let hit_char_idx = text[..byte_idx].chars().count();
+    let left_window = max_chars / 3;
+    let mut start_char = hit_char_idx.saturating_sub(left_window);
+    let end_char = (start_char + max_chars).min(total_chars);
+    if end_char - start_char < max_chars {
+        start_char = end_char.saturating_sub(max_chars);
+    }
+
+    let mut excerpt = text
+        .chars()
+        .skip(start_char)
+        .take(end_char - start_char)
+        .collect::<String>();
+    if start_char > 0 {
+        excerpt = format!("...{excerpt}");
+    }
+    if end_char < total_chars {
+        excerpt.push_str("...");
+    }
+    excerpt
 }
 
 fn parse_timestamp_ms(value: &str) -> i64 {
@@ -3241,6 +3416,36 @@ mod tests {
         let kw = extract_search_keywords_with_synonyms("function");
         let count = kw.iter().filter(|w| *w == "function").count();
         assert_eq!(count, 1, "no duplicate expansions");
+    }
+
+    #[test]
+    fn test_fts_query_joins_groups_with_and() {
+        let groups = build_search_term_groups("func db timeout");
+        let query = build_fts_query(&groups);
+        assert!(query.contains(" AND "), "fts groups should be AND-joined");
+        assert!(
+            query.contains("(\"function\" OR \"func\")"),
+            "func should expand to function alternates"
+        );
+        assert!(
+            query.contains("(\"database\" OR \"db\")"),
+            "db should expand to database alternates"
+        );
+    }
+
+    #[test]
+    fn test_query_focused_excerpt_finds_late_match() {
+        let prefix = "x".repeat(260);
+        let text = format!("{prefix} I graduated with a degree in Business Administration.");
+        let excerpt = query_focused_excerpt(&text, "What degree did I graduate with?", 120);
+        assert!(
+            excerpt.to_lowercase().contains("graduated"),
+            "excerpt should contain matched term"
+        );
+        assert!(
+            excerpt.contains("Business Administration"),
+            "excerpt should preserve local factual span"
+        );
     }
 
     // ── query cache tests ──────────────────────────────────────────
