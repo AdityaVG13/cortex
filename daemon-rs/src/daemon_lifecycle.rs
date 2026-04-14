@@ -14,6 +14,7 @@ use fs2::FileExt;
 const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
 const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
 const RUNTIME_COPY_STALE_SECS: u64 = 600;
+const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 
 fn health_probe_base(bind: &str, port: u16) -> String {
     let bind = bind.trim();
@@ -134,7 +135,7 @@ pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
 }
 
 /// Spawn the daemon as a detached background process.
-pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
+pub fn spawn_daemon(paths: &CortexPaths, owner_tag: Option<&str>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
     let spawn_exe =
         prepare_spawn_executable(paths, &exe).map_err(|e| format!("prepare spawn copy: {e}"))?;
@@ -148,6 +149,9 @@ pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(owner_tag) = owner_tag {
+        cmd.env("CORTEX_DAEMON_OWNER", owner_tag);
+    }
 
     #[cfg(windows)]
     {
@@ -263,7 +267,7 @@ fn acquire_respawn_coordination_lock(paths: &CortexPaths) -> Result<fs::File, St
 
 /// Attempt to respawn the daemon and wait for it to become healthy.
 /// Returns true if the daemon is healthy after respawn.
-pub async fn try_respawn(paths: &CortexPaths) -> bool {
+pub async fn try_respawn(paths: &CortexPaths, owner_tag: Option<&str>) -> bool {
     let _respawn_coordinator = match acquire_respawn_coordination_lock(paths) {
         Ok(lock) => lock,
         Err(_) => {
@@ -297,7 +301,19 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
         paths.port
     );
 
-    if let Err(e) = spawn_daemon(paths) {
+    if owner_tag
+        .map(|owner| !owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
+        .unwrap_or(true)
+        && crate::auth::control_center_is_active(paths)
+    {
+        eprintln!(
+            "[cortex-lifecycle] Control Center is active; skipping respawn attempt by '{}'",
+            owner_tag.unwrap_or("unknown")
+        );
+        return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS)).await;
+    }
+
+    if let Err(e) = spawn_daemon(paths, owner_tag) {
         eprintln!("[cortex-lifecycle] Respawn failed: {e}");
         return false;
     }

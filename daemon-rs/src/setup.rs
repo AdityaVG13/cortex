@@ -935,13 +935,18 @@ async fn is_daemon_healthy() -> bool {
         .ok();
 
     let Some(client) = client else { return false };
-
-    client
-        .get(daemon_url("/health"))
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+    let paths = auth::CortexPaths::resolve();
+    let health_url = daemon_url("/health");
+    let response = match client.get(&health_url).send().await {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+    let status = response.status().as_u16();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+    crate::daemon_lifecycle::is_cortex_health_payload(status, &body, Some(paths.port), Some(&paths))
 }
 
 // ─── Step 5: Verify ─────────────────────────────────────────────────────────

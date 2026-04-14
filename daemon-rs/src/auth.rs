@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 const CORTEX_DIR_NAME: &str = ".cortex";
 const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const CONTROL_CENTER_RUNTIME_LOCK_FILE: &str = "control-center.lock";
 
 // ---------------------------------------------------------------------------
 // CortexPaths -- centralized path + port resolver
@@ -194,6 +195,43 @@ pub fn acquire_daemon_lock(paths: &CortexPaths) -> Result<fs::File, String> {
         .try_lock_exclusive()
         .map_err(|_| "another cortex instance holds the lock".to_string())?;
     Ok(lock_file)
+}
+
+/// Returns the Control Center runtime lock path for this Cortex home.
+pub fn control_center_lock_path(paths: &CortexPaths) -> PathBuf {
+    paths
+        .home
+        .join("runtime")
+        .join(CONTROL_CENTER_RUNTIME_LOCK_FILE)
+}
+
+/// Returns true when the Control Center app lock is currently held.
+pub fn control_center_is_active(paths: &CortexPaths) -> bool {
+    let lock_path = control_center_lock_path(paths);
+    if !lock_path.exists() {
+        return false;
+    }
+
+    let lock_file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return true,
+        Err(_) => return false,
+    };
+
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = lock_file.unlock();
+            false
+        }
+        Err(err) => matches!(
+            err.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+        ),
+    }
 }
 
 /// Returns `~/.cortex` (or `$HOME/.cortex` on non-Windows).
@@ -479,6 +517,23 @@ mod tests {
         ];
         let paths = CortexPaths::resolve_from_args(&args);
         assert_eq!(paths.bind, "0.0.0.0");
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn control_center_is_active_reflects_runtime_lock_state() {
+        let home_dir = temp_test_dir("control_center_lock");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        let runtime_dir = paths.home.join("runtime");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        let lock_path = control_center_lock_path(&paths);
+        fs::write(&lock_path, "pid=1").unwrap();
+
+        assert!(!control_center_is_active(&paths));
 
         let _ = fs::remove_dir_all(&home_dir);
     }

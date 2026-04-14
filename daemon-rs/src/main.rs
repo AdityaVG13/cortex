@@ -388,13 +388,22 @@ async fn main() {
             let remaining = &args[2..];
             let agent = parse_flag_value(remaining, "--agent");
             let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
+            let allow_spawn = local_owner_mode && local_spawn_allowed(&paths);
             if let Err(e) = ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
             {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
             let ensure = if local_owner_mode {
-                match ensure_daemon(&paths, agent.as_deref(), false, true).await {
+                match ensure_daemon(
+                    &paths,
+                    agent.as_deref(),
+                    false,
+                    allow_spawn,
+                    Some(OWNER_TAG_CLI_MCP),
+                )
+                .await
+                {
                     Ok(result) => result,
                     Err(e) => {
                         eprintln!("[cortex-mcp] {e}");
@@ -412,9 +421,14 @@ async fn main() {
                 api_key.as_deref(),
                 agent.as_deref(),
                 mcp_proxy::ProxyRuntimeOptions {
-                    allow_respawn: local_owner_mode,
+                    allow_respawn: allow_spawn,
                     shutdown_on_exit: ensure.spawned,
                     shutdown_on_idle_startup: ensure.spawned,
+                    respawn_owner: if allow_spawn {
+                        Some(OWNER_TAG_CLI_MCP)
+                    } else {
+                        None
+                    },
                 },
             )
             .await
@@ -449,7 +463,15 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, false).await {
+                    if let Err(e) = ensure_daemon(
+                        &paths,
+                        agent.as_deref(),
+                        true,
+                        false,
+                        Some(OWNER_TAG_PLUGIN_CLAUDE),
+                    )
+                    .await
+                    {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
@@ -459,6 +481,17 @@ async fn main() {
                     let (base_url, api_key, local_owner_mode) =
                         resolve_client_target(remaining, &paths);
                     let agent = parse_flag_value(remaining, "--agent");
+                    let allow_spawn = if local_owner_mode {
+                        match plugin_local_spawn_allowed(&paths, agent.as_deref()) {
+                            Ok(allowed) => allowed,
+                            Err(e) => {
+                                eprintln!("[cortex-plugin] {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        false
+                    };
                     if let Err(e) =
                         ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
                     {
@@ -466,7 +499,15 @@ async fn main() {
                         std::process::exit(1);
                     }
                     let ensure = if local_owner_mode {
-                        match ensure_daemon(&paths, agent.as_deref(), false, true).await {
+                        match ensure_daemon(
+                            &paths,
+                            agent.as_deref(),
+                            false,
+                            allow_spawn,
+                            Some(OWNER_TAG_PLUGIN_CLAUDE),
+                        )
+                        .await
+                        {
                             Ok(result) => result,
                             Err(e) => {
                                 eprintln!("[cortex-plugin] {e}");
@@ -484,9 +525,14 @@ async fn main() {
                         api_key.as_deref(),
                         agent.as_deref(),
                         mcp_proxy::ProxyRuntimeOptions {
-                            allow_respawn: local_owner_mode,
+                            allow_respawn: allow_spawn,
                             shutdown_on_exit: ensure.spawned,
                             shutdown_on_idle_startup: false,
+                            respawn_owner: if allow_spawn {
+                                Some(OWNER_TAG_PLUGIN_CLAUDE)
+                            } else {
+                                None
+                            },
                         },
                     )
                     .await
@@ -1755,10 +1801,38 @@ const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
 const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
+const OWNER_TAG_CLI_MCP: &str = "cli-mcp";
+const OWNER_TAG_CLI_BOOT: &str = "cli-boot";
+const OWNER_TAG_PLUGIN_CLAUDE: &str = "plugin-claude";
+
+fn local_spawn_allowed(paths: &auth::CortexPaths) -> bool {
+    !auth::control_center_is_active(paths)
+}
+
+fn plugin_agent_is_claude(agent: Option<&str>) -> bool {
+    match agent.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.to_ascii_lowercase().contains("claude"),
+        None => true,
+    }
+}
+
+fn plugin_local_spawn_allowed(
+    paths: &auth::CortexPaths,
+    agent: Option<&str>,
+) -> Result<bool, String> {
+    if !plugin_agent_is_claude(agent) {
+        return Err(
+            "Plugin local daemon spawn is restricted to Claude-only mode. Pass --agent claude-code."
+                .to_string(),
+        );
+    }
+    Ok(local_spawn_allowed(paths))
+}
 
 async fn recover_unhealthy_locked_daemon(
     paths: &auth::CortexPaths,
     result: &mut EnsureDaemonResult,
+    owner_tag: Option<&str>,
 ) -> Result<bool, String> {
     let _ = auth::cleanup_stale_pid_lock(paths);
 
@@ -1773,7 +1847,7 @@ async fn recover_unhealthy_locked_daemon(
     }
 
     apply_path_env(paths);
-    spawn_daemon(paths)?;
+    spawn_daemon(paths, owner_tag)?;
     drop(guard);
 
     if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
@@ -1876,7 +1950,8 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
     ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), paths)?;
 
     if local_owner_mode {
-        let _ = ensure_daemon(paths, None, false, true).await?;
+        let allow_spawn = local_spawn_allowed(paths);
+        let _ = ensure_daemon(paths, None, false, allow_spawn, Some(OWNER_TAG_CLI_BOOT)).await?;
     }
 
     let allow_local_token_fallback = local_owner_mode || is_local_client_base_url(&base_url, paths);
@@ -1963,6 +2038,7 @@ async fn ensure_daemon(
     agent: Option<&str>,
     emit_port: bool,
     allow_spawn: bool,
+    owner_tag: Option<&str>,
 ) -> Result<EnsureDaemonResult, String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
@@ -1976,7 +2052,7 @@ async fn ensure_daemon(
                 // already healthy
             } else if allow_spawn {
                 apply_path_env(paths);
-                spawn_daemon(paths)?;
+                spawn_daemon(paths, owner_tag)?;
                 drop(guard);
                 if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                     return Err(format!(
@@ -1995,7 +2071,7 @@ async fn ensure_daemon(
         Err(_) => {
             if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                 if allow_spawn {
-                    if recover_unhealthy_locked_daemon(paths, &mut result).await? {
+                    if recover_unhealthy_locked_daemon(paths, &mut result, owner_tag).await? {
                         if let Some(agent) = agent {
                             if let Err(e) = boot_agent(paths, agent).await {
                                 eprintln!(

@@ -17,6 +17,7 @@ use crate::state::RuntimeState;
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const SESSION_TTL_SECONDS: i64 = 7200; // 2 hours -- agents heartbeat to extend
+const ACTIVE_SESSION_WINDOW_SECONDS: i64 = 75;
 const MAX_ACTIVITIES: i64 = 1000;
 const MAX_MESSAGES_PER_AGENT: i64 = 100;
 const MAX_TASKS: i64 = 500;
@@ -354,19 +355,21 @@ fn fetch_sessions(
     conn: &rusqlite::Connection,
     owner_id: Option<i64>,
 ) -> Result<Vec<Value>, String> {
+    let heartbeat_cutoff =
+        (Utc::now() - Duration::seconds(ACTIVE_SESSION_WINDOW_SECONDS)).to_rfc3339();
     let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
         owner_id
     {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
-             FROM sessions WHERE owner_id = ?1 ORDER BY last_heartbeat DESC",
-            vec![Box::new(owner_id)],
+             FROM sessions WHERE owner_id = ?1 AND last_heartbeat >= ?2 ORDER BY last_heartbeat DESC",
+            vec![Box::new(owner_id), Box::new(heartbeat_cutoff.clone())],
         )
     } else {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
-             FROM sessions ORDER BY last_heartbeat DESC",
-            vec![],
+             FROM sessions WHERE last_heartbeat >= ?1 ORDER BY last_heartbeat DESC",
+            vec![Box::new(heartbeat_cutoff)],
         )
     };
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =

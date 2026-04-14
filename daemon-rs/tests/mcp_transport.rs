@@ -283,7 +283,7 @@ fn plugin_mcp_local_owner_mode_stops_spawned_daemon_on_exit() {
             "plugin",
             "mcp",
             "--agent",
-            "codex",
+            "claude-code",
             "--home",
             &home,
             "--port",
@@ -326,6 +326,46 @@ fn plugin_mcp_local_owner_mode_stops_spawned_daemon_on_exit() {
         port,
         Duration::from_secs(8),
         "plugin owner mode should stop daemon it spawned",
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
+#[test]
+fn plugin_mcp_local_owner_mode_rejects_non_claude_agent() {
+    let home_dir = unique_temp_dir("plugin_mcp_reject_non_claude");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "plugin",
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run cortex plugin mcp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "non-claude plugin local owner mode should fail"
+    );
+    assert!(
+        stderr.contains("Claude-only mode"),
+        "expected rejection reason in stderr, got: {stderr}"
+    );
+    assert!(
+        !health_ok(port),
+        "daemon should not start for rejected non-claude local plugin invocation"
     );
     let _ = fs::remove_dir_all(&home_dir);
 }

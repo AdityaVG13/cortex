@@ -40,6 +40,7 @@ pub struct ProxyRuntimeOptions {
     pub allow_respawn: bool,
     pub shutdown_on_exit: bool,
     pub shutdown_on_idle_startup: bool,
+    pub respawn_owner: Option<&'static str>,
 }
 
 /// Read the auth token from ~/.cortex/cortex.token.
@@ -261,11 +262,19 @@ fn is_local_daemon_base(base_url: &str) -> bool {
     host_ok && port_ok
 }
 
-fn build_auth_header(base_url: &str, api_key: Option<&str>) -> Option<String> {
+fn local_token_fallback_required(base_url: &str, api_key: Option<&str>) -> bool {
+    api_key.is_none() && is_local_daemon_base(base_url)
+}
+
+fn build_auth_header(
+    base_url: &str,
+    api_key: Option<&str>,
+    allow_local_token_fallback: bool,
+) -> Option<String> {
     if let Some(key) = api_key {
         return Some(format!("Bearer {key}"));
     }
-    if is_local_daemon_base(base_url) {
+    if allow_local_token_fallback && local_token_fallback_required(base_url, api_key) {
         return read_auth_token().map(|token| format!("Bearer {token}"));
     }
     None
@@ -351,10 +360,13 @@ async fn recover_solo_auth(
     base_url: &str,
     agent: &str,
     model: Option<&str>,
+    allow_local_token_fallback: &mut bool,
 ) -> bool {
     if !health_check_ready(client, health_url).await {
+        *allow_local_token_fallback = false;
         return false;
     }
+    *allow_local_token_fallback = true;
 
     if !session_start_with_retry(
         client,
@@ -362,8 +374,7 @@ async fn recover_solo_auth(
         None,
         agent,
         model,
-        SESSION_RESTART_ATTEMPTS,
-        SESSION_RESTART_DELAY_MS,
+        *allow_local_token_fallback,
     )
     .await
     {
@@ -380,16 +391,27 @@ async fn session_start_with_retry(
     api_key: Option<&str>,
     agent: &str,
     model: Option<&str>,
-    attempts: u32,
-    delay_ms: u64,
+    allow_local_token_fallback: bool,
 ) -> bool {
-    for attempt in 1..=attempts.max(1) {
-        if session_start(client, base_url, api_key, agent, model).await {
+    for attempt in 1..=SESSION_RESTART_ATTEMPTS.max(1) {
+        if session_start(
+            client,
+            base_url,
+            api_key,
+            agent,
+            model,
+            allow_local_token_fallback,
+        )
+        .await
+        {
             return true;
         }
 
-        if attempt < attempts {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms * attempt as u64)).await;
+        if attempt < SESSION_RESTART_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                SESSION_RESTART_DELAY_MS * attempt as u64,
+            ))
+            .await;
         }
     }
 
@@ -416,6 +438,7 @@ async fn drain_write_buffer(
     agent: &str,
     model: Option<&str>,
     paths: &CortexPaths,
+    allow_local_token_fallback: bool,
 ) {
     let buffer_path = &paths.write_buffer;
     let content = match std::fs::read_to_string(buffer_path) {
@@ -445,7 +468,7 @@ async fn drain_write_buffer(
         if let Some(model_name) = model {
             req = req.header("x-source-model", model_name);
         }
-        if let Some(auth) = build_auth_header(rpc_url, api_key) {
+        if let Some(auth) = build_auth_header(rpc_url, api_key, allow_local_token_fallback) {
             req = req.header("authorization", auth);
         }
 
@@ -479,6 +502,7 @@ async fn session_start(
     api_key: Option<&str>,
     agent: &str,
     model: Option<&str>,
+    allow_local_token_fallback: bool,
 ) -> bool {
     let mut req = client
         .post(format!("{base_url}/session/start"))
@@ -492,7 +516,7 @@ async fn session_start(
                 .unwrap_or_else(|| "MCP session".to_string())
         }));
 
-    if let Some(auth) = build_auth_header(base_url, api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key, allow_local_token_fallback) {
         req = req.header("authorization", auth);
     }
 
@@ -514,6 +538,7 @@ async fn session_heartbeat(
     api_key: Option<&str>,
     agent: &str,
     model: Option<&str>,
+    allow_local_token_fallback: bool,
 ) -> SessionHeartbeatOutcome {
     let mut req = client
         .post(format!("{base_url}/session/heartbeat"))
@@ -524,7 +549,7 @@ async fn session_heartbeat(
             "description": model.map(|m| format!("MCP session · {m}")).unwrap_or_else(|| "MCP session".to_string())
         }));
 
-    if let Some(auth) = build_auth_header(base_url, api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key, allow_local_token_fallback) {
         req = req.header("authorization", auth);
     }
 
@@ -543,6 +568,7 @@ async fn session_end(
     base_url: &str,
     api_key: Option<&str>,
     agent: &str,
+    allow_local_token_fallback: bool,
 ) -> bool {
     let mut req = client
         .post(format!("{base_url}/session/end"))
@@ -550,7 +576,7 @@ async fn session_end(
         .header("x-cortex-request", "true")
         .json(&serde_json::json!({ "agent": agent }));
 
-    if let Some(auth) = build_auth_header(base_url, api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key, allow_local_token_fallback) {
         req = req.header("authorization", auth);
     }
 
@@ -560,14 +586,19 @@ async fn session_end(
     }
 }
 
-async fn shutdown_daemon(client: &reqwest::Client, base_url: &str, api_key: Option<&str>) -> bool {
+async fn shutdown_daemon(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    allow_local_token_fallback: bool,
+) -> bool {
     let mut req = client
         .post(format!("{base_url}/shutdown"))
         .header("content-type", "application/json")
         .header("x-cortex-request", "true")
         .body("{}");
 
-    if let Some(auth) = build_auth_header(base_url, api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key, allow_local_token_fallback) {
         req = req.header("authorization", auth);
     }
 
@@ -583,11 +614,12 @@ async fn finalize_proxy_session(
     api_key: Option<&str>,
     agent: &str,
     saw_client_message: bool,
+    allow_local_token_fallback: bool,
     options: ProxyRuntimeOptions,
 ) {
-    let _ = session_end(client, base_url, api_key, agent).await;
+    let _ = session_end(client, base_url, api_key, agent, allow_local_token_fallback).await;
     if options.shutdown_on_exit || (options.shutdown_on_idle_startup && !saw_client_message) {
-        if shutdown_daemon(client, base_url, api_key).await {
+        if shutdown_daemon(client, base_url, api_key, allow_local_token_fallback).await {
             eprintln!("[cortex-mcp] Stopped owned daemon for '{agent}'");
         } else {
             eprintln!("[cortex-mcp] Warning: failed to stop owned daemon for '{agent}'");
@@ -666,7 +698,15 @@ pub async fn run(
         eprintln!(
             "[cortex-mcp] Health check failed after {HEALTH_CHECK_ATTEMPTS} attempts; keeping proxy alive and deferring errors to JSON-RPC responses"
         );
-    } else {
+    }
+
+    let mut allow_local_token_fallback =
+        !local_token_fallback_required(&rpc_base_url, api_key) || healthy;
+    if local_token_fallback_required(&rpc_base_url, api_key) && !allow_local_token_fallback {
+        eprintln!(
+            "[cortex-mcp] Local target is not identity-verified yet; withholding local token auth until health is valid"
+        );
+    } else if healthy {
         let paths = CortexPaths::resolve();
         drain_write_buffer(
             &client,
@@ -675,20 +715,22 @@ pub async fn run(
             &agent_display,
             agent_model.as_deref(),
             &paths,
+            allow_local_token_fallback,
         )
         .await;
     }
 
-    let _ = session_start_with_retry(
-        &client,
-        &rpc_base_url,
-        api_key,
-        &agent_display,
-        agent_model.as_deref(),
-        SESSION_RESTART_ATTEMPTS,
-        SESSION_RESTART_DELAY_MS,
-    )
-    .await;
+    if allow_local_token_fallback || !local_token_fallback_required(&rpc_base_url, api_key) {
+        let _ = session_start_with_retry(
+            &client,
+            &rpc_base_url,
+            api_key,
+            &agent_display,
+            agent_model.as_deref(),
+            allow_local_token_fallback,
+        )
+        .await;
+    }
 
     // Spawn background heartbeat to keep sessions visible and recover after daemon restarts.
     {
@@ -697,6 +739,7 @@ pub async fn run(
         let heartbeat_agent = agent_display.clone();
         let heartbeat_model = agent_model.clone();
         let heartbeat_api_key = api_key.map(String::from);
+        let mut heartbeat_allow_local_token_fallback = allow_local_token_fallback;
         tokio::spawn(async move {
             let hb_client = match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
@@ -722,6 +765,7 @@ pub async fn run(
                     heartbeat_api_key.as_deref(),
                     &heartbeat_agent,
                     heartbeat_model.as_deref(),
+                    heartbeat_allow_local_token_fallback,
                 )
                 .await
                 {
@@ -736,10 +780,28 @@ pub async fn run(
                             heartbeat_api_key.as_deref(),
                             &heartbeat_agent,
                             heartbeat_model.as_deref(),
-                            SESSION_RESTART_ATTEMPTS,
-                            SESSION_RESTART_DELAY_MS,
+                            heartbeat_allow_local_token_fallback,
                         )
                         .await;
+                        if !restarted
+                            && local_token_fallback_required(
+                                &heartbeat_base_url,
+                                heartbeat_api_key.as_deref(),
+                            )
+                            && !heartbeat_allow_local_token_fallback
+                            && health_check_ready(&hb_client, &heartbeat_health_url).await
+                        {
+                            heartbeat_allow_local_token_fallback = true;
+                            restarted = session_start_with_retry(
+                                &hb_client,
+                                &heartbeat_base_url,
+                                heartbeat_api_key.as_deref(),
+                                &heartbeat_agent,
+                                heartbeat_model.as_deref(),
+                                heartbeat_allow_local_token_fallback,
+                            )
+                            .await;
+                        }
                         if !restarted && heartbeat_can_refresh_local {
                             let refreshed_base =
                                 local_daemon_base_from_paths(&CortexPaths::resolve());
@@ -747,14 +809,18 @@ pub async fn run(
                                 heartbeat_base_url = refreshed_base;
                                 heartbeat_health_url = format!("{heartbeat_base_url}/health");
                                 let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
+                                heartbeat_allow_local_token_fallback =
+                                    !local_token_fallback_required(
+                                        &heartbeat_base_url,
+                                        heartbeat_api_key.as_deref(),
+                                    );
                                 restarted = session_start_with_retry(
                                     &hb_client,
                                     &heartbeat_base_url,
                                     heartbeat_api_key.as_deref(),
                                     &heartbeat_agent,
                                     heartbeat_model.as_deref(),
-                                    SESSION_RESTART_ATTEMPTS,
-                                    SESSION_RESTART_DELAY_MS,
+                                    heartbeat_allow_local_token_fallback,
                                 )
                                 .await;
                             }
@@ -784,6 +850,7 @@ pub async fn run(
                                 continue;
                             }
                         }
+                        heartbeat_allow_local_token_fallback = true;
 
                         let restarted = session_start_with_retry(
                             &hb_client,
@@ -791,8 +858,7 @@ pub async fn run(
                             heartbeat_api_key.as_deref(),
                             &heartbeat_agent,
                             heartbeat_model.as_deref(),
-                            SESSION_RESTART_ATTEMPTS,
-                            SESSION_RESTART_DELAY_MS,
+                            heartbeat_allow_local_token_fallback,
                         )
                         .await;
                         if restarted {
@@ -843,7 +909,7 @@ pub async fn run(
                 _ = orphan_check.tick() => {
                     if let Some(parent_pid) = parent_pid {
                         if !process_is_alive(parent_pid) {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (parent process exited before handshake)");
                             return Ok(());
@@ -852,7 +918,7 @@ pub async fn run(
                     continue;
                 }
                 _ = &mut startup_sleep => {
-                    finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                    finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                         .await;
                     eprintln!(
                         "[cortex-mcp] Proxy session ended (no client handshake within {}s)",
@@ -864,13 +930,13 @@ pub async fn run(
                     match result {
                         Some(Ok(Some(line))) => line,
                         Some(Ok(None)) | None => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
                             return Ok(());
                         }
                         Some(Err(e)) => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Stdin read error: {e}");
                             return Err(std::io::Error::other(e).into());
@@ -883,7 +949,7 @@ pub async fn run(
                 _ = orphan_check.tick() => {
                     if let Some(parent_pid) = parent_pid {
                         if !process_is_alive(parent_pid) {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (parent process exited)");
                             return Ok(());
@@ -895,13 +961,13 @@ pub async fn run(
                     match result {
                         Some(Ok(Some(line))) => line,
                         Some(Ok(None)) | None => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
                             return Ok(());
                         }
                         Some(Err(e)) => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
                                 .await;
                             eprintln!("[cortex-mcp] Stdin read error: {e}");
                             return Err(std::io::Error::other(e).into());
@@ -932,6 +998,7 @@ pub async fn run(
                         api_key,
                         &agent_display,
                         saw_client_message,
+                        allow_local_token_fallback,
                         options,
                     )
                     .await;
@@ -949,6 +1016,7 @@ pub async fn run(
                 rpc_base_url = refreshed_base;
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
                 health_url = format!("{rpc_base_url}/health");
+                allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key);
             }
         }
 
@@ -968,7 +1036,7 @@ pub async fn run(
                 break;
             }
 
-            let auth_header = build_auth_header(&rpc_base_url, api_key);
+            let auth_header = build_auth_header(&rpc_base_url, api_key, allow_local_token_fallback);
 
             let mut req = client
                 .post(&rpc_url)
@@ -1021,6 +1089,7 @@ pub async fn run(
                                     &rpc_base_url,
                                     &agent_display,
                                     agent_model.as_deref(),
+                                    &mut allow_local_token_fallback,
                                 )
                                 .await;
                                 if recovered {
@@ -1103,6 +1172,7 @@ pub async fn run(
                             &agent_display,
                             agent_model.as_deref(),
                             &paths,
+                            allow_local_token_fallback,
                         )
                         .await;
                     }
@@ -1144,6 +1214,7 @@ pub async fn run(
                     api_key,
                     &agent_display,
                     saw_client_message,
+                    allow_local_token_fallback,
                     options,
                 )
                 .await;
@@ -1171,12 +1242,14 @@ pub async fn run(
             );
 
             let mut paths = CortexPaths::resolve();
-            if daemon_lifecycle::try_respawn(&paths).await {
+            if daemon_lifecycle::try_respawn(&paths, options.respawn_owner).await {
                 // Daemon is back -- rebuild URLs using the latest resolved port.
                 paths = CortexPaths::resolve();
                 rpc_base_url = local_daemon_base_from_paths(&paths);
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
                 health_url = format!("{rpc_base_url}/health");
+                allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key)
+                    || health_check_ready(&client, &health_url).await;
                 let _ = rpc_base_tx.send(rpc_base_url.clone());
                 let _ = session_start(
                     &client,
@@ -1184,6 +1257,7 @@ pub async fn run(
                     api_key,
                     &agent_display,
                     agent_model.as_deref(),
+                    allow_local_token_fallback,
                 )
                 .await;
                 drain_write_buffer(
@@ -1193,6 +1267,7 @@ pub async fn run(
                     &agent_display,
                     agent_model.as_deref(),
                     &paths,
+                    allow_local_token_fallback,
                 )
                 .await;
                 consecutive_failures = 0;
@@ -1213,6 +1288,7 @@ pub async fn run(
                     api_key,
                     &agent_display,
                     saw_client_message,
+                    allow_local_token_fallback,
                     options,
                 )
                 .await;
@@ -1353,7 +1429,7 @@ mod tests {
     fn custom_url_without_api_key_does_not_use_local_token_fallback() {
         let custom_base = "https://example.com";
         assert!(!is_local_daemon_base(custom_base));
-        assert_eq!(build_auth_header(custom_base, None), None);
+        assert_eq!(build_auth_header(custom_base, None, true), None);
     }
 
     #[test]
@@ -1385,9 +1461,10 @@ mod tests {
         let local_base = "http://100.64.0.12:7437";
         assert!(is_local_daemon_base(local_base));
         assert_eq!(
-            build_auth_header(local_base, None),
+            build_auth_header(local_base, None, true),
             Some("Bearer ctx_local".to_string())
         );
+        assert_eq!(build_auth_header(local_base, None, false), None);
 
         std::env::remove_var("CORTEX_HOME");
         std::env::remove_var("CORTEX_PORT");

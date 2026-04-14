@@ -102,6 +102,10 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         .ok()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     json!({
         "status": if degraded || db_corrupted { "degraded" } else { "ok" },
@@ -128,7 +132,8 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
             "db_path": state.db_path.display().to_string(),
             "token_path": state.token_path.display().to_string(),
             "pid_path": state.pid_path.display().to_string(),
-            "executable": executable
+            "executable": executable,
+            "owner": daemon_owner
         }
     })
 }
