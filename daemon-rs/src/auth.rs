@@ -303,12 +303,11 @@ pub fn write_pid() {
     fs::write(dir.join("cortex.pid"), std::process::id().to_string()).ok();
 }
 
-/// Remove stale PID/lock files when the recorded daemon process no longer exists.
+/// Remove stale PID file when the recorded daemon process no longer exists.
 pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
     let pid = stale_pid_candidate(paths)?;
 
     let _ = fs::remove_file(&paths.pid);
-    let _ = fs::remove_file(&paths.lock);
     eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
     Some(pid)
 }
@@ -423,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_stale_pid_lock_removes_dead_process_files() {
+    fn cleanup_stale_pid_lock_removes_dead_process_pid_only() {
         let home_dir = temp_test_dir("stale_pid");
         fs::create_dir_all(&home_dir).unwrap();
 
@@ -435,7 +434,7 @@ mod tests {
         let cleaned = cleanup_stale_pid_lock(&paths);
         assert_eq!(cleaned, Some(999999));
         assert!(!paths.pid.exists());
-        assert!(!paths.lock.exists());
+        assert!(paths.lock.exists());
 
         let _ = fs::remove_dir_all(&home_dir);
     }

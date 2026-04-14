@@ -42,7 +42,7 @@ fn mcp_rpc_missing_auth_returns_jsonrpc_unauthorized() {
     assert_eq!(payload["jsonrpc"], "2.0");
     assert_eq!(payload["error"]["code"], -32600);
     assert_eq!(payload["error"]["message"], "Unauthorized");
-    assert_eq!(payload["id"], 17);
+    assert_eq!(payload["id"], Value::Null);
 
     shutdown_daemon(port, &home_dir);
     wait_for_exit(&mut daemon, Duration::from_secs(10));
@@ -86,7 +86,7 @@ fn mcp_rpc_missing_x_cortex_request_with_non_local_origin_returns_forbidden_json
         payload["error"]["message"],
         "Missing X-Cortex-Request header"
     );
-    assert_eq!(payload["id"], 29);
+    assert_eq!(payload["id"], Value::Null);
 
     shutdown_daemon(port, &home_dir);
     wait_for_exit(&mut daemon, Duration::from_secs(10));
@@ -94,8 +94,8 @@ fn mcp_rpc_missing_x_cortex_request_with_non_local_origin_returns_forbidden_json
 }
 
 #[test]
-fn mcp_rpc_local_context_without_x_cortex_request_still_initializes() {
-    let home_dir = unique_temp_dir("mcp_rpc_local_no_header");
+fn mcp_rpc_local_context_without_x_cortex_request_is_forbidden() {
+    let home_dir = unique_temp_dir("mcp_rpc_local_missing_header");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
     let home = home_dir.to_string_lossy().to_string();
@@ -121,15 +121,16 @@ fn mcp_rpc_local_context_without_x_cortex_request_still_initializes() {
         &request_body.to_string(),
     )
     .expect("request");
-    assert_eq!(http_status(&response), 200);
+    assert_eq!(http_status(&response), 403);
     let body = split_http_body(&response).expect("http body");
     let payload: Value = serde_json::from_str(body.trim()).expect("json payload");
     assert_eq!(payload["jsonrpc"], "2.0");
-    assert_eq!(payload["id"], 31);
-    assert!(
-        payload.get("result").is_some(),
-        "expected initialize result, got: {payload}"
+    assert_eq!(payload["error"]["code"], -32600);
+    assert_eq!(
+        payload["error"]["message"],
+        "Missing X-Cortex-Request header"
     );
+    assert_eq!(payload["id"], Value::Null);
 
     shutdown_daemon(port, &home_dir);
     wait_for_exit(&mut daemon, Duration::from_secs(10));
@@ -137,7 +138,7 @@ fn mcp_rpc_local_context_without_x_cortex_request_still_initializes() {
 }
 
 #[test]
-fn mcp_rpc_x_auth_header_alias_authenticates() {
+fn mcp_rpc_x_auth_header_alias_is_rejected() {
     let home_dir = unique_temp_dir("mcp_rpc_x_auth_header");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -167,15 +168,12 @@ fn mcp_rpc_x_auth_header_alias_authenticates() {
         &request_body.to_string(),
     )
     .expect("request");
-    assert_eq!(http_status(&response), 200);
+    assert_eq!(http_status(&response), 401);
     let body = split_http_body(&response).expect("http body");
     let payload: Value = serde_json::from_str(body.trim()).expect("json payload");
     assert_eq!(payload["jsonrpc"], "2.0");
-    assert_eq!(payload["id"], 41);
-    assert!(
-        payload.get("result").is_some(),
-        "expected initialize result, got: {payload}"
-    );
+    assert_eq!(payload["error"]["message"], "Unauthorized");
+    assert_eq!(payload["id"], Value::Null);
 
     shutdown_daemon(port, &home_dir);
     wait_for_exit(&mut daemon, Duration::from_secs(10));

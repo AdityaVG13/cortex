@@ -315,10 +315,7 @@ fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String
         return Vec::new();
     };
 
-    let mut lines = vec![format!("DELETE cortex.pid (process {pid} not running)")];
-    if paths.lock.exists() {
-        lines.push("DELETE cortex.lock".to_string());
-    }
+    let lines = vec![format!("DELETE cortex.pid (process {pid} not running)")];
 
     if !dry_run {
         let _ = auth::cleanup_stale_pid_lock(paths);
@@ -391,6 +388,11 @@ async fn main() {
             let remaining = &args[2..];
             let agent = parse_flag_value(remaining, "--agent");
             let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
+            if let Err(e) = ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
+            {
+                eprintln!("[cortex-mcp] {e}");
+                std::process::exit(1);
+            }
             let ensure = if local_owner_mode {
                 match ensure_daemon(&paths, agent.as_deref(), false, true).await {
                     Ok(result) => result,
@@ -457,6 +459,12 @@ async fn main() {
                     let (base_url, api_key, local_owner_mode) =
                         resolve_client_target(remaining, &paths);
                     let agent = parse_flag_value(remaining, "--agent");
+                    if let Err(e) =
+                        ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
+                    {
+                        eprintln!("[cortex-plugin] {e}");
+                        std::process::exit(1);
+                    }
                     let ensure = if local_owner_mode {
                         match ensure_daemon(&paths, agent.as_deref(), false, true).await {
                             Ok(result) => result,
@@ -1678,6 +1686,19 @@ fn resolve_client_target(
     )
 }
 
+fn ensure_remote_target_has_api_key(
+    base_url: &str,
+    api_key: Option<&str>,
+    paths: &auth::CortexPaths,
+) -> Result<(), String> {
+    if api_key.is_none() && !is_local_client_base_url(base_url, paths) {
+        return Err(format!(
+            "Remote Cortex target '{base_url}' requires an API key. Pass --api-key <key> or set CORTEX_API_KEY."
+        ));
+    }
+    Ok(())
+}
+
 fn apply_path_env(paths: &auth::CortexPaths) {
     std::env::set_var("CORTEX_HOME", &paths.home);
     std::env::set_var("CORTEX_DB", &paths.db);
@@ -1830,6 +1851,7 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
     let budget = parse_flag_usize(args, "--budget")?.unwrap_or(DEFAULT_BOOT_BUDGET);
     let json_output = args.iter().any(|arg| arg == "--json");
     let (base_url, api_key, local_owner_mode) = resolve_client_target(args, paths);
+    ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), paths)?;
 
     if local_owner_mode {
         let _ = ensure_daemon(paths, None, false, true).await?;
@@ -2575,6 +2597,37 @@ mod tests {
     }
 
     #[test]
+    fn run_stale_pid_cleanup_keeps_lock_file() {
+        let home_dir = temp_test_dir("stale_pid_cleanup");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        fs::write(&paths.pid, "999999").unwrap();
+        fs::write(&paths.lock, "lock-held").unwrap();
+
+        let dry_run = run_stale_pid_cleanup(&paths, true);
+        assert_eq!(
+            dry_run,
+            vec!["DELETE cortex.pid (process 999999 not running)"]
+        );
+        assert!(paths.pid.exists());
+        assert!(paths.lock.exists());
+
+        let apply = run_stale_pid_cleanup(&paths, false);
+        assert_eq!(
+            apply,
+            vec!["DELETE cortex.pid (process 999999 not running)"]
+        );
+        assert!(!paths.pid.exists());
+        assert!(paths.lock.exists());
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
     fn parse_flag_usize_validates_and_parses_values() {
         let args = vec![
             "--agent".to_string(),
@@ -2682,6 +2735,34 @@ mod tests {
 
         paths.bind = "0.0.0.0".to_string();
         assert!(is_local_client_base_url("http://127.0.0.1:7437", &paths));
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn remote_target_without_api_key_is_rejected() {
+        let home_dir = temp_test_dir("remote_target_auth_required");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let err =
+            ensure_remote_target_has_api_key("https://100.64.0.12:7437", None, &paths).unwrap_err();
+        assert!(err.contains("requires an API key"));
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn local_target_without_api_key_is_allowed() {
+        let home_dir = temp_test_dir("local_target_no_key");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        assert!(ensure_remote_target_has_api_key("http://127.0.0.1:7437", None, &paths).is_ok());
 
         let _ = fs::remove_dir_all(&home_dir);
     }

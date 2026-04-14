@@ -3,6 +3,7 @@ use crate::handlers;
 use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::routing::{get, post};
@@ -182,7 +183,7 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
 async fn handle_mcp_rpc(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
-    Json(msg): Json<Value>,
+    body: Bytes,
 ) -> axum::response::Response {
     let caller_id = match handlers::ensure_auth_with_caller(&headers, &state) {
         Ok(caller_id) => caller_id,
@@ -205,7 +206,24 @@ async fn handle_mcp_rpc(
                         "message": message,
                         "hint": hint
                     },
-                    "id": msg.get("id")
+                    "id": serde_json::Value::Null
+                }),
+            );
+        }
+    };
+
+    let msg: Value = match serde_json::from_slice(&body) {
+        Ok(msg) => msg,
+        Err(_) => {
+            return handlers::json_response(
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32700,
+                        "message": "Parse error"
+                    },
+                    "id": serde_json::Value::Null
                 }),
             );
         }
@@ -391,21 +409,47 @@ pub async fn run(
         }
         Err(e) => {
             // Team mode: refuse to start with broken TLS (auth integrity requires it)
-            // Solo mode: warn and fall back to plain HTTP
+            // Solo mode: allow plain fallback only for localhost binds (or explicit override).
             let team_mode = detect_team_mode_for_tls(db_path);
+            let local_bind = is_local_bind_addr(bind_addr);
+            let allow_insecure_remote = std::env::var("CORTEX_ALLOW_INSECURE_REMOTE")
+                .ok()
+                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"));
             if team_mode {
                 eprintln!("[cortex] TLS configuration error: {e}");
                 eprintln!(
                     "[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
                 );
                 std::process::exit(1);
+            } else if !local_bind && !allow_insecure_remote {
+                eprintln!("[cortex] TLS configuration error: {e}");
+                eprintln!(
+                    "[cortex] Refusing insecure HTTP fallback for non-local bind '{bind_addr}'."
+                );
+                eprintln!(
+                    "[cortex] Fix TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override."
+                );
+                std::process::exit(1);
             } else {
                 eprintln!("[cortex] TLS certificate error: {e}");
-                eprintln!("[cortex] Starting without TLS (solo mode -- localhost only)");
+                if local_bind {
+                    eprintln!("[cortex] Starting without TLS (solo mode -- localhost bind)");
+                } else {
+                    eprintln!(
+                        "[cortex] Starting without TLS on non-local bind due to CORTEX_ALLOW_INSECURE_REMOTE=1"
+                    );
+                }
                 run_plain(router, bind_addr, port, shutdown).await;
             }
         }
     }
+}
+
+fn is_local_bind_addr(bind_addr: &str) -> bool {
+    matches!(
+        bind_addr.trim().to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1" | "[::1]"
+    )
 }
 
 /// Lightweight team-mode detection for TLS decisions (before full state init).
@@ -524,7 +568,7 @@ fn parse_allowed_origin(origin: &str) -> Option<HeaderValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
@@ -654,5 +698,63 @@ mod tests {
                 "status drift for route {path}: solo={solo_status} team={team_status}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn mcp_rpc_malformed_json_returns_jsonrpc_parse_error() {
+        let state = build_state(false).await;
+        let token = state.token.as_ref().clone();
+        let router = build_router(state, 7437);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp-rpc")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-cortex-request", "true")
+            .body(Body::from("{\"jsonrpc\":"))
+            .unwrap();
+
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["error"]["code"], -32700);
+        assert_eq!(payload["error"]["message"], "Parse error");
+        assert_eq!(payload["id"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn mcp_rpc_malformed_json_without_auth_returns_unauthorized() {
+        let state = build_state(false).await;
+        let router = build_router(state, 7437);
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp-rpc")
+            .header("content-type", "application/json")
+            .header("x-cortex-request", "true")
+            .body(Body::from("{\"jsonrpc\":"))
+            .unwrap();
+
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let body = to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["jsonrpc"], "2.0");
+        assert_eq!(payload["error"]["message"], "Unauthorized");
+        assert_eq!(payload["id"], Value::Null);
+    }
+
+    #[test]
+    fn local_bind_detection_is_strict() {
+        assert!(is_local_bind_addr("127.0.0.1"));
+        assert!(is_local_bind_addr("localhost"));
+        assert!(is_local_bind_addr("::1"));
+        assert!(!is_local_bind_addr("0.0.0.0"));
+        assert!(!is_local_bind_addr("100.84.247.96"));
     }
 }

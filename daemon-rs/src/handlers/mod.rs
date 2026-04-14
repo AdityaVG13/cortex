@@ -31,6 +31,7 @@ pub struct SourceIdentity {
 }
 
 const MAX_SOURCE_LABEL_LEN: usize = 160;
+const CTX_API_KEY_LEN: usize = 50;
 
 /// Build an Axum JSON response with CORS / cache headers applied.
 pub fn json_response(status: StatusCode, body: Value) -> Response {
@@ -74,28 +75,6 @@ pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
     }
 }
 
-fn is_local_web_origin(value: &str) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    value.starts_with("http://127.0.0.1")
-        || value.starts_with("https://127.0.0.1")
-        || value.starts_with("http://localhost")
-        || value.starts_with("https://localhost")
-        || value.starts_with("http://[::1]")
-        || value.starts_with("https://[::1]")
-        || value.starts_with("tauri://localhost")
-        || value.starts_with("https://tauri.localhost")
-}
-
-fn is_local_request_context(headers: &HeaderMap) -> bool {
-    let origin_ok = header_text(headers, "origin")
-        .map(|value| is_local_web_origin(&value))
-        .unwrap_or(true);
-    let referer_ok = header_text(headers, "referer")
-        .map(|value| is_local_web_origin(&value))
-        .unwrap_or(true);
-    origin_ok && referer_ok
-}
-
 #[allow(clippy::result_large_err)]
 /// Validate the Bearer token on protected endpoints.  Returns `Err(Response)`
 /// when the caller should short-circuit with a 401.
@@ -112,9 +91,7 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
     };
 
     if let Err(resp) = ensure_ssrf_protection(headers) {
-        if !is_local_request_context(headers) {
-            return Err(resp);
-        }
+        return Err(resp);
     }
 
     Ok(())
@@ -139,7 +116,7 @@ pub fn ensure_auth_with_caller(
 
     let caller = if candidate == state.token.as_str() {
         None
-    } else if state.team_mode && candidate.starts_with("ctx_") {
+    } else if state.team_mode && is_well_formed_ctx_api_key(&candidate) {
         let hashes = match state.team_api_key_hashes.read() {
             Ok(hashes) => hashes,
             Err(poisoned) => {
@@ -171,9 +148,7 @@ pub fn ensure_auth_with_caller(
     };
 
     if let Err(resp) = ensure_ssrf_protection(headers) {
-        if !is_local_request_context(headers) {
-            return Err(resp);
-        }
+        return Err(resp);
     }
 
     Ok(caller)
@@ -247,7 +222,7 @@ fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
     if !state.team_mode {
         return false;
     }
-    if !candidate.starts_with("ctx_") {
+    if !is_well_formed_ctx_api_key(candidate) {
         return false;
     }
     let hashes = match state.team_api_key_hashes.read() {
@@ -392,20 +367,21 @@ fn parse_auth_token(raw: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            if without_prefix.contains(' ') {
-                None
-            } else {
-                Some(without_prefix.to_string())
-            }
-        })
+}
+
+fn is_well_formed_ctx_api_key(candidate: &str) -> bool {
+    if candidate.len() != CTX_API_KEY_LEN || !candidate.starts_with("ctx_") {
+        return false;
+    }
+    candidate
+        .as_bytes()
+        .iter()
+        .skip(4)
+        .all(|byte| byte.is_ascii_alphanumeric())
 }
 
 pub fn extract_auth_token(headers: &HeaderMap) -> Option<String> {
-    header_text(headers, "authorization")
-        .and_then(|raw| parse_auth_token(&raw))
-        .or_else(|| header_text(headers, "x-cortex-auth").and_then(|raw| parse_auth_token(&raw)))
-        .or_else(|| header_text(headers, "x-auth-header").and_then(|raw| parse_auth_token(&raw)))
+    header_text(headers, "authorization").and_then(|raw| parse_auth_token(&raw))
 }
 
 pub fn resolve_source_identity(headers: &HeaderMap, fallback_agent: &str) -> SourceIdentity {
@@ -527,5 +503,44 @@ mod tests {
         let source = resolve_source_identity(&headers, "mcp");
         assert_eq!(source.agent, "codex");
         assert!(source.model.is_none());
+    }
+
+    #[test]
+    fn ensure_ssrf_protection_requires_non_empty_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", HeaderValue::from_static("http://127.0.0.1:7437"));
+        headers.insert(
+            "referer",
+            HeaderValue::from_static("http://localhost:7437/settings"),
+        );
+        assert!(ensure_ssrf_protection(&headers).is_err());
+
+        headers.insert("x-cortex-request", HeaderValue::from_static("true"));
+        assert!(ensure_ssrf_protection(&headers).is_ok());
+    }
+
+    #[test]
+    fn extract_auth_token_accepts_only_standard_bearer_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer ctx_token"),
+        );
+        assert_eq!(extract_auth_token(&headers).as_deref(), Some("ctx_token"));
+
+        let mut alias_headers = HeaderMap::new();
+        alias_headers.insert(
+            "x-cortex-auth",
+            HeaderValue::from_static("Bearer ctx_token"),
+        );
+        assert!(extract_auth_token(&alias_headers).is_none());
+    }
+
+    #[test]
+    fn well_formed_ctx_api_key_shape_validation() {
+        let valid = format!("ctx_{}", "A".repeat(46));
+        assert!(is_well_formed_ctx_api_key(&valid));
+        assert!(!is_well_formed_ctx_api_key("ctx_short"));
+        assert!(!is_well_formed_ctx_api_key("ctx_!invalidchars"));
     }
 }
