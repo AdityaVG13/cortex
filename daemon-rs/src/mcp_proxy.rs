@@ -32,6 +32,8 @@ const SESSION_RESTART_DELAY_MS: u64 = 250;
 const HEARTBEAT_RECOVERY_FAILURES: u32 = 2;
 const STARTUP_IDLE_TIMEOUT_SECS: u64 = 60;
 const ORPHAN_CHECK_SECS: u64 = 15;
+const MAX_AGENT_HEADER_LEN: usize = 160;
+const MAX_MODEL_HEADER_LEN: usize = 160;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProxyRuntimeOptions {
@@ -86,6 +88,28 @@ fn env_trimmed(key: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_header_value(raw: &str, max_len: usize) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.len() > max_len {
+        return None;
+    }
+    if !trimmed.is_ascii() {
+        return None;
+    }
+    if trimmed
+        .as_bytes()
+        .iter()
+        .any(|byte| *byte <= 31 || *byte == 127)
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn normalize_api_key(api_key: Option<&str>) -> Option<&str> {
+    api_key.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn detect_agent_hint(value: &str) -> Option<&'static str> {
@@ -164,7 +188,9 @@ fn process_is_alive(pid: sysinfo::Pid) -> bool {
 }
 
 fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
-    let model = env_trimmed("CORTEX_AGENT_MODEL").or_else(|| env_trimmed("CORTEX_MODEL"));
+    let model = env_trimmed("CORTEX_AGENT_MODEL")
+        .or_else(|| env_trimmed("CORTEX_MODEL"))
+        .and_then(|value| normalize_header_value(&value, MAX_MODEL_HEADER_LEN));
 
     let mut agent = env_trimmed("CORTEX_AGENT_DISPLAY")
         .or_else(|| {
@@ -185,6 +211,16 @@ fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
             }
         }
     }
+
+    let agent = match normalize_header_value(&agent, MAX_AGENT_HEADER_LEN) {
+        Some(agent) => agent,
+        None => {
+            eprintln!(
+                "[cortex-mcp] Invalid source agent label after normalization; falling back to 'mcp'"
+            );
+            "mcp".to_string()
+        }
+    };
 
     (agent, model)
 }
@@ -508,6 +544,7 @@ pub async fn run(
     agent: Option<&str>,
     options: ProxyRuntimeOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let api_key = normalize_api_key(api_key);
     let base_url = base_url.trim_end_matches('/');
     let mut rpc_base_url = base_url.to_string();
     let mut rpc_url = format!("{rpc_base_url}/mcp-rpc");
@@ -1234,5 +1271,26 @@ mod tests {
             body,
             None
         ));
+    }
+
+    #[test]
+    fn normalize_api_key_treats_blank_values_as_missing() {
+        assert_eq!(normalize_api_key(None), None);
+        assert_eq!(normalize_api_key(Some("")), None);
+        assert_eq!(normalize_api_key(Some("   ")), None);
+        assert_eq!(normalize_api_key(Some(" ctx_abc ")), Some("ctx_abc"));
+    }
+
+    #[test]
+    fn normalize_header_value_rejects_invalid_characters() {
+        assert_eq!(
+            normalize_header_value("codex-cli", MAX_AGENT_HEADER_LEN),
+            Some("codex-cli".to_string())
+        );
+        assert_eq!(
+            normalize_header_value("bad\nvalue", MAX_AGENT_HEADER_LEN),
+            None
+        );
+        assert_eq!(normalize_header_value("módèl", MAX_MODEL_HEADER_LEN), None);
     }
 }
