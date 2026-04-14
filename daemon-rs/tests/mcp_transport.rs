@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod support;
+use support::{terminate_child_tree, SpawnTrackedExt};
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -34,8 +37,7 @@ fn direct_mcp_stops_owned_daemon_after_client_exit() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex mcp");
+        .spawn_tracked("spawn cortex mcp");
 
     wait_for_health(port, &mut child);
 
@@ -112,8 +114,7 @@ fn direct_mcp_cleans_up_unused_owned_daemon_when_stdin_closes_immediately() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn idle cortex mcp");
+        .spawn_tracked("spawn idle cortex mcp");
 
     wait_for_exit(&mut child, Duration::from_secs(10));
 
@@ -121,6 +122,39 @@ fn direct_mcp_cleans_up_unused_owned_daemon_when_stdin_closes_immediately() {
         port,
         Duration::from_secs(5),
         "owned daemon remained healthy after idle MCP wrapper exit",
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
+#[test]
+fn direct_mcp_force_kill_cleans_up_owned_daemon() {
+    let home_dir = unique_temp_dir("mcp_force_kill");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn_tracked("spawn cortex mcp");
+
+    wait_for_health(port, &mut child);
+    child.kill().expect("kill cortex mcp wrapper");
+    wait_for_exit(&mut child, Duration::from_secs(10));
+    wait_for_daemon_shutdown(
+        port,
+        Duration::from_secs(12),
+        "owned daemon remained healthy after force-killing MCP wrapper",
     );
     let _ = fs::remove_dir_all(&home_dir);
 }
@@ -137,8 +171,7 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex serve");
+        .spawn_tracked("spawn cortex serve");
 
     wait_for_health(port, &mut daemon);
 
@@ -155,8 +188,7 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex mcp");
+        .spawn_tracked("spawn cortex mcp");
 
     wait_for_exit(&mut child, Duration::from_secs(10));
 
@@ -190,8 +222,7 @@ fn owned_mcp_recovers_after_daemon_interruption_and_cleans_up_on_exit() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex mcp");
+        .spawn_tracked("spawn cortex mcp");
 
     wait_for_health(port, &mut child);
 
@@ -294,8 +325,7 @@ fn plugin_mcp_local_owner_mode_stops_spawned_daemon_on_exit() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex plugin mcp");
+        .spawn_tracked("spawn cortex plugin mcp");
 
     wait_for_health(port, &mut child);
 
@@ -384,8 +414,7 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex serve");
+        .spawn_tracked("spawn cortex serve");
     wait_for_health(port, &mut daemon);
 
     let token = fs::read_to_string(home_dir.join("cortex.token"))
@@ -412,8 +441,7 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex plugin mcp custom url");
+        .spawn_tracked("spawn cortex plugin mcp custom url");
 
     let stdout = child.stdout.take().expect("child stdout");
     let responses = spawn_stdout_reader(stdout);
@@ -488,8 +516,7 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex serve");
+        .spawn_tracked("spawn cortex serve");
     wait_for_health(port, &mut daemon);
 
     let token = fs::read_to_string(home_dir.join("cortex.token"))
@@ -514,8 +541,7 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex plugin mcp via env target");
+        .spawn_tracked("spawn cortex plugin mcp via env target");
 
     let stdout = child.stdout.take().expect("child stdout");
     let responses = spawn_stdout_reader(stdout);
@@ -735,8 +761,7 @@ fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex mcp against adversarial listener");
+        .spawn_tracked("spawn cortex mcp against adversarial listener");
 
     let stdout = child.stdout.take().expect("child stdout");
     let responses = spawn_stdout_reader(stdout);
@@ -1101,6 +1126,7 @@ fn wait_for_health(port: u16, child: &mut Child) {
         thread::sleep(HEALTH_POLL_INTERVAL);
     }
 
+    terminate_child_tree(child);
     let stderr = read_stderr(child);
     panic!("daemon did not become healthy on port {port}\n{stderr}");
 }
@@ -1114,6 +1140,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) {
         thread::sleep(Duration::from_millis(100));
     }
 
+    terminate_child_tree(child);
     let stderr = read_stderr(child);
     panic!("cortex mcp did not exit after stdin closed\n{stderr}");
 }

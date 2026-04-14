@@ -356,6 +356,7 @@ dependencies = [
  "tower-http",
  "uuid",
  "windows-service",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

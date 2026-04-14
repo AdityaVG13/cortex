@@ -7,6 +7,9 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod support;
+use support::{terminate_child_tree, SpawnTrackedExt};
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -186,8 +189,7 @@ fn spawn_daemon(home: &str, port: u16) -> Child {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn cortex serve")
+        .spawn_tracked("spawn cortex serve")
 }
 
 fn read_token(home_dir: &std::path::Path) -> String {
@@ -210,6 +212,7 @@ fn wait_for_health(port: u16, child: &mut Child) {
         thread::sleep(HEALTH_POLL_INTERVAL);
     }
 
+    terminate_child_tree(child);
     let stderr = read_stderr(child);
     panic!("daemon did not become healthy on port {port}\n{stderr}");
 }
@@ -223,6 +226,7 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) {
         thread::sleep(Duration::from_millis(100));
     }
 
+    terminate_child_tree(child);
     let stderr = read_stderr(child);
     panic!("daemon did not exit in time\n{stderr}");
 }
