@@ -1789,8 +1789,8 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
 }
 
 use daemon_lifecycle::{
-    daemon_healthy, spawn_daemon, validate_spawned_owner_claim, wait_for_health,
-    DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV,
+    daemon_healthy, is_cortex_health_payload, spawn_daemon, validate_spawned_owner_claim,
+    wait_for_health, DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV,
 };
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
@@ -2123,6 +2123,55 @@ fn validate_spawned_owner_runtime_claim(
     validate_spawned_owner_claim(paths, owner_tag, parent_pid, owner_token)
 }
 
+async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<(), String> {
+    let bind_addr = paths.bind.trim();
+    let bind_error = match std::net::TcpListener::bind((bind_addr, paths.port)) {
+        Ok(listener) => {
+            drop(listener);
+            return Ok(());
+        }
+        Err(err) => err,
+    };
+
+    let health_url = format!("{}/health", local_daemon_base_url(paths));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|err| format!("daemon startup preflight: build HTTP client: {err}"))?;
+    let response = match client.get(&health_url).send().await {
+        Ok(response) => response,
+        Err(err) => {
+            return Err(format!(
+                "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}) and health probe at {health_url} failed ({err})",
+                paths.port
+            ));
+        }
+    };
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| String::from("<unreadable>"));
+
+    if is_cortex_health_payload(status, &body, Some(paths.port), Some(paths)) {
+        return Err(format!(
+            "daemon startup denied: canonical Cortex instance is already healthy on port {}",
+            paths.port
+        ));
+    }
+    if is_cortex_health_payload(status, &body, Some(paths.port), None) {
+        return Err(format!(
+            "daemon startup denied: port {} is served by a different Cortex runtime identity",
+            paths.port
+        ));
+    }
+
+    Err(format!(
+        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}); /health at {health_url} returned non-canonical payload (HTTP {status})",
+        paths.port
+    ))
+}
+
 async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
@@ -2336,8 +2385,6 @@ pub(crate) async fn run_daemon(
     );
     eprintln!("[cortex] DB: {}", db_path.display());
 
-    let (state, shutdown_rx) = state::initialize(&paths, true).expect("Failed to initialize state");
-
     let daemon_owner = daemon_owner_tag_from_env();
     let parent_pid = spawn_parent_pid_from_env();
     let parent_start_time = spawn_parent_start_time_from_env();
@@ -2352,6 +2399,13 @@ pub(crate) async fn run_daemon(
         eprintln!("[cortex] FATAL: invalid spawned owner claim ({reason}); refusing startup");
         std::process::exit(1);
     }
+    if let Err(reason) = startup_single_daemon_preflight(&paths).await {
+        eprintln!("[cortex] FATAL: {reason}");
+        std::process::exit(1);
+    }
+
+    let (state, shutdown_rx) = state::initialize(&paths, true).expect("Failed to initialize state");
+
     if should_watch_spawn_parent(daemon_owner.as_deref()) {
         if let (Some(parent_pid), Some(parent_start_time)) = (parent_pid, parent_start_time) {
             let shutdown_tx = state.shutdown_tx.clone();
@@ -2705,6 +2759,8 @@ async fn build_embeddings_async(
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_test_dir(name: &str) -> std::path::PathBuf {
@@ -2713,6 +2769,37 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("cortex_{name}_{unique}"))
+    }
+
+    fn run_preflight(paths: &auth::CortexPaths) -> Result<(), String> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime")
+            .block_on(startup_single_daemon_preflight(paths))
+    }
+
+    fn spawn_single_response_server(
+        listener: TcpListener,
+        status_line: &str,
+        content_type: &str,
+        body: String,
+    ) -> std::thread::JoinHandle<()> {
+        let status_line = status_line.to_string();
+        let content_type = content_type.to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request_buffer = [0_u8; 2048];
+                let _ = stream.read(&mut request_buffer);
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        })
     }
 
     #[test]
@@ -3073,6 +3160,63 @@ mod tests {
         paths.bind = "100.64.0.12".to_string();
         assert_eq!(local_daemon_base_url(&paths), "http://100.64.0.12:7437");
 
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn startup_preflight_rejects_non_canonical_health_payload() {
+        let home_dir = temp_test_dir("startup_preflight_noncanonical");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let mut paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        paths.bind = "127.0.0.1".to_string();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let port = listener.local_addr().expect("resolve listener addr").port();
+        paths.port = port;
+        let server =
+            spawn_single_response_server(listener, "404 Not Found", "text/plain", "nope".into());
+
+        let err = run_preflight(&paths).unwrap_err();
+        assert!(err.contains("non-canonical payload"));
+
+        server.join().expect("join response server");
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn startup_preflight_rejects_different_cortex_runtime_identity() {
+        let home_dir = temp_test_dir("startup_preflight_wrong_runtime");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let mut paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        paths.bind = "127.0.0.1".to_string();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let port = listener.local_addr().expect("resolve listener addr").port();
+        paths.port = port;
+
+        let payload = serde_json::json!({
+            "status": "ok",
+            "runtime": {
+                "port": port,
+                "token_path": "C:/other/cortex.token",
+                "pid_path": "C:/other/cortex.pid",
+                "db_path": "C:/other/cortex.db"
+            },
+            "stats": {
+                "home": "C:/other"
+            }
+        })
+        .to_string();
+        let server = spawn_single_response_server(listener, "200 OK", "application/json", payload);
+
+        let err = run_preflight(&paths).unwrap_err();
+        assert!(err.contains("different Cortex runtime identity"));
+
+        server.join().expect("join response server");
         let _ = fs::remove_dir_all(&home_dir);
     }
 
