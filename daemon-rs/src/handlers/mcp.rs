@@ -83,6 +83,152 @@ fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
         .map(|value| value as usize)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClientPermission {
+    Read,
+    Write,
+    Admin,
+}
+
+impl ClientPermission {
+    fn as_str(self) -> &'static str {
+        match self {
+            ClientPermission::Read => "read",
+            ClientPermission::Write => "write",
+            ClientPermission::Admin => "admin",
+        }
+    }
+}
+
+fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
+    match tool_name {
+        "cortex_boot"
+        | "cortex_reconnect"
+        | "cortex_peek"
+        | "cortex_recall"
+        | "cortex_semantic_recall"
+        | "cortex_health"
+        | "cortex_digest"
+        | "cortex_unfold"
+        | "cortex_focus_status"
+        | "cortex_lastCall" => Some(ClientPermission::Read),
+        "cortex_store" | "cortex_focus_start" | "cortex_focus_end" | "cortex_diary" => {
+            Some(ClientPermission::Write)
+        }
+        "cortex_forget" | "cortex_resolve" => Some(ClientPermission::Admin),
+        _ => None,
+    }
+}
+
+fn normalize_permission_client_id(raw: &str) -> String {
+    let before_model = raw
+        .split('(')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_ascii_lowercase();
+    let normalized: String = before_model
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if normalized.is_empty() {
+        "mcp".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn source_client_for_permissions(source: Option<&SourceIdentity>, args: &Value) -> String {
+    let raw = source
+        .map(|identity| identity.agent.as_str())
+        .or_else(|| arg_str(args, &["source_agent", "agent"]))
+        .unwrap_or("mcp");
+    normalize_permission_client_id(raw)
+}
+
+fn permission_satisfies(granted: &str, required: ClientPermission) -> bool {
+    match required {
+        ClientPermission::Read => matches!(granted, "read" | "write" | "admin"),
+        ClientPermission::Write => matches!(granted, "write" | "admin"),
+        ClientPermission::Admin => granted == "admin",
+    }
+}
+
+fn has_client_permission(
+    conn: &rusqlite::Connection,
+    owner_id: i64,
+    client_id: &str,
+    scope: &str,
+    required: ClientPermission,
+) -> Result<bool, String> {
+    let configured_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM client_permissions WHERE owner_id = ?1",
+            rusqlite::params![owner_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+
+    // Backward-compatible baseline: no policy rows means permissive mode.
+    if configured_rows == 0 {
+        return Ok(true);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT permission FROM client_permissions
+             WHERE owner_id = ?1
+               AND (client_id = ?2 OR client_id = '*')
+               AND (scope = ?3 OR scope = '*')",
+        )
+        .map_err(|err| err.to_string())?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![owner_id, client_id, scope], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|err| err.to_string())?;
+
+    for granted in rows.flatten() {
+        if permission_satisfies(granted.trim(), required) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+async fn enforce_client_permission(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+    tool_name: &str,
+    args: &Value,
+    source: Option<&SourceIdentity>,
+) -> Result<(), String> {
+    let Some(required) = required_permission_for_tool(tool_name) else {
+        return Ok(());
+    };
+    let owner_id = if state.team_mode {
+        caller_id.unwrap_or_default()
+    } else {
+        0
+    };
+    let client_id = source_client_for_permissions(source, args);
+
+    let conn = state.db.lock().await;
+    let allowed = has_client_permission(&conn, owner_id, &client_id, tool_name, required)?;
+    drop(conn);
+
+    if allowed {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Permission denied: client '{client_id}' lacks '{}' permission for '{tool_name}'",
+        required.as_str()
+    ))
+}
+
 fn source_agent_for_tool(source: Option<&SourceIdentity>, fallback: &str) -> String {
     source
         .map(|identity| identity.agent.clone())
@@ -271,7 +417,9 @@ fn fetch_last_call(
 
 #[cfg(test)]
 mod tests {
-    use super::fetch_last_call;
+    use super::{
+        fetch_last_call, has_client_permission, normalize_permission_client_id, ClientPermission,
+    };
     use crate::db;
     use crate::handlers::recall::RecallContext;
 
@@ -302,6 +450,79 @@ mod tests {
             payload["detail"]["decision"].as_str(),
             Some("semantic recall added")
         );
+    }
+
+    #[test]
+    fn normalize_permission_client_id_strips_model_suffix_and_symbols() {
+        assert_eq!(normalize_permission_client_id("Codex (gpt-5.4)"), "codex");
+        assert_eq!(
+            normalize_permission_client_id("  Claude Code / Desktop  "),
+            "claudecodedesktop"
+        );
+        assert_eq!(normalize_permission_client_id(""), "mcp");
+    }
+
+    #[test]
+    fn client_permission_allows_by_default_when_no_policy_rows_exist() {
+        let conn = test_conn();
+        let allowed =
+            has_client_permission(&conn, 0, "codex", "cortex_store", ClientPermission::Write)
+                .unwrap();
+        assert!(
+            allowed,
+            "empty policy table should preserve legacy permissive mode"
+        );
+    }
+
+    #[test]
+    fn client_permission_enforces_explicit_policy_rows() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+             VALUES (0, 'claude', 'read', '*', 'test')",
+            [],
+        )
+        .unwrap();
+
+        let claude_read =
+            has_client_permission(&conn, 0, "claude", "cortex_recall", ClientPermission::Read)
+                .unwrap();
+        let claude_write =
+            has_client_permission(&conn, 0, "claude", "cortex_store", ClientPermission::Write)
+                .unwrap();
+        let codex_read =
+            has_client_permission(&conn, 0, "codex", "cortex_recall", ClientPermission::Read)
+                .unwrap();
+
+        assert!(claude_read);
+        assert!(!claude_write);
+        assert!(!codex_read);
+    }
+
+    #[test]
+    fn client_permission_supports_wildcard_grants() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+             VALUES (42, '*', 'write', 'cortex_store', 'test')",
+            [],
+        )
+        .unwrap();
+
+        let allowed =
+            has_client_permission(&conn, 42, "gemini", "cortex_store", ClientPermission::Write)
+                .unwrap();
+        let denied_admin = has_client_permission(
+            &conn,
+            42,
+            "gemini",
+            "cortex_forget",
+            ClientPermission::Admin,
+        )
+        .unwrap();
+
+        assert!(allowed);
+        assert!(!denied_admin);
     }
 }
 
@@ -583,6 +804,7 @@ async fn mcp_dispatch(
     if state.team_mode && caller_id.is_none() {
         return Err("Team mode MCP calls require a caller-scoped ctx_ API key".to_string());
     }
+    enforce_client_permission(state, caller_id, tool_name, args, source).await?;
 
     match tool_name {
         "cortex_boot" => {

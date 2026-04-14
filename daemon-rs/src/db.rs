@@ -68,7 +68,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 7] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 8] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -76,6 +76,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 7] = [
     ("005_quality_dedup_columns", "quality_dedup_columns"),
     ("006", "ttl_expiration"),
     ("007", "semantic_store_quality_defaults"),
+    ("008", "client_permissions"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -263,6 +264,24 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
                 "UPDATE decisions SET quality = 50 WHERE quality IS NULL",
                 [],
             );
+            Ok(())
+        }
+        "008" => {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS client_permissions (
+                  owner_id INTEGER NOT NULL DEFAULT 0,
+                  client_id TEXT NOT NULL,
+                  permission TEXT NOT NULL,
+                  scope TEXT NOT NULL DEFAULT '*',
+                  granted_by TEXT NOT NULL DEFAULT 'system',
+                  granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+                  PRIMARY KEY (owner_id, client_id, permission, scope)
+                );
+                CREATE INDEX IF NOT EXISTS idx_client_permissions_client
+                  ON client_permissions(owner_id, client_id);
+                "#,
+            )?;
             Ok(())
         }
         other => Err(migration_error(format!(
@@ -502,6 +521,19 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           last_seen_id TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS client_permissions (
+          owner_id INTEGER NOT NULL DEFAULT 0,
+          client_id TEXT NOT NULL,
+          permission TEXT NOT NULL,
+          scope TEXT NOT NULL DEFAULT '*',
+          granted_by TEXT NOT NULL DEFAULT 'system',
+          granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (owner_id, client_id, permission, scope)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_client_permissions_client
+          ON client_permissions(owner_id, client_id);
 
         CREATE INDEX IF NOT EXISTS idx_cooccur_a ON co_occurrence(source_a);
         CREATE INDEX IF NOT EXISTS idx_cooccur_b ON co_occurrence(source_b);
@@ -1587,6 +1619,7 @@ mod tests {
             "tasks",
             "feed",
             "feed_acks",
+            "client_permissions",
             "context_cache",
             "schema_migrations",
             "memories_fts",
