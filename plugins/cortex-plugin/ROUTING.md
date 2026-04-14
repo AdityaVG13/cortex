@@ -34,6 +34,7 @@ These no longer affect plugin routing behavior.
 
 ## Lifecycle Guarantees
 - Plugin SessionStart hook is status-only and never starts/stops daemon.
+- SessionStart probes `/readiness` first and falls back to `/health` for older daemons.
 - Plugin MCP bridge does not request local daemon spawn.
 - If local daemon is unavailable, plugin fails fast with attach-only guidance.
 
