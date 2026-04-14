@@ -306,7 +306,16 @@ fn health_probe_base(bind: &str, port: u16) -> String {
     format!("http://{host}:{port}")
 }
 
-/// Check if the daemon responds to /health within 2s.
+fn health_probe_url(bind: &str, port: u16) -> String {
+    format!("{}/health", health_probe_base(bind, port))
+}
+
+fn readiness_probe_url(bind: &str, port: u16) -> String {
+    format!("{}/readiness", health_probe_base(bind, port))
+}
+
+/// Check if the daemon is ready within a short timeout.
+/// Prefers `/readiness` and falls back to `/health` for backward compatibility.
 async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&CortexPaths>) -> bool {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -316,7 +325,19 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
         Err(_) => return false,
     };
 
-    let health_url = format!("{}/health", health_probe_base(bind, port));
+    let readiness_url = readiness_probe_url(bind, port);
+    if let Ok(response) = client.get(&readiness_url).send().await {
+        let status = response.status().as_u16();
+        if let Ok(body) = response.text().await {
+            if let Some(ready) =
+                readiness_state_from_payload(status, &body, Some(port), expected_paths)
+            {
+                return ready;
+            }
+        }
+    }
+
+    let health_url = health_probe_url(bind, port);
     let response = match client.get(health_url).send().await {
         Ok(response) => response,
         Err(_) => return false,
@@ -401,7 +422,67 @@ pub(crate) fn is_cortex_health_payload(
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
 
-/// Poll /health on the resolved bind host/port until success or timeout.
+pub(crate) fn readiness_state_from_payload(
+    status: u16,
+    body: &str,
+    expected_port: Option<u16>,
+    expected_paths: Option<&CortexPaths>,
+) -> Option<bool> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return None;
+    };
+
+    let ready = json.get("ready").and_then(|value| value.as_bool())?;
+    let runtime = json.get("runtime").and_then(|value| value.as_object())?;
+    let stats = json.get("stats").and_then(|value| value.as_object())?;
+    let runtime_port = runtime
+        .get("port")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+
+    if let Some(expected_port) = expected_port {
+        if runtime_port != Some(expected_port) {
+            return None;
+        }
+    }
+
+    if let Some(paths) = expected_paths {
+        if !path_field_matches(stats.get("home"), &paths.home) {
+            return None;
+        }
+        if !path_field_matches(runtime.get("token_path"), &paths.token) {
+            return None;
+        }
+        if !path_field_matches(runtime.get("pid_path"), &paths.pid) {
+            return None;
+        }
+        if !path_field_matches(runtime.get("db_path"), &paths.db) {
+            return None;
+        }
+    }
+
+    // Ready payloads are expected to be 2xx. Not-ready payloads are expected
+    // to be 503 (with optional legacy 2xx compatibility).
+    if ready && !(200..300).contains(&status) {
+        return None;
+    }
+    if !ready && !(status == 503 || (200..300).contains(&status)) {
+        return None;
+    }
+
+    let readiness_status = json.get("status").and_then(|value| value.as_str());
+    let expected_status = if ready { "ready" } else { "starting" };
+    if let Some(readiness_status) = readiness_status {
+        if readiness_status != expected_status {
+            return None;
+        }
+    }
+
+    Some(ready)
+}
+
+/// Poll readiness on the resolved bind host/port until success or timeout.
+/// Prefers `/readiness` and falls back to `/health` for backward compatibility.
 /// Requires runtime identity to match the expected local Cortex paths.
 pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
@@ -647,8 +728,9 @@ mod tests {
     use super::{
         acquire_respawn_coordination_lock, build_owner_token, evaluate_respawn_policy,
         is_cortex_health_payload, is_runtime_copy_name, issue_owner_token_for_spawn,
-        load_or_create_owner_signing_key, stable_runtime_path, validate_spawned_owner_claim,
-        workspace_runtime_copy_dir, DaemonOwnerMode, DAEMON_OWNER_TOKEN_TTL_SECS,
+        load_or_create_owner_signing_key, readiness_state_from_payload, stable_runtime_path,
+        validate_spawned_owner_claim, workspace_runtime_copy_dir, DaemonOwnerMode,
+        DAEMON_OWNER_TOKEN_TTL_SECS,
     };
     use crate::auth::CortexPaths;
     use serde_json::json;
@@ -710,6 +792,59 @@ mod tests {
             Some(7437),
             None,
         ));
+    }
+
+    #[test]
+    fn cortex_readiness_payload_reports_ready_and_starting_states() {
+        let ready = serde_json::json!({
+            "status": "ready",
+            "ready": true,
+            "runtime": { "port": 7437 },
+            "stats": { "home": "C:/Users/aditya/.cortex" }
+        })
+        .to_string();
+        assert_eq!(
+            readiness_state_from_payload(200, &ready, Some(7437), None),
+            Some(true)
+        );
+
+        let starting = serde_json::json!({
+            "status": "starting",
+            "ready": false,
+            "runtime": { "port": 7437 },
+            "stats": { "home": "C:/Users/aditya/.cortex" }
+        })
+        .to_string();
+        assert_eq!(
+            readiness_state_from_payload(503, &starting, Some(7437), None),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn cortex_readiness_payload_rejects_invalid_shapes() {
+        assert_eq!(
+            readiness_state_from_payload(200, r#"{"status":"ready"}"#, Some(7437), None),
+            None
+        );
+        assert_eq!(
+            readiness_state_from_payload(
+                200,
+                r#"{"status":"ready","ready":true,"runtime":{"port":9000},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                Some(7437),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            readiness_state_from_payload(
+                500,
+                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                Some(7437),
+                None
+            ),
+            None
+        );
     }
 
     #[test]

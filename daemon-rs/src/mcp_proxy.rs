@@ -334,22 +334,36 @@ fn expected_port_from_url(url: &str) -> Option<u16> {
         .and_then(|parsed| parsed.port_or_known_default())
 }
 
-fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, health_url: &str) -> bool {
-    let local_paths = if is_local_daemon_base(health_url) {
+fn fallback_health_probe_url(probe_url: &str) -> Option<String> {
+    probe_url
+        .strip_suffix("/readiness")
+        .map(|base| format!("{base}/health"))
+}
+
+fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, probe_url: &str) -> bool {
+    let local_paths = if is_local_daemon_base(probe_url) {
         Some(CortexPaths::resolve())
     } else {
         None
     };
+    if let Some(ready) = daemon_lifecycle::readiness_state_from_payload(
+        status.as_u16(),
+        body,
+        expected_port_from_url(probe_url),
+        local_paths.as_ref(),
+    ) {
+        return ready;
+    }
     daemon_lifecycle::is_cortex_health_payload(
         status.as_u16(),
         body,
-        expected_port_from_url(health_url),
+        expected_port_from_url(probe_url),
         local_paths.as_ref(),
     )
 }
 
-async fn health_check_ready(client: &reqwest::Client, health_url: &str) -> bool {
-    let response = match client.get(health_url).send().await {
+async fn health_check_ready(client: &reqwest::Client, probe_url: &str) -> bool {
+    let response = match client.get(probe_url).send().await {
         Ok(response) => response,
         Err(_) => return false,
     };
@@ -360,7 +374,23 @@ async fn health_check_ready(client: &reqwest::Client, health_url: &str) -> bool 
         Err(_) => return false,
     };
 
-    is_cortex_health_response(status, &body, health_url)
+    if is_cortex_health_response(status, &body, probe_url) {
+        return true;
+    }
+
+    let Some(health_url) = fallback_health_probe_url(probe_url) else {
+        return false;
+    };
+    let response = match client.get(&health_url).send().await {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+    let status = response.status();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+    is_cortex_health_response(status, &body, &health_url)
 }
 
 fn is_auth_recovery_status(status: reqwest::StatusCode) -> bool {
@@ -658,7 +688,7 @@ pub async fn run(
     }
     let mut rpc_base_url = base_url.to_string();
     let mut rpc_url = format!("{rpc_base_url}/mcp-rpc");
-    let mut health_url = format!("{rpc_base_url}/health");
+    let mut health_url = format!("{rpc_base_url}/readiness");
     let (rpc_base_tx, mut rpc_base_rx) = tokio::sync::watch::channel(rpc_base_url.clone());
     let (agent_display, agent_model) = resolve_agent_identity(agent);
 
@@ -765,7 +795,7 @@ pub async fn run(
                 }
             };
             let mut heartbeat_base_url = heartbeat_base_url;
-            let mut heartbeat_health_url = format!("{heartbeat_base_url}/health");
+            let mut heartbeat_health_url = format!("{heartbeat_base_url}/readiness");
             let resolved_local_base = local_daemon_base_from_paths(&CortexPaths::resolve());
             let heartbeat_can_refresh_local = heartbeat_base_url == resolved_local_base;
             let mut consecutive_heartbeat_failures = 0u32;
@@ -820,7 +850,7 @@ pub async fn run(
                                 local_daemon_base_from_paths(&CortexPaths::resolve());
                             if refreshed_base != heartbeat_base_url {
                                 heartbeat_base_url = refreshed_base;
-                                heartbeat_health_url = format!("{heartbeat_base_url}/health");
+                                heartbeat_health_url = format!("{heartbeat_base_url}/readiness");
                                 let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
                                 heartbeat_allow_local_token_fallback =
                                     !local_token_fallback_required(
@@ -855,7 +885,8 @@ pub async fn run(
                                     local_daemon_base_from_paths(&CortexPaths::resolve());
                                 if refreshed_base != heartbeat_base_url {
                                     heartbeat_base_url = refreshed_base;
-                                    heartbeat_health_url = format!("{heartbeat_base_url}/health");
+                                    heartbeat_health_url =
+                                        format!("{heartbeat_base_url}/readiness");
                                     let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
                                 }
                             }
@@ -1028,7 +1059,7 @@ pub async fn run(
             if refreshed_base != rpc_base_url {
                 rpc_base_url = refreshed_base;
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
-                health_url = format!("{rpc_base_url}/health");
+                health_url = format!("{rpc_base_url}/readiness");
                 allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key);
             }
         }
@@ -1260,7 +1291,7 @@ pub async fn run(
                 paths = CortexPaths::resolve();
                 rpc_base_url = local_daemon_base_from_paths(&paths);
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
-                health_url = format!("{rpc_base_url}/health");
+                health_url = format!("{rpc_base_url}/readiness");
                 allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key)
                     || health_check_ready(&client, &health_url).await;
                 let _ = rpc_base_tx.send(rpc_base_url.clone());

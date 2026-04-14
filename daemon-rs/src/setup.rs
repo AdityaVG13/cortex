@@ -928,25 +928,8 @@ async fn step_daemon() -> StepResult {
 }
 
 async fn is_daemon_healthy() -> bool {
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .ok();
-
-    let Some(client) = client else { return false };
     let paths = auth::CortexPaths::resolve();
-    let health_url = daemon_url("/health");
-    let response = match client.get(&health_url).send().await {
-        Ok(response) => response,
-        Err(_) => return false,
-    };
-    let status = response.status().as_u16();
-    let body = match response.text().await {
-        Ok(body) => body,
-        Err(_) => return false,
-    };
-    crate::daemon_lifecycle::is_cortex_health_payload(status, &body, Some(paths.port), Some(&paths))
+    crate::daemon_lifecycle::daemon_healthy(&paths).await
 }
 
 // ─── Step 5: Verify ─────────────────────────────────────────────────────────

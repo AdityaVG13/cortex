@@ -99,6 +99,9 @@ pub struct RuntimeState {
     /// Set to true when a runtime `quick_check` detects B-tree corruption.
     /// Exposed on the `/health` endpoint as `db_corrupted`.
     pub db_corrupted: Arc<AtomicBool>,
+    /// Readiness gate for daemon startup sequencing.
+    /// `/readiness` reports this directly while `/health` remains diagnostic.
+    pub readiness: Arc<AtomicBool>,
     /// Path for buffering writes when daemon is unreachable in proxy mode.
     /// Used by mcp_proxy via cortex_dir() directly; kept here for discoverability.
     #[allow(dead_code)]
@@ -326,6 +329,7 @@ fn initialize_with_conn(
         team_api_key_hashes,
         degraded_mode: Arc::new(AtomicBool::new(false)),
         db_corrupted: Arc::new(AtomicBool::new(false)),
+        readiness: Arc::new(AtomicBool::new(false)),
         write_buffer_path,
     };
 

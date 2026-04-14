@@ -106,9 +106,11 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
 
     json!({
         "status": if degraded || db_corrupted { "degraded" } else { "ok" },
+        "ready": ready,
         "degraded": degraded || db_corrupted,
         "db_corrupted": db_corrupted,
         "embedding_status": embedding_status,
@@ -140,6 +142,50 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
 
 pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
     json_response(StatusCode::OK, build_health_payload(&state).await)
+}
+
+pub async fn build_readiness_payload(state: &RuntimeState) -> Value {
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
+
+    json!({
+        "status": if ready { "ready" } else { "starting" },
+        "ready": ready,
+        "runtime": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "mode": if state.team_mode { "team" } else { "solo" },
+            "port": state.port,
+            "db_path": state.db_path.display().to_string(),
+            "token_path": state.token_path.display().to_string(),
+            "pid_path": state.pid_path.display().to_string(),
+            "executable": executable,
+            "owner": daemon_owner
+        },
+        "stats": {
+            "home": state.home.display().to_string()
+        }
+    })
+}
+
+pub async fn handle_readiness(State(state): State<RuntimeState>) -> Response {
+    let payload = build_readiness_payload(&state).await;
+    let ready = payload
+        .get("ready")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let status = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    json_response(status, payload)
 }
 
 // ─── GET /digest ─────────────────────────────────────────────────────────────

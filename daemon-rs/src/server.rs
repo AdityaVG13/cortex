@@ -39,6 +39,7 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
     Router::new()
         // ── Public endpoints (no auth) ─────────────────────────────
         .route("/health", get(handlers::health::handle_health))
+        .route("/readiness", get(handlers::health::handle_readiness))
         // ── Core endpoints ─────────────────────────────────────────
         // boot and recall already accept HeaderMap and call ensure_auth.
         // digest, savings, peek, budget_recall now have auth added to
@@ -636,6 +637,7 @@ mod tests {
 
         let cases: Vec<(Method, &str, Option<&str>)> = vec![
             (Method::GET, "/health", None),
+            (Method::GET, "/readiness", None),
             (Method::GET, "/digest", None),
             (Method::GET, "/savings", None),
             (Method::GET, "/dump", None),

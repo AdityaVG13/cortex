@@ -977,6 +977,7 @@ mod tests {
             team_api_key_hashes: Arc::new(std::sync::RwLock::new(Vec::new())),
             degraded_mode: Arc::new(AtomicBool::new(false)),
             db_corrupted: Arc::new(AtomicBool::new(false)),
+            readiness: Arc::new(AtomicBool::new(true)),
             write_buffer_path: PathBuf::from("write_buffer.jsonl"),
         }
     }

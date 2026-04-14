@@ -83,6 +83,26 @@ async fn fetch_health(port: u16) -> Option<HealthResult> {
         .build()
         .ok()?;
 
+    let readiness_url = format!("http://127.0.0.1:{port}/readiness");
+    if let Ok(resp) = client.get(&readiness_url).send().await {
+        let status = resp.status().as_u16();
+        if let Ok(body) = resp.text().await {
+            match crate::daemon_lifecycle::readiness_state_from_payload(
+                status,
+                &body,
+                Some(port),
+                None,
+            ) {
+                Some(true) => {}
+                Some(false) | None => return None,
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    }
+
     let resp = client
         .get(format!("http://127.0.0.1:{port}/health"))
         .send()
@@ -91,7 +111,6 @@ async fn fetch_health(port: u16) -> Option<HealthResult> {
     if !resp.status().is_success() {
         return None;
     }
-
     let data: serde_json::Value = resp.json().await.ok()?;
     let stats = data.get("stats")?;
     Some(HealthResult {

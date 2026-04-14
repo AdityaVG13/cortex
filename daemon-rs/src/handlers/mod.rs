@@ -57,7 +57,7 @@ fn apply_json_headers(headers: &mut HeaderMap) {
 /// Prevents SSRF attacks where a malicious website tricks the browser into
 /// calling localhost:7437 -- browsers cannot add custom headers without CORS
 /// preflight, and our CORS policy rejects non-localhost origins.
-/// `/health` is exempt (unauthenticated monitoring endpoint).
+/// `/health` and `/readiness` are exempt (unauthenticated monitoring endpoints).
 pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
     match headers
         .get("x-cortex-request")

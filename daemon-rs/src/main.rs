@@ -1772,8 +1772,9 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
 }
 
 use daemon_lifecycle::{
-    daemon_healthy, is_cortex_health_payload, spawn_daemon, validate_spawned_owner_claim,
-    wait_for_health, DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV,
+    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload, spawn_daemon,
+    validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
+    SPAWN_PARENT_START_TIME_ENV,
 };
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
@@ -2091,25 +2092,63 @@ async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<()
         Err(err) => err,
     };
 
+    let readiness_url = format!("{}/readiness", local_daemon_base_url(paths));
     let health_url = format!("{}/health", local_daemon_base_url(paths));
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
         .map_err(|err| format!("daemon startup preflight: build HTTP client: {err}"))?;
-    let response = match client.get(&health_url).send().await {
+    let response = match client.get(&readiness_url).send().await {
         Ok(response) => response,
         Err(err) => {
-            return Err(format!(
-                "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}) and health probe at {health_url} failed ({err})",
-                paths.port
-            ));
+            // Backward compatibility for daemons that do not expose /readiness yet.
+            match client.get(&health_url).send().await {
+                Ok(response) => response,
+                Err(health_err) => {
+                    return Err(format!(
+                        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}) and readiness probe at {readiness_url} failed ({err}); fallback health probe at {health_url} also failed ({health_err})",
+                        paths.port
+                    ));
+                }
+            }
         }
     };
-    let status = response.status().as_u16();
-    let body = response
+    let mut status = response.status().as_u16();
+    let mut body = response
         .text()
         .await
         .unwrap_or_else(|_| String::from("<unreadable>"));
+
+    if let Some(ready) = readiness_state_from_payload(status, &body, Some(paths.port), Some(paths))
+    {
+        return if ready {
+            Err(format!(
+                "daemon startup denied: canonical Cortex instance is already ready on port {}",
+                paths.port
+            ))
+        } else {
+            Err(format!(
+                "daemon startup denied: canonical Cortex instance is already starting on port {}",
+                paths.port
+            ))
+        };
+    }
+    if readiness_state_from_payload(status, &body, Some(paths.port), None).is_some() {
+        return Err(format!(
+            "daemon startup denied: port {} is served by a different Cortex runtime identity",
+            paths.port
+        ));
+    }
+
+    // Fallback for legacy daemons (or intermediaries that do not proxy readiness):
+    // probe /health and apply canonical identity checks there.
+    if let Ok(health_response) = client.get(&health_url).send().await {
+        status = health_response.status().as_u16();
+        body = health_response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<unreadable>"));
+    }
 
     if is_cortex_health_payload(status, &body, Some(paths.port), Some(paths)) {
         return Err(format!(
@@ -2125,7 +2164,7 @@ async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<()
     }
 
     Err(format!(
-        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}); /health at {health_url} returned non-canonical payload (HTTP {status})",
+        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}); readiness probe at {readiness_url} returned non-canonical payload (HTTP {status})",
         paths.port
     ))
 }
@@ -2602,6 +2641,11 @@ pub(crate) async fn run_daemon(
             }
         });
     }
+
+    state
+        .readiness
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    eprintln!("[cortex] Runtime readiness gate is open");
 
     let db_for_shutdown = state.db.clone();
     let router = server::build_router(state, paths.port);
