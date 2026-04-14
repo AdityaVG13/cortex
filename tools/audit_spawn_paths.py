@@ -74,6 +74,12 @@ def gather_findings() -> dict[str, list[Finding]]:
     rust_runtime = sorted((REPO_ROOT / "daemon-rs" / "src").rglob("*.rs"))
     rust_tests = sorted((REPO_ROOT / "daemon-rs" / "tests").rglob("*.rs"))
     plugin_scripts = sorted((REPO_ROOT / "plugins" / "cortex-plugin" / "scripts").glob("*.cjs"))
+    control_center_main = [
+        REPO_ROOT / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "main.rs"
+    ]
+    control_center_sidecar_file = (
+        REPO_ROOT / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "sidecar.rs"
+    )
 
     spawn_def = scan(
         rust_runtime,
@@ -119,6 +125,31 @@ def gather_findings() -> dict[str, list[Finding]]:
         pattern=re.compile(r"\bvalidate_spawned_owner_claim\s*\("),
         skip_when=re.compile(r"\bfn\s+validate_spawned_owner_claim\s*\("),
     )
+    forbidden_control_center_sidecar_spawn = scan(
+        control_center_main,
+        kind="forbidden_control_center_sidecar_spawn",
+        pattern=re.compile(r"\bstate\.start\s*\("),
+    )
+    forbidden_control_center_sidecar_env = scan(
+        control_center_main,
+        kind="forbidden_control_center_sidecar_env",
+        pattern=re.compile(r"CORTEX_ALLOW_SIDECAR_FALLBACK"),
+    )
+    forbidden_plugin_legacy_app_url = scan(
+        plugin_scripts,
+        kind="forbidden_plugin_legacy_app_url",
+        pattern=re.compile(r"CORTEX_DEV_APP_URL"),
+    )
+    forbidden_control_center_sidecar_module: list[Finding] = []
+    if control_center_sidecar_file.exists():
+        forbidden_control_center_sidecar_module.append(
+            Finding(
+                kind="forbidden_control_center_sidecar_module",
+                path=normalize(control_center_sidecar_file),
+                line=1,
+                snippet="legacy sidecar module file exists",
+            )
+        )
 
     return {
         "spawn_definition": spawn_def,
@@ -129,6 +160,10 @@ def gather_findings() -> dict[str, list[Finding]]:
         "plugin_spawn_primitive": plugin_spawn,
         "owner_token_env_reference": owner_token_env,
         "owner_token_validation_callsite": owner_token_validation,
+        "forbidden_control_center_sidecar_spawn": forbidden_control_center_sidecar_spawn,
+        "forbidden_control_center_sidecar_env": forbidden_control_center_sidecar_env,
+        "forbidden_plugin_legacy_app_url": forbidden_plugin_legacy_app_url,
+        "forbidden_control_center_sidecar_module": forbidden_control_center_sidecar_module,
     }
 
 
@@ -160,6 +195,10 @@ def print_markdown_report(findings: dict[str, list[Finding]]) -> None:
         "plugin_spawn_primitive",
         "owner_token_env_reference",
         "owner_token_validation_callsite",
+        "forbidden_control_center_sidecar_spawn",
+        "forbidden_control_center_sidecar_env",
+        "forbidden_plugin_legacy_app_url",
+        "forbidden_control_center_sidecar_module",
     ):
         rows = findings[section]
         print(f"## {section}")
@@ -205,7 +244,17 @@ def main() -> int:
     bad_respawn = unauthorized_paths(
         findings["respawn_callsite"], AUTHORIZED_RESPAWN_CALLERS, allow_tests=True
     )
-    if bad_spawn or bad_respawn:
+    forbidden_hits = {
+        key: findings[key]
+        for key in (
+            "forbidden_control_center_sidecar_spawn",
+            "forbidden_control_center_sidecar_env",
+            "forbidden_plugin_legacy_app_url",
+            "forbidden_control_center_sidecar_module",
+        )
+        if findings[key]
+    }
+    if bad_spawn or bad_respawn or forbidden_hits:
         if bad_spawn:
             print(
                 "Unauthorized spawn_daemon callsites: "
@@ -218,6 +267,9 @@ def main() -> int:
                 + ", ".join(sorted(bad_respawn)),
                 file=sys.stderr,
             )
+        for key, rows in forbidden_hits.items():
+            rendered = ", ".join(sorted({f"{row.path}:{row.line}" for row in rows}))
+            print(f"Forbidden lifecycle pattern `{key}` found at: {rendered}", file=sys.stderr)
         return 1
 
     return 0
