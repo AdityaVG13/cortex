@@ -57,16 +57,7 @@ impl SidecarDaemon {
 
         let exe = exe.clone();
         let spawn_path = self.prepare_spawn_path(&exe);
-        let mut command = Command::new(&spawn_path);
-        command
-            .arg("serve")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(target_os = "windows")]
-        {
-            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
+        let mut command = build_start_command(&spawn_path);
         let mut child = command
             .spawn()
             .map_err(|e| format!("Failed to start cortex daemon: {e}"))?;
@@ -283,11 +274,28 @@ fn copy_if_changed(src: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn build_start_command(spawn_path: &Path) -> Command {
+    let mut command = Command::new(spawn_path);
+    command
+        .arg("serve")
+        // Match the CLI daemon lifecycle: allow a short handoff window while the
+        // previous daemon releases cortex.lock during restart.
+        .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_runtime_copies, copy_if_changed, is_workspace_daemon_binary,
-        runtime_copy_path,
+        build_start_command, cleanup_stale_runtime_copies, copy_if_changed,
+        is_workspace_daemon_binary, runtime_copy_path,
     };
     use std::fs;
     use std::path::Path;
@@ -370,5 +378,22 @@ mod tests {
         let _ = fs::remove_file(source);
         let _ = fs::remove_file(dest);
         let _ = fs::remove_dir(temp_root);
+    }
+
+    #[test]
+    fn start_command_waits_for_lock_handoff() {
+        let command = build_start_command(Path::new(r"C:\Users\aditya\.cortex\bin\cortex.exe"));
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["serve"]);
+
+        let wait_env = command
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == "CORTEX_WAIT_FOR_DAEMON_LOCK")
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()));
+        assert_eq!(wait_env.as_deref(), Some("1"));
     }
 }

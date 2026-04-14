@@ -7,7 +7,7 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ensure_auth_with_caller, json_response, log_event, now_iso};
+use super::{ensure_auth_with_caller, json_response, log_event, now_iso, resolve_source_identity};
 use crate::conflict::{detect_conflict, jaccard_similarity};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
@@ -114,12 +114,8 @@ pub async fn handle_store(
         );
     }
 
-    let source_agent = headers
-        .get("x-source-agent")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or(body.source_agent)
-        .unwrap_or_else(|| "http".to_string());
+    let source_agent =
+        resolve_source_identity(&headers, body.source_agent.as_deref().unwrap_or("http")).agent;
 
     if let Some(ttl_seconds) = body.ttl_seconds {
         if ttl_seconds <= 0 {
@@ -368,7 +364,9 @@ fn store_decision_legacy(
         let existing_id = cr
             .matched_id
             .ok_or_else(|| StoreError::Internal("Missing conflict target id".to_string()))?;
-        let tx = conn.transaction().map_err(|e| StoreError::Internal(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         if let Some(oid) = owner_id {
             tx.execute(
                 "INSERT INTO decisions \
@@ -445,7 +443,9 @@ fn store_decision_legacy(
         let old_id = cr
             .matched_id
             .ok_or_else(|| StoreError::Internal("Missing supersede target id".to_string()))?;
-        let tx = conn.transaction().map_err(|e| StoreError::Internal(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
         tx.execute(
             "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2",
             params![ts, old_id],
@@ -592,7 +592,11 @@ fn assess_quality(text: &str) -> QualityAssessment {
         100
     };
 
-    let specificity_bonus = if has_specificity_markers(trimmed) { 20 } else { 0 };
+    let specificity_bonus = if has_specificity_markers(trimmed) {
+        20
+    } else {
+        0
+    };
     let question_penalty = if trimmed.ends_with('?') { -30 } else { 0 };
     let score = (length_score + specificity_bonus + question_penalty).clamp(0, 100);
 
@@ -613,15 +617,7 @@ fn has_specificity_markers(text: &str) -> bool {
         ".sql", ".md",
     ];
     let code_prefixes = [
-        "fn ",
-        "func ",
-        "def ",
-        "class ",
-        "struct ",
-        "impl ",
-        "select ",
-        "insert ",
-        "update ",
+        "fn ", "func ", "def ", "class ", "struct ", "impl ", "select ", "insert ", "update ",
         "delete ",
     ];
 
@@ -631,9 +627,9 @@ fn has_specificity_markers(text: &str) -> bool {
         || text.contains("()")
         || text.contains("->")
         || code_prefixes.iter().any(|needle| lower.contains(needle));
-    let has_identifier = text.split_whitespace().any(|token| {
-        token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic())
-    });
+    let has_identifier = text
+        .split_whitespace()
+        .any(|token| token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic()));
 
     has_path || has_extension || has_function || has_identifier
 }
@@ -728,7 +724,11 @@ fn merge_into_existing_decision(
     let tx = conn
         .transaction()
         .map_err(|e| StoreError::Internal(e.to_string()))?;
-    let (existing_decision, existing_context, previous_merged_count): (String, Option<String>, i64) = tx
+    let (existing_decision, existing_context, previous_merged_count): (
+        String,
+        Option<String>,
+        i64,
+    ) = tx
         .query_row(
             "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1",
             params![target_id],

@@ -889,7 +889,11 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
         };
         let left = format!("dec-{id}");
         let right = format!("dec-{disputes_id}");
-        let (source, target) = if left <= right { (left, right) } else { (right, left) };
+        let (source, target) = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
         let key = format!("{source}|{target}|conflict");
         if !seen_links.insert(key) {
             continue;

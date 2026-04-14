@@ -30,6 +30,7 @@ ndarray = "0.16"
 tokenizers = { version = "0.21", default-features = false, features = ["progressbar", "fancy-regex"] }
 reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
 dirs = "6"
+sysinfo = "0.33"
 
 # HTTP middleware
 tower-http = { version = "0.6", features = ["cors"] }

@@ -14,8 +14,8 @@ use std::env;
 use std::path::Path;
 
 use regex::Regex;
-use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Value, json};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Value};
 
 use crate::indexer::custom_source_paths;
 
@@ -45,7 +45,11 @@ pub(crate) fn claude_project_slug() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let canonical = cwd.to_string_lossy().to_string();
     let slug = canonical.replace(['\\', ':'], "-");
-    if slug.is_empty() { None } else { Some(slug) }
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug)
+    }
 }
 
 // ─── Public types ───────────────────────────────────────────────────────────

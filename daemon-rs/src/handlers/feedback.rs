@@ -11,13 +11,13 @@
 //! Reranking: boost = sum(signal * decay) for matching result_source,
 //! where decay = exp(-age_days / 30). Capped at [-0.2, +0.3].
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use rusqlite::{Connection, params};
+use axum::Json;
+use rusqlite::{params, Connection};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{ensure_auth, json_error, json_response};
 use crate::embeddings;

@@ -17,7 +17,7 @@
 //! Runs as a background job (like aging). No LLM dependency -- pure embeddings
 //! + extractive text synthesis. The same zero-runtime-dep architecture.
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 
 use crate::embeddings::{self, EmbeddingEngine};

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use rusqlite::{Connection, params};
+use axum::Json;
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::json;
 

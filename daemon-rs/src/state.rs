@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::Arc;
 
 use rusqlite::Connection;
 use serde_json::Value;
-use tokio::sync::{Mutex, broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, Mutex};
 
 use crate::auth::CortexPaths;
 

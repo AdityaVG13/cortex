@@ -11,7 +11,7 @@
 //! Designed for teams of 10+ agents doing hundreds of stores/day.
 //! Target: keep DB under 500MB regardless of usage volume.
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 

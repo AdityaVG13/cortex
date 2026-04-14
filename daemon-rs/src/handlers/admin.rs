@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::Json;
 use rusqlite::params;
 use serde::Deserialize;
 use serde_json::json;
@@ -137,7 +137,16 @@ pub async fn handle_user_add(
 
     // Update in-memory key cache
     {
-        let mut hashes = state.team_api_key_hashes.write().unwrap();
+        let mut hashes = match state.team_api_key_hashes.write() {
+            Ok(hashes) => hashes,
+            Err(_) => {
+                eprintln!("[cortex] team_api_key_hashes write lock poisoned while adding user");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "team auth cache unavailable",
+                );
+            }
+        };
         hashes.push((user_id, hash));
     }
 
@@ -191,7 +200,16 @@ pub async fn handle_user_rotate_key(
 
     // Swap in-memory key cache entry
     {
-        let mut hashes = state.team_api_key_hashes.write().unwrap();
+        let mut hashes = match state.team_api_key_hashes.write() {
+            Ok(hashes) => hashes,
+            Err(_) => {
+                eprintln!("[cortex] team_api_key_hashes write lock poisoned while rotating key");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "team auth cache unavailable",
+                );
+            }
+        };
         hashes.retain(|(id, _)| *id != user_id);
         hashes.push((user_id, hash));
     }
@@ -239,7 +257,16 @@ pub async fn handle_user_remove(
 
     // Remove from in-memory key cache
     {
-        let mut hashes = state.team_api_key_hashes.write().unwrap();
+        let mut hashes = match state.team_api_key_hashes.write() {
+            Ok(hashes) => hashes,
+            Err(_) => {
+                eprintln!("[cortex] team_api_key_hashes write lock poisoned while removing user");
+                return json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "team auth cache unavailable",
+                );
+            }
+        };
         hashes.retain(|(id, _)| *id != user_id);
     }
 
