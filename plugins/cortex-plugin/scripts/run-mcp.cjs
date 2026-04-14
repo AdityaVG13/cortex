@@ -12,7 +12,6 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 
 function crashLog(msg) {
@@ -27,6 +26,51 @@ function crashLog(msg) {
   console.error(`[cortex-plugin] ${msg}`);
 }
 
+function normalizeOption(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
+function isTruthy(value) {
+  const normalized = normalizeOption(value).toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function resolveRoute(config) {
+  const explicitUrl = normalizeOption(config.cortexUrl);
+  const devAppUrl =
+    normalizeOption(process.env.CORTEX_DEV_APP_URL) ||
+    normalizeOption(process.env.CORTEX_APP_URL);
+  const preferApp = isTruthy(process.env.CORTEX_DEV_PREFER_APP);
+  const disableLocalSpawn = isTruthy(process.env.CORTEX_DEV_DISABLE_LOCAL_SPAWN);
+  const allowLocalSpawnRaw = process.env.CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN;
+  const allowLocalSpawn =
+    allowLocalSpawnRaw === undefined ? true : isTruthy(allowLocalSpawnRaw);
+
+  if (explicitUrl) {
+    return { mode: 'remote', url: explicitUrl, reason: 'explicit plugin URL', allowLocalSpawn: false };
+  }
+
+  if (preferApp) {
+    if (!devAppUrl) {
+      return {
+        error:
+          'CORTEX_DEV_PREFER_APP=1 is set but no app URL was provided. Set CORTEX_DEV_APP_URL (or CORTEX_APP_URL) or configure Cortex Server URL in plugin settings.'
+      };
+    }
+    return { mode: 'remote', url: devAppUrl, reason: 'dev app preference', allowLocalSpawn: false };
+  }
+
+  if (disableLocalSpawn || !allowLocalSpawn) {
+    return {
+      error:
+        'Local plugin daemon spawn is disabled by policy. Configure Cortex Server URL or re-enable local spawn.'
+    };
+  }
+
+  return { mode: 'local', url: '', reason: 'local fallback', allowLocalSpawn: true };
+}
+
 // Load prepare-runtime first (ensures binary is extracted)
 require('./prepare-runtime.cjs');
 
@@ -37,26 +81,42 @@ const binaryPath = path.join(PLUGIN_DATA, 'bin', binaryName);
 // User config from Claude Code
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
 const cortexApiKey = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
-
-const isTeamMode = cortexUrl && cortexUrl.trim().length > 0;
 const pluginAgent = (process.env.CORTEX_PLUGIN_AGENT || 'claude-code').trim() || 'claude-code';
 const isClaudeAgent = /^claude(?:-|$)/i.test(pluginAgent);
+const dryRun = isTruthy(process.env.CORTEX_PLUGIN_DRY_RUN);
 
-// Build args for cortex plugin mcp
+const route = resolveRoute({ cortexUrl });
+if (route.error) {
+  crashLog(route.error);
+  process.exit(1);
+}
+
+if (route.mode === 'local' && !isClaudeAgent) {
+  crashLog(`Refusing local daemon spawn for non-Claude agent "${pluginAgent}"`);
+  process.exit(1);
+}
+
 const args = ['plugin', 'mcp', '--agent', pluginAgent];
+if (route.mode === 'remote') {
+  args.push('--url', route.url);
+  if (normalizeOption(cortexApiKey).length > 0) {
+    args.push('--api-key', normalizeOption(cortexApiKey));
+  }
+}
 
-if (isTeamMode) {
-  args.push('--url', cortexUrl.trim());
-  if (cortexApiKey && cortexApiKey.trim().length > 0) {
-    args.push('--api-key', cortexApiKey.trim());
-  }
-} else {
-  if (!isClaudeAgent) {
-    crashLog(`Refusing local daemon spawn for non-Claude agent "${pluginAgent}"`);
-    process.exit(1);
-  }
-  // Solo mode: use default localhost URL (daemon resolve its own port)
-  // cortex plugin mcp will use resolved port from CortexPaths
+const ownerMode = route.mode === 'local'
+  ? 'solo'
+  : route.reason === 'explicit plugin URL'
+    ? 'team'
+    : 'app';
+
+console.error(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
+
+if (dryRun) {
+  console.error(
+    `[cortex-plugin] Dry run complete. agent=${pluginAgent} local_spawn=${route.allowLocalSpawn ? 'on' : 'off'} url=${route.url || '(none)'}`
+  );
+  process.exit(0);
 }
 
 const childEnv = {
@@ -64,14 +124,12 @@ const childEnv = {
   CORTEX_DAEMON_OWNER_KIND: 'plugin',
   CORTEX_DAEMON_OWNER_SOURCE: 'claude-plugin',
   CORTEX_DAEMON_OWNER_AGENT: pluginAgent,
-  CORTEX_DAEMON_OWNER_MODE: isTeamMode ? 'team' : 'solo',
+  CORTEX_DAEMON_OWNER_MODE: ownerMode,
   CORTEX_DAEMON_OWNER_CLAUDE_ONLY: '1',
-  CORTEX_DAEMON_OWNER_LOCAL_SPAWN: isTeamMode ? '0' : '1',
+  CORTEX_DAEMON_OWNER_LOCAL_SPAWN: route.allowLocalSpawn ? '1' : '0',
   CORTEX_DAEMON_OWNER_PARENT_PID: String(process.pid)
 };
 
-// Spawn the MCP proxy with stdio: 'inherit'
-// The child process takes over stdin/stdout entirely
 const child = spawn(binaryPath, args, {
   stdio: 'inherit',
   env: childEnv

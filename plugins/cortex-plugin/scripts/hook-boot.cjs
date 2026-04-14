@@ -3,8 +3,7 @@
  * Cortex Plugin - SessionStart Hook
  *
  * Reports daemon status before MCP server connects.
- * - Solo mode: checks local daemon health without starting it
- * - Team mode: health-checks remote server
+ * Never starts or stops a daemon from this hook.
  *
  * Output: JSON on stdout for Claude Code to consume.
  */
@@ -14,8 +13,52 @@ const http = require('http');
 const https = require('https');
 const { spawnSync } = require('child_process');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
+
+function normalizeOption(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
+function isTruthy(value) {
+  const normalized = normalizeOption(value).toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function resolveRoute(config) {
+  const explicitUrl = normalizeOption(config.cortexUrl);
+  const devAppUrl =
+    normalizeOption(process.env.CORTEX_DEV_APP_URL) ||
+    normalizeOption(process.env.CORTEX_APP_URL);
+  const preferApp = isTruthy(process.env.CORTEX_DEV_PREFER_APP);
+  const disableLocalSpawn = isTruthy(process.env.CORTEX_DEV_DISABLE_LOCAL_SPAWN);
+  const allowLocalSpawnRaw = process.env.CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN;
+  const allowLocalSpawn =
+    allowLocalSpawnRaw === undefined ? true : isTruthy(allowLocalSpawnRaw);
+
+  if (explicitUrl) {
+    return { mode: 'team', url: explicitUrl, reason: 'explicit plugin URL' };
+  }
+
+  if (preferApp) {
+    if (!devAppUrl) {
+      return {
+        error:
+          'CORTEX_DEV_PREFER_APP=1 is set but no app URL was provided. Set CORTEX_DEV_APP_URL (or CORTEX_APP_URL) or configure Cortex Server URL in plugin settings.'
+      };
+    }
+    return { mode: 'app', url: devAppUrl, reason: 'dev app preference' };
+  }
+
+  if (disableLocalSpawn || !allowLocalSpawn) {
+    return {
+      error:
+        'Local plugin daemon spawn is disabled by policy. Configure Cortex Server URL or re-enable local spawn.'
+    };
+  }
+
+  return { mode: 'solo', url: '', reason: 'local fallback' };
+}
 
 // Load prepare-runtime first (ensures binary is extracted)
 require('./prepare-runtime.cjs');
@@ -25,25 +68,16 @@ const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
 const binaryPath = path.join(PLUGIN_DATA, 'bin', binaryName);
 const DEFAULT_DAEMON_PORT = 7437;
 
-// User config from Claude Code (CLAUDE_PLUGIN_OPTION_<KEY>)
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
-const cortexApiKey = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
+const route = resolveRoute({ cortexUrl });
 
-const isTeamMode = cortexUrl && cortexUrl.trim().length > 0;
-
-/**
- * Health check a daemon endpoint
- */
 function isCortexHealthResponse(data) {
-  return Boolean(
-    data &&
-    typeof data === 'object' &&
-    (data.status === 'ok' || data.status === 'degraded') &&
-    data.runtime &&
-    typeof data.runtime === 'object' &&
-    data.stats &&
-    typeof data.stats === 'object'
-  );
+  if (!data || typeof data !== 'object') return false;
+  if (data.status !== 'ok' && data.status !== 'degraded') return false;
+  if (!data.stats || typeof data.stats !== 'object') return false;
+  // runtime is optional for backward compatibility with older daemons
+  if (data.runtime !== undefined && typeof data.runtime !== 'object') return false;
+  return true;
 }
 
 function normalizeRuntimePath(value) {
@@ -69,12 +103,13 @@ function pathFieldMatches(actualValue, expectedPath) {
 }
 
 function validateHealthIdentity(data, expectedIdentity) {
-  if (!expectedIdentity || typeof expectedIdentity !== 'object') {
-    return true;
-  }
+  if (!expectedIdentity || typeof expectedIdentity !== 'object') return true;
+  if (!data || typeof data !== 'object') return false;
+  const runtime = data.runtime;
+  const stats = data.stats || {};
 
-  const runtime = (data && data.runtime) || {};
-  const stats = (data && data.stats) || {};
+  // Backward-compatible: if runtime block is missing, accept legacy payload.
+  if (!runtime || typeof runtime !== 'object') return true;
 
   if (Number.isFinite(expectedIdentity.port) && runtime.port !== expectedIdentity.port) {
     return false;
@@ -83,7 +118,6 @@ function validateHealthIdentity(data, expectedIdentity) {
   if (!pathFieldMatches(runtime.db_path, expectedIdentity.db)) return false;
   if (!pathFieldMatches(runtime.token_path, expectedIdentity.token)) return false;
   if (!pathFieldMatches(runtime.pid_path, expectedIdentity.pid)) return false;
-
   return true;
 }
 
@@ -122,9 +156,7 @@ function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
       target,
       {
         method: 'GET',
-        headers: {
-          'X-Cortex-Request': 'true'
-        }
+        headers: { 'X-Cortex-Request': 'true' }
       },
       (response) => {
         let body = '';
@@ -141,7 +173,7 @@ function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
                 return;
               }
               if (!validateHealthIdentity(data, expectedIdentity)) {
-                finish({ ok: false, error: 'Invalid Cortex health response (local identity mismatch)' });
+                finish({ ok: false, error: 'Invalid Cortex health response (identity mismatch)' });
                 return;
               }
               const stats = data.stats || {};
@@ -156,11 +188,7 @@ function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
             }
             return;
           }
-
-          finish({
-            ok: false,
-            error: body.trim() || `HTTP ${response.statusCode || 'unknown'}`
-          });
+          finish({ ok: false, error: body.trim() || `HTTP ${response.statusCode || 'unknown'}` });
         });
       }
     );
@@ -175,27 +203,17 @@ function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
   });
 }
 
-/**
- * Get health status for local daemon
- */
 async function getLocalHealth() {
-  // Resolve port from daemon (cortex paths --json)
   let port = DEFAULT_DAEMON_PORT;
   let bind = '127.0.0.1';
   const expectedIdentity = {};
+
   try {
     const result = spawnSync(binaryPath, ['paths', '--json'], { encoding: 'utf8', timeout: 5000 });
-    if (result.error) {
-      console.error(`[cortex-plugin] paths --json failed: ${result.error.message}`);
-    }
     if (result.status === 0 && result.stdout) {
       const paths = JSON.parse(result.stdout);
-      if (Number.isFinite(paths.port)) {
-        port = paths.port;
-      }
-      if (typeof paths.bind === 'string' && paths.bind.trim().length > 0) {
-        bind = paths.bind.trim();
-      }
+      if (Number.isFinite(paths.port)) port = paths.port;
+      if (typeof paths.bind === 'string' && paths.bind.trim().length > 0) bind = paths.bind.trim();
       if (typeof paths.home === 'string') expectedIdentity.home = paths.home;
       if (typeof paths.db === 'string') expectedIdentity.db = paths.db;
       if (typeof paths.token === 'string') expectedIdentity.token = paths.token;
@@ -204,24 +222,15 @@ async function getLocalHealth() {
       console.error(`[cortex-plugin] paths --json stderr: ${result.stderr.trim()}`);
     }
   } catch (e) {
-    console.error(`[cortex-plugin] Failed to resolve daemon port: ${e.message}`);
+    console.error(`[cortex-plugin] Failed to resolve local daemon paths: ${e.message}`);
   }
+
   expectedIdentity.port = port;
   const host = formatHostForUrl(resolveHealthHost(bind));
   return healthCheck(`http://${host}:${port}`, 5000, expectedIdentity);
 }
 
-/**
- * Team mode: just check remote server
- */
-async function checkTeamServer() {
-  return healthCheck(cortexUrl.trim());
-}
-
-/**
- * Build status line for Claude context
- */
-function buildStatusLine(health, mode) {
+function buildStatusLine(health, routeState) {
   const parts = [];
 
   if (health.ok) {
@@ -229,61 +238,51 @@ function buildStatusLine(health, mode) {
     const counts = [];
     if (typeof health.memories === 'number') counts.push(`${health.memories} memories`);
     if (typeof health.decisions === 'number') counts.push(`${health.decisions} decisions`);
-    if (counts.length > 0) {
-      parts.push(`(${counts.join(', ')})`);
-    }
-  } else if (mode === 'solo') {
+    if (counts.length > 0) parts.push(`(${counts.join(', ')})`);
+  } else if (routeState === 'solo') {
     parts.push('STANDBY');
   } else {
     parts.push('UNAVAILABLE');
   }
 
-  if (mode === 'team') {
-    parts.push(`| Team @ ${cortexUrl.split('/')[2]}`);
+  if (routeState === 'team') {
+    parts.push(`| Team @ ${normalizeOption(cortexUrl).split('/')[2] || 'custom'}`);
+  } else if (routeState === 'app') {
+    parts.push('| App route');
   } else {
     parts.push('| Solo mode');
   }
-
   return `Brain: ${parts.join(' ')} | Cortex`;
 }
 
+function emitStatus(additionalContext) {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext
+      }
+    }) + '\n'
+  );
+}
+
 (async () => {
-  let result;
-
-  if (isTeamMode) {
-    console.error(`[cortex-plugin] Team mode: connecting to ${cortexUrl}`);
-    const health = await checkTeamServer();
-    result = { mode: 'team', health, url: cortexUrl };
-    const status = buildStatusLine(health, 'team');
-
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: status
-      }
-    }) + '\n');
-  } else {
-    console.error('[cortex-plugin] Solo mode: checking local daemon');
-    const health = await getLocalHealth();
-    result = { mode: 'solo', health };
-    const status = buildStatusLine(health, 'solo');
-
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: status
-      }
-    }) + '\n');
+  if (route.error) {
+    console.error(`[cortex-plugin] ${route.error}`);
+    emitStatus('Brain: UNAVAILABLE | Route policy blocked | Cortex');
+    process.exit(1);
   }
 
-  return result;
+  if (route.mode === 'team' || route.mode === 'app') {
+    const health = await healthCheck(route.url);
+    emitStatus(buildStatusLine(health, route.mode));
+    return;
+  }
+
+  const health = await getLocalHealth();
+  emitStatus(buildStatusLine(health, 'solo'));
 })().catch((err) => {
   console.error(`[cortex-plugin] SessionStart hook failed: ${err && err.stack ? err.stack : err}`);
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext: 'Brain: UNAVAILABLE | Cortex'
-    }
-  }) + '\n');
+  emitStatus('Brain: UNAVAILABLE | Cortex');
   process.exit(1);
 });
