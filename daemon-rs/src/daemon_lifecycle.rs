@@ -1,80 +1,22 @@
 // SPDX-License-Identifier: MIT
-//! Shared daemon lifecycle utilities: health checks, spawn, respawn.
-//!
-//! Used by both the CLI (`ensure_daemon`) and the MCP proxy (auto-respawn).
+//! Shared daemon lifecycle utilities: health checks and runtime identity checks.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::auth::CortexPaths;
 use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use sysinfo::{Pid, ProcessesToUpdate, System};
 use uuid::Uuid;
 
-const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
-const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
-const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
-const PLUGIN_CLAUDE_OWNER_TAG: &str = "plugin-claude";
 const DAEMON_OWNER_SIGNING_KEY_FILE: &str = "daemon-owner-signing.key";
 const DAEMON_OWNER_TOKEN_VERSION: &str = "v1";
 const DAEMON_OWNER_TOKEN_TTL_SECS: u64 = 180;
 pub const DAEMON_OWNER_TOKEN_ENV: &str = "CORTEX_DAEMON_OWNER_TOKEN";
 pub const SPAWN_PARENT_START_TIME_ENV: &str = "CORTEX_SPAWN_PARENT_START_TIME";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DaemonOwnerMode {
-    AppControlCenter,
-    PluginClaude,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RespawnPolicyDecision {
-    pub mode: DaemonOwnerMode,
-    pub allow_respawn: bool,
-    pub reason: &'static str,
-}
-
-pub fn classify_owner_mode(owner_tag: Option<&str>) -> DaemonOwnerMode {
-    match owner_tag {
-        Some(owner) if owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG) => {
-            DaemonOwnerMode::AppControlCenter
-        }
-        Some(owner) if owner.eq_ignore_ascii_case(PLUGIN_CLAUDE_OWNER_TAG) => {
-            DaemonOwnerMode::PluginClaude
-        }
-        _ => DaemonOwnerMode::Unknown,
-    }
-}
-
-pub fn evaluate_respawn_policy(
-    owner_tag: Option<&str>,
-    control_center_active: bool,
-) -> RespawnPolicyDecision {
-    let mode = classify_owner_mode(owner_tag);
-    if control_center_active && !matches!(mode, DaemonOwnerMode::AppControlCenter) {
-        return RespawnPolicyDecision {
-            mode,
-            allow_respawn: false,
-            reason: "control-center-active-non-app-owner",
-        };
-    }
-    let reason = if control_center_active {
-        "control-center-active-app-owner"
-    } else {
-        "control-center-inactive"
-    };
-    RespawnPolicyDecision {
-        mode,
-        allow_respawn: true,
-        reason,
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedOwnerToken {
@@ -131,6 +73,7 @@ fn load_or_create_owner_signing_key(paths: &CortexPaths) -> Result<Vec<u8>, Stri
     Ok(key_bytes)
 }
 
+#[cfg(test)]
 fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -181,6 +124,7 @@ fn sign_owner_token_claim(
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
+#[cfg(test)]
 fn build_owner_token(
     key: &[u8],
     owner_tag: &str,
@@ -226,6 +170,7 @@ fn parse_owner_token(token: &str) -> Result<ParsedOwnerToken, String> {
     })
 }
 
+#[cfg(test)]
 fn issue_owner_token_for_spawn(
     paths: &CortexPaths,
     owner_tag: &str,
@@ -238,13 +183,6 @@ fn issue_owner_token_for_spawn(
         .unwrap_or_default();
     let nonce = Uuid::new_v4().simple().to_string();
     build_owner_token(&key, owner_tag, parent_pid, issued_at, &nonce)
-}
-
-fn process_start_time_secs(pid: u32) -> Option<u64> {
-    let mut system = System::new_all();
-    let target = Pid::from_u32(pid);
-    system.refresh_processes(ProcessesToUpdate::Some(&[target]), true);
-    system.process(target).map(|process| process.start_time())
 }
 
 pub fn validate_spawned_owner_claim(
@@ -495,242 +433,12 @@ pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
     false
 }
 
-/// Spawn the daemon as a detached background process.
-pub fn spawn_daemon(paths: &CortexPaths, owner_tag: Option<&str>) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("resolve current exe: {e}"))?;
-    let spawn_exe =
-        prepare_spawn_executable(paths, &exe).map_err(|e| format!("prepare spawn copy: {e}"))?;
-    let launcher_pid = std::process::id();
-    let launcher_start = process_start_time_secs(launcher_pid)
-        .ok_or_else(|| format!("resolve parent process start time for pid {launcher_pid}"))?;
-    let mut cmd = Command::new(spawn_exe);
-    cmd.arg("serve")
-        .env("CORTEX_HOME", &paths.home)
-        .env("CORTEX_DB", &paths.db)
-        .env("CORTEX_PORT", paths.port.to_string())
-        .env("CORTEX_BIND", &paths.bind)
-        .env("CORTEX_SPAWN_PARENT_PID", launcher_pid.to_string())
-        .env(SPAWN_PARENT_START_TIME_ENV, launcher_start.to_string())
-        .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if let Some(owner_tag) = owner_tag {
-        let token = issue_owner_token_for_spawn(paths, owner_tag, launcher_pid)?;
-        validate_spawned_owner_claim(paths, Some(owner_tag), Some(launcher_pid), Some(&token))?;
-        cmd.env("CORTEX_DAEMON_OWNER", owner_tag);
-        cmd.env(DAEMON_OWNER_TOKEN_ENV, token);
-    }
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x00000008;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        // Start the child in a new session so it survives the parent CLI process.
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-        }
-    }
-
-    cmd.spawn().map_err(|e| format!("spawn daemon: {e}"))?;
-    Ok(())
-}
-
-fn prepare_spawn_executable(paths: &CortexPaths, source: &Path) -> std::io::Result<PathBuf> {
-    if !is_workspace_daemon_binary(source) {
-        return Ok(source.to_path_buf());
-    }
-
-    let runtime_dir = workspace_runtime_copy_dir(paths, source);
-    fs::create_dir_all(&runtime_dir)?;
-    cleanup_stale_runtime_copies(&runtime_dir);
-
-    let runtime_path = stable_runtime_path(&runtime_dir, source);
-
-    // Only copy when the stable runtime binary is missing or source size
-    // changed (new build).  Reusing the same path prevents Windows
-    // SmartScreen from re-prompting on every spawn of an unsigned binary.
-    let needs_copy = match (fs::metadata(source), fs::metadata(&runtime_path)) {
-        (Ok(src_meta), Ok(dst_meta)) => {
-            let size_changed = src_meta.len() != dst_meta.len();
-            let source_newer = match (src_meta.modified(), dst_meta.modified()) {
-                (Ok(src_modified), Ok(dst_modified)) => src_modified > dst_modified,
-                _ => true,
-            };
-            size_changed || source_newer
-        }
-        (Ok(_), Err(_)) => true,
-        _ => true,
-    };
-
-    if needs_copy {
-        fs::copy(source, &runtime_path)?;
-    }
-    Ok(runtime_path)
-}
-
-fn is_workspace_daemon_binary(path: &Path) -> bool {
-    path.ancestors().any(|ancestor| {
-        ancestor
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.eq_ignore_ascii_case("daemon-rs"))
-            .unwrap_or(false)
-    })
-}
-
-fn workspace_runtime_copy_dir(paths: &CortexPaths, source: &Path) -> PathBuf {
-    source
-        .parent()
-        .map(|parent| parent.join("daemon-lifecycle-runtime"))
-        .unwrap_or_else(|| paths.home.join("runtime").join("daemon-lifecycle"))
-}
-
-/// Deterministic runtime copy path.  A stable name (no PID/timestamp) means
-/// Windows SmartScreen evaluates the binary once; subsequent spawns reuse the
-/// allowed path without re-prompting.
-fn stable_runtime_path(runtime_dir: &Path, source: &Path) -> PathBuf {
-    let extension = source
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| format!(".{ext}"))
-        .unwrap_or_default();
-    runtime_dir.join(format!("cortex-daemon-run{extension}"))
-}
-
-fn is_runtime_copy_name(name: &str) -> bool {
-    name == "cortex-daemon-run"
-        || name.starts_with("cortex-daemon-run.")
-        || name.starts_with("cortex-daemon-run-")
-}
-
-/// Remove old timestamped copies (pre-stable-path migration) and the stable
-/// copy names that should no longer be used.
-fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
-    let Ok(entries) = fs::read_dir(runtime_dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if !is_runtime_copy_name(name) {
-            continue;
-        }
-        if name.starts_with("cortex-daemon-run-") {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-fn acquire_respawn_coordination_lock(paths: &CortexPaths) -> Result<fs::File, String> {
-    fs::create_dir_all(&paths.home).map_err(|e| format!("create home: {e}"))?;
-    let respawn_lock = paths.home.join("cortex.respawn.lock");
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(respawn_lock)
-        .map_err(|e| format!("open respawn lock: {e}"))?;
-    lock_file
-        .try_lock_exclusive()
-        .map_err(|_| "another respawn attempt is already in progress".to_string())?;
-    Ok(lock_file)
-}
-
-/// Attempt to respawn the daemon and wait for it to become healthy.
-/// Returns true if the daemon is healthy after respawn.
-pub async fn try_respawn(paths: &CortexPaths, owner_tag: Option<&str>) -> bool {
-    let _respawn_coordinator = match acquire_respawn_coordination_lock(paths) {
-        Ok(lock) => lock,
-        Err(_) => {
-            eprintln!(
-                "[cortex-lifecycle] Respawn already in progress; waiting for daemon health on port {}",
-                paths.port
-            );
-            return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS))
-                .await;
-        }
-    };
-
-    let daemon_lock = match crate::auth::acquire_daemon_lock(paths) {
-        Ok(lock) => lock,
-        Err(_) => {
-            eprintln!(
-                "[cortex-lifecycle] Daemon lock is held by another process; waiting for health on port {}",
-                paths.port
-            );
-            return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS))
-                .await;
-        }
-    };
-
-    if daemon_healthy(paths).await {
-        return true;
-    }
-
-    eprintln!(
-        "[cortex-lifecycle] Daemon appears dead on port {}; attempting respawn",
-        paths.port
-    );
-
-    let respawn_policy =
-        evaluate_respawn_policy(owner_tag, crate::auth::control_center_is_active(paths));
-    if !respawn_policy.allow_respawn {
-        eprintln!(
-            "[cortex-lifecycle] Respawn denied (reason='{}', mode={:?}, owner='{}')",
-            respawn_policy.reason,
-            respawn_policy.mode,
-            owner_tag.unwrap_or("unknown")
-        );
-        return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS)).await;
-    }
-
-    if let Err(e) = spawn_daemon(paths, owner_tag) {
-        eprintln!("[cortex-lifecycle] Respawn failed: {e}");
-        return false;
-    }
-
-    drop(daemon_lock);
-    let healthy = wait_for_health(paths, Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS)).await;
-    if healthy {
-        eprintln!(
-            "[cortex-lifecycle] Daemon respawned successfully on port {}",
-            paths.port
-        );
-    } else {
-        eprintln!(
-            "[cortex-lifecycle] Daemon did not become healthy within {}s after respawn",
-            RESPAWN_HEALTH_TIMEOUT_SECS
-        );
-    }
-    healthy
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_respawn_coordination_lock, build_owner_token, evaluate_respawn_policy,
-        is_cortex_health_payload, is_runtime_copy_name, issue_owner_token_for_spawn,
-        load_or_create_owner_signing_key, readiness_state_from_payload, stable_runtime_path,
-        validate_spawned_owner_claim, workspace_runtime_copy_dir, DaemonOwnerMode,
-        DAEMON_OWNER_TOKEN_TTL_SECS,
+        build_owner_token, is_cortex_health_payload, issue_owner_token_for_spawn,
+        load_or_create_owner_signing_key, readiness_state_from_payload,
+        validate_spawned_owner_claim, DAEMON_OWNER_TOKEN_TTL_SECS,
     };
     use crate::auth::CortexPaths;
     use serde_json::json;
@@ -906,54 +614,6 @@ mod tests {
     }
 
     #[test]
-    fn respawn_coordination_lock_rejects_concurrent_holder() {
-        let home_dir = temp_test_dir("respawn_lock");
-        let home_str = home_dir.to_string_lossy().to_string();
-        let paths = CortexPaths::resolve_with_overrides(
-            Some(&home_str),
-            None,
-            Some(7437),
-            Some("127.0.0.1"),
-        );
-
-        let first = acquire_respawn_coordination_lock(&paths).expect("first lock should succeed");
-        let second = acquire_respawn_coordination_lock(&paths).unwrap_err();
-        assert!(second.contains("already in progress"));
-        drop(first);
-
-        let _ = std::fs::remove_dir_all(&home_dir);
-    }
-
-    #[test]
-    fn respawn_policy_allows_control_center_owner_when_app_lock_is_active() {
-        let decision = evaluate_respawn_policy(Some("control-center"), true);
-        assert_eq!(decision.mode, DaemonOwnerMode::AppControlCenter);
-        assert!(decision.allow_respawn);
-        assert_eq!(decision.reason, "control-center-active-app-owner");
-    }
-
-    #[test]
-    fn respawn_policy_denies_non_app_owner_when_app_lock_is_active() {
-        let plugin = evaluate_respawn_policy(Some("plugin-claude"), true);
-        assert_eq!(plugin.mode, DaemonOwnerMode::PluginClaude);
-        assert!(!plugin.allow_respawn);
-        assert_eq!(plugin.reason, "control-center-active-non-app-owner");
-
-        let unknown = evaluate_respawn_policy(None, true);
-        assert_eq!(unknown.mode, DaemonOwnerMode::Unknown);
-        assert!(!unknown.allow_respawn);
-        assert_eq!(unknown.reason, "control-center-active-non-app-owner");
-    }
-
-    #[test]
-    fn respawn_policy_allows_non_app_owner_when_app_lock_is_inactive() {
-        let decision = evaluate_respawn_policy(Some("plugin-claude"), false);
-        assert_eq!(decision.mode, DaemonOwnerMode::PluginClaude);
-        assert!(decision.allow_respawn);
-        assert_eq!(decision.reason, "control-center-inactive");
-    }
-
-    #[test]
     fn owner_token_round_trip_validates_for_spawned_owner() {
         let home_dir = temp_test_dir("owner_token_round_trip");
         let home_str = home_dir.to_string_lossy().to_string();
@@ -1045,50 +705,5 @@ mod tests {
         validate_spawned_owner_claim(&paths, Some("control-center"), None, None)
             .expect("unspawned owner claims should remain backwards compatible");
         let _ = std::fs::remove_dir_all(&home_dir);
-    }
-
-    #[test]
-    fn runtime_copy_name_classifier_matches_stable_and_legacy_paths() {
-        assert!(is_runtime_copy_name("cortex-daemon-run"));
-        assert!(is_runtime_copy_name("cortex-daemon-run.exe"));
-        assert!(is_runtime_copy_name("cortex-daemon-run-123-456.exe"));
-        assert!(!is_runtime_copy_name("cortex-daemon"));
-        assert!(!is_runtime_copy_name("daemon-cortex-run.exe"));
-    }
-
-    #[test]
-    fn stable_runtime_path_is_deterministic() {
-        let runtime_dir = temp_test_dir("stable_runtime_path");
-        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
-        let source = runtime_dir.join("cortex.exe");
-        std::fs::write(&source, b"binary").expect("seed source");
-
-        let first = stable_runtime_path(&runtime_dir, &source);
-        let second = stable_runtime_path(&runtime_dir, &source);
-        assert_eq!(first, second);
-        assert!(first
-            .file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|name| name == "cortex-daemon-run.exe"));
-
-        let _ = std::fs::remove_dir_all(&runtime_dir);
-    }
-
-    #[test]
-    fn workspace_runtime_copy_dir_prefers_source_relative_location() {
-        let root = temp_test_dir("workspace_runtime_dir");
-        let source_dir = root.join("daemon-rs").join("target").join("debug");
-        let home_dir = root.join("home");
-        std::fs::create_dir_all(&source_dir).expect("create source dir");
-        std::fs::create_dir_all(&home_dir).expect("create home dir");
-
-        let home_str = home_dir.to_string_lossy().to_string();
-        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
-        let source = source_dir.join("cortex.exe");
-
-        let runtime_dir = workspace_runtime_copy_dir(&paths, &source);
-        assert_eq!(runtime_dir, source_dir.join("daemon-lifecycle-runtime"));
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

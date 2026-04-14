@@ -23,7 +23,6 @@ AUTHORIZED_RUNTIME_SPAWN_CALLERS = {
 
 AUTHORIZED_RESPAWN_CALLERS = {
     "daemon-rs/src/daemon_lifecycle.rs",
-    "daemon-rs/src/mcp_proxy.rs",
 }
 
 
@@ -184,7 +183,9 @@ def print_markdown_report(findings: dict[str, list[Finding]]) -> None:
     print("# Spawn Path Audit")
     print()
     print(f"- Repo root: `{REPO_ROOT.as_posix()}`")
-    print("- Canonical spawn API: `daemon-rs/src/daemon_lifecycle.rs::spawn_daemon`")
+    print(
+        "- Runtime spawn policy: service-managed daemon lifecycle only (no MCP/plugin/runtime auto-spawn paths)"
+    )
     print()
     for section in (
         "spawn_definition",

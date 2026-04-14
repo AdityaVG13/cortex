@@ -403,19 +403,7 @@ async fn main() {
             if local_owner_mode {
                 apply_path_env(&paths);
             }
-            if let Err(e) = mcp_proxy::run(
-                &base_url,
-                api_key.as_deref(),
-                agent.as_deref(),
-                mcp_proxy::ProxyRuntimeOptions {
-                    allow_respawn: false,
-                    shutdown_on_exit: false,
-                    shutdown_on_idle_startup: false,
-                    respawn_owner: None,
-                },
-            )
-            .await
-            {
+            if let Err(e) = mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await {
                 eprintln!("[cortex-mcp] {e}");
                 std::process::exit(1);
             }
@@ -471,18 +459,8 @@ async fn main() {
                     if local_owner_mode {
                         apply_path_env(&paths);
                     }
-                    if let Err(e) = mcp_proxy::run(
-                        &base_url,
-                        api_key.as_deref(),
-                        agent.as_deref(),
-                        mcp_proxy::ProxyRuntimeOptions {
-                            allow_respawn: false,
-                            shutdown_on_exit: false,
-                            shutdown_on_idle_startup: false,
-                            respawn_owner: None,
-                        },
-                    )
-                    .await
+                    if let Err(e) =
+                        mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await
                     {
                         eprintln!("[cortex-plugin] {e}");
                         std::process::exit(1);

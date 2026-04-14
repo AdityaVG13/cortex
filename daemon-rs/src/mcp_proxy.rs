@@ -13,7 +13,7 @@
 //! Resilience:
 //! - Plugin mode requires daemon connectivity (no standalone fallback)
 //! - Team mode uses explicit API key injection from CLI args
-//! - Owner-managed sessions can respawn and stop the daemon they created
+//! - Proxy sessions never spawn or stop daemon processes
 
 use serde_json::Value;
 use sysinfo::{ProcessesToUpdate, System};
@@ -24,8 +24,6 @@ use crate::daemon_lifecycle;
 
 const HEALTH_CHECK_ATTEMPTS: u32 = 5;
 const REQUEST_ATTEMPTS: u32 = 3;
-const MAX_CONSECUTIVE_FAILURES: u32 = 2;
-const RESPAWN_COOLDOWN_SECS: u64 = 15;
 const SESSION_HEARTBEAT_SECS: u64 = 15;
 const SESSION_RESTART_ATTEMPTS: u32 = 4;
 const SESSION_RESTART_DELAY_MS: u64 = 250;
@@ -34,14 +32,6 @@ const STARTUP_IDLE_TIMEOUT_SECS: u64 = 60;
 const ORPHAN_CHECK_SECS: u64 = 15;
 const MAX_AGENT_HEADER_LEN: usize = 160;
 const MAX_MODEL_HEADER_LEN: usize = 160;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProxyRuntimeOptions {
-    pub allow_respawn: bool,
-    pub shutdown_on_exit: bool,
-    pub shutdown_on_idle_startup: bool,
-    pub respawn_owner: Option<&'static str>,
-}
 
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
@@ -629,45 +619,14 @@ async fn session_end(
     }
 }
 
-async fn shutdown_daemon(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    allow_local_token_fallback: bool,
-) -> bool {
-    let mut req = client
-        .post(format!("{base_url}/shutdown"))
-        .header("content-type", "application/json")
-        .header("x-cortex-request", "true")
-        .body("{}");
-
-    if let Some(auth) = build_auth_header(base_url, api_key, allow_local_token_fallback) {
-        req = req.header("authorization", auth);
-    }
-
-    match req.send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
-    }
-}
-
 async fn finalize_proxy_session(
     client: &reqwest::Client,
     base_url: &str,
     api_key: Option<&str>,
     agent: &str,
-    saw_client_message: bool,
     allow_local_token_fallback: bool,
-    options: ProxyRuntimeOptions,
 ) {
     let _ = session_end(client, base_url, api_key, agent, allow_local_token_fallback).await;
-    if options.shutdown_on_exit || (options.shutdown_on_idle_startup && !saw_client_message) {
-        if shutdown_daemon(client, base_url, api_key, allow_local_token_fallback).await {
-            eprintln!("[cortex-mcp] Stopped owned daemon for '{agent}'");
-        } else {
-            eprintln!("[cortex-mcp] Warning: failed to stop owned daemon for '{agent}'");
-        }
-    }
 }
 
 /// Run MCP proxy over stdio -> HTTP.
@@ -675,7 +634,6 @@ pub async fn run(
     base_url: &str,
     api_key: Option<&str>,
     agent: Option<&str>,
-    options: ProxyRuntimeOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let api_key = normalize_api_key(api_key);
     let base_url = base_url.trim_end_matches('/');
@@ -937,8 +895,6 @@ pub async fn run(
     });
 
     let mut consecutive_failures: u32 = 0;
-    let mut respawn_attempts: u32 = 0;
-    let mut last_respawn_attempt_at: Option<std::time::Instant> = None;
     let startup_timeout = startup_idle_timeout();
     let parent_process = current_parent_process();
     let mut saw_client_message = false;
@@ -953,7 +909,7 @@ pub async fn run(
                 _ = orphan_check.tick() => {
                     if let Some(parent_process) = parent_process {
                         if !process_is_alive(parent_process) {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (parent process exited before handshake)");
                             return Ok(());
@@ -962,7 +918,7 @@ pub async fn run(
                     continue;
                 }
                 _ = &mut startup_sleep => {
-                    finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                    finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                         .await;
                     eprintln!(
                         "[cortex-mcp] Proxy session ended (no client handshake within {}s)",
@@ -974,13 +930,13 @@ pub async fn run(
                     match result {
                         Some(Ok(Some(line))) => line,
                         Some(Ok(None)) | None => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
                             return Ok(());
                         }
                         Some(Err(e)) => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                                 .await;
                             eprintln!("[cortex-mcp] Stdin read error: {e}");
                             return Err(std::io::Error::other(e).into());
@@ -993,7 +949,7 @@ pub async fn run(
                 _ = orphan_check.tick() => {
                     if let Some(parent_process) = parent_process {
                         if !process_is_alive(parent_process) {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (parent process exited)");
                             return Ok(());
@@ -1005,13 +961,13 @@ pub async fn run(
                     match result {
                         Some(Ok(Some(line))) => line,
                         Some(Ok(None)) | None => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                                 .await;
                             eprintln!("[cortex-mcp] Proxy session ended (stdin closed)");
                             return Ok(());
                         }
                         Some(Err(e)) => {
-                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, saw_client_message, allow_local_token_fallback, options)
+                            finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback)
                                 .await;
                             eprintln!("[cortex-mcp] Stdin read error: {e}");
                             return Err(std::io::Error::other(e).into());
@@ -1041,9 +997,7 @@ pub async fn run(
                         &rpc_base_url,
                         api_key,
                         &agent_display,
-                        saw_client_message,
                         allow_local_token_fallback,
-                        options,
                     )
                     .await;
                     eprintln!("[cortex-mcp] Stdout closed while returning parse error");
@@ -1257,70 +1211,11 @@ pub async fn run(
                     &rpc_base_url,
                     api_key,
                     &agent_display,
-                    saw_client_message,
                     allow_local_token_fallback,
-                    options,
                 )
                 .await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon error");
                 return Ok(());
-            }
-        }
-
-        if options.allow_respawn
-            && should_count_failure
-            && consecutive_failures >= MAX_CONSECUTIVE_FAILURES
-        {
-            let in_cooldown = last_respawn_attempt_at
-                .map(|t| t.elapsed() < std::time::Duration::from_secs(RESPAWN_COOLDOWN_SECS))
-                .unwrap_or(false);
-            if in_cooldown {
-                continue;
-            }
-
-            respawn_attempts += 1;
-            last_respawn_attempt_at = Some(std::time::Instant::now());
-            eprintln!(
-                "[cortex-mcp] {consecutive_failures} consecutive failures; \
-                 respawn attempt {respawn_attempts}"
-            );
-
-            let mut paths = CortexPaths::resolve();
-            if daemon_lifecycle::try_respawn(&paths, options.respawn_owner).await {
-                // Daemon is back -- rebuild URLs using the latest resolved port.
-                paths = CortexPaths::resolve();
-                rpc_base_url = local_daemon_base_from_paths(&paths);
-                rpc_url = format!("{rpc_base_url}/mcp-rpc");
-                health_url = format!("{rpc_base_url}/readiness");
-                allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key)
-                    || health_check_ready(&client, &health_url).await;
-                let _ = rpc_base_tx.send(rpc_base_url.clone());
-                let _ = session_start(
-                    &client,
-                    &rpc_base_url,
-                    api_key,
-                    &agent_display,
-                    agent_model.as_deref(),
-                    allow_local_token_fallback,
-                )
-                .await;
-                drain_write_buffer(
-                    &client,
-                    &rpc_url,
-                    api_key,
-                    &agent_display,
-                    agent_model.as_deref(),
-                    &paths,
-                    allow_local_token_fallback,
-                )
-                .await;
-                consecutive_failures = 0;
-                eprintln!("[cortex-mcp] Daemon recovered; resuming proxy");
-            } else {
-                eprintln!(
-                    "[cortex-mcp] Respawn attempt {respawn_attempts} failed; \
-                     will keep retrying while proxy stays online"
-                );
             }
         }
 
@@ -1331,9 +1226,7 @@ pub async fn run(
                     &rpc_base_url,
                     api_key,
                     &agent_display,
-                    saw_client_message,
                     allow_local_token_fallback,
-                    options,
                 )
                 .await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon response");
