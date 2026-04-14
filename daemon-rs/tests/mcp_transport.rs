@@ -812,6 +812,151 @@ fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+#[test]
+fn boot_withholds_local_token_fallback_until_health_identity_is_valid() {
+    let home_dir = unique_temp_dir("boot_wrong_instance_guard");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+    let local_token = "ctx_boot_local_should_not_leak";
+    fs::write(home_dir.join("cortex.token"), local_token).expect("write local token");
+
+    let wrong_identity_health = serde_json::json!({
+        "status": "ok",
+        "runtime": {
+            "version": "0.5.0",
+            "port": port,
+            "token_path": "C:/wrong-instance/cortex.token",
+            "pid_path": "C:/wrong-instance/cortex.pid",
+            "db_path": "C:/wrong-instance/cortex.db"
+        },
+        "stats": {
+            "memories": 1,
+            "home": "C:/wrong-instance"
+        }
+    })
+    .to_string();
+
+    let stop_listener = Arc::new(AtomicBool::new(false));
+    let captured = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
+    let listener_stop = Arc::clone(&stop_listener);
+    let captured_requests = Arc::clone(&captured);
+    let listener = thread::spawn(move || {
+        let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind adversarial listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set adversarial listener nonblocking");
+
+        while !listener_stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    if let Some(request) = read_captured_request(&mut stream) {
+                        let path = request.path.clone();
+                        captured_requests
+                            .lock()
+                            .expect("lock captured requests")
+                            .push(request);
+
+                        match path.as_str() {
+                            "/health" => write_mock_http_response(
+                                &mut stream,
+                                200,
+                                "application/json",
+                                &wrong_identity_health,
+                            ),
+                            path if path.starts_with("/boot") => {
+                                write_mock_http_response(&mut stream, 200, "application/json", "{}")
+                            }
+                            _ => write_mock_http_response(
+                                &mut stream,
+                                404,
+                                "text/plain",
+                                "Not Found",
+                            ),
+                        }
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("adversarial listener accept failed: {err}"),
+            }
+        }
+    });
+
+    let base_url = format!("http://127.0.0.1:{port}");
+    let output = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "boot",
+            "--url",
+            &base_url,
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .env("CORTEX_HOME", &home)
+        .env("CORTEX_PORT", port.to_string())
+        .env("CORTEX_BIND", "127.0.0.1")
+        .env_remove("CORTEX_API_KEY")
+        .env_remove("CORTEX_API_BASE")
+        .env_remove("CORTEX_BASE_URL")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run cortex boot against adversarial listener");
+
+    assert!(
+        !output.status.success(),
+        "boot should fail against wrong-instance listener"
+    );
+
+    stop_listener.store(true, Ordering::SeqCst);
+    let _ = TcpStream::connect(("127.0.0.1", port));
+    listener.join().expect("join adversarial listener");
+
+    let captured_requests = captured.lock().expect("lock captured requests");
+    assert!(
+        captured_requests
+            .iter()
+            .any(|request| request.path == "/health"),
+        "expected health probes against adversarial listener"
+    );
+    assert!(
+        captured_requests
+            .iter()
+            .any(|request| request.path.starts_with("/boot")),
+        "expected boot calls against adversarial listener"
+    );
+
+    let leaked_paths: Vec<&str> = captured_requests
+        .iter()
+        .filter_map(|request| {
+            request
+                .authorization
+                .as_deref()
+                .filter(|value| value.contains(local_token))
+                .map(|_| request.path.as_str())
+        })
+        .collect();
+    assert!(
+        leaked_paths.is_empty(),
+        "local token leaked to wrong-instance listener on paths: {leaked_paths:?}"
+    );
+    assert!(
+        captured_requests
+            .iter()
+            .filter(|request| request.path.starts_with("/boot"))
+            .all(|request| request.authorization.is_none()),
+        "boot requests should not carry Authorization until health identity validates: {captured_requests:?}"
+    );
+
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 fn read_captured_request(stream: &mut TcpStream) -> Option<CapturedRequest> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))

@@ -1954,7 +1954,14 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
         let _ = ensure_daemon(paths, None, false, allow_spawn, Some(OWNER_TAG_CLI_BOOT)).await?;
     }
 
-    let allow_local_token_fallback = local_owner_mode || is_local_client_base_url(&base_url, paths);
+    let local_target_identity_valid = if local_owner_mode {
+        false
+    } else if is_local_client_base_url(&base_url, paths) {
+        daemon_healthy(paths).await
+    } else {
+        false
+    };
+    let allow_local_token_fallback = local_owner_mode || local_target_identity_valid;
     let payload = request_boot_payload(
         &base_url,
         &paths.token,
