@@ -41,6 +41,7 @@ const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
+const SIDECAR_FALLBACK_ENV: &str = "CORTEX_ALLOW_SIDECAR_FALLBACK";
 
 struct DaemonState {
     daemon: Mutex<SidecarDaemon>,
@@ -502,6 +503,20 @@ fn resolve_daemon_port() -> u16 {
     resolved_cortex_paths().port.unwrap_or(DEFAULT_DAEMON_PORT)
 }
 
+fn parse_truthy_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn sidecar_fallback_allowed() -> bool {
+    env::var(SIDECAR_FALLBACK_ENV)
+        .ok()
+        .map(|value| parse_truthy_flag(&value))
+        .unwrap_or(false)
+}
+
 fn newest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
 
@@ -790,6 +805,7 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 #[tauri::command]
 async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
+    let allow_sidecar_fallback = sidecar_fallback_allowed();
     let (already_managed, current_pid) = state.status()?;
     if !already_managed && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         let auth_token_ready = auth_token_ready();
@@ -816,8 +832,21 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
                     message: "Daemon started via Windows service.".to_string(),
                 });
             }
-            Ok(false) => {}
+            Ok(false) => {
+                if !allow_sidecar_fallback {
+                    return Err(format!(
+                        "Service-first startup is required and sidecar fallback is disabled. Start the daemon with `cortex service ensure` (set {}=1 only for temporary recovery).",
+                        SIDECAR_FALLBACK_ENV
+                    ));
+                }
+            }
             Err(err) => {
+                if !allow_sidecar_fallback {
+                    return Err(format!(
+                        "Service ensure failed: {err}. Sidecar fallback is disabled; run `cortex service ensure` manually (set {}=1 only for temporary recovery).",
+                        SIDECAR_FALLBACK_ENV
+                    ));
+                }
                 eprintln!("[cortex-control-center] service ensure failed, falling back to sidecar start: {err}");
             }
         }
@@ -1717,18 +1746,32 @@ fn main() {
 
             let daemon_state = app.handle().state::<DaemonState>();
             let port = daemon_port();
+            let allow_sidecar_fallback = sidecar_fallback_allowed();
             if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
                 let service_ready = match try_service_ensure(port) {
                     Ok(ready) => ready,
                     Err(err) => {
-                        eprintln!(
-                            "[cortex-control-center] service ensure failed at startup, falling back to sidecar start: {err}"
-                        );
+                        if allow_sidecar_fallback {
+                            eprintln!(
+                                "[cortex-control-center] service ensure failed at startup, falling back to sidecar start: {err}"
+                            );
+                        } else {
+                            eprintln!(
+                                "[cortex-control-center] service ensure failed at startup and sidecar fallback is disabled: {err}"
+                            );
+                        }
                         false
                     }
                 };
                 if !service_ready {
-                    let _ = daemon_state.start();
+                    if allow_sidecar_fallback {
+                        let _ = daemon_state.start();
+                    } else {
+                        eprintln!(
+                            "[cortex-control-center] sidecar fallback disabled ({} not set to truthy); daemon remains offline until service is healthy",
+                            SIDECAR_FALLBACK_ENV
+                        );
+                    }
                 }
             }
 
@@ -1781,8 +1824,9 @@ fn main() {
 mod tests {
     use super::{
         default_cortex_dir, editor_args, editor_config_path, editor_targets, extract_error_detail,
-        interpret_shutdown_response, is_cortex_health_response, runtime_copy_dir_for_session,
-        workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
+        interpret_shutdown_response, is_cortex_health_response, parse_truthy_flag,
+        runtime_copy_dir_for_session, workspace_binary_candidates, FetchCortexResponse,
+        ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1970,5 +2014,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(claude_desktop.config_path, expected);
+    }
+
+    #[test]
+    fn parse_truthy_flag_accepts_expected_values() {
+        assert!(parse_truthy_flag("1"));
+        assert!(parse_truthy_flag("true"));
+        assert!(parse_truthy_flag("YES"));
+        assert!(parse_truthy_flag(" on "));
+        assert!(!parse_truthy_flag("0"));
+        assert!(!parse_truthy_flag("false"));
+        assert!(!parse_truthy_flag(""));
     }
 }
