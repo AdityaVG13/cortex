@@ -434,6 +434,108 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+#[test]
+fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
+    let home_dir = unique_temp_dir("plugin_mcp_env_remote");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex serve");
+    wait_for_health(port, &mut daemon);
+
+    let token = fs::read_to_string(home_dir.join("cortex.token"))
+        .expect("read daemon token")
+        .trim()
+        .to_string();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "plugin",
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .env("CORTEX_API_BASE", &base_url)
+        .env("CORTEX_API_KEY", &token)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex plugin mcp via env target");
+
+    let stdout = child.stdout.take().expect("child stdout");
+    let responses = spawn_stdout_reader(stdout);
+    let stdin = child.stdin.as_mut().expect("child stdin");
+
+    write_json_line(
+        stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "ci", "version": "1.0.0" }
+            }
+        }),
+    );
+    let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
+    assert!(
+        initialize.get("result").is_some(),
+        "initialize failed: {initialize}"
+    );
+
+    assert!(
+        health_ok(port),
+        "target daemon must remain healthy before kill"
+    );
+    daemon.kill().expect("kill target daemon");
+    wait_for_exit(&mut daemon, Duration::from_secs(5));
+
+    write_json_line(
+        stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+    );
+    let tools = read_json_line(&responses, RESPONSE_TIMEOUT);
+    assert!(
+        tools
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|msg| msg.contains("Daemon unavailable")),
+        "expected daemon unavailable response after target kill: {tools}"
+    );
+    thread::sleep(Duration::from_millis(800));
+    assert!(
+        !health_ok(port),
+        "env-target plugin flow must not respawn killed target daemon"
+    );
+
+    drop(child.stdin.take());
+    wait_for_exit(&mut child, RESPONSE_TIMEOUT);
+    assert!(
+        !health_ok(port),
+        "env-target plugin flow must not restart or shutdown-manage target daemon"
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 fn write_json_line(stdin: &mut std::process::ChildStdin, value: Value) {
     let mut line = serde_json::to_vec(&value).expect("serialize request");
     line.push(b'\n');

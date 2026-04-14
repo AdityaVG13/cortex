@@ -388,23 +388,29 @@ async fn main() {
 
         // ── MCP stdio transport ─────────────────────────────────────
         "mcp" => {
-            let agent = parse_flag_value(&args[2..], "--agent");
-            let ensure = match ensure_daemon(&paths, agent.as_deref(), false, true).await {
-                Ok(result) => result,
-                Err(e) => {
-                    eprintln!("[cortex-mcp] {e}");
-                    std::process::exit(1);
+            let remaining = &args[2..];
+            let agent = parse_flag_value(remaining, "--agent");
+            let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
+            let ensure = if local_owner_mode {
+                match ensure_daemon(&paths, agent.as_deref(), false, true).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        eprintln!("[cortex-mcp] {e}");
+                        std::process::exit(1);
+                    }
                 }
+            } else {
+                EnsureDaemonResult::default()
             };
-            std::env::set_var("CORTEX_HOME", &paths.home);
-            std::env::set_var("CORTEX_DB", &paths.db);
-            std::env::set_var("CORTEX_PORT", paths.port.to_string());
+            if local_owner_mode {
+                apply_path_env(&paths);
+            }
             if let Err(e) = mcp_proxy::run(
-                &format!("http://127.0.0.1:{}", paths.port),
-                None,
+                &base_url,
+                api_key.as_deref(),
                 agent.as_deref(),
                 mcp_proxy::ProxyRuntimeOptions {
-                    allow_respawn: ensure.spawned,
+                    allow_respawn: local_owner_mode,
                     shutdown_on_exit: ensure.spawned,
                     shutdown_on_idle_startup: ensure.spawned,
                 },
@@ -447,13 +453,10 @@ async fn main() {
                     }
                 }
                 "mcp" => {
-                    let override_url = parse_flag_value(&args[3..], "--url");
-                    let base_url = override_url
-                        .clone()
-                        .unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
-                    let api_key = parse_flag_value(&args[3..], "--api-key");
-                    let agent = parse_flag_value(&args[3..], "--agent");
-                    let local_owner_mode = override_url.is_none() && api_key.is_none();
+                    let remaining = &args[3..];
+                    let (base_url, api_key, local_owner_mode) =
+                        resolve_client_target(remaining, &paths);
+                    let agent = parse_flag_value(remaining, "--agent");
                     let ensure = if local_owner_mode {
                         match ensure_daemon(&paths, agent.as_deref(), false, true).await {
                             Ok(result) => result,
@@ -466,9 +469,7 @@ async fn main() {
                         EnsureDaemonResult::default()
                     };
                     if local_owner_mode {
-                        std::env::set_var("CORTEX_HOME", &paths.home);
-                        std::env::set_var("CORTEX_DB", &paths.db);
-                        std::env::set_var("CORTEX_PORT", paths.port.to_string());
+                        apply_path_env(&paths);
                     }
                     if let Err(e) = mcp_proxy::run(
                         &base_url,
@@ -1160,9 +1161,11 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  migrate --dry-run  Preview migration without modifying the database");
     eprintln!();
     eprintln!("Daemon:");
-    eprintln!("  serve              HTTP daemon on :7437");
-    eprintln!("  mcp                MCP stdio (auto-start/attach to the local daemon)");
-    eprintln!("  paths --json       Print resolved Cortex paths + port as JSON");
+    eprintln!("  serve [--bind <addr>]  HTTP daemon on :7437 (default bind 127.0.0.1)");
+    eprintln!(
+        "  mcp [--url <base>] [--api-key <key>] [--agent <name>]  MCP stdio (auto-start/attach in local owner mode)"
+    );
+    eprintln!("  paths --json       Print resolved Cortex paths + port + bind as JSON");
     eprintln!("  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]");
     eprintln!("  plugin ensure-daemon [--agent <name>]  Verify/attach to a healthy daemon only");
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
@@ -1592,6 +1595,96 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+fn env_trimmed(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_option(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn local_daemon_base_url(paths: &auth::CortexPaths) -> String {
+    let bind = paths.bind.trim();
+    let host = if bind.is_empty() || matches!(bind, "0.0.0.0" | "::" | "[::]") {
+        "127.0.0.1"
+    } else {
+        bind
+    };
+    format!("http://{host}:{}", paths.port)
+}
+
+fn normalized_host(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+fn is_local_client_base_url(base_url: &str, paths: &auth::CortexPaths) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if url.port_or_known_default() != Some(paths.port) {
+        return false;
+    }
+    let host_norm = normalized_host(host);
+    let bind_norm = normalized_host(&paths.bind);
+    matches!(host_norm.as_str(), "127.0.0.1" | "localhost" | "::1")
+        || (!bind_norm.is_empty()
+            && !matches!(bind_norm.as_str(), "0.0.0.0" | "::")
+            && host_norm == bind_norm)
+}
+
+fn resolve_client_target_inputs(
+    override_url: Option<&str>,
+    override_api_key: Option<&str>,
+    env_base_url: Option<&str>,
+    env_api_key: Option<&str>,
+    default_base_url: &str,
+) -> (String, Option<String>, bool) {
+    let resolved_base_url =
+        normalize_option(override_url).or_else(|| normalize_option(env_base_url));
+    let resolved_api_key =
+        normalize_option(override_api_key).or_else(|| normalize_option(env_api_key));
+    let local_owner_mode = resolved_base_url.is_none() && resolved_api_key.is_none();
+    let base_url = resolved_base_url.unwrap_or_else(|| default_base_url.to_string());
+    (base_url, resolved_api_key, local_owner_mode)
+}
+
+fn resolve_client_target(
+    args: &[String],
+    paths: &auth::CortexPaths,
+) -> (String, Option<String>, bool) {
+    let override_url = parse_flag_value(args, "--url");
+    let override_api_key = parse_flag_value(args, "--api-key");
+    let env_base_url = env_trimmed("CORTEX_API_BASE").or_else(|| env_trimmed("CORTEX_BASE_URL"));
+    let env_api_key = env_trimmed("CORTEX_API_KEY");
+    resolve_client_target_inputs(
+        override_url.as_deref(),
+        override_api_key.as_deref(),
+        env_base_url.as_deref(),
+        env_api_key.as_deref(),
+        &local_daemon_base_url(paths),
+    )
+}
+
+fn apply_path_env(paths: &auth::CortexPaths) {
+    std::env::set_var("CORTEX_HOME", &paths.home);
+    std::env::set_var("CORTEX_DB", &paths.db);
+    std::env::set_var("CORTEX_PORT", paths.port.to_string());
+    std::env::set_var("CORTEX_BIND", &paths.bind);
+}
+
 fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String> {
     let Some(idx) = args.iter().position(|a| a == flag) else {
         return Ok(None);
@@ -1609,7 +1702,7 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
     Ok(Some(value))
 }
 
-use daemon_lifecycle::{daemon_healthy, spawn_daemon, wait_for_health};
+use daemon_lifecycle::{daemon_healthy_with_bind, spawn_daemon, wait_for_health_with_bind};
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
@@ -1625,15 +1718,22 @@ async fn recover_unhealthy_locked_daemon(
         Err(_) => return Ok(false),
     };
 
-    if daemon_healthy(paths.port).await {
+    if daemon_healthy_with_bind(&paths.bind, paths.port).await {
         drop(guard);
         return Ok(true);
     }
 
+    apply_path_env(paths);
     spawn_daemon(paths)?;
     drop(guard);
 
-    if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
+    if !wait_for_health_with_bind(
+        &paths.bind,
+        paths.port,
+        Duration::from_secs(DAEMON_STARTUP_WAIT_SECS),
+    )
+    .await
+    {
         return Err(format!(
             "daemon lock was recovered but daemon did not become healthy on port {} within {}s",
             paths.port, DAEMON_STARTUP_WAIT_SECS
@@ -1655,20 +1755,28 @@ fn read_auth_token_from_path(token_path: &std::path::Path) -> Option<String> {
     })
 }
 
-fn resolve_boot_auth_header(token_path: &std::path::Path, api_key: Option<&str>) -> Option<String> {
+fn resolve_boot_auth_header(
+    token_path: &std::path::Path,
+    api_key: Option<&str>,
+    allow_local_token_fallback: bool,
+) -> Option<String> {
     if let Some(api_key) = api_key {
         let trimmed = api_key.trim();
         if !trimmed.is_empty() {
             return Some(format!("Bearer {trimmed}"));
         }
     }
-    read_auth_token_from_path(token_path).map(|token| format!("Bearer {token}"))
+    if allow_local_token_fallback {
+        return read_auth_token_from_path(token_path).map(|token| format!("Bearer {token}"));
+    }
+    None
 }
 
 async fn request_boot_payload(
     base_url: &str,
     token_path: &std::path::Path,
     api_key: Option<&str>,
+    allow_local_token_fallback: bool,
     agent: &str,
     budget: usize,
 ) -> Result<serde_json::Value, String> {
@@ -1686,7 +1794,7 @@ async fn request_boot_payload(
         .header("x-cortex-request", "true")
         .header("x-source-agent", agent);
 
-    if let Some(auth) = resolve_boot_auth_header(token_path, api_key) {
+    if let Some(auth) = resolve_boot_auth_header(token_path, api_key, allow_local_token_fallback) {
         req = req.header("Authorization", auth);
     }
 
@@ -1721,17 +1829,22 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
 
     let budget = parse_flag_usize(args, "--budget")?.unwrap_or(DEFAULT_BOOT_BUDGET);
     let json_output = args.iter().any(|arg| arg == "--json");
-    let override_url = parse_flag_value(args, "--url");
-    let api_key = parse_flag_value(args, "--api-key");
-    let local_owner_mode = override_url.is_none() && api_key.is_none();
+    let (base_url, api_key, local_owner_mode) = resolve_client_target(args, paths);
 
     if local_owner_mode {
         let _ = ensure_daemon(paths, None, false, true).await?;
     }
 
-    let base_url = override_url.unwrap_or_else(|| format!("http://127.0.0.1:{}", paths.port));
-    let payload =
-        request_boot_payload(&base_url, &paths.token, api_key.as_deref(), agent, budget).await?;
+    let allow_local_token_fallback = local_owner_mode || is_local_client_base_url(&base_url, paths);
+    let payload = request_boot_payload(
+        &base_url,
+        &paths.token,
+        api_key.as_deref(),
+        allow_local_token_fallback,
+        agent,
+        budget,
+    )
+    .await?;
 
     if json_output {
         println!(
@@ -1749,9 +1862,9 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
     Ok(())
 }
 
-async fn boot_agent(port: u16, token_path: &std::path::Path, agent: &str) -> Result<(), String> {
-    let base_url = format!("http://127.0.0.1:{port}");
-    request_boot_payload(&base_url, token_path, None, agent, 200)
+async fn boot_agent(paths: &auth::CortexPaths, agent: &str) -> Result<(), String> {
+    let base_url = local_daemon_base_url(paths);
+    request_boot_payload(&base_url, &paths.token, None, true, agent, 200)
         .await
         .map(|_| ())
 }
@@ -1802,12 +1915,18 @@ async fn ensure_daemon(
 
     match lock {
         Ok(guard) => {
-            if daemon_healthy(paths.port).await {
+            if daemon_healthy_with_bind(&paths.bind, paths.port).await {
                 // already healthy
             } else if allow_spawn {
+                apply_path_env(paths);
                 spawn_daemon(paths)?;
                 drop(guard);
-                if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await
+                if !wait_for_health_with_bind(
+                    &paths.bind,
+                    paths.port,
+                    Duration::from_secs(DAEMON_STARTUP_WAIT_SECS),
+                )
+                .await
                 {
                     return Err(format!(
                         "daemon did not become healthy on port {} within {}s",
@@ -1823,11 +1942,17 @@ async fn ensure_daemon(
             }
         }
         Err(_) => {
-            if !wait_for_health(paths.port, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
+            if !wait_for_health_with_bind(
+                &paths.bind,
+                paths.port,
+                Duration::from_secs(DAEMON_STARTUP_WAIT_SECS),
+            )
+            .await
+            {
                 if allow_spawn {
                     if recover_unhealthy_locked_daemon(paths, &mut result).await? {
                         if let Some(agent) = agent {
-                            if let Err(e) = boot_agent(paths.port, &paths.token, agent).await {
+                            if let Err(e) = boot_agent(paths, agent).await {
                                 eprintln!(
                                     "[cortex-plugin] Warning: boot call failed for agent '{agent}': {e}"
                                 );
@@ -1852,7 +1977,7 @@ async fn ensure_daemon(
     }
 
     if let Some(agent) = agent {
-        if let Err(e) = boot_agent(paths.port, &paths.token, agent).await {
+        if let Err(e) = boot_agent(paths, agent).await {
             eprintln!("[cortex-plugin] Warning: boot call failed for agent '{agent}': {e}");
         }
     }
@@ -1978,7 +2103,7 @@ pub(crate) async fn run_daemon(
     let _daemon_lock = match acquire_runtime_lock(&paths) {
         Ok(lock) => lock,
         Err(err) => {
-            if daemon_healthy(paths.port).await {
+            if daemon_healthy_with_bind(&paths.bind, paths.port).await {
                 eprintln!(
                     "[cortex] Daemon already healthy on port {}; exiting cleanly.",
                     paths.port
@@ -2231,7 +2356,7 @@ pub(crate) async fn run_daemon(
         }
     };
 
-    server::run(router, paths.port, &db_path, shutdown_future).await;
+    server::run(router, &paths.bind, paths.port, &db_path, shutdown_future).await;
 
     // WAL checkpoint + cleanup
     eprintln!("[cortex] Flushing database...");
@@ -2437,7 +2562,8 @@ mod tests {
         fs::create_dir_all(&home_dir).unwrap();
 
         let home_str = home_dir.to_string_lossy().to_string();
-        let paths = auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437));
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
 
         let first_lock = acquire_runtime_lock(&paths).unwrap();
         let err = acquire_runtime_lock(&paths).unwrap_err();
@@ -2481,14 +2607,81 @@ mod tests {
         let token_path = home_dir.join("cortex.token");
         fs::write(&token_path, "local-token").unwrap();
 
-        let explicit = resolve_boot_auth_header(&token_path, Some("ctx_remote"));
+        let explicit = resolve_boot_auth_header(&token_path, Some("ctx_remote"), true);
         assert_eq!(explicit, Some("Bearer ctx_remote".to_string()));
 
-        let fallback = resolve_boot_auth_header(&token_path, None);
+        let fallback = resolve_boot_auth_header(&token_path, None, true);
         assert_eq!(fallback, Some("Bearer local-token".to_string()));
 
         fs::write(&token_path, "   ").unwrap();
-        assert_eq!(resolve_boot_auth_header(&token_path, None), None);
+        assert_eq!(resolve_boot_auth_header(&token_path, None, true), None);
+        assert_eq!(resolve_boot_auth_header(&token_path, None, false), None);
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn resolve_client_target_inputs_prefers_cli_over_env_values() {
+        let (base_url, api_key, local_owner_mode) = resolve_client_target_inputs(
+            Some("https://cli.example"),
+            Some("ctx_cli"),
+            Some("https://env.example"),
+            Some("ctx_env"),
+            "http://127.0.0.1:7437",
+        );
+        assert_eq!(base_url, "https://cli.example");
+        assert_eq!(api_key.as_deref(), Some("ctx_cli"));
+        assert!(!local_owner_mode);
+    }
+
+    #[test]
+    fn resolve_client_target_inputs_uses_env_and_disables_local_owner_mode() {
+        let (base_url, api_key, local_owner_mode) = resolve_client_target_inputs(
+            None,
+            None,
+            Some("https://100.101.102.103:7437"),
+            Some("ctx_remote"),
+            "http://127.0.0.1:7437",
+        );
+        assert_eq!(base_url, "https://100.101.102.103:7437");
+        assert_eq!(api_key.as_deref(), Some("ctx_remote"));
+        assert!(!local_owner_mode);
+    }
+
+    #[test]
+    fn local_daemon_base_url_uses_loopback_for_wildcard_bind() {
+        let home_dir = temp_test_dir("bind_wildcard");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let mut paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        paths.bind = "0.0.0.0".to_string();
+        assert_eq!(local_daemon_base_url(&paths), "http://127.0.0.1:7437");
+
+        paths.bind = "100.64.0.12".to_string();
+        assert_eq!(local_daemon_base_url(&paths), "http://100.64.0.12:7437");
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn is_local_client_base_url_accepts_configured_bind_host() {
+        let home_dir = temp_test_dir("local_client_base");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let mut paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        paths.bind = "100.64.0.12".to_string();
+        assert!(is_local_client_base_url("http://100.64.0.12:7437", &paths));
+        assert!(!is_local_client_base_url("http://100.64.0.12:9999", &paths));
+        assert!(!is_local_client_base_url(
+            "https://example.com:7437",
+            &paths
+        ));
+
+        paths.bind = "0.0.0.0".to_string();
+        assert!(is_local_client_base_url("http://127.0.0.1:7437", &paths));
 
         let _ = fs::remove_dir_all(&home_dir);
     }

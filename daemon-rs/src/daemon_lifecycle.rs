@@ -14,8 +14,25 @@ const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
 const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
 const RUNTIME_COPY_STALE_SECS: u64 = 600;
 
+fn health_probe_base(bind: &str, port: u16) -> String {
+    let bind = bind.trim();
+    let host = if bind.is_empty() || matches!(bind, "0.0.0.0" | "::" | "[::]") {
+        "127.0.0.1"
+    } else {
+        bind
+    };
+    format!("http://{host}:{port}")
+}
+
 /// Check if the daemon responds to /health within 2s.
+#[allow(dead_code)]
 pub async fn daemon_healthy(port: u16) -> bool {
+    let paths = CortexPaths::resolve();
+    daemon_healthy_with_bind(&paths.bind, port).await
+}
+
+/// Check if the daemon responds to /health on a specific bind host within 2s.
+pub async fn daemon_healthy_with_bind(bind: &str, port: u16) -> bool {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -24,11 +41,8 @@ pub async fn daemon_healthy(port: u16) -> bool {
         Err(_) => return false,
     };
 
-    let response = match client
-        .get(format!("http://127.0.0.1:{port}/health"))
-        .send()
-        .await
-    {
+    let health_url = format!("{}/health", health_probe_base(bind, port));
+    let response = match client.get(health_url).send().await {
         Ok(response) => response,
         Err(_) => return false,
     };
@@ -69,10 +83,17 @@ fn is_cortex_health_payload(status: u16, body: &str, expected_port: Option<u16>)
 }
 
 /// Poll /health until success or timeout.
+#[allow(dead_code)]
 pub async fn wait_for_health(port: u16, timeout: Duration) -> bool {
+    let paths = CortexPaths::resolve();
+    wait_for_health_with_bind(&paths.bind, port, timeout).await
+}
+
+/// Poll /health on the provided bind host until success or timeout.
+pub async fn wait_for_health_with_bind(bind: &str, port: u16, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() <= timeout {
-        if daemon_healthy(port).await {
+        if daemon_healthy_with_bind(bind, port).await {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -90,6 +111,7 @@ pub fn spawn_daemon(paths: &CortexPaths) -> Result<(), String> {
         .env("CORTEX_HOME", &paths.home)
         .env("CORTEX_DB", &paths.db)
         .env("CORTEX_PORT", paths.port.to_string())
+        .env("CORTEX_BIND", &paths.bind)
         .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -202,7 +224,8 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
                 "[cortex-lifecycle] Respawn already in progress; waiting for daemon health on port {}",
                 paths.port
             );
-            return wait_for_health(
+            return wait_for_health_with_bind(
+                &paths.bind,
                 paths.port,
                 Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS),
             )
@@ -210,7 +233,7 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
         }
     };
 
-    if daemon_healthy(paths.port).await {
+    if daemon_healthy_with_bind(&paths.bind, paths.port).await {
         return true;
     }
 
@@ -225,8 +248,12 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
     }
 
     drop(respawn_lock);
-    let healthy =
-        wait_for_health(paths.port, Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS)).await;
+    let healthy = wait_for_health_with_bind(
+        &paths.bind,
+        paths.port,
+        Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS),
+    )
+    .await;
     if healthy {
         eprintln!(
             "[cortex-lifecycle] Daemon respawned successfully on port {}",

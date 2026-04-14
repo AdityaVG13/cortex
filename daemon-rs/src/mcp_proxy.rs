@@ -225,12 +225,39 @@ fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
     (agent, model)
 }
 
+fn normalized_host(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
+fn local_daemon_base_from_paths(paths: &CortexPaths) -> String {
+    let bind = paths.bind.trim();
+    let host = if bind.is_empty() || matches!(bind, "0.0.0.0" | "::" | "[::]") {
+        "127.0.0.1"
+    } else {
+        bind
+    };
+    format!("http://{host}:{}", paths.port)
+}
+
 fn is_local_daemon_base(base_url: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(base_url) else {
         return false;
     };
-    let host_ok = matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
-    let port_ok = url.port_or_known_default() == Some(CortexPaths::resolve().port);
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let paths = CortexPaths::resolve();
+    let port_ok = url.port_or_known_default() == Some(paths.port);
+    let host_norm = normalized_host(host);
+    let bind_norm = normalized_host(&paths.bind);
+    let host_ok = matches!(host_norm.as_str(), "127.0.0.1" | "localhost" | "::1")
+        || (!bind_norm.is_empty()
+            && !matches!(bind_norm.as_str(), "0.0.0.0" | "::")
+            && host_norm == bind_norm);
     host_ok && port_ok
 }
 
@@ -663,7 +690,7 @@ pub async fn run(
             };
             let mut heartbeat_base_url = heartbeat_base_url;
             let mut heartbeat_health_url = format!("{heartbeat_base_url}/health");
-            let resolved_local_base = format!("http://127.0.0.1:{}", CortexPaths::resolve().port);
+            let resolved_local_base = local_daemon_base_from_paths(&CortexPaths::resolve());
             let heartbeat_can_refresh_local = heartbeat_base_url == resolved_local_base;
             let mut consecutive_heartbeat_failures = 0u32;
 
@@ -695,7 +722,7 @@ pub async fn run(
                         .await;
                         if !restarted && heartbeat_can_refresh_local {
                             let refreshed_base =
-                                format!("http://127.0.0.1:{}", CortexPaths::resolve().port);
+                                local_daemon_base_from_paths(&CortexPaths::resolve());
                             if refreshed_base != heartbeat_base_url {
                                 heartbeat_base_url = refreshed_base;
                                 heartbeat_health_url = format!("{heartbeat_base_url}/health");
@@ -726,7 +753,7 @@ pub async fn run(
                         if !health_check_ready(&hb_client, &heartbeat_health_url).await {
                             if heartbeat_can_refresh_local {
                                 let refreshed_base =
-                                    format!("http://127.0.0.1:{}", CortexPaths::resolve().port);
+                                    local_daemon_base_from_paths(&CortexPaths::resolve());
                                 if refreshed_base != heartbeat_base_url {
                                     heartbeat_base_url = refreshed_base;
                                     heartbeat_health_url = format!("{heartbeat_base_url}/health");
@@ -1127,7 +1154,7 @@ pub async fn run(
             if daemon_lifecycle::try_respawn(&paths).await {
                 // Daemon is back -- rebuild URLs using the latest resolved port.
                 paths = CortexPaths::resolve();
-                rpc_base_url = format!("http://127.0.0.1:{}", paths.port);
+                rpc_base_url = local_daemon_base_from_paths(&paths);
                 rpc_url = format!("{rpc_base_url}/mcp-rpc");
                 health_url = format!("{rpc_base_url}/health");
                 let _ = rpc_base_tx.send(rpc_base_url.clone());
@@ -1307,5 +1334,28 @@ mod tests {
         let custom_base = "https://example.com";
         assert!(!is_local_daemon_base(custom_base));
         assert_eq!(build_auth_header(custom_base, None), None);
+    }
+
+    #[test]
+    fn configured_bind_host_is_treated_as_local_for_token_fallback() {
+        let home_dir = temp_test_dir("configured_bind_local");
+        fs::create_dir_all(&home_dir).unwrap();
+        fs::write(home_dir.join("cortex.token"), "ctx_local").unwrap();
+
+        std::env::set_var("CORTEX_HOME", &home_dir);
+        std::env::set_var("CORTEX_PORT", "7437");
+        std::env::set_var("CORTEX_BIND", "100.64.0.12");
+
+        let local_base = "http://100.64.0.12:7437";
+        assert!(is_local_daemon_base(local_base));
+        assert_eq!(
+            build_auth_header(local_base, None),
+            Some("Bearer ctx_local".to_string())
+        );
+
+        std::env::remove_var("CORTEX_HOME");
+        std::env::remove_var("CORTEX_PORT");
+        std::env::remove_var("CORTEX_BIND");
+        let _ = fs::remove_dir_all(&home_dir);
     }
 }

@@ -377,18 +377,17 @@ async fn handle_focus_end(
 
 pub async fn run(
     router: Router,
+    bind_addr: &str,
     port: u16,
     db_path: &Path,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    let bind_addr = std::env::var("CORTEX_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
-
     match crate::tls::try_load_tls() {
         Ok(Some(acceptor)) => {
-            run_tls(router, &bind_addr, port, acceptor, shutdown).await;
+            run_tls(router, bind_addr, port, acceptor, shutdown).await;
         }
         Ok(None) => {
-            run_plain(router, &bind_addr, port, shutdown).await;
+            run_plain(router, bind_addr, port, shutdown).await;
         }
         Err(e) => {
             // Team mode: refuse to start with broken TLS (auth integrity requires it)
@@ -403,7 +402,7 @@ pub async fn run(
             } else {
                 eprintln!("[cortex] TLS certificate error: {e}");
                 eprintln!("[cortex] Starting without TLS (solo mode -- localhost only)");
-                run_plain(router, &bind_addr, port, shutdown).await;
+                run_plain(router, bind_addr, port, shutdown).await;
             }
         }
     }
@@ -559,8 +558,12 @@ mod tests {
 
         let home_str = home_dir.to_string_lossy().to_string();
         let db_str = db_path.to_string_lossy().to_string();
-        let paths =
-            crate::auth::CortexPaths::resolve_with_overrides(Some(&home_str), Some(&db_str), None);
+        let paths = crate::auth::CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            Some(&db_str),
+            None,
+            None,
+        );
         let (state, _shutdown_rx) = crate::state::initialize(&paths, false).unwrap();
         let _ = std::fs::remove_file(db_path);
         state

@@ -23,6 +23,7 @@ pub struct CortexPaths {
     pub pid: PathBuf,
     pub lock: PathBuf,
     pub port: u16,
+    pub bind: String,
     pub models: PathBuf,
     #[allow(dead_code)]
     pub write_buffer: PathBuf,
@@ -31,7 +32,7 @@ pub struct CortexPaths {
 impl CortexPaths {
     /// Resolve paths from environment variables only (no CLI args).
     pub fn resolve() -> Self {
-        Self::resolve_with_overrides(None, None, None)
+        Self::resolve_with_overrides(None, None, None, None)
     }
 
     /// Resolve paths with optional CLI overrides.
@@ -39,6 +40,7 @@ impl CortexPaths {
         home_override: Option<&str>,
         db_override: Option<&str>,
         port_override: Option<u16>,
+        bind_override: Option<&str>,
     ) -> Self {
         let home = home_override
             .map(PathBuf::from)
@@ -57,6 +59,8 @@ impl CortexPaths {
                     .and_then(|s| s.parse().ok())
             })
             .unwrap_or(7437);
+        let env_bind = std::env::var("CORTEX_BIND").ok();
+        let bind = resolve_bind(bind_override, env_bind.as_deref());
 
         Self {
             token: home.join("cortex.token"),
@@ -67,15 +71,17 @@ impl CortexPaths {
             home,
             db,
             port,
+            bind,
         }
     }
 
-    /// Parse --home, --db, --port flags from CLI args.
+    /// Parse --home, --db, --port, --bind flags from CLI args.
     pub fn resolve_from_args(args: &[String]) -> Self {
         let home = Self::find_flag(args, "--home");
         let db = Self::find_flag(args, "--db");
         let port = Self::find_flag(args, "--port").and_then(|s| s.parse().ok());
-        Self::resolve_with_overrides(home.as_deref(), db.as_deref(), port)
+        let bind = Self::find_flag(args, "--bind");
+        Self::resolve_with_overrides(home.as_deref(), db.as_deref(), port, bind.as_deref())
     }
 
     fn find_flag(args: &[String], flag: &str) -> Option<String> {
@@ -93,10 +99,27 @@ impl CortexPaths {
             "token": self.token.display().to_string(),
             "pid": self.pid.display().to_string(),
             "port": self.port,
+            "bind": &self.bind,
             "models": self.models.display().to_string(),
         })
         .to_string()
     }
+}
+
+fn normalize_bind(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn resolve_bind(bind_override: Option<&str>, env_bind: Option<&str>) -> String {
+    bind_override
+        .and_then(normalize_bind)
+        .or_else(|| env_bind.and_then(normalize_bind))
+        .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +428,7 @@ mod tests {
         fs::create_dir_all(&home_dir).unwrap();
 
         let home_str = home_dir.to_string_lossy().to_string();
-        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, None);
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, None, None);
         fs::write(&paths.pid, "999999").unwrap();
         fs::write(&paths.lock, "locked").unwrap();
 
@@ -423,13 +446,40 @@ mod tests {
         fs::create_dir_all(&home_dir).unwrap();
 
         let home_str = home_dir.to_string_lossy().to_string();
-        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(54967));
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(54967), None);
 
         let token = generate_token_for(&paths);
 
         assert_eq!(read_token_from(&paths).as_deref(), Some(token.as_str()));
         assert_eq!(paths.token, home_dir.join("cortex.token"));
         assert!(paths.token.exists());
+        assert_eq!(paths.bind, "127.0.0.1");
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn resolve_bind_prefers_cli_then_env_then_default() {
+        assert_eq!(resolve_bind(Some("0.0.0.0"), Some("10.10.0.5")), "0.0.0.0");
+        assert_eq!(resolve_bind(Some("   "), Some("10.10.0.5")), "10.10.0.5");
+        assert_eq!(resolve_bind(None, Some("   ")), "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_from_args_parses_bind_flag() {
+        let home_dir = temp_test_dir("bind_flag");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let args = vec![
+            "cortex".to_string(),
+            "serve".to_string(),
+            "--home".to_string(),
+            home_str,
+            "--bind".to_string(),
+            "0.0.0.0".to_string(),
+        ];
+        let paths = CortexPaths::resolve_from_args(&args);
+        assert_eq!(paths.bind, "0.0.0.0");
 
         let _ = fs::remove_dir_all(&home_dir);
     }
