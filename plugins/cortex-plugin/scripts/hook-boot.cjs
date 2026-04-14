@@ -12,6 +12,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const { spawnSync } = require('child_process');
+const { resolveCortexBinary } = require('./resolve-binary.cjs');
 
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 
@@ -37,16 +38,18 @@ function resolveRoute(config) {
   return { mode: 'solo', url: '', reason: 'local attach-only' };
 }
 
-// Load prepare-runtime first (ensures binary is extracted)
-require('./prepare-runtime.cjs');
-
 const PLATFORM = process.platform;
 const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
-const binaryPath = path.join(PLUGIN_DATA, 'bin', binaryName);
+const { binaryPath, source: binarySource } = resolveCortexBinary({
+  pluginData: PLUGIN_DATA,
+  binaryName,
+  ensureBundled: () => require('./prepare-runtime.cjs')
+});
 const DEFAULT_DAEMON_PORT = 7437;
 
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
 const route = resolveRoute({ cortexUrl });
+console.error(`[cortex-plugin] SessionStart binary: ${binaryPath} (${binarySource})`);
 
 function isCortexHealthResponse(data) {
   if (!data || typeof data !== 'object') return false;

@@ -11,6 +11,7 @@
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { resolveCortexBinary } = require('./resolve-binary.cjs');
 
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 
@@ -36,12 +37,6 @@ function isTruthy(value) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
-function resolveCanonicalCortexHome() {
-  const userHome = process.env.USERPROFILE || process.env.HOME || '';
-  if (!userHome) return '';
-  return path.join(userHome, '.cortex');
-}
-
 function resolveRoute(config) {
   const explicitUrl = normalizeOption(config.cortexUrl);
   const appUrl =
@@ -59,12 +54,13 @@ function resolveRoute(config) {
   return { mode: 'local', url: '', reason: 'local attach-only' };
 }
 
-// Load prepare-runtime first (ensures binary is extracted)
-require('./prepare-runtime.cjs');
-
 const PLATFORM = process.platform;
 const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
-const binaryPath = path.join(PLUGIN_DATA, 'bin', binaryName);
+const { binaryPath, source: binarySource } = resolveCortexBinary({
+  pluginData: PLUGIN_DATA,
+  binaryName,
+  ensureBundled: () => require('./prepare-runtime.cjs')
+});
 
 // User config from Claude Code
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
@@ -89,6 +85,7 @@ const ownerMode = route.mode === 'local'
     : 'app';
 
 console.error(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
+console.error(`[cortex-plugin] Cortex binary: ${binaryPath} (${binarySource})`);
 
 if (dryRun) {
   console.error(
@@ -108,9 +105,9 @@ const childEnv = {
 };
 
 if (route.mode === 'local') {
-  const canonicalHome = resolveCanonicalCortexHome();
-  if (canonicalHome) {
-    childEnv.CORTEX_HOME = canonicalHome;
+  const userHome = process.env.USERPROFILE || process.env.HOME || '';
+  if (userHome) {
+    childEnv.CORTEX_HOME = path.join(userHome, '.cortex');
   }
   delete childEnv.CORTEX_DB;
 }

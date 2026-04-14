@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod sidecar;
-
 use fs2::FileExt;
 use rusqlite::Connection;
 use serde::Serialize;
-use sidecar::SidecarDaemon;
 use std::collections::HashSet;
 use std::env;
 use std::fs;
@@ -16,7 +13,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -34,61 +30,25 @@ const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 400;
 const DAEMON_CONNECT_TIMEOUT_MS: u64 = 1_200;
 const DAEMON_READ_TIMEOUT_MS: u64 = 10_000;
 const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
-const DAEMON_START_WAIT_MS: u64 = 3_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
 const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
-const SIDECAR_FALLBACK_ENV: &str = "CORTEX_ALLOW_SIDECAR_FALLBACK";
 
-struct DaemonState {
-    daemon: Mutex<SidecarDaemon>,
-}
+struct DaemonState;
 
 impl DaemonState {
-    fn new(exe_path: Option<PathBuf>) -> Self {
-        let runtime_copy_dir = if cfg!(debug_assertions) {
-            default_cortex_dir()
-                .ok()
-                .map(|dir| runtime_copy_dir_for_session(&dir))
-        } else {
-            None
-        };
-        let daemon = match exe_path {
-            Some(path) => SidecarDaemon::with_exe_path(path, runtime_copy_dir),
-            None => SidecarDaemon::default(),
-        };
-        Self {
-            daemon: Mutex::new(daemon),
-        }
+    fn new(_exe_path: Option<PathBuf>) -> Self {
+        Self
     }
 
     fn status(&self) -> Result<(bool, Option<u32>), String> {
-        let mut daemon = self
-            .daemon
-            .lock()
-            .map_err(|_| "Failed to lock daemon state".to_string())?;
-        let s = daemon.status();
-        Ok((s.running, s.pid))
-    }
-
-    fn start(&self) -> Result<(bool, Option<u32>), String> {
-        let mut daemon = self
-            .daemon
-            .lock()
-            .map_err(|_| "Failed to lock daemon state".to_string())?;
-        let s = daemon.start()?;
-        Ok((s.running, s.pid))
+        Ok((false, None))
     }
 
     fn stop(&self) -> Result<(), String> {
-        let mut daemon = self
-            .daemon
-            .lock()
-            .map_err(|_| "Failed to lock daemon state".to_string())?;
-        daemon.stop()?;
         Ok(())
     }
 }
@@ -193,13 +153,6 @@ struct ResolvedCortexPaths {
 
 fn default_cortex_dir() -> Result<PathBuf, String> {
     Ok(cortex_home()?.join(".cortex"))
-}
-
-fn runtime_copy_dir_for_session(cortex_dir: &Path) -> PathBuf {
-    cortex_dir
-        .join("runtime")
-        .join("control-center-dev")
-        .join(format!("session-{}", std::process::id()))
 }
 
 fn token_path() -> Result<PathBuf, String> {
@@ -524,20 +477,6 @@ fn resolve_daemon_port() -> u16 {
     resolved_cortex_paths().port.unwrap_or(DEFAULT_DAEMON_PORT)
 }
 
-fn parse_truthy_flag(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn sidecar_fallback_allowed() -> bool {
-    env::var(SIDECAR_FALLBACK_ENV)
-        .ok()
-        .map(|value| parse_truthy_flag(&value))
-        .unwrap_or(false)
-}
-
 fn log_startup_path(context: &str, decision: &str, detail: &str) {
     eprintln!(
         "[cortex-control-center] startup-path context={context} decision={decision} detail={detail}"
@@ -832,9 +771,8 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 #[tauri::command]
 async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
-    let allow_sidecar_fallback = sidecar_fallback_allowed();
-    let (already_managed, current_pid) = state.status()?;
-    if !already_managed && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+    let _ = state.status()?;
+    if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         log_startup_path(
             "start_daemon",
             "existing-daemon",
@@ -851,85 +789,37 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
         });
     }
 
-    if !already_managed {
-        match try_service_ensure(port) {
-            Ok(true) => {
-                log_startup_path(
-                    "start_daemon",
-                    "service-ensure",
-                    "daemon started or validated via service ensure",
-                );
-                let auth_token_ready = auth_token_ready();
-                return Ok(DaemonCommandResult {
-                    running: true,
-                    reachable: true,
-                    managed: false,
-                    auth_token_ready,
-                    pid: None,
-                    message: "Daemon started via Windows service.".to_string(),
-                });
-            }
-            Ok(false) => {
-                if !allow_sidecar_fallback {
-                    log_startup_path(
-                        "start_daemon",
-                        "blocked",
-                        "service ensure unavailable and sidecar fallback disabled",
-                    );
-                    return Err(format!(
-                        "Service-first startup is required and sidecar fallback is disabled. Start the daemon with `cortex service ensure` (set {}=1 only for temporary recovery).",
-                        SIDECAR_FALLBACK_ENV
-                    ));
-                }
-            }
-            Err(err) => {
-                if !allow_sidecar_fallback {
-                    log_startup_path(
-                        "start_daemon",
-                        "blocked",
-                        "service ensure failed and sidecar fallback disabled",
-                    );
-                    return Err(format!(
-                        "Service ensure failed: {err}. Sidecar fallback is disabled; run `cortex service ensure` manually (set {}=1 only for temporary recovery).",
-                        SIDECAR_FALLBACK_ENV
-                    ));
-                }
-                eprintln!("[cortex-control-center] service ensure failed, falling back to sidecar start: {err}");
-            }
+    match try_service_ensure(port) {
+        Ok(true) => {
+            log_startup_path(
+                "start_daemon",
+                "service-ensure",
+                "daemon started or validated via service ensure",
+            );
+            let auth_token_ready = auth_token_ready();
+            Ok(DaemonCommandResult {
+                running: true,
+                reachable: true,
+                managed: false,
+                auth_token_ready,
+                pid: None,
+                message: "Daemon started via Windows service.".to_string(),
+            })
+        }
+        Ok(false) => {
+            log_startup_path("start_daemon", "blocked", "service ensure unavailable");
+            Err(
+                "Service-first startup is required. Start the daemon with `cortex service ensure`."
+                    .to_string(),
+            )
+        }
+        Err(err) => {
+            log_startup_path("start_daemon", "blocked", "service ensure failed");
+            Err(format!(
+                "Service ensure failed: {err}. Run `cortex service ensure` manually and retry."
+            ))
         }
     }
-
-    let (managed, pid) = if already_managed {
-        log_startup_path(
-            "start_daemon",
-            "managed-process",
-            "control-center sidecar process already running",
-        );
-        (already_managed, current_pid)
-    } else {
-        log_startup_path(
-            "start_daemon",
-            "sidecar-fallback",
-            "service path unavailable; starting sidecar fallback",
-        );
-        state.start()?
-    };
-    let reachable = if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
-        true
-    } else {
-        wait_for_reachability(port, true, Duration::from_millis(DAEMON_START_WAIT_MS)).await
-    };
-    let auth_token_ready = reachable && auth_token_ready();
-    let message = describe_daemon_state(managed, reachable, auth_token_ready, pid, port);
-
-    Ok(DaemonCommandResult {
-        running: managed,
-        reachable,
-        managed,
-        auth_token_ready,
-        pid,
-        message,
-    })
 }
 
 /// Send POST /shutdown to the daemon's HTTP endpoint (works for any daemon,
@@ -1858,57 +1748,27 @@ fn main() {
         .setup(|app| {
             setup_tray(app)?;
 
-            let daemon_state = app.handle().state::<DaemonState>();
             let port = daemon_port();
-            let allow_sidecar_fallback = sidecar_fallback_allowed();
             if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
-                let service_ready = match try_service_ensure(port) {
-                    Ok(ready) => {
-                        if ready {
-                            log_startup_path(
-                                "setup",
-                                "service-ensure",
-                                "daemon started or validated via service ensure",
-                            );
-                        }
-                        ready
+                match try_service_ensure(port) {
+                    Ok(true) => {
+                        log_startup_path(
+                            "setup",
+                            "service-ensure",
+                            "daemon started or validated via service ensure",
+                        );
+                    }
+                    Ok(false) => {
+                        eprintln!(
+                            "[cortex-control-center] service ensure unavailable at startup; daemon remains offline until service is healthy"
+                        );
+                        log_startup_path("setup", "blocked", "service ensure unavailable");
                     }
                     Err(err) => {
-                        if allow_sidecar_fallback {
-                            eprintln!(
-                                "[cortex-control-center] service ensure failed at startup, falling back to sidecar start: {err}"
-                            );
-                        } else {
-                            eprintln!(
-                                "[cortex-control-center] service ensure failed at startup and sidecar fallback is disabled: {err}"
-                            );
-                            log_startup_path(
-                                "setup",
-                                "blocked",
-                                "service ensure failed and sidecar fallback disabled",
-                            );
-                        }
-                        false
-                    }
-                };
-                if !service_ready {
-                    if allow_sidecar_fallback {
-                        log_startup_path(
-                            "setup",
-                            "sidecar-fallback",
-                            "service path unavailable; starting sidecar fallback",
-                        );
-                        let _ = daemon_state.start();
-                    } else {
                         eprintln!(
-                            "[cortex-control-center] sidecar fallback disabled ({} not set to truthy); daemon remains offline until service is healthy",
-                            SIDECAR_FALLBACK_ENV
+                            "[cortex-control-center] service ensure failed at startup; daemon remains offline: {err}"
                         );
-                        log_startup_path(
-                            "setup",
-                            "blocked",
-                            "service ensure unavailable and sidecar fallback disabled",
-                        );
+                        log_startup_path("setup", "blocked", "service ensure failed");
                     }
                 }
             } else {
@@ -1967,9 +1827,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        cortex_readiness_state, default_cortex_dir, editor_args, editor_config_path,
-        editor_targets, extract_error_detail, interpret_shutdown_response,
-        is_cortex_health_response, parse_truthy_flag, runtime_copy_dir_for_session,
+        cortex_readiness_state, editor_args, editor_config_path, editor_targets,
+        extract_error_detail, interpret_shutdown_response, is_cortex_health_response,
         workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
     };
     use std::fs;
@@ -1999,16 +1858,6 @@ mod tests {
             .to_string_lossy()
             .contains("target-control-center-dev\\debug"));
         assert!(candidates[3].to_string_lossy().contains("target\\debug"));
-    }
-
-    #[test]
-    fn runtime_copy_dir_is_scoped_to_the_control_center_session() {
-        let cortex_dir = default_cortex_dir().expect("cortex dir");
-        let path = runtime_copy_dir_for_session(&cortex_dir);
-        let pid = std::process::id().to_string();
-
-        assert!(path.starts_with(cortex_dir.join("runtime").join("control-center-dev")));
-        assert!(path.to_string_lossy().contains(&format!("session-{pid}")));
     }
 
     #[test]
@@ -2202,16 +2051,5 @@ mod tests {
             .unwrap();
 
         assert_eq!(claude_desktop.config_path, expected);
-    }
-
-    #[test]
-    fn parse_truthy_flag_accepts_expected_values() {
-        assert!(parse_truthy_flag("1"));
-        assert!(parse_truthy_flag("true"));
-        assert!(parse_truthy_flag("YES"));
-        assert!(parse_truthy_flag(" on "));
-        assert!(!parse_truthy_flag("0"));
-        assert!(!parse_truthy_flag("false"));
-        assert!(!parse_truthy_flag(""));
     }
 }
