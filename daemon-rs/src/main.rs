@@ -2069,6 +2069,12 @@ fn process_pid_alive(pid: u32) -> bool {
     system.process(target).is_some()
 }
 
+fn spawned_owner_requires_parent_pid(owner_tag: Option<&str>) -> bool {
+    owner_tag
+        .map(|owner| should_watch_spawn_parent(Some(owner)))
+        .unwrap_or(false)
+}
+
 async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
@@ -2285,8 +2291,17 @@ pub(crate) async fn run_daemon(
     let (state, shutdown_rx) = state::initialize(&paths, true).expect("Failed to initialize state");
 
     let daemon_owner = daemon_owner_tag_from_env();
+    let parent_pid = spawn_parent_pid_from_env();
+    if spawned_owner_requires_parent_pid(daemon_owner.as_deref()) && parent_pid.is_none() {
+        eprintln!(
+            "[cortex] FATAL: owner '{}' requires {} linkage; refusing to run detached",
+            daemon_owner.as_deref().unwrap_or("unknown"),
+            SPAWN_PARENT_PID_ENV
+        );
+        std::process::exit(1);
+    }
     if should_watch_spawn_parent(daemon_owner.as_deref()) {
-        if let Some(parent_pid) = spawn_parent_pid_from_env() {
+        if let Some(parent_pid) = parent_pid {
             let shutdown_tx = state.shutdown_tx.clone();
             tokio::spawn(async move {
                 let mut interval =
@@ -2811,6 +2826,14 @@ mod tests {
         assert!(paths.lock.exists());
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn spawned_owner_requires_parent_pid_only_for_non_control_center_owner() {
+        assert!(spawned_owner_requires_parent_pid(Some("cli-mcp")));
+        assert!(spawned_owner_requires_parent_pid(Some("plugin-claude")));
+        assert!(!spawned_owner_requires_parent_pid(Some("control-center")));
+        assert!(!spawned_owner_requires_parent_pid(None));
     }
 
     #[test]
