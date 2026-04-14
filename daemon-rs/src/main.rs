@@ -1200,7 +1200,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  admin stats        Database and per-user statistics");
     eprintln!();
     eprintln!("Service:");
-    eprintln!("  service install    Register as Windows Service (auto-start)");
+    eprintln!("  service install    Register as Windows Service (manual start by default)");
     eprintln!("  service uninstall  Remove Windows Service");
     eprintln!("  service start      Start the service");
     eprintln!("  service stop       Stop the service");

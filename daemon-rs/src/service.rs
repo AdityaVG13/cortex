@@ -10,17 +10,24 @@
 //!   `cortex service-run`       -- Internal: SCM entry point
 //!
 //! The service runs the same daemon as `cortex serve` but under the Windows
-//! Service Control Manager with auto-start, auto-restart on failure, and
-//! proper lifecycle management. Every AI (Claude, Gemini, Codex, Cursor,
-//! Qwen, DeepSeek, GLM, Droid) benefits because the daemon is always alive.
+//! Service Control Manager with manual start by default, auto-restart on
+//! failure, and proper lifecycle management.
 
 const SERVICE_NAME: &str = "CortexDaemon";
 const DISPLAY_NAME: &str = "Cortex Memory Daemon";
 const DESCRIPTION: &str = "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
+const DEFAULT_START_MODE: &str = "demand";
 
 fn daemon_health_url() -> String {
     let port = crate::auth::CortexPaths::resolve().port;
     format!("http://127.0.0.1:{port}/health")
+}
+
+fn build_sc_create_command(exe_path: &str, username: &str) -> String {
+    format!(
+        "sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= {} DisplayName= \"{}\" obj= \".\\{}\"",
+        SERVICE_NAME, exe_path, DEFAULT_START_MODE, DISPLAY_NAME, username
+    )
 }
 
 // ---- CLI commands (work on any platform) ------------------------------------
@@ -36,10 +43,7 @@ pub fn install() {
 
     // COR-5 fix: use cmd /C for sc.exe to handle binPath quoting correctly.
     // sc.exe has non-standard argument parsing that fights with Rust's Command.
-    let sc_cmd = format!(
-        "sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= auto DisplayName= \"{}\" obj= \".\\{}\"",
-        SERVICE_NAME, exe_path, DISPLAY_NAME, username
-    );
+    let sc_cmd = build_sc_create_command(&exe_path, &username);
 
     let output = std::process::Command::new("cmd")
         .args(["/C", &sc_cmd])
@@ -63,7 +67,8 @@ pub fn install() {
                 )])
                 .output();
 
-            eprintln!("[cortex] Auto-start: enabled");
+            eprintln!("[cortex] Auto-start on boot: disabled (manual start mode)");
+            eprintln!("[cortex] To opt in later: sc.exe config CortexDaemon start= auto");
             eprintln!("[cortex] Recovery: restart on failure (5s / 10s / 30s)");
             eprintln!("[cortex] NOTE: You may need to set the password:");
             eprintln!("[cortex]   sc.exe config CortexDaemon password= YOUR_PASSWORD");
@@ -314,4 +319,38 @@ pub fn dispatch_service() {
 pub fn dispatch_service() {
     eprintln!("[cortex] Windows Service is only available on Windows");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_sc_create_command_defaults_to_manual_start() {
+        let cmd = build_sc_create_command(r"C:\Program Files\Cortex\cortex.exe", "alice");
+        assert!(
+            cmd.contains("start= demand"),
+            "expected manual start mode: {cmd}"
+        );
+        assert!(
+            !cmd.contains("start= auto"),
+            "must not auto-start by default: {cmd}"
+        );
+    }
+
+    #[test]
+    fn build_sc_create_command_includes_quoted_binpath_and_user() {
+        let exe = r"C:\Program Files\Cortex\cortex.exe";
+        let cmd = build_sc_create_command(exe, "alice");
+        let expected_bin = format!("binPath= \"\\\"{}\\\" service-run\"", exe);
+        assert!(cmd.contains(&format!("sc.exe create {}", SERVICE_NAME)));
+        assert!(
+            cmd.contains(&expected_bin),
+            "missing binPath quoting: {cmd}"
+        );
+        assert!(
+            cmd.contains("obj= \".\\alice\""),
+            "missing user account object: {cmd}"
+        );
+    }
 }
