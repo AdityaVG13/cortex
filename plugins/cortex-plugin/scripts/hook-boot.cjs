@@ -46,7 +46,60 @@ function isCortexHealthResponse(data) {
   );
 }
 
-function healthCheck(url, timeoutMs = 5000) {
+function normalizeRuntimePath(value) {
+  if (typeof value !== 'string') return '';
+  let normalized = value.trim().replace(/\\/g, '/');
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  if (process.platform === 'win32') {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function pathFieldMatches(actualValue, expectedPath) {
+  if (typeof expectedPath !== 'string' || expectedPath.trim().length === 0) {
+    return true;
+  }
+  if (typeof actualValue !== 'string' || actualValue.trim().length === 0) {
+    return false;
+  }
+  return normalizeRuntimePath(actualValue) === normalizeRuntimePath(expectedPath);
+}
+
+function validateHealthIdentity(data, expectedIdentity) {
+  if (!expectedIdentity || typeof expectedIdentity !== 'object') {
+    return true;
+  }
+
+  const runtime = (data && data.runtime) || {};
+  const stats = (data && data.stats) || {};
+
+  if (Number.isFinite(expectedIdentity.port) && runtime.port !== expectedIdentity.port) {
+    return false;
+  }
+  if (!pathFieldMatches(stats.home, expectedIdentity.home)) return false;
+  if (!pathFieldMatches(runtime.db_path, expectedIdentity.db)) return false;
+  if (!pathFieldMatches(runtime.token_path, expectedIdentity.token)) return false;
+  if (!pathFieldMatches(runtime.pid_path, expectedIdentity.pid)) return false;
+
+  return true;
+}
+
+function resolveHealthHost(bind) {
+  const trimmed = typeof bind === 'string' ? bind.trim() : '';
+  if (!trimmed || trimmed === '0.0.0.0' || trimmed === '::' || trimmed === '[::]') {
+    return '127.0.0.1';
+  }
+  return trimmed.replace(/^\[/, '').replace(/\]$/, '');
+}
+
+function formatHostForUrl(host) {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
   return new Promise((resolve) => {
     let target;
     try {
@@ -87,6 +140,10 @@ function healthCheck(url, timeoutMs = 5000) {
                 finish({ ok: false, error: 'Invalid Cortex health response' });
                 return;
               }
+              if (!validateHealthIdentity(data, expectedIdentity)) {
+                finish({ ok: false, error: 'Invalid Cortex health response (local identity mismatch)' });
+                return;
+              }
               const stats = data.stats || {};
               finish({
                 ok: true,
@@ -124,6 +181,8 @@ function healthCheck(url, timeoutMs = 5000) {
 async function getLocalHealth() {
   // Resolve port from daemon (cortex paths --json)
   let port = DEFAULT_DAEMON_PORT;
+  let bind = '127.0.0.1';
+  const expectedIdentity = {};
   try {
     const result = spawnSync(binaryPath, ['paths', '--json'], { encoding: 'utf8', timeout: 5000 });
     if (result.error) {
@@ -131,14 +190,25 @@ async function getLocalHealth() {
     }
     if (result.status === 0 && result.stdout) {
       const paths = JSON.parse(result.stdout);
-      port = paths.port || port;
+      if (Number.isFinite(paths.port)) {
+        port = paths.port;
+      }
+      if (typeof paths.bind === 'string' && paths.bind.trim().length > 0) {
+        bind = paths.bind.trim();
+      }
+      if (typeof paths.home === 'string') expectedIdentity.home = paths.home;
+      if (typeof paths.db === 'string') expectedIdentity.db = paths.db;
+      if (typeof paths.token === 'string') expectedIdentity.token = paths.token;
+      if (typeof paths.pid === 'string') expectedIdentity.pid = paths.pid;
     } else if (result.status !== 0 && result.stderr) {
       console.error(`[cortex-plugin] paths --json stderr: ${result.stderr.trim()}`);
     }
   } catch (e) {
     console.error(`[cortex-plugin] Failed to resolve daemon port: ${e.message}`);
   }
-  return healthCheck(`http://127.0.0.1:${port}`);
+  expectedIdentity.port = port;
+  const host = formatHostForUrl(resolveHealthHost(bind));
+  return healthCheck(`http://${host}:${port}`, 5000, expectedIdentity);
 }
 
 /**
