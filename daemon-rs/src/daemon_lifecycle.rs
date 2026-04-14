@@ -15,6 +15,57 @@ const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
 const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
 const RUNTIME_COPY_STALE_SECS: u64 = 600;
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
+const PLUGIN_CLAUDE_OWNER_TAG: &str = "plugin-claude";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonOwnerMode {
+    AppControlCenter,
+    PluginClaude,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RespawnPolicyDecision {
+    pub mode: DaemonOwnerMode,
+    pub allow_respawn: bool,
+    pub reason: &'static str,
+}
+
+pub fn classify_owner_mode(owner_tag: Option<&str>) -> DaemonOwnerMode {
+    match owner_tag {
+        Some(owner) if owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG) => {
+            DaemonOwnerMode::AppControlCenter
+        }
+        Some(owner) if owner.eq_ignore_ascii_case(PLUGIN_CLAUDE_OWNER_TAG) => {
+            DaemonOwnerMode::PluginClaude
+        }
+        _ => DaemonOwnerMode::Unknown,
+    }
+}
+
+pub fn evaluate_respawn_policy(
+    owner_tag: Option<&str>,
+    control_center_active: bool,
+) -> RespawnPolicyDecision {
+    let mode = classify_owner_mode(owner_tag);
+    if control_center_active && !matches!(mode, DaemonOwnerMode::AppControlCenter) {
+        return RespawnPolicyDecision {
+            mode,
+            allow_respawn: false,
+            reason: "control-center-active-non-app-owner",
+        };
+    }
+    let reason = if control_center_active {
+        "control-center-active-app-owner"
+    } else {
+        "control-center-inactive"
+    };
+    RespawnPolicyDecision {
+        mode,
+        allow_respawn: true,
+        reason,
+    }
+}
 
 fn health_probe_base(bind: &str, port: u16) -> String {
     let bind = bind.trim();
@@ -303,13 +354,13 @@ pub async fn try_respawn(paths: &CortexPaths, owner_tag: Option<&str>) -> bool {
         paths.port
     );
 
-    if owner_tag
-        .map(|owner| !owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
-        .unwrap_or(true)
-        && crate::auth::control_center_is_active(paths)
-    {
+    let respawn_policy =
+        evaluate_respawn_policy(owner_tag, crate::auth::control_center_is_active(paths));
+    if !respawn_policy.allow_respawn {
         eprintln!(
-            "[cortex-lifecycle] Control Center is active; skipping respawn attempt by '{}'",
+            "[cortex-lifecycle] Respawn denied (reason='{}', mode={:?}, owner='{}')",
+            respawn_policy.reason,
+            respawn_policy.mode,
             owner_tag.unwrap_or("unknown")
         );
         return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS)).await;
@@ -338,7 +389,10 @@ pub async fn try_respawn(paths: &CortexPaths, owner_tag: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{acquire_respawn_coordination_lock, is_cortex_health_payload};
+    use super::{
+        acquire_respawn_coordination_lock, evaluate_respawn_policy, is_cortex_health_payload,
+        DaemonOwnerMode,
+    };
     use crate::auth::CortexPaths;
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -476,5 +530,34 @@ mod tests {
         drop(first);
 
         let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn respawn_policy_allows_control_center_owner_when_app_lock_is_active() {
+        let decision = evaluate_respawn_policy(Some("control-center"), true);
+        assert_eq!(decision.mode, DaemonOwnerMode::AppControlCenter);
+        assert!(decision.allow_respawn);
+        assert_eq!(decision.reason, "control-center-active-app-owner");
+    }
+
+    #[test]
+    fn respawn_policy_denies_non_app_owner_when_app_lock_is_active() {
+        let plugin = evaluate_respawn_policy(Some("plugin-claude"), true);
+        assert_eq!(plugin.mode, DaemonOwnerMode::PluginClaude);
+        assert!(!plugin.allow_respawn);
+        assert_eq!(plugin.reason, "control-center-active-non-app-owner");
+
+        let unknown = evaluate_respawn_policy(None, true);
+        assert_eq!(unknown.mode, DaemonOwnerMode::Unknown);
+        assert!(!unknown.allow_respawn);
+        assert_eq!(unknown.reason, "control-center-active-non-app-owner");
+    }
+
+    #[test]
+    fn respawn_policy_allows_non_app_owner_when_app_lock_is_inactive() {
+        let decision = evaluate_respawn_policy(Some("plugin-claude"), false);
+        assert_eq!(decision.mode, DaemonOwnerMode::PluginClaude);
+        assert!(decision.allow_respawn);
+        assert_eq!(decision.reason, "control-center-inactive");
     }
 }
