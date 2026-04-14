@@ -8,7 +8,6 @@ use uuid::Uuid;
 
 const CORTEX_DIR_NAME: &str = ".cortex";
 const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-const CONTROL_CENTER_RUNTIME_LOCK_FILE: &str = "control-center.lock";
 
 // ---------------------------------------------------------------------------
 // CortexPaths -- centralized path + port resolver
@@ -195,59 +194,6 @@ pub fn acquire_daemon_lock(paths: &CortexPaths) -> Result<fs::File, String> {
         .try_lock_exclusive()
         .map_err(|_| "another cortex instance holds the lock".to_string())?;
     Ok(lock_file)
-}
-
-/// Returns the Control Center runtime lock path for this Cortex home.
-pub fn control_center_lock_path(paths: &CortexPaths) -> PathBuf {
-    paths
-        .home
-        .join("runtime")
-        .join(CONTROL_CENTER_RUNTIME_LOCK_FILE)
-}
-
-/// Returns true when the Control Center app lock is currently held.
-pub fn control_center_is_active(paths: &CortexPaths) -> bool {
-    let lock_path = control_center_lock_path(paths);
-    if !lock_path.exists() {
-        return false;
-    }
-
-    let lock_file = match fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-    {
-        Ok(file) => file,
-        Err(err) if lock_error_indicates_active(&err) => return true,
-        Err(_) => return false,
-    };
-
-    match lock_file.try_lock_exclusive() {
-        Ok(()) => {
-            let _ = lock_file.unlock();
-            false
-        }
-        Err(err) => lock_error_indicates_active(&err),
-    }
-}
-
-fn lock_error_indicates_active(err: &std::io::Error) -> bool {
-    if matches!(
-        err.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
-    ) {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        // Windows lock failures from LockFileEx can surface as ERROR_SHARING_VIOLATION (32)
-        // or ERROR_LOCK_VIOLATION (33), sometimes mapped to ErrorKind::Other.
-        matches!(err.raw_os_error(), Some(32 | 33))
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
 }
 
 /// Returns `~/.cortex` (or `$HOME/.cortex` on non-Windows).
@@ -465,13 +411,7 @@ fn base62_encode_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-    const CONTROL_CENTER_LOCK_HELPER_ENV: &str = "CORTEX_TEST_CONTROL_CENTER_LOCK_HELPER";
-    const CONTROL_CENTER_LOCK_PATH_ENV: &str = "CORTEX_TEST_CONTROL_CENTER_LOCK_PATH";
-    const CONTROL_CENTER_READY_PATH_ENV: &str = "CORTEX_TEST_CONTROL_CENTER_READY_PATH";
-    const CONTROL_CENTER_HOLD_MS_ENV: &str = "CORTEX_TEST_CONTROL_CENTER_HOLD_MS";
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -479,42 +419,6 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("cortex_auth_{name}_{unique}"))
-    }
-
-    #[test]
-    fn control_center_lock_holder_helper_process() {
-        if std::env::var_os(CONTROL_CENTER_LOCK_HELPER_ENV).is_none() {
-            return;
-        }
-
-        let lock_path = PathBuf::from(
-            std::env::var(CONTROL_CENTER_LOCK_PATH_ENV)
-                .expect("helper requires control-center lock path"),
-        );
-        let ready_path = PathBuf::from(
-            std::env::var(CONTROL_CENTER_READY_PATH_ENV)
-                .expect("helper requires control-center ready marker path"),
-        );
-        let hold_ms = std::env::var(CONTROL_CENTER_HOLD_MS_ENV)
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(10_000);
-
-        if let Some(parent) = lock_path.parent() {
-            fs::create_dir_all(parent).expect("create lock parent");
-        }
-        let lock_file = fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-            .expect("open helper lock file");
-        lock_file
-            .try_lock_exclusive()
-            .expect("helper must hold control-center lock");
-        fs::write(&ready_path, "ready").expect("write helper ready marker");
-        std::thread::sleep(Duration::from_millis(hold_ms));
     }
 
     #[test]
@@ -581,75 +485,6 @@ mod tests {
         let paths = CortexPaths::resolve_from_args(&args);
         assert_eq!(paths.bind, "0.0.0.0");
 
-        let _ = fs::remove_dir_all(&home_dir);
-    }
-
-    #[test]
-    fn control_center_is_active_reflects_runtime_lock_state() {
-        let home_dir = temp_test_dir("control_center_lock");
-        fs::create_dir_all(&home_dir).unwrap();
-
-        let home_str = home_dir.to_string_lossy().to_string();
-        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
-        let runtime_dir = paths.home.join("runtime");
-        fs::create_dir_all(&runtime_dir).unwrap();
-        let lock_path = control_center_lock_path(&paths);
-        fs::write(&lock_path, "pid=1").unwrap();
-
-        assert!(!control_center_is_active(&paths));
-
-        let _ = fs::remove_dir_all(&home_dir);
-    }
-
-    #[test]
-    fn control_center_is_active_detects_cross_process_lock_holder() {
-        let home_dir = temp_test_dir("control_center_cross_process");
-        fs::create_dir_all(&home_dir).unwrap();
-
-        let home_str = home_dir.to_string_lossy().to_string();
-        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
-        let runtime_dir = paths.home.join("runtime");
-        fs::create_dir_all(&runtime_dir).unwrap();
-        let lock_path = control_center_lock_path(&paths);
-        fs::write(&lock_path, "pid=1").unwrap();
-        let ready_path = runtime_dir.join("control-center-ready.marker");
-        let _ = fs::remove_file(&ready_path);
-
-        let mut child = Command::new(std::env::current_exe().expect("resolve current test binary"))
-            .arg("control_center_lock_holder_helper_process")
-            .arg("--nocapture")
-            .env(CONTROL_CENTER_LOCK_HELPER_ENV, "1")
-            .env(CONTROL_CENTER_LOCK_PATH_ENV, lock_path.as_os_str())
-            .env(CONTROL_CENTER_READY_PATH_ENV, ready_path.as_os_str())
-            .env(CONTROL_CENTER_HOLD_MS_ENV, "10000")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn helper process");
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !ready_path.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(25));
-        }
-
-        assert!(
-            ready_path.exists(),
-            "helper did not report lock acquisition in time"
-        );
-        assert!(
-            child
-                .try_wait()
-                .expect("query helper process state")
-                .is_none(),
-            "helper exited before lock-state assertion"
-        );
-        assert!(
-            control_center_is_active(&paths),
-            "control-center lock held by a different process should be active"
-        );
-
-        let _ = child.kill();
-        let _ = child.wait();
         let _ = fs::remove_dir_all(&home_dir);
     }
 }
