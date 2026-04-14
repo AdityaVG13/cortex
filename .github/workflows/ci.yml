@@ -102,6 +102,21 @@ jobs:
         run: rtk cargo clippy --all-targets -- -D warnings
         working-directory: daemon-rs
 
+  spawn-audit:
+    name: Spawn ownership audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Python
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d
+        with:
+          python-version: "3.11"
+
+      - name: Enforce spawn path map
+        run: python tools/audit_spawn_paths.py --strict
+
   plugin-validation:
     name: Plugin validation
     runs-on: ubuntu-latest
