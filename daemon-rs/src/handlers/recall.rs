@@ -902,9 +902,30 @@ fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize) -> Vec<Recal
             .collect();
     }
 
+    let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
+    let min_relevance = if top_relevance >= 0.25 {
+        (top_relevance * 0.72).max(0.18)
+    } else {
+        0.0
+    };
+    let max_items = if token_budget <= 220 {
+        4
+    } else if token_budget <= 400 {
+        6
+    } else if token_budget <= 800 {
+        8
+    } else {
+        10
+    };
+
     let mut spent = 0usize;
     let mut budgeted = Vec::new();
-    for (idx, mut item) in raw.into_iter().enumerate() {
+    for (idx, mut item) in raw
+        .into_iter()
+        .filter(|item| item.relevance >= min_relevance)
+        .take(max_items)
+        .enumerate()
+    {
         let remaining = token_budget.saturating_sub(spent);
         if remaining <= 10 {
             break;
@@ -939,9 +960,35 @@ fn run_budget_recall_with_query_vector(
         return Ok(vec![]);
     }
 
+    let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
+    let min_relevance = if top_relevance >= 0.25 {
+        (top_relevance * 0.72).max(0.18)
+    } else {
+        0.0
+    };
+    let max_items = if token_budget <= 220 {
+        k.min(4)
+    } else if token_budget <= 400 {
+        k.min(6)
+    } else if token_budget <= 800 {
+        k.min(8)
+    } else {
+        k.min(12)
+    };
+
+    let mut candidates: Vec<RecallItem> = raw
+        .iter()
+        .filter(|item| item.relevance >= min_relevance)
+        .take(max_items)
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        candidates = raw.into_iter().take(max_items).collect();
+    }
+
     let mut spent = 0usize;
     let mut budgeted = Vec::new();
-    for (idx, item) in raw.into_iter().enumerate() {
+    for (idx, item) in candidates.into_iter().enumerate() {
         let remaining = token_budget.saturating_sub(spent);
         if remaining <= 10 {
             break;
