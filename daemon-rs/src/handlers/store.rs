@@ -25,8 +25,39 @@ pub struct StoreRequest {
     #[serde(rename = "type")]
     pub entry_type: Option<String>,
     pub source_agent: Option<String>,
+    pub source_model: Option<String>,
     pub confidence: Option<f64>,
+    pub reasoning_depth: Option<String>,
     pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DecisionProvenance {
+    source_client: String,
+    source_model: Option<String>,
+    reasoning_depth: String,
+}
+
+impl DecisionProvenance {
+    pub(crate) fn from_fields(
+        source_agent: &str,
+        source_model: Option<&str>,
+        reasoning_depth: Option<&str>,
+    ) -> Self {
+        let normalized_model = source_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Self {
+            source_client: normalize_source_client(source_agent),
+            source_model: normalized_model,
+            reasoning_depth: normalize_reasoning_depth(reasoning_depth),
+        }
+    }
+
+    fn trust_score(&self, confidence: f64) -> f64 {
+        compute_trust_score(confidence, self.source_model.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +127,80 @@ impl From<String> for StoreError {
     }
 }
 
+fn normalize_source_client(raw: &str) -> String {
+    let before_model = raw
+        .split('(')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_ascii_lowercase();
+    let normalized: String = before_model
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if normalized.is_empty() {
+        "unknown".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn normalize_reasoning_depth(raw: Option<&str>) -> String {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .map(|value| {
+            value
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || ch == '-' {
+                        ch
+                    } else if ch == ' ' || ch == '_' {
+                        '-'
+                    } else {
+                        '\0'
+                    }
+                })
+                .filter(|ch| *ch != '\0')
+                .collect::<String>()
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "single-shot".to_string());
+
+    match normalized.as_str() {
+        "chain-of-thought" | "single-shot" | "tool-assisted" | "multi-step" | "user-stated" => {
+            normalized
+        }
+        _ => "single-shot".to_string(),
+    }
+}
+
+fn model_weight(source_model: Option<&str>) -> f64 {
+    let Some(model) = source_model.map(|value| value.to_ascii_lowercase()) else {
+        return 0.70;
+    };
+    if model.contains("opus") {
+        1.0
+    } else if model.contains("sonnet") {
+        0.85
+    } else if model.contains("gemini") && model.contains("pro") {
+        0.80
+    } else if model.contains("gemini") {
+        0.60
+    } else if model.contains("qwen") {
+        0.50
+    } else {
+        0.70
+    }
+}
+
+fn compute_trust_score(confidence: f64, source_model: Option<&str>) -> f64 {
+    let bounded_confidence = confidence.clamp(0.0, 1.0);
+    let raw = bounded_confidence * model_weight(source_model);
+    ((raw * 10_000.0).round() / 10_000.0).clamp(0.0, 1.0)
+}
+
 pub async fn handle_store(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
@@ -114,8 +219,16 @@ pub async fn handle_store(
         );
     }
 
-    let source_agent =
-        resolve_source_identity(&headers, body.source_agent.as_deref().unwrap_or("http")).agent;
+    let source_identity =
+        resolve_source_identity(&headers, body.source_agent.as_deref().unwrap_or("http"));
+    let source_agent = source_identity.agent.clone();
+    let provenance = DecisionProvenance::from_fields(
+        &source_agent,
+        body.source_model
+            .as_deref()
+            .or(source_identity.model.as_deref()),
+        body.reasoning_depth.as_deref(),
+    );
 
     if let Some(ttl_seconds) = body.ttl_seconds {
         if ttl_seconds <= 0 {
@@ -133,12 +246,13 @@ pub async fn handle_store(
         .and_then(|engine| engine.embed(&decision_text));
 
     let mut conn = state.db.lock().await;
-    let result = store_decision_with_input_embedding(
+    let result = store_decision_with_input_embedding_and_provenance(
         &mut conn,
         &decision_text,
         body.context,
         body.entry_type,
         source_agent.clone(),
+        provenance,
         body.confidence,
         body.ttl_seconds,
         decision_embedding.as_deref(),
@@ -198,12 +312,14 @@ pub fn store_decision(
     confidence: Option<f64>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
+    let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
     store_decision_internal(
         conn,
         decision,
         context,
         entry_type,
         source_agent,
+        provenance,
         confidence,
         None,
         None,
@@ -223,12 +339,14 @@ pub fn store_decision_with_ttl(
     ttl_seconds: Option<i64>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
+    let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
     store_decision_internal(
         conn,
         decision,
         context,
         entry_type,
         source_agent,
+        provenance,
         confidence,
         ttl_seconds,
         None,
@@ -237,7 +355,7 @@ pub fn store_decision_with_ttl(
     .map_err(|err| err.to_string())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn store_decision_with_input_embedding(
     conn: &mut Connection,
     decision: &str,
@@ -249,12 +367,41 @@ pub(crate) fn store_decision_with_input_embedding(
     query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
+    let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
+    store_decision_with_input_embedding_and_provenance(
+        conn,
+        decision,
+        context,
+        entry_type,
+        source_agent,
+        provenance,
+        confidence,
+        ttl_seconds,
+        query_embedding,
+        owner_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn store_decision_with_input_embedding_and_provenance(
+    conn: &mut Connection,
+    decision: &str,
+    context: Option<String>,
+    entry_type: Option<String>,
+    source_agent: String,
+    provenance: DecisionProvenance,
+    confidence: Option<f64>,
+    ttl_seconds: Option<i64>,
+    query_embedding: Option<&[f32]>,
+    owner_id: Option<i64>,
+) -> Result<(Value, Option<i64>), StoreError> {
     store_decision_internal(
         conn,
         decision,
         context,
         entry_type,
         source_agent,
+        provenance,
         confidence,
         ttl_seconds,
         query_embedding,
@@ -269,6 +416,7 @@ fn store_decision_internal(
     context: Option<String>,
     entry_type: Option<String>,
     source_agent: String,
+    provenance: DecisionProvenance,
     confidence: Option<f64>,
     ttl_seconds: Option<i64>,
     query_embedding: Option<&[f32]>,
@@ -286,6 +434,7 @@ fn store_decision_internal(
 
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let confidence = confidence.unwrap_or(0.8);
+    let trust_score = provenance.trust_score(confidence);
     let ts = now_iso();
     let expires_at = compute_expires_at(conn, ttl_seconds).map_err(StoreError::Internal)?;
 
@@ -322,7 +471,9 @@ fn store_decision_internal(
             context,
             &entry_type,
             &source_agent,
+            &provenance,
             confidence,
+            trust_score,
             quality.score,
             expires_at,
             &ts,
@@ -337,7 +488,9 @@ fn store_decision_internal(
         context,
         &entry_type,
         &source_agent,
+        &provenance,
         confidence,
+        trust_score,
         quality.score,
         expires_at,
         &ts,
@@ -352,7 +505,9 @@ fn store_decision_legacy(
     context: Option<String>,
     entry_type: &str,
     source_agent: &str,
+    provenance: &DecisionProvenance,
     confidence: f64,
+    trust_score: f64,
     quality: i32,
     expires_at: Option<String>,
     ts: &str,
@@ -370,8 +525,8 @@ fn store_decision_legacy(
         if let Some(oid) = owner_id {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, status, disputes_id, owner_id, quality, expires_at, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?9, ?10, ?10)",
+                 (decision, context, type, source_agent, confidence, status, disputes_id, owner_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     decision,
                     context,
@@ -382,14 +537,18 @@ fn store_decision_legacy(
                     oid,
                     quality,
                     expires_at,
-                    ts
+                    ts,
+                    provenance.source_client.as_str(),
+                    provenance.source_model.as_deref(),
+                    provenance.reasoning_depth.as_str(),
+                    trust_score,
                 ],
             )
         } else {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, status, disputes_id, quality, expires_at, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?9, ?9)",
+                 (decision, context, type, source_agent, confidence, status, disputes_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'disputed', ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     decision,
                     context,
@@ -399,7 +558,11 @@ fn store_decision_legacy(
                     existing_id,
                     quality,
                     expires_at,
-                    ts
+                    ts,
+                    provenance.source_client.as_str(),
+                    provenance.source_model.as_deref(),
+                    provenance.reasoning_depth.as_str(),
+                    trust_score,
                 ],
             )
         }
@@ -455,8 +618,8 @@ fn store_decision_legacy(
         if let Some(oid) = owner_id {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, supersedes_id, owner_id, quality, expires_at, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                 (decision, context, type, source_agent, confidence, supersedes_id, owner_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     decision,
                     context,
@@ -467,14 +630,18 @@ fn store_decision_legacy(
                     oid,
                     quality,
                     expires_at,
-                    ts
+                    ts,
+                    provenance.source_client.as_str(),
+                    provenance.source_model.as_deref(),
+                    provenance.reasoning_depth.as_str(),
+                    trust_score,
                 ],
             )
         } else {
             tx.execute(
                 "INSERT INTO decisions \
-                 (decision, context, type, source_agent, confidence, supersedes_id, quality, expires_at, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+                 (decision, context, type, source_agent, confidence, supersedes_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     decision,
                     context,
@@ -484,7 +651,11 @@ fn store_decision_legacy(
                     old_id,
                     quality,
                     expires_at,
-                    ts
+                    ts,
+                    provenance.source_client.as_str(),
+                    provenance.source_model.as_deref(),
+                    provenance.reasoning_depth.as_str(),
+                    trust_score,
                 ],
             )
         }
@@ -570,7 +741,9 @@ fn store_decision_legacy(
         context,
         entry_type,
         source_agent,
+        provenance,
         confidence,
+        trust_score,
         quality,
         expires_at,
         ts,
@@ -831,7 +1004,9 @@ fn insert_decision(
     context: Option<String>,
     entry_type: &str,
     source_agent: &str,
+    provenance: &DecisionProvenance,
     confidence: f64,
+    trust_score: f64,
     quality: i32,
     expires_at: Option<String>,
     ts: &str,
@@ -842,8 +1017,8 @@ fn insert_decision(
     if let Some(oid) = owner_id {
         conn.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, owner_id, quality, expires_at, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?10)",
+             (decision, context, type, source_agent, confidence, surprise, status, owner_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)",
             params![
                 decision,
                 context,
@@ -854,14 +1029,18 @@ fn insert_decision(
                 oid,
                 quality,
                 expires_at,
-                ts
+                ts,
+                provenance.source_client.as_str(),
+                provenance.source_model.as_deref(),
+                provenance.reasoning_depth.as_str(),
+                trust_score,
             ],
         )
     } else {
         conn.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, quality, expires_at, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?9)",
+             (decision, context, type, source_agent, confidence, surprise, status, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
             params![
                 decision,
                 context,
@@ -871,7 +1050,11 @@ fn insert_decision(
                 surprise,
                 quality,
                 expires_at,
-                ts
+                ts,
+                provenance.source_client.as_str(),
+                provenance.source_model.as_deref(),
+                provenance.reasoning_depth.as_str(),
+                trust_score,
             ],
         )
     }
@@ -986,6 +1169,26 @@ mod tests {
         vec![similarity, (1.0 - similarity * similarity).sqrt()]
     }
 
+    #[test]
+    fn provenance_normalizes_client_model_and_depth() {
+        let provenance = DecisionProvenance::from_fields(
+            "Codex (GPT-5.4)",
+            Some("claude-opus-4.1"),
+            Some("multi_step"),
+        );
+        assert_eq!(provenance.source_client, "codex");
+        assert_eq!(provenance.source_model.as_deref(), Some("claude-opus-4.1"));
+        assert_eq!(provenance.reasoning_depth, "multi-step");
+    }
+
+    #[test]
+    fn trust_score_prefers_stronger_models() {
+        let weak = compute_trust_score(0.9, Some("qwen-30b"));
+        let strong = compute_trust_score(0.9, Some("claude-opus-4.1"));
+        assert!(strong > weak);
+        assert_eq!(strong, 0.9);
+    }
+
     fn insert_existing_decision(
         conn: &Connection,
         decision: &str,
@@ -1001,6 +1204,49 @@ mod tests {
         let id = conn.last_insert_rowid();
         persist_decision_embedding(conn, id, vector).unwrap();
         id
+    }
+
+    #[test]
+    fn store_with_provenance_persists_trust_fields() {
+        let mut conn = test_conn();
+        let provenance = DecisionProvenance::from_fields(
+            "codex",
+            Some("claude-opus-4.1"),
+            Some("tool-assisted"),
+        );
+
+        let (_, new_id) = store_decision_with_input_embedding_and_provenance(
+            &mut conn,
+            "persist provenance for memory trust",
+            Some("unit test".to_string()),
+            Some("decision".to_string()),
+            "codex".to_string(),
+            provenance,
+            Some(0.9),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let new_id = new_id.unwrap();
+        let (source_client, source_model, reasoning_depth, trust_score): (
+            String,
+            Option<String>,
+            String,
+            f64,
+        ) = conn
+            .query_row(
+                "SELECT source_client, source_model, reasoning_depth, trust_score FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(source_client, "codex");
+        assert_eq!(source_model.as_deref(), Some("claude-opus-4.1"));
+        assert_eq!(reasoning_depth, "tool-assisted");
+        assert_eq!(trust_score, 0.9);
     }
 
     #[test]

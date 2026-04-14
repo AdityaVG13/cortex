@@ -68,7 +68,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 8] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 9] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -77,6 +77,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 8] = [
     ("006", "ttl_expiration"),
     ("007", "semantic_store_quality_defaults"),
     ("008", "client_permissions"),
+    ("009", "provenance_fields"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -284,6 +285,72 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             )?;
             Ok(())
         }
+        "009" => {
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN source_client TEXT DEFAULT 'unknown'",
+            )?;
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN source_model TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN reasoning_depth TEXT DEFAULT 'single-shot'",
+            )?;
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN trust_score REAL DEFAULT 0.8",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN source_client TEXT DEFAULT 'unknown'",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN source_model TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN reasoning_depth TEXT DEFAULT 'single-shot'",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN trust_score REAL DEFAULT 0.8",
+            )?;
+
+            let _ = conn.execute(
+                "UPDATE memories
+                 SET source_client = COALESCE(NULLIF(lower(source_agent), ''), 'unknown')
+                 WHERE source_client IS NULL OR source_client = ''",
+                [],
+            );
+            let _ = conn.execute(
+                "UPDATE memories SET trust_score = COALESCE(confidence, 0.8)
+                 WHERE trust_score IS NULL",
+                [],
+            );
+            let _ = conn.execute(
+                "UPDATE decisions
+                 SET source_client = COALESCE(NULLIF(lower(source_agent), ''), 'unknown')
+                 WHERE source_client IS NULL OR source_client = ''",
+                [],
+            );
+            let _ = conn.execute(
+                "UPDATE decisions SET trust_score = COALESCE(confidence, 0.8)
+                 WHERE trust_score IS NULL",
+                [],
+            );
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -386,7 +453,11 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           type TEXT DEFAULT 'memory',
           tags TEXT,
           source_agent TEXT DEFAULT 'unknown',
+          source_client TEXT DEFAULT 'unknown',
+          source_model TEXT,
           confidence REAL DEFAULT 0.8,
+          reasoning_depth TEXT DEFAULT 'single-shot',
+          trust_score REAL DEFAULT 0.8,
           status TEXT DEFAULT 'active',
           score REAL DEFAULT 1.0,
           retrievals INTEGER DEFAULT 0,
@@ -408,7 +479,11 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           context TEXT,
           type TEXT DEFAULT 'decision',
           source_agent TEXT DEFAULT 'unknown',
+          source_client TEXT DEFAULT 'unknown',
+          source_model TEXT,
           confidence REAL DEFAULT 0.8,
+          reasoning_depth TEXT DEFAULT 'single-shot',
+          trust_score REAL DEFAULT 0.8,
           surprise REAL DEFAULT 1.0,
           status TEXT DEFAULT 'active',
           score REAL DEFAULT 1.0,
@@ -1638,8 +1713,16 @@ mod tests {
         // Team columns are not present in solo baseline.
         assert!(!table_has_column(&conn, "memories", "owner_id"));
         assert!(!table_has_column(&conn, "memories", "visibility"));
+        assert!(table_has_column(&conn, "memories", "source_client"));
+        assert!(table_has_column(&conn, "memories", "source_model"));
+        assert!(table_has_column(&conn, "memories", "reasoning_depth"));
+        assert!(table_has_column(&conn, "memories", "trust_score"));
         assert!(!table_has_column(&conn, "decisions", "owner_id"));
         assert!(!table_has_column(&conn, "decisions", "visibility"));
+        assert!(table_has_column(&conn, "decisions", "source_client"));
+        assert!(table_has_column(&conn, "decisions", "source_model"));
+        assert!(table_has_column(&conn, "decisions", "reasoning_depth"));
+        assert!(table_has_column(&conn, "decisions", "trust_score"));
         assert!(table_has_column(&conn, "sessions", "agent"));
         assert!(table_has_column(&conn, "sessions", "session_id"));
         assert!(!table_has_column(&conn, "sessions", "owner_id"));
@@ -1809,9 +1892,17 @@ mod tests {
         assert!(table_has_column(&conn, "memories", "merged_count"));
         assert!(table_has_column(&conn, "memories", "quality"));
         assert!(table_has_column(&conn, "memories", "expires_at"));
+        assert!(table_has_column(&conn, "memories", "source_client"));
+        assert!(table_has_column(&conn, "memories", "source_model"));
+        assert!(table_has_column(&conn, "memories", "reasoning_depth"));
+        assert!(table_has_column(&conn, "memories", "trust_score"));
         assert!(table_has_column(&conn, "decisions", "merged_count"));
         assert!(table_has_column(&conn, "decisions", "quality"));
         assert!(table_has_column(&conn, "decisions", "expires_at"));
+        assert!(table_has_column(&conn, "decisions", "source_client"));
+        assert!(table_has_column(&conn, "decisions", "source_model"));
+        assert!(table_has_column(&conn, "decisions", "reasoning_depth"));
+        assert!(table_has_column(&conn, "decisions", "trust_score"));
         assert!(table_exists(&conn, "focus_sessions"));
         assert!(table_exists(&conn, "memory_clusters"));
         assert!(table_exists(&conn, "cluster_members"));

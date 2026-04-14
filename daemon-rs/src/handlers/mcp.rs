@@ -8,7 +8,10 @@ use super::mutate::{forget_keyword, resolve_decision};
 use super::recall::{
     execute_semantic_recall, execute_unified_recall, unfold_source, RecallContext,
 };
-use super::store::{persist_decision_embedding, store_decision_with_input_embedding};
+use super::store::{
+    persist_decision_embedding, store_decision_with_input_embedding_and_provenance,
+    DecisionProvenance,
+};
 use super::{estimate_tokens, now_iso, SourceIdentity};
 use crate::state::RuntimeState;
 
@@ -697,7 +700,8 @@ pub fn mcp_tools() -> Vec<Value> {
                     "context": { "type": "string", "description": "Optional context about where/why" },
                     "type": { "type": "string", "description": "Entry type (default: decision)" },
                     "source_agent": { "type": "string", "description": "Agent that produced this" },
-                    "confidence": { "type": "number", "description": "Confidence score 0-1 (default: 0.8)" }
+                    "confidence": { "type": "number", "description": "Confidence score 0-1 (default: 0.8)" },
+                    "reasoning_depth": { "type": "string", "description": "single-shot | multi-step | tool-assisted | chain-of-thought | user-stated" }
                 },
                 "required": ["decision"]
             }
@@ -964,7 +968,7 @@ async fn mcp_dispatch(
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or_else(|| {
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or({
                 if budget <= 220 {
                     16
                 } else if budget <= 400 {
@@ -984,7 +988,7 @@ async fn mcp_dispatch(
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or_else(|| {
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or({
                 if budget <= 220 {
                     14
                 } else {
@@ -1005,6 +1009,10 @@ async fn mcp_dispatch(
             let entry_type = arg_str(args, &["type", "t"]).map(str::to_string);
             let source_agent =
                 source_agent_for_tool(source, arg_str(args, &["source_agent"]).unwrap_or("mcp"));
+            let source_model = source_model_for_tool(source, args);
+            let reasoning_depth = arg_str(args, &["reasoning_depth", "reasoningDepth"]);
+            let provenance =
+                DecisionProvenance::from_fields(&source_agent, source_model, reasoning_depth);
             let confidence = arg_f64(args, &["confidence", "conf"]);
             let ttl_seconds = arg_i64(args, &["ttl_seconds", "ttl"]);
             let decision_embedding = state
@@ -1013,12 +1021,13 @@ async fn mcp_dispatch(
                 .and_then(|engine| engine.embed(decision));
 
             let mut conn = state.db.lock().await;
-            let (entry, new_id) = store_decision_with_input_embedding(
+            let (entry, new_id) = store_decision_with_input_embedding_and_provenance(
                 &mut conn,
                 decision,
                 context,
                 entry_type,
                 source_agent.clone(),
+                provenance,
                 confidence,
                 ttl_seconds,
                 decision_embedding.as_deref(),
