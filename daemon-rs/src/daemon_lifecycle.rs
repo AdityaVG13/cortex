@@ -13,6 +13,7 @@ use crate::auth::CortexPaths;
 use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use uuid::Uuid;
 
 const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
@@ -24,6 +25,7 @@ const DAEMON_OWNER_SIGNING_KEY_FILE: &str = "daemon-owner-signing.key";
 const DAEMON_OWNER_TOKEN_VERSION: &str = "v1";
 const DAEMON_OWNER_TOKEN_TTL_SECS: u64 = 180;
 pub const DAEMON_OWNER_TOKEN_ENV: &str = "CORTEX_DAEMON_OWNER_TOKEN";
+pub const SPAWN_PARENT_START_TIME_ENV: &str = "CORTEX_SPAWN_PARENT_START_TIME";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DaemonOwnerMode {
@@ -239,6 +241,13 @@ fn issue_owner_token_for_spawn(
     build_owner_token(&key, owner_tag, parent_pid, issued_at, &nonce)
 }
 
+fn process_start_time_secs(pid: u32) -> Option<u64> {
+    let mut system = System::new_all();
+    let target = Pid::from_u32(pid);
+    system.refresh_processes(ProcessesToUpdate::Some(&[target]), true);
+    system.process(target).map(|process| process.start_time())
+}
+
 pub fn validate_spawned_owner_claim(
     paths: &CortexPaths,
     owner_tag: Option<&str>,
@@ -412,6 +421,8 @@ pub fn spawn_daemon(paths: &CortexPaths, owner_tag: Option<&str>) -> Result<(), 
     let spawn_exe =
         prepare_spawn_executable(paths, &exe).map_err(|e| format!("prepare spawn copy: {e}"))?;
     let launcher_pid = std::process::id();
+    let launcher_start = process_start_time_secs(launcher_pid)
+        .ok_or_else(|| format!("resolve parent process start time for pid {launcher_pid}"))?;
     let mut cmd = Command::new(spawn_exe);
     cmd.arg("serve")
         .env("CORTEX_HOME", &paths.home)
@@ -419,6 +430,7 @@ pub fn spawn_daemon(paths: &CortexPaths, owner_tag: Option<&str>) -> Result<(), 
         .env("CORTEX_PORT", paths.port.to_string())
         .env("CORTEX_BIND", &paths.bind)
         .env("CORTEX_SPAWN_PARENT_PID", launcher_pid.to_string())
+        .env(SPAWN_PARENT_START_TIME_ENV, launcher_start.to_string())
         .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

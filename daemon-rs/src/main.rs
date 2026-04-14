@@ -1790,7 +1790,7 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
 
 use daemon_lifecycle::{
     daemon_healthy, spawn_daemon, validate_spawned_owner_claim, wait_for_health,
-    DAEMON_OWNER_TOKEN_ENV,
+    DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV,
 };
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
@@ -2054,17 +2054,29 @@ fn spawn_parent_pid_from_env() -> Option<u32> {
         .and_then(|value| value.trim().parse::<u32>().ok())
 }
 
+fn spawn_parent_start_time_from_env() -> Option<u64> {
+    std::env::var(SPAWN_PARENT_START_TIME_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
 fn should_watch_spawn_parent(owner_tag: Option<&str>) -> bool {
     owner_tag
         .map(|owner| !owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
         .unwrap_or(true)
 }
 
-fn process_pid_alive(pid: u32) -> bool {
+fn process_pid_start_time(pid: u32) -> Option<u64> {
     let mut system = sysinfo::System::new_all();
     let target = sysinfo::Pid::from_u32(pid);
     system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[target]), true);
-    system.process(target).is_some()
+    system.process(target).map(|process| process.start_time())
+}
+
+fn process_pid_identity_matches(pid: u32, expected_start_time: u64) -> bool {
+    process_pid_start_time(pid)
+        .map(|actual_start_time| actual_start_time == expected_start_time)
+        .unwrap_or(false)
 }
 
 fn spawned_owner_requires_parent_pid(owner_tag: Option<&str>) -> bool {
@@ -2077,6 +2089,7 @@ fn validate_spawned_owner_runtime_claim(
     paths: &auth::CortexPaths,
     owner_tag: Option<&str>,
     parent_pid: Option<u32>,
+    parent_start_time: Option<u64>,
     owner_token: Option<&str>,
 ) -> Result<(), String> {
     if spawned_owner_requires_parent_pid(owner_tag) && parent_pid.is_none() {
@@ -2086,6 +2099,27 @@ fn validate_spawned_owner_runtime_claim(
             SPAWN_PARENT_PID_ENV
         ));
     }
+    if spawned_owner_requires_parent_pid(owner_tag) && parent_start_time.is_none() {
+        return Err(format!(
+            "owner '{}' requires {} linkage",
+            owner_tag.unwrap_or("unknown"),
+            SPAWN_PARENT_START_TIME_ENV
+        ));
+    }
+
+    if let (Some(parent_pid), Some(parent_start_time)) = (parent_pid, parent_start_time) {
+        let Some(actual_start_time) = process_pid_start_time(parent_pid) else {
+            return Err(format!(
+                "spawn parent process {parent_pid} is not running during ownership claim validation"
+            ));
+        };
+        if actual_start_time != parent_start_time {
+            return Err(format!(
+                "spawn parent start-time mismatch for pid {parent_pid} (env={parent_start_time}, actual={actual_start_time})"
+            ));
+        }
+    }
+
     validate_spawned_owner_claim(paths, owner_tag, parent_pid, owner_token)
 }
 
@@ -2306,18 +2340,20 @@ pub(crate) async fn run_daemon(
 
     let daemon_owner = daemon_owner_tag_from_env();
     let parent_pid = spawn_parent_pid_from_env();
+    let parent_start_time = spawn_parent_start_time_from_env();
     let owner_token = daemon_owner_token_from_env();
     if let Err(reason) = validate_spawned_owner_runtime_claim(
         &paths,
         daemon_owner.as_deref(),
         parent_pid,
+        parent_start_time,
         owner_token.as_deref(),
     ) {
         eprintln!("[cortex] FATAL: invalid spawned owner claim ({reason}); refusing startup");
         std::process::exit(1);
     }
     if should_watch_spawn_parent(daemon_owner.as_deref()) {
-        if let Some(parent_pid) = parent_pid {
+        if let (Some(parent_pid), Some(parent_start_time)) = (parent_pid, parent_start_time) {
             let shutdown_tx = state.shutdown_tx.clone();
             tokio::spawn(async move {
                 let mut interval =
@@ -2325,9 +2361,9 @@ pub(crate) async fn run_daemon(
                 interval.tick().await;
                 loop {
                     interval.tick().await;
-                    if !process_pid_alive(parent_pid) {
+                    if !process_pid_identity_matches(parent_pid, parent_start_time) {
                         eprintln!(
-                            "[cortex] Spawn parent process {parent_pid} exited; shutting down daemon"
+                            "[cortex] Spawn parent process {parent_pid} exited or was recycled; shutting down daemon"
                         );
                         if let Some(tx) = shutdown_tx.lock().await.take() {
                             let _ = tx.send(());
@@ -2860,8 +2896,9 @@ mod tests {
         let paths =
             auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
 
-        let err = validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), None, None)
-            .unwrap_err();
+        let err =
+            validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), None, None, None)
+                .unwrap_err();
         assert!(err.contains(SPAWN_PARENT_PID_ENV));
 
         let _ = std::fs::remove_dir_all(&home_dir);
@@ -2875,9 +2912,17 @@ mod tests {
         let paths =
             auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
 
-        let err =
-            validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), Some(4242), None)
-                .unwrap_err();
+        let parent_pid = std::process::id();
+        let parent_start_time =
+            process_pid_start_time(parent_pid).expect("current process start time should resolve");
+        let err = validate_spawned_owner_runtime_claim(
+            &paths,
+            Some("plugin-claude"),
+            Some(parent_pid),
+            Some(parent_start_time),
+            None,
+        )
+        .unwrap_err();
         assert!(err.contains("missing ownership token"));
 
         let _ = std::fs::remove_dir_all(&home_dir);
@@ -2891,8 +2936,52 @@ mod tests {
         let paths =
             auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
 
-        validate_spawned_owner_runtime_claim(&paths, Some("control-center"), None, None)
+        validate_spawned_owner_runtime_claim(&paths, Some("control-center"), None, None, None)
             .expect("direct control-center owner mode should remain compatible");
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn spawned_owner_runtime_claim_rejects_missing_parent_start_time_when_parent_set() {
+        let home_dir = temp_test_dir("owner_runtime_parent_start");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let parent_pid = std::process::id();
+        let err = validate_spawned_owner_runtime_claim(
+            &paths,
+            Some("plugin-claude"),
+            Some(parent_pid),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains(SPAWN_PARENT_START_TIME_ENV));
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn spawned_owner_runtime_claim_rejects_parent_start_time_mismatch() {
+        let home_dir = temp_test_dir("owner_runtime_parent_start_mismatch");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let parent_pid = std::process::id();
+        let err = validate_spawned_owner_runtime_claim(
+            &paths,
+            Some("plugin-claude"),
+            Some(parent_pid),
+            Some(0),
+            Some("invalid-token"),
+        )
+        .unwrap_err();
+        assert!(err.contains("start-time mismatch"));
 
         let _ = std::fs::remove_dir_all(&home_dir);
     }
