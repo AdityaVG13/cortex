@@ -21,9 +21,41 @@ const DEFAULT_START_MODE: &str = "demand";
 const ENSURE_HEALTH_TIMEOUT_SECS: u64 = 12;
 const ENSURE_POLL_MILLIS: u64 = 250;
 
-fn daemon_health_url() -> String {
+fn daemon_base_url() -> String {
     let port = crate::auth::CortexPaths::resolve().port;
-    format!("http://127.0.0.1:{port}/health")
+    format!("http://127.0.0.1:{port}")
+}
+
+fn daemon_health_url() -> String {
+    format!("{}/health", daemon_base_url())
+}
+
+fn daemon_readiness_url() -> String {
+    format!("{}/readiness", daemon_base_url())
+}
+
+fn daemon_ready_from_payload(
+    status: u16,
+    body: &str,
+    paths: &crate::auth::CortexPaths,
+) -> Option<bool> {
+    if let Some(ready) = crate::daemon_lifecycle::readiness_state_from_payload(
+        status,
+        body,
+        Some(paths.port),
+        Some(paths),
+    ) {
+        return Some(ready);
+    }
+    if crate::daemon_lifecycle::is_cortex_health_payload(
+        status,
+        body,
+        Some(paths.port),
+        Some(paths),
+    ) {
+        return Some(true);
+    }
+    None
 }
 
 fn build_sc_create_command(exe_path: &str, username: &str) -> String {
@@ -101,14 +133,37 @@ fn query_service_state() -> Result<ServiceState, String> {
 }
 
 fn daemon_health_ready() -> bool {
-    let health_url = daemon_health_url();
-    match std::process::Command::new("curl")
-        .args(["-s", "--max-time", "2", &health_url])
-        .output()
+    let paths = crate::auth::CortexPaths::resolve();
+    let client = match reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
     {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    let readiness_url = daemon_readiness_url();
+    if let Ok(response) = client.get(&readiness_url).send() {
+        let status = response.status().as_u16();
+        if let Ok(body) = response.text() {
+            if let Some(ready) = daemon_ready_from_payload(status, &body, &paths) {
+                return ready;
+            }
+        }
     }
+
+    let health_url = daemon_health_url();
+    let response = match client.get(&health_url).send() {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+    let status = response.status().as_u16();
+    let body = match response.text() {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+    daemon_ready_from_payload(status, &body, &paths).unwrap_or(false)
 }
 
 fn wait_for_daemon_health(timeout: std::time::Duration) -> bool {
@@ -528,6 +583,15 @@ pub fn dispatch_service() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_service_{name}_{unique}"))
+    }
 
     #[test]
     fn build_sc_create_command_defaults_to_manual_start() {
@@ -590,5 +654,76 @@ mod tests {
         assert_eq!(ServiceState::StartPending.as_str(), "START_PENDING");
         assert_eq!(ServiceState::StopPending.as_str(), "STOP_PENDING");
         assert_eq!(ServiceState::Unknown.as_str(), "UNKNOWN");
+    }
+
+    #[test]
+    fn daemon_ready_payload_accepts_readiness_ready_and_health_ok() {
+        let home_dir = temp_test_dir("ready_payload");
+        let home = home_dir.to_string_lossy().to_string();
+        let paths = crate::auth::CortexPaths::resolve_with_overrides(
+            Some(&home),
+            None,
+            Some(7437),
+            Some("127.0.0.1"),
+        );
+
+        let readiness = serde_json::json!({
+            "status": "ready",
+            "ready": true,
+            "runtime": {
+                "port": 7437,
+                "token_path": paths.token.display().to_string(),
+                "db_path": paths.db.display().to_string(),
+                "pid_path": paths.pid.display().to_string(),
+            },
+            "stats": { "home": paths.home.display().to_string() }
+        })
+        .to_string();
+        assert_eq!(
+            daemon_ready_from_payload(200, &readiness, &paths),
+            Some(true)
+        );
+
+        let health = serde_json::json!({
+            "status": "ok",
+            "runtime": {
+                "port": 7437,
+                "token_path": paths.token.display().to_string(),
+                "db_path": paths.db.display().to_string(),
+                "pid_path": paths.pid.display().to_string(),
+            },
+            "stats": { "home": paths.home.display().to_string(), "memories": 1 }
+        })
+        .to_string();
+        assert_eq!(daemon_ready_from_payload(200, &health, &paths), Some(true));
+    }
+
+    #[test]
+    fn daemon_ready_payload_preserves_starting_state() {
+        let home_dir = temp_test_dir("starting_payload");
+        let home = home_dir.to_string_lossy().to_string();
+        let paths = crate::auth::CortexPaths::resolve_with_overrides(
+            Some(&home),
+            None,
+            Some(7437),
+            Some("127.0.0.1"),
+        );
+
+        let readiness = serde_json::json!({
+            "status": "starting",
+            "ready": false,
+            "runtime": {
+                "port": 7437,
+                "token_path": paths.token.display().to_string(),
+                "db_path": paths.db.display().to_string(),
+                "pid_path": paths.pid.display().to_string(),
+            },
+            "stats": { "home": paths.home.display().to_string() }
+        })
+        .to_string();
+        assert_eq!(
+            daemon_ready_from_payload(503, &readiness, &paths),
+            Some(false)
+        );
     }
 }

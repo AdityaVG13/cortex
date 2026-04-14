@@ -135,6 +135,7 @@ pub async fn run_setup() {
     );
     eprintln!("  Daemon:         {}", daemon_base_url());
     eprintln!("  Health check:   curl {}", daemon_url("/health"));
+    eprintln!("  Readiness:      curl {}", daemon_url("/readiness"));
     eprintln!();
     eprintln!("  Cortex is configured. Start it from Control Center or let your client run `cortex mcp --agent <name>` when you want a live daemon.");
     eprintln!();

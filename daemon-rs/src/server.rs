@@ -11,6 +11,8 @@ use axum::Json;
 use axum::Router;
 use serde_json::Value;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 pub fn build_router(state: RuntimeState, port: u16) -> Router {
@@ -399,14 +401,23 @@ pub async fn run(
     bind_addr: &str,
     port: u16,
     db_path: &Path,
+    readiness_signal: Option<Arc<AtomicBool>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     match crate::tls::try_load_tls() {
         Ok(Some(acceptor)) => {
-            run_tls(router, bind_addr, port, acceptor, shutdown).await;
+            run_tls(
+                router,
+                bind_addr,
+                port,
+                acceptor,
+                readiness_signal,
+                shutdown,
+            )
+            .await;
         }
         Ok(None) => {
-            run_plain(router, bind_addr, port, shutdown).await;
+            run_plain(router, bind_addr, port, readiness_signal, shutdown).await;
         }
         Err(e) => {
             // Team mode: refuse to start with broken TLS (auth integrity requires it)
@@ -440,8 +451,17 @@ pub async fn run(
                         "[cortex] Starting without TLS on non-local bind due to CORTEX_ALLOW_INSECURE_REMOTE=1"
                     );
                 }
-                run_plain(router, bind_addr, port, shutdown).await;
+                run_plain(router, bind_addr, port, readiness_signal, shutdown).await;
             }
+        }
+    }
+}
+
+fn mark_runtime_ready(readiness_signal: Option<&Arc<AtomicBool>>) {
+    if let Some(readiness) = readiness_signal {
+        let was_ready = readiness.swap(true, Ordering::SeqCst);
+        if !was_ready {
+            eprintln!("[cortex] Runtime readiness gate is open");
         }
     }
 }
@@ -467,6 +487,7 @@ async fn run_plain(
     router: Router,
     bind_addr: &str,
     port: u16,
+    readiness_signal: Option<Arc<AtomicBool>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     let listener = match tokio::net::TcpListener::bind((bind_addr, port)).await {
@@ -477,6 +498,7 @@ async fn run_plain(
             std::process::exit(1);
         }
     };
+    mark_runtime_ready(readiness_signal.as_ref());
     eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
     if let Err(e) = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
@@ -491,6 +513,7 @@ async fn run_tls(
     bind_addr: &str,
     port: u16,
     acceptor: tokio_rustls::TlsAcceptor,
+    readiness_signal: Option<Arc<AtomicBool>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     use tokio::net::TcpListener;
@@ -503,6 +526,7 @@ async fn run_tls(
             std::process::exit(1);
         }
     };
+    mark_runtime_ready(readiness_signal.as_ref());
     eprintln!("[cortex] Listening on https://{bind_addr}:{port} (TLS via rustls)");
 
     let mut make_svc = router.into_make_service();

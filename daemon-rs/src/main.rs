@@ -2642,11 +2642,7 @@ pub(crate) async fn run_daemon(
         });
     }
 
-    state
-        .readiness
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    eprintln!("[cortex] Runtime readiness gate is open");
-
+    let readiness_signal = state.readiness.clone();
     let db_for_shutdown = state.db.clone();
     let router = server::build_router(state, paths.port);
 
@@ -2660,7 +2656,15 @@ pub(crate) async fn run_daemon(
         }
     };
 
-    server::run(router, &paths.bind, paths.port, &db_path, shutdown_future).await;
+    server::run(
+        router,
+        &paths.bind,
+        paths.port,
+        &db_path,
+        Some(readiness_signal),
+        shutdown_future,
+    )
+    .await;
 
     // WAL checkpoint + cleanup
     eprintln!("[cortex] Flushing database...");
