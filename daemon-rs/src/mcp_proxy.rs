@@ -225,11 +225,23 @@ fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
     (agent, model)
 }
 
-fn build_auth_header(api_key: Option<&str>) -> Option<String> {
+fn is_local_daemon_base(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    let host_ok = matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+    let port_ok = url.port_or_known_default() == Some(CortexPaths::resolve().port);
+    host_ok && port_ok
+}
+
+fn build_auth_header(base_url: &str, api_key: Option<&str>) -> Option<String> {
     if let Some(key) = api_key {
         return Some(format!("Bearer {key}"));
     }
-    read_auth_token().map(|token| format!("Bearer {token}"))
+    if is_local_daemon_base(base_url) {
+        return read_auth_token().map(|token| format!("Bearer {token}"));
+    }
+    None
 }
 
 fn expected_port_from_url(url: &str) -> Option<u16> {
@@ -387,7 +399,7 @@ async fn drain_write_buffer(
         if let Some(model_name) = model {
             req = req.header("x-source-model", model_name);
         }
-        if let Some(auth) = build_auth_header(api_key) {
+        if let Some(auth) = build_auth_header(rpc_url, api_key) {
             req = req.header("authorization", auth);
         }
 
@@ -434,7 +446,7 @@ async fn session_start(
                 .unwrap_or_else(|| "MCP session".to_string())
         }));
 
-    if let Some(auth) = build_auth_header(api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key) {
         req = req.header("authorization", auth);
     }
 
@@ -466,7 +478,7 @@ async fn session_heartbeat(
             "description": model.map(|m| format!("MCP session · {m}")).unwrap_or_else(|| "MCP session".to_string())
         }));
 
-    if let Some(auth) = build_auth_header(api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key) {
         req = req.header("authorization", auth);
     }
 
@@ -492,7 +504,7 @@ async fn session_end(
         .header("x-cortex-request", "true")
         .json(&serde_json::json!({ "agent": agent }));
 
-    if let Some(auth) = build_auth_header(api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key) {
         req = req.header("authorization", auth);
     }
 
@@ -509,7 +521,7 @@ async fn shutdown_daemon(client: &reqwest::Client, base_url: &str, api_key: Opti
         .header("x-cortex-request", "true")
         .body("{}");
 
-    if let Some(auth) = build_auth_header(api_key) {
+    if let Some(auth) = build_auth_header(base_url, api_key) {
         req = req.header("authorization", auth);
     }
 
@@ -909,11 +921,7 @@ pub async fn run(
                 break;
             }
 
-            let auth_header = if let Some(key) = api_key {
-                Some(format!("Bearer {key}"))
-            } else {
-                read_auth_token().map(|token| format!("Bearer {token}"))
-            };
+            let auth_header = build_auth_header(&rpc_base_url, api_key);
 
             let mut req = client
                 .post(&rpc_url)
@@ -1292,5 +1300,12 @@ mod tests {
             None
         );
         assert_eq!(normalize_header_value("módèl", MAX_MODEL_HEADER_LEN), None);
+    }
+
+    #[test]
+    fn custom_url_without_api_key_does_not_use_local_token_fallback() {
+        let custom_base = "https://example.com";
+        assert!(!is_local_daemon_base(custom_base));
+        assert_eq!(build_auth_header(custom_base, None), None);
     }
 }

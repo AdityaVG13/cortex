@@ -168,6 +168,272 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+#[test]
+fn owned_mcp_recovers_after_daemon_interruption_and_cleans_up_on_exit() {
+    let home_dir = unique_temp_dir("mcp_recovery");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex mcp");
+
+    wait_for_health(port, &mut child);
+
+    let stdout = child.stdout.take().expect("child stdout");
+    let responses = spawn_stdout_reader(stdout);
+    let stdin = child.stdin.as_mut().expect("child stdin");
+
+    write_json_line(
+        stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "ci", "version": "1.0.0" }
+            }
+        }),
+    );
+    let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
+    assert!(
+        initialize.get("result").is_some(),
+        "initialize failed: {initialize}"
+    );
+
+    let daemon_pid = read_daemon_pid(&home_dir);
+    terminate_pid(daemon_pid);
+
+    let mut saw_unavailable = false;
+    let mut recovered = false;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut id = 10;
+    while Instant::now() < deadline {
+        write_json_line(
+            stdin,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/list"
+            }),
+        );
+        let resp = read_json_line(&responses, RESPONSE_TIMEOUT);
+        if resp
+            .get("result")
+            .and_then(|value| value.get("tools"))
+            .and_then(|value| value.as_array())
+            .is_some_and(|tools| !tools.is_empty())
+        {
+            recovered = true;
+            break;
+        }
+        if resp
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|msg| msg.contains("Daemon unavailable"))
+        {
+            saw_unavailable = true;
+        }
+        id += 1;
+        thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        saw_unavailable,
+        "expected a transient daemon unavailable response after forced kill"
+    );
+    assert!(
+        recovered,
+        "owned mcp flow did not recover after forced kill"
+    );
+
+    drop(child.stdin.take());
+    wait_for_exit(&mut child, RESPONSE_TIMEOUT);
+    wait_for_daemon_shutdown(
+        port,
+        Duration::from_secs(8),
+        "owned daemon remained healthy after MCP session exit",
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
+#[test]
+fn plugin_mcp_local_owner_mode_stops_spawned_daemon_on_exit() {
+    let home_dir = unique_temp_dir("plugin_mcp_owner");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "plugin",
+            "mcp",
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex plugin mcp");
+
+    wait_for_health(port, &mut child);
+
+    let stdout = child.stdout.take().expect("child stdout");
+    let responses = spawn_stdout_reader(stdout);
+    let stdin = child.stdin.as_mut().expect("child stdin");
+
+    write_json_line(
+        stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "ci", "version": "1.0.0" }
+            }
+        }),
+    );
+    let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
+    assert!(
+        initialize.get("result").is_some(),
+        "initialize failed: {initialize}"
+    );
+
+    drop(child.stdin.take());
+    wait_for_exit(&mut child, RESPONSE_TIMEOUT);
+    wait_for_daemon_shutdown(
+        port,
+        Duration::from_secs(8),
+        "plugin owner mode should stop daemon it spawned",
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
+#[test]
+fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
+    let home_dir = unique_temp_dir("plugin_mcp_custom");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex serve");
+    wait_for_health(port, &mut daemon);
+
+    let token = fs::read_to_string(home_dir.join("cortex.token"))
+        .expect("read daemon token")
+        .trim()
+        .to_string();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+        .args([
+            "plugin",
+            "mcp",
+            "--url",
+            &base_url,
+            "--api-key",
+            &token,
+            "--agent",
+            "codex",
+            "--home",
+            &home,
+            "--port",
+            &port.to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cortex plugin mcp custom url");
+
+    let stdout = child.stdout.take().expect("child stdout");
+    let responses = spawn_stdout_reader(stdout);
+    let stdin = child.stdin.as_mut().expect("child stdin");
+
+    write_json_line(
+        stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "ci", "version": "1.0.0" }
+            }
+        }),
+    );
+    let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
+    assert!(
+        initialize.get("result").is_some(),
+        "initialize failed: {initialize}"
+    );
+
+    assert!(
+        health_ok(port),
+        "target daemon must remain healthy before kill"
+    );
+    daemon.kill().expect("kill target daemon");
+    wait_for_exit(&mut daemon, Duration::from_secs(5));
+
+    write_json_line(
+        stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+    );
+    let tools = read_json_line(&responses, RESPONSE_TIMEOUT);
+    assert!(
+        tools
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|msg| msg.contains("Daemon unavailable")),
+        "expected daemon unavailable response after target kill: {tools}"
+    );
+    thread::sleep(Duration::from_millis(800));
+    assert!(
+        !health_ok(port),
+        "custom-url plugin flow must not respawn killed target daemon"
+    );
+
+    drop(child.stdin.take());
+    wait_for_exit(&mut child, RESPONSE_TIMEOUT);
+    assert!(
+        !health_ok(port),
+        "custom-url plugin flow must not restart or shutdown-manage target daemon"
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 fn write_json_line(stdin: &mut std::process::ChildStdin, value: Value) {
     let mut line = serde_json::to_vec(&value).expect("serialize request");
     line.push(b'\n');
@@ -291,6 +557,30 @@ fn shutdown_daemon(port: u16, home_dir: &std::path::Path) {
         "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-Cortex-Request: true\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     let _ = http_request(port, &request).expect("shutdown daemon");
+}
+
+fn read_daemon_pid(home_dir: &std::path::Path) -> u32 {
+    fs::read_to_string(home_dir.join("cortex.pid"))
+        .expect("read daemon pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse daemon pid")
+}
+
+fn terminate_pid(pid: u32) {
+    #[cfg(windows)]
+    let status = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .status()
+        .expect("run taskkill");
+
+    #[cfg(not(windows))]
+    let status = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .expect("run kill");
+
+    assert!(status.success(), "failed to terminate daemon pid {pid}");
 }
 
 fn http_request(port: u16, request: &str) -> Result<String, String> {

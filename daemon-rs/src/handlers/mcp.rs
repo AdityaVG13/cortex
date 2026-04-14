@@ -328,6 +328,9 @@ async fn upsert_mcp_session(
             }
         }
     }
+    if agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+        return Err("Invalid agent label".to_string());
+    }
 
     let owner_id = if state.team_mode {
         let caller_id = caller_id.ok_or_else(|| {

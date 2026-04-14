@@ -30,6 +30,8 @@ pub struct SourceIdentity {
     pub model: Option<String>,
 }
 
+const MAX_SOURCE_LABEL_LEN: usize = 160;
+
 /// Build an Axum JSON response with CORS / cache headers applied.
 pub fn json_response(status: StatusCode, body: Value) -> Response {
     let mut response = (status, Json(body)).into_response();
@@ -332,12 +334,15 @@ pub fn now_iso() -> String {
 
 fn normalize_agent_label(raw_agent: &str, raw_model: Option<&str>) -> Option<String> {
     let mut agent = raw_agent.trim().to_string();
-    if agent.is_empty() || agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+    if agent.is_empty()
+        || agent.len() > MAX_SOURCE_LABEL_LEN
+        || agent.chars().any(|ch| ch.is_control())
+    {
         return None;
     }
 
     if !agent.contains('(') {
-        if let Some(model) = raw_model.map(str::trim).filter(|m| !m.is_empty()) {
+        if let Some(model) = raw_model.and_then(normalize_model_label) {
             if agent.eq_ignore_ascii_case("droid") {
                 agent = format!("DROID ({model})");
             } else {
@@ -346,7 +351,22 @@ fn normalize_agent_label(raw_agent: &str, raw_model: Option<&str>) -> Option<Str
         }
     }
 
+    if agent.len() > MAX_SOURCE_LABEL_LEN || agent.chars().any(|ch| ch.is_control()) {
+        return None;
+    }
+
     Some(agent)
+}
+
+fn normalize_model_label(raw_model: &str) -> Option<String> {
+    let model = raw_model.trim();
+    if model.is_empty()
+        || model.len() > MAX_SOURCE_LABEL_LEN
+        || model.chars().any(|ch| ch.is_control())
+    {
+        return None;
+    }
+    Some(model.to_string())
 }
 
 fn header_text(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -389,7 +409,7 @@ pub fn extract_auth_token(headers: &HeaderMap) -> Option<String> {
 }
 
 pub fn resolve_source_identity(headers: &HeaderMap, fallback_agent: &str) -> SourceIdentity {
-    let model = header_text(headers, "x-source-model");
+    let model = header_text(headers, "x-source-model").and_then(|raw| normalize_model_label(&raw));
     let fallback = fallback_agent.trim();
     let fallback = if fallback.is_empty() {
         "unknown"
@@ -480,4 +500,32 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// Truncate a string to at most `max` characters.
 pub fn truncate_chars(input: &str, max: usize) -> String {
     input.chars().take(max).collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn normalize_agent_label_rejects_overflow_after_model_append() {
+        let agent = "codex";
+        let model = "m".repeat(MAX_SOURCE_LABEL_LEN);
+        assert!(normalize_agent_label(agent, Some(&model)).is_none());
+    }
+
+    #[test]
+    fn resolve_source_identity_drops_invalid_source_model() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-source-agent", HeaderValue::from_static("codex"));
+        let invalid_model = "x".repeat(MAX_SOURCE_LABEL_LEN + 1);
+        headers.insert(
+            "x-source-model",
+            HeaderValue::from_str(&invalid_model).expect("valid header chars"),
+        );
+
+        let source = resolve_source_identity(&headers, "mcp");
+        assert_eq!(source.agent, "codex");
+        assert!(source.model.is_none());
+    }
 }

@@ -1,6 +1,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -153,38 +154,57 @@ struct TestDaemon {
 
 impl TestDaemon {
     async fn spawn() -> Self {
-        let home = unique_temp_dir("recall_benchmark");
-        fs::create_dir_all(home.join("models")).unwrap();
-        write_dummy_model_files(&home);
-
-        let port = reserve_port();
-        let base_url = format!("http://127.0.0.1:{port}");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
-            .arg("serve")
-            .arg("--home")
-            .arg(&home)
-            .arg("--port")
-            .arg(port.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("failed to spawn cortex daemon");
-
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(2))
             .timeout(REQUEST_TIMEOUT)
             .build()
             .unwrap();
-        wait_for_health(&client, &base_url, &mut child).await;
-        let token = wait_for_token(&home, &mut child).await;
 
-        Self {
-            child,
-            home,
-            base_url,
-            token,
-            client,
+        let mut last_error = String::new();
+        for attempt in 1..=6u32 {
+            let home = unique_temp_dir(&format!("recall_benchmark_{attempt}"));
+            fs::create_dir_all(home.join("models")).unwrap();
+            write_dummy_model_files(&home);
+
+            let port = reserve_port();
+            let base_url = format!("http://127.0.0.1:{port}");
+            let mut child = Command::new(env!("CARGO_BIN_EXE_cortex"))
+                .arg("serve")
+                .arg("--home")
+                .arg(&home)
+                .arg("--port")
+                .arg(port.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("failed to spawn cortex daemon");
+
+            match wait_for_health(&client, &base_url, &mut child).await {
+                Ok(()) => {
+                    let token = wait_for_token(&home, &mut child)
+                        .await
+                        .expect("token file was not written");
+                    return Self {
+                        child,
+                        home,
+                        base_url,
+                        token,
+                        client,
+                    };
+                }
+                Err(err) => {
+                    last_error = err;
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&home);
+                    if attempt < 6 {
+                        tokio::time::sleep(Duration::from_millis(200 * attempt as u64)).await;
+                    }
+                }
+            }
         }
+
+        panic!("failed to spawn healthy benchmark daemon after retries: {last_error}");
     }
 
     fn request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -316,7 +336,9 @@ async fn recall_different_queries_do_not_cross_dedup_for_same_agent() {
         let payload = daemon.recall_case(case).await;
         let results = payload["results"].as_array().cloned().unwrap_or_default();
         assert!(
-            results.iter().any(|result| matches_ground_truth(case, result)),
+            results
+                .iter()
+                .any(|result| matches_ground_truth(case, result)),
             "cross-query dedup regression for {slug}: {:?}",
             results
                 .iter()
@@ -367,43 +389,63 @@ fn write_dummy_model_files(home: &Path) {
     fs::write(model_dir.join("tokenizer.json"), b"{}").unwrap();
 }
 
-async fn wait_for_health(client: &Client, base_url: &str, child: &mut Child) {
+async fn wait_for_health(client: &Client, base_url: &str, child: &mut Child) -> Result<(), String> {
     let deadline = Instant::now() + HEALTH_TIMEOUT;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().expect("failed to poll daemon") {
-            panic!("daemon exited before health check succeeded: {status}");
+            let stderr = read_child_stderr(child);
+            return Err(format!(
+                "daemon exited before health check succeeded: {status}; stderr: {stderr}"
+            ));
         }
 
         let response = client.get(format!("{base_url}/health")).send().await;
         if let Ok(response) = response {
             if response.status().is_success() {
-                return;
+                return Ok(());
             }
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    panic!("daemon did not become healthy within {:?}", HEALTH_TIMEOUT);
+    Err(format!(
+        "daemon did not become healthy within {:?}",
+        HEALTH_TIMEOUT
+    ))
 }
 
-async fn wait_for_token(home: &Path, child: &mut Child) -> String {
+async fn wait_for_token(home: &Path, child: &mut Child) -> Result<String, String> {
     let token_path = home.join("cortex.token");
     let deadline = Instant::now() + TOKEN_TIMEOUT;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().expect("failed to poll daemon") {
-            panic!("daemon exited before token was written: {status}");
+            let stderr = read_child_stderr(child);
+            return Err(format!(
+                "daemon exited before token was written: {status}; stderr: {stderr}"
+            ));
         }
 
         if let Ok(token) = fs::read_to_string(&token_path) {
             let token = token.trim().to_string();
             if !token.is_empty() {
-                return token;
+                return Ok(token);
             }
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    panic!("token file was not written within {:?}", TOKEN_TIMEOUT);
+    Err(format!(
+        "token file was not written within {:?}",
+        TOKEN_TIMEOUT
+    ))
+}
+
+fn read_child_stderr(child: &mut Child) -> String {
+    let mut stderr = String::new();
+    if let Some(handle) = child.stderr.as_mut() {
+        let _ = handle.read_to_string(&mut stderr);
+    }
+    stderr
 }
