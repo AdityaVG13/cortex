@@ -1691,6 +1691,32 @@ fn ensure_remote_target_has_api_key(
     api_key: Option<&str>,
     paths: &auth::CortexPaths,
 ) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| {
+        format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// URL.")
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.",
+            parsed.scheme()
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err(format!(
+            "Invalid Cortex target URL '{base_url}': missing host."
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(
+            "Cortex target URL must not include embedded credentials; pass --api-key instead."
+                .to_string(),
+        );
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(
+            "Cortex target URL must not include query parameters or fragments.".to_string(),
+        );
+    }
+
     if api_key.is_none() && !is_local_client_base_url(base_url, paths) {
         return Err(format!(
             "Remote Cortex target '{base_url}' requires an API key. Pass --api-key <key> or set CORTEX_API_KEY."
@@ -1723,10 +1749,12 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
     Ok(Some(value))
 }
 
-use daemon_lifecycle::{daemon_healthy_with_bind, spawn_daemon, wait_for_health_with_bind};
+use daemon_lifecycle::{daemon_healthy, spawn_daemon, wait_for_health};
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
+const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
+const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
 
 async fn recover_unhealthy_locked_daemon(
     paths: &auth::CortexPaths,
@@ -1739,7 +1767,7 @@ async fn recover_unhealthy_locked_daemon(
         Err(_) => return Ok(false),
     };
 
-    if daemon_healthy_with_bind(&paths.bind, paths.port).await {
+    if daemon_healthy(paths).await {
         drop(guard);
         return Ok(true);
     }
@@ -1748,13 +1776,7 @@ async fn recover_unhealthy_locked_daemon(
     spawn_daemon(paths)?;
     drop(guard);
 
-    if !wait_for_health_with_bind(
-        &paths.bind,
-        paths.port,
-        Duration::from_secs(DAEMON_STARTUP_WAIT_SECS),
-    )
-    .await
-    {
+    if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
         return Err(format!(
             "daemon lock was recovered but daemon did not become healthy on port {} within {}s",
             paths.port, DAEMON_STARTUP_WAIT_SECS
@@ -1908,17 +1930,30 @@ fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, Stri
         .is_some_and(|value| value == "1")
     {
         let deadline = std::time::Instant::now() + daemon_lock_wait_timeout();
-        loop {
+        let last_err = loop {
             match auth::acquire_daemon_lock(paths) {
                 Ok(lock) => return Ok(lock),
                 Err(err) => {
+                    let _ = auth::cleanup_stale_pid_lock(paths);
                     if std::time::Instant::now() >= deadline {
-                        return Err(err);
+                        break err;
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    std::thread::sleep(Duration::from_millis(DAEMON_LOCK_RETRY_INTERVAL_MS));
                 }
             }
+        };
+
+        // Sleep/wake edge: lock ownership can hand off shortly after timeout due scheduler jitter.
+        let grace_deadline =
+            std::time::Instant::now() + Duration::from_secs(DAEMON_LOCK_HANDOFF_GRACE_SECS);
+        while std::time::Instant::now() < grace_deadline {
+            let _ = auth::cleanup_stale_pid_lock(paths);
+            if let Ok(lock) = auth::acquire_daemon_lock(paths) {
+                return Ok(lock);
+            }
+            std::thread::sleep(Duration::from_millis(DAEMON_LOCK_RETRY_INTERVAL_MS));
         }
+        return Err(last_err);
     }
     auth::acquire_daemon_lock(paths)
 }
@@ -1937,19 +1972,13 @@ async fn ensure_daemon(
 
     match lock {
         Ok(guard) => {
-            if daemon_healthy_with_bind(&paths.bind, paths.port).await {
+            if daemon_healthy(paths).await {
                 // already healthy
             } else if allow_spawn {
                 apply_path_env(paths);
                 spawn_daemon(paths)?;
                 drop(guard);
-                if !wait_for_health_with_bind(
-                    &paths.bind,
-                    paths.port,
-                    Duration::from_secs(DAEMON_STARTUP_WAIT_SECS),
-                )
-                .await
-                {
+                if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                     return Err(format!(
                         "daemon did not become healthy on port {} within {}s",
                         paths.port, DAEMON_STARTUP_WAIT_SECS
@@ -1964,13 +1993,7 @@ async fn ensure_daemon(
             }
         }
         Err(_) => {
-            if !wait_for_health_with_bind(
-                &paths.bind,
-                paths.port,
-                Duration::from_secs(DAEMON_STARTUP_WAIT_SECS),
-            )
-            .await
-            {
+            if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                 if allow_spawn {
                     if recover_unhealthy_locked_daemon(paths, &mut result).await? {
                         if let Some(agent) = agent {
@@ -2125,7 +2148,7 @@ pub(crate) async fn run_daemon(
     let _daemon_lock = match acquire_runtime_lock(&paths) {
         Ok(lock) => lock,
         Err(err) => {
-            if daemon_healthy_with_bind(&paths.bind, paths.port).await {
+            if daemon_healthy(&paths).await {
                 eprintln!(
                     "[cortex] Daemon already healthy on port {}; exiting cleanly.",
                     paths.port
@@ -2597,6 +2620,33 @@ mod tests {
     }
 
     #[test]
+    fn acquire_runtime_lock_waits_for_handoff_when_enabled() {
+        let home_dir = temp_test_dir("runtime_lock_handoff");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let first_lock = acquire_runtime_lock(&paths).unwrap();
+        std::env::set_var("CORTEX_WAIT_FOR_DAEMON_LOCK", "1");
+        std::env::set_var("CORTEX_DAEMON_LOCK_WAIT_SECS", "1");
+
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(first_lock);
+        });
+
+        let second_lock = acquire_runtime_lock(&paths).expect("lock handoff should succeed");
+        drop(second_lock);
+        releaser.join().unwrap();
+
+        std::env::remove_var("CORTEX_WAIT_FOR_DAEMON_LOCK");
+        std::env::remove_var("CORTEX_DAEMON_LOCK_WAIT_SECS");
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
     fn run_stale_pid_cleanup_keeps_lock_file() {
         let home_dir = temp_test_dir("stale_pid_cleanup");
         fs::create_dir_all(&home_dir).unwrap();
@@ -2763,6 +2813,38 @@ mod tests {
             auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
 
         assert!(ensure_remote_target_has_api_key("http://127.0.0.1:7437", None, &paths).is_ok());
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn invalid_client_target_url_is_rejected_cleanly() {
+        let home_dir = temp_test_dir("invalid_client_target_url");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let invalid_scheme =
+            ensure_remote_target_has_api_key("ftp://example.com", Some("ctx_key"), &paths)
+                .unwrap_err();
+        assert!(invalid_scheme.contains("Unsupported Cortex target URL scheme"));
+
+        let embedded_creds = ensure_remote_target_has_api_key(
+            "https://user:pass@example.com",
+            Some("ctx_key"),
+            &paths,
+        )
+        .unwrap_err();
+        assert!(embedded_creds.contains("must not include embedded credentials"));
+
+        let query_url = ensure_remote_target_has_api_key(
+            "https://example.com?debug=1",
+            Some("ctx_key"),
+            &paths,
+        )
+        .unwrap_err();
+        assert!(query_url.contains("must not include query parameters"));
 
         let _ = fs::remove_dir_all(&home_dir);
     }

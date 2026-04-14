@@ -271,40 +271,59 @@ fn build_auth_header(base_url: &str, api_key: Option<&str>) -> Option<String> {
     None
 }
 
+fn requires_explicit_api_key(base_url: &str, api_key: Option<&str>) -> bool {
+    api_key.is_none() && !is_local_daemon_base(base_url)
+}
+
+fn validate_target_base_url(base_url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| {
+        format!(
+            "Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// base URL."
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!(
+            "Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.",
+            parsed.scheme()
+        ));
+    }
+    if parsed.host_str().is_none() {
+        return Err(format!(
+            "Invalid Cortex target URL '{base_url}': missing host."
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(
+            "Cortex target URL must not include embedded credentials; pass --api-key instead."
+                .to_string(),
+        );
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(
+            "Cortex target URL must not include query parameters or fragments.".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn expected_port_from_url(url: &str) -> Option<u16> {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|parsed| parsed.port_or_known_default())
 }
 
-fn is_cortex_health_response(
-    status: reqwest::StatusCode,
-    body: &str,
-    expected_port: Option<u16>,
-) -> bool {
-    if !status.is_success() {
-        return false;
-    }
-
-    let Ok(json) = serde_json::from_str::<Value>(body.trim()) else {
-        return false;
+fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, health_url: &str) -> bool {
+    let local_paths = if is_local_daemon_base(health_url) {
+        Some(CortexPaths::resolve())
+    } else {
+        None
     };
-
-    let health_status = json.get("status").and_then(|value| value.as_str());
-    let runtime = json.get("runtime").and_then(|value| value.as_object());
-    let stats = json.get("stats").and_then(|value| value.as_object());
-    let runtime_port = runtime
-        .and_then(|runtime| runtime.get("port"))
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u16::try_from(value).ok());
-
-    if let Some(expected_port) = expected_port {
-        if runtime_port != Some(expected_port) {
-            return false;
-        }
-    }
-
-    matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
+    daemon_lifecycle::is_cortex_health_payload(
+        status.as_u16(),
+        body,
+        expected_port_from_url(health_url),
+        local_paths.as_ref(),
+    )
 }
 
 async fn health_check_ready(client: &reqwest::Client, health_url: &str) -> bool {
@@ -319,7 +338,7 @@ async fn health_check_ready(client: &reqwest::Client, health_url: &str) -> bool 
         Err(_) => return false,
     };
 
-    is_cortex_health_response(status, &body, expected_port_from_url(health_url))
+    is_cortex_health_response(status, &body, health_url)
 }
 
 fn is_auth_recovery_status(status: reqwest::StatusCode) -> bool {
@@ -585,6 +604,13 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let api_key = normalize_api_key(api_key);
     let base_url = base_url.trim_end_matches('/');
+    validate_target_base_url(base_url)?;
+    if requires_explicit_api_key(base_url, api_key) {
+        return Err(format!(
+            "Remote Cortex target '{base_url}' requires an API key. Pass --api-key <key> or set CORTEX_API_KEY."
+        )
+        .into());
+    }
     let mut rpc_base_url = base_url.to_string();
     let mut rpc_url = format!("{rpc_base_url}/mcp-rpc");
     let mut health_url = format!("{rpc_base_url}/health");
@@ -610,13 +636,7 @@ pub async fn run(
             Ok(resp) => {
                 let status = resp.status();
                 match resp.text().await {
-                    Ok(body)
-                        if is_cortex_health_response(
-                            status,
-                            &body,
-                            expected_port_from_url(&health_url),
-                        ) =>
-                    {
+                    Ok(body) if is_cortex_health_response(status, &body, &health_url) => {
                         healthy = true;
                         break;
                     }
@@ -1294,17 +1314,17 @@ mod tests {
         assert!(is_cortex_health_response(
             reqwest::StatusCode::OK,
             body,
-            Some(7437)
+            "https://example.com:7437/health"
         ));
         assert!(!is_cortex_health_response(
             reqwest::StatusCode::OK,
             body,
-            Some(9000)
+            "https://example.com:9000/health"
         ));
         assert!(is_cortex_health_response(
             reqwest::StatusCode::OK,
             body,
-            None
+            "invalid-url"
         ));
     }
 
@@ -1334,6 +1354,22 @@ mod tests {
         let custom_base = "https://example.com";
         assert!(!is_local_daemon_base(custom_base));
         assert_eq!(build_auth_header(custom_base, None), None);
+    }
+
+    #[test]
+    fn remote_target_requires_explicit_api_key() {
+        let remote_base = "https://example.com";
+        assert!(requires_explicit_api_key(remote_base, None));
+        assert!(!requires_explicit_api_key(remote_base, Some("ctx_remote")));
+    }
+
+    #[test]
+    fn validate_target_base_url_rejects_invalid_or_unsafe_values() {
+        assert!(validate_target_base_url("https://example.com").is_ok());
+        assert!(validate_target_base_url("ftp://example.com").is_err());
+        assert!(validate_target_base_url("https://user:pass@example.com").is_err());
+        assert!(validate_target_base_url("https://example.com?x=1").is_err());
+        assert!(validate_target_base_url("not-a-url").is_err());
     }
 
     #[test]

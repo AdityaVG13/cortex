@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::auth::CortexPaths;
+use fs2::FileExt;
 
 const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
 const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
@@ -25,14 +26,7 @@ fn health_probe_base(bind: &str, port: u16) -> String {
 }
 
 /// Check if the daemon responds to /health within 2s.
-#[allow(dead_code)]
-pub async fn daemon_healthy(port: u16) -> bool {
-    let paths = CortexPaths::resolve();
-    daemon_healthy_with_bind(&paths.bind, port).await
-}
-
-/// Check if the daemon responds to /health on a specific bind host within 2s.
-pub async fn daemon_healthy_with_bind(bind: &str, port: u16) -> bool {
+async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&CortexPaths>) -> bool {
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -53,10 +47,39 @@ pub async fn daemon_healthy_with_bind(bind: &str, port: u16) -> bool {
         Err(_) => return false,
     };
 
-    is_cortex_health_payload(status, &body, Some(port))
+    is_cortex_health_payload(status, &body, Some(port), expected_paths)
 }
 
-fn is_cortex_health_payload(status: u16, body: &str, expected_port: Option<u16>) -> bool {
+pub async fn daemon_healthy(paths: &CortexPaths) -> bool {
+    daemon_healthy_at(&paths.bind, paths.port, Some(paths)).await
+}
+
+fn normalize_runtime_path(value: &str) -> String {
+    let mut normalized = value.trim().replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    #[cfg(windows)]
+    {
+        normalized = normalized.to_ascii_lowercase();
+    }
+    normalized
+}
+
+fn path_field_matches(value: Option<&serde_json::Value>, expected: &Path) -> bool {
+    let expected = normalize_runtime_path(&expected.to_string_lossy());
+    value
+        .and_then(|field| field.as_str())
+        .map(normalize_runtime_path)
+        .is_some_and(|actual| actual == expected)
+}
+
+pub(crate) fn is_cortex_health_payload(
+    status: u16,
+    body: &str,
+    expected_port: Option<u16>,
+    expected_paths: Option<&CortexPaths>,
+) -> bool {
     if !(200..300).contains(&status) {
         return false;
     }
@@ -79,21 +102,30 @@ fn is_cortex_health_payload(status: u16, body: &str, expected_port: Option<u16>)
         }
     }
 
+    if let Some(paths) = expected_paths {
+        if !path_field_matches(stats.and_then(|obj| obj.get("home")), &paths.home) {
+            return false;
+        }
+        if !path_field_matches(runtime.and_then(|obj| obj.get("token_path")), &paths.token) {
+            return false;
+        }
+        if !path_field_matches(runtime.and_then(|obj| obj.get("pid_path")), &paths.pid) {
+            return false;
+        }
+        if !path_field_matches(runtime.and_then(|obj| obj.get("db_path")), &paths.db) {
+            return false;
+        }
+    }
+
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
 
-/// Poll /health until success or timeout.
-#[allow(dead_code)]
-pub async fn wait_for_health(port: u16, timeout: Duration) -> bool {
-    let paths = CortexPaths::resolve();
-    wait_for_health_with_bind(&paths.bind, port, timeout).await
-}
-
-/// Poll /health on the provided bind host until success or timeout.
-pub async fn wait_for_health_with_bind(bind: &str, port: u16, timeout: Duration) -> bool {
+/// Poll /health on the resolved bind host/port until success or timeout.
+/// Requires runtime identity to match the expected local Cortex paths.
+pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
     while started.elapsed() <= timeout {
-        if daemon_healthy_with_bind(bind, port).await {
+        if daemon_healthy(paths).await {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -214,26 +246,49 @@ fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
     }
 }
 
+fn acquire_respawn_coordination_lock(paths: &CortexPaths) -> Result<fs::File, String> {
+    fs::create_dir_all(&paths.home).map_err(|e| format!("create home: {e}"))?;
+    let respawn_lock = paths.home.join("cortex.respawn.lock");
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(respawn_lock)
+        .map_err(|e| format!("open respawn lock: {e}"))?;
+    lock_file
+        .try_lock_exclusive()
+        .map_err(|_| "another respawn attempt is already in progress".to_string())?;
+    Ok(lock_file)
+}
+
 /// Attempt to respawn the daemon and wait for it to become healthy.
 /// Returns true if the daemon is healthy after respawn.
 pub async fn try_respawn(paths: &CortexPaths) -> bool {
-    let respawn_lock = match crate::auth::acquire_daemon_lock(paths) {
+    let _respawn_coordinator = match acquire_respawn_coordination_lock(paths) {
         Ok(lock) => lock,
         Err(_) => {
             eprintln!(
                 "[cortex-lifecycle] Respawn already in progress; waiting for daemon health on port {}",
                 paths.port
             );
-            return wait_for_health_with_bind(
-                &paths.bind,
-                paths.port,
-                Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS),
-            )
-            .await;
+            return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS))
+                .await;
         }
     };
 
-    if daemon_healthy_with_bind(&paths.bind, paths.port).await {
+    let daemon_lock = match crate::auth::acquire_daemon_lock(paths) {
+        Ok(lock) => lock,
+        Err(_) => {
+            eprintln!(
+                "[cortex-lifecycle] Daemon lock is held by another process; waiting for health on port {}",
+                paths.port
+            );
+            return wait_for_health(paths, Duration::from_secs(RESPAWN_COORDINATION_WAIT_SECS))
+                .await;
+        }
+    };
+
+    if daemon_healthy(paths).await {
         return true;
     }
 
@@ -247,13 +302,8 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
         return false;
     }
 
-    drop(respawn_lock);
-    let healthy = wait_for_health_with_bind(
-        &paths.bind,
-        paths.port,
-        Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS),
-    )
-    .await;
+    drop(daemon_lock);
+    let healthy = wait_for_health(paths, Duration::from_secs(RESPAWN_HEALTH_TIMEOUT_SECS)).await;
     if healthy {
         eprintln!(
             "[cortex-lifecycle] Daemon respawned successfully on port {}",
@@ -270,7 +320,18 @@ pub async fn try_respawn(paths: &CortexPaths) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_cortex_health_payload;
+    use super::{acquire_respawn_coordination_lock, is_cortex_health_payload};
+    use crate::auth::CortexPaths;
+    use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cortex_lifecycle_{name}_{unique}"))
+    }
 
     #[test]
     fn cortex_health_payload_accepts_expected_shapes() {
@@ -278,11 +339,13 @@ mod tests {
             200,
             r#"{"status":"ok","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#,
             Some(7437),
+            None,
         ));
         assert!(is_cortex_health_payload(
             200,
             r#"{"status":"degraded","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#,
             Some(7437),
+            None,
         ));
     }
 
@@ -291,27 +354,109 @@ mod tests {
         assert!(!is_cortex_health_payload(
             200,
             r#"{"status":"ok"}"#,
-            Some(7437)
+            Some(7437),
+            None
         ));
         assert!(!is_cortex_health_payload(
             200,
             r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#,
             Some(7437),
+            None,
         ));
         assert!(!is_cortex_health_payload(
             200,
             "<html>ok</html>",
-            Some(7437)
+            Some(7437),
+            None
         ));
         assert!(!is_cortex_health_payload(
             500,
             r#"{"status":"ok","runtime":{}}"#,
             Some(7437),
+            None,
         ));
         assert!(!is_cortex_health_payload(
             200,
             r#"{"status":"ok","runtime":{"version":"0.5.0","port":9000},"stats":{"memories":1}}"#,
             Some(7437),
+            None,
         ));
+    }
+
+    #[test]
+    fn cortex_health_payload_rejects_identity_mismatch_for_local_expectations() {
+        let home_dir = temp_test_dir("identity_mismatch");
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(7437),
+            Some("127.0.0.1"),
+        );
+
+        let valid_body = json!({
+            "status": "ok",
+            "stats": {
+                "memories": 1,
+                "home": paths.home.display().to_string()
+            },
+            "runtime": {
+                "version": "0.5.0",
+                "port": paths.port,
+                "db_path": paths.db.display().to_string(),
+                "token_path": paths.token.display().to_string(),
+                "pid_path": paths.pid.display().to_string()
+            }
+        })
+        .to_string();
+        assert!(is_cortex_health_payload(
+            200,
+            &valid_body,
+            Some(paths.port),
+            Some(&paths),
+        ));
+
+        let bad_token_body = json!({
+            "status": "ok",
+            "stats": {
+                "memories": 1,
+                "home": paths.home.display().to_string()
+            },
+            "runtime": {
+                "version": "0.5.0",
+                "port": paths.port,
+                "db_path": paths.db.display().to_string(),
+                "token_path": "C:/wrong/token",
+                "pid_path": paths.pid.display().to_string()
+            }
+        })
+        .to_string();
+        assert!(!is_cortex_health_payload(
+            200,
+            &bad_token_body,
+            Some(paths.port),
+            Some(&paths),
+        ));
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn respawn_coordination_lock_rejects_concurrent_holder() {
+        let home_dir = temp_test_dir("respawn_lock");
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(7437),
+            Some("127.0.0.1"),
+        );
+
+        let first = acquire_respawn_coordination_lock(&paths).expect("first lock should succeed");
+        let second = acquire_respawn_coordination_lock(&paths).unwrap_err();
+        assert!(second.contains("already in progress"));
+        drop(first);
+
+        let _ = std::fs::remove_dir_all(&home_dir);
     }
 }
