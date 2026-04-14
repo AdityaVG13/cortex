@@ -5,7 +5,7 @@ Cortex daemon endpoint.
 
 ## Priority Order
 1. Explicit plugin URL (`CLAUDE_PLUGIN_OPTION_CORTEX_URL`)
-2. App route URL (`CORTEX_APP_URL`, legacy: `CORTEX_DEV_APP_URL`)
+2. App route URL (`CORTEX_APP_URL`)
 3. Local attach route (`localhost` daemon expected to already be running)
 
 ## Binary Selection Order (for MCP bridge and SessionStart probes)
@@ -24,8 +24,6 @@ relying on stale bundled binaries when a canonical app-managed binary exists.
   - Optional API key for explicit remote route.
 - `CORTEX_APP_URL`
   - Preferred app-managed endpoint route during development.
-- `CORTEX_DEV_APP_URL`
-  - Legacy alias for app-managed endpoint route.
 - `CORTEX_PLUGIN_DRY_RUN=1`
   - Prints resolved route and exits without launching MCP bridge child.
 - `CORTEX_APP_BINARY`, `CORTEX_DAEMON_BINARY`, `CORTEX_PLUGIN_CORTEX_BINARY`

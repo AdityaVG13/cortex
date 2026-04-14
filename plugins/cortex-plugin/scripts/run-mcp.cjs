@@ -39,9 +39,7 @@ function isTruthy(value) {
 
 function resolveRoute(config) {
   const explicitUrl = normalizeOption(config.cortexUrl);
-  const appUrl =
-    normalizeOption(process.env.CORTEX_APP_URL) ||
-    normalizeOption(process.env.CORTEX_DEV_APP_URL);
+  const appUrl = normalizeOption(process.env.CORTEX_APP_URL);
 
   if (explicitUrl) {
     return { mode: 'remote', url: explicitUrl, reason: 'explicit plugin URL' };
