@@ -570,8 +570,9 @@ async fn main() {
                 "start" => service::start(),
                 "stop" => service::stop(),
                 "status" => service::status(),
+                "ensure" => service::ensure(),
                 _ => {
-                    eprintln!("Usage: cortex service <install|uninstall|start|stop|status>");
+                    eprintln!("Usage: cortex service <install|uninstall|start|stop|status|ensure>");
                 }
             }
         }
@@ -1255,6 +1256,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  service start      Start the service");
     eprintln!("  service stop       Stop the service");
     eprintln!("  service status     Check service status");
+    eprintln!("  service ensure     Ensure service is installed, running, and healthy");
     eprintln!();
     eprintln!("Troubleshooting:");
     eprintln!("  cortex doctor      Validate DB schema, migrations, integrity, and FTS state");

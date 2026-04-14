@@ -37,6 +37,7 @@ const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
 const DAEMON_START_WAIT_MS: u64 = 3_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
+const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
@@ -601,6 +602,54 @@ fn find_cortex_binary() -> Option<PathBuf> {
     resolve_binary_on_path(cortex_binary_name())
 }
 
+fn command_output_summary(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (true, true) => "<no output>".to_string(),
+    }
+}
+
+fn try_service_ensure(port: u16) -> Result<bool, String> {
+    if !cfg!(windows) {
+        return Ok(false);
+    }
+
+    let Some(cortex_bin) = find_cortex_binary() else {
+        return Ok(false);
+    };
+
+    let output = Command::new(&cortex_bin)
+        .args(["service", "ensure"])
+        .output()
+        .map_err(|err| {
+            format!(
+                "Failed to run `{}` service ensure: {err}",
+                cortex_bin.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "`cortex service ensure` failed: {}",
+            command_output_summary(&output)
+        ));
+    }
+
+    if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+        return Ok(true);
+    }
+
+    Ok(wait_for_reachability_blocking(
+        port,
+        true,
+        Duration::from_millis(SERVICE_ENSURE_WAIT_MS),
+    ))
+}
+
 fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.unminimize();
@@ -752,6 +801,26 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
             pid: None,
             message: describe_daemon_state(false, true, auth_token_ready, None, port),
         });
+    }
+
+    if !already_managed {
+        match try_service_ensure(port) {
+            Ok(true) => {
+                let auth_token_ready = auth_token_ready();
+                return Ok(DaemonCommandResult {
+                    running: true,
+                    reachable: true,
+                    managed: false,
+                    auth_token_ready,
+                    pid: None,
+                    message: "Daemon started via Windows service.".to_string(),
+                });
+            }
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!("[cortex-control-center] service ensure failed, falling back to sidecar start: {err}");
+            }
+        }
     }
 
     let (managed, pid) = if already_managed {
@@ -1063,12 +1132,16 @@ fn is_cortex_health_response(
         ) {
             return false;
         }
-        if !health_path_field_matches(runtime.and_then(|obj| obj.get("db_path")), paths.db.as_deref())
-        {
+        if !health_path_field_matches(
+            runtime.and_then(|obj| obj.get("db_path")),
+            paths.db.as_deref(),
+        ) {
             return false;
         }
-        if !health_path_field_matches(runtime.and_then(|obj| obj.get("pid_path")), paths.pid.as_deref())
-        {
+        if !health_path_field_matches(
+            runtime.and_then(|obj| obj.get("pid_path")),
+            paths.pid.as_deref(),
+        ) {
             return false;
         }
     }
@@ -1643,8 +1716,20 @@ fn main() {
             setup_tray(app)?;
 
             let daemon_state = app.handle().state::<DaemonState>();
-            if !is_cortex_reachable_with_port(daemon_port(), DAEMON_REACHABILITY_TIMEOUT_MS) {
-                let _ = daemon_state.start();
+            let port = daemon_port();
+            if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+                let service_ready = match try_service_ensure(port) {
+                    Ok(ready) => ready,
+                    Err(err) => {
+                        eprintln!(
+                            "[cortex-control-center] service ensure failed at startup, falling back to sidecar start: {err}"
+                        );
+                        false
+                    }
+                };
+                if !service_ready {
+                    let _ = daemon_state.start();
+                }
             }
 
             Ok(())
@@ -1773,7 +1858,12 @@ mod tests {
 
     #[test]
     fn cortex_health_probe_rejects_non_cortex_responses() {
-        assert!(!is_cortex_health_response(200, "<html>ok</html>", None, None));
+        assert!(!is_cortex_health_response(
+            200,
+            "<html>ok</html>",
+            None,
+            None
+        ));
         assert!(!is_cortex_health_response(
             200,
             r#"{"status":"ok"}"#,

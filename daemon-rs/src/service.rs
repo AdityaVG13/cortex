@@ -7,6 +7,7 @@
 //!   `cortex service start`     -- Start the service
 //!   `cortex service stop`      -- Stop the service
 //!   `cortex service status`    -- Check service status
+//!   `cortex service ensure`    -- Ensure installed + running + healthy
 //!   `cortex service-run`       -- Internal: SCM entry point
 //!
 //! The service runs the same daemon as `cortex serve` but under the Windows
@@ -17,6 +18,8 @@ const SERVICE_NAME: &str = "CortexDaemon";
 const DISPLAY_NAME: &str = "Cortex Memory Daemon";
 const DESCRIPTION: &str = "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
 const DEFAULT_START_MODE: &str = "demand";
+const ENSURE_HEALTH_TIMEOUT_SECS: u64 = 12;
+const ENSURE_POLL_MILLIS: u64 = 250;
 
 fn daemon_health_url() -> String {
     let port = crate::auth::CortexPaths::resolve().port;
@@ -28,6 +31,192 @@ fn build_sc_create_command(exe_path: &str, username: &str) -> String {
         "sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= {} DisplayName= \"{}\" obj= \".\\{}\"",
         SERVICE_NAME, exe_path, DEFAULT_START_MODE, DISPLAY_NAME, username
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceState {
+    NotInstalled,
+    Running,
+    Stopped,
+    StartPending,
+    StopPending,
+    Unknown,
+}
+
+impl ServiceState {
+    fn as_str(self) -> &'static str {
+        match self {
+            ServiceState::NotInstalled => "NOT_INSTALLED",
+            ServiceState::Running => "RUNNING",
+            ServiceState::Stopped => "STOPPED",
+            ServiceState::StartPending => "START_PENDING",
+            ServiceState::StopPending => "STOP_PENDING",
+            ServiceState::Unknown => "UNKNOWN",
+        }
+    }
+}
+
+fn output_text(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (true, true) => "<no output>".to_string(),
+    }
+}
+
+fn parse_service_state(output_text: &str) -> ServiceState {
+    if output_text.contains("RUNNING") {
+        ServiceState::Running
+    } else if output_text.contains("STOPPED") {
+        ServiceState::Stopped
+    } else if output_text.contains("START_PENDING") {
+        ServiceState::StartPending
+    } else if output_text.contains("STOP_PENDING") {
+        ServiceState::StopPending
+    } else {
+        ServiceState::Unknown
+    }
+}
+
+fn query_service_state() -> Result<ServiceState, String> {
+    let output = std::process::Command::new("sc.exe")
+        .args(["query", SERVICE_NAME])
+        .output()
+        .map_err(|e| format!("Failed to run sc.exe query: {e}"))?;
+
+    if output.status.success() {
+        let text = output_text(&output);
+        return Ok(parse_service_state(&text));
+    }
+
+    let text = output_text(&output);
+    if text.contains("1060") || text.contains("does not exist") {
+        Ok(ServiceState::NotInstalled)
+    } else {
+        Err(text)
+    }
+}
+
+fn daemon_health_ready() -> bool {
+    let health_url = daemon_health_url();
+    match std::process::Command::new("curl")
+        .args(["-s", "--max-time", "2", &health_url])
+        .output()
+    {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn wait_for_daemon_health(timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if daemon_health_ready() {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(ENSURE_POLL_MILLIS));
+    }
+}
+
+fn start_service_once() -> Result<(), String> {
+    let output = std::process::Command::new("sc.exe")
+        .args(["start", SERVICE_NAME])
+        .output()
+        .map_err(|e| format!("Failed to run sc.exe start: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let text = output_text(&output);
+    if text.contains("1056") {
+        Ok(())
+    } else {
+        Err(text)
+    }
+}
+
+fn stop_service_once() -> Result<(), String> {
+    let output = std::process::Command::new("sc.exe")
+        .args(["stop", SERVICE_NAME])
+        .output()
+        .map_err(|e| format!("Failed to run sc.exe stop: {e}"))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let text = output_text(&output);
+    if text.contains("1062") {
+        Ok(())
+    } else {
+        Err(text)
+    }
+}
+
+#[cfg(windows)]
+fn ensure_windows() -> bool {
+    if daemon_health_ready() {
+        eprintln!("[cortex] Daemon already healthy");
+        return true;
+    }
+
+    let mut state = match query_service_state() {
+        Ok(state) => state,
+        Err(err) => {
+            eprintln!("[cortex] Failed to query service state: {err}");
+            return false;
+        }
+    };
+
+    if state == ServiceState::NotInstalled {
+        eprintln!("[cortex] Service not installed; installing");
+        install();
+        state = match query_service_state() {
+            Ok(next) => next,
+            Err(err) => {
+                eprintln!("[cortex] Failed to query service state after install: {err}");
+                return false;
+            }
+        };
+        if state == ServiceState::NotInstalled {
+            eprintln!("[cortex] Service install did not complete (run as Administrator if needed)");
+            return false;
+        }
+    }
+
+    eprintln!("[cortex] Service state before ensure: {}", state.as_str());
+
+    if state == ServiceState::Running {
+        if wait_for_daemon_health(std::time::Duration::from_secs(2)) {
+            eprintln!("[cortex] Service already running and healthy");
+            return true;
+        }
+        eprintln!("[cortex] Service running but health failed; restarting once");
+        if let Err(err) = stop_service_once() {
+            eprintln!("[cortex] Failed to stop unhealthy service: {err}");
+            return false;
+        }
+    }
+
+    if let Err(err) = start_service_once() {
+        eprintln!("[cortex] Failed to start service: {err}");
+        return false;
+    }
+
+    if wait_for_daemon_health(std::time::Duration::from_secs(ENSURE_HEALTH_TIMEOUT_SECS)) {
+        eprintln!("[cortex] Service ensured and daemon health is live");
+        true
+    } else {
+        eprintln!("[cortex] Service started but daemon health endpoint is still unavailable");
+        false
+    }
 }
 
 // ---- CLI commands (work on any platform) ------------------------------------
@@ -198,6 +387,21 @@ pub fn status() {
     }
 }
 
+pub fn ensure() {
+    #[cfg(not(windows))]
+    {
+        eprintln!("[cortex] `service ensure` is only available on Windows");
+        std::process::exit(1);
+    }
+
+    #[cfg(windows)]
+    {
+        if !ensure_windows() {
+            std::process::exit(1);
+        }
+    }
+}
+
 // ---- Windows Service entry point (called by SCM) ----------------------------
 
 #[cfg(windows)]
@@ -352,5 +556,39 @@ mod tests {
             cmd.contains("obj= \".\\alice\""),
             "missing user account object: {cmd}"
         );
+    }
+
+    #[test]
+    fn parse_service_state_recognizes_known_states() {
+        assert_eq!(
+            parse_service_state("STATE              : 4  RUNNING"),
+            ServiceState::Running
+        );
+        assert_eq!(
+            parse_service_state("STATE              : 1  STOPPED"),
+            ServiceState::Stopped
+        );
+        assert_eq!(
+            parse_service_state("STATE              : 2  START_PENDING"),
+            ServiceState::StartPending
+        );
+        assert_eq!(
+            parse_service_state("STATE              : 3  STOP_PENDING"),
+            ServiceState::StopPending
+        );
+        assert_eq!(
+            parse_service_state("STATE              : ???"),
+            ServiceState::Unknown
+        );
+    }
+
+    #[test]
+    fn service_state_strings_are_stable() {
+        assert_eq!(ServiceState::NotInstalled.as_str(), "NOT_INSTALLED");
+        assert_eq!(ServiceState::Running.as_str(), "RUNNING");
+        assert_eq!(ServiceState::Stopped.as_str(), "STOPPED");
+        assert_eq!(ServiceState::StartPending.as_str(), "START_PENDING");
+        assert_eq!(ServiceState::StopPending.as_str(), "STOP_PENDING");
+        assert_eq!(ServiceState::Unknown.as_str(), "UNKNOWN");
     }
 }
