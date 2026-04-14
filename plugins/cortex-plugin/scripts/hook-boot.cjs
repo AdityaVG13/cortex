@@ -20,44 +20,21 @@ function normalizeOption(value) {
   return value.trim();
 }
 
-function isTruthy(value) {
-  const normalized = normalizeOption(value).toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
-}
-
 function resolveRoute(config) {
   const explicitUrl = normalizeOption(config.cortexUrl);
-  const devAppUrl =
-    normalizeOption(process.env.CORTEX_DEV_APP_URL) ||
-    normalizeOption(process.env.CORTEX_APP_URL);
-  const preferApp = isTruthy(process.env.CORTEX_DEV_PREFER_APP);
-  const disableLocalSpawn = isTruthy(process.env.CORTEX_DEV_DISABLE_LOCAL_SPAWN);
-  const allowLocalSpawnRaw = process.env.CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN;
-  const allowLocalSpawn =
-    allowLocalSpawnRaw === undefined ? true : isTruthy(allowLocalSpawnRaw);
+  const appUrl =
+    normalizeOption(process.env.CORTEX_APP_URL) ||
+    normalizeOption(process.env.CORTEX_DEV_APP_URL);
 
   if (explicitUrl) {
     return { mode: 'team', url: explicitUrl, reason: 'explicit plugin URL' };
   }
 
-  if (preferApp) {
-    if (!devAppUrl) {
-      return {
-        error:
-          'CORTEX_DEV_PREFER_APP=1 is set but no app URL was provided. Set CORTEX_DEV_APP_URL (or CORTEX_APP_URL) or configure Cortex Server URL in plugin settings.'
-      };
-    }
-    return { mode: 'app', url: devAppUrl, reason: 'dev app preference' };
+  if (appUrl) {
+    return { mode: 'app', url: appUrl, reason: 'app route' };
   }
 
-  if (disableLocalSpawn || !allowLocalSpawn) {
-    return {
-      error:
-        'Local plugin daemon spawn is disabled by policy. Configure Cortex Server URL or re-enable local spawn.'
-    };
-  }
-
-  return { mode: 'solo', url: '', reason: 'local fallback' };
+  return { mode: 'solo', url: '', reason: 'local attach-only' };
 }
 
 // Load prepare-runtime first (ensures binary is extracted)
@@ -267,12 +244,6 @@ function emitStatus(additionalContext) {
 }
 
 (async () => {
-  if (route.error) {
-    console.error(`[cortex-plugin] ${route.error}`);
-    emitStatus('Brain: UNAVAILABLE | Route policy blocked | Cortex');
-    process.exit(1);
-  }
-
   if (route.mode === 'team' || route.mode === 'app') {
     const health = await healthCheck(route.url);
     emitStatus(buildStatusLine(health, route.mode));

@@ -391,8 +391,8 @@ async fn main() {
             let remaining = &args[2..];
             let agent = parse_flag_value(remaining, "--agent");
             let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
-            // CLI MCP never spawns the daemon. Control Center is primary owner,
-            // and plugin Claude-only mode is the only non-app fallback spawner.
+            // MCP clients are attach-only; daemon lifecycle is owned by
+            // Control Center / service commands.
             let allow_spawn = false;
             if let Err(e) = ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
             {
@@ -456,14 +456,7 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(
-                        &paths,
-                        agent.as_deref(),
-                        true,
-                        false,
-                        Some(OWNER_TAG_PLUGIN_CLAUDE),
-                    )
-                    .await
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, false, None).await
                     {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
@@ -474,17 +467,7 @@ async fn main() {
                     let (base_url, api_key, local_owner_mode) =
                         resolve_client_target(remaining, &paths);
                     let agent = parse_flag_value(remaining, "--agent");
-                    let allow_spawn = if local_owner_mode {
-                        match plugin_local_spawn_allowed(&paths, agent.as_deref()) {
-                            Ok(allowed) => allowed,
-                            Err(e) => {
-                                eprintln!("[cortex-plugin] {e}");
-                                std::process::exit(1);
-                            }
-                        }
-                    } else {
-                        false
-                    };
+                    let allow_spawn = false;
                     if let Err(e) =
                         ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
                     {
@@ -492,14 +475,8 @@ async fn main() {
                         std::process::exit(1);
                     }
                     let ensure = if local_owner_mode {
-                        match ensure_daemon(
-                            &paths,
-                            agent.as_deref(),
-                            false,
-                            allow_spawn,
-                            Some(OWNER_TAG_PLUGIN_CLAUDE),
-                        )
-                        .await
+                        match ensure_daemon(&paths, agent.as_deref(), false, allow_spawn, None)
+                            .await
                         {
                             Ok(result) => result,
                             Err(e) => {
@@ -521,11 +498,7 @@ async fn main() {
                             allow_respawn: allow_spawn,
                             shutdown_on_exit: ensure.spawned,
                             shutdown_on_idle_startup: false,
-                            respawn_owner: if allow_spawn {
-                                Some(OWNER_TAG_PLUGIN_CLAUDE)
-                            } else {
-                                None
-                            },
+                            respawn_owner: None,
                         },
                     )
                     .await
@@ -1211,7 +1184,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("Daemon:");
     eprintln!("  serve [--bind <addr>]  HTTP daemon on :7437 (default bind 127.0.0.1)");
     eprintln!(
-        "  mcp [--url <base>] [--api-key <key>] [--agent <name>]  MCP stdio (auto-start/attach in local owner mode)"
+        "  mcp [--url <base>] [--api-key <key>] [--agent <name>]  MCP stdio (attach-only when local)"
     );
     eprintln!("  paths --json       Print resolved Cortex paths + port + bind as JSON");
     eprintln!("  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]");
@@ -1651,18 +1624,12 @@ fn env_trimmed(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+#[cfg(test)]
 fn parse_truthy_flag(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
-}
-
-fn env_flag_truthy(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|value| parse_truthy_flag(&value))
-        .unwrap_or(false)
 }
 
 fn normalize_option(value: Option<&str>) -> Option<String> {
@@ -1813,34 +1780,6 @@ const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
 const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
-const OWNER_TAG_PLUGIN_CLAUDE: &str = "plugin-claude";
-
-fn local_spawn_allowed(paths: &auth::CortexPaths) -> bool {
-    !auth::control_center_is_active(paths)
-}
-
-fn plugin_agent_is_claude(agent: Option<&str>) -> bool {
-    match agent.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value) => value.to_ascii_lowercase().contains("claude"),
-        None => true,
-    }
-}
-
-fn plugin_local_spawn_allowed(
-    paths: &auth::CortexPaths,
-    agent: Option<&str>,
-) -> Result<bool, String> {
-    if !plugin_agent_is_claude(agent) {
-        return Err(
-            "Plugin local daemon spawn is restricted to Claude-only mode. Pass --agent claude-code."
-                .to_string(),
-        );
-    }
-    if !env_flag_truthy("CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN") {
-        return Ok(false);
-    }
-    Ok(local_spawn_allowed(paths))
-}
 
 async fn recover_unhealthy_locked_daemon(
     paths: &auth::CortexPaths,
