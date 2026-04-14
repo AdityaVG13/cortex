@@ -6,6 +6,9 @@ target/
 # Benchmark data (local only, not distributed)
 benchmark/
 dashboard/
+graphify-out/
+.graphify/
+.graphify_*.json
 
 # OS files
 .DS_Store

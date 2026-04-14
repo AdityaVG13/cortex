@@ -75,6 +75,10 @@ config/*.env
 
 # Personal scripts
 cortex-start.ps1
+start-cortex.bat
+cortex-brain.bat
+claudebrain.bat
+CortexBrain.bat
 Cortex?Ingester?Instructions.txt
 
 # Editor/tool artifacts
