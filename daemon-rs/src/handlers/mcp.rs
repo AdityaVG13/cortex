@@ -672,7 +672,7 @@ async fn mcp_dispatch(
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx).await?;
+            let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx, None).await?;
             Ok(results)
         }
 
@@ -684,7 +684,7 @@ async fn mcp_dispatch(
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            execute_unified_recall(state, query, budget, 10, agent, &ctx).await
+            execute_unified_recall(state, query, budget, 10, agent, &ctx, None).await
         }
 
         "cortex_semantic_recall" => {
@@ -696,7 +696,7 @@ async fn mcp_dispatch(
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            execute_semantic_recall(state, query, budget, k, agent, &ctx).await
+            execute_semantic_recall(state, query, budget, k, agent, &ctx, None).await
         }
 
         "cortex_store" => {

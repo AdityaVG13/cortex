@@ -161,6 +161,13 @@ fn is_visible(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallConte
     matches!(visibility, Some("shared") | Some("team"))
 }
 
+fn source_matches_prefix(source: &str, source_prefix: Option<&str>) -> bool {
+    match source_prefix {
+        Some(prefix) => source.starts_with(prefix),
+        None => true,
+    }
+}
+
 // ─── Query types ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
@@ -169,6 +176,7 @@ pub struct RecallQuery {
     pub k: Option<usize>,
     pub budget: Option<usize>,
     pub agent: Option<String>,
+    pub source_prefix: Option<String>,
 }
 
 // ─── GET /recall ─────────────────────────────────────────────────────────────
@@ -185,6 +193,11 @@ pub async fn handle_recall(
     let q = query.q.unwrap_or_default();
     let k = query.k.unwrap_or(10);
     let budget = query.budget.unwrap_or(200);
+    let source_prefix = query
+        .source_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
 
     if q.trim().is_empty() {
@@ -195,7 +208,7 @@ pub async fn handle_recall(
     }
 
     let ctx = RecallContext::from_caller(caller_id, &state);
-    match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx).await {
+    match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -216,6 +229,11 @@ pub async fn handle_semantic_recall(
     let q = query.q.unwrap_or_default();
     let k = query.k.unwrap_or(10);
     let budget = query.budget.unwrap_or(200);
+    let source_prefix = query
+        .source_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
 
     if q.trim().is_empty() {
@@ -226,7 +244,7 @@ pub async fn handle_semantic_recall(
     }
 
     let ctx = RecallContext::from_caller(caller_id, &state);
-    match execute_semantic_recall(&state, q.trim(), budget, k, &agent, &ctx).await {
+    match execute_semantic_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -258,6 +276,11 @@ pub async fn handle_budget_recall(
 
     let budget = query.budget.unwrap_or(300);
     let k = query.k.unwrap_or(10);
+    let source_prefix = query
+        .source_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
 
     let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
@@ -269,6 +292,7 @@ pub async fn handle_budget_recall(
         k,
         engine,
         &ctx,
+        source_prefix,
         Some(&state.degraded_mode),
     ) {
         Ok(results) => {
@@ -318,10 +342,15 @@ pub async fn handle_peek(
             );
         }
     };
+    let source_prefix = query
+        .source_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let k = query.k.unwrap_or(10);
     let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
-    match run_recall(&mut conn, &q, k, &ctx) {
+    match run_recall(&mut conn, &q, k, &ctx, source_prefix) {
         Ok(results) => {
             let matches: Vec<Value> = results
                 .iter()
@@ -358,6 +387,7 @@ pub async fn execute_unified_recall(
     k: usize,
     agent: &str,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Result<Value, String> {
     let recall_scope = recall_scope_key(agent, ctx);
     let scope_prefix = recall_owner_scope(ctx);
@@ -397,9 +427,18 @@ pub async fn execute_unified_recall(
     let engine = state.embedding_engine.as_deref();
     let dflag = Some(&state.degraded_mode);
     let results = if budget == 0 {
-        run_recall_with_engine(&mut conn, query_text, k, engine, ctx, dflag)?
+        run_recall_with_engine(&mut conn, query_text, k, engine, ctx, source_prefix, dflag)?
     } else {
-        run_budget_recall_with_engine(&mut conn, query_text, budget, k, engine, ctx, dflag)?
+        run_budget_recall_with_engine(
+            &mut conn,
+            query_text,
+            budget,
+            k,
+            engine,
+            ctx,
+            source_prefix,
+            dflag,
+        )?
     };
 
     // Co-occurrence tracking (recording only -- predictions excluded from response)
@@ -506,6 +545,7 @@ pub async fn execute_semantic_recall(
     k: usize,
     agent: &str,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Result<Value, String> {
     let query_vector = state
         .embedding_engine
@@ -520,6 +560,7 @@ pub async fn execute_semantic_recall(
             k,
             query_vector.as_deref(),
             ctx,
+            source_prefix,
         );
         apply_semantic_budget(results, budget)
     };
@@ -563,8 +604,9 @@ fn run_recall(
     query_text: &str,
     k: usize,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
-    run_recall_with_engine(conn, query_text, k, None, ctx, None)
+    run_recall_with_engine(conn, query_text, k, None, ctx, source_prefix, None)
 }
 
 #[allow(clippy::type_complexity)]
@@ -574,6 +616,7 @@ fn run_recall_with_engine(
     k: usize,
     engine: Option<&crate::embeddings::EmbeddingEngine>,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
     degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
     let query_vector = engine.and_then(|engine| engine.embed(query_text));
@@ -581,7 +624,14 @@ fn run_recall_with_engine(
         update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
     }
 
-    run_recall_with_query_vector(conn, query_text, k, query_vector.as_deref(), ctx)
+    run_recall_with_query_vector(
+        conn,
+        query_text,
+        k,
+        query_vector.as_deref(),
+        ctx,
+        source_prefix,
+    )
 }
 
 #[allow(clippy::type_complexity)]
@@ -591,6 +641,7 @@ fn run_recall_with_query_vector(
     k: usize,
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
     let extracted = extract_search_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
@@ -623,6 +674,9 @@ fn run_recall_with_query_vector(
             ctx.team_mode,
         ) {
             let source = format!("crystal::{crystal_id}::{label}");
+            if !source_matches_prefix(&source, source_prefix) {
+                continue;
+            }
             crystal_items.insert(
                 source.clone(),
                 RecallItem {
@@ -653,13 +707,13 @@ fn run_recall_with_query_vector(
         let mut all: Vec<SearchCandidate> = Vec::new();
         loop {
             all.clear();
-            for row in search_memories(conn, &keyword_query, fts_limit)?
+            for row in search_memories(conn, &keyword_query, fts_limit, source_prefix)?
                 .into_iter()
                 .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
             {
                 all.push(row);
             }
-            for row in search_decisions(conn, &keyword_query, fts_limit)?
+            for row in search_decisions(conn, &keyword_query, fts_limit, source_prefix)?
                 .into_iter()
                 .filter(|r| is_visible(r.owner_id, r.visibility.as_deref(), ctx))
             {
@@ -705,7 +759,9 @@ fn run_recall_with_query_vector(
         Vec::new()
     } else {
         query_vector
-            .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx))
+            .map(|query_vec| {
+                collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
+            })
             .unwrap_or_default()
     };
 
@@ -848,8 +904,18 @@ fn run_budget_recall(
     token_budget: usize,
     k: usize,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
-    run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx, None)
+    run_budget_recall_with_engine(
+        conn,
+        query_text,
+        token_budget,
+        k,
+        None,
+        ctx,
+        source_prefix,
+        None,
+    )
 }
 
 fn run_semantic_recall_with_query_vector(
@@ -858,9 +924,12 @@ fn run_semantic_recall_with_query_vector(
     k: usize,
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Vec<RecallItem> {
     let mut ranked: Vec<RecallItem> = query_vector
-        .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx))
+        .map(|query_vec| {
+            collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
+        })
         .unwrap_or_default()
         .into_iter()
         .map(|candidate| RecallItem {
@@ -954,8 +1023,9 @@ fn run_budget_recall_with_query_vector(
     k: usize,
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
-    let raw = run_recall_with_query_vector(conn, query_text, k, query_vector, ctx)?;
+    let raw = run_recall_with_query_vector(conn, query_text, k, query_vector, ctx, source_prefix)?;
     if raw.is_empty() {
         return Ok(vec![]);
     }
@@ -1023,6 +1093,7 @@ fn run_budget_recall_with_query_vector(
     Ok(budgeted)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_budget_recall_with_engine(
     conn: &mut Connection,
     query_text: &str,
@@ -1030,6 +1101,7 @@ fn run_budget_recall_with_engine(
     k: usize,
     engine: Option<&crate::embeddings::EmbeddingEngine>,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
     degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
     let query_vector = engine.and_then(|engine| engine.embed(query_text));
@@ -1044,6 +1116,7 @@ fn run_budget_recall_with_engine(
         k,
         query_vector.as_deref(),
         ctx,
+        source_prefix,
     )
 }
 
@@ -1079,6 +1152,7 @@ fn search_memories(
     conn: &Connection,
     query_text: &str,
     limit: usize,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
     let keyword_terms = extract_search_keywords(query_text);
     let term_groups = build_search_term_groups(query_text);
@@ -1120,7 +1194,10 @@ fn search_memories(
             })
             .map_err(|e| e.to_string())?;
 
-        return Ok(rows.flatten().collect());
+        return Ok(rows
+            .flatten()
+            .filter(|row| source_matches_prefix(&row.source, source_prefix))
+            .collect());
     }
 
     let fts_query = build_fts_query(&term_groups);
@@ -1178,6 +1255,9 @@ fn search_memories(
                 row_visibility,
             ) = row;
             let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
+            if !source_matches_prefix(&source_key, source_prefix) {
+                continue;
+            }
             let score = score.unwrap_or(1.0).max(0.0);
             let ts_source = last_accessed
                 .clone()
@@ -1242,7 +1322,7 @@ fn search_memories(
 
     match fts_result {
         Ok(results) if !results.is_empty() => Ok(results),
-        _ => search_memories_fallback(conn, query_text, limit),
+        _ => search_memories_fallback(conn, query_text, limit, source_prefix),
     }
 }
 
@@ -1250,6 +1330,7 @@ fn search_memories_fallback(
     conn: &Connection,
     query_text: &str,
     limit: usize,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
     let mut stmt = conn
         .prepare(
@@ -1280,6 +1361,9 @@ fn search_memories_fallback(
     for row in rows.flatten() {
         let (id, text, source, tags, score, retrievals, last_accessed, created_at) = row;
         let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
+        if !source_matches_prefix(&source_key, source_prefix) {
+            continue;
+        }
         let score = score.unwrap_or(1.0).max(0.0);
         let ts_source = last_accessed
             .clone()
@@ -1364,6 +1448,7 @@ fn search_decisions(
     conn: &Connection,
     query_text: &str,
     limit: usize,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
     let keyword_terms = extract_search_keywords(query_text);
     let term_groups = build_search_term_groups(query_text);
@@ -1399,7 +1484,10 @@ fn search_decisions(
             })
             .map_err(|e| e.to_string())?;
 
-        return Ok(rows.flatten().collect());
+        return Ok(rows
+            .flatten()
+            .filter(|row| source_matches_prefix(&row.source, source_prefix))
+            .collect());
     }
 
     let fts_query = build_fts_query(&term_groups);
@@ -1454,6 +1542,9 @@ fn search_decisions(
                 row_visibility,
             ) = row;
             let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
+            if !source_matches_prefix(&source_key, source_prefix) {
+                continue;
+            }
             let score = score.unwrap_or(1.0).max(0.0);
             let ts_source = last_accessed
                 .clone()
@@ -1517,7 +1608,7 @@ fn search_decisions(
 
     match fts_result {
         Ok(results) if !results.is_empty() => Ok(results),
-        _ => search_decisions_fallback(conn, query_text, limit),
+        _ => search_decisions_fallback(conn, query_text, limit, source_prefix),
     }
 }
 
@@ -1525,6 +1616,7 @@ fn search_decisions_fallback(
     conn: &Connection,
     query_text: &str,
     limit: usize,
+    source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
     let mut stmt = conn
         .prepare(
@@ -1554,6 +1646,9 @@ fn search_decisions_fallback(
     for row in rows.flatten() {
         let (id, decision, context, score, retrievals, last_accessed, created_at) = row;
         let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
+        if !source_matches_prefix(&source_key, source_prefix) {
+            continue;
+        }
         let score = score.unwrap_or(1.0).max(0.0);
         let ts_source = last_accessed
             .clone()
@@ -1637,6 +1732,7 @@ fn collect_semantic_candidates(
     query_vector: &[f32],
     query_text: &str,
     ctx: &RecallContext,
+    source_prefix: Option<&str>,
 ) -> Vec<SemanticCandidate> {
     let scale_sim = |sim: f32| -> f64 {
         SEMANTIC_SCALE_BASE
@@ -1679,6 +1775,9 @@ fn collect_semantic_candidates(
 
         for (blob, text, source, owner_id, visibility, score, last_accessed, created_at) in rows {
             if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                continue;
+            }
+            if !source_matches_prefix(&source, source_prefix) {
                 continue;
             }
             let existing_vec = crate::embeddings::blob_to_vector(&blob);
@@ -1765,6 +1864,9 @@ fn collect_semantic_candidates(
             let source = context.unwrap_or_else(|| {
                 format!("decision::{}", decision.chars().take(40).collect::<String>())
             });
+            if !source_matches_prefix(&source, source_prefix) {
+                continue;
+            }
             let mut scaled = scale_sim(sim);
             if !keyword_terms.is_empty() {
                 let haystack = decision.to_lowercase();
@@ -2374,7 +2476,7 @@ async fn predict_and_cache(
     };
 
     let mut conn = state.db.lock().await;
-    let results = run_budget_recall(&mut conn, &predicted_query, 200, 5, &predict_ctx)?;
+    let results = run_budget_recall(&mut conn, &predicted_query, 200, 5, &predict_ctx, None)?;
     drop(conn);
     if results.is_empty() {
         return Ok(());
@@ -2847,7 +2949,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_memories(&conn, "", 10).unwrap();
+        let results = search_memories(&conn, "", 10, None).unwrap();
         let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
 
         assert!(sources.contains(&"active-memory"));
@@ -2870,7 +2972,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_decisions(&conn, "", 10).unwrap();
+        let results = search_decisions(&conn, "", 10, None).unwrap();
         let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
 
         assert!(sources.contains(&"active-decision"));
@@ -2911,7 +3013,8 @@ mod tests {
             &[0.0, 0.0, 0.0, 0.0, 1.0],
         );
 
-        let results = run_budget_recall(&mut conn, "write buffer", 400, 5, &solo_ctx()).unwrap();
+        let results =
+            run_budget_recall(&mut conn, "write buffer", 400, 5, &solo_ctx(), None).unwrap();
 
         assert!(!results.is_empty());
         assert_eq!(
@@ -2967,6 +3070,7 @@ mod tests {
             5,
             None,
             &solo_ctx(),
+            None,
             None,
         )
         .unwrap();
