@@ -517,6 +517,12 @@ fn sidecar_fallback_allowed() -> bool {
         .unwrap_or(false)
 }
 
+fn log_startup_path(context: &str, decision: &str, detail: &str) {
+    eprintln!(
+        "[cortex-control-center] startup-path context={context} decision={decision} detail={detail}"
+    );
+}
+
 fn newest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
 
@@ -808,6 +814,11 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
     let allow_sidecar_fallback = sidecar_fallback_allowed();
     let (already_managed, current_pid) = state.status()?;
     if !already_managed && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+        log_startup_path(
+            "start_daemon",
+            "existing-daemon",
+            "daemon already reachable before start command",
+        );
         let auth_token_ready = auth_token_ready();
         return Ok(DaemonCommandResult {
             running: true,
@@ -822,6 +833,11 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
     if !already_managed {
         match try_service_ensure(port) {
             Ok(true) => {
+                log_startup_path(
+                    "start_daemon",
+                    "service-ensure",
+                    "daemon started or validated via service ensure",
+                );
                 let auth_token_ready = auth_token_ready();
                 return Ok(DaemonCommandResult {
                     running: true,
@@ -834,6 +850,11 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
             }
             Ok(false) => {
                 if !allow_sidecar_fallback {
+                    log_startup_path(
+                        "start_daemon",
+                        "blocked",
+                        "service ensure unavailable and sidecar fallback disabled",
+                    );
                     return Err(format!(
                         "Service-first startup is required and sidecar fallback is disabled. Start the daemon with `cortex service ensure` (set {}=1 only for temporary recovery).",
                         SIDECAR_FALLBACK_ENV
@@ -842,6 +863,11 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
             }
             Err(err) => {
                 if !allow_sidecar_fallback {
+                    log_startup_path(
+                        "start_daemon",
+                        "blocked",
+                        "service ensure failed and sidecar fallback disabled",
+                    );
                     return Err(format!(
                         "Service ensure failed: {err}. Sidecar fallback is disabled; run `cortex service ensure` manually (set {}=1 only for temporary recovery).",
                         SIDECAR_FALLBACK_ENV
@@ -853,8 +879,18 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
     }
 
     let (managed, pid) = if already_managed {
+        log_startup_path(
+            "start_daemon",
+            "managed-process",
+            "control-center sidecar process already running",
+        );
         (already_managed, current_pid)
     } else {
+        log_startup_path(
+            "start_daemon",
+            "sidecar-fallback",
+            "service path unavailable; starting sidecar fallback",
+        );
         state.start()?
     };
     let reachable = if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
@@ -1749,7 +1785,16 @@ fn main() {
             let allow_sidecar_fallback = sidecar_fallback_allowed();
             if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
                 let service_ready = match try_service_ensure(port) {
-                    Ok(ready) => ready,
+                    Ok(ready) => {
+                        if ready {
+                            log_startup_path(
+                                "setup",
+                                "service-ensure",
+                                "daemon started or validated via service ensure",
+                            );
+                        }
+                        ready
+                    }
                     Err(err) => {
                         if allow_sidecar_fallback {
                             eprintln!(
@@ -1759,20 +1804,41 @@ fn main() {
                             eprintln!(
                                 "[cortex-control-center] service ensure failed at startup and sidecar fallback is disabled: {err}"
                             );
+                            log_startup_path(
+                                "setup",
+                                "blocked",
+                                "service ensure failed and sidecar fallback disabled",
+                            );
                         }
                         false
                     }
                 };
                 if !service_ready {
                     if allow_sidecar_fallback {
+                        log_startup_path(
+                            "setup",
+                            "sidecar-fallback",
+                            "service path unavailable; starting sidecar fallback",
+                        );
                         let _ = daemon_state.start();
                     } else {
                         eprintln!(
                             "[cortex-control-center] sidecar fallback disabled ({} not set to truthy); daemon remains offline until service is healthy",
                             SIDECAR_FALLBACK_ENV
                         );
+                        log_startup_path(
+                            "setup",
+                            "blocked",
+                            "service ensure unavailable and sidecar fallback disabled",
+                        );
                     }
                 }
+            } else {
+                log_startup_path(
+                    "setup",
+                    "existing-daemon",
+                    "daemon already reachable at application startup",
+                );
             }
 
             Ok(())
