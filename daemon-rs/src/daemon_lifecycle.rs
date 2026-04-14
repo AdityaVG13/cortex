@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 const RESPAWN_HEALTH_TIMEOUT_SECS: u64 = 90;
 const RESPAWN_COORDINATION_WAIT_SECS: u64 = 20;
-const RUNTIME_COPY_STALE_SECS: u64 = 600;
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const PLUGIN_CLAUDE_OWNER_TAG: &str = "plugin-claude";
 const DAEMON_OWNER_SIGNING_KEY_FILE: &str = "daemon-owner-signing.key";
@@ -475,7 +474,7 @@ fn prepare_spawn_executable(paths: &CortexPaths, source: &Path) -> std::io::Resu
         return Ok(source.to_path_buf());
     }
 
-    let runtime_dir = paths.home.join("runtime").join("daemon-lifecycle");
+    let runtime_dir = workspace_runtime_copy_dir(paths, source);
     fs::create_dir_all(&runtime_dir)?;
     cleanup_stale_runtime_copies(&runtime_dir);
 
@@ -513,6 +512,13 @@ fn is_workspace_daemon_binary(path: &Path) -> bool {
     })
 }
 
+fn workspace_runtime_copy_dir(paths: &CortexPaths, source: &Path) -> PathBuf {
+    source
+        .parent()
+        .map(|parent| parent.join("daemon-lifecycle-runtime"))
+        .unwrap_or_else(|| paths.home.join("runtime").join("daemon-lifecycle"))
+}
+
 /// Deterministic runtime copy path.  A stable name (no PID/timestamp) means
 /// Windows SmartScreen evaluates the binary once; subsequent spawns reuse the
 /// allowed path without re-prompting.
@@ -532,9 +538,8 @@ fn is_runtime_copy_name(name: &str) -> bool {
 }
 
 /// Remove old timestamped copies (pre-stable-path migration) and the stable
-/// copy when it has gone stale.
+/// copy names that should no longer be used.
 fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
-    let now = std::time::SystemTime::now();
     let Ok(entries) = fs::read_dir(runtime_dir) else {
         return;
     };
@@ -547,14 +552,7 @@ fn cleanup_stale_runtime_copies(runtime_dir: &Path) {
         if !is_runtime_copy_name(name) {
             continue;
         }
-        let stale = entry
-            .metadata()
-            .ok()
-            .and_then(|meta| meta.modified().ok())
-            .and_then(|modified| now.duration_since(modified).ok())
-            .map(|age| age.as_secs() >= RUNTIME_COPY_STALE_SECS)
-            .unwrap_or(false);
-        if stale {
+        if name.starts_with("cortex-daemon-run-") {
             let _ = fs::remove_file(path);
         }
     }
@@ -650,7 +648,7 @@ mod tests {
         acquire_respawn_coordination_lock, build_owner_token, evaluate_respawn_policy,
         is_cortex_health_payload, is_runtime_copy_name, issue_owner_token_for_spawn,
         load_or_create_owner_signing_key, stable_runtime_path, validate_spawned_owner_claim,
-        DaemonOwnerMode, DAEMON_OWNER_TOKEN_TTL_SECS,
+        workspace_runtime_copy_dir, DaemonOwnerMode, DAEMON_OWNER_TOKEN_TTL_SECS,
     };
     use crate::auth::CortexPaths;
     use serde_json::json;
@@ -939,5 +937,23 @@ mod tests {
             .is_some_and(|name| name == "cortex-daemon-run.exe"));
 
         let _ = std::fs::remove_dir_all(&runtime_dir);
+    }
+
+    #[test]
+    fn workspace_runtime_copy_dir_prefers_source_relative_location() {
+        let root = temp_test_dir("workspace_runtime_dir");
+        let source_dir = root.join("daemon-rs").join("target").join("debug");
+        let home_dir = root.join("home");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        std::fs::create_dir_all(&home_dir).expect("create home dir");
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        let source = source_dir.join("cortex.exe");
+
+        let runtime_dir = workspace_runtime_copy_dir(&paths, &source);
+        assert_eq!(runtime_dir, source_dir.join("daemon-lifecycle-runtime"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
