@@ -100,6 +100,15 @@ impl ClientPermission {
     }
 }
 
+fn parse_client_permission(raw: &str) -> Option<ClientPermission> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "read" => Some(ClientPermission::Read),
+        "write" => Some(ClientPermission::Write),
+        "admin" => Some(ClientPermission::Admin),
+        _ => None,
+    }
+}
+
 fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
     match tool_name {
         "cortex_boot"
@@ -115,7 +124,11 @@ fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
         "cortex_store" | "cortex_focus_start" | "cortex_focus_end" | "cortex_diary" => {
             Some(ClientPermission::Write)
         }
-        "cortex_forget" | "cortex_resolve" => Some(ClientPermission::Admin),
+        "cortex_forget"
+        | "cortex_resolve"
+        | "cortex_permissions_list"
+        | "cortex_permissions_grant"
+        | "cortex_permissions_revoke" => Some(ClientPermission::Admin),
         _ => None,
     }
 }
@@ -463,6 +476,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_client_permission_accepts_known_values() {
+        assert_eq!(
+            super::parse_client_permission("read"),
+            Some(ClientPermission::Read)
+        );
+        assert_eq!(
+            super::parse_client_permission("WRITE"),
+            Some(ClientPermission::Write)
+        );
+        assert_eq!(
+            super::parse_client_permission(" admin "),
+            Some(ClientPermission::Admin)
+        );
+        assert_eq!(super::parse_client_permission("owner"), None);
+    }
+
+    #[test]
     fn client_permission_allows_by_default_when_no_policy_rows_exist() {
         let conn = test_conn();
         let allowed =
@@ -765,6 +795,37 @@ pub fn mcp_tools() -> Vec<Value> {
                     "pending": { "type": "string", "description": "Pending work items" },
                     "knownIssues": { "type": "string", "description": "Known issues to address" }
                 }
+            }
+        }),
+        json!({
+            "name": "cortex_permissions_list",
+            "description": "List MCP client permission grants for the current owner scope.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "cortex_permissions_grant",
+            "description": "Grant a client permission (`read`, `write`, `admin`) for a scope (`*` by default).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "client": { "type": "string", "description": "Client id or '*' wildcard" },
+                    "permission": { "type": "string", "enum": ["read", "write", "admin"], "description": "Permission level" },
+                    "scope": { "type": "string", "description": "Scope key (default '*', tool-name scopes supported)" }
+                },
+                "required": ["client", "permission"]
+            }
+        }),
+        json!({
+            "name": "cortex_permissions_revoke",
+            "description": "Revoke a previously granted client permission for a scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "client": { "type": "string", "description": "Client id or '*' wildcard" },
+                    "permission": { "type": "string", "enum": ["read", "write", "admin"], "description": "Permission level" },
+                    "scope": { "type": "string", "description": "Scope key (default '*')" }
+                },
+                "required": ["client", "permission"]
             }
         }),
         json!({
@@ -1193,6 +1254,121 @@ async fn mcp_dispatch(
             let ctx = RecallContext::from_caller(caller_id, state);
             let conn = state.db.lock().await;
             fetch_last_call(&conn, kind, agent_filter, &ctx)
+        }
+
+        "cortex_permissions_list" => {
+            let owner_id = if state.team_mode {
+                caller_id.unwrap_or_default()
+            } else {
+                0
+            };
+            let conn = state.db.lock().await;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT client_id, permission, scope, granted_by, granted_at
+                     FROM client_permissions
+                     WHERE owner_id = ?1
+                     ORDER BY client_id ASC, permission ASC, scope ASC",
+                )
+                .map_err(|err| err.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![owner_id], |row| {
+                    Ok(json!({
+                        "client": row.get::<_, String>(0)?,
+                        "permission": row.get::<_, String>(1)?,
+                        "scope": row.get::<_, String>(2)?,
+                        "grantedBy": row.get::<_, String>(3)?,
+                        "grantedAt": row.get::<_, String>(4)?,
+                    }))
+                })
+                .map_err(|err| err.to_string())?;
+            let grants: Vec<Value> = rows.filter_map(Result::ok).collect();
+            Ok(json!({
+                "ownerId": owner_id,
+                "count": grants.len(),
+                "grants": grants
+            }))
+        }
+
+        "cortex_permissions_grant" => {
+            let owner_id = if state.team_mode {
+                caller_id.unwrap_or_default()
+            } else {
+                0
+            };
+            let client = arg_str(args, &["client", "client_id"])
+                .ok_or_else(|| "Missing required argument: client".to_string())?;
+            let client = if client.trim() == "*" {
+                "*".to_string()
+            } else {
+                normalize_permission_client_id(client)
+            };
+            let permission_raw = arg_str(args, &["permission"])
+                .ok_or_else(|| "Missing required argument: permission".to_string())?;
+            let permission = parse_client_permission(permission_raw)
+                .ok_or_else(|| "Invalid permission; expected read, write, or admin".to_string())?;
+            let scope = arg_str(args, &["scope"])
+                .map(str::to_string)
+                .unwrap_or_else(|| "*".to_string());
+            let granted_by = source_client_for_permissions(source, args);
+
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+                 ON CONFLICT(owner_id, client_id, permission, scope)
+                 DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at",
+                rusqlite::params![owner_id, client, permission.as_str(), scope, granted_by],
+            )
+            .map_err(|err| err.to_string())?;
+
+            Ok(json!({
+                "granted": true,
+                "ownerId": owner_id,
+                "client": client,
+                "permission": permission.as_str(),
+                "scope": scope,
+            }))
+        }
+
+        "cortex_permissions_revoke" => {
+            let owner_id = if state.team_mode {
+                caller_id.unwrap_or_default()
+            } else {
+                0
+            };
+            let client = arg_str(args, &["client", "client_id"])
+                .ok_or_else(|| "Missing required argument: client".to_string())?;
+            let client = if client.trim() == "*" {
+                "*".to_string()
+            } else {
+                normalize_permission_client_id(client)
+            };
+            let permission_raw = arg_str(args, &["permission"])
+                .ok_or_else(|| "Missing required argument: permission".to_string())?;
+            let permission = parse_client_permission(permission_raw)
+                .ok_or_else(|| "Invalid permission; expected read, write, or admin".to_string())?;
+            let scope = arg_str(args, &["scope"])
+                .map(str::to_string)
+                .unwrap_or_else(|| "*".to_string());
+
+            let conn = state.db.lock().await;
+            let deleted = conn
+                .execute(
+                    "DELETE FROM client_permissions
+                     WHERE owner_id = ?1 AND client_id = ?2 AND permission = ?3 AND scope = ?4",
+                    rusqlite::params![owner_id, client, permission.as_str(), scope],
+                )
+                .map_err(|err| err.to_string())?;
+
+            Ok(json!({
+                "revoked": deleted > 0,
+                "deleted": deleted,
+                "ownerId": owner_id,
+                "client": client,
+                "permission": permission.as_str(),
+                "scope": scope,
+            }))
         }
 
         _ => Err(format!("Unknown tool: {tool_name}")),
