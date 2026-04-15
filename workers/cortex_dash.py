@@ -3,20 +3,21 @@
 Run: streamlit run workers/cortex_dash.py --server.port 3333
 """
 
-import asyncio
 import json
 import sys
+from json import JSONDecodeError
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from urllib.error import HTTPError, URLError
 
 try:
     import streamlit as st
-    import httpx
-except ImportError as e:
-    print("Missing dependencies: install with: pip install streamlit httpx")
+except ImportError:
+    print("Missing dependencies: install with: pip install streamlit")
     sys.exit(1)
+
+CLIENT_ERRORS = (RuntimeError, URLError, JSONDecodeError, TimeoutError)
 
 # Allow importing cortex_client from same directory
 sys.path.insert(0, str(Path(__file__).parent.parent / "workers"))
@@ -56,8 +57,8 @@ def format_timestamp(iso_str: str) -> str:
             return f"{dt.strftime('%Y-%m-%d %H:%M')} ({mins}m ago)"
         else:
             return f"{dt.strftime('%Y-%m-%d %H:%M')} (just now)"
-    except Exception:
-        return iso_str[:16]
+    except (TypeError, ValueError):
+        return iso_str
 
 
 def format_duration(secs: float) -> str:
@@ -94,7 +95,7 @@ def get_cortex_stats() -> CortexStats | None:
             embeddings=s.get("embeddings", 0),
             events=s.get("events", 0),
         )
-    except Exception as e:
+    except CLIENT_ERRORS as e:
         st.error(f"Failed to fetch stats: {e}")
         return None
 
@@ -126,8 +127,8 @@ def render_health_card(stats: CortexStats):
             today = digest.get("today", {})
             if today.get("newMemories", 0) > 0 or today.get("newDecisions", 0) > 0:
                 st.markdown(f"📈 **Today:** +{today['newMemories']} memories, +{today['newDecisions']} decisions")
-        except Exception:
-            pass
+        except CLIENT_ERRORS as e:
+            st.warning(f"Token savings unavailable: {e}")
 
 
 def render_agent_presence(sessions_data: dict | None):
@@ -162,8 +163,8 @@ def render_agent_presence(sessions_data: dict | None):
                 delta = dt - now
                 if delta.total_seconds() > 0:
                     time_left = f" (expires in {format_duration(delta.total_seconds())})"
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                time_left = " (invalid expiry)"
         
         with st.container():
             cols = st.columns([3, 2, 1])
@@ -214,8 +215,8 @@ def render_active_locks(locks_data: dict | None):
                     time_left = f"📅 Expires in {mins_left} min"
                 else:
                     time_left = "⚠️ Expired"
-            except Exception:
-                time_left = "⚠️ Unknown"
+            except (TypeError, ValueError):
+                time_left = "⚠️ Invalid expiry"
         
         with st.container():
             col1, col2, col3 = st.columns([4, 2, 2])
@@ -273,7 +274,7 @@ def render_task_board():
     try:
         all_tasks = cortex_client.get_tasks(status="all")
         tasks = all_tasks.get("tasks", [])
-    except Exception as e:
+    except CLIENT_ERRORS as e:
         st.error(f"Failed to fetch tasks: {e}")
         return
     
@@ -353,7 +354,7 @@ def render_memory_explorer():
                 with st.expander(f"[{method}] {source} ({relevance:.2%})", expanded=(i <= 2)):
                     st.text(excerpt)
                     st.caption(f"Relevance: {relevance:.2%} | Method: {method}")
-        except Exception as e:
+        except CLIENT_ERRORS as e:
             st.error(f"Search failed: {e}")
 
 
@@ -407,7 +408,7 @@ def render_messages_tab():
                         with col2:
                             st.info(message)
                         st.divider()
-        except Exception as e:
+        except CLIENT_ERRORS as e:
             st.error(f"Failed to fetch messages: {e}")
     
     st.markdown("---")
@@ -430,7 +431,7 @@ def render_messages_tab():
                     st.rerun()
                 else:
                     st.error("Failed to send message")
-            except Exception as e:
+            except CLIENT_ERRORS as e:
                 st.error(f"Failed to send: {e}")
         else:
             st.warning("Please enter a message")
@@ -475,10 +476,13 @@ def render_feed_tab():
             kind=kind,
             unread=unread_filter,
         )
-    except Exception as e:
-        if "404" in str(e):
+    except HTTPError as e:
+        if e.code == 404:
             st.info("Feed endpoint not available yet.")
             return
+        st.error(f"Failed to fetch feed: {e}")
+        return
+    except CLIENT_ERRORS as e:
         st.error(f"Failed to fetch feed: {e}")
         return
 
@@ -553,7 +557,7 @@ def main():
             locks = cortex_client.get_locks()
             render_agent_presence(sessions)
             render_active_locks(locks)
-        except Exception as e:
+        except CLIENT_ERRORS as e:
             st.error(f"Failed to fetch agent data: {e}")
     
     with tab3:
@@ -562,7 +566,7 @@ def main():
         try:
             activity = cortex_client.get_activity(since="1h")
             render_activity_feed(activity)
-        except Exception as e:
+        except CLIENT_ERRORS as e:
             st.error(f"Failed to fetch activity data: {e}")
     
     with tab4:

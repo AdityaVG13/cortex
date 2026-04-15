@@ -10,12 +10,16 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
+from urllib.error import URLError
 
 # Allow importing cortex_client from same directory
 sys.path.insert(0, str(Path(__file__).parent))
 import cortex_client
+
+CLIENT_ERRORS = (URLError, TimeoutError, json.JSONDecodeError, ValueError)
 
 
 def tokenize(text: str) -> set[str]:
@@ -89,7 +93,7 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         h = cortex_client.health()
         stats = h.get("stats", {})
         print(f"Connected: {stats.get('memories', '?')} memories, {stats.get('decisions', '?')} decisions")
-    except Exception as e:
+    except CLIENT_ERRORS as e:
         print(f"Cannot connect to Cortex: {e}")
         return 1
 
@@ -97,7 +101,7 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
     print(f"\nFetching all active entries...")
     try:
         data = cortex_client.dump()
-    except Exception as e:
+    except CLIENT_ERRORS as e:
         print(f"Dump failed: {e}")
         return 1
 
@@ -139,7 +143,7 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         try:
             result = cortex_client.archive("memories", ids_to_archive)
             archived += result.get("archived", 0)
-        except Exception as e:
+        except CLIENT_ERRORS as e:
             print(f"  Failed to archive memory cluster: {e}")
 
     for cluster in dec_dupes:
@@ -148,7 +152,7 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         try:
             result = cortex_client.archive("decisions", ids_to_archive)
             archived += result.get("archived", 0)
-        except Exception as e:
+        except CLIENT_ERRORS as e:
             print(f"  Failed to archive decision cluster: {e}")
 
     print(f"\nDone. Archived {archived} duplicate entries.")

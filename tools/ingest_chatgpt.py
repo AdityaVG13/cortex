@@ -29,6 +29,7 @@ from collections import Counter
 
 import urllib.request
 import urllib.error
+import urllib.parse
 
 
 # ─── Configuration ───────────────────────────────────────────────────────────
@@ -103,7 +104,7 @@ def get_cortex_token() -> str | None:
 
 def cortex_store(token: str, decision: str, context: str | None = None,
                  entry_type: str = "memory", confidence: float = 0.7,
-                 source_agent: str = "chatgpt-import") -> dict | None:
+                 source_agent: str = "chatgpt-import") -> dict:
     payload = json.dumps({
         "decision": decision,
         "context": context,
@@ -122,12 +123,8 @@ def cortex_store(token: str, decision: str, context: str | None = None,
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read())
-    except urllib.error.URLError as e:
-        print(f"  [ERROR] Store failed: {e}", file=sys.stderr)
-        return None
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
 
 
 def cortex_peek(token: str, query: str, limit: int = 3) -> list[dict]:
@@ -137,12 +134,9 @@ def cortex_peek(token: str, query: str, limit: int = 3) -> list[dict]:
         url,
         headers={"Authorization": f"Bearer {token}"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            return data.get("matches", [])
-    except Exception:
-        return []
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+        return data.get("matches", [])
 
 
 # ─── Parsing ─────────────────────────────────────────────────────────────────
@@ -602,5 +596,8 @@ def main():
 
 
 if __name__ == "__main__":
-    import urllib.parse
-    main()
+    try:
+        main()
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, RuntimeError) as e:
+        print(f"[ERROR] Cortex request failed: {e}", file=sys.stderr)
+        sys.exit(1)
