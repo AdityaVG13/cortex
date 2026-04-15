@@ -123,10 +123,7 @@ fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
     let lower_text = text.to_ascii_lowercase();
     let lower_query = query_text.to_ascii_lowercase();
     let exact_phrase = usize::from(lower_text.contains(&lower_query));
-    let mut terms = extract_keywords(query_text);
-    if terms.is_empty() {
-        terms = extract_search_keywords(query_text);
-    }
+    let terms = query_focus_terms(query_text);
     let keyword_hits = terms
         .into_iter()
         .collect::<HashSet<_>>()
@@ -2479,7 +2476,6 @@ fn search_memories(
     limit: usize,
     source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let keyword_terms = extract_search_keywords(query_text);
     let term_groups = build_search_term_groups(query_text);
 
     if term_groups.is_empty() {
@@ -2604,15 +2600,10 @@ fn search_memories(
                 source.unwrap_or_default().to_lowercase(),
                 tags.unwrap_or_default().to_lowercase(),
             ];
-            let mut matched = 0_i64;
-            for token in &keyword_terms {
-                if haystacks.iter().any(|h| h.contains(token)) {
-                    matched += 1;
-                }
-            }
+            let matched = count_matching_term_groups(&haystacks, &term_groups);
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-            let keyword_weight = matched as f64 / keyword_terms.len().max(1) as f64;
+            let keyword_weight = matched as f64 / term_groups.len().max(1) as f64;
             let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
             let score_weight = effective_score.clamp(0.0, 1.0);
             let ranking = (keyword_weight * 0.40)
@@ -2685,7 +2676,7 @@ fn search_memories_fallback(
         })
         .map_err(|e| e.to_string())?;
 
-    let tokens = extract_search_keywords(query_text);
+    let term_groups = build_search_term_groups(query_text);
     let mut ranked = Vec::new();
 
     for row in rows.flatten() {
@@ -2702,7 +2693,7 @@ fn search_memories_fallback(
             .unwrap_or_default();
         let ts = parse_timestamp_ms(&ts_source);
 
-        if tokens.is_empty() {
+        if term_groups.is_empty() {
             ranked.push(SearchCandidate {
                 source: source_key,
                 excerpt: query_focused_excerpt(&text, query_text, 220),
@@ -2722,19 +2713,14 @@ fn search_memories_fallback(
             tags.unwrap_or_default().to_lowercase(),
         ];
 
-        let mut matched = 0_i64;
-        for token in &tokens {
-            if haystacks.iter().any(|h| h.contains(token)) {
-                matched += 1;
-            }
-        }
+        let matched = count_matching_term_groups(&haystacks, &term_groups);
         if matched == 0 {
             continue;
         }
 
         let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-        let keyword_weight = matched as f64 / tokens.len() as f64;
+        let keyword_weight = matched as f64 / term_groups.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
         let score_weight = effective_score.clamp(0.0, 1.0);
         let ranking = (keyword_weight * 0.40)
@@ -2754,7 +2740,7 @@ fn search_memories_fallback(
         });
     }
 
-    if tokens.is_empty() {
+    if term_groups.is_empty() {
         ranked.sort_by(|a, b| b.ts.cmp(&a.ts));
     } else {
         ranked.sort_by(|a, b| {
@@ -2781,7 +2767,6 @@ fn search_decisions(
     limit: usize,
     source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let keyword_terms = extract_search_keywords(query_text);
     let term_groups = build_search_term_groups(query_text);
 
     if term_groups.is_empty() {
@@ -2896,15 +2881,10 @@ fn search_decisions(
                 decision.to_lowercase(),
                 context.unwrap_or_default().to_lowercase(),
             ];
-            let mut matched = 0_i64;
-            for token in &keyword_terms {
-                if haystacks.iter().any(|h| h.contains(token)) {
-                    matched += 1;
-                }
-            }
+            let matched = count_matching_term_groups(&haystacks, &term_groups);
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
             let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-            let keyword_weight = matched as f64 / keyword_terms.len().max(1) as f64;
+            let keyword_weight = matched as f64 / term_groups.len().max(1) as f64;
             let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
             let score_weight = effective_score.clamp(0.0, 1.0);
             let ranking = (keyword_weight * 0.40)
@@ -2976,7 +2956,7 @@ fn search_decisions_fallback(
         })
         .map_err(|e| e.to_string())?;
 
-    let tokens = extract_search_keywords(query_text);
+    let term_groups = build_search_term_groups(query_text);
     let mut ranked = Vec::new();
 
     for row in rows.flatten() {
@@ -2993,7 +2973,7 @@ fn search_decisions_fallback(
             .unwrap_or_default();
         let ts = parse_timestamp_ms(&ts_source);
 
-        if tokens.is_empty() {
+        if term_groups.is_empty() {
             ranked.push(SearchCandidate {
                 source: source_key,
                 excerpt: query_focused_excerpt(&decision, query_text, 220),
@@ -3011,19 +2991,14 @@ fn search_decisions_fallback(
             decision.to_lowercase(),
             context.unwrap_or_default().to_lowercase(),
         ];
-        let mut matched = 0_i64;
-        for token in &tokens {
-            if haystacks.iter().any(|h| h.contains(token)) {
-                matched += 1;
-            }
-        }
+        let matched = count_matching_term_groups(&haystacks, &term_groups);
         if matched == 0 {
             continue;
         }
 
         let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
         let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-        let keyword_weight = matched as f64 / tokens.len() as f64;
+        let keyword_weight = matched as f64 / term_groups.len() as f64;
         let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
         let score_weight = effective_score.clamp(0.0, 1.0);
         let ranking = (keyword_weight * 0.40)
@@ -3043,7 +3018,7 @@ fn search_decisions_fallback(
         });
     }
 
-    if tokens.is_empty() {
+    if term_groups.is_empty() {
         ranked.sort_by(|a, b| b.ts.cmp(&a.ts));
     } else {
         ranked.sort_by(|a, b| {
@@ -3403,6 +3378,33 @@ fn build_search_term_groups(text: &str) -> Vec<Vec<String>> {
     groups
 }
 
+fn count_matching_term_groups(haystacks: &[String], term_groups: &[Vec<String>]) -> i64 {
+    term_groups
+        .iter()
+        .filter(|group| {
+            group
+                .iter()
+                .any(|term| haystacks.iter().any(|haystack| haystack.contains(term)))
+        })
+        .count() as i64
+}
+
+fn query_focus_terms(query_text: &str) -> Vec<String> {
+    let mut terms = extract_keywords(query_text);
+    let mut seen: HashSet<String> = terms.iter().cloned().collect();
+    for group in build_search_term_groups(query_text) {
+        for term in group {
+            if seen.insert(term.clone()) {
+                terms.push(term);
+            }
+        }
+    }
+    if terms.is_empty() {
+        terms = extract_search_keywords(query_text);
+    }
+    terms
+}
+
 fn build_fts_query(groups: &[Vec<String>]) -> String {
     groups
         .iter()
@@ -3433,10 +3435,7 @@ fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> Stri
     }
 
     let lower_text = text.to_lowercase();
-    let mut terms = extract_keywords(query_text);
-    if terms.is_empty() {
-        terms = extract_search_keywords(query_text);
-    }
+    let mut terms = query_focus_terms(query_text);
     if terms.is_empty() {
         return truncate_chars(text, max_chars);
     }
@@ -5957,6 +5956,103 @@ mod tests {
             excerpt.contains("Business Administration"),
             "excerpt should preserve local factual span"
         );
+    }
+
+    #[test]
+    fn test_query_focused_excerpt_matches_synonym_expansion() {
+        let prefix = "x".repeat(240);
+        let text =
+            format!("{prefix} database timeout recovery keeps the daemon stable during reconnect.");
+        let excerpt = query_focused_excerpt(&text, "db timeout", 110);
+        let lower = excerpt.to_ascii_lowercase();
+        assert!(
+            lower.contains("database") && lower.contains("timeout"),
+            "excerpt should center on the synonym-expanded span, got {excerpt:?}"
+        );
+    }
+
+    #[test]
+    fn test_search_memories_fallback_matches_synonym_term_groups() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, 'memory::db-timeout', 'note', 'active', 0.9, datetime('now'), datetime('now'))",
+            params!["database timeout recovery keeps reconnect stable"],
+        )
+        .unwrap();
+
+        let results = search_memories_fallback(&conn, "db timeout", 5, None)
+            .expect("memory fallback should succeed");
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "memory::db-timeout"),
+            "fallback should match synonym-expanded memory text"
+        );
+        assert_eq!(results[0].matched_keywords, 2);
+    }
+
+    #[test]
+    fn test_search_memories_fts_scoring_counts_synonym_term_groups() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, 'memory::db-timeout-fts', 'note', 'active', 0.9, datetime('now'), datetime('now'))",
+            params!["database timeout recovery keeps reconnect stable"],
+        )
+        .unwrap();
+
+        let results =
+            search_memories(&conn, "db timeout", 5, None).expect("memory search should succeed");
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "memory::db-timeout-fts"),
+            "fts search should match synonym-expanded memory text"
+        );
+        assert_eq!(results[0].matched_keywords, 2);
+    }
+
+    #[test]
+    fn test_search_decisions_fallback_matches_synonym_term_groups() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, created_at, updated_at)
+             VALUES (?1, 'decision::authz-policy', 'active', 0.85, datetime('now'), datetime('now'))",
+            params!["authorization policy should reject unknown callers by default"],
+        )
+        .unwrap();
+
+        let results = search_decisions_fallback(&conn, "authz policy", 5, None)
+            .expect("decision fallback should succeed");
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "decision::authz-policy"),
+            "fallback should match synonym-expanded decision text"
+        );
+        assert_eq!(results[0].matched_keywords, 2);
+    }
+
+    #[test]
+    fn test_search_decisions_fts_scoring_counts_synonym_term_groups() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, created_at, updated_at)
+             VALUES (?1, 'decision::authz-policy-fts', 'active', 0.85, datetime('now'), datetime('now'))",
+            params!["authorization policy should reject unknown callers by default"],
+        )
+        .unwrap();
+
+        let results = search_decisions(&conn, "authz policy", 5, None)
+            .expect("decision search should succeed");
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "decision::authz-policy-fts"),
+            "fts search should match synonym-expanded decision text"
+        );
+        assert_eq!(results[0].matched_keywords, 2);
     }
 
     #[test]
