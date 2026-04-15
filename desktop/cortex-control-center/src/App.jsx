@@ -4999,8 +4999,8 @@ export function App() {
                 </div>
 
                 <p style={{ color: "var(--text-2)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
-                  A desktop command surface for the Cortex daemon. The app is built to be production-safe for shipped users first:
-                  auth-aware startup, daemon lifecycle control, live telemetry, and a brain view that can double as a showpiece.
+                  A desktop command surface for Cortex built around one app-managed daemon instance:
+                  auth-aware startup, owned lifecycle control, live telemetry, and a brain view that can double as a showpiece.
                 </p>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "2rem" }}>
@@ -5034,23 +5034,23 @@ export function App() {
                     <tbody>
                       <tr>
                         <td>Start</td>
-                        <td>Launches the daemon sidecar and waits for a healthy API before reloading data.</td>
+                        <td>Launches the app-managed Cortex daemon and waits for a healthy API before reloading data.</td>
                       </tr>
                       <tr>
                         <td>Stop</td>
-                        <td>Sends a graceful shutdown request, then tears down sidecar process handles.</td>
+                        <td>Sends a graceful shutdown request to the app-managed daemon, then clears owned process handles.</td>
                       </tr>
                       <tr>
                         <td>Restart</td>
-                        <td>Runs Stop then Start with timeout handling so the UI can recover when shutdown hangs.</td>
+                        <td>Runs Stop then Start with timeout handling so the UI can recover from stale daemon state without creating a second instance.</td>
                       </tr>
                       <tr>
                         <td>Close Window</td>
-                        <td>Minimizes to tray by default so Cortex keeps running in the background.</td>
+                        <td>Minimizes to tray by default so the app-managed daemon can keep serving local clients in the background.</td>
                       </tr>
                       <tr>
                         <td>Exit</td>
-                        <td>Fully quits the app process and attempts daemon shutdown.</td>
+                        <td>Fully quits the app and requests daemon shutdown when this app instance owns it.</td>
                       </tr>
                     </tbody>
                   </table>
@@ -5109,7 +5109,7 @@ export function App() {
                 </div>
 
                 <p style={{ color: "var(--text-2)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
-                  A persistent, self-improving brain for AI coding agents. Single Rust binary,
+                  A persistent, self-improving brain for AI coding agents. One app-managed daemon,
                   zero runtime dependencies, in-process ONNX embeddings.
                 </p>
 
@@ -5144,23 +5144,23 @@ export function App() {
                     <tbody>
                       <tr>
                         <td>Start</td>
-                        <td>Launches the daemon sidecar and waits for a healthy API before reloading data.</td>
+                        <td>Launches the app-managed Cortex daemon and waits for a healthy API before reloading data.</td>
                       </tr>
                       <tr>
                         <td>Stop</td>
-                        <td>Sends a graceful shutdown request, then tears down sidecar process handles.</td>
+                        <td>Sends a graceful shutdown request to the app-managed daemon, then clears owned process handles.</td>
                       </tr>
                       <tr>
                         <td>Restart</td>
-                        <td>Runs Stop then Start with timeout handling; retries when shutdown hangs.</td>
+                        <td>Runs Stop then Start with timeout handling; retries when shutdown hangs without creating a second daemon instance.</td>
                       </tr>
                       <tr>
                         <td>Close Window (✕)</td>
-                        <td>Minimizes to tray by default so Cortex keeps running in background.</td>
+                        <td>Minimizes to tray by default so the app-managed daemon can keep serving local clients in the background.</td>
                       </tr>
                       <tr>
                         <td>Exit</td>
-                        <td>Fully quits the app process and attempts daemon shutdown.</td>
+                        <td>Fully quits the app and requests daemon shutdown when this app instance owns it.</td>
                       </tr>
                     </tbody>
                   </table>
@@ -5216,4 +5216,3 @@ export function App() {
     </div>
   );
 }
-
