@@ -935,8 +935,16 @@ pub async fn execute_recall_policy_explain(
     let engine = state.embedding_engine.as_deref();
     let dflag = Some(&state.degraded_mode);
 
-    let (budgeted, candidate_pool, retrieval_depth, min_relevance, top_relevance, max_items) =
-        if budget == 0 {
+    let (
+        budgeted,
+        candidate_pool,
+        pre_compaction_candidate_count,
+        family_compactions,
+        retrieval_depth,
+        min_relevance,
+        top_relevance,
+        max_items,
+    ) = if budget == 0 {
             let raw_pool = run_recall_with_engine(
                 &mut conn,
                 query_text,
@@ -956,7 +964,17 @@ pub async fn execute_recall_policy_explain(
                     item
                 })
                 .collect::<Vec<_>>();
-            (budgeted, raw_pool, pool_k, 0.0_f64, 0.0_f64, requested_k)
+            let raw_pool_len = raw_pool.len();
+            (
+                budgeted,
+                raw_pool,
+                raw_pool_len,
+                Vec::new(),
+                pool_k,
+                0.0_f64,
+                0.0_f64,
+                requested_k,
+            )
         } else {
             let trace = run_budget_recall_trace_with_engine(
                 &mut conn,
@@ -971,6 +989,8 @@ pub async fn execute_recall_policy_explain(
             (
                 trace.budgeted,
                 trace.candidate_pool,
+                trace.pre_compaction_candidate_count,
+                trace.family_compactions,
                 trace.retrieval_depth,
                 trace.min_relevance,
                 trace.top_relevance,
@@ -989,6 +1009,20 @@ pub async fn execute_recall_policy_explain(
         .sum();
     let saved = budget as i64 - spent as i64;
     let mode = recall_mode_for_budget(budget);
+    let family_compacted_count: usize = family_compactions
+        .iter()
+        .map(|entry| entry.dropped_sources.len())
+        .sum();
+    let family_compactions_json: Vec<Value> = family_compactions
+        .iter()
+        .map(|entry| {
+            json!({
+                "familyKey": entry.family_key,
+                "keptSource": entry.kept_source,
+                "droppedSources": entry.dropped_sources,
+            })
+        })
+        .collect();
     let returned_sources: HashSet<&str> = final_results
         .iter()
         .map(|item| item.source.as_str())
@@ -1037,6 +1071,7 @@ pub async fn execute_recall_policy_explain(
             })
         })
         .collect();
+    let post_compaction_dropped_count = candidate_pool.len().saturating_sub(final_with_factors.len());
 
     Ok(json!({
         "query": query_text,
@@ -1062,13 +1097,18 @@ pub async fn execute_recall_policy_explain(
                 "spent": spent,
                 "saved": saved,
                 "budgetPressure": if budget == 0 { 0.0 } else { round4((spent as f64) / (budget as f64)) },
+                "candidateCountBeforeFamilyCompaction": pre_compaction_candidate_count,
                 "candidateCount": candidate_pool.len(),
+                "candidateCountAfterFamilyCompaction": candidate_pool.len(),
+                "familyCompactedCount": family_compacted_count,
                 "returnedCount": final_with_factors.len(),
-                "droppedCount": candidate_pool.len().saturating_sub(final_with_factors.len())
+                "droppedCount": post_compaction_dropped_count,
+                "totalPreBudgetDrops": family_compacted_count + post_compaction_dropped_count
             }
         },
         "explain": {
             "returned": final_with_factors,
+            "familyCompactions": family_compactions_json,
             "droppedCandidates": dropped_candidates
         }
     }))
@@ -1645,13 +1685,13 @@ fn prefer_family_candidate(candidate: &RecallItem, current: &RecallItem, query_t
     candidate.source < current.source
 }
 
-fn compact_budget_family_candidates(
+fn compact_budget_family_candidates_with_trace(
     candidates: Vec<RecallItem>,
     query_text: &str,
     token_budget: usize,
-) -> Vec<RecallItem> {
+) -> (Vec<RecallItem>, Vec<RecallItem>, Vec<RecallFamilyCompaction>) {
     if token_budget > 400 || candidates.len() <= 1 {
-        return candidates;
+        return (candidates, Vec::new(), Vec::new());
     }
 
     let mut family_lookup = HashMap::new();
@@ -1666,10 +1706,12 @@ fn compact_budget_family_candidates(
         }
     }
     if family_lookup.is_empty() {
-        return candidates;
+        return (candidates, Vec::new(), Vec::new());
     }
 
     let mut compacted: HashMap<String, RecallItem> = HashMap::new();
+    let mut dropped = Vec::new();
+    let mut dropped_by_family: HashMap<String, Vec<String>> = HashMap::new();
     for item in candidates {
         let family_key = if !item.family_members.is_empty() {
             item.source.clone()
@@ -1682,7 +1724,18 @@ fn compact_budget_family_candidates(
         match compacted.entry(family_key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 if prefer_family_candidate(&item, entry.get(), query_text) {
-                    entry.insert(item);
+                    let replaced = entry.insert(item);
+                    dropped_by_family
+                        .entry(entry.key().clone())
+                        .or_default()
+                        .push(replaced.source.clone());
+                    dropped.push(replaced);
+                } else {
+                    dropped_by_family
+                        .entry(entry.key().clone())
+                        .or_default()
+                        .push(item.source.clone());
+                    dropped.push(item);
                 }
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1691,13 +1744,45 @@ fn compact_budget_family_candidates(
         }
     }
 
+    dropped.sort_by(|a, b| {
+        b.relevance
+            .partial_cmp(&a.relevance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut family_compactions = Vec::new();
+    for (family_key, mut dropped_sources) in dropped_by_family {
+        if dropped_sources.is_empty() {
+            continue;
+        }
+        dedup_preserve_order(&mut dropped_sources);
+        let Some(kept_source) = compacted
+            .get(&family_key)
+            .map(|item| item.source.clone())
+        else {
+            continue;
+        };
+        family_compactions.push(RecallFamilyCompaction {
+            family_key,
+            kept_source,
+            dropped_sources,
+        });
+    }
+    family_compactions.sort_by(|a, b| a.family_key.cmp(&b.family_key));
     let mut compacted_items: Vec<RecallItem> = compacted.into_values().collect();
     compacted_items.sort_by(|a, b| {
         b.relevance
             .partial_cmp(&a.relevance)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    compacted_items
+    (compacted_items, dropped, family_compactions)
+}
+
+fn compact_budget_family_candidates(
+    candidates: Vec<RecallItem>,
+    query_text: &str,
+    token_budget: usize,
+) -> Vec<RecallItem> {
+    compact_budget_family_candidates_with_trace(candidates, query_text, token_budget).0
 }
 
 fn apply_semantic_budget(
@@ -2088,10 +2173,19 @@ fn build_associative_candidates(
 struct RecallBudgetTrace {
     budgeted: Vec<RecallItem>,
     candidate_pool: Vec<RecallItem>,
+    pre_compaction_candidate_count: usize,
+    family_compactions: Vec<RecallFamilyCompaction>,
     retrieval_depth: usize,
     top_relevance: f64,
     min_relevance: f64,
     max_items: usize,
+}
+
+#[derive(Clone)]
+struct RecallFamilyCompaction {
+    family_key: String,
+    kept_source: String,
+    dropped_sources: Vec<String>,
 }
 
 fn run_budget_recall_trace_with_query_vector(
@@ -2122,6 +2216,8 @@ fn run_budget_recall_trace_with_query_vector(
         return Ok(RecallBudgetTrace {
             budgeted: vec![],
             candidate_pool: vec![],
+            pre_compaction_candidate_count: 0,
+            family_compactions: vec![],
             retrieval_depth,
             top_relevance: 0.0,
             min_relevance: 0.0,
@@ -2131,7 +2227,7 @@ fn run_budget_recall_trace_with_query_vector(
 
     let associative =
         build_associative_candidates(conn, &raw, query_text, token_budget, ctx, source_prefix);
-    let raw = if associative.is_empty() {
+    let pre_compaction_pool = if associative.is_empty() {
         raw
     } else {
         let mut merged: HashMap<String, RecallItem> = raw
@@ -2156,8 +2252,15 @@ fn run_budget_recall_trace_with_query_vector(
                 .partial_cmp(&a.relevance)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        compact_budget_family_candidates(merged_pool, query_text, token_budget)
+        merged_pool
     };
+    let pre_compaction_candidate_count = pre_compaction_pool.len();
+    let (raw, _family_compaction_dropped, family_compactions) =
+        compact_budget_family_candidates_with_trace(
+            pre_compaction_pool,
+            query_text,
+            token_budget,
+        );
 
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = if top_relevance >= 0.25 {
@@ -2228,6 +2331,8 @@ fn run_budget_recall_trace_with_query_vector(
     Ok(RecallBudgetTrace {
         budgeted,
         candidate_pool: raw,
+        pre_compaction_candidate_count,
+        family_compactions,
         retrieval_depth,
         top_relevance,
         min_relevance,
@@ -5840,6 +5945,88 @@ mod tests {
             assoc.unwrap().method,
             "associative",
             "linked source should be explicitly tagged as associative"
+        );
+    }
+
+    #[test]
+    fn budget_recall_trace_reports_family_compaction_after_associative_merge() {
+        let mut conn = test_conn();
+        let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let (_crystal_id, crystal_key, _member_sources) = insert_crystal_with_memory_members(
+            &conn,
+            "daemon lifecycle",
+            "Daemon lifecycle summary covers lease renewal and recovery.",
+            &query_vector,
+            &[
+                (
+                    "Daemon lifecycle lease renewal keeps ownership stable.",
+                    "memory::daemon-lifecycle",
+                    &query_vector,
+                ),
+                (
+                    "Plugin reconnect heartbeat stops duplicate daemon startup.",
+                    "memory::plugin-heartbeat",
+                    &[0.97, 0.03, 0.0, 0.0, 0.0],
+                ),
+            ],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "Recovery dashboard shows lock state and daemon readiness.",
+            "memory::recovery-dashboard",
+            &[0.94, 0.06, 0.0, 0.0, 0.0],
+        );
+
+        for _ in 0..6 {
+            crate::co_occurrence::record(
+                &conn,
+                &[
+                    crystal_key.clone(),
+                    "memory::plugin-heartbeat".to_string(),
+                    "memory::recovery-dashboard".to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let trace = run_budget_recall_trace_with_query_vector(
+            &mut conn,
+            "daemon lifecycle recovery",
+            320,
+            8,
+            Some(&query_vector),
+            &solo_ctx(),
+            None,
+        )
+        .expect("budget trace should succeed");
+
+        assert_eq!(
+            trace.pre_compaction_candidate_count,
+            trace.candidate_pool.len() + 1,
+            "one associative family sibling should be compacted before packing"
+        );
+        assert_eq!(trace.family_compactions.len(), 1);
+        assert_eq!(trace.family_compactions[0].family_key, crystal_key);
+        assert_eq!(trace.family_compactions[0].kept_source, crystal_key);
+        assert!(
+            trace.family_compactions[0]
+                .dropped_sources
+                .contains(&"memory::plugin-heartbeat".to_string()),
+            "associative family sibling should be reported as compacted"
+        );
+        assert!(
+            trace
+                .candidate_pool
+                .iter()
+                .all(|item| item.source != "memory::plugin-heartbeat"),
+            "compacted sibling should not survive in candidate pool"
+        );
+        assert!(
+            trace
+                .candidate_pool
+                .iter()
+                .any(|item| item.source == "memory::recovery-dashboard"),
+            "unrelated high-signal context should remain after compaction"
         );
     }
 
