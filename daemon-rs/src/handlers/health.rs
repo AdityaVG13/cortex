@@ -537,16 +537,25 @@ fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+fn round4(value: f64) -> f64 {
+    (value * 10_000.0).round() / 10_000.0
+}
+
 fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
     let mut tier_counts: BTreeMap<String, i64> = BTreeMap::new();
     let mut tier_latency_sum: BTreeMap<String, i64> = BTreeMap::new();
     let mut tier_latency_samples: BTreeMap<String, i64> = BTreeMap::new();
     let mut mode_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut shadow_status_counts: BTreeMap<String, i64> = BTreeMap::new();
 
     let mut total_budget = 0_i64;
     let mut total_spent = 0_i64;
     let mut total_saved = 0_i64;
     let mut total_hits = 0_i64;
+    let mut shadow_ok_overlap_ratio_sum = 0.0_f64;
+    let mut shadow_ok_overlap_ratio_samples = 0_i64;
+    let mut shadow_ok_jaccard_sum = 0.0_f64;
+    let mut shadow_ok_jaccard_samples = 0_i64;
 
     let mut latency_total = 0_i64;
     let mut latency_samples = 0_i64;
@@ -582,6 +591,34 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
                 *tier_latency_samples.entry(tier.clone()).or_insert(0) += 1;
             }
         }
+        if let Some(shadow_semantic) = payload
+            .get("shadow_semantic")
+            .and_then(|value| value.as_object())
+        {
+            let status = shadow_semantic
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            *shadow_status_counts.entry(status.clone()).or_insert(0) += 1;
+
+            if status == "ok" {
+                if let Some(overlap_ratio) = shadow_semantic
+                    .get("overlapRatio")
+                    .and_then(|value| value.as_f64())
+                {
+                    shadow_ok_overlap_ratio_sum += overlap_ratio;
+                    shadow_ok_overlap_ratio_samples += 1;
+                }
+                if let Some(jaccard) = shadow_semantic
+                    .get("jaccard")
+                    .and_then(|value| value.as_f64())
+                {
+                    shadow_ok_jaccard_sum += jaccard;
+                    shadow_ok_jaccard_samples += 1;
+                }
+            }
+        }
 
         recent.push(json!({
             "timestamp": created_at,
@@ -606,6 +643,20 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
         round1((total_saved as f64 / total_budget as f64) * 100.0)
     } else {
         0.0
+    };
+    let shadow_overlap_ratio_avg = if shadow_ok_overlap_ratio_samples > 0 {
+        Some(round4(
+            shadow_ok_overlap_ratio_sum / shadow_ok_overlap_ratio_samples as f64,
+        ))
+    } else {
+        None
+    };
+    let shadow_jaccard_avg = if shadow_ok_jaccard_samples > 0 {
+        Some(round4(
+            shadow_ok_jaccard_sum / shadow_ok_jaccard_samples as f64,
+        ))
+    } else {
+        None
     };
 
     let tier_distribution: Vec<Value> = tier_counts
@@ -681,6 +732,18 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
             "vs_always_full_pipeline_pct": savings_pct_vs_budget
         },
         "modeCounts": mode_counts,
+        "shadow_semantic": {
+            "status_counts": shadow_status_counts,
+            "ok_samples": shadow_ok_overlap_ratio_samples.max(shadow_ok_jaccard_samples),
+            "ok_overlap_ratio_avg": shadow_overlap_ratio_avg,
+            "ok_jaccard_avg": shadow_jaccard_avg
+        },
+        "shadowSemantic": {
+            "statusCounts": shadow_status_counts,
+            "okSamples": shadow_ok_overlap_ratio_samples.max(shadow_ok_jaccard_samples),
+            "okOverlapRatioAvg": shadow_overlap_ratio_avg,
+            "okJaccardAvg": shadow_jaccard_avg
+        },
         "recent": recent
     })
 }
@@ -1318,7 +1381,11 @@ mod tests {
                     "cached": false,
                     "method_breakdown": { "keyword": 2 },
                     "tier": "keyword_only",
-                    "latency_ms": 5
+                    "latency_ms": 5,
+                    "shadow_semantic": {
+                        "status": "unavailable",
+                        "reason": "query_embedding_unavailable"
+                    }
                 })
                 .to_string(),
                 "2026-04-14T10:00:00Z".to_string(),
@@ -1333,7 +1400,12 @@ mod tests {
                     "cached": false,
                     "method_breakdown": { "hybrid": 2, "semantic": 1 },
                     "tier": "hybrid_fusion",
-                    "latency_ms": 28
+                    "latency_ms": 28,
+                    "shadow_semantic": {
+                        "status": "ok",
+                        "overlapRatio": 0.5,
+                        "jaccard": 0.4
+                    }
                 })
                 .to_string(),
                 "2026-04-14T10:01:00Z".to_string(),
@@ -1347,7 +1419,11 @@ mod tests {
                     "hits": 1,
                     "cached": true,
                     "tier": "cache_hit",
-                    "latency_ms": 1
+                    "latency_ms": 1,
+                    "shadow_semantic": {
+                        "status": "skipped",
+                        "reason": "cache_hit"
+                    }
                 })
                 .to_string(),
                 "2026-04-14T10:02:00Z".to_string(),
@@ -1363,6 +1439,17 @@ mod tests {
         assert_eq!(payload["tier_distribution"]["keyword_only"], 1);
         assert_eq!(payload["tier_distribution"]["hybrid_fusion"], 1);
         assert_eq!(payload["avg_latency_ms"]["overall"], 11.3);
+        assert_eq!(
+            payload["shadow_semantic"]["status_counts"]["unavailable"],
+            1
+        );
+        assert_eq!(payload["shadow_semantic"]["status_counts"]["ok"], 1);
+        assert_eq!(payload["shadow_semantic"]["status_counts"]["skipped"], 1);
+        assert_eq!(payload["shadow_semantic"]["ok_samples"], 1);
+        assert_eq!(payload["shadow_semantic"]["ok_overlap_ratio_avg"], 0.5);
+        assert_eq!(payload["shadow_semantic"]["ok_jaccard_avg"], 0.4);
+        assert_eq!(payload["shadowSemantic"]["statusCounts"]["ok"], 1);
+        assert_eq!(payload["shadowSemantic"]["okOverlapRatioAvg"], 0.5);
         assert_eq!(
             payload["estimated_savings"]["vs_always_full_pipeline_pct"],
             58.8
