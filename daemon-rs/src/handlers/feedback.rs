@@ -797,6 +797,82 @@ pub fn build_agent_feedback_stats_payload(
     }))
 }
 
+pub fn recommend_recall_k(
+    conn: &Connection,
+    owner_id: i64,
+    agent: &str,
+    task_class: Option<&str>,
+    base_k: usize,
+) -> Result<Option<Value>, String> {
+    let task_class = normalize_task_class(task_class).to_string();
+    let mut stmt = conn
+        .prepare(
+            "SELECT outcome, quality_score
+             FROM agent_feedback
+             WHERE owner_id = ?1
+               AND agent = ?2
+               AND task_class = ?3
+               AND julianday('now') - julianday(created_at) <= 30
+             ORDER BY datetime(created_at) DESC, id DESC
+             LIMIT 40",
+        )
+        .map_err(|err| err.to_string())?;
+
+    let rows = stmt
+        .query_map(params![owner_id, agent, task_class], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+        })
+        .map_err(|err| err.to_string())?;
+
+    let mut success = 0usize;
+    let mut partial = 0usize;
+    let mut failure = 0usize;
+    let mut quality_total = 0.0f64;
+    let mut count = 0usize;
+    for (outcome, quality) in rows.flatten() {
+        count += 1;
+        quality_total += quality.clamp(0.0, 1.0);
+        match outcome.as_str() {
+            "success" => success += 1,
+            "partial" => partial += 1,
+            _ => failure += 1,
+        }
+    }
+
+    if count < 8 {
+        return Ok(None);
+    }
+
+    let failure_rate = failure as f64 / count as f64;
+    let partial_rate = partial as f64 / count as f64;
+    let success_rate = success as f64 / count as f64;
+    let avg_quality = quality_total / count as f64;
+
+    let mut recommended_k = base_k;
+    let reason = if failure_rate >= 0.3 || partial_rate >= 0.45 {
+        recommended_k = (base_k + 4).min(24);
+        "raise_depth_for_recovery"
+    } else if success_rate >= 0.75 && avg_quality >= 0.82 {
+        recommended_k = base_k.saturating_sub(2).max(6);
+        "reduce_depth_for_efficiency"
+    } else {
+        "keep_depth_stable"
+    };
+
+    Ok(Some(json!({
+        "agent": agent,
+        "taskClass": task_class,
+        "samples": count,
+        "baseK": base_k,
+        "recommendedK": recommended_k,
+        "reason": reason,
+        "successRate": success_rate,
+        "partialRate": partial_rate,
+        "failureRate": failure_rate,
+        "avgQuality": avg_quality,
+    })))
+}
+
 pub async fn handle_agent_feedback_record(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
@@ -1086,6 +1162,57 @@ mod tests {
             stats["byAgent"][0]["name"].as_str(),
             Some("codex"),
             "owner-scoped stats should exclude other owners"
+        );
+    }
+
+    #[test]
+    fn test_recommend_recall_k_increases_depth_for_struggling_task_class() {
+        let conn = setup_test_db();
+        for _ in 0..10 {
+            record_agent_feedback_from_value(
+                &conn,
+                0,
+                &json!({
+                    "agent": "codex",
+                    "taskClass": "debug",
+                    "outcome": "failure",
+                    "qualityScore": 0.25
+                }),
+                "mcp",
+            )
+            .unwrap();
+        }
+        let policy = recommend_recall_k(&conn, 0, "codex", Some("debug"), 10)
+            .unwrap()
+            .expect("policy expected");
+        assert_eq!(policy["recommendedK"].as_u64(), Some(14));
+        assert_eq!(policy["reason"].as_str(), Some("raise_depth_for_recovery"));
+    }
+
+    #[test]
+    fn test_recommend_recall_k_reduces_depth_for_stable_high_quality_runs() {
+        let conn = setup_test_db();
+        for _ in 0..12 {
+            record_agent_feedback_from_value(
+                &conn,
+                0,
+                &json!({
+                    "agent": "codex",
+                    "taskClass": "refactor",
+                    "outcome": "success",
+                    "qualityScore": 0.95
+                }),
+                "mcp",
+            )
+            .unwrap();
+        }
+        let policy = recommend_recall_k(&conn, 0, "codex", Some("refactor"), 12)
+            .unwrap()
+            .expect("policy expected");
+        assert_eq!(policy["recommendedK"].as_u64(), Some(10));
+        assert_eq!(
+            policy["reason"].as_str(),
+            Some("reduce_depth_for_efficiency")
         );
     }
 }

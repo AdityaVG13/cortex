@@ -3,7 +3,9 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 use super::diary::{write_diary_entry, DiaryRequest};
-use super::feedback::{build_agent_feedback_stats_payload, record_agent_feedback_from_value};
+use super::feedback::{
+    build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value,
+};
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{
     forget_keyword, list_conflicts_payload, parse_conflict_id, resolve_decision,
@@ -901,7 +903,9 @@ pub fn mcp_tools() -> Vec<Value> {
                     "query": { "type": "string", "description": "Search query text" },
                     "budget": { "type": "number", "description": "Token budget. 0=headlines only, 200=balanced, 500+=full detail" },
                     "k": { "type": "number", "description": "Retrieval depth hint (default adapts to budget for low-token recall)" },
-                    "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" }
+                    "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" },
+                    "taskClass": { "type": "string", "description": "Optional task class for adaptive retrieval hints (e.g. debug, refactor, docs)" },
+                    "adaptive": { "type": "boolean", "description": "When true, tune k using recent agent/task outcomes from telemetry." }
                 },
                 "required": ["query"]
             }
@@ -1294,7 +1298,7 @@ async fn mcp_dispatch(
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or({
+            let mut k = arg_usize(args, &["k", "limit"]).unwrap_or({
                 if budget <= 220 {
                     16
                 } else if budget <= 400 {
@@ -1305,9 +1309,36 @@ async fn mcp_dispatch(
             });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let task_class = arg_str(args, &["taskClass", "task_class"]);
+            let adaptive = args
+                .get("adaptive")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let mut adaptive_policy: Option<Value> = None;
+            if adaptive {
+                let owner_id = if state.team_mode {
+                    caller_id.unwrap_or_default()
+                } else {
+                    0
+                };
+                let conn = state.db.lock().await;
+                if let Some(policy) = recommend_recall_k(&conn, owner_id, agent, task_class, k)? {
+                    if let Some(recommended_k) =
+                        policy.get("recommendedK").and_then(|value| value.as_u64())
+                    {
+                        k = recommended_k as usize;
+                    }
+                    adaptive_policy = Some(policy);
+                }
+            }
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            execute_unified_recall(state, query, budget, k, agent, &ctx, None).await
+            let mut payload =
+                execute_unified_recall(state, query, budget, k, agent, &ctx, None).await?;
+            if let (Some(policy), Value::Object(map)) = (adaptive_policy, &mut payload) {
+                map.insert("adaptivePolicy".to_string(), policy);
+            }
+            Ok(payload)
         }
 
         "cortex_recall_policy_explain" => {
