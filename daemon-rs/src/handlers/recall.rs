@@ -264,28 +264,27 @@ fn parse_crystal_source_id(source: &str) -> Option<i64> {
 }
 
 fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &RecallContext) -> Vec<String> {
-    let query_rows =
-        |sql: &str,
-         with_visibility: bool|
-         -> Result<Vec<CrystalMemberSourceRow>, rusqlite::Error> {
-            let mut stmt = conn.prepare(sql)?;
-            let mapped = stmt.query_map(params![crystal_id], |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    if with_visibility {
-                        row.get::<_, Option<i64>>(1)?
-                    } else {
-                        None
-                    },
-                    if with_visibility {
-                        row.get::<_, Option<String>>(2)?
-                    } else {
-                        None
-                    },
-                ))
-            })?;
-            Ok(mapped.flatten().collect())
-        };
+    let query_rows = |sql: &str,
+                      with_visibility: bool|
+     -> Result<Vec<CrystalMemberSourceRow>, rusqlite::Error> {
+        let mut stmt = conn.prepare(sql)?;
+        let mapped = stmt.query_map(params![crystal_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                if with_visibility {
+                    row.get::<_, Option<i64>>(1)?
+                } else {
+                    None
+                },
+                if with_visibility {
+                    row.get::<_, Option<String>>(2)?
+                } else {
+                    None
+                },
+            ))
+        })?;
+        Ok(mapped.flatten().collect())
+    };
 
     let sql_with_visibility = "SELECT CASE
                 WHEN cm.target_type = 'memory' THEN COALESCE(m.source, 'memory::' || m.id)
@@ -947,81 +946,81 @@ async fn execute_recall_policy_explain_inner(
         top_relevance,
         max_items,
     ) = if budget == 0 {
-            let raw_pool = if let Some(query_vector) = query_vector_override {
-                run_recall_with_query_vector(
-                    &mut conn,
-                    query_text,
-                    pool_k,
-                    Some(query_vector),
-                    ctx,
-                    source_prefix,
-                )?
-            } else {
-                run_recall_with_engine(
-                    &mut conn,
-                    query_text,
-                    pool_k,
-                    engine,
-                    ctx,
-                    source_prefix,
-                    dflag,
-                )?
-            };
-            let budgeted = raw_pool
-                .iter()
-                .take(requested_k)
-                .cloned()
-                .map(|mut item| {
-                    item.excerpt.clear();
-                    item.tokens = Some(estimate_tokens(&item.source));
-                    item
-                })
-                .collect::<Vec<_>>();
-            let raw_pool_len = raw_pool.len();
-            (
-                budgeted,
-                raw_pool,
-                raw_pool_len,
-                Vec::new(),
+        let raw_pool = if let Some(query_vector) = query_vector_override {
+            run_recall_with_query_vector(
+                &mut conn,
+                query_text,
                 pool_k,
-                0.0_f64,
-                0.0_f64,
-                requested_k,
-            )
+                Some(query_vector),
+                ctx,
+                source_prefix,
+            )?
         } else {
-            let trace = if let Some(query_vector) = query_vector_override {
-                run_budget_recall_trace_with_query_vector(
-                    &mut conn,
-                    query_text,
-                    budget,
-                    requested_k,
-                    Some(query_vector),
-                    ctx,
-                    source_prefix,
-                )?
-            } else {
-                run_budget_recall_trace_with_engine(
-                    &mut conn,
-                    query_text,
-                    budget,
-                    requested_k,
-                    engine,
-                    ctx,
-                    source_prefix,
-                    dflag,
-                )?
-            };
-            (
-                trace.budgeted,
-                trace.candidate_pool,
-                trace.pre_compaction_candidate_count,
-                trace.family_compactions,
-                trace.retrieval_depth,
-                trace.min_relevance,
-                trace.top_relevance,
-                trace.max_items,
-            )
+            run_recall_with_engine(
+                &mut conn,
+                query_text,
+                pool_k,
+                engine,
+                ctx,
+                source_prefix,
+                dflag,
+            )?
         };
+        let budgeted = raw_pool
+            .iter()
+            .take(requested_k)
+            .cloned()
+            .map(|mut item| {
+                item.excerpt.clear();
+                item.tokens = Some(estimate_tokens(&item.source));
+                item
+            })
+            .collect::<Vec<_>>();
+        let raw_pool_len = raw_pool.len();
+        (
+            budgeted,
+            raw_pool,
+            raw_pool_len,
+            Vec::new(),
+            pool_k,
+            0.0_f64,
+            0.0_f64,
+            requested_k,
+        )
+    } else {
+        let trace = if let Some(query_vector) = query_vector_override {
+            run_budget_recall_trace_with_query_vector(
+                &mut conn,
+                query_text,
+                budget,
+                requested_k,
+                Some(query_vector),
+                ctx,
+                source_prefix,
+            )?
+        } else {
+            run_budget_recall_trace_with_engine(
+                &mut conn,
+                query_text,
+                budget,
+                requested_k,
+                engine,
+                ctx,
+                source_prefix,
+                dflag,
+            )?
+        };
+        (
+            trace.budgeted,
+            trace.candidate_pool,
+            trace.pre_compaction_candidate_count,
+            trace.family_compactions,
+            trace.retrieval_depth,
+            trace.min_relevance,
+            trace.top_relevance,
+            trace.max_items,
+        )
+    };
     drop(conn);
 
     let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
@@ -1096,7 +1095,9 @@ async fn execute_recall_policy_explain_inner(
             })
         })
         .collect();
-    let post_compaction_dropped_count = candidate_pool.len().saturating_sub(final_with_factors.len());
+    let post_compaction_dropped_count = candidate_pool
+        .len()
+        .saturating_sub(final_with_factors.len());
 
     Ok(json!({
         "query": query_text,
@@ -1448,7 +1449,13 @@ fn run_recall_with_query_vector(
         .map(|candidate| (get_idx(&candidate.source), candidate.relevance))
         .collect();
 
-    let fused = rrf_fuse(&[kw_list, sem_list], 60.0);
+    let fusion_weights =
+        adaptive_rrf_weights(query_text, source_prefix, !semantic_candidates.is_empty());
+    let fused = rrf_fuse_weighted(
+        &[kw_list, sem_list],
+        &[fusion_weights.keyword, fusion_weights.semantic],
+        60.0,
+    );
 
     // ── Compound scoring + merge into RecallItem map ──────────────────────────
     // For each fused entry: look up metadata from keyword or semantic candidates,
@@ -1739,7 +1746,11 @@ fn compact_budget_family_candidates_with_trace(
     candidates: Vec<RecallItem>,
     query_text: &str,
     token_budget: usize,
-) -> (Vec<RecallItem>, Vec<RecallItem>, Vec<RecallFamilyCompaction>) {
+) -> (
+    Vec<RecallItem>,
+    Vec<RecallItem>,
+    Vec<RecallFamilyCompaction>,
+) {
     if token_budget > 400 || candidates.len() <= 1 {
         return (candidates, Vec::new(), Vec::new());
     }
@@ -1805,10 +1816,7 @@ fn compact_budget_family_candidates_with_trace(
             continue;
         }
         dedup_preserve_order(&mut dropped_sources);
-        let Some(kept_source) = compacted
-            .get(&family_key)
-            .map(|item| item.source.clone())
-        else {
+        let Some(kept_source) = compacted.get(&family_key).map(|item| item.source.clone()) else {
             continue;
         };
         family_compactions.push(RecallFamilyCompaction {
@@ -2306,11 +2314,7 @@ fn run_budget_recall_trace_with_query_vector(
     };
     let pre_compaction_candidate_count = pre_compaction_pool.len();
     let (raw, _family_compaction_dropped, family_compactions) =
-        compact_budget_family_candidates_with_trace(
-            pre_compaction_pool,
-            query_text,
-            token_budget,
-        );
+        compact_budget_family_candidates_with_trace(pre_compaction_pool, query_text, token_budget);
 
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = if top_relevance >= 0.25 {
@@ -3660,7 +3664,12 @@ fn source_dedup_hash(source: &str) -> u32 {
     hash_content(&format!("source::{source}"))
 }
 
-fn collapse_score_is_better(candidate_score: f64, candidate_order: usize, best_score: f64, best_order: usize) -> bool {
+fn collapse_score_is_better(
+    candidate_score: f64,
+    candidate_order: usize,
+    best_score: f64,
+    best_order: usize,
+) -> bool {
     match candidate_score.total_cmp(&best_score) {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
@@ -3735,24 +3744,22 @@ async fn dedup_and_mark_served(
 
         if already_served {
             if result.method == "crystal" && !result.collapsed_sources.is_empty() {
-                let fallback_candidates: Vec<(usize, String, f64)> = if result
-                    .collapsed_source_scores
-                    .is_empty()
-                {
-                    result
-                        .collapsed_sources
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, source)| (idx, source.clone(), 0.0))
-                        .collect()
-                } else {
-                    result
-                        .collapsed_source_scores
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, (source, score))| (idx, source.clone(), *score))
-                        .collect()
-                };
+                let fallback_candidates: Vec<(usize, String, f64)> =
+                    if result.collapsed_source_scores.is_empty() {
+                        result
+                            .collapsed_sources
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, source)| (idx, source.clone(), 0.0))
+                            .collect()
+                    } else {
+                        result
+                            .collapsed_source_scores
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, (source, score))| (idx, source.clone(), *score))
+                            .collect()
+                    };
                 let mut best_candidate: Option<(usize, f64, RecallItem)> = None;
                 for (order, collapsed_source, collapsed_score) in fallback_candidates {
                     let collapsed_source_hash = source_dedup_hash(&collapsed_source);
@@ -3784,8 +3791,10 @@ async fn dedup_and_mark_served(
                         let served = state.served_content.lock().await;
                         served
                             .get(&scope_key)
-                            .map(|map| map.contains_key(&candidate_excerpt_hash)
-                                || map.contains_key(&candidate_source_hash))
+                            .map(|map| {
+                                map.contains_key(&candidate_excerpt_hash)
+                                    || map.contains_key(&candidate_source_hash)
+                            })
                             .unwrap_or(false)
                     };
                     if candidate_seen {
@@ -3793,9 +3802,12 @@ async fn dedup_and_mark_served(
                     }
                     let replace = match &best_candidate {
                         None => true,
-                        Some((best_order, best_score, _)) => {
-                            collapse_score_is_better(candidate_relevance, order, *best_score, *best_order)
-                        }
+                        Some((best_order, best_score, _)) => collapse_score_is_better(
+                            candidate_relevance,
+                            order,
+                            *best_score,
+                            *best_order,
+                        ),
                     };
                     if replace {
                         best_candidate = Some((order, candidate_relevance, candidate));
@@ -4376,10 +4388,62 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
 
 // ─── RRF fusion ──────────────────────────────────────────────────────────────
 
-/// Reciprocal Rank Fusion (Cormack et al., 2009).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FusionWeights {
+    keyword: f64,
+    semantic: f64,
+}
+
+fn adaptive_rrf_weights(
+    query_text: &str,
+    source_prefix: Option<&str>,
+    semantic_available: bool,
+) -> FusionWeights {
+    if !semantic_available {
+        return FusionWeights {
+            keyword: 1.0,
+            semantic: 0.0,
+        };
+    }
+
+    let trimmed = query_text.trim();
+    let token_count = trimmed.split_whitespace().count();
+    let char_count = trimmed.chars().count();
+    let has_exact_markers = trimmed.contains('"')
+        || trimmed.contains('`')
+        || trimmed.contains("::")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(".rs")
+        || trimmed.contains(".ts")
+        || trimmed.contains(".tsx")
+        || trimmed.contains(".js")
+        || trimmed.contains(".py");
+    let exactish =
+        has_exact_markers || token_count <= 3 || char_count <= 24 || source_prefix.is_some();
+    let naturalish = token_count >= 8 || char_count >= 56 || trimmed.ends_with('?');
+
+    let mut keyword = 1.0_f64;
+    let mut semantic = 1.0_f64;
+    if exactish {
+        keyword += 0.35;
+        semantic -= 0.15;
+    }
+    if naturalish {
+        semantic += 0.35;
+        keyword -= 0.15;
+    }
+
+    FusionWeights {
+        keyword: keyword.clamp(0.35, 1.75),
+        semantic: semantic.clamp(0.35, 1.75),
+    }
+}
+
+/// Weighted Reciprocal Rank Fusion (Cormack et al., 2009).
 ///
 /// Fuses multiple ranked lists into a single list using the formula:
-///   score(item) = Σ  1 / (k + rank + 1)   for each list containing item
+///   score(item) = Σ  weight / (k + rank + 1)   for each list containing item
 ///
 /// `k = 60.0` is the standard value from the original paper.
 /// Items only in one list still accumulate their 1/(k+1) score.
@@ -4387,18 +4451,29 @@ fn jaccard_similarity(a: &str, b: &str) -> f64 {
 ///
 /// # Arguments
 /// * `lists` -- slice of ranked lists, each a `Vec<(id, score)>` in descending score order
+/// * `weights` -- per-list weights in the same order as `lists`
 /// * `k`     -- smoothing constant (use `60.0` per Cormack et al.)
 ///
-fn rrf_fuse(lists: &[Vec<(i64, f64)>], k: f64) -> Vec<(i64, f64)> {
+fn rrf_fuse_weighted(lists: &[Vec<(i64, f64)>], weights: &[f64], k: f64) -> Vec<(i64, f64)> {
     let mut fused: HashMap<i64, f64> = HashMap::new();
-    for list in lists {
+    for (list_index, list) in lists.iter().enumerate() {
+        let weight = weights.get(list_index).copied().unwrap_or(1.0).max(0.0);
+        if weight == 0.0 {
+            continue;
+        }
         for (rank, &(id, _score)) in list.iter().enumerate() {
-            *fused.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+            *fused.entry(id).or_insert(0.0) += weight / (k + rank as f64 + 1.0);
         }
     }
     let mut result: Vec<(i64, f64)> = fused.into_iter().collect();
     result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     result
+}
+
+#[cfg(test)]
+fn rrf_fuse(lists: &[Vec<(i64, f64)>], k: f64) -> Vec<(i64, f64)> {
+    let default_weights = vec![1.0; lists.len()];
+    rrf_fuse_weighted(lists, &default_weights, k)
 }
 
 // ─── Compound scoring (Task 1.4) ─────────────────────────────────────────────
@@ -5181,8 +5256,14 @@ mod tests {
         collapsed_sources.sort();
         expected_collapsed.sort();
         assert_eq!(collapsed_sources, expected_collapsed);
-        assert_eq!(crystal.collapsed_source_scores.len(), crystal.collapsed_sources.len());
-        assert_eq!(crystal.collapsed_source_scores[0].0, crystal.collapsed_sources[0]);
+        assert_eq!(
+            crystal.collapsed_source_scores.len(),
+            crystal.collapsed_sources.len()
+        );
+        assert_eq!(
+            crystal.collapsed_source_scores[0].0,
+            crystal.collapsed_sources[0]
+        );
         assert!(
             crystal.collapsed_source_scores[0].1 >= crystal.collapsed_source_scores[1].1,
             "collapsed child scores should preserve the ranked collapse order"
@@ -5239,7 +5320,9 @@ mod tests {
             .expect("crystal family head should be returned");
         let excerpt = crystal.excerpt.to_ascii_lowercase();
         assert!(
-            excerpt.contains("plugin") || excerpt.contains("heartbeat") || excerpt.contains("reconnect"),
+            excerpt.contains("plugin")
+                || excerpt.contains("heartbeat")
+                || excerpt.contains("reconnect"),
             "crystal excerpt should surface the best query-bearing family detail, got: {}",
             crystal.excerpt
         );
@@ -5470,14 +5553,8 @@ mod tests {
             "first serve should emit the crystal family head"
         );
 
-        let second = dedup_and_mark_served(
-            &state,
-            "codex",
-            query,
-            &solo_ctx(),
-            vec![crystal_result],
-        )
-        .await;
+        let second =
+            dedup_and_mark_served(&state, "codex", query, &solo_ctx(), vec![crystal_result]).await;
         assert!(
             second.iter().all(|item| item.source != crystal_key),
             "second serve should not repeat the crystal summary"
@@ -5700,6 +5777,44 @@ mod tests {
     fn test_rrf_fuse_single_empty_list() {
         let result = rrf_fuse(&[vec![]], 60.0);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_rrf_fuse_weighted_prefers_heavier_ranker() {
+        let keyword_list = vec![(1, 0.99)];
+        let semantic_list = vec![(2, 0.99)];
+
+        let result = rrf_fuse_weighted(&[keyword_list, semantic_list], &[1.4, 0.6], 60.0);
+        assert_eq!(result[0].0, 1);
+        assert!(result[0].1 > result[1].1);
+    }
+
+    #[test]
+    fn test_adaptive_rrf_weights_bias_short_exact_queries_toward_keyword() {
+        let weights = adaptive_rrf_weights("auth.rs", None, true);
+        assert!(weights.keyword > weights.semantic);
+    }
+
+    #[test]
+    fn test_adaptive_rrf_weights_bias_long_natural_queries_toward_semantic() {
+        let weights = adaptive_rrf_weights(
+            "How does Cortex preserve session truth after a daemon restart and reconnect?",
+            None,
+            true,
+        );
+        assert!(weights.semantic > weights.keyword);
+    }
+
+    #[test]
+    fn test_adaptive_rrf_weights_disable_semantic_when_unavailable() {
+        let weights = adaptive_rrf_weights("codex recall", None, false);
+        assert_eq!(
+            weights,
+            FusionWeights {
+                keyword: 1.0,
+                semantic: 0.0,
+            }
+        );
     }
 
     // ── compound scoring tests (Task 1.4) ──────────────────────────
@@ -6144,7 +6259,10 @@ mod tests {
             .as_array()
             .expect("family compactions should be present");
         assert_eq!(family_compactions.len(), 1);
-        assert_eq!(family_compactions[0]["familyKey"].as_str(), Some(crystal_key.as_str()));
+        assert_eq!(
+            family_compactions[0]["familyKey"].as_str(),
+            Some(crystal_key.as_str())
+        );
         assert_eq!(
             family_compactions[0]["keptSource"].as_str(),
             Some(crystal_key.as_str())
@@ -6230,8 +6348,9 @@ mod tests {
                 RecallItem {
                     source: "crystal::1::daemon lifecycle".to_string(),
                     relevance: 0.92,
-                    excerpt: "Daemon recovery policy covers lease renewal and safe restart behavior."
-                        .to_string(),
+                    excerpt:
+                        "Daemon recovery policy covers lease renewal and safe restart behavior."
+                            .to_string(),
                     method: "crystal".to_string(),
                     tokens: None,
                     entropy: None,
