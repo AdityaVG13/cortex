@@ -939,6 +939,27 @@ function isRouteMissingError(error) {
   return message.includes("HTTP 404") || message.includes("HTTP 405");
 }
 
+function normalizePermissionGrant(entry, index) {
+  const client = String(pickDefined(entry?.client, entry?.client_id, entry?.clientId, "unknown") || "unknown");
+  const permission = String(pickDefined(entry?.permission, "read") || "read").toLowerCase();
+  const scope = String(pickDefined(entry?.scope, "*") || "*");
+  const grantedBy = String(pickDefined(entry?.grantedBy, entry?.granted_by, "") || "");
+  const grantedAt = String(pickDefined(entry?.grantedAt, entry?.granted_at, "") || "");
+  return {
+    key: `${client}-${permission}-${scope}-${index}`,
+    client,
+    permission,
+    scope,
+    grantedBy,
+    grantedAt,
+  };
+}
+
+function normalizePermissionPayload(payload) {
+  const grants = Array.isArray(payload?.grants) ? payload.grants : [];
+  return grants.map((entry, index) => normalizePermissionGrant(entry, index));
+}
+
 function AgentItem({ session }) {
   const color = agentColor(session.agent);
   return (
@@ -1478,6 +1499,13 @@ export function App() {
   const [conflictPairs, setConflictPairs] = useState([]);
   const [resolveDrafts, setResolveDrafts] = useState({});
   const [conflictLoading, setConflictLoading] = useState(false);
+  const [permissionGrants, setPermissionGrants] = useState([]);
+  const [permissionLoading, setPermissionLoading] = useState(false);
+  const [permissionDraft, setPermissionDraft] = useState({
+    client: "",
+    permission: "read",
+    scope: "*",
+  });
   const [editorSetup, setEditorSetup] = useState(null);
   const [editorDetections, setEditorDetections] = useState([]);
   const [selectedEditorIds, setSelectedEditorIds] = useState([]);
@@ -1682,6 +1710,7 @@ export function App() {
     setActivityEntries([]);
     setConflictPairs([]);
     setResolveDrafts({});
+    setPermissionGrants([]);
     setSavings(null);
     setStats({
       memories: "--",
@@ -1906,6 +1935,12 @@ export function App() {
     clearTransientFeedback();
   }, [api, clearTransientFeedback]);
 
+  const refreshPermissions = useCallback(async () => {
+    const result = await api("/permissions", true);
+    setPermissionGrants(normalizePermissionPayload(result));
+    clearTransientFeedback();
+  }, [api, clearTransientFeedback]);
+
   const refreshProtectedData = useCallback(
     () => settledCollectErrors([
       refreshCoreData,
@@ -1914,6 +1949,7 @@ export function App() {
       refreshActivity,
       refreshSavings,
       refreshConflicts,
+      refreshPermissions,
     ]),
     [
       refreshCoreData,
@@ -1922,6 +1958,7 @@ export function App() {
       refreshActivity,
       refreshSavings,
       refreshConflicts,
+      refreshPermissions,
     ]
   );
 
@@ -1967,6 +2004,55 @@ export function App() {
       };
     });
   }, []);
+
+  const handleGrantPermission = useCallback(async () => {
+    const client = String(permissionDraft.client || "").trim();
+    if (!client) {
+      setFeedbackMessage("Permission grant failed: client is required.");
+      return;
+    }
+
+    setPermissionLoading(true);
+    try {
+      await postApi("/permissions/grant", {
+        client,
+        permission: permissionDraft.permission || "read",
+        scope: String(permissionDraft.scope || "*").trim() || "*",
+        grantedBy: selectedOperatorName
+          ? `user:${selectedOperatorName}`
+          : "user:control-center",
+      });
+      setPermissionDraft((current) => ({
+        ...current,
+        client: "",
+      }));
+      await refreshPermissions();
+    } catch (err) {
+      setFeedbackMessage(`Permission grant failed: ${err.message || err}`);
+    } finally {
+      setPermissionLoading(false);
+    }
+  }, [permissionDraft, postApi, refreshPermissions, selectedOperatorName]);
+
+  const handleRevokePermission = useCallback(
+    async (grant) => {
+      if (!grant?.client || !grant?.permission) return;
+      setPermissionLoading(true);
+      try {
+        await postApi("/permissions/revoke", {
+          client: grant.client,
+          permission: grant.permission,
+          scope: grant.scope || "*",
+        });
+        await refreshPermissions();
+      } catch (err) {
+        setFeedbackMessage(`Permission revoke failed: ${err.message || err}`);
+      } finally {
+        setPermissionLoading(false);
+      }
+    },
+    [postApi, refreshPermissions]
+  );
 
   const openEditorSetupWizard = useCallback(async () => {
     setIsSettingUpEditors(true);
@@ -3892,7 +3978,7 @@ export function App() {
             <div className="panel-header">
               <div>
                 <h1>Memory</h1>
-                <p className="panel-subtitle">Search the brain, inspect recall health, and resolve conflicts without leaving the same tab.</p>
+                <p className="panel-subtitle">Search the brain, inspect recall health, manage client permissions, and resolve conflicts without leaving the same tab.</p>
               </div>
               <div className="surface-actions">
                 <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh Conflicts</button>
@@ -3984,6 +4070,91 @@ export function App() {
                         </div>
                       </li>
                     )) : <EmptyItem text="No active conflicts" />}
+                  </ul>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
+                    <h2>Client Permissions</h2>
+                    <span className="badge">{permissionGrants.length}</span>
+                  </div>
+                  <div className="permission-form">
+                    <input
+                      type="text"
+                      className="memory-input"
+                      placeholder="client id (e.g. codex, claude, *)"
+                      value={permissionDraft.client}
+                      onChange={(event) =>
+                        setPermissionDraft((current) => ({ ...current, client: event.target.value }))
+                      }
+                    />
+                    <div className="permission-form-row">
+                      <label className="feed-control">
+                        <span>Permission</span>
+                        <select
+                          value={permissionDraft.permission}
+                          onChange={(event) =>
+                            setPermissionDraft((current) => ({ ...current, permission: event.target.value }))
+                          }
+                        >
+                          <option value="read">read</option>
+                          <option value="write">write</option>
+                          <option value="admin">admin</option>
+                        </select>
+                      </label>
+                      <label className="feed-control">
+                        <span>Scope</span>
+                        <input
+                          type="text"
+                          placeholder="* or tool name"
+                          value={permissionDraft.scope}
+                          onChange={(event) =>
+                            setPermissionDraft((current) => ({ ...current, scope: event.target.value }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="permission-actions">
+                      <button
+                        type="button"
+                        className="btn-sm btn-primary"
+                        disabled={permissionLoading}
+                        onClick={() => handleGrantPermission().catch(reportSurfaceError)}
+                      >
+                        {permissionLoading ? "Applying..." : "Grant"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        disabled={permissionLoading}
+                        onClick={() => refreshPermissions().catch(reportSurfaceError)}
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                  <ul className="item-list compact-list permission-list">
+                    {permissionGrants.length ? permissionGrants.slice(0, 8).map((grant) => (
+                      <li key={grant.key}>
+                        <div className="item-meta">
+                          <span className="item-name">{grant.client}</span>
+                          <span className="badge">{grant.permission}</span>
+                        </div>
+                        <div className="item-detail">
+                          scope={grant.scope} {grant.grantedBy ? `· by ${grant.grantedBy}` : ""}
+                        </div>
+                        <div className="permission-item-actions">
+                          <button
+                            type="button"
+                            className="btn-sm btn-danger"
+                            disabled={permissionLoading}
+                            onClick={() => handleRevokePermission(grant).catch(reportSurfaceError)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      </li>
+                    )) : <EmptyItem text="No explicit grants yet (legacy permissive mode)." />}
                   </ul>
                 </div>
               </div>

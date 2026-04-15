@@ -178,6 +178,7 @@ const PANEL_LABELS = {
   "/activity": "Activity",
   "/savings": "Savings",
   "/conflicts": "Conflicts",
+  "/permissions": "Permissions",
 };
 
 function panelLabelFromError(message) {

@@ -74,7 +74,20 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         .route("/storage", get(handle_storage))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
+        .route("/conflicts/resolve", post(handlers::mutate::handle_resolve))
         .route("/conflicts", get(handlers::mutate::handle_conflicts))
+        .route(
+            "/permissions",
+            get(handlers::mutate::handle_permissions_list),
+        )
+        .route(
+            "/permissions/grant",
+            post(handlers::mutate::handle_permissions_grant),
+        )
+        .route(
+            "/permissions/revoke",
+            post(handlers::mutate::handle_permissions_revoke),
+        )
         .route("/archive", post(handlers::mutate::handle_archive))
         .route("/focus/start", post(handle_focus_start))
         .route("/focus/end", post(handle_focus_end))

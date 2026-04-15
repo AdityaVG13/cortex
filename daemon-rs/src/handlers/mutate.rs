@@ -50,6 +50,22 @@ pub struct ConflictListQuery {
     pub limit: Option<usize>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct PermissionGrantRequest {
+    pub client: Option<String>,
+    pub permission: Option<String>,
+    pub scope: Option<String>,
+    #[serde(rename = "grantedBy", alias = "granted_by")]
+    pub granted_by: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct PermissionRevokeRequest {
+    pub client: Option<String>,
+    pub permission: Option<String>,
+    pub scope: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictStatusFilter {
     Open,
@@ -142,6 +158,97 @@ pub struct ResolutionMetadata {
     pub notes: Option<String>,
     pub resolved_by: Option<String>,
     pub similarity: Option<f64>,
+}
+
+fn normalize_permission_client_id(raw: &str) -> String {
+    let before_model = raw
+        .split('(')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_ascii_lowercase();
+    let normalized: String = before_model
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if normalized.is_empty() {
+        "http".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn parse_permission(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "read" => Some("read"),
+        "write" => Some("write"),
+        "admin" => Some("admin"),
+        _ => None,
+    }
+}
+
+fn normalize_permission_scope(raw: Option<&str>) -> String {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "*".to_string())
+}
+
+pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT client_id, permission, scope, granted_by, granted_at
+             FROM client_permissions
+             WHERE owner_id = ?1
+             ORDER BY client_id ASC, permission ASC, scope ASC",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(params![owner_id], |row| {
+            Ok(json!({
+                "client": row.get::<_, String>(0)?,
+                "permission": row.get::<_, String>(1)?,
+                "scope": row.get::<_, String>(2)?,
+                "grantedBy": row.get::<_, String>(3)?,
+                "grantedAt": row.get::<_, String>(4)?,
+            }))
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+pub fn grant_permission(
+    conn: &Connection,
+    owner_id: i64,
+    client: &str,
+    permission: &str,
+    scope: &str,
+    granted_by: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+         ON CONFLICT(owner_id, client_id, permission, scope)
+         DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at",
+        params![owner_id, client, permission, scope, granted_by],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn revoke_permission(
+    conn: &Connection,
+    owner_id: i64,
+    client: &str,
+    permission: &str,
+    scope: &str,
+) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM client_permissions
+         WHERE owner_id = ?1 AND client_id = ?2 AND permission = ?3 AND scope = ?4",
+        params![owner_id, client, permission, scope],
+    )
+    .map_err(|err| err.to_string())
 }
 
 pub fn parse_conflict_id(raw: &str) -> Option<(i64, i64)> {
@@ -583,15 +690,15 @@ pub fn list_conflicts_payload(
     }))
 }
 
-fn ensure_conflict_admin(
+fn ensure_admin_surface(
     headers: &HeaderMap,
     state: &RuntimeState,
     conn: &Connection,
-) -> Result<(), Response> {
+) -> Result<Option<i64>, Response> {
     if state.team_mode {
-        ensure_admin(headers, state, conn).map(|_| ())
+        ensure_admin(headers, state, conn).map(Some)
     } else {
-        ensure_auth(headers, state).map(|_| ())
+        ensure_auth(headers, state).map(|_| None)
     }
 }
 
@@ -662,7 +769,7 @@ pub async fn handle_resolve(
     Json(body): Json<ResolveRequest>,
 ) -> Response {
     let mut conn = state.db.lock().await;
-    if let Err(resp) = ensure_conflict_admin(&headers, &state, &conn) {
+    if let Err(resp) = ensure_admin_surface(&headers, &state, &conn) {
         return resp;
     }
 
@@ -853,7 +960,7 @@ pub async fn handle_conflicts(
     Query(query): Query<ConflictListQuery>,
 ) -> Response {
     let conn = state.db.lock().await;
-    if let Err(resp) = ensure_conflict_admin(&headers, &state, &conn) {
+    if let Err(resp) = ensure_admin_surface(&headers, &state, &conn) {
         return resp;
     }
 
@@ -869,6 +976,177 @@ pub async fn handle_conflicts(
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Conflict query failed: {err}") }),
+        ),
+    }
+}
+
+// ─── GET /permissions ────────────────────────────────────────────────────────
+
+pub async fn handle_permissions_list(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> Response {
+    let conn = state.db.lock().await;
+    let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
+        Ok(user_id) => user_id.unwrap_or(0),
+        Err(resp) => return resp,
+    };
+
+    match list_permissions(&conn, owner_id) {
+        Ok(grants) => json_response(
+            StatusCode::OK,
+            json!({
+                "ownerId": owner_id,
+                "count": grants.len(),
+                "grants": grants,
+            }),
+        ),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Permission list failed: {err}") }),
+        ),
+    }
+}
+
+// ─── POST /permissions/grant ────────────────────────────────────────────────
+
+pub async fn handle_permissions_grant(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Json(body): Json<PermissionGrantRequest>,
+) -> Response {
+    let conn = state.db.lock().await;
+    let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
+        Ok(user_id) => user_id.unwrap_or(0),
+        Err(resp) => return resp,
+    };
+
+    let raw_client = match body
+        .client
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(value) => value,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Missing field: client" }),
+            );
+        }
+    };
+    let client = if raw_client == "*" {
+        "*".to_string()
+    } else {
+        normalize_permission_client_id(raw_client)
+    };
+
+    let permission = match body
+        .permission
+        .as_deref()
+        .and_then(parse_permission)
+        .map(str::to_string)
+    {
+        Some(value) => value,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Invalid permission; expected read, write, or admin" }),
+            );
+        }
+    };
+
+    let scope = normalize_permission_scope(body.scope.as_deref());
+    let granted_by = body
+        .granted_by
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_permission_client_id)
+        .unwrap_or_else(|| "control-center".to_string());
+
+    match grant_permission(&conn, owner_id, &client, &permission, &scope, &granted_by) {
+        Ok(()) => json_response(
+            StatusCode::OK,
+            json!({
+                "granted": true,
+                "ownerId": owner_id,
+                "client": client,
+                "permission": permission,
+                "scope": scope,
+            }),
+        ),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Permission grant failed: {err}") }),
+        ),
+    }
+}
+
+// ─── POST /permissions/revoke ───────────────────────────────────────────────
+
+pub async fn handle_permissions_revoke(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Json(body): Json<PermissionRevokeRequest>,
+) -> Response {
+    let conn = state.db.lock().await;
+    let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
+        Ok(user_id) => user_id.unwrap_or(0),
+        Err(resp) => return resp,
+    };
+
+    let raw_client = match body
+        .client
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(value) => value,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Missing field: client" }),
+            );
+        }
+    };
+    let client = if raw_client == "*" {
+        "*".to_string()
+    } else {
+        normalize_permission_client_id(raw_client)
+    };
+
+    let permission = match body
+        .permission
+        .as_deref()
+        .and_then(parse_permission)
+        .map(str::to_string)
+    {
+        Some(value) => value,
+        None => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Invalid permission; expected read, write, or admin" }),
+            );
+        }
+    };
+    let scope = normalize_permission_scope(body.scope.as_deref());
+
+    match revoke_permission(&conn, owner_id, &client, &permission, &scope) {
+        Ok(deleted) => json_response(
+            StatusCode::OK,
+            json!({
+                "revoked": deleted > 0,
+                "deleted": deleted,
+                "ownerId": owner_id,
+                "client": client,
+                "permission": permission,
+                "scope": scope,
+            }),
+        ),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Permission revoke failed: {err}") }),
         ),
     }
 }
@@ -1088,6 +1366,46 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let payload = response_json(response).await;
+        assert_eq!(
+            payload["error"].as_str(),
+            Some("Admin endpoints require team mode")
+        );
+    }
+
+    #[test]
+    fn permission_grant_list_and_revoke_round_trip() {
+        let conn = test_conn();
+        grant_permission(&conn, 0, "codex", "admin", "*", "control-center").unwrap();
+        grant_permission(
+            &conn,
+            0,
+            "claude",
+            "read",
+            "cortex_recall",
+            "control-center",
+        )
+        .unwrap();
+
+        let grants = list_permissions(&conn, 0).unwrap();
+        assert_eq!(grants.len(), 2);
+        assert_eq!(grants[0]["client"].as_str(), Some("claude"));
+        assert_eq!(grants[1]["client"].as_str(), Some("codex"));
+
+        let deleted = revoke_permission(&conn, 0, "claude", "read", "cortex_recall").unwrap();
+        assert_eq!(deleted, 1);
+
+        let grants = list_permissions(&conn, 0).unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0]["client"].as_str(), Some("codex"));
+    }
+
+    #[tokio::test]
+    async fn permissions_endpoint_requires_admin_in_team_mode() {
+        let state = test_state(true);
+        let response = handle_permissions_list(State(state), auth_headers("test-token")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
         let payload = response_json(response).await;
         assert_eq!(
             payload["error"].as_str(),
