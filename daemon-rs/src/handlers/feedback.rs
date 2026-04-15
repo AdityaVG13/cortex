@@ -392,6 +392,7 @@ struct FeedbackAggregate {
 }
 
 impl FeedbackAggregate {
+    #[allow(clippy::too_many_arguments)]
     fn observe(
         &mut self,
         outcome: &str,

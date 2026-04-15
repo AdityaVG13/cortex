@@ -52,7 +52,7 @@ pub struct BootResult {
 
 // ─── Token estimation ───────────────────────────────────────────────────────
 
-/// Estimate tokens from character length (~3.8 chars/token, matching Node.js).
+// Estimate tokens from character length (~3.8 chars/token, matching Node.js).
 // ─── Content-addressed cache ────────────────────────────────────────────────
 
 /// Compute a fast content hash for cache invalidation.

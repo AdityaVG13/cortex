@@ -108,6 +108,7 @@ type DecisionSemanticRow = (
     Option<String>,
     Option<String>,
 );
+type CrystalMemberSourceRow = (Option<String>, Option<i64>, Option<String>);
 
 fn blend_importance(score: Option<f64>, trust_score: Option<f64>) -> f64 {
     let score = score.unwrap_or(1.0).clamp(0.0, 1.0);
@@ -266,7 +267,7 @@ fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &RecallContex
     let query_rows =
         |sql: &str,
          with_visibility: bool|
-         -> Result<Vec<(Option<String>, Option<i64>, Option<String>)>, rusqlite::Error> {
+         -> Result<Vec<CrystalMemberSourceRow>, rusqlite::Error> {
             let mut stmt = conn.prepare(sql)?;
             let mapped = stmt.query_map(params![crystal_id], |row| {
                 Ok((
@@ -919,7 +920,7 @@ fn recall_mode_for_budget(budget: usize) -> &'static str {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn execute_recall_policy_explain(
+async fn execute_recall_policy_explain_inner(
     state: &RuntimeState,
     query_text: &str,
     budget: usize,
@@ -928,6 +929,7 @@ pub async fn execute_recall_policy_explain(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
     pool_k: usize,
+    query_vector_override: Option<&[f32]>,
 ) -> Result<Value, String> {
     let requested_k = k.max(1);
     let pool_k = pool_k.max(requested_k).min(128);
@@ -945,15 +947,26 @@ pub async fn execute_recall_policy_explain(
         top_relevance,
         max_items,
     ) = if budget == 0 {
-            let raw_pool = run_recall_with_engine(
-                &mut conn,
-                query_text,
-                pool_k,
-                engine,
-                ctx,
-                source_prefix,
-                dflag,
-            )?;
+            let raw_pool = if let Some(query_vector) = query_vector_override {
+                run_recall_with_query_vector(
+                    &mut conn,
+                    query_text,
+                    pool_k,
+                    Some(query_vector),
+                    ctx,
+                    source_prefix,
+                )?
+            } else {
+                run_recall_with_engine(
+                    &mut conn,
+                    query_text,
+                    pool_k,
+                    engine,
+                    ctx,
+                    source_prefix,
+                    dflag,
+                )?
+            };
             let budgeted = raw_pool
                 .iter()
                 .take(requested_k)
@@ -976,16 +989,28 @@ pub async fn execute_recall_policy_explain(
                 requested_k,
             )
         } else {
-            let trace = run_budget_recall_trace_with_engine(
-                &mut conn,
-                query_text,
-                budget,
-                requested_k,
-                engine,
-                ctx,
-                source_prefix,
-                dflag,
-            )?;
+            let trace = if let Some(query_vector) = query_vector_override {
+                run_budget_recall_trace_with_query_vector(
+                    &mut conn,
+                    query_text,
+                    budget,
+                    requested_k,
+                    Some(query_vector),
+                    ctx,
+                    source_prefix,
+                )?
+            } else {
+                run_budget_recall_trace_with_engine(
+                    &mut conn,
+                    query_text,
+                    budget,
+                    requested_k,
+                    engine,
+                    ctx,
+                    source_prefix,
+                    dflag,
+                )?
+            };
             (
                 trace.budgeted,
                 trace.candidate_pool,
@@ -1112,6 +1137,31 @@ pub async fn execute_recall_policy_explain(
             "droppedCandidates": dropped_candidates
         }
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_recall_policy_explain(
+    state: &RuntimeState,
+    query_text: &str,
+    budget: usize,
+    k: usize,
+    agent: &str,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+    pool_k: usize,
+) -> Result<Value, String> {
+    execute_recall_policy_explain_inner(
+        state,
+        query_text,
+        budget,
+        k,
+        agent,
+        ctx,
+        source_prefix,
+        pool_k,
+        None,
+    )
+    .await
 }
 
 pub async fn execute_semantic_recall(
@@ -1960,7 +2010,7 @@ fn fetch_associative_source_payload(
             );
             let excerpt = query_focused_excerpt(&display, query_text, 220);
             let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(|| now_iso()));
+            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso));
             best = Some((excerpt, importance, ts));
         }
     }
@@ -2037,7 +2087,7 @@ fn fetch_associative_source_payload(
             );
             let excerpt = query_focused_excerpt(&display, query_text, 220);
             let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(|| now_iso()));
+            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso));
             let replace = match &best {
                 Some((_, best_importance, best_ts)) => {
                     importance > *best_importance
@@ -6027,6 +6077,107 @@ mod tests {
                 .iter()
                 .any(|item| item.source == "memory::recovery-dashboard"),
             "unrelated high-signal context should remain after compaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_recall_policy_explain_reports_family_compaction_after_associative_merge() {
+        let state = shared_test_state();
+        let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let crystal_key = {
+            let conn = state.db.lock().await;
+            let (_crystal_id, crystal_key, _member_sources) = insert_crystal_with_memory_members(
+                &conn,
+                "daemon lifecycle",
+                "Daemon lifecycle summary covers lease renewal and recovery.",
+                &query_vector,
+                &[
+                    (
+                        "Daemon lifecycle lease renewal keeps ownership stable.",
+                        "memory::daemon-lifecycle",
+                        &query_vector,
+                    ),
+                    (
+                        "Plugin reconnect heartbeat stops duplicate daemon startup.",
+                        "memory::plugin-heartbeat",
+                        &[0.97, 0.03, 0.0, 0.0, 0.0],
+                    ),
+                ],
+            );
+            insert_memory_with_embedding(
+                &conn,
+                "Recovery dashboard shows lock state and daemon readiness.",
+                "memory::recovery-dashboard",
+                &[0.94, 0.06, 0.0, 0.0, 0.0],
+            );
+
+            for _ in 0..6 {
+                crate::co_occurrence::record(
+                    &conn,
+                    &[
+                        crystal_key.clone(),
+                        "memory::plugin-heartbeat".to_string(),
+                        "memory::recovery-dashboard".to_string(),
+                    ],
+                )
+                .unwrap();
+            }
+
+            crystal_key
+        };
+
+        let explain = execute_recall_policy_explain_inner(
+            &state,
+            "daemon lifecycle recovery",
+            320,
+            8,
+            "codex",
+            &solo_ctx(),
+            None,
+            8,
+            Some(&query_vector),
+        )
+        .await
+        .expect("policy explain should succeed");
+
+        let family_compactions = explain["explain"]["familyCompactions"]
+            .as_array()
+            .expect("family compactions should be present");
+        assert_eq!(family_compactions.len(), 1);
+        assert_eq!(family_compactions[0]["familyKey"].as_str(), Some(crystal_key.as_str()));
+        assert_eq!(
+            family_compactions[0]["keptSource"].as_str(),
+            Some(crystal_key.as_str())
+        );
+        assert!(
+            family_compactions[0]["droppedSources"]
+                .as_array()
+                .expect("dropped sources should be present")
+                .iter()
+                .any(|value| value.as_str() == Some("memory::plugin-heartbeat")),
+            "compacted sibling should be reported in explain output"
+        );
+
+        assert_eq!(
+            explain["policy"]["budgetReasoning"]["familyCompactedCount"].as_u64(),
+            Some(1)
+        );
+        let post_budget_dropped = explain["policy"]["budgetReasoning"]["droppedCount"]
+            .as_u64()
+            .expect("post-budget dropped count should be numeric");
+        assert_eq!(
+            explain["policy"]["budgetReasoning"]["totalPreBudgetDrops"].as_u64(),
+            Some(post_budget_dropped + 1)
+        );
+
+        let dropped_candidates = explain["explain"]["droppedCandidates"]
+            .as_array()
+            .expect("dropped candidates should be present");
+        assert!(
+            dropped_candidates
+                .iter()
+                .all(|candidate| candidate["source"].as_str() != Some("memory::plugin-heartbeat")),
+            "family compaction should not misreport the sibling as a post-budget drop"
         );
     }
 
