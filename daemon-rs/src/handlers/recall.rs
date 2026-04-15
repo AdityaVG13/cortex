@@ -1620,6 +1620,86 @@ fn fit_excerpt_to_remaining_budget(
     Some((String::new(), source_only_tokens))
 }
 
+fn prefer_family_candidate(candidate: &RecallItem, current: &RecallItem, query_text: &str) -> bool {
+    let relevance_delta = candidate.relevance - current.relevance;
+    if relevance_delta > 0.03 {
+        return true;
+    }
+    if relevance_delta < -0.03 {
+        return false;
+    }
+    let candidate_alignment = query_alignment_score(&candidate.excerpt, query_text);
+    let current_alignment = query_alignment_score(&current.excerpt, query_text);
+    if candidate_alignment != current_alignment {
+        return candidate_alignment > current_alignment;
+    }
+    if candidate.method == "crystal" && current.method != "crystal" {
+        return true;
+    }
+    if candidate.method != "crystal" && current.method == "crystal" {
+        return false;
+    }
+    if candidate.excerpt.len() != current.excerpt.len() {
+        return candidate.excerpt.len() < current.excerpt.len();
+    }
+    candidate.source < current.source
+}
+
+fn compact_budget_family_candidates(
+    candidates: Vec<RecallItem>,
+    query_text: &str,
+    token_budget: usize,
+) -> Vec<RecallItem> {
+    if token_budget > 400 || candidates.len() <= 1 {
+        return candidates;
+    }
+
+    let mut family_lookup = HashMap::new();
+    for item in &candidates {
+        if item.family_members.is_empty() {
+            continue;
+        }
+        for member in &item.family_members {
+            family_lookup
+                .entry(member.clone())
+                .or_insert_with(|| item.source.clone());
+        }
+    }
+    if family_lookup.is_empty() {
+        return candidates;
+    }
+
+    let mut compacted: HashMap<String, RecallItem> = HashMap::new();
+    for item in candidates {
+        let family_key = if !item.family_members.is_empty() {
+            item.source.clone()
+        } else {
+            family_lookup
+                .get(&item.source)
+                .cloned()
+                .unwrap_or_else(|| item.source.clone())
+        };
+        match compacted.entry(family_key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if prefer_family_candidate(&item, entry.get(), query_text) {
+                    entry.insert(item);
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(item);
+            }
+        }
+    }
+
+    let mut compacted_items: Vec<RecallItem> = compacted.into_values().collect();
+    compacted_items.sort_by(|a, b| {
+        b.relevance
+            .partial_cmp(&a.relevance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    compacted_items
+}
+
 fn apply_semantic_budget(
     raw: Vec<RecallItem>,
     token_budget: usize,
@@ -1636,6 +1716,7 @@ fn apply_semantic_budget(
             .collect();
     }
 
+    let raw = compact_budget_family_candidates(raw, query_text, token_budget);
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = if top_relevance >= 0.25 {
         (top_relevance * 0.72).max(0.18)
@@ -2075,7 +2156,7 @@ fn run_budget_recall_trace_with_query_vector(
                 .partial_cmp(&a.relevance)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        merged_pool
+        compact_budget_family_candidates(merged_pool, query_text, token_budget)
     };
 
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
@@ -5801,6 +5882,69 @@ mod tests {
         assert!(
             results.iter().all(|item| item.method != "associative"),
             "tight token budgets should skip associative expansion"
+        );
+    }
+
+    #[test]
+    fn apply_semantic_budget_compacts_same_family_candidates_for_tight_budgets() {
+        let results = apply_semantic_budget(
+            vec![
+                RecallItem {
+                    source: "crystal::1::daemon lifecycle".to_string(),
+                    relevance: 0.92,
+                    excerpt: "Daemon recovery policy covers lease renewal and safe restart behavior."
+                        .to_string(),
+                    method: "crystal".to_string(),
+                    tokens: None,
+                    entropy: None,
+                    family_members: vec!["memory::family-child".to_string()],
+                    collapsed_sources: vec!["memory::family-child".to_string()],
+                    collapsed_source_scores: vec![("memory::family-child".to_string(), 0.88)],
+                },
+                RecallItem {
+                    source: "memory::family-child".to_string(),
+                    relevance: 0.89,
+                    excerpt: "Child detail about plugin reconnect heartbeat.".to_string(),
+                    method: "associative".to_string(),
+                    tokens: None,
+                    entropy: None,
+                    family_members: Vec::new(),
+                    collapsed_sources: Vec::new(),
+                    collapsed_source_scores: Vec::new(),
+                },
+                RecallItem {
+                    source: "memory::other-family".to_string(),
+                    relevance: 0.83,
+                    excerpt: "Unrelated recovery guardrail detail.".to_string(),
+                    method: "keyword".to_string(),
+                    tokens: None,
+                    entropy: None,
+                    family_members: Vec::new(),
+                    collapsed_sources: Vec::new(),
+                    collapsed_source_scores: Vec::new(),
+                },
+            ],
+            180,
+            "daemon recovery policy",
+        );
+
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "crystal::1::daemon lifecycle"),
+            "tight budget should keep one family representative"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "memory::other-family"),
+            "tight budget should still keep unrelated high-signal context"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|item| item.source != "memory::family-child"),
+            "tight budget should not spend a second slot on the same crystal family"
         );
     }
 
