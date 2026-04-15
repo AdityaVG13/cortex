@@ -68,7 +68,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 10] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 11] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -79,6 +79,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 10] = [
     ("008", "client_permissions"),
     ("009", "provenance_fields"),
     ("010", "decision_conflict_records"),
+    ("011", "agent_feedback_telemetry"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -377,6 +378,34 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
                   ON decision_conflicts(target_decision_id);
                 CREATE INDEX IF NOT EXISTS idx_decision_conflicts_status_created
                   ON decision_conflicts(status, created_at);
+                "#,
+            )?;
+            Ok(())
+        }
+        "011" => {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS agent_feedback (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  owner_id INTEGER NOT NULL DEFAULT 0,
+                  agent TEXT NOT NULL,
+                  task_class TEXT NOT NULL DEFAULT 'general',
+                  outcome TEXT NOT NULL
+                    CHECK (outcome IN ('success', 'partial', 'failure')),
+                  outcome_score REAL NOT NULL,
+                  quality_score REAL NOT NULL DEFAULT 0.7,
+                  latency_ms INTEGER,
+                  retries INTEGER,
+                  tokens_used INTEGER,
+                  memory_sources_json TEXT NOT NULL DEFAULT '[]',
+                  notes TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_feedback_agent_created
+                  ON agent_feedback(owner_id, agent, created_at);
+                CREATE INDEX IF NOT EXISTS idx_agent_feedback_task_created
+                  ON agent_feedback(owner_id, task_class, created_at);
                 "#,
             )?;
             Ok(())
@@ -717,6 +746,28 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_feedback_result ON recall_feedback(result_source);
         CREATE INDEX IF NOT EXISTS idx_feedback_created ON recall_feedback(created_at);
+
+        CREATE TABLE IF NOT EXISTS agent_feedback (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_id INTEGER NOT NULL DEFAULT 0,
+          agent TEXT NOT NULL,
+          task_class TEXT NOT NULL DEFAULT 'general',
+          outcome TEXT NOT NULL
+            CHECK (outcome IN ('success', 'partial', 'failure')),
+          outcome_score REAL NOT NULL,
+          quality_score REAL NOT NULL DEFAULT 0.7,
+          latency_ms INTEGER,
+          retries INTEGER,
+          tokens_used INTEGER,
+          memory_sources_json TEXT NOT NULL DEFAULT '[]',
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_feedback_agent_created
+          ON agent_feedback(owner_id, agent, created_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_feedback_task_created
+          ON agent_feedback(owner_id, task_class, created_at);
 
         -- Triggers to keep FTS in sync with base tables
         CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
@@ -1750,6 +1801,7 @@ mod tests {
             "memories_fts",
             "decisions_fts",
             "recall_feedback",
+            "agent_feedback",
         ] {
             assert!(table_exists(&conn, table), "missing solo table: {table}");
         }
@@ -1954,6 +2006,7 @@ mod tests {
         assert!(table_has_column(&conn, "decisions", "reasoning_depth"));
         assert!(table_has_column(&conn, "decisions", "trust_score"));
         assert!(table_exists(&conn, "decision_conflicts"));
+        assert!(table_exists(&conn, "agent_feedback"));
         assert!(table_exists(&conn, "focus_sessions"));
         assert!(table_exists(&conn, "memory_clusters"));
         assert!(table_exists(&conn, "cluster_members"));

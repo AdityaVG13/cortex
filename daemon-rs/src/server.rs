@@ -72,6 +72,14 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
             "/feedback/stats",
             get(handlers::feedback::handle_feedback_stats),
         )
+        .route(
+            "/agent-feedback",
+            post(handlers::feedback::handle_agent_feedback_record),
+        )
+        .route(
+            "/agent-feedback/stats",
+            get(handlers::feedback::handle_agent_feedback_stats),
+        )
         .route("/crystals", get(handle_crystals))
         .route("/crystallize", post(handle_crystallize))
         .route("/compact", post(handle_compact))
@@ -786,6 +794,8 @@ mod tests {
             (Method::GET, "/recall/budget", None),
             (Method::POST, "/feedback", Some("{}")),
             (Method::GET, "/feedback/stats", None),
+            (Method::POST, "/agent-feedback", Some("{}")),
+            (Method::GET, "/agent-feedback/stats", None),
             (Method::GET, "/crystals", None),
             (Method::POST, "/crystallize", Some("{}")),
             (Method::POST, "/compact", Some("{}")),

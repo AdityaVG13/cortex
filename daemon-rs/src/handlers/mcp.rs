@@ -3,6 +3,7 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 use super::diary::{write_diary_entry, DiaryRequest};
+use super::feedback::{build_agent_feedback_stats_payload, record_agent_feedback_from_value};
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{
     forget_keyword, list_conflicts_payload, parse_conflict_id, resolve_decision,
@@ -124,14 +125,17 @@ fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
         | "cortex_recall"
         | "cortex_recall_policy_explain"
         | "cortex_semantic_recall"
+        | "cortex_agent_feedback_stats"
         | "cortex_health"
         | "cortex_digest"
         | "cortex_unfold"
         | "cortex_focus_status"
         | "cortex_lastCall" => Some(ClientPermission::Read),
-        "cortex_store" | "cortex_focus_start" | "cortex_focus_end" | "cortex_diary" => {
-            Some(ClientPermission::Write)
-        }
+        "cortex_store"
+        | "cortex_agent_feedback_record"
+        | "cortex_focus_start"
+        | "cortex_focus_end"
+        | "cortex_diary" => Some(ClientPermission::Write),
         "cortex_forget"
         | "cortex_resolve"
         | "cortex_conflicts_list"
@@ -665,6 +669,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn agent_feedback_tools_require_expected_permission_scopes() {
+        assert_eq!(
+            required_permission_for_tool("cortex_agent_feedback_record"),
+            Some(ClientPermission::Write)
+        );
+        assert_eq!(
+            required_permission_for_tool("cortex_agent_feedback_stats"),
+            Some(ClientPermission::Read)
+        );
+    }
+
     #[tokio::test]
     async fn conflict_list_denies_non_admin_client_permission() {
         let state = test_state();
@@ -933,6 +949,43 @@ pub fn mcp_tools() -> Vec<Value> {
                     "reasoning_depth": { "type": "string", "description": "single-shot | multi-step | tool-assisted | chain-of-thought | user-stated" }
                 },
                 "required": ["decision"]
+            }
+        }),
+        json!({
+            "name": "cortex_agent_feedback_record",
+            "description": "Record task outcome telemetry for any agent (success/partial/failure, quality, latency, retries, tokens).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string", "description": "Agent identifier (defaults to source agent)" },
+                    "taskClass": { "type": "string", "description": "Task class label (default: general)" },
+                    "outcome": { "type": "string", "enum": ["success", "partial", "failure"], "description": "Task outcome category" },
+                    "outcomeScore": { "type": "number", "description": "Outcome score override in [0,1] (defaults from outcome)" },
+                    "qualityScore": { "type": "number", "description": "Quality score in [0,1], default 0.7" },
+                    "latencyMs": { "type": "number", "description": "Optional latency in milliseconds" },
+                    "retries": { "type": "number", "description": "Optional retry count" },
+                    "tokensUsed": { "type": "number", "description": "Optional token usage count for this task" },
+                    "memorySources": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional memory/decision source ids used during task execution"
+                    },
+                    "notes": { "type": "string", "description": "Optional operator note" }
+                },
+                "required": ["outcome"]
+            }
+        }),
+        json!({
+            "name": "cortex_agent_feedback_stats",
+            "description": "Summarize reliability trends from recorded agent outcome telemetry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "horizonDays": { "type": "number", "description": "Lookback window in days (default 30, max 180)" },
+                    "limit": { "type": "number", "description": "Max rows sampled for stats (default 400, max 2000)" },
+                    "taskClass": { "type": "string", "description": "Optional task class filter" },
+                    "agent": { "type": "string", "description": "Optional agent filter" }
+                }
             }
         }),
         json!({
@@ -1344,6 +1397,41 @@ async fn mcp_dispatch(
                 "kind": entry.get("kind").cloned().unwrap_or(Value::Null),
                 "action": entry.get("action").cloned().unwrap_or_else(|| json!("stored")),
             }))
+        }
+
+        "cortex_agent_feedback_record" => {
+            let owner_id = if state.team_mode {
+                caller_id.unwrap_or_default()
+            } else {
+                0
+            };
+            let fallback_agent = source
+                .as_ref()
+                .map(|identity| identity.agent.as_str())
+                .unwrap_or("mcp");
+            let conn = state.db.lock().await;
+            record_agent_feedback_from_value(&conn, owner_id, args, fallback_agent)
+        }
+
+        "cortex_agent_feedback_stats" => {
+            let owner_id = if state.team_mode {
+                caller_id.unwrap_or_default()
+            } else {
+                0
+            };
+            let horizon_days = arg_i64(args, &["horizonDays", "horizon_days"]).unwrap_or(30);
+            let limit = arg_usize(args, &["limit"]).unwrap_or(400);
+            let task_class = arg_str(args, &["taskClass", "task_class"]);
+            let agent = arg_str(args, &["agent", "source_agent"]);
+            let conn = state.db.lock().await;
+            build_agent_feedback_stats_payload(
+                &conn,
+                owner_id,
+                horizon_days,
+                limit,
+                task_class,
+                agent,
+            )
         }
 
         "cortex_health" => Ok(build_health_payload(state).await),
