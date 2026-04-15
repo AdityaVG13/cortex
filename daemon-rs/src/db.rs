@@ -68,7 +68,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 9] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 10] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -78,6 +78,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 9] = [
     ("007", "semantic_store_quality_defaults"),
     ("008", "client_permissions"),
     ("009", "provenance_fields"),
+    ("010", "decision_conflict_records"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -351,6 +352,35 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             );
             Ok(())
         }
+        "010" => {
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS decision_conflicts (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  source_decision_id INTEGER REFERENCES decisions(id) ON DELETE SET NULL,
+                  target_decision_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+                  classification TEXT NOT NULL
+                    CHECK (classification IN ('AGREES', 'CONTRADICTS', 'REFINES', 'UNRELATED')),
+                  similarity_jaccard REAL,
+                  similarity_cosine REAL,
+                  status TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'auto_resolved', 'user_resolved')),
+                  resolution_strategy TEXT,
+                  resolved_by TEXT,
+                  resolved_at TEXT,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_decision_conflicts_source
+                  ON decision_conflicts(source_decision_id);
+                CREATE INDEX IF NOT EXISTS idx_decision_conflicts_target
+                  ON decision_conflicts(target_decision_id);
+                CREATE INDEX IF NOT EXISTS idx_decision_conflicts_status_created
+                  ON decision_conflicts(status, created_at);
+                "#,
+            )?;
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -501,6 +531,22 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           updated_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS decision_conflicts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_decision_id INTEGER REFERENCES decisions(id) ON DELETE SET NULL,
+          target_decision_id INTEGER NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+          classification TEXT NOT NULL
+            CHECK (classification IN ('AGREES', 'CONTRADICTS', 'REFINES', 'UNRELATED')),
+          similarity_jaccard REAL,
+          similarity_cosine REAL,
+          status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open', 'auto_resolved', 'user_resolved')),
+          resolution_strategy TEXT,
+          resolved_by TEXT,
+          resolved_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS embeddings (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           target_type TEXT NOT NULL,
@@ -617,6 +663,9 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
         CREATE INDEX IF NOT EXISTS idx_memories_source_status ON memories(source, status);
         CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+        CREATE INDEX IF NOT EXISTS idx_decision_conflicts_source ON decision_conflicts(source_decision_id);
+        CREATE INDEX IF NOT EXISTS idx_decision_conflicts_target ON decision_conflicts(target_decision_id);
+        CREATE INDEX IF NOT EXISTS idx_decision_conflicts_status_created ON decision_conflicts(status, created_at);
         CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_type, target_id);
         CREATE INDEX IF NOT EXISTS idx_events_type_created ON events(type, created_at);
         CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient);
@@ -1684,6 +1733,7 @@ mod tests {
         for table in [
             "memories",
             "decisions",
+            "decision_conflicts",
             "embeddings",
             "events",
             "co_occurrence",
@@ -1903,6 +1953,7 @@ mod tests {
         assert!(table_has_column(&conn, "decisions", "source_model"));
         assert!(table_has_column(&conn, "decisions", "reasoning_depth"));
         assert!(table_has_column(&conn, "decisions", "trust_score"));
+        assert!(table_exists(&conn, "decision_conflicts"));
         assert!(table_exists(&conn, "focus_sessions"));
         assert!(table_exists(&conn, "memory_clusters"));
         assert!(table_exists(&conn, "cluster_members"));

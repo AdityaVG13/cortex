@@ -622,6 +622,323 @@ function agentColor(name) {
   return "var(--cyan)";
 }
 
+const CONFLICT_CLASSIFICATIONS = new Set(["AGREES", "CONTRADICTS", "REFINES", "UNRELATED"]);
+const CONFLICT_STATUS_FALLBACK = "OPEN";
+
+function pickDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function toFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function normalizeConflictClassification(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (!normalized) return "UNSPECIFIED";
+  return CONFLICT_CLASSIFICATIONS.has(normalized) ? normalized : normalized;
+}
+
+function normalizeConflictStatus(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (!normalized) return CONFLICT_STATUS_FALLBACK;
+  if (normalized === "IN_PROGRESS") return "OPEN";
+  return normalized;
+}
+
+function extractEntityId(value) {
+  if (value && typeof value === "object") {
+    return pickDefined(value.id, value.decision_id, value.memory_id);
+  }
+  return value;
+}
+
+function extractEntityAgent(value) {
+  if (!value || typeof value !== "object") return "";
+  return String(
+    pickDefined(
+      value.source_agent,
+      value.sourceAgent,
+      value.agent,
+      value.source_client,
+      value.client_id,
+      ""
+    ) || ""
+  );
+}
+
+function normalizeConflictEntry(entry, fallbackId) {
+  const sourceAgent = String(
+    pickDefined(
+      entry?.source_agent,
+      entry?.sourceAgent,
+      entry?.agent,
+      entry?.source_client,
+      entry?.client_id,
+      "unknown"
+    ) || "unknown"
+  );
+  const id = pickDefined(entry?.id, entry?.decision_id, entry?.memory_id, fallbackId);
+  return {
+    raw: entry || {},
+    id,
+    sourceAgent,
+    decision: String(
+      pickDefined(
+        entry?.decision,
+        entry?.text,
+        entry?.content,
+        entry?.memory,
+        entry?.value,
+        "(no decision text)"
+      ) || "(no decision text)"
+    ),
+    context: String(pickDefined(entry?.context, entry?.scope, entry?.topic, "") || ""),
+    confidence: toFiniteNumber(pickDefined(entry?.confidence, entry?.source_confidence, entry?.score)),
+    trustScore: toFiniteNumber(pickDefined(entry?.trust_score, entry?.trustScore, entry?.trust)),
+    createdAt: String(
+      pickDefined(entry?.created_at, entry?.createdAt, entry?.detected_at, entry?.timestamp, "") || ""
+    ),
+    resolvedAt: String(pickDefined(entry?.resolved_at, entry?.resolvedAt, "") || ""),
+  };
+}
+
+function normalizeConflictResolution(rawResolution, pair, left, right) {
+  const resolution = rawResolution && typeof rawResolution === "object" ? rawResolution : {};
+  const winnerRaw = pickDefined(resolution.winner, pair?.winner, pair?.winning_entry);
+  const loserRaw = pickDefined(resolution.loser, pair?.loser, pair?.losing_entry, pair?.superseded);
+  const winnerId = pickDefined(
+    resolution.winner_id,
+    resolution.winnerId,
+    pair?.winner_id,
+    pair?.winnerId,
+    extractEntityId(winnerRaw)
+  );
+  const loserId = pickDefined(
+    resolution.loser_id,
+    resolution.loserId,
+    pair?.loser_id,
+    pair?.loserId,
+    pair?.superseded_id,
+    pair?.supersededId,
+    extractEntityId(loserRaw)
+  );
+
+  const winnerAgentFallback = winnerId === left?.id ? left.sourceAgent : winnerId === right?.id ? right.sourceAgent : "";
+  const loserAgentFallback = loserId === left?.id ? left.sourceAgent : loserId === right?.id ? right.sourceAgent : "";
+
+  const action = String(
+    pickDefined(
+      resolution.action,
+      resolution.resolution,
+      resolution.method,
+      resolution.policy,
+      pair?.resolution,
+      pair?.resolution_action
+    ) || ""
+  ).toLowerCase();
+
+  const method = String(
+    pickDefined(
+      resolution.method,
+      resolution.policy,
+      pair?.resolved_by,
+      pair?.resolvedBy,
+      ""
+    ) || ""
+  );
+
+  const resolvedBy = String(
+    pickDefined(
+      resolution.resolved_by,
+      resolution.resolvedBy,
+      pair?.resolved_by,
+      pair?.resolvedBy,
+      ""
+    ) || ""
+  );
+
+  const notes = String(
+    pickDefined(
+      resolution.notes,
+      resolution.reason,
+      pair?.resolution_reason,
+      pair?.reason,
+      ""
+    ) || ""
+  );
+
+  const trustDelta = toFiniteNumber(
+    pickDefined(
+      resolution.trust_delta,
+      resolution.trustDelta,
+      pair?.trust_delta,
+      pair?.trustDelta
+    )
+  );
+
+  if (
+    winnerId === null
+    && loserId === null
+    && !action
+    && !method
+    && !resolvedBy
+    && !notes
+    && trustDelta === null
+  ) {
+    return null;
+  }
+
+  return {
+    winnerId,
+    loserId,
+    winnerAgent: String(
+      pickDefined(resolution.winner_agent, resolution.winnerAgent, extractEntityAgent(winnerRaw), winnerAgentFallback, "")
+      || ""
+    ),
+    loserAgent: String(
+      pickDefined(resolution.loser_agent, resolution.loserAgent, extractEntityAgent(loserRaw), loserAgentFallback, "")
+      || ""
+    ),
+    action,
+    method,
+    resolvedBy,
+    notes,
+    trustDelta,
+  };
+}
+
+function normalizeConflictPair(pair, index) {
+  const leftRaw = pickDefined(
+    pair?.left,
+    pair?.memory_a,
+    pair?.a,
+    pair?.first,
+    pair?.winner,
+    pair?.entries?.[0]
+  );
+  const rightRaw = pickDefined(
+    pair?.right,
+    pair?.memory_b,
+    pair?.b,
+    pair?.second,
+    pair?.loser,
+    pair?.entries?.[1]
+  );
+
+  const left = normalizeConflictEntry(leftRaw, `left-${index}`);
+  const right = normalizeConflictEntry(rightRaw, `right-${index}`);
+  const conflictId = pickDefined(
+    pair?.id,
+    pair?.conflict_id,
+    pair?.conflictId,
+    pair?.pair_id,
+    pair?.pairId
+  );
+
+  const classification = normalizeConflictClassification(
+    pickDefined(
+      pair?.classification,
+      pair?.conflict_classification,
+      pair?.relation,
+      pair?.relationship,
+      pair?.type,
+      pair?.conflict_type
+    )
+  );
+  const createdAt = String(
+    pickDefined(
+      pair?.created_at,
+      pair?.createdAt,
+      pair?.detected_at,
+      left.createdAt,
+      right.createdAt,
+      ""
+    ) || ""
+  );
+  const resolvedAt = String(
+    pickDefined(pair?.resolved_at, pair?.resolvedAt, left.resolvedAt, right.resolvedAt, "") || ""
+  );
+  const status = normalizeConflictStatus(
+    pickDefined(
+      pair?.status,
+      pair?.state,
+      pair?.resolution_status,
+      pair?.conflict_status,
+      resolvedAt ? "resolved" : "open"
+    )
+  );
+  const trustDelta = toFiniteNumber(pickDefined(pair?.trust_delta, pair?.trustDelta));
+  const resolution = normalizeConflictResolution(
+    pickDefined(pair?.resolution, pair?.resolution_detail, pair?.result, pair?.outcome),
+    pair,
+    left,
+    right
+  );
+  const key = String(conflictId || `${left.id || "left"}-${right.id || "right"}-${index}`);
+
+  return {
+    raw: pair || {},
+    key,
+    conflictId,
+    classification,
+    status,
+    createdAt,
+    resolvedAt,
+    trustDelta,
+    left,
+    right,
+    resolution,
+  };
+}
+
+function normalizeConflictPairsPayload(payload) {
+  const rawPairs = Array.isArray(payload?.pairs)
+    ? payload.pairs
+    : Array.isArray(payload?.conflicts)
+      ? payload.conflicts
+      : [];
+  return rawPairs.map((pair, index) => normalizeConflictPair(pair, index));
+}
+
+function formatConfidencePercent(value) {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) return "n/a";
+  const normalized = numeric <= 1 ? numeric * 100 : numeric;
+  return `${Math.max(0, normalized).toFixed(0)}%`;
+}
+
+function formatTrustScore(value) {
+  const numeric = toFiniteNumber(value);
+  if (numeric === null) return "n/a";
+  return numeric.toFixed(3);
+}
+
+function formatTimestamp(iso) {
+  if (!iso) return "unknown";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return String(iso);
+  return parsed.toLocaleString();
+}
+
+function conflictBadgeClass(prefix, value) {
+  const suffix = String(value || "unspecified")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-");
+  return `${prefix} ${prefix}-${suffix}`;
+}
+
+function isRouteMissingError(error) {
+  const message = String(error?.message || error || "");
+  return message.includes("HTTP 404") || message.includes("HTTP 405");
+}
+
 function AgentItem({ session }) {
   const color = agentColor(session.agent);
   return (
@@ -893,6 +1210,184 @@ function ActivityItem({ entry }) {
   );
 }
 
+function ConflictPairCard({
+  pair,
+  conflictLoading = false,
+  onResolveQuick = null,
+  onResolveDraft = null,
+  resolveDraft = null,
+  onResolveDraftChange = null,
+}) {
+  const draftAction = resolveDraft?.action || "keep";
+  const draftWinner = resolveDraft?.winner || "left";
+  const leftId = pair?.left?.id;
+  const rightId = pair?.right?.id;
+  const canResolve = leftId !== null && leftId !== undefined && rightId !== null && rightId !== undefined;
+  const winner = draftWinner === "right" ? pair.right : pair.left;
+  const loser = draftWinner === "right" ? pair.left : pair.right;
+
+  return (
+    <div key={pair.key} className="conflict-pair">
+      <div className="conflict-topline">
+        <div className="conflict-topline-left">
+          <span className="conflict-id">Conflict #{pair.conflictId || pair.key}</span>
+          <span className={conflictBadgeClass("conflict-pill conflict-class", pair.classification)}>{pair.classification}</span>
+          <span className={conflictBadgeClass("conflict-pill conflict-status", pair.status)}>{pair.status}</span>
+        </div>
+        <div className="conflict-timestamps">
+          <span>Created {formatTimestamp(pair.createdAt)}</span>
+          {pair.resolvedAt ? <span>Resolved {formatTimestamp(pair.resolvedAt)}</span> : null}
+        </div>
+      </div>
+
+      <div className="conflict-cards">
+        <div className="card conflict-card">
+          <div className="conflict-card-header">
+            <span className="conflict-id">#{pair.left.id ?? "?"}</span>
+            <span className="agent-indicator" style={{
+              background: agentColor(pair.left.sourceAgent),
+              boxShadow: `0 0 8px ${agentColor(pair.left.sourceAgent)}`,
+            }} />
+            <span className="item-name">{pair.left.sourceAgent || "unknown"}</span>
+            <span className="muted-inline">{timeAgo(pair.left.createdAt)}</span>
+          </div>
+          <p className="conflict-text">{pair.left.decision}</p>
+          {pair.left.context ? <p className="conflict-context">{pair.left.context}</p> : null}
+          <div className="conflict-meta">
+            <span>Confidence: {formatConfidencePercent(pair.left.confidence)}</span>
+            <span>Trust: {formatTrustScore(pair.left.trustScore)}</span>
+          </div>
+        </div>
+
+        <div className="conflict-vs">VS</div>
+
+        <div className="card conflict-card">
+          <div className="conflict-card-header">
+            <span className="conflict-id">#{pair.right.id ?? "?"}</span>
+            <span className="agent-indicator" style={{
+              background: agentColor(pair.right.sourceAgent),
+              boxShadow: `0 0 8px ${agentColor(pair.right.sourceAgent)}`,
+            }} />
+            <span className="item-name">{pair.right.sourceAgent || "unknown"}</span>
+            <span className="muted-inline">{timeAgo(pair.right.createdAt)}</span>
+          </div>
+          <p className="conflict-text">{pair.right.decision}</p>
+          {pair.right.context ? <p className="conflict-context">{pair.right.context}</p> : null}
+          <div className="conflict-meta">
+            <span>Confidence: {formatConfidencePercent(pair.right.confidence)}</span>
+            <span>Trust: {formatTrustScore(pair.right.trustScore)}</span>
+          </div>
+        </div>
+      </div>
+
+      {pair.resolution ? (
+        <div className="conflict-resolution-summary">
+          <div className="conflict-resolution-grid">
+            <span>
+              <strong>Winner:</strong>{" "}
+              {pair.resolution.winnerId !== null && pair.resolution.winnerId !== undefined
+                ? `#${pair.resolution.winnerId}`
+                : "n/a"}
+              {pair.resolution.winnerAgent ? ` (${pair.resolution.winnerAgent})` : ""}
+            </span>
+            <span>
+              <strong>Loser:</strong>{" "}
+              {pair.resolution.loserId !== null && pair.resolution.loserId !== undefined
+                ? `#${pair.resolution.loserId}`
+                : "n/a"}
+              {pair.resolution.loserAgent ? ` (${pair.resolution.loserAgent})` : ""}
+            </span>
+            {pair.resolution.action ? <span><strong>Action:</strong> {pair.resolution.action}</span> : null}
+            {pair.resolution.method ? <span><strong>Method:</strong> {pair.resolution.method}</span> : null}
+            {pair.resolution.resolvedBy ? <span><strong>Resolved by:</strong> {pair.resolution.resolvedBy}</span> : null}
+            {pair.resolution.trustDelta !== null ? (
+              <span className="conflict-trust-highlight"><strong>Trust delta:</strong> {pair.resolution.trustDelta.toFixed(3)}</span>
+            ) : null}
+          </div>
+          {pair.resolution.notes ? <div className="conflict-resolution-notes">{pair.resolution.notes}</div> : null}
+        </div>
+      ) : null}
+
+      <div className="conflict-actions">
+        <button
+          className="btn-sm btn-primary"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.left.id, "keep", pair.right.id, pair)}
+        >
+          Keep Left
+        </button>
+        <button
+          className="btn-sm btn-primary"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.right.id, "keep", pair.left.id, pair)}
+        >
+          Keep Right
+        </button>
+        <button
+          className="btn-sm"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.left.id, "merge", pair.right.id, pair)}
+        >
+          Merge Both
+        </button>
+        <button
+          className="btn-sm btn-danger"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.left.id, "archive", pair.right.id, pair)}
+        >
+          Archive Both
+        </button>
+      </div>
+
+      <div className="conflict-manual-controls">
+        <span className="conflict-manual-label">Manual resolve</span>
+        <label className="conflict-control-group">
+          <span>Action</span>
+          <select
+            className="conflict-select"
+            value={draftAction}
+            onChange={(event) => onResolveDraftChange?.(pair.key, { action: event.target.value })}
+          >
+            <option value="keep">Keep</option>
+            <option value="merge">Merge</option>
+            <option value="archive">Archive</option>
+          </select>
+        </label>
+        {draftAction === "keep" ? (
+          <label className="conflict-control-group">
+            <span>Winner</span>
+            <select
+              className="conflict-select"
+              value={draftWinner}
+              onChange={(event) => onResolveDraftChange?.(pair.key, { winner: event.target.value })}
+            >
+              <option value="left">Left ({pair.left.sourceAgent || "unknown"})</option>
+              <option value="right">Right ({pair.right.sourceAgent || "unknown"})</option>
+            </select>
+          </label>
+        ) : null}
+        <button
+          className="btn-sm btn-primary"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => {
+            if (draftAction === "keep") {
+              onResolveDraft?.(winner.id, "keep", loser.id, pair);
+              return;
+            }
+            if (draftAction === "merge") {
+              onResolveDraft?.(pair.left.id, "merge", pair.right.id, pair);
+              return;
+            }
+            onResolveDraft?.(pair.left.id, "archive", pair.right.id, pair);
+          }}
+        >
+          Apply
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function normalizeSession(session, index) {
   const files = Array.isArray(session?.files)
     ? session.files
@@ -981,6 +1476,7 @@ export function App() {
   const [activitySince, setActivitySince] = useState("1h");
   const [feedbackMessage, setFeedbackMessage] = useState("Checking daemon...");
   const [conflictPairs, setConflictPairs] = useState([]);
+  const [resolveDrafts, setResolveDrafts] = useState({});
   const [conflictLoading, setConflictLoading] = useState(false);
   const [editorSetup, setEditorSetup] = useState(null);
   const [editorDetections, setEditorDetections] = useState([]);
@@ -1185,6 +1681,7 @@ export function App() {
     setMessageEntries([]);
     setActivityEntries([]);
     setConflictPairs([]);
+    setResolveDrafts({});
     setSavings(null);
     setStats({
       memories: "--",
@@ -1393,7 +1890,19 @@ export function App() {
 
   const refreshConflicts = useCallback(async () => {
     const result = await api("/conflicts", true);
-    setConflictPairs(Array.isArray(result?.pairs) ? result.pairs : []);
+    const normalizedPairs = normalizeConflictPairsPayload(result);
+    setConflictPairs(normalizedPairs);
+    setResolveDrafts((current) => {
+      if (!current || typeof current !== "object") return {};
+      const next = {};
+      const validKeys = new Set(normalizedPairs.map((pair) => pair.key));
+      for (const [key, value] of Object.entries(current)) {
+        if (validKeys.has(key)) {
+          next[key] = value;
+        }
+      }
+      return next;
+    });
     clearTransientFeedback();
   }, [api, clearTransientFeedback]);
 
@@ -1416,17 +1925,48 @@ export function App() {
     ]
   );
 
-  const handleResolveConflict = useCallback(async (keepId, action, supersededId) => {
+  const handleResolveConflict = useCallback(async (keepId, action, supersededId, pair = null) => {
+    const resolver = selectedOperatorName ? `user:${selectedOperatorName}` : "user:control-center";
+    const resolutionBody = {
+      keepId,
+      action,
+      supersededId,
+      conflictId: pair?.conflictId || null,
+      winnerId: action === "keep" ? keepId : null,
+      loserId: action === "keep" ? supersededId : null,
+      resolution: action,
+      resolvedBy: resolver,
+    };
     setConflictLoading(true);
     try {
-      await postApi("/resolve", { keepId, action, supersededId });
+      try {
+        await postApi("/conflicts/resolve", resolutionBody);
+      } catch (primaryError) {
+        if (!isRouteMissingError(primaryError)) {
+          throw primaryError;
+        }
+        await postApi("/resolve", resolutionBody);
+      }
       await refreshConflicts();
     } catch (err) {
       setFeedbackMessage(`Resolve failed: ${err.message || err}`);
     } finally {
       setConflictLoading(false);
     }
-  }, [postApi, refreshConflicts]);
+  }, [postApi, refreshConflicts, selectedOperatorName]);
+
+  const handleResolveDraftChange = useCallback((pairKey, updates) => {
+    setResolveDrafts((current) => {
+      const draft = current[pairKey] || { action: "keep", winner: "left" };
+      return {
+        ...current,
+        [pairKey]: {
+          ...draft,
+          ...updates,
+        },
+      };
+    });
+  }, []);
 
   const openEditorSetupWizard = useCallback(async () => {
     setIsSettingUpEditors(true);
@@ -3434,13 +3974,13 @@ export function App() {
                   </div>
                   <ul className="item-list compact-list">
                     {conflictPairs.length ? conflictPairs.slice(0, 4).map((pair) => (
-                      <li key={`${pair.left.id}-${pair.right.id}`}>
+                      <li key={pair.key}>
                         <div className="item-meta">
-                          <span className="item-name">#{pair.left.id} vs #{pair.right.id}</span>
-                          <span className="muted-inline">{Math.round(((pair.left.confidence || 0.8) + (pair.right.confidence || 0.8)) * 50)}%</span>
+                          <span className="item-name">#{pair.left.id ?? "?"} vs #{pair.right.id ?? "?"}</span>
+                          <span className={conflictBadgeClass("conflict-pill conflict-class", pair.classification)}>{pair.classification}</span>
                         </div>
                         <div className="item-detail">
-                          {pair.left.source_agent || "unknown"} / {pair.right.source_agent || "unknown"}
+                          {pair.left.sourceAgent || "unknown"} / {pair.right.sourceAgent || "unknown"} · {pair.status}
                         </div>
                       </li>
                     )) : <EmptyItem text="No active conflicts" />}
@@ -3465,61 +4005,15 @@ export function App() {
                 </div>
               ) : (
                 conflictPairs.map((pair) => (
-                  <div key={`${pair.left.id}-${pair.right.id}`} className="conflict-pair">
-                    <div className="conflict-cards">
-                      <div className="card conflict-card">
-                        <div className="conflict-card-header">
-                          <span className="conflict-id">#{pair.left.id}</span>
-                          <span className="agent-indicator" style={{
-                            background: agentColor(pair.left.source_agent),
-                            boxShadow: `0 0 8px ${agentColor(pair.left.source_agent)}`,
-                          }} />
-                          <span className="item-name">{pair.left.source_agent || "unknown"}</span>
-                          <span className="muted-inline">{timeAgo(pair.left.created_at)}</span>
-                        </div>
-                        <p className="conflict-text">{pair.left.decision}</p>
-                        {pair.left.context ? <p className="conflict-context">{pair.left.context}</p> : null}
-                        <div className="conflict-meta">
-                          <span>Confidence: {((pair.left.confidence || 0.8) * 100).toFixed(0)}%</span>
-                        </div>
-                      </div>
-                      <div className="conflict-vs">VS</div>
-                      <div className="card conflict-card">
-                        <div className="conflict-card-header">
-                          <span className="conflict-id">#{pair.right.id}</span>
-                          <span className="agent-indicator" style={{
-                            background: agentColor(pair.right.source_agent),
-                            boxShadow: `0 0 8px ${agentColor(pair.right.source_agent)}`,
-                          }} />
-                          <span className="item-name">{pair.right.source_agent || "unknown"}</span>
-                          <span className="muted-inline">{timeAgo(pair.right.created_at)}</span>
-                        </div>
-                        <p className="conflict-text">{pair.right.decision}</p>
-                        {pair.right.context ? <p className="conflict-context">{pair.right.context}</p> : null}
-                        <div className="conflict-meta">
-                          <span>Confidence: {((pair.right.confidence || 0.8) * 100).toFixed(0)}%</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="conflict-actions">
-                      <button className="btn-sm btn-primary" disabled={conflictLoading}
-                        onClick={() => handleResolveConflict(pair.left.id, "keep", pair.right.id)}>
-                        Keep Left
-                      </button>
-                      <button className="btn-sm btn-primary" disabled={conflictLoading}
-                        onClick={() => handleResolveConflict(pair.right.id, "keep", pair.left.id)}>
-                        Keep Right
-                      </button>
-                      <button className="btn-sm" disabled={conflictLoading}
-                        onClick={() => handleResolveConflict(pair.left.id, "merge", pair.right.id)}>
-                        Merge Both
-                      </button>
-                      <button className="btn-sm btn-danger" disabled={conflictLoading}
-                        onClick={() => handleResolveConflict(pair.left.id, "archive", pair.right.id)}>
-                        Archive Both
-                      </button>
-                    </div>
-                  </div>
+                  <ConflictPairCard
+                    key={pair.key}
+                    pair={pair}
+                    conflictLoading={conflictLoading}
+                    onResolveQuick={handleResolveConflict}
+                    onResolveDraft={handleResolveConflict}
+                    resolveDraft={resolveDrafts[pair.key]}
+                    onResolveDraftChange={handleResolveDraftChange}
+                  />
                 ))
               )}
             </div>
@@ -4274,61 +4768,15 @@ export function App() {
               </div>
             ) : (
               conflictPairs.map((pair) => (
-                <div key={`${pair.left.id}-${pair.right.id}`} className="conflict-pair">
-                  <div className="conflict-cards">
-                    <div className="card conflict-card">
-                      <div className="conflict-card-header">
-                        <span className="conflict-id">#{pair.left.id}</span>
-                        <span className="agent-indicator" style={{
-                          background: agentColor(pair.left.source_agent),
-                          boxShadow: `0 0 8px ${agentColor(pair.left.source_agent)}`,
-                        }} />
-                        <span className="item-name">{pair.left.source_agent || "unknown"}</span>
-                        <span className="muted-inline">{timeAgo(pair.left.created_at)}</span>
-                      </div>
-                      <p className="conflict-text">{pair.left.decision}</p>
-                      {pair.left.context && <p className="conflict-context">{pair.left.context}</p>}
-                      <div className="conflict-meta">
-                        <span>Confidence: {((pair.left.confidence || 0.8) * 100).toFixed(0)}%</span>
-                      </div>
-                    </div>
-                    <div className="conflict-vs">VS</div>
-                    <div className="card conflict-card">
-                      <div className="conflict-card-header">
-                        <span className="conflict-id">#{pair.right.id}</span>
-                        <span className="agent-indicator" style={{
-                          background: agentColor(pair.right.source_agent),
-                          boxShadow: `0 0 8px ${agentColor(pair.right.source_agent)}`,
-                        }} />
-                        <span className="item-name">{pair.right.source_agent || "unknown"}</span>
-                        <span className="muted-inline">{timeAgo(pair.right.created_at)}</span>
-                      </div>
-                      <p className="conflict-text">{pair.right.decision}</p>
-                      {pair.right.context && <p className="conflict-context">{pair.right.context}</p>}
-                      <div className="conflict-meta">
-                        <span>Confidence: {((pair.right.confidence || 0.8) * 100).toFixed(0)}%</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="conflict-actions">
-                    <button className="btn-sm btn-primary" disabled={conflictLoading}
-                      onClick={() => handleResolveConflict(pair.left.id, "keep", pair.right.id)}>
-                      Keep Left
-                    </button>
-                    <button className="btn-sm btn-primary" disabled={conflictLoading}
-                      onClick={() => handleResolveConflict(pair.right.id, "keep", pair.left.id)}>
-                      Keep Right
-                    </button>
-                    <button className="btn-sm" disabled={conflictLoading}
-                      onClick={() => handleResolveConflict(pair.left.id, "merge", pair.right.id)}>
-                      Merge Both
-                    </button>
-                    <button className="btn-sm btn-danger" disabled={conflictLoading}
-                      onClick={() => handleResolveConflict(pair.left.id, "archive", pair.right.id)}>
-                      Archive Both
-                    </button>
-                  </div>
-                </div>
+                <ConflictPairCard
+                  key={pair.key}
+                  pair={pair}
+                  conflictLoading={conflictLoading}
+                  onResolveQuick={handleResolveConflict}
+                  onResolveDraft={handleResolveConflict}
+                  resolveDraft={resolveDrafts[pair.key]}
+                  onResolveDraftChange={handleResolveDraftChange}
+                />
               ))
             )}
           </section>

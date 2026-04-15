@@ -4,7 +4,10 @@ use serde_json::{json, Value};
 
 use super::diary::{write_diary_entry, DiaryRequest};
 use super::health::{build_digest, build_health_payload};
-use super::mutate::{forget_keyword, resolve_decision};
+use super::mutate::{
+    forget_keyword, list_conflicts_payload, parse_conflict_id, resolve_decision,
+    resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
+};
 use super::recall::{
     execute_semantic_recall, execute_unified_recall, unfold_source, RecallContext,
 };
@@ -129,6 +132,9 @@ fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
         }
         "cortex_forget"
         | "cortex_resolve"
+        | "cortex_conflicts_list"
+        | "cortex_conflicts_get"
+        | "cortex_conflicts_resolve"
         | "cortex_permissions_list"
         | "cortex_permissions_grant"
         | "cortex_permissions_revoke" => Some(ClientPermission::Admin),
@@ -434,16 +440,89 @@ fn fetch_last_call(
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_last_call, has_client_permission, normalize_permission_client_id, ClientPermission,
+        fetch_last_call, has_client_permission, mcp_dispatch, normalize_permission_client_id,
+        required_permission_for_tool, ClientPermission,
     };
     use crate::db;
     use crate::handlers::recall::RecallContext;
+    use crate::handlers::SourceIdentity;
+    use crate::state::RuntimeState;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, Mutex};
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         db::configure(&conn).unwrap();
         db::initialize_schema(&conn).unwrap();
+        db::run_pending_migrations(&conn);
         conn
+    }
+
+    fn test_state() -> RuntimeState {
+        let write_conn = test_conn();
+        let read_conn = test_conn();
+        let (events, _) = broadcast::channel(8);
+        RuntimeState {
+            db: Arc::new(Mutex::new(write_conn)),
+            db_read: Arc::new(Mutex::new(read_conn)),
+            token: Arc::new("test-token".to_string()),
+            events,
+            mcp_calls: Arc::new(AtomicU64::new(0)),
+            mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
+            recall_history: Arc::new(Mutex::new(HashMap::new())),
+            pre_cache: Arc::new(Mutex::new(HashMap::new())),
+            served_content: Arc::new(Mutex::new(HashMap::new())),
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            home: PathBuf::from("."),
+            db_path: PathBuf::from(":memory:"),
+            token_path: PathBuf::from("cortex.token"),
+            pid_path: PathBuf::from("cortex.pid"),
+            port: 7437,
+            embedding_engine: None,
+            rate_limiter: crate::rate_limit::RateLimiter::new(),
+            team_mode: false,
+            default_owner_id: None,
+            team_api_key_hashes: Arc::new(std::sync::RwLock::new(Vec::new())),
+            degraded_mode: Arc::new(AtomicBool::new(false)),
+            db_corrupted: Arc::new(AtomicBool::new(false)),
+            readiness: Arc::new(AtomicBool::new(true)),
+            write_buffer_path: PathBuf::from("write_buffer.jsonl"),
+        }
+    }
+
+    async fn seed_disputed_pair(state: &RuntimeState) -> (i64, i64) {
+        let conn = state.db.lock().await;
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, source_client, confidence, trust_score, status)
+             VALUES (?1, ?2, 'claude', 'claude', 0.71, 0.73, 'active')",
+            rusqlite::params!["Use sqlite for local projects", "storage policy"],
+        )
+        .unwrap();
+        let first = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, source_client, confidence, trust_score, status)
+             VALUES (?1, ?2, 'codex', 'codex', 0.93, 0.95, 'active')",
+            rusqlite::params!["Use postgres for production workloads", "storage policy"],
+        )
+        .unwrap();
+        let second = conn.last_insert_rowid();
+
+        conn.execute(
+            "UPDATE decisions SET status = 'disputed', disputes_id = ?1 WHERE id = ?2",
+            rusqlite::params![second, first],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE decisions SET status = 'disputed', disputes_id = ?1 WHERE id = ?2",
+            rusqlite::params![first, second],
+        )
+        .unwrap();
+        (first, second)
     }
 
     #[test]
@@ -556,6 +635,129 @@ mod tests {
 
         assert!(allowed);
         assert!(!denied_admin);
+    }
+
+    #[test]
+    fn conflict_tools_require_admin_permission_scope() {
+        assert_eq!(
+            required_permission_for_tool("cortex_conflicts_list"),
+            Some(ClientPermission::Admin)
+        );
+        assert_eq!(
+            required_permission_for_tool("cortex_conflicts_get"),
+            Some(ClientPermission::Admin)
+        );
+        assert_eq!(
+            required_permission_for_tool("cortex_conflicts_resolve"),
+            Some(ClientPermission::Admin)
+        );
+    }
+
+    #[tokio::test]
+    async fn conflict_list_denies_non_admin_client_permission() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: None,
+        };
+
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+                 VALUES (0, 'codex', 'read', '*', 'test')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let result = mcp_dispatch(
+            &state,
+            None,
+            "cortex_conflicts_list",
+            &json!({"status": "open"}),
+            Some(&source),
+        )
+        .await;
+
+        let err = result.expect_err("list should require admin permission");
+        assert!(
+            err.contains("Permission denied"),
+            "expected permission denied error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn conflict_tools_list_and_resolve_success_path() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+                 VALUES (0, 'codex', 'admin', '*', 'test')",
+                [],
+            )
+            .unwrap();
+        }
+        let (first, second) = seed_disputed_pair(&state).await;
+        let conflict_id = format!("decision:{}:{}", first.min(second), first.max(second));
+
+        let listed = mcp_dispatch(
+            &state,
+            None,
+            "cortex_conflicts_list",
+            &json!({"status": "open", "conflictId": conflict_id}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["count"].as_u64(), Some(1));
+        assert_eq!(listed["conflicts"][0]["status"].as_str(), Some("open"));
+        assert_eq!(
+            listed["conflicts"][0]["classification"].as_str(),
+            Some("CONTRADICTS")
+        );
+
+        let resolved = mcp_dispatch(
+            &state,
+            None,
+            "cortex_conflicts_resolve",
+            &json!({
+                "conflictId": conflict_id,
+                "winnerId": second,
+                "action": "keep",
+                "classification": "CONTRADICTS",
+                "notes": "codex winner",
+                "similarity": 0.62
+            }),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved["resolved"].as_bool(), Some(true));
+        assert_eq!(resolved["winnerId"].as_i64(), Some(second));
+        assert_eq!(resolved["supersededId"].as_i64(), Some(first));
+
+        let fetched = mcp_dispatch(
+            &state,
+            None,
+            "cortex_conflicts_get",
+            &json!({"conflictId": format!("decision:{}:{}", first.min(second), first.max(second))}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fetched["found"].as_bool(), Some(true));
+        assert_eq!(fetched["conflict"]["status"].as_str(), Some("resolved"));
+        assert_eq!(
+            fetched["conflict"]["resolution"]["notes"].as_str(),
+            Some("codex winner")
+        );
     }
 }
 
@@ -736,6 +938,50 @@ pub fn mcp_tools() -> Vec<Value> {
                     "supersededId": { "type": "number", "description": "ID of the decision to supersede (for keep action)" }
                 },
                 "required": ["keepId", "action"]
+            }
+        }),
+        json!({
+            "name": "cortex_conflicts_list",
+            "description": "List conflict records with optional status/classification filters.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string", "enum": ["open", "resolved", "all"], "description": "Filter by conflict lifecycle status (default: open)" },
+                    "classification": { "type": "string", "enum": ["AGREES", "CONTRADICTS", "REFINES", "UNRELATED"], "description": "Optional conflict classification filter" },
+                    "conflictId": { "type": "string", "description": "Optional conflict id (decision:<id>:<id>) to filter exact record" },
+                    "limit": { "type": "number", "description": "Max records per status bucket (default 100, max 500)" }
+                }
+            }
+        }),
+        json!({
+            "name": "cortex_conflicts_get",
+            "description": "Fetch a single conflict record by id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "conflictId": { "type": "string", "description": "Conflict id in decision:<id>:<id> format" }
+                },
+                "required": ["conflictId"]
+            }
+        }),
+        json!({
+            "name": "cortex_conflicts_resolve",
+            "description": "Resolve a conflict by selecting a winner and persisting resolution metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "winnerId": { "type": "number", "description": "Decision id to keep as winner (alias: keepId)" },
+                    "keepId": { "type": "number", "description": "Alias for winnerId" },
+                    "action": { "type": "string", "enum": ["keep", "merge", "archive"], "description": "Resolution action" },
+                    "supersededId": { "type": "number", "description": "Decision id to supersede/archive (alias: loserId)" },
+                    "loserId": { "type": "number", "description": "Alias for supersededId" },
+                    "conflictId": { "type": "string", "description": "Conflict id (decision:<id>:<id>); used for metadata and loser inference" },
+                    "classification": { "type": "string", "enum": ["AGREES", "CONTRADICTS", "REFINES", "UNRELATED"], "description": "Final classification override" },
+                    "similarity": { "type": "number", "description": "Optional similarity score snapshot for auditability" },
+                    "notes": { "type": "string", "description": "Optional operator note for why this resolution was chosen" },
+                    "resolvedBy": { "type": "string", "description": "Optional resolver identity (defaults to source agent)" }
+                },
+                "required": ["action"]
             }
         }),
         json!({
@@ -1179,6 +1425,96 @@ async fn mcp_dispatch(
             let mut conn = state.db.lock().await;
             resolve_decision(&mut conn, keep_id, action, superseded_id)?;
             Ok(json!({ "resolved": true }))
+        }
+
+        "cortex_conflicts_list" => {
+            let status = ConflictStatusFilter::parse(arg_str(args, &["status"]))?;
+            let classification = arg_str(args, &["classification"])
+                .map(str::trim)
+                .map(str::to_string);
+            let conflict_id = arg_str(args, &["conflictId", "conflict_id", "id"])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let limit = arg_usize(args, &["limit"]).unwrap_or(100).max(1).min(500);
+
+            let options = ConflictListOptions {
+                status,
+                classification,
+                conflict_id,
+                limit,
+            };
+            let conn = state.db.lock().await;
+            list_conflicts_payload(&conn, &options)
+        }
+
+        "cortex_conflicts_get" => {
+            let conflict_id = arg_str(args, &["conflictId", "conflict_id", "id"])
+                .ok_or_else(|| "Missing required argument: conflictId".to_string())?
+                .to_string();
+
+            let options = ConflictListOptions {
+                status: ConflictStatusFilter::All,
+                classification: None,
+                conflict_id: Some(conflict_id.clone()),
+                limit: 200,
+            };
+            let conn = state.db.lock().await;
+            let payload = list_conflicts_payload(&conn, &options)?;
+            let found = payload
+                .get("count")
+                .and_then(|value| value.as_u64())
+                .map(|value| value > 0)
+                .unwrap_or(false);
+            Ok(json!({
+                "found": found,
+                "conflictId": conflict_id,
+                "conflict": payload.get("conflict").cloned().unwrap_or(Value::Null),
+            }))
+        }
+
+        "cortex_conflicts_resolve" => {
+            let action = arg_str(args, &["action"])
+                .ok_or_else(|| "Missing required argument: action".to_string())?;
+            let mut winner_id = arg_i64(args, &["winnerId", "keepId"]);
+            let mut superseded_id = arg_i64(args, &["supersededId", "loserId"]);
+            let conflict_id = arg_str(args, &["conflictId", "conflict_id", "id"])
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            if let Some((left, right)) = conflict_id.as_deref().and_then(parse_conflict_id) {
+                if winner_id.is_none() {
+                    winner_id = Some(left);
+                }
+                if superseded_id.is_none() {
+                    superseded_id = winner_id.map(|winner| {
+                        if winner == left {
+                            right
+                        } else if winner == right {
+                            left
+                        } else {
+                            right
+                        }
+                    });
+                }
+            }
+
+            let winner_id = winner_id
+                .ok_or_else(|| "Missing required argument: winnerId (or keepId)".to_string())?;
+            let resolved_by = arg_str(args, &["resolvedBy", "resolved_by"])
+                .map(str::to_string)
+                .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
+            let metadata = ResolutionMetadata {
+                conflict_id,
+                classification: arg_str(args, &["classification"]).map(str::to_string),
+                notes: arg_str(args, &["notes"]).map(str::to_string),
+                resolved_by: Some(resolved_by),
+                similarity: arg_f64(args, &["similarity"]),
+            };
+
+            let mut conn = state.db.lock().await;
+            resolve_decision_with_metadata(&mut conn, winner_id, action, superseded_id, metadata)
         }
 
         "cortex_focus_start" => {
