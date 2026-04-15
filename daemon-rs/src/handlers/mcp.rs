@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 use chrono::{Duration, Utc};
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 use super::diary::{write_diary_entry, DiaryRequest};
@@ -297,6 +298,74 @@ fn normalize_mcp_agent_label(raw_agent: &str, model: Option<&str>) -> Result<Str
     Ok(agent)
 }
 
+fn mcp_session_description(description_prefix: &str, model: Option<&str>) -> String {
+    model
+        .map(|model_name| format!("{description_prefix} · {model_name}"))
+        .unwrap_or_else(|| description_prefix.to_string())
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+fn resolve_refresh_presence_agent(
+    conn: &rusqlite::Connection,
+    owner_id: Option<i64>,
+    raw_agent: &str,
+    model: Option<&str>,
+    normalized_agent: &str,
+) -> Result<String, String> {
+    let trimmed_agent = raw_agent.trim();
+    if model.is_some() || trimmed_agent.contains('(') {
+        return Ok(normalized_agent.to_string());
+    }
+
+    let modeled_pattern = format!("{} (%)", escape_like_pattern(trimmed_agent));
+    let sql_with_owner = "SELECT agent
+         FROM sessions
+         WHERE owner_id = ?1 AND (agent = ?2 OR agent LIKE ?3 ESCAPE '\\')
+         ORDER BY
+             CASE WHEN expires_at IS NULL OR expires_at > datetime('now') THEN 0 ELSE 1 END,
+             CASE WHEN agent LIKE ?3 ESCAPE '\\' THEN 0 ELSE 1 END,
+             COALESCE(last_heartbeat, started_at) DESC
+         LIMIT 1";
+    let sql_solo = "SELECT agent
+         FROM sessions
+         WHERE agent = ?1 OR agent LIKE ?2 ESCAPE '\\'
+         ORDER BY
+             CASE WHEN expires_at IS NULL OR expires_at > datetime('now') THEN 0 ELSE 1 END,
+             CASE WHEN agent LIKE ?2 ESCAPE '\\' THEN 0 ELSE 1 END,
+             COALESCE(last_heartbeat, started_at) DESC
+         LIMIT 1";
+
+    let existing_agent = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            sql_with_owner,
+            rusqlite::params![owner_id, trimmed_agent, modeled_pattern],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?
+    } else {
+        conn.query_row(
+            sql_solo,
+            rusqlite::params![trimmed_agent, modeled_pattern],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?
+    };
+
+    Ok(existing_agent.unwrap_or_else(|| normalized_agent.to_string()))
+}
+
 fn mcp_session_owner_id(
     state: &RuntimeState,
     caller_id: Option<i64>,
@@ -324,16 +393,16 @@ async fn refresh_mcp_session_presence(
     model: Option<&str>,
     description_prefix: &str,
 ) -> Result<(String, String, McpPresenceDisposition), String> {
-    let agent = normalize_mcp_agent_label(raw_agent, model)?;
+    let normalized_agent = normalize_mcp_agent_label(raw_agent, model)?;
     let owner_id = mcp_session_owner_id(state, caller_id)?;
     let now = now_iso();
     let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
     let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
-    let description = model
-        .map(|m| format!("{description_prefix} · {m}"))
-        .unwrap_or_else(|| description_prefix.to_string());
+    let description = mcp_session_description(description_prefix, model);
 
     let conn = state.db.lock().await;
+    let agent =
+        resolve_refresh_presence_agent(&conn, owner_id, raw_agent, model, &normalized_agent)?;
     let disposition = if let Some(owner_id) = owner_id {
         let updated = conn
             .execute(
@@ -1049,6 +1118,104 @@ mod tests {
             "existing sessions should not emit a new session event on recall refresh: {drained:?}"
         );
     }
+
+    #[tokio::test]
+    async fn reconnect_preserves_boot_description_for_existing_session() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_boot",
+            &json!({"budget": 0}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_reconnect",
+            &json!({"agent": "codex"}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        let conn = state.db.lock().await;
+        let description: String = conn
+            .query_row(
+                "SELECT description FROM sessions WHERE agent = ?1",
+                rusqlite::params!["codex (gpt-5.4)"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let session_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(description, "MCP boot session · gpt-5.4");
+        assert_eq!(session_count, 1);
+    }
+
+    #[tokio::test]
+    async fn model_less_read_refresh_reuses_existing_modeled_session() {
+        let state = test_state();
+        let mut events = state.events.subscribe();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_boot",
+            &json!({"budget": 0}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        while events.try_recv().is_ok() {}
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_recall",
+            &json!({"query": "sqlite", "agent": "codex"}),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let conn = state.db.lock().await;
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT agent, description FROM sessions ORDER BY last_heartbeat DESC")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "codex (gpt-5.4)");
+        assert_eq!(rows[0].1, "MCP boot session · gpt-5.4");
+        drop(conn);
+
+        let drained: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+            .map(|event| event.event_type)
+            .collect();
+        assert!(
+            !drained.iter().any(|event_type| event_type == "session"),
+            "model-less read refresh should reuse the existing session without a new session event: {drained:?}"
+        );
+    }
 }
 
 async fn upsert_mcp_session(
@@ -1063,9 +1230,7 @@ async fn upsert_mcp_session(
     let now = now_iso();
     let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
     let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
-    let description = model
-        .map(|m| format!("{description_prefix} · {m}"))
-        .unwrap_or_else(|| description_prefix.to_string());
+    let description = mcp_session_description(description_prefix, model);
 
     let conn = state.db.lock().await;
     if let Some(owner_id) = owner_id {
@@ -1073,7 +1238,10 @@ async fn upsert_mcp_session(
             "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
              VALUES (?1, ?2, ?3, 'mcp', '[]', ?4, ?5, ?5, ?6)
              ON CONFLICT(owner_id, agent) DO UPDATE SET
-               description = excluded.description,
+               description = CASE
+                   WHEN sessions.description IS NULL OR trim(sessions.description) = '' THEN excluded.description
+                   ELSE sessions.description
+               END,
                project = excluded.project,
                files_json = excluded.files_json,
                last_heartbeat = excluded.last_heartbeat,
@@ -1086,7 +1254,10 @@ async fn upsert_mcp_session(
             "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
              VALUES (?1, ?2, 'mcp', '[]', ?3, ?4, ?4, ?5)
              ON CONFLICT(agent) DO UPDATE SET
-               description = excluded.description,
+               description = CASE
+                   WHEN sessions.description IS NULL OR trim(sessions.description) = '' THEN excluded.description
+                   ELSE sessions.description
+               END,
                project = excluded.project,
                files_json = excluded.files_json,
                last_heartbeat = excluded.last_heartbeat,

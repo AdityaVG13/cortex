@@ -119,6 +119,9 @@ const CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token";
 const LEGACY_CORTEX_AUTH_STORAGE_KEYS = ["cortex_token"];
 const CORTEX_OPERATOR_STORAGE_KEY = "cortex_operator";
 const CORTEX_PANEL_STORAGE_KEY = "cortex_panel";
+const DEV_RESTART_VERIFY_ENABLED = import.meta.env.VITE_CORTEX_DEV_VERIFY_RESTART === "1";
+const DEV_RESTART_VERIFY_TIMEOUT_MS = 30000;
+
 function clearLegacyBrowserAuthTokens() {
   if (typeof window === "undefined") return;
   try {
@@ -1426,6 +1429,20 @@ function normalizeSession(session, index) {
   };
 }
 
+function normalizeSessionAgent(agent) {
+  return String(agent || "")
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .trim()
+    .toLowerCase();
+}
+
+function sessionMatchesAgent(session, agent) {
+  const rawSessionAgent = String(session?.agent || "").trim();
+  const rawAgent = String(agent || "").trim();
+  if (!rawSessionAgent || !rawAgent) return false;
+  return sameAgent(rawSessionAgent, rawAgent) || normalizeSessionAgent(rawSessionAgent) === rawAgent.toLowerCase();
+}
+
 function isDaemonOfflineErrorMessage(message) {
   const value = String(message || "").toLowerCase();
   return (
@@ -1440,6 +1457,30 @@ function isDaemonOfflineErrorMessage(message) {
 function isReachableHealthPayload(health) {
   const status = String(health?.status || "").toLowerCase();
   return (status === "ok" || status === "degraded") && Boolean(health?.runtime) && Boolean(health?.stats);
+}
+
+function parseMcpToolResult(result) {
+  const text = result?.content?.find((item) => typeof item?.text === "string")?.text || "";
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { text };
+  }
+}
+
+function extractMcpToolError(payload) {
+  if (payload?.error?.message) {
+    return payload.error.message;
+  }
+  if (!payload?.result?.isError) {
+    return "";
+  }
+  const parsed = parseMcpToolResult(payload.result);
+  if (parsed && typeof parsed === "object" && typeof parsed.error === "string") {
+    return parsed.error;
+  }
+  return parsed?.text || "Unknown MCP error.";
 }
 
 export function App() {
@@ -1498,6 +1539,7 @@ export function App() {
   const [permissionGrants, setPermissionGrants] = useState([]);
   const [permissionLoading, setPermissionLoading] = useState(false);
   const [permissionAccessDenied, setPermissionAccessDenied] = useState(false);
+  const [permissionsEndpointAvailable, setPermissionsEndpointAvailable] = useState(true);
   const [permissionDraft, setPermissionDraft] = useState({
     client: "",
     permission: "read",
@@ -1525,8 +1567,16 @@ export function App() {
   const refreshAllRef = useRef(async () => {});
   const daemonTransitionRef = useRef(false);
   const recoveryRetryTimerRef = useRef(null);
+  const skipInitialFeedRefreshRef = useRef(true);
   const skipInitialMessagesRefreshRef = useRef(true);
   const skipInitialActivityRefreshRef = useRef(true);
+  const sessionsRef = useRef([]);
+  const daemonStateRef = useRef(EMPTY_DAEMON);
+  const streamConnectedAtRef = useRef(0);
+  const streamDisconnectedAtRef = useRef(0);
+  const streamSessionEventCountRef = useRef(0);
+  const devVerificationStartedRef = useRef(false);
+  const permissionsEndpointAvailableRef = useRef(true);
 
   const changePanel = useCallback((nextPanel) => {
     if (!PANEL_SEQUENCE.some((entry) => entry.key === nextPanel) || nextPanel === panel) {
@@ -1574,6 +1624,14 @@ export function App() {
 
     return Array.from(deduped.values()).filter((session) => !isTransportSession(session));
   }, [sessions]);
+
+  useEffect(() => {
+    sessionsRef.current = normalizedSessions;
+  }, [normalizedSessions]);
+
+  useEffect(() => {
+    daemonStateRef.current = daemonState;
+  }, [daemonState]);
 
   const knownAgents = useMemo(() => {
     const extras = [
@@ -1709,6 +1767,8 @@ export function App() {
     setResolveDrafts({});
     setPermissionGrants([]);
     setPermissionAccessDenied(false);
+    setPermissionsEndpointAvailable(true);
+    permissionsEndpointAvailableRef.current = true;
     setSavings(null);
     setStats({
       memories: "--",
@@ -1754,6 +1814,32 @@ export function App() {
     if (!invokeRef.current) throw new Error("No Tauri IPC available");
     return invokeRef.current(command, args);
   }, []);
+
+  const callMcpTool = useCallback(async (name, args = {}) => {
+    const payload = await postApi("/mcp-rpc", {
+      jsonrpc: "2.0",
+      id: `control-center-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      method: "tools/call",
+      params: {
+        name,
+        arguments: args,
+      },
+    });
+    const error = extractMcpToolError(payload);
+    if (error) {
+      throw new Error(`MCP ${name} failed: ${error}`);
+    }
+    return parseMcpToolResult(payload?.result) ?? payload?.result ?? null;
+  }, [postApi]);
+
+  const writeDevVerificationReport = useCallback(async (report) => {
+    if (!DEV_RESTART_VERIFY_ENABLED) {
+      return "";
+    }
+    return call("write_dev_verification_report", {
+      content: JSON.stringify(report, null, 2),
+    });
+  }, [call]);
 
   const readAuthToken = useCallback(async ({ suppressFeedback = false } = {}) => {
     if (!invokeRef.current) {
@@ -1933,16 +2019,32 @@ export function App() {
     clearTransientFeedback();
   }, [api, clearTransientFeedback]);
 
-  const refreshPermissions = useCallback(async () => {
+  const refreshPermissions = useCallback(async (options = {}) => {
+    const force = options?.force === true;
+    if (!force && !permissionsEndpointAvailableRef.current) {
+      return;
+    }
     try {
       const result = await api("/permissions", true);
+      permissionsEndpointAvailableRef.current = true;
+      setPermissionsEndpointAvailable(true);
       setPermissionGrants(normalizePermissionPayload(result));
       setPermissionAccessDenied(false);
       clearTransientFeedback();
     } catch (error) {
       if (String(error?.message || error || "").includes("HTTP 403")) {
+        permissionsEndpointAvailableRef.current = true;
+        setPermissionsEndpointAvailable(true);
         setPermissionAccessDenied(true);
         setPermissionGrants([]);
+        return;
+      }
+      if (isRouteMissingError(error)) {
+        permissionsEndpointAvailableRef.current = false;
+        setPermissionsEndpointAvailable(false);
+        setPermissionAccessDenied(false);
+        setPermissionGrants([]);
+        clearTransientFeedback();
         return;
       }
       throw error;
@@ -2014,6 +2116,10 @@ export function App() {
   }, []);
 
   const handleGrantPermission = useCallback(async () => {
+    if (!permissionsEndpointAvailable) {
+      setFeedbackMessage("Permission endpoint unavailable on this daemon build.");
+      return;
+    }
     const client = String(permissionDraft.client || "").trim();
     if (!client) {
       setFeedbackMessage("Permission grant failed: client is required.");
@@ -2034,16 +2140,20 @@ export function App() {
         ...current,
         client: "",
       }));
-      await refreshPermissions();
+      await refreshPermissions({ force: true });
     } catch (err) {
       setFeedbackMessage(`Permission grant failed: ${err.message || err}`);
     } finally {
       setPermissionLoading(false);
     }
-  }, [permissionDraft, postApi, refreshPermissions, selectedOperatorName]);
+  }, [permissionDraft, permissionsEndpointAvailable, postApi, refreshPermissions, selectedOperatorName]);
 
   const handleRevokePermission = useCallback(
     async (grant) => {
+      if (!permissionsEndpointAvailable) {
+        setFeedbackMessage("Permission endpoint unavailable on this daemon build.");
+        return;
+      }
       if (!grant?.client || !grant?.permission) return;
       setPermissionLoading(true);
       try {
@@ -2052,14 +2162,14 @@ export function App() {
           permission: grant.permission,
           scope: grant.scope || "*",
         });
-        await refreshPermissions();
+        await refreshPermissions({ force: true });
       } catch (err) {
         setFeedbackMessage(`Permission revoke failed: ${err.message || err}`);
       } finally {
         setPermissionLoading(false);
       }
     },
-    [postApi, refreshPermissions]
+    [permissionsEndpointAvailable, postApi, refreshPermissions]
   );
 
   const openEditorSetupWizard = useCallback(async () => {
@@ -2321,6 +2431,18 @@ export function App() {
   }, [knownAgents, messageTarget, selectedOperator]);
 
   useEffect(() => {
+    if (skipInitialFeedRefreshRef.current) {
+      skipInitialFeedRefreshRef.current = false;
+      return;
+    }
+    refreshFeed().catch((error) => {
+      const message = error?.message || String(error);
+      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      setFeedbackMessage(summarizeDashboardErrors([message]) || message);
+    });
+  }, [refreshFeed]);
+
+  useEffect(() => {
     if (skipInitialMessagesRefreshRef.current) {
       skipInitialMessagesRefreshRef.current = false;
       return;
@@ -2443,13 +2565,17 @@ export function App() {
 
       nextStream.onopen = () => {
         reconnectAttempt = 0;
+        streamConnectedAtRef.current = Date.now();
         scheduleRefresh(true);
       };
 
       nextStream.onmessage = handleRealtimeEvent;
       nextStream.addEventListener("connected", handleRealtimeEvent);
       nextStream.addEventListener("task", handleRealtimeEvent);
-      nextStream.addEventListener("session", handleRealtimeEvent);
+      nextStream.addEventListener("session", () => {
+        streamSessionEventCountRef.current += 1;
+        handleRealtimeEvent();
+      });
       nextStream.addEventListener("lock", handleRealtimeEvent);
       nextStream.addEventListener("feed", handleRealtimeEvent);
       nextStream.addEventListener("message", handleRealtimeEvent);
@@ -2457,6 +2583,7 @@ export function App() {
 
       nextStream.onerror = () => {
         if (disposed || stream !== nextStream) return;
+        streamDisconnectedAtRef.current = Date.now();
         handleRealtimeEvent();
         closeStream();
         scheduleReconnect();
@@ -2876,6 +3003,63 @@ export function App() {
     return false;
   }, [api, call]);
 
+  const runRestartDaemonSequence = useCallback(async () => {
+    daemonTransitionRef.current = true;
+
+    const statusBefore = await call("daemon_status").catch(() => null);
+    const shouldStop = Boolean(statusBefore?.running || statusBefore?.reachable);
+
+    if (shouldStop) {
+      setFeedbackMessage("Restarting daemon: stopping...");
+      const stopPromise = call("stop_daemon")
+        .then((result) => ({ ok: true, result }))
+        .catch((error) => ({ ok: false, error: error?.message || String(error) }));
+      const stopResult = await Promise.race([
+        stopPromise,
+        new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), DAEMON_STOP_HANG_TIMEOUT_MS)),
+      ]);
+      let stopFailure = "";
+      if (stopResult?.timedOut) {
+        setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...");
+      } else if (!stopResult?.ok) {
+        stopFailure = stopResult?.error || "Existing daemon rejected shutdown.";
+      }
+      const stopped = await waitForDaemonOffline();
+      if (!stopped) {
+        throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
+      }
+      tokenRef.current = "";
+      persistBrowserAuthToken("");
+      clearDisconnectedData();
+      setDaemonState({
+        running: false,
+        reachable: false,
+        managed: false,
+        authTokenReady: false,
+        pid: null,
+        message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+      });
+    } else {
+      setFeedbackMessage("Daemon already stopped. Starting...");
+    }
+
+    setFeedbackMessage("Restarting daemon: starting...");
+    const startResult = await call("start_daemon");
+    if (startResult?.message) {
+      setFeedbackMessage(startResult.message);
+    }
+
+    const reachable = await waitForDaemonReachable();
+    if (!reachable) {
+      throw new Error("Daemon did not become reachable after restart.");
+    }
+
+    daemonTransitionRef.current = false;
+    await readAuthToken({ suppressFeedback: true });
+    await refreshAll();
+    return startResult;
+  }, [call, clearDisconnectedData, cortexBase, readAuthToken, refreshAll, waitForDaemonOffline, waitForDaemonReachable]);
+
   async function handleMemorySearch(e) {
     e?.preventDefault();
     if (!memoryQuery.trim()) return;
@@ -2959,49 +3143,9 @@ export function App() {
 
     setRestartingDaemon(true);
     setRestartError("");
-    daemonTransitionRef.current = true;
 
     try {
-      const statusBefore = await call("daemon_status").catch(() => null);
-      const shouldStop = Boolean(statusBefore?.running || statusBefore?.reachable);
-
-      if (shouldStop) {
-        setFeedbackMessage("Restarting daemon: stopping...");
-        const stopPromise = call("stop_daemon")
-          .then((result) => ({ ok: true, result }))
-          .catch((error) => ({ ok: false, error: error?.message || String(error) }));
-        const stopResult = await Promise.race([
-          stopPromise,
-          new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), DAEMON_STOP_HANG_TIMEOUT_MS)),
-        ]);
-        let stopFailure = "";
-        if (stopResult?.timedOut) {
-          setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...");
-        } else if (!stopResult?.ok) {
-          stopFailure = stopResult?.error || "Existing daemon rejected shutdown.";
-        }
-        const stopped = await waitForDaemonOffline();
-        if (!stopped) {
-          throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
-        }
-      } else {
-        setFeedbackMessage("Daemon already stopped. Starting...");
-      }
-
-      setFeedbackMessage("Restarting daemon: starting...");
-      const startResult = await call("start_daemon");
-      if (startResult?.message) {
-        setFeedbackMessage(startResult.message);
-      }
-
-      const reachable = await waitForDaemonReachable();
-      if (!reachable) {
-        throw new Error("Daemon did not become reachable after restart.");
-      }
-
-      daemonTransitionRef.current = false;
-      await readAuthToken({ suppressFeedback: true });
-      await refreshAll();
+      await runRestartDaemonSequence();
       setFeedbackMessage("Daemon restarted successfully.");
     } catch (error) {
       const message = error?.message || String(error);
@@ -3012,6 +3156,216 @@ export function App() {
       setRestartingDaemon(false);
     }
   }
+
+  useEffect(() => {
+    if (!DEV_RESTART_VERIFY_ENABLED || devVerificationStartedRef.current) {
+      return undefined;
+    }
+    devVerificationStartedRef.current = true;
+
+    let cancelled = false;
+    let completed = false;
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const waitForCondition = async (label, check, timeoutMs = DEV_RESTART_VERIFY_TIMEOUT_MS, intervalMs = 200) => {
+      const started = Date.now();
+      while (!cancelled && Date.now() - started < timeoutMs) {
+        const value = check();
+        if (value) {
+          return value;
+        }
+        await sleep(intervalMs);
+      }
+      if (cancelled) {
+        throw new Error("Dev verification cancelled.");
+      }
+      throw new Error(`Timed out waiting for ${label}.`);
+    };
+        const findSessionByAgent = (agent) => sessionsRef.current.find(
+          (session) => sessionMatchesAgent(session, agent)
+        ) || null;
+    const sessionSnapshot = (session) => {
+      if (!session) return null;
+      return {
+        agent: String(session.agent || ""),
+        description: String(session.description || ""),
+        lastHeartbeat: String(session.lastHeartbeat || session.last_heartbeat || ""),
+        expiresAt: String(session.expiresAt || session.expires_at || ""),
+      };
+    };
+
+    const runVerification = async () => {
+      const report = {
+        mode: "app-dev-restart-reconnect",
+        startedAt: new Date().toISOString(),
+        controlCenterVersion: CONTROL_CENTER_VERSION,
+        cortexBase,
+        success: false,
+        steps: [],
+      };
+      const recordStep = (name, details = {}) => {
+        report.steps.push({
+          name,
+          at: new Date().toISOString(),
+          ...details,
+        });
+      };
+
+      try {
+        invokeRef.current = await readTauriInvoke();
+        if (!invokeRef.current) {
+          throw new Error("Tauri IPC is not available for dev verification.");
+        }
+
+        setFeedbackMessage("Running dev restart/reconnect verification...");
+        await refreshAll();
+        await waitForCondition("the initial event stream connection", () => streamConnectedAtRef.current > 0, 10000);
+
+        if (!daemonStateRef.current?.reachable) {
+          const startResult = await call("start_daemon");
+          recordStep("start", { message: startResult?.message || "Daemon start requested." });
+          const reachable = await waitForDaemonReachable();
+          if (!reachable) {
+            throw new Error("Daemon did not become reachable during verification startup.");
+          }
+          await readAuthToken({ suppressFeedback: true });
+          await refreshAll();
+        } else {
+          recordStep("start", { message: "Daemon already reachable before verification." });
+        }
+
+        const authToken = await readAuthToken({ suppressFeedback: true });
+        if (!authToken) {
+          throw new Error("Daemon auth token did not become available.");
+        }
+
+        const verificationAgent = `cortex-dev-verify-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        report.agent = verificationAgent;
+
+        const sessionEventCountBeforeBoot = streamSessionEventCountRef.current;
+        const bootResult = await callMcpTool("cortex_boot", {
+          agent: verificationAgent,
+          model: "desktop-dev-verify",
+          budget: 120,
+        });
+        await waitForCondition(
+          "the boot session event",
+          () => streamSessionEventCountRef.current > sessionEventCountBeforeBoot
+        );
+        const bootSession = await waitForCondition(
+          "the boot session in the Agents surface",
+          () => findSessionByAgent(verificationAgent)
+        );
+        const bootSnapshot = sessionSnapshot(bootSession);
+        recordStep("boot", {
+          tokenEstimate: Number(bootResult?.tokenEstimate || 0),
+          session: bootSnapshot,
+        });
+
+        const connectedBeforeRestart = streamConnectedAtRef.current;
+        const disconnectedBeforeRestart = streamDisconnectedAtRef.current;
+        const sessionEventCountBeforeReconnect = streamSessionEventCountRef.current;
+
+        await runRestartDaemonSequence();
+
+        await waitForCondition(
+          "the event stream disconnect during restart",
+          () => streamDisconnectedAtRef.current > disconnectedBeforeRestart
+        );
+        await waitForCondition(
+          "the event stream reconnect after restart",
+          () => streamConnectedAtRef.current > connectedBeforeRestart
+        );
+        recordStep("restart", {
+          disconnectedAt: new Date(streamDisconnectedAtRef.current).toISOString(),
+          reconnectedAt: new Date(streamConnectedAtRef.current).toISOString(),
+        });
+
+        const reconnectResult = await callMcpTool("cortex_reconnect", {
+          agent: verificationAgent,
+          model: "desktop-dev-verify",
+        });
+        await waitForCondition(
+          "the reconnect session event",
+          () => streamSessionEventCountRef.current > sessionEventCountBeforeReconnect
+        );
+        const reconnectSession = await waitForCondition(
+          "the reconnected session in the Agents surface",
+          () => findSessionByAgent(verificationAgent)
+        );
+        const reconnectSnapshot = sessionSnapshot(reconnectSession);
+        if (bootSnapshot?.description && reconnectSnapshot?.description !== bootSnapshot.description) {
+          throw new Error("Reconnect changed the session description shown in the Agents surface.");
+        }
+        recordStep("reconnect", {
+          expiresAt: reconnectResult?.expiresAt || "",
+          session: reconnectSnapshot,
+        });
+
+        const recallResult = await callMcpTool("cortex_recall", {
+          agent: verificationAgent,
+          model: "desktop-dev-verify",
+          query: "restart reconnect verification",
+          budget: 200,
+        });
+        const recallSessionsPayload = await api("/sessions", true);
+        const recallSession = (Array.isArray(recallSessionsPayload?.sessions) ? recallSessionsPayload.sessions : [])
+          .map((session, index) => normalizeSession(session, index))
+          .find((session) => sessionMatchesAgent(session, verificationAgent)) || null;
+        const recallSnapshot = sessionSnapshot(recallSession);
+        if (!recallSnapshot) {
+          throw new Error("Session disappeared after read-path recall refresh.");
+        }
+        if (bootSnapshot?.description && recallSnapshot.description !== bootSnapshot.description) {
+          throw new Error("Read-path recall refresh downgraded the session description.");
+        }
+        recordStep("read-path-refresh", {
+          resultCount: Array.isArray(recallResult?.results) ? recallResult.results.length : 0,
+          session: recallSnapshot,
+        });
+
+        report.success = true;
+        setFeedbackMessage("Dev restart/reconnect verification passed.");
+      } catch (error) {
+        const message = error?.message || String(error);
+        report.error = message;
+        setFeedbackMessage(`Dev verification failed: ${message}`);
+      } finally {
+        if (cancelled && !completed) {
+          return;
+        }
+        report.completedAt = new Date().toISOString();
+        report.finalDaemonState = {
+          running: Boolean(daemonStateRef.current?.running),
+          reachable: Boolean(daemonStateRef.current?.reachable),
+          managed: Boolean(daemonStateRef.current?.managed),
+          authTokenReady: Boolean(daemonStateRef.current?.authTokenReady),
+          message: String(daemonStateRef.current?.message || ""),
+        };
+        try {
+          report.reportPath = await writeDevVerificationReport(report);
+        } catch (writeError) {
+          report.reportWriteError = writeError?.message || String(writeError);
+        }
+        completed = true;
+        await sleep(500);
+        if (invokeRef.current) {
+          try {
+            await call("quit_app");
+          } catch {
+            // App is already exiting.
+          }
+        }
+      }
+    };
+
+    runVerification();
+    return () => {
+      cancelled = true;
+      if (!completed) {
+        devVerificationStartedRef.current = false;
+      }
+    };
+  }, [api, call, callMcpTool, cortexBase, readAuthToken, refreshAll, runRestartDaemonSequence, waitForDaemonReachable, writeDevVerificationReport]);
 
   // Keyboard nav
   useEffect(() => {
@@ -4086,7 +4440,23 @@ export function App() {
                     <h2>Client Permissions</h2>
                     <span className="badge">{permissionGrants.length}</span>
                   </div>
-                  {permissionAccessDenied ? (
+                  {!permissionsEndpointAvailable ? (
+                    <div className="permission-form">
+                      <div className="permission-actions">
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          disabled={permissionLoading}
+                          onClick={() => refreshPermissions({ force: true }).catch(reportSurfaceError)}
+                        >
+                          Recheck
+                        </button>
+                      </div>
+                      <ul className="item-list compact-list permission-list">
+                        <EmptyItem text="Permission endpoint unavailable on this daemon build." />
+                      </ul>
+                    </div>
+                  ) : permissionAccessDenied ? (
                     <ul className="item-list compact-list permission-list">
                       <EmptyItem text="Permission controls require admin role in team mode." />
                     </ul>
@@ -4141,7 +4511,7 @@ export function App() {
                         type="button"
                         className="btn-sm"
                         disabled={permissionLoading}
-                        onClick={() => refreshPermissions().catch(reportSurfaceError)}
+                        onClick={() => refreshPermissions({ force: true }).catch(reportSurfaceError)}
                       >
                         Refresh
                       </button>

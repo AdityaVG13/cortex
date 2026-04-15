@@ -11,8 +11,9 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -33,22 +34,164 @@ const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
 const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
+const LOCAL_DAEMON_START_WAIT_MS: u64 = 12_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
+const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
+#[cfg(windows)]
+const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
+#[cfg(windows)]
+const DETACHED_PROCESS_FLAG: u32 = 0x0000_0008;
 
-struct DaemonState;
+#[cfg(windows)]
+fn apply_hidden_process_flags(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(CREATE_NO_WINDOW_FLAG);
+}
+
+#[cfg(not(windows))]
+fn apply_hidden_process_flags(_command: &mut Command) {}
+
+#[cfg(windows)]
+fn apply_hidden_daemon_process_flags(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(CREATE_NO_WINDOW_FLAG | DETACHED_PROCESS_FLAG);
+}
+
+#[cfg(not(windows))]
+fn apply_hidden_daemon_process_flags(_command: &mut Command) {}
+
+struct DaemonState {
+    exe_path: Option<PathBuf>,
+    child: Mutex<Option<Child>>,
+}
 
 impl DaemonState {
-    fn new(_exe_path: Option<PathBuf>) -> Self {
-        Self
+    fn new(exe_path: Option<PathBuf>) -> Self {
+        Self {
+            exe_path,
+            child: Mutex::new(None),
+        }
     }
 
     fn status(&self) -> Result<(bool, Option<u32>), String> {
-        Ok((false, None))
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let Some(managed_child) = child.as_mut() else {
+            return Ok((false, None));
+        };
+
+        match managed_child.try_wait() {
+            Ok(Some(_)) => {
+                *child = None;
+                Ok((false, None))
+            }
+            Ok(None) => Ok((true, Some(managed_child.id()))),
+            Err(err) => Err(format!("Failed to poll managed daemon process: {err}")),
+        }
+    }
+
+    fn ensure_local_daemon(&self) -> Result<Option<u32>, String> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        if let Some(existing) = child.as_mut() {
+            match existing.try_wait() {
+                Ok(Some(_)) => {
+                    *child = None;
+                }
+                Ok(None) => {
+                    return Ok(Some(existing.id()));
+                }
+                Err(err) => {
+                    return Err(format!("Failed to poll managed daemon process: {err}"));
+                }
+            }
+        }
+
+        let exe_path = self.exe_path.clone().ok_or_else(|| {
+            "Could not resolve Cortex daemon binary for app-managed local mode.".to_string()
+        })?;
+        if is_disallowed_daemon_binary_path(&exe_path) {
+            return Err(format!(
+                "Refusing to launch app-managed daemon from disallowed path: {}",
+                exe_path.display()
+            ));
+        }
+
+        let paths = resolved_cortex_paths();
+        let home = paths.home.clone().ok_or_else(|| {
+            "Could not resolve Cortex home path for app-managed local mode.".to_string()
+        })?;
+        let db = paths.db.clone().ok_or_else(|| {
+            "Could not resolve Cortex database path for app-managed local mode.".to_string()
+        })?;
+        let bind = paths
+            .bind
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let port = paths.port.unwrap_or(DEFAULT_DAEMON_PORT);
+
+        let mut command = Command::new(&exe_path);
+        command
+            .arg("serve")
+            .arg("--home")
+            .arg(home.display().to_string())
+            .arg("--db")
+            .arg(db.display().to_string())
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--bind")
+            .arg(bind)
+            .env("CORTEX_DAEMON_OWNER", CONTROL_CENTER_OWNER_TAG)
+            .env("CORTEX_DAEMON_OWNER_SOURCE", "control-center-app")
+            .env("CORTEX_DAEMON_OWNER_MODE", "app-managed-local")
+            .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
+            .env("CORTEX_DAEMON_LOCK_WAIT_SECS", "15")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        apply_hidden_daemon_process_flags(&mut command);
+
+        let spawned = command.spawn().map_err(|err| {
+            format!(
+                "Failed to spawn app-managed daemon from {}: {err}",
+                exe_path.display()
+            )
+        })?;
+        let pid = spawned.id();
+        *child = Some(spawned);
+        Ok(Some(pid))
     }
 
     fn stop(&self) -> Result<(), String> {
+        let mut child = self
+            .child
+            .lock()
+            .map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        if let Some(managed_child) = child.as_mut() {
+            match managed_child.try_wait() {
+                Ok(Some(_)) => {
+                    *child = None;
+                }
+                Ok(None) => {
+                    managed_child
+                        .kill()
+                        .map_err(|err| format!("Failed to stop managed daemon process: {err}"))?;
+                    let _ = managed_child.wait();
+                    *child = None;
+                }
+                Err(err) => {
+                    return Err(format!("Failed to poll managed daemon process: {err}"));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -149,6 +292,7 @@ struct ResolvedCortexPaths {
     db: Option<PathBuf>,
     pid: Option<PathBuf>,
     port: Option<u16>,
+    bind: Option<String>,
 }
 
 fn default_cortex_dir() -> Result<PathBuf, String> {
@@ -459,14 +603,20 @@ fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
             .and_then(|value| value.as_str())
             .map(PathBuf::from),
         port,
+        bind: json
+            .get("bind")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
     })
 }
 
 fn resolve_paths_with_binary(
     binary: impl AsRef<std::ffi::OsStr>,
 ) -> Result<Option<ResolvedCortexPaths>, String> {
-    let output = Command::new(binary)
-        .args(["paths", "--json"])
+    let mut command = Command::new(binary);
+    command.args(["paths", "--json"]);
+    apply_hidden_process_flags(&mut command);
+    let output = command
         .output()
         .map_err(|err| format!("Failed to execute `cortex paths --json`: {err}"))?;
     if !output.status.success() {
@@ -506,6 +656,11 @@ fn fallback_cortex_paths() -> ResolvedCortexPaths {
         db: cortex_dir.as_ref().map(|dir| dir.join("cortex.db")),
         pid: cortex_dir.as_ref().map(|dir| dir.join("cortex.pid")),
         port,
+        bind: env::var("CORTEX_BIND")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| Some("127.0.0.1".to_string())),
     }
 }
 
@@ -537,25 +692,6 @@ fn log_startup_path(context: &str, decision: &str, detail: &str) {
     eprintln!(
         "[cortex-control-center] startup-path context={context} decision={decision} detail={detail}"
     );
-}
-
-fn newest_existing_path(candidates: &[PathBuf]) -> Option<PathBuf> {
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-
-    for candidate in candidates {
-        let Ok(metadata) = fs::metadata(candidate) else {
-            continue;
-        };
-        let modified = metadata
-            .modified()
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        match &newest {
-            Some((current, _)) if &modified <= current => {}
-            _ => newest = Some((modified, candidate.clone())),
-        }
-    }
-
-    newest.map(|(_, path)| path)
 }
 
 fn installed_plugin_binary_path(home: &Path) -> PathBuf {
@@ -613,12 +749,22 @@ fn find_cortex_binary() -> Option<PathBuf> {
         let plugin_path = home.join(".cortex").join("bin").join(cortex_binary_name());
         let mut candidates = Vec::new();
         if cfg!(debug_assertions) {
-            // In dev builds prefer workspace binaries so the app does not
-            // silently launch an older installed or copied sidecar daemon.
-            let workspace_candidates = workspace_binary_candidates(&home, true);
-            if let Some(candidate) = newest_existing_path(&workspace_candidates)
-                .filter(|path| !is_disallowed_daemon_binary_path(path))
-            {
+            // In dev builds prefer the Control Center's isolated daemon target
+            // before falling back to the shared workspace target. This avoids
+            // unrelated `target/debug` activity (for example MCP client shims)
+            // from silently hijacking lifecycle verification.
+            for candidate in workspace_binary_candidates(&home, true) {
+                if !candidate.exists() {
+                    continue;
+                }
+                if is_disallowed_daemon_binary_path(&candidate) {
+                    log_startup_path(
+                        "find-cortex-binary",
+                        "reject-disallowed",
+                        &candidate.display().to_string(),
+                    );
+                    continue;
+                }
                 return Some(candidate);
             }
             candidates.push(plugin_path);
@@ -678,15 +824,15 @@ fn try_service_ensure(port: u16) -> Result<bool, String> {
         return Ok(false);
     };
 
-    let output = Command::new(&cortex_bin)
-        .args(["service", "ensure"])
-        .output()
-        .map_err(|err| {
-            format!(
-                "Failed to run `{}` service ensure: {err}",
-                cortex_bin.display()
-            )
-        })?;
+    let mut command = Command::new(&cortex_bin);
+    command.args(["service", "ensure"]);
+    apply_hidden_process_flags(&mut command);
+    let output = command.output().map_err(|err| {
+        format!(
+            "Failed to run `{}` service ensure: {err}",
+            cortex_bin.display()
+        )
+    })?;
 
     if !output.status.success() {
         return Err(format!(
@@ -704,6 +850,27 @@ fn try_service_ensure(port: u16) -> Result<bool, String> {
         true,
         Duration::from_millis(SERVICE_ENSURE_WAIT_MS),
     ))
+}
+
+fn try_local_app_managed_ensure(state: &DaemonState, port: u16) -> Result<bool, String> {
+    let pid = state.ensure_local_daemon()?;
+    if wait_for_reachability_blocking(
+        port,
+        true,
+        Duration::from_millis(LOCAL_DAEMON_START_WAIT_MS),
+    ) {
+        return Ok(true);
+    }
+
+    if let Some(pid) = pid {
+        Err(format!(
+            "App-managed daemon spawned (pid {pid}) but never became reachable on :{port}."
+        ))
+    } else {
+        Err(format!(
+            "App-managed daemon spawn did not produce a live daemon on :{port}."
+        ))
+    }
 }
 
 fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -734,12 +901,12 @@ fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 fn shutdown_daemon<R: Runtime>(app: &tauri::AppHandle<R>) {
     let daemon_state = app.state::<DaemonState>();
     let port = daemon_port();
-    let _ = daemon_state.stop();
     if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         let _ = send_http_shutdown();
         let _ =
             wait_for_reachability_blocking(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS));
     }
+    let _ = daemon_state.stop();
     let _ = flush_cortex_db_on_shutdown();
 }
 
@@ -881,19 +1048,68 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
                 message: "Daemon started via Windows service.".to_string(),
             })
         }
-        Ok(false) => {
-            log_startup_path("start_daemon", "blocked", "service ensure unavailable");
-            Err(
-                "Service-first startup is required. Start the daemon with `cortex service ensure`."
-                    .to_string(),
-            )
-        }
-        Err(err) => {
-            log_startup_path("start_daemon", "blocked", "service ensure failed");
-            Err(format!(
-                "Service ensure failed: {err}. Run `cortex service ensure` manually and retry."
-            ))
-        }
+        Ok(false) => match try_local_app_managed_ensure(&state, port) {
+            Ok(true) => {
+                log_startup_path(
+                    "start_daemon",
+                    "app-managed-spawn",
+                    "daemon started via Control Center local mode",
+                );
+                let (managed, pid) = state.status()?;
+                let auth_token_ready = auth_token_ready();
+                Ok(DaemonCommandResult {
+                    running: true,
+                    reachable: true,
+                    managed,
+                    auth_token_ready,
+                    pid,
+                    message: "Daemon started via Control Center (app-managed local mode)."
+                        .to_string(),
+                })
+            }
+            Ok(false) => {
+                log_startup_path("start_daemon", "blocked", "service ensure unavailable");
+                Err("Control Center could not start Cortex automatically.".to_string())
+            }
+            Err(local_err) => {
+                log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
+                Err(format!(
+                    "Service ensure unavailable and app-managed local start failed: {local_err}"
+                ))
+            }
+        },
+        Err(err) => match try_local_app_managed_ensure(&state, port) {
+            Ok(true) => {
+                log_startup_path(
+                    "start_daemon",
+                    "app-managed-spawn",
+                    "daemon started via Control Center after service ensure failure",
+                );
+                let (managed, pid) = state.status()?;
+                let auth_token_ready = auth_token_ready();
+                Ok(DaemonCommandResult {
+                    running: true,
+                    reachable: true,
+                    managed,
+                    auth_token_ready,
+                    pid,
+                    message: "Daemon started via Control Center (app-managed local mode)."
+                        .to_string(),
+                })
+            }
+            Ok(false) => {
+                log_startup_path("start_daemon", "blocked", "service ensure failed");
+                Err(format!(
+                    "Service ensure failed and Control Center could not start Cortex automatically: {err}"
+                ))
+            }
+            Err(local_err) => {
+                log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
+                Err(format!(
+                    "Service ensure failed: {err}. App-managed local start also failed: {local_err}"
+                ))
+            }
+        },
     }
 }
 
@@ -964,7 +1180,6 @@ fn extract_error_detail(body: &str) -> Option<String> {
 async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
     let (was_running, _) = state.status()?;
-    let managed_stop_error = state.stop().err();
 
     // If daemon is still reachable (started externally by Claude, CLI, etc.),
     // send a graceful HTTP shutdown signal
@@ -978,6 +1193,7 @@ async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResul
             wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
     }
 
+    let managed_stop_error = state.stop().err();
     let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
     if reachable {
         if let Some(err) = managed_stop_error.or(shutdown_error) {
@@ -1024,6 +1240,27 @@ fn post_cortex(
     body: String,
 ) -> Result<FetchCortexResponse, String> {
     send_cortex_request("POST", &path, &auth_token, Some(&body))
+}
+
+#[tauri::command]
+fn write_dev_verification_report(content: String) -> Result<String, String> {
+    if !cfg!(debug_assertions) {
+        return Err("Dev verification reporting is only available in debug builds.".to_string());
+    }
+
+    let report_path = env::var("CORTEX_DEV_VERIFY_REPORT_PATH")
+        .map(PathBuf::from)
+        .map_err(|_| "CORTEX_DEV_VERIFY_REPORT_PATH is not configured.".to_string())?;
+
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+
+    fs::write(&report_path, content)
+        .map_err(|err| format!("Failed to write {}: {err}", report_path.display()))?;
+
+    Ok(report_path.display().to_string())
 }
 
 fn send_cortex_request(
@@ -1825,6 +2062,7 @@ fn main() {
 
             let port = daemon_port();
             if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+                let daemon_state = app.state::<DaemonState>();
                 match try_service_ensure(port) {
                     Ok(true) => {
                         log_startup_path(
@@ -1833,18 +2071,48 @@ fn main() {
                             "daemon started or validated via service ensure",
                         );
                     }
-                    Ok(false) => {
-                        eprintln!(
-                            "[cortex-control-center] service ensure unavailable at startup; daemon remains offline until service is healthy"
-                        );
-                        log_startup_path("setup", "blocked", "service ensure unavailable");
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "[cortex-control-center] service ensure failed at startup; daemon remains offline: {err}"
-                        );
-                        log_startup_path("setup", "blocked", "service ensure failed");
-                    }
+                    Ok(false) => match try_local_app_managed_ensure(&daemon_state, port) {
+                        Ok(true) => {
+                            log_startup_path(
+                                "setup",
+                                "app-managed-spawn",
+                                "daemon started via Control Center local mode",
+                            );
+                        }
+                        Ok(false) => {
+                            eprintln!(
+                                "[cortex-control-center] neither service ensure nor app-managed local start is available; daemon remains offline"
+                            );
+                            log_startup_path("setup", "blocked", "service ensure unavailable");
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "[cortex-control-center] app-managed local start failed at startup: {err}"
+                            );
+                            log_startup_path("setup", "blocked", "app-managed spawn failed");
+                        }
+                    },
+                    Err(err) => match try_local_app_managed_ensure(&daemon_state, port) {
+                        Ok(true) => {
+                            log_startup_path(
+                                "setup",
+                                "app-managed-spawn",
+                                "daemon started via Control Center after service ensure failure",
+                            );
+                        }
+                        Ok(false) => {
+                            eprintln!(
+                                "[cortex-control-center] service ensure failed at startup and app-managed local start was unavailable: {err}"
+                            );
+                            log_startup_path("setup", "blocked", "service ensure failed");
+                        }
+                        Err(local_err) => {
+                            eprintln!(
+                                "[cortex-control-center] service ensure failed at startup and app-managed local start also failed: {err}; {local_err}"
+                            );
+                            log_startup_path("setup", "blocked", "app-managed spawn failed");
+                        }
+                    },
                 }
             } else {
                 log_startup_path(
@@ -1876,6 +2144,7 @@ fn main() {
             read_auth_token,
             fetch_cortex,
             post_cortex,
+            write_dev_verification_report,
             setup_editors,
             detect_editors
         ])
@@ -2066,6 +2335,7 @@ mod tests {
             db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
             pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
             port: Some(7437),
+            bind: Some("127.0.0.1".to_string()),
         };
         assert!(!is_cortex_health_response(
             200,

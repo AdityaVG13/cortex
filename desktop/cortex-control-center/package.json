@@ -18,7 +18,8 @@
     "mock:cortex": "node scripts/mock-cortex-server.mjs",
     "expect:smoke": "npm run web:build && node scripts/run-expect-smoke.mjs",
     "expect:smoke:work": "npm run web:build && node scripts/run-expect-smoke.mjs --scope work",
-    "expect:smoke:ci": "npm run web:build && node scripts/run-expect-smoke.mjs --ci"
+    "expect:smoke:ci": "npm run web:build && node scripts/run-expect-smoke.mjs --ci",
+    "verify:lifecycle:dev": "node scripts/run-dev-lifecycle-verification.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

@@ -20,6 +20,7 @@ const DESCRIPTION: &str = "Always-on AI memory daemon -- serves Claude, Gemini, 
 const DEFAULT_START_MODE: &str = "demand";
 const ENSURE_HEALTH_TIMEOUT_SECS: u64 = 12;
 const ENSURE_POLL_MILLIS: u64 = 250;
+const HEALTH_PROBE_TIMEOUT_SECS: u64 = 2;
 
 fn daemon_base_url() -> String {
     let port = crate::auth::CortexPaths::resolve().port;
@@ -28,10 +29,6 @@ fn daemon_base_url() -> String {
 
 fn daemon_health_url() -> String {
     format!("{}/health", daemon_base_url())
-}
-
-fn daemon_readiness_url() -> String {
-    format!("{}/readiness", daemon_base_url())
 }
 
 fn daemon_ready_from_payload(
@@ -132,38 +129,76 @@ fn query_service_state() -> Result<ServiceState, String> {
     }
 }
 
-fn daemon_health_ready() -> bool {
-    let paths = crate::auth::CortexPaths::resolve();
-    let client = match reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
+fn parse_http_probe_response(raw: &[u8]) -> Result<(u16, String), String> {
+    let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return Err("invalid HTTP response from Cortex daemon".to_string());
     };
 
-    let readiness_url = daemon_readiness_url();
-    if let Ok(response) = client.get(&readiness_url).send() {
-        let status = response.status().as_u16();
-        if let Ok(body) = response.text() {
-            if let Some(ready) = daemon_ready_from_payload(status, &body, &paths) {
-                return ready;
-            }
+    let header = std::str::from_utf8(&raw[..header_end])
+        .map_err(|_| "daemon response headers are not valid UTF-8".to_string())?;
+    let status = header
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| "daemon response missing valid status line".to_string())?;
+    let body = String::from_utf8_lossy(&raw[header_end + 4..]).to_string();
+    Ok((status, body))
+}
+
+fn daemon_probe(path: &str) -> Result<(u16, String), String> {
+    use std::io::{Read, Write};
+
+    let port = crate::auth::CortexPaths::resolve().port;
+    let mut stream = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS),
+    )
+    .map_err(|e| format!("connect failed: {e}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(
+            HEALTH_PROBE_TIMEOUT_SECS,
+        )))
+        .map_err(|e| format!("read timeout failed: {e}"))?;
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(
+            HEALTH_PROBE_TIMEOUT_SECS,
+        )))
+        .map_err(|e| format!("write timeout failed: {e}"))?;
+
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write failed: {e}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|e| format!("read failed: {e}"))?;
+    parse_http_probe_response(&response)
+}
+
+fn daemon_health_response() -> Option<String> {
+    let paths = crate::auth::CortexPaths::resolve();
+
+    if let Ok((status, body)) = daemon_probe("/readiness") {
+        if daemon_ready_from_payload(status, &body, &paths) == Some(true) {
+            return Some(body);
         }
     }
 
-    let health_url = daemon_health_url();
-    let response = match client.get(&health_url).send() {
-        Ok(response) => response,
-        Err(_) => return false,
-    };
-    let status = response.status().as_u16();
-    let body = match response.text() {
-        Ok(body) => body,
-        Err(_) => return false,
-    };
-    daemon_ready_from_payload(status, &body, &paths).unwrap_or(false)
+    if let Ok((status, body)) = daemon_probe("/health") {
+        if daemon_ready_from_payload(status, &body, &paths).unwrap_or(false) {
+            return Some(body);
+        }
+    }
+
+    None
+}
+
+fn daemon_health_ready() -> bool {
+    daemon_health_response().is_some()
 }
 
 fn wait_for_daemon_health(timeout: std::time::Duration) -> bool {
@@ -361,16 +396,13 @@ pub fn start() {
             // Wait and verify
             std::thread::sleep(std::time::Duration::from_secs(3));
             let health_url = daemon_health_url();
-            if let Ok(h) = std::process::Command::new("curl")
-                .args(["-s", &health_url])
-                .output()
-            {
-                if h.status.success() {
-                    eprintln!("[cortex] Daemon is LIVE at {health_url}");
-                    eprintln!("{}", String::from_utf8_lossy(&h.stdout));
-                } else {
-                    eprintln!("[cortex] Service started but health check pending");
+            if daemon_health_ready() {
+                eprintln!("[cortex] Daemon is LIVE at {health_url}");
+                if let Ok((_, body)) = daemon_probe("/health") {
+                    eprintln!("{body}");
                 }
+            } else {
+                eprintln!("[cortex] Service started but health check pending");
             }
         }
         Ok(o) => {
@@ -424,17 +456,13 @@ pub fn status() {
             eprintln!("[cortex] Service: {state}");
 
             // Also check HTTP health
-            let health_url = daemon_health_url();
-            if let Ok(h) = std::process::Command::new("curl")
-                .args(["-s", &health_url])
-                .output()
-            {
-                if h.status.success() {
-                    eprintln!("[cortex] HTTP: LIVE");
-                    eprintln!("{}", String::from_utf8_lossy(&h.stdout));
-                } else {
-                    eprintln!("[cortex] HTTP: not responding");
+            if daemon_health_ready() {
+                eprintln!("[cortex] HTTP: LIVE");
+                if let Ok((_, body)) = daemon_probe("/health") {
+                    eprintln!("{body}");
                 }
+            } else {
+                eprintln!("[cortex] HTTP: not responding");
             }
         }
         Ok(_) => eprintln!("[cortex] Service not installed. Run: cortex service install"),
@@ -737,5 +765,19 @@ mod tests {
             daemon_ready_from_payload(503, &readiness, &paths),
             Some(false)
         );
+    }
+
+    #[test]
+    fn parse_http_probe_response_extracts_status_and_body() {
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\":\"ok\"}";
+        let (status, body) = parse_http_probe_response(raw).expect("parse response");
+        assert_eq!(status, 200);
+        assert_eq!(body, "{\"status\":\"ok\"}");
+    }
+
+    #[test]
+    fn parse_http_probe_response_rejects_invalid_payloads() {
+        let err = parse_http_probe_response(b"not-http").unwrap_err();
+        assert!(err.contains("invalid HTTP response"));
     }
 }

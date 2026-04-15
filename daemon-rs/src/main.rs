@@ -504,8 +504,8 @@ async fn main() {
 
         // ── Windows Service lifecycle ───────────────────────────────
         "service" => {
-            let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
-            match subcmd {
+            let subcmd = args.get(2).cloned().unwrap_or_default();
+            if let Err(err) = tokio::task::spawn_blocking(move || match subcmd.as_str() {
                 "install" => service::install(),
                 "uninstall" => service::uninstall(),
                 "start" => service::start(),
@@ -515,6 +515,11 @@ async fn main() {
                 _ => {
                     eprintln!("Usage: cortex service <install|uninstall|start|stop|status|ensure>");
                 }
+            })
+            .await
+            {
+                eprintln!("[cortex] Service command task failed: {err}");
+                std::process::exit(1);
             }
         }
 
