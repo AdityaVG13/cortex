@@ -44,31 +44,44 @@ fn read_auth_token() -> Option<String> {
     }
 }
 
-fn daemon_port() -> u16 {
-    crate::auth::CortexPaths::resolve().port
-}
-
-async fn fetch_boot(agent: &str, budget: u32, port: u16) -> Option<BootResult> {
+async fn fetch_boot(
+    agent: &str,
+    budget: u32,
+    paths: &crate::auth::CortexPaths,
+) -> Option<BootResult> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(7))
         .build()
         .ok()?;
 
-    let url = format!(
-        "http://127.0.0.1:{port}/boot?agent={}&budget={}",
-        agent, budget
-    );
-    let mut req = client.get(&url).header("x-cortex-request", "true");
+    let base_url = crate::transport::local_http_base_url(paths);
+    let mut url = reqwest::Url::parse(&format!("{}/boot", base_url.trim_end_matches('/'))).ok()?;
+    url.query_pairs_mut()
+        .append_pair("agent", agent)
+        .append_pair("budget", &budget.to_string());
+
+    let mut headers = vec![("x-cortex-request".to_string(), "true".to_string())];
     if let Some(token) = read_auth_token() {
-        req = req.header("Authorization", format!("Bearer {}", token));
+        headers.push(("authorization".to_string(), format!("Bearer {token}")));
     }
-    let resp = req.send().await.ok()?;
-    if !resp.status().is_success() {
+
+    let (status, body) = crate::transport::request_url_with_local_ipc_fallback(
+        &client,
+        "GET",
+        url.as_ref(),
+        paths,
+        &headers,
+        None,
+        std::time::Duration::from_secs(7),
+    )
+    .await
+    .ok()?;
+    if !status.is_success() {
         return None;
     }
 
-    let data: serde_json::Value = resp.json().await.ok()?;
+    let data: serde_json::Value = serde_json::from_str(&body).ok()?;
     Some(BootResult {
         boot_prompt: data.get("bootPrompt")?.as_str()?.to_string(),
         token_estimate: data.get("tokenEstimate").and_then(|v| v.as_i64()),
@@ -76,42 +89,52 @@ async fn fetch_boot(agent: &str, budget: u32, port: u16) -> Option<BootResult> {
     })
 }
 
-async fn fetch_health(port: u16) -> Option<HealthResult> {
+async fn fetch_health(paths: &crate::auth::CortexPaths) -> Option<HealthResult> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(2))
         .build()
         .ok()?;
 
-    let readiness_url = format!("http://127.0.0.1:{port}/readiness");
-    if let Ok(resp) = client.get(&readiness_url).send().await {
-        let status = resp.status().as_u16();
-        if let Ok(body) = resp.text().await {
-            match crate::daemon_lifecycle::readiness_state_from_payload(
-                status,
-                &body,
-                Some(port),
-                None,
-            ) {
-                Some(true) => {}
-                Some(false) | None => return None,
-            }
-        } else {
-            return None;
-        }
-    } else {
-        return None;
+    let base_url = crate::transport::local_http_base_url(paths);
+    let readiness_url = format!("{base_url}/readiness");
+    let (readiness_status, readiness_body) = crate::transport::request_url_with_local_ipc_fallback(
+        &client,
+        "GET",
+        &readiness_url,
+        paths,
+        &[],
+        None,
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .ok()?;
+    match crate::daemon_lifecycle::readiness_state_from_payload(
+        readiness_status.as_u16(),
+        &readiness_body,
+        Some(paths.port),
+        None,
+    ) {
+        Some(true) => {}
+        Some(false) | None => return None,
     }
 
-    let resp = client
-        .get(format!("http://127.0.0.1:{port}/health"))
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
+    let health_url = format!("{base_url}/health");
+    let (status, body) = crate::transport::request_url_with_local_ipc_fallback(
+        &client,
+        "GET",
+        &health_url,
+        paths,
+        &[],
+        None,
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .ok()?;
+    if !status.is_success() {
         return None;
     }
-    let data: serde_json::Value = resp.json().await.ok()?;
+    let data: serde_json::Value = serde_json::from_str(&body).ok()?;
     let stats = data.get("stats")?;
     Some(HealthResult {
         memories: stats.get("memories")?.as_i64()?,
@@ -131,7 +154,7 @@ fn status_path() -> PathBuf {
 }
 
 /// Register an active session with the daemon so the Agents panel shows it.
-async fn register_session(agent: &str, port: u16) {
+async fn register_session(agent: &str, paths: &crate::auth::CortexPaths) {
     let client = match reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(3))
@@ -141,30 +164,42 @@ async fn register_session(agent: &str, port: u16) {
         Err(_) => return,
     };
 
-    let url = format!("http://127.0.0.1:{port}/session/start");
+    let base_url = crate::transport::local_http_base_url(paths);
     let body = json!({
         "agent": agent,
         "ttl": 7200,
         "description": "Active coding session"
-    });
-
-    let mut req = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .header("x-cortex-request", "true")
-        .json(&body);
+    })
+    .to_string();
+    let mut headers = vec![
+        ("content-type".to_string(), "application/json".to_string()),
+        ("x-cortex-request".to_string(), "true".to_string()),
+    ];
     if let Some(token) = read_auth_token() {
-        req = req.header("Authorization", format!("Bearer {token}"));
+        headers.push(("authorization".to_string(), format!("Bearer {token}")));
     }
-    let _ = req.send().await;
+    let _ = crate::transport::request_with_local_ipc_fallback(
+        &client,
+        "POST",
+        &base_url,
+        "/session/start",
+        paths,
+        &headers,
+        Some(&body),
+        std::time::Duration::from_secs(3),
+    )
+    .await;
 }
 
 // ---- Public entry points ----------------------------------------------------
 
 /// SessionStart hook -- outputs JSON for Claude Code hook system.
 pub async fn run_boot(agent: &str) {
-    let port = daemon_port();
-    let (boot, health) = tokio::join!(fetch_boot(agent, DEFAULT_BUDGET, port), fetch_health(port));
+    let paths = crate::auth::CortexPaths::resolve();
+    let (boot, health) = tokio::join!(
+        fetch_boot(agent, DEFAULT_BUDGET, &paths),
+        fetch_health(&paths)
+    );
 
     let (total, memories, decisions) = health
         .as_ref()
@@ -176,7 +211,7 @@ pub async fn run_boot(agent: &str) {
 
     // Register session so the Agents panel shows this agent as online
     if cortex_booted {
-        register_session(agent, port).await;
+        register_session(agent, &paths).await;
     }
     let overall = if cortex_connected {
         "ONLINE"
@@ -265,7 +300,8 @@ pub async fn run_boot(agent: &str) {
 
 /// Statusline output -- prints a one-liner to stdout.
 pub async fn run_status() {
-    match fetch_health(daemon_port()).await {
+    let paths = crate::auth::CortexPaths::resolve();
+    match fetch_health(&paths).await {
         Some(h) => {
             println!(
                 "ONLINE | {} mem | {} dec | {} emb",

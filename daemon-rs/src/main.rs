@@ -1747,6 +1747,7 @@ fn resolve_boot_auth_header(
 }
 
 async fn request_boot_payload(
+    paths: &auth::CortexPaths,
     base_url: &str,
     token_path: &std::path::Path,
     api_key: Option<&str>,
@@ -1759,28 +1760,32 @@ async fn request_boot_payload(
         .build()
         .map_err(|e| format!("create boot client: {e}"))?;
 
-    let mut req = client
-        .get(format!("{}/boot", base_url.trim_end_matches('/')))
-        .query(&[
-            ("agent".to_string(), agent.to_string()),
-            ("budget".to_string(), budget.to_string()),
-        ])
-        .header("x-cortex-request", "true")
-        .header("x-source-agent", agent);
+    let mut boot_url = reqwest::Url::parse(&format!("{}/boot", base_url.trim_end_matches('/')))
+        .map_err(|e| format!("invalid boot URL '{base_url}': {e}"))?;
+    boot_url
+        .query_pairs_mut()
+        .append_pair("agent", agent)
+        .append_pair("budget", &budget.to_string());
 
+    let mut headers = vec![
+        ("x-cortex-request".to_string(), "true".to_string()),
+        ("x-source-agent".to_string(), agent.to_string()),
+    ];
     if let Some(auth) = resolve_boot_auth_header(token_path, api_key, allow_local_token_fallback) {
-        req = req.header("Authorization", auth);
+        headers.push(("authorization".to_string(), auth));
     }
 
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("boot request failed: {e}"))?;
-    let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("read boot response failed: {e}"))?;
+    let (status, body) = transport::request_url_with_local_ipc_fallback(
+        &client,
+        "GET",
+        boot_url.as_ref(),
+        paths,
+        &headers,
+        None,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|e| format!("boot request failed: {e}"))?;
     if !status.is_success() {
         let detail = body.trim();
         return if detail.is_empty() {
@@ -1820,6 +1825,7 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
     };
     let allow_local_token_fallback = local_owner_mode || local_target_identity_valid;
     let payload = request_boot_payload(
+        paths,
         &base_url,
         &paths.token,
         api_key.as_deref(),
@@ -1847,7 +1853,7 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
 
 async fn boot_agent(paths: &auth::CortexPaths, agent: &str) -> Result<(), String> {
     let base_url = local_daemon_base_url(paths);
-    request_boot_payload(&base_url, &paths.token, None, true, agent, 200)
+    request_boot_payload(paths, &base_url, &paths.token, None, true, agent, 200)
         .await
         .map(|_| ())
 }
@@ -2002,26 +2008,41 @@ async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<()
         .timeout(Duration::from_secs(2))
         .build()
         .map_err(|err| format!("daemon startup preflight: build HTTP client: {err}"))?;
-    let response = match client.get(&readiness_url).send().await {
-        Ok(response) => response,
-        Err(err) => {
+    let (mut status, mut body) = match transport::request_url_with_local_ipc_fallback(
+        &client,
+        "GET",
+        &readiness_url,
+        paths,
+        &[],
+        None,
+        Duration::from_secs(2),
+    )
+    .await
+    {
+        Ok((status, body)) => (status.as_u16(), body),
+        Err(readiness_err) => {
             // Backward compatibility for daemons that do not expose /readiness yet.
-            match client.get(&health_url).send().await {
-                Ok(response) => response,
+            match transport::request_url_with_local_ipc_fallback(
+                &client,
+                "GET",
+                &health_url,
+                paths,
+                &[],
+                None,
+                Duration::from_secs(2),
+            )
+            .await
+            {
+                Ok((status, body)) => (status.as_u16(), body),
                 Err(health_err) => {
                     return Err(format!(
-                        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}) and readiness probe at {readiness_url} failed ({err}); fallback health probe at {health_url} also failed ({health_err})",
+                        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}) and readiness probe at {readiness_url} failed ({readiness_err}); fallback health probe at {health_url} also failed ({health_err})",
                         paths.port
                     ));
                 }
             }
         }
     };
-    let mut status = response.status().as_u16();
-    let mut body = response
-        .text()
-        .await
-        .unwrap_or_else(|_| String::from("<unreadable>"));
 
     if let Some(ready) = readiness_state_from_payload(status, &body, Some(paths.port), Some(paths))
     {
@@ -2046,12 +2067,19 @@ async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<()
 
     // Fallback for legacy daemons (or intermediaries that do not proxy readiness):
     // probe /health and apply canonical identity checks there.
-    if let Ok(health_response) = client.get(&health_url).send().await {
-        status = health_response.status().as_u16();
-        body = health_response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unreadable>"));
+    if let Ok((health_status, health_body)) = transport::request_url_with_local_ipc_fallback(
+        &client,
+        "GET",
+        &health_url,
+        paths,
+        &[],
+        None,
+        Duration::from_secs(2),
+    )
+    .await
+    {
+        status = health_status.as_u16();
+        body = health_body;
     }
 
     if is_cortex_health_payload(status, &body, Some(paths.port), Some(paths)) {
@@ -2135,35 +2163,39 @@ async fn admin_request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let port = auth::CortexPaths::resolve().port;
+    let paths = auth::CortexPaths::resolve();
     let token = read_auth_token()?;
-    let client = reqwest::Client::new();
-    let url = format!("http://localhost:{port}{path}");
-    let req = match method {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        _ => return Err("Invalid method".into()),
-    };
-    let req = req
-        .header("Authorization", format!("Bearer {token}"))
-        .header("X-Cortex-Request", "true");
-    let req = if let Some(b) = body {
-        req.json(&b)
-    } else {
-        req
-    };
-    let resp = req.send().await.map_err(|e| {
-        if e.is_connect() {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("create admin client: {e}"))?;
+    let base_url = local_daemon_base_url(&paths);
+    let payload = body.map(|value| value.to_string());
+    let mut headers = vec![
+        ("authorization".to_string(), format!("Bearer {token}")),
+        ("x-cortex-request".to_string(), "true".to_string()),
+    ];
+    if payload.is_some() {
+        headers.push(("content-type".to_string(), "application/json".to_string()));
+    }
+    let (status, body_text) = transport::request_with_local_ipc_fallback(
+        &client,
+        method,
+        &base_url,
+        path,
+        &paths,
+        &headers,
+        payload.as_deref(),
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|e| {
+        if e.to_ascii_lowercase().contains("connect") {
             "Cortex daemon not running. Start with: cortex serve".to_string()
         } else {
             format!("Request failed: {e}")
         }
     })?;
-    let status = resp.status();
-    let body_text = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {e}"))?;
     if status.as_u16() == 403 {
         return Err("Admin commands require team mode. Run: cortex setup --team".to_string());
     }

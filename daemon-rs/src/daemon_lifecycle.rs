@@ -244,14 +244,6 @@ fn health_probe_base(bind: &str, port: u16) -> String {
     format!("http://{host}:{port}")
 }
 
-fn health_probe_url(bind: &str, port: u16) -> String {
-    format!("{}/health", health_probe_base(bind, port))
-}
-
-fn readiness_probe_url(bind: &str, port: u16) -> String {
-    format!("{}/readiness", health_probe_base(bind, port))
-}
-
 /// Check if the daemon is ready within a short timeout.
 /// Prefers `/readiness` and falls back to `/health` for backward compatibility.
 async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&CortexPaths>) -> bool {
@@ -262,32 +254,46 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
         Ok(client) => client,
         Err(_) => return false,
     };
+    let resolved_paths = CortexPaths::resolve();
+    let probe_paths = expected_paths.unwrap_or(&resolved_paths);
+    let base_url = health_probe_base(bind, port);
 
-    let readiness_url = readiness_probe_url(bind, port);
-    if let Ok(response) = client.get(&readiness_url).send().await {
-        let status = response.status().as_u16();
-        if let Ok(body) = response.text().await {
-            if let Some(ready) =
-                readiness_state_from_payload(status, &body, Some(port), expected_paths)
-            {
-                return ready;
-            }
+    if let Ok((status, body)) = crate::transport::request_with_local_ipc_fallback(
+        &client,
+        "GET",
+        &base_url,
+        "/readiness",
+        probe_paths,
+        &[],
+        None,
+        Duration::from_secs(2),
+    )
+    .await
+    {
+        if let Some(ready) =
+            readiness_state_from_payload(status.as_u16(), &body, Some(port), expected_paths)
+        {
+            return ready;
         }
     }
 
-    let health_url = health_probe_url(bind, port);
-    let response = match client.get(health_url).send().await {
+    let (status, body) = match crate::transport::request_with_local_ipc_fallback(
+        &client,
+        "GET",
+        &base_url,
+        "/health",
+        probe_paths,
+        &[],
+        None,
+        Duration::from_secs(2),
+    )
+    .await
+    {
         Ok(response) => response,
         Err(_) => return false,
     };
 
-    let status = response.status().as_u16();
-    let body = match response.text().await {
-        Ok(body) => body,
-        Err(_) => return false,
-    };
-
-    is_cortex_health_payload(status, &body, Some(port), expected_paths)
+    is_cortex_health_payload(status.as_u16(), &body, Some(port), expected_paths)
 }
 
 pub async fn daemon_healthy(paths: &CortexPaths) -> bool {
