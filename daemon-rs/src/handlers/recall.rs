@@ -24,10 +24,11 @@ const SEMANTIC_SCALE_BASE: f64 = 0.55;
 const MAX_SEMANTIC_RRF_CANDIDATES: usize = 120;
 const MIN_BUDGET_HEADROOM_TOKENS: usize = 8;
 const MIN_EXCERPT_CHARS: usize = 24;
+const ASSOCIATIVE_MIN_BUDGET_TOKENS: usize = 260;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct RecallItem {
     source: String,
     relevance: f64,
@@ -473,12 +474,16 @@ fn classify_recall_tier(cached: bool, mode: &str, methods: &Value) -> &'static s
     let semantic = method_count(methods, "semantic");
     let hybrid = method_count(methods, "hybrid");
     let crystal = method_count(methods, "crystal");
+    let associative = method_count(methods, "associative");
 
     if hybrid > 0 || (keyword > 0 && semantic > 0) {
         if crystal > 0 {
             return "hybrid_crystal";
         }
         return "hybrid_fusion";
+    }
+    if associative > 0 && (keyword > 0 || semantic > 0 || crystal > 0) {
+        return "associative_blend";
     }
     if keyword > 0 {
         if crystal > 0 {
@@ -494,6 +499,9 @@ fn classify_recall_tier(cached: bool, mode: &str, methods: &Value) -> &'static s
     }
     if crystal > 0 {
         return "crystal_only";
+    }
+    if associative > 0 {
+        return "associative_only";
     }
     "unknown"
 }
@@ -1419,6 +1427,327 @@ fn apply_semantic_budget(
     budgeted
 }
 
+fn associative_item_limit(token_budget: usize) -> usize {
+    if token_budget <= 420 {
+        1
+    } else if token_budget <= 900 {
+        2
+    } else {
+        3
+    }
+}
+
+fn parse_co_occurrence_prediction(entry: &Value) -> Option<(String, i64)> {
+    let source = entry.get("source")?.as_str()?.trim();
+    if source.is_empty() {
+        return None;
+    }
+    let score = entry.get("coScore")?.as_i64()?;
+    if score <= 0 {
+        return None;
+    }
+    Some((source.to_string(), score))
+}
+
+fn fetch_associative_source_payload(
+    conn: &Connection,
+    source: &str,
+    query_text: &str,
+    ctx: &RecallContext,
+) -> Option<(String, f64, i64)> {
+    type PayloadRow = (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<f64>,
+        Option<f64>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+    );
+
+    let mut best: Option<(String, f64, i64)> = None;
+
+    let memory_row: Option<PayloadRow> = if ctx.team_mode {
+        conn.query_row(
+            "SELECT text, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
+             FROM memories
+             WHERE status = 'active'
+               AND source = ?1
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY COALESCE(last_accessed, created_at) DESC
+             LIMIT 1",
+            params![source],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )
+        .ok()
+    } else {
+        conn.query_row(
+            "SELECT text, compressed_text, age_tier, score, trust_score, last_accessed, created_at
+             FROM memories
+             WHERE status = 'active'
+               AND source = ?1
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY COALESCE(last_accessed, created_at) DESC
+             LIMIT 1",
+            params![source],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    None,
+                    None,
+                ))
+            },
+        )
+        .ok()
+    };
+
+    if let Some((
+        text,
+        compressed_text,
+        age_tier,
+        score,
+        trust_score,
+        last_accessed,
+        created_at,
+        owner_id,
+        visibility,
+    )) = memory_row
+    {
+        if !ctx.team_mode || is_visible(owner_id, visibility.as_deref(), ctx) {
+            let display = crate::aging::get_display_text(
+                &text,
+                &compressed_text,
+                &age_tier.unwrap_or_else(|| "fresh".to_string()),
+            );
+            let excerpt = query_focused_excerpt(&display, query_text, 220);
+            let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
+            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(|| now_iso()));
+            best = Some((excerpt, importance, ts));
+        }
+    }
+
+    let decision_row: Option<PayloadRow> = if ctx.team_mode {
+        conn.query_row(
+            "SELECT decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
+             FROM decisions
+             WHERE status = 'active'
+               AND context = ?1
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY COALESCE(last_accessed, created_at) DESC
+             LIMIT 1",
+            params![source],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )
+        .ok()
+    } else {
+        conn.query_row(
+            "SELECT decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at
+             FROM decisions
+             WHERE status = 'active'
+               AND context = ?1
+               AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY COALESCE(last_accessed, created_at) DESC
+             LIMIT 1",
+            params![source],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    None,
+                    None,
+                ))
+            },
+        )
+        .ok()
+    };
+
+    if let Some((
+        decision,
+        compressed_text,
+        age_tier,
+        score,
+        trust_score,
+        last_accessed,
+        created_at,
+        owner_id,
+        visibility,
+    )) = decision_row
+    {
+        if !ctx.team_mode || is_visible(owner_id, visibility.as_deref(), ctx) {
+            let display = crate::aging::get_display_text(
+                &decision,
+                &compressed_text,
+                &age_tier.unwrap_or_else(|| "fresh".to_string()),
+            );
+            let excerpt = query_focused_excerpt(&display, query_text, 220);
+            let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
+            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(|| now_iso()));
+            let replace = match &best {
+                Some((_, best_importance, best_ts)) => {
+                    importance > *best_importance
+                        || (importance == *best_importance && ts > *best_ts)
+                }
+                None => true,
+            };
+            if replace {
+                best = Some((excerpt, importance, ts));
+            }
+        }
+    }
+
+    best
+}
+
+fn build_associative_candidates(
+    conn: &Connection,
+    base: &[RecallItem],
+    query_text: &str,
+    token_budget: usize,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+) -> Vec<RecallItem> {
+    if token_budget < ASSOCIATIVE_MIN_BUDGET_TOKENS || base.is_empty() {
+        return Vec::new();
+    }
+
+    let top_relevance = base.first().map(|item| item.relevance).unwrap_or(0.0);
+    if top_relevance < 0.28 {
+        return Vec::new();
+    }
+
+    let min_anchor_relevance = (top_relevance * 0.45).max(0.18);
+    let anchors: Vec<String> = base
+        .iter()
+        .filter(|item| item.relevance >= min_anchor_relevance)
+        .take(4)
+        .map(|item| item.source.clone())
+        .collect();
+    if anchors.is_empty() {
+        return Vec::new();
+    }
+
+    let max_associative = associative_item_limit(token_budget);
+    if max_associative == 0 {
+        return Vec::new();
+    }
+
+    let predictions = match co_occurrence::predict(conn, &anchors, max_associative * 4) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+    if predictions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut parsed = predictions
+        .iter()
+        .filter_map(parse_co_occurrence_prediction)
+        .collect::<Vec<_>>();
+    if parsed.is_empty() {
+        return Vec::new();
+    }
+
+    parsed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let max_co_score = parsed[0].1.max(1);
+    let min_required_co_score = ((max_co_score as f64) * 0.35).ceil() as i64;
+    let query_terms = extract_search_keywords(query_text);
+    let mut associative = Vec::new();
+
+    for (source, co_score) in parsed {
+        if co_score < 2 || co_score < min_required_co_score {
+            continue;
+        }
+        if !source_matches_prefix(&source, source_prefix) {
+            continue;
+        }
+        let Some((excerpt, importance, ts)) =
+            fetch_associative_source_payload(conn, &source, query_text, ctx)
+        else {
+            continue;
+        };
+
+        let norm =
+            ((co_score as f64 + 1.0).ln() / (max_co_score as f64 + 1.0).ln()).clamp(0.0, 1.0);
+        let source_lower = source.to_ascii_lowercase();
+        let overlap = if query_terms.is_empty() {
+            0.0
+        } else {
+            let matched = query_terms
+                .iter()
+                .filter(|term| source_lower.contains(term.as_str()))
+                .count();
+            matched as f64 / query_terms.len().max(1) as f64
+        };
+        let recency_days = if ts > 0 {
+            let now = Utc::now().timestamp_millis();
+            ((now - ts).max(0) as f64) / (1000.0 * 60.0 * 60.0 * 24.0)
+        } else {
+            30.0
+        };
+        let recency = (1.0 / (1.0 + recency_days / 14.0)).clamp(0.0, 1.0);
+
+        let anchor = (top_relevance * 0.68).clamp(0.24, 0.82);
+        let relevance = round4(
+            ((anchor * (0.76 + 0.24 * norm))
+                + (importance * 0.10)
+                + (overlap * 0.08)
+                + (recency * 0.10))
+                .clamp(0.0, 0.95),
+        );
+
+        associative.push(RecallItem {
+            source,
+            relevance,
+            excerpt,
+            method: "associative".to_string(),
+            tokens: None,
+            entropy: None,
+        });
+        if associative.len() >= max_associative {
+            break;
+        }
+    }
+
+    associative
+}
+
 struct RecallBudgetTrace {
     budgeted: Vec<RecallItem>,
     candidate_pool: Vec<RecallItem>,
@@ -1463,6 +1792,36 @@ fn run_budget_recall_trace_with_query_vector(
         });
     }
 
+    let associative =
+        build_associative_candidates(conn, &raw, query_text, token_budget, ctx, source_prefix);
+    let raw = if associative.is_empty() {
+        raw
+    } else {
+        let mut merged: HashMap<String, RecallItem> = raw
+            .into_iter()
+            .map(|item| (item.source.clone(), item))
+            .collect();
+        for candidate in associative {
+            if let Some(existing) = merged.get_mut(&candidate.source) {
+                if candidate.relevance > existing.relevance {
+                    existing.relevance = candidate.relevance;
+                    existing.excerpt = candidate.excerpt;
+                }
+                existing.method = "associative".to_string();
+                existing.tokens = None;
+            } else {
+                merged.insert(candidate.source.clone(), candidate);
+            }
+        }
+        let mut merged_pool: Vec<RecallItem> = merged.into_values().collect();
+        merged_pool.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        merged_pool
+    };
+
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = if top_relevance >= 0.25 {
         (top_relevance * 0.72).max(0.18)
@@ -1487,6 +1846,17 @@ fn run_budget_recall_trace_with_query_vector(
         .collect();
     if candidates.is_empty() {
         candidates = raw.iter().take(max_items).cloned().collect();
+    }
+    if !candidates.iter().any(|item| item.method == "associative") {
+        if let Some(best_associative) = raw.iter().find(|item| item.method == "associative") {
+            candidates.push(best_associative.clone());
+            candidates.sort_by(|a, b| {
+                b.relevance
+                    .partial_cmp(&a.relevance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(max_items.max(1));
+        }
     }
 
     let mut spent = 0usize;
@@ -4231,6 +4601,105 @@ mod tests {
                 .contains("ownership")
                 || results[0].excerpt.to_ascii_lowercase().contains("lock"),
             "top result should keep query-bearing span under clipping"
+        );
+    }
+
+    #[test]
+    fn test_budget_recall_adds_associative_source_when_co_occurrence_is_strong() {
+        let mut conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::daemon-lock', 'note', 'active', 0.9, 0.92, datetime('now'), datetime('now'))",
+            params!["daemon ownership lock lease protects startup arbitration and stale pid recovery"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::service-ensure', 'note', 'active', 0.85, 0.88, datetime('now'), datetime('now'))",
+            params!["service ensure keeps one daemon active before mcp attach"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::recovery-playbook', 'note', 'active', 0.25, 0.25, datetime('now'), datetime('now'))",
+            params!["snapshot pruning and wal checkpoint cadence for cold-start recovery"],
+        )
+        .unwrap();
+
+        for _ in 0..6 {
+            crate::co_occurrence::record(
+                &conn,
+                &[
+                    "memory::daemon-lock".to_string(),
+                    "memory::recovery-playbook".to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let results = run_budget_recall(
+            &mut conn,
+            "daemon ownership lock",
+            700,
+            8,
+            &solo_ctx(),
+            None,
+        )
+        .expect("budget recall should succeed");
+
+        let assoc = results
+            .iter()
+            .find(|item| item.source == "memory::recovery-playbook");
+        assert!(
+            assoc.is_some(),
+            "expected co-occurrence linked source to be included; got results={results:?}"
+        );
+        assert_eq!(
+            assoc.unwrap().method,
+            "associative",
+            "linked source should be explicitly tagged as associative"
+        );
+    }
+
+    #[test]
+    fn test_budget_recall_skips_associative_expansion_for_tight_budgets() {
+        let mut conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::daemon-lock', 'note', 'active', 0.9, 0.92, datetime('now'), datetime('now'))",
+            params!["daemon ownership lock lease protects startup arbitration and stale pid recovery"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::recovery-playbook', 'note', 'active', 0.25, 0.25, datetime('now'), datetime('now'))",
+            params!["snapshot pruning and wal checkpoint cadence for cold-start recovery"],
+        )
+        .unwrap();
+        for _ in 0..6 {
+            crate::co_occurrence::record(
+                &conn,
+                &[
+                    "memory::daemon-lock".to_string(),
+                    "memory::recovery-playbook".to_string(),
+                ],
+            )
+            .unwrap();
+        }
+
+        let results = run_budget_recall(
+            &mut conn,
+            "daemon ownership lock",
+            180,
+            8,
+            &solo_ctx(),
+            None,
+        )
+        .expect("budget recall should succeed");
+
+        assert!(
+            results.iter().all(|item| item.method != "associative"),
+            "tight token budgets should skip associative expansion"
         );
     }
 
