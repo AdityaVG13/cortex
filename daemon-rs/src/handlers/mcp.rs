@@ -274,6 +274,122 @@ fn source_model_for_tool<'a>(
         .or_else(|| arg_str(args, &["model"]))
 }
 
+fn normalize_mcp_agent_label(raw_agent: &str, model: Option<&str>) -> Result<String, String> {
+    let mut agent = raw_agent.trim().to_string();
+    if agent.is_empty() {
+        return Err("Missing required argument: agent".to_string());
+    }
+    if agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+        return Err("Invalid agent label".to_string());
+    }
+    if !agent.contains('(') {
+        if let Some(model_name) = model.map(str::trim).filter(|m| !m.is_empty()) {
+            if agent.eq_ignore_ascii_case("droid") {
+                agent = format!("DROID ({model_name})");
+            } else {
+                agent = format!("{agent} ({model_name})");
+            }
+        }
+    }
+    if agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
+        return Err("Invalid agent label".to_string());
+    }
+    Ok(agent)
+}
+
+fn mcp_session_owner_id(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+) -> Result<Option<i64>, String> {
+    if state.team_mode {
+        let caller_id = caller_id.ok_or_else(|| {
+            "Team mode requires a caller-scoped API key for MCP session operations".to_string()
+        })?;
+        Ok(Some(caller_id))
+    } else {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpPresenceDisposition {
+    Existing,
+    Started,
+}
+
+async fn refresh_mcp_session_presence(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+    raw_agent: &str,
+    model: Option<&str>,
+    description_prefix: &str,
+) -> Result<(String, String, McpPresenceDisposition), String> {
+    let agent = normalize_mcp_agent_label(raw_agent, model)?;
+    let owner_id = mcp_session_owner_id(state, caller_id)?;
+    let now = now_iso();
+    let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
+    let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
+    let description = model
+        .map(|m| format!("{description_prefix} · {m}"))
+        .unwrap_or_else(|| description_prefix.to_string());
+
+    let conn = state.db.lock().await;
+    let disposition = if let Some(owner_id) = owner_id {
+        let updated = conn
+            .execute(
+                "UPDATE sessions
+                 SET last_heartbeat = ?1,
+                     expires_at = ?2,
+                     description = CASE
+                         WHEN description IS NULL OR trim(description) = '' THEN ?3
+                         ELSE description
+                     END
+                 WHERE owner_id = ?4 AND agent = ?5",
+                rusqlite::params![now, expires_at, description, owner_id, agent],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            conn.execute(
+                "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+                 VALUES (?1, ?2, ?3, 'mcp', '[]', ?4, ?5, ?5, ?6)",
+                rusqlite::params![agent, owner_id, session_id, description, now, expires_at],
+            )
+            .map_err(|e| e.to_string())?;
+            McpPresenceDisposition::Started
+        } else {
+            McpPresenceDisposition::Existing
+        }
+    } else {
+        let updated = conn
+            .execute(
+                "UPDATE sessions
+                 SET last_heartbeat = ?1,
+                     expires_at = ?2,
+                     description = CASE
+                         WHEN description IS NULL OR trim(description) = '' THEN ?3
+                         ELSE description
+                     END
+                 WHERE agent = ?4",
+                rusqlite::params![now, expires_at, description, agent],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            conn.execute(
+                "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+                 VALUES (?1, ?2, 'mcp', '[]', ?3, ?4, ?4, ?5)",
+                rusqlite::params![agent, session_id, description, now, expires_at],
+            )
+            .map_err(|e| e.to_string())?;
+            McpPresenceDisposition::Started
+        } else {
+            McpPresenceDisposition::Existing
+        }
+    };
+
+    crate::db::checkpoint_wal_best_effort(&conn);
+    Ok((agent, expires_at, disposition))
+}
+
 fn recall_owner_scope(ctx: &RecallContext) -> String {
     if !ctx.team_mode {
         return "solo".to_string();
@@ -456,7 +572,7 @@ mod tests {
     use crate::db;
     use crate::handlers::recall::RecallContext;
     use crate::handlers::SourceIdentity;
-    use crate::state::RuntimeState;
+    use crate::state::{DaemonEvent, RuntimeState};
     use serde_json::json;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -502,6 +618,16 @@ mod tests {
             readiness: Arc::new(AtomicBool::new(true)),
             write_buffer_path: PathBuf::from("write_buffer.jsonl"),
         }
+    }
+
+    async fn recv_session_event(receiver: &mut broadcast::Receiver<DaemonEvent>) -> DaemonEvent {
+        for _ in 0..8 {
+            let event = receiver.recv().await.unwrap();
+            if event.event_type == "session" {
+                return event;
+            }
+        }
+        panic!("expected session event");
     }
 
     async fn seed_disputed_pair(state: &RuntimeState) -> (i64, i64) {
@@ -789,6 +915,140 @@ mod tests {
             Some("codex winner")
         );
     }
+
+    #[tokio::test]
+    async fn cortex_boot_emits_session_started_event() {
+        let state = test_state();
+        let mut events = state.events.subscribe();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        let booted = mcp_dispatch(
+            &state,
+            None,
+            "cortex_boot",
+            &json!({"budget": 0}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+        assert!(booted.get("bootPrompt").is_some());
+
+        let session_event = recv_session_event(&mut events).await;
+        assert_eq!(session_event.data["action"].as_str(), Some("started"));
+        assert_eq!(
+            session_event.data["agent"].as_str(),
+            Some("codex (gpt-5.4)")
+        );
+
+        let conn = state.db.lock().await;
+        let description: String = conn
+            .query_row(
+                "SELECT description FROM sessions WHERE agent = ?1",
+                rusqlite::params!["codex (gpt-5.4)"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(description, "MCP boot session · gpt-5.4");
+    }
+
+    #[tokio::test]
+    async fn read_path_tools_recreate_mcp_presence_when_missing() {
+        let cases = vec![
+            ("cortex_peek", json!({"query": "sqlite"})),
+            ("cortex_recall", json!({"query": "sqlite"})),
+            ("cortex_recall_policy_explain", json!({"query": "sqlite"})),
+            ("cortex_semantic_recall", json!({"query": "sqlite"})),
+            ("cortex_unfold", json!({"sources": ["memory::missing"]})),
+        ];
+
+        for (tool_name, args) in cases {
+            let state = test_state();
+            let mut events = state.events.subscribe();
+            let source = SourceIdentity {
+                agent: "codex".to_string(),
+                model: Some("gpt-5.4".to_string()),
+            };
+
+            let payload = mcp_dispatch(&state, None, tool_name, &args, Some(&source))
+                .await
+                .unwrap();
+            assert!(
+                payload.is_object(),
+                "{tool_name} should return a JSON payload"
+            );
+
+            let session_event = recv_session_event(&mut events).await;
+            assert_eq!(session_event.data["action"].as_str(), Some("started"));
+            assert_eq!(
+                session_event.data["agent"].as_str(),
+                Some("codex (gpt-5.4)")
+            );
+
+            let conn = state.db.lock().await;
+            let description: String = conn
+                .query_row(
+                    "SELECT description FROM sessions WHERE agent = ?1",
+                    rusqlite::params!["codex (gpt-5.4)"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(description, "MCP active session · gpt-5.4");
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_presence_refresh_preserves_boot_description_without_new_session_event() {
+        let state = test_state();
+        let mut events = state.events.subscribe();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_boot",
+            &json!({"budget": 0}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        while events.try_recv().is_ok() {}
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_recall",
+            &json!({"query": "sqlite", "agent": "codex"}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        let conn = state.db.lock().await;
+        let description: String = conn
+            .query_row(
+                "SELECT description FROM sessions WHERE agent = ?1",
+                rusqlite::params!["codex (gpt-5.4)"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(description, "MCP boot session · gpt-5.4");
+        drop(conn);
+
+        let drained: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+            .map(|event| event.event_type)
+            .collect();
+        assert!(
+            !drained.iter().any(|event_type| event_type == "session"),
+            "existing sessions should not emit a new session event on recall refresh: {drained:?}"
+        );
+    }
 }
 
 async fn upsert_mcp_session(
@@ -798,34 +1058,8 @@ async fn upsert_mcp_session(
     model: Option<&str>,
     description_prefix: &str,
 ) -> Result<(String, String), String> {
-    let mut agent = raw_agent.trim().to_string();
-    if agent.is_empty() {
-        return Err("Missing required argument: agent".to_string());
-    }
-    if agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
-        return Err("Invalid agent label".to_string());
-    }
-    if !agent.contains('(') {
-        if let Some(model_name) = model.map(str::trim).filter(|m| !m.is_empty()) {
-            if agent.eq_ignore_ascii_case("droid") {
-                agent = format!("DROID ({model_name})");
-            } else {
-                agent = format!("{agent} ({model_name})");
-            }
-        }
-    }
-    if agent.len() > 160 || agent.chars().any(|ch| ch.is_control()) {
-        return Err("Invalid agent label".to_string());
-    }
-
-    let owner_id = if state.team_mode {
-        let caller_id = caller_id.ok_or_else(|| {
-            "Team mode requires a caller-scoped API key for MCP session operations".to_string()
-        })?;
-        Some(caller_id)
-    } else {
-        None
-    };
+    let agent = normalize_mcp_agent_label(raw_agent, model)?;
+    let owner_id = mcp_session_owner_id(state, caller_id)?;
     let now = now_iso();
     let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
     let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
@@ -1251,6 +1485,10 @@ async fn mcp_dispatch(
             crate::db::checkpoint_wal_best_effort(&conn);
 
             state.emit(
+                "session",
+                json!({ "action": "started", "agent": agent.clone() }),
+            );
+            state.emit(
                 "agent_boot",
                 json!({"agent": agent.clone(), "profile": profile_str.clone()}),
             );
@@ -1288,6 +1526,17 @@ async fn mcp_dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let agent = source_agent_for_tool(source, "mcp");
+            let model = source_model_for_tool(source, args);
+            let (display_agent, _, disposition) =
+                refresh_mcp_session_presence(state, caller_id, &agent, model, "MCP active session")
+                    .await?;
+            if disposition == McpPresenceDisposition::Started {
+                state.emit(
+                    "session",
+                    json!({ "action": "started", "agent": display_agent }),
+                );
+            }
 
             let ctx = RecallContext::from_caller(caller_id, state);
             let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx, None).await?;
@@ -1331,6 +1580,16 @@ async fn mcp_dispatch(
                     adaptive_policy = Some(policy);
                 }
             }
+            let model = source_model_for_tool(source, args);
+            let (display_agent, _, disposition) =
+                refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session")
+                    .await?;
+            if disposition == McpPresenceDisposition::Started {
+                state.emit(
+                    "session",
+                    json!({ "action": "started", "agent": display_agent }),
+                );
+            }
 
             let ctx = RecallContext::from_caller(caller_id, state);
             let mut payload =
@@ -1358,6 +1617,16 @@ async fn mcp_dispatch(
                 .unwrap_or((k.max(8) * 3).min(64));
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let model = source_model_for_tool(source, args);
+            let (display_agent, _, disposition) =
+                refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session")
+                    .await?;
+            if disposition == McpPresenceDisposition::Started {
+                state.emit(
+                    "session",
+                    json!({ "action": "started", "agent": display_agent }),
+                );
+            }
 
             let ctx = RecallContext::from_caller(caller_id, state);
             execute_recall_policy_explain(state, query, budget, k, agent, &ctx, None, pool_k).await
@@ -1376,6 +1645,16 @@ async fn mcp_dispatch(
             });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let model = source_model_for_tool(source, args);
+            let (display_agent, _, disposition) =
+                refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session")
+                    .await?;
+            if disposition == McpPresenceDisposition::Started {
+                state.emit(
+                    "session",
+                    json!({ "action": "started", "agent": display_agent }),
+                );
+            }
 
             let ctx = RecallContext::from_caller(caller_id, state);
             execute_semantic_recall(state, query, budget, k, agent, &ctx, None).await
@@ -1496,7 +1775,18 @@ async fn mcp_dispatch(
             if sources.len() > MAX_UNFOLD_SOURCES {
                 return Err(format!("Too many sources (max {MAX_UNFOLD_SOURCES})"));
             }
-            let agent = args.get("agent").and_then(|v| v.as_str()).unwrap_or("mcp");
+            let agent = arg_str(args, &["agent", "source_agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let model = source_model_for_tool(source, args);
+            let (display_agent, _, disposition) =
+                refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session")
+                    .await?;
+            if disposition == McpPresenceDisposition::Started {
+                state.emit(
+                    "session",
+                    json!({ "action": "started", "agent": display_agent }),
+                );
+            }
             let ctx = RecallContext::from_caller(caller_id, state);
             let conn = state.db_read.lock().await;
             let mut results: Vec<Value> = Vec::new();
