@@ -2,7 +2,7 @@
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use chrono::{NaiveDateTime, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use super::ensure_auth_with_caller;
-use super::{estimate_tokens, json_response, now_iso, resolve_source_identity, truncate_chars};
+use super::{
+    estimate_tokens, json_response, now_iso, parse_timestamp_ms, resolve_source_identity,
+    truncate_chars,
+};
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState};
@@ -2976,22 +2979,6 @@ fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> Stri
         excerpt.push_str("...");
     }
     excerpt
-}
-
-fn parse_timestamp_ms(value: &str) -> i64 {
-    if value.trim().is_empty() {
-        return 0;
-    }
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
-        return dt.timestamp_millis();
-    }
-    if let Ok(naive) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Utc.from_utc_datetime(&naive).timestamp_millis();
-    }
-    if let Ok(naive) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
-        return Utc.from_utc_datetime(&naive).timestamp_millis();
-    }
-    0
 }
 
 fn recency_days(value: Option<&str>) -> i64 {

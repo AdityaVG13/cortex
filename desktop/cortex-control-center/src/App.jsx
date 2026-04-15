@@ -8,7 +8,12 @@ import {
   settledCollectErrors,
   summarizeDashboardErrors,
 } from "./api-client.js";
-import { CURRENCY_OPTIONS, USD_TO_CURRENCY_RATE, SAVINGS_OPERATION_LABELS } from "./constants.js";
+import {
+  CURRENCY_OPTIONS,
+  USD_TO_CURRENCY_RATE,
+  SAVINGS_OPERATION_LABELS,
+  timeAgo,
+} from "./constants.js";
 import {
   buildKnownAgents,
   canClaimTask,
@@ -225,15 +230,6 @@ function persistBrowserAuthToken(token) {
   } catch {
     // Ignore storage failures in restricted browser contexts.
   }
-}
-
-function timeAgo(iso) {
-  if (!iso) return "unknown";
-  const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`;
-  return `${Math.floor(minutes / 1440)}d`;
 }
 
 function priorityRank(priority) {

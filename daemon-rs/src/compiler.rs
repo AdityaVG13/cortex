@@ -17,6 +17,7 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+use crate::handlers::estimate_tokens;
 use crate::indexer::custom_source_paths;
 
 fn detect_identity() -> String {
@@ -65,10 +66,6 @@ pub struct BootResult {
 // ─── Token estimation ───────────────────────────────────────────────────────
 
 /// Estimate tokens from character length (~3.8 chars/token, matching Node.js).
-fn estimate_tokens(text: &str) -> usize {
-    (text.len() as f64 / 3.8).ceil() as usize
-}
-
 // ─── Content-addressed cache ────────────────────────────────────────────────
 
 /// Compute a fast content hash for cache invalidation.

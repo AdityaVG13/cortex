@@ -18,7 +18,7 @@ pub mod store;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
 use std::net::IpAddr;
 
@@ -465,8 +465,25 @@ pub fn log_event(
 }
 
 /// Estimate token count from character length (≈3.8 chars/token).
-pub fn estimate_tokens(text: &str) -> usize {
+pub(crate) fn estimate_tokens(text: &str) -> usize {
     (text.len() as f64 / 3.8).ceil() as usize
+}
+
+/// Parse an RFC3339 or legacy timestamp string into epoch milliseconds.
+pub(crate) fn parse_timestamp_ms(value: &str) -> i64 {
+    if value.trim().is_empty() {
+        return 0;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return dt.timestamp_millis();
+    }
+    if let Ok(naive) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Utc.from_utc_datetime(&naive).timestamp_millis();
+    }
+    if let Ok(naive) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
+        return Utc.from_utc_datetime(&naive).timestamp_millis();
+    }
+    0
 }
 
 /// Truncate a string to at most `max` characters.

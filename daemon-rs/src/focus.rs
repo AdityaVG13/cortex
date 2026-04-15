@@ -14,6 +14,8 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
+use crate::handlers::estimate_tokens;
+
 /// Start a new focus session. Returns the session ID.
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
     // Check for existing open session with same label
@@ -230,8 +232,4 @@ fn summarize_entries(entries: &[String]) -> String {
     } else {
         result
     }
-}
-
-fn estimate_tokens(text: &str) -> usize {
-    (text.len() as f64 / 3.8).ceil() as usize
 }

@@ -3,14 +3,14 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use chrono::{Duration, TimeZone, Utc};
+use chrono::{Duration, Utc};
 use regex::Regex;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{ensure_auth, json_response, now_iso, resolve_caller_id};
+use super::{ensure_auth, json_response, now_iso, parse_timestamp_ms, resolve_caller_id};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 
@@ -163,22 +163,6 @@ fn parse_json_array(raw: &str) -> Value {
 fn is_valid_agent_label(agent: &str) -> bool {
     let trimmed = agent.trim();
     !trimmed.is_empty() && trimmed.len() <= 160 && !trimmed.chars().any(|ch| ch.is_control())
-}
-
-fn parse_timestamp_ms(value: &str) -> i64 {
-    if value.trim().is_empty() {
-        return 0;
-    }
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
-        return dt.timestamp_millis();
-    }
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Utc.from_utc_datetime(&naive).timestamp_millis();
-    }
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f") {
-        return Utc.from_utc_datetime(&naive).timestamp_millis();
-    }
-    0
 }
 
 fn redact_secrets(text: &str) -> String {
