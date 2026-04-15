@@ -3081,12 +3081,24 @@ fn collect_semantic_candidates(
 
     let mut candidates: HashMap<String, SemanticCandidate> = HashMap::new();
 
-    if let Ok(mut stmt) = conn.prepare(
+    let semantic_memory_query_with_acl =
         "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
-         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))",
-    ) {
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+    let semantic_memory_query_without_acl =
+        "SELECT e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
+         FROM embeddings e \
+         JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+    let semantic_memory_stmt = match conn.prepare(semantic_memory_query_with_acl) {
+        Ok(stmt) => Some(stmt),
+        Err(err) if is_missing_team_visibility_columns(&err) => {
+            conn.prepare(semantic_memory_query_without_acl).ok()
+        }
+        Err(_) => None,
+    };
+    if let Some(mut stmt) = semantic_memory_stmt {
         let rows: Vec<MemorySemanticRow> = stmt
             .query_map([], |row| {
                 Ok((
@@ -3152,13 +3164,15 @@ fn collect_semantic_candidates(
                 .or(created_at.as_deref())
                 .unwrap_or_default();
             let ts = parse_timestamp_ms(ts_source);
-            let entry = candidates.entry(source.clone()).or_insert(SemanticCandidate {
-                source,
-                excerpt: excerpt.clone(),
-                relevance: scaled,
-                importance,
-                ts,
-            });
+            let entry = candidates
+                .entry(source.clone())
+                .or_insert(SemanticCandidate {
+                    source,
+                    excerpt: excerpt.clone(),
+                    relevance: scaled,
+                    importance,
+                    ts,
+                });
             if scaled > entry.relevance {
                 *entry = SemanticCandidate {
                     source: entry.source.clone(),
@@ -3171,12 +3185,24 @@ fn collect_semantic_candidates(
         }
     }
 
-    if let Ok(mut stmt) = conn.prepare(
+    let semantic_decision_query_with_acl =
         "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
-         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
-    ) {
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+    let semantic_decision_query_without_acl =
+        "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
+         FROM embeddings e \
+         JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+    let semantic_decision_stmt = match conn.prepare(semantic_decision_query_with_acl) {
+        Ok(stmt) => Some(stmt),
+        Err(err) if is_missing_team_visibility_columns(&err) => {
+            conn.prepare(semantic_decision_query_without_acl).ok()
+        }
+        Err(_) => None,
+    };
+    if let Some(mut stmt) = semantic_decision_stmt {
         let rows: Vec<DecisionSemanticRow> = stmt
             .query_map([], |row| {
                 Ok((
@@ -3219,7 +3245,10 @@ fn collect_semantic_candidates(
             }
 
             let source = context.unwrap_or_else(|| {
-                format!("decision::{}", decision.chars().take(40).collect::<String>())
+                format!(
+                    "decision::{}",
+                    decision.chars().take(40).collect::<String>()
+                )
             });
             if !source_matches_prefix(&source, source_prefix) {
                 continue;
@@ -3245,13 +3274,15 @@ fn collect_semantic_candidates(
                 .or(created_at.as_deref())
                 .unwrap_or_default();
             let ts = parse_timestamp_ms(ts_source);
-            let entry = candidates.entry(source.clone()).or_insert(SemanticCandidate {
-                source,
-                excerpt: excerpt.clone(),
-                relevance: scaled,
-                importance,
-                ts,
-            });
+            let entry = candidates
+                .entry(source.clone())
+                .or_insert(SemanticCandidate {
+                    source,
+                    excerpt: excerpt.clone(),
+                    relevance: scaled,
+                    importance,
+                    ts,
+                });
             if scaled > entry.relevance {
                 *entry = SemanticCandidate {
                     source: entry.source.clone(),
@@ -5335,6 +5366,42 @@ mod tests {
         assert_eq!(
             manual_semantic_ranking[position].0,
             "decision::expect-skill"
+        );
+    }
+
+    #[test]
+    fn semantic_candidate_collection_supports_solo_schema_without_team_columns() {
+        let conn = test_conn();
+        insert_memory_with_embedding(
+            &conn,
+            "daemon ownership lock arbitration with wal checkpoint fallback",
+            "memory::solo-semantic",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "token budgeting and shallow entropy heuristics",
+            "memory::solo-noise",
+            &[0.0, 1.0, 0.0, 0.0, 0.0],
+        );
+
+        let query_vector = [0.98, 0.02, 0.0, 0.0, 0.0];
+        let candidates = collect_semantic_candidates(
+            &conn,
+            &query_vector,
+            "daemon ownership lock",
+            &solo_ctx(),
+            None,
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.source == "memory::solo-semantic"),
+            "solo schema semantic fallback should still surface matching embeddings: {:?}",
+            candidates
+                .iter()
+                .map(|candidate| candidate.source.clone())
+                .collect::<Vec<_>>()
         );
     }
 
