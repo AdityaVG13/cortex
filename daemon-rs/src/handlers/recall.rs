@@ -3326,6 +3326,37 @@ fn hash_content(content: &str) -> u32 {
     hash
 }
 
+fn source_dedup_hash(source: &str) -> u32 {
+    hash_content(&format!("source::{source}"))
+}
+
+async fn load_collapsed_source_fallback(
+    state: &RuntimeState,
+    source: &str,
+    query: &str,
+    ctx: &RecallContext,
+    relevance: f64,
+) -> Option<RecallItem> {
+    let conn = state.db_read.lock().await;
+    let payload = unfold_source(&conn, source, ctx)?;
+    let canonical_source = payload
+        .get("source")
+        .and_then(|value| value.as_str())
+        .unwrap_or(source)
+        .to_string();
+    let text = payload.get("text").and_then(|value| value.as_str())?;
+    Some(RecallItem {
+        source: canonical_source,
+        relevance,
+        excerpt: query_focused_excerpt(text, query, 260),
+        method: "crystal".to_string(),
+        tokens: None,
+        entropy: None,
+        family_members: Vec::new(),
+        collapsed_sources: Vec::new(),
+    })
+}
+
 /// Content served within this window is suppressed to avoid echo in rapid
 /// successive recalls. After this TTL, the same content can be re-served.
 const SERVED_TTL_MS: i64 = 60_000; // 60 seconds
@@ -3342,24 +3373,83 @@ async fn dedup_and_mark_served(
     }
 
     let now = Utc::now().timestamp_millis();
-    let mut served = state.served_content.lock().await;
-    let map = served
-        .entry(served_content_scope(agent, query, ctx))
-        .or_insert_with(HashMap::<u32, i64>::new);
-
-    // Evict expired entries
-    map.retain(|_, ts| now - *ts < SERVED_TTL_MS);
+    let scope_key = served_content_scope(agent, query, ctx);
+    {
+        let mut served = state.served_content.lock().await;
+        let map = served
+            .entry(scope_key.clone())
+            .or_insert_with(HashMap::<u32, i64>::new);
+        map.retain(|_, ts| now - *ts < SERVED_TTL_MS);
+    }
 
     let mut filtered = Vec::new();
     for result in results {
-        let hash = hash_content(&result.excerpt);
-        if map.contains_key(&hash) {
+        let excerpt_hash = hash_content(&result.excerpt);
+        let source_hash = source_dedup_hash(&result.source);
+        let already_served = {
+            let served = state.served_content.lock().await;
+            served
+                .get(&scope_key)
+                .map(|map| map.contains_key(&excerpt_hash) || map.contains_key(&source_hash))
+                .unwrap_or(false)
+        };
+
+        if already_served {
             if result.method == "crystal" && !result.collapsed_sources.is_empty() {
-                filtered.push(result);
+                let fallback_relevance = round4((result.relevance * 0.98).max(0.0));
+                let mut fallback_item = None;
+                for collapsed_source in &result.collapsed_sources {
+                    let collapsed_source_hash = source_dedup_hash(collapsed_source);
+                    let collapsed_seen = {
+                        let served = state.served_content.lock().await;
+                        served
+                            .get(&scope_key)
+                            .map(|map| map.contains_key(&collapsed_source_hash))
+                            .unwrap_or(false)
+                    };
+                    if collapsed_seen {
+                        continue;
+                    }
+                    let Some(candidate) = load_collapsed_source_fallback(
+                        state,
+                        collapsed_source,
+                        query,
+                        ctx,
+                        fallback_relevance,
+                    )
+                    .await
+                    else {
+                        continue;
+                    };
+                    let candidate_excerpt_hash = hash_content(&candidate.excerpt);
+                    let candidate_source_hash = source_dedup_hash(&candidate.source);
+                    let mut served = state.served_content.lock().await;
+                    let map = served
+                        .entry(scope_key.clone())
+                        .or_insert_with(HashMap::<u32, i64>::new);
+                    if map.contains_key(&candidate_excerpt_hash)
+                        || map.contains_key(&candidate_source_hash)
+                    {
+                        continue;
+                    }
+                    map.insert(candidate_excerpt_hash, now);
+                    map.insert(candidate_source_hash, now);
+                    fallback_item = Some(candidate);
+                    break;
+                }
+                if let Some(candidate) = fallback_item {
+                    filtered.push(candidate);
+                }
             }
             continue;
         }
-        map.insert(hash, now);
+
+        let mut served = state.served_content.lock().await;
+        let map = served
+            .entry(scope_key.clone())
+            .or_insert_with(HashMap::<u32, i64>::new);
+        map.insert(excerpt_hash, now);
+        map.insert(source_hash, now);
         filtered.push(result);
     }
 
@@ -3961,6 +4051,11 @@ mod tests {
     use super::*;
     use crate::handlers::store::{persist_decision_embedding, store_decision_with_input_embedding};
     use rusqlite::params;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, Mutex};
 
     // ── is_visible tests ───────────────────────────────────────────
 
@@ -3989,6 +4084,54 @@ mod tests {
         crate::db::initialize_schema(&conn).unwrap();
         crate::db::run_pending_migrations(&conn);
         conn
+    }
+
+    fn shared_test_state() -> RuntimeState {
+        let db_path = std::env::temp_dir().join(format!(
+            "cortex-recall-shared-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let write_conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::db::configure(&write_conn).unwrap();
+        crate::db::initialize_schema(&write_conn).unwrap();
+        crate::db::run_pending_migrations(&write_conn);
+
+        let read_conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::db::configure(&read_conn).unwrap();
+        crate::db::initialize_schema(&read_conn).unwrap();
+        crate::db::run_pending_migrations(&read_conn);
+
+        let (events, _) = broadcast::channel(8);
+        RuntimeState {
+            db: Arc::new(Mutex::new(write_conn)),
+            db_read: Arc::new(Mutex::new(read_conn)),
+            token: Arc::new("test-token".to_string()),
+            events,
+            mcp_calls: Arc::new(AtomicU64::new(0)),
+            mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
+            recall_history: Arc::new(Mutex::new(HashMap::new())),
+            pre_cache: Arc::new(Mutex::new(HashMap::new())),
+            served_content: Arc::new(Mutex::new(HashMap::new())),
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            home: PathBuf::from("."),
+            db_path: db_path.clone(),
+            token_path: PathBuf::from("cortex.token"),
+            pid_path: PathBuf::from("cortex.pid"),
+            port: 7437,
+            embedding_engine: None,
+            rate_limiter: crate::rate_limit::RateLimiter::new(),
+            team_mode: false,
+            default_owner_id: None,
+            team_api_key_hashes: Arc::new(std::sync::RwLock::new(Vec::new())),
+            degraded_mode: Arc::new(AtomicBool::new(false)),
+            db_corrupted: Arc::new(AtomicBool::new(false)),
+            readiness: Arc::new(AtomicBool::new(true)),
+            write_buffer_path: PathBuf::from("write_buffer.jsonl"),
+        }
     }
 
     fn insert_memory_with_embedding(
@@ -4733,6 +4876,74 @@ mod tests {
                 .iter()
                 .all(|item| item.source != canonical_member_source),
             "null-source member should collapse under the crystal family head"
+        );
+    }
+
+    #[tokio::test]
+    async fn deduped_crystal_can_fall_back_to_a_collapsed_child_source() {
+        let state = shared_test_state();
+        let query = "daemon lease renewal single daemon";
+        let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0];
+
+        let (crystal_key, member_sources, first_results, second_results) = {
+            let mut conn = state.db.lock().await;
+            let (_crystal_id, crystal_key, member_sources) = insert_crystal_with_memory_members(
+                &conn,
+                "daemon lease renewal",
+                "Lease renewal prevents duplicate daemon spawns and stale lock ownership.",
+                &query_vector,
+                &[
+                    (
+                        "Daemon lease renewal keeps the single-daemon invariant intact during recovery.",
+                        "memory::daemon-lease-renewal",
+                        &query_vector,
+                    ),
+                    (
+                        "Lock ownership heartbeat stops plugin reconnects from spawning another daemon.",
+                        "memory::plugin-lock-heartbeat",
+                        &[0.98, 0.02, 0.0, 0.0, 0.0],
+                    ),
+                ],
+            );
+
+            let first_results = run_recall_with_query_vector(
+                &mut conn,
+                query,
+                5,
+                Some(&query_vector),
+                &solo_ctx(),
+                None,
+            )
+            .expect("first recall should succeed");
+            let second_results = run_recall_with_query_vector(
+                &mut conn,
+                query,
+                5,
+                Some(&query_vector),
+                &solo_ctx(),
+                None,
+            )
+            .expect("second recall should succeed");
+            (crystal_key, member_sources, first_results, second_results)
+        };
+
+        let first = dedup_and_mark_served(&state, "codex", query, &solo_ctx(), first_results).await;
+        assert!(
+            first.iter().any(|item| item.source == crystal_key),
+            "first serve should emit the crystal family head"
+        );
+
+        let second =
+            dedup_and_mark_served(&state, "codex", query, &solo_ctx(), second_results).await;
+        assert!(
+            second.iter().all(|item| item.source != crystal_key),
+            "second serve should not repeat the crystal summary when a child fallback is available"
+        );
+        assert!(
+            second
+                .iter()
+                .any(|item| member_sources.iter().any(|source| source == &item.source)),
+            "second serve should fall back to a collapsed child source"
         );
     }
 
