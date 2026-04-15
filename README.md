@@ -161,8 +161,8 @@ The docs are organized around what you are trying to do, not around internal fol
 | `cortex --help` | Show command reference plus troubleshooting guidance |
 | `cortex doctor` | Run integrity and configuration diagnostics |
 | `cortex paths --json` | Output canonical file and port paths |
-| `cortex plugin ensure-daemon` | Verify that a healthy daemon is already running and print its port |
-| `cortex plugin mcp` | Bridge MCP stdio to the Cortex HTTP API |
+| `cortex plugin ensure-daemon` | Ensure daemon health in plugin mode (service-first on Windows) and print its port |
+| `cortex plugin mcp` | Bridge MCP stdio to the Cortex HTTP API (plugin local mode uses service-first daemon ensure) |
 | `cortex setup --team` | Initialize team mode and generate API keys |
 | `cortex export` | Export data in `json` or `sql` format |
 | `cortex import` | Import a JSON export into solo or team mode |

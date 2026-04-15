@@ -27,6 +27,18 @@ const ARCHIVED_TEXT_RETENTION_DAYS: i64 = 90;
 /// Feedback signals older than this are aggregated into summaries.
 const FEEDBACK_AGGREGATION_DAYS: i64 = 60;
 
+/// Elevated-pressure storage governor soft limit (no hard failures, compaction only).
+pub const STORAGE_SOFT_LIMIT_BYTES: i64 = 256 * 1024 * 1024; // 256MB
+/// Critical-pressure storage governor hard limit (triggers aggressive safe compaction).
+pub const STORAGE_HARD_LIMIT_BYTES: i64 = 512 * 1024 * 1024; // 512MB
+
+/// Under critical pressure, compact events more aggressively.
+const AGGRESSIVE_EVENT_RETENTION_DAYS: i64 = 3;
+/// Under critical pressure, compact archived text sooner.
+const AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS: i64 = 30;
+/// Under critical pressure, aggregate feedback sooner.
+const AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS: i64 = 14;
+
 // ─── Result ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
@@ -38,6 +50,60 @@ pub struct CompactionResult {
     pub feedback_aggregated: usize,
     pub bytes_before: i64,
     pub bytes_after: i64,
+}
+
+fn bytes_to_mb(bytes: i64) -> i64 {
+    bytes / (1024 * 1024)
+}
+
+/// Classify current storage pressure based on DB size.
+/// This is advisory only; Cortex should compact automatically, not reject writes.
+pub fn classify_storage_pressure(db_size_bytes: i64) -> &'static str {
+    if db_size_bytes >= STORAGE_HARD_LIMIT_BYTES {
+        "critical"
+    } else if db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES {
+        "elevated"
+    } else {
+        "normal"
+    }
+}
+
+/// Run compaction only when pressure or reclaimable space justifies IO.
+/// Returns `Some(result)` when a compaction pass ran, `None` when skipped.
+pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
+    let before = db_size_bytes(conn);
+    let freelist_pages = freelist_count(conn);
+    let pressure_before = classify_storage_pressure(before);
+
+    if before < STORAGE_SOFT_LIMIT_BYTES && freelist_pages <= VACUUM_FREELIST_THRESHOLD_PAGES {
+        return None;
+    }
+
+    let mut result = run_compaction(conn);
+
+    // Critical pressure gets an additional safe-aggressive pass. We still only touch:
+    // old events, archived text, and aged feedback (never active memory content).
+    if before >= STORAGE_HARD_LIMIT_BYTES {
+        result.events_pruned +=
+            prune_old_events_with_retention(conn, AGGRESSIVE_EVENT_RETENTION_DAYS);
+        result.archived_text_stripped +=
+            strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
+        result.feedback_aggregated +=
+            aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        result.bytes_after = db_size_bytes(conn);
+    }
+
+    let pressure_after = classify_storage_pressure(result.bytes_after);
+    eprintln!(
+        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB",
+        pressure_before,
+        pressure_after,
+        bytes_to_mb(result.bytes_before),
+        bytes_to_mb(result.bytes_after)
+    );
+
+    Some(result)
 }
 
 // ─── Main entry point ───────────────────────────────────────────────────────
@@ -99,11 +165,15 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
 // ─── Event log rotation ─────────────────────────────────────────────────────
 
 fn prune_old_events(conn: &Connection) -> usize {
+    prune_old_events_with_retention(conn, EVENT_RETENTION_DAYS)
+}
+
+fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
     conn.execute(
         "DELETE FROM events \
          WHERE type NOT IN ('agent_boot', 'boot_savings') \
          AND created_at < datetime('now', ?1)",
-        params![format!("-{EVENT_RETENTION_DAYS} days")],
+        params![format!("-{retention_days} days")],
     )
     .unwrap_or(0)
 }
@@ -114,6 +184,10 @@ fn prune_old_events(conn: &Connection) -> usize {
 /// Keeps: id, source, type, status, created_at, score (for audit).
 /// Drops: text, compressed_text, tags, context (saves space).
 fn strip_archived_text(conn: &Connection) -> usize {
+    strip_archived_text_with_retention(conn, ARCHIVED_TEXT_RETENTION_DAYS)
+}
+
+fn strip_archived_text_with_retention(conn: &Connection, retention_days: i64) -> usize {
     let mut count = 0usize;
 
     count += conn
@@ -122,7 +196,7 @@ fn strip_archived_text(conn: &Connection) -> usize {
              WHERE status = 'archived' \
              AND text != '[compacted]' \
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
-            params![ARCHIVED_TEXT_RETENTION_DAYS],
+            params![retention_days],
         )
         .unwrap_or(0);
 
@@ -132,7 +206,7 @@ fn strip_archived_text(conn: &Connection) -> usize {
              WHERE status = 'archived' \
              AND decision != '[compacted]' \
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
-            params![ARCHIVED_TEXT_RETENTION_DAYS],
+            params![retention_days],
         )
         .unwrap_or(0);
 
@@ -206,6 +280,10 @@ fn prune_crystal_member_embeddings(conn: &Connection) -> usize {
 /// Before: 50 rows for "memory::foo" with signal 1.0, -0.5, 1.0, ...
 /// After:  1 row for "memory::foo" with signal = net_sum, query_text = "[aggregated]"
 fn aggregate_old_feedback(conn: &Connection) -> usize {
+    aggregate_old_feedback_with_window(conn, FEEDBACK_AGGREGATION_DAYS)
+}
+
+fn aggregate_old_feedback_with_window(conn: &Connection, aggregation_days: i64) -> usize {
     // Find sources with old feedback to aggregate
     let sources: Vec<(String, f64, i64)> = conn
         .prepare(
@@ -215,7 +293,7 @@ fn aggregate_old_feedback(conn: &Connection) -> usize {
              GROUP BY result_source HAVING COUNT(*) > 1",
         )
         .and_then(|mut stmt| {
-            let rows = stmt.query_map(params![FEEDBACK_AGGREGATION_DAYS], |row| {
+            let rows = stmt.query_map(params![aggregation_days], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, f64>(1)?,
@@ -238,7 +316,7 @@ fn aggregate_old_feedback(conn: &Connection) -> usize {
                 "DELETE FROM recall_feedback \
                  WHERE result_source = ?1 \
                  AND julianday('now') - julianday(created_at) > ?2",
-                params![source, FEEDBACK_AGGREGATION_DAYS],
+                params![source, aggregation_days],
             )
             .unwrap_or(0);
 
@@ -393,6 +471,22 @@ mod tests {
         assert!(!breakdown.is_empty());
         // All counts should be 0 for empty DB
         assert!(breakdown.iter().all(|(_, count)| *count == 0));
+    }
+
+    #[test]
+    fn test_storage_pressure_classification() {
+        assert_eq!(
+            classify_storage_pressure(STORAGE_SOFT_LIMIT_BYTES - 1),
+            "normal"
+        );
+        assert_eq!(
+            classify_storage_pressure(STORAGE_SOFT_LIMIT_BYTES),
+            "elevated"
+        );
+        assert_eq!(
+            classify_storage_pressure(STORAGE_HARD_LIMIT_BYTES),
+            "critical"
+        );
     }
 
     #[test]

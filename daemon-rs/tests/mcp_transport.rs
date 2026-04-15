@@ -55,7 +55,7 @@ fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
 }
 
 #[test]
-fn plugin_mcp_refuses_auto_spawn_without_opt_in() {
+fn plugin_mcp_local_mode_uses_service_first_policy_when_daemon_absent() {
     let home_dir = unique_temp_dir("plugin_mcp_no_autospawn");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -81,14 +81,19 @@ fn plugin_mcp_refuses_auto_spawn_without_opt_in() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
-        "plugin mcp must fail when no daemon is already running and local spawn opt-in is absent"
+        "plugin mcp should fail cleanly when daemon is absent and service ensure cannot satisfy health"
     );
     assert!(
         stderr.contains("cannot start it automatically")
+            || stderr.contains("Windows service ensure failed")
+            || stderr.contains("automatic service ensure is only available on Windows")
             || stderr.contains("another process still holds the daemon lock"),
-        "expected ownership-policy rejection in stderr, got: {stderr}"
+        "expected service/ownership policy rejection in stderr, got: {stderr}"
     );
-    assert!(!health_ok(port), "plugin mcp must not auto-spawn daemon");
+    assert!(
+        !health_ok(port),
+        "plugin mcp absent-daemon case must not report healthy target unless ensure succeeded"
+    );
     let _ = fs::remove_dir_all(&home_dir);
 }
 

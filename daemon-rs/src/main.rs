@@ -393,16 +393,14 @@ async fn main() {
                 std::process::exit(1);
             }
             if local_owner_mode {
-                match ensure_daemon(&paths, agent.as_deref(), false).await {
+                apply_path_env(&paths);
+                match ensure_daemon(&paths, agent.as_deref(), false, false).await {
                     Ok(()) => {}
                     Err(e) => {
                         eprintln!("[cortex-mcp] {e}");
                         std::process::exit(1);
                     }
                 }
-            }
-            if local_owner_mode {
-                apply_path_env(&paths);
             }
             if let Err(e) = mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await {
                 eprintln!("[cortex-mcp] {e}");
@@ -432,7 +430,8 @@ async fn main() {
             match subcmd {
                 "ensure-daemon" => {
                     let agent = parse_flag_value(&args[3..], "--agent");
-                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true).await {
+                    apply_path_env(&paths);
+                    if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, true).await {
                         eprintln!("Error: {e}");
                         std::process::exit(1);
                     }
@@ -449,16 +448,14 @@ async fn main() {
                         std::process::exit(1);
                     }
                     if local_owner_mode {
-                        match ensure_daemon(&paths, agent.as_deref(), false).await {
+                        apply_path_env(&paths);
+                        match ensure_daemon(&paths, agent.as_deref(), false, true).await {
                             Ok(()) => {}
                             Err(e) => {
                                 eprintln!("[cortex-plugin] {e}");
                                 std::process::exit(1);
                             }
                         }
-                    }
-                    if local_owner_mode {
-                        apply_path_env(&paths);
                     }
                     if let Err(e) =
                         mcp_proxy::run(&base_url, api_key.as_deref(), agent.as_deref()).await
@@ -1148,7 +1145,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     );
     eprintln!("  paths --json       Print resolved Cortex paths + port + bind as JSON");
     eprintln!("  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]");
-    eprintln!("  plugin ensure-daemon [--agent <name>]  Verify/attach to a healthy daemon only");
+    eprintln!("  plugin ensure-daemon [--agent <name>]  Ensure daemon is running (service-first on Windows), then print port");
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
     eprintln!();
     eprintln!("Hooks:");
@@ -1813,7 +1810,7 @@ async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), 
 
     if local_owner_mode {
         // Boot CLI does not own daemon lifecycle and must not auto-spawn.
-        ensure_daemon(paths, None, false).await?;
+        ensure_daemon(paths, None, false, false).await?;
     }
 
     let local_target_identity_valid = if local_owner_mode {
@@ -2105,6 +2102,7 @@ async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
     emit_port: bool,
+    allow_service_ensure: bool,
 ) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
@@ -2115,6 +2113,23 @@ async fn ensure_daemon(
         Ok(_guard) => {
             if daemon_healthy(paths).await {
                 // already healthy
+            } else if allow_service_ensure {
+                #[cfg(windows)]
+                {
+                    if !ensure_service_ready_async().await {
+                        return Err(format!(
+                            "daemon is not healthy on port {} and Windows service ensure failed. Run `cortex service ensure` manually.",
+                            paths.port
+                        ));
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    return Err(format!(
+                        "daemon is not healthy on port {} and automatic service ensure is only available on Windows.",
+                        paths.port
+                    ));
+                }
             } else {
                 return Err(format!(
                     "daemon is not healthy on port {} and this client cannot start it automatically. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
@@ -2124,10 +2139,31 @@ async fn ensure_daemon(
         }
         Err(_) => {
             if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
-                return Err(format!(
+                if allow_service_ensure {
+                    #[cfg(windows)]
+                    {
+                        if ensure_service_ready_async().await {
+                            // proceed
+                        } else {
+                            return Err(format!(
+                                "daemon is not healthy on port {} and Windows service ensure failed while daemon lock was held.",
+                                paths.port
+                            ));
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        return Err(format!(
+                            "daemon is not healthy on port {} and automatic service ensure is only available on Windows.",
+                            paths.port
+                        ));
+                    }
+                } else {
+                    return Err(format!(
                     "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
                     paths.port
                 ));
+                }
             }
         }
     }
@@ -2142,6 +2178,13 @@ async fn ensure_daemon(
         println!("{}", paths.port);
     }
     Ok(())
+}
+
+#[cfg(windows)]
+async fn ensure_service_ready_async() -> bool {
+    tokio::task::spawn_blocking(service::ensure_ready)
+        .await
+        .unwrap_or(false)
 }
 
 // ── Admin CLI helpers ───────────────────────────────────────────────────────
@@ -2480,6 +2523,7 @@ pub(crate) async fn run_daemon(
                         "[cortex] Initial aging: {compressed} compressed, {archived} archived"
                     );
                 }
+                let _ = compaction::run_compaction_governor(&conn);
                 cleanup_expired_rows(&conn, "Initial expired cleanup");
             }
             // Then run every 6 hours
@@ -2489,8 +2533,21 @@ pub(crate) async fn run_daemon(
                 interval.tick().await;
                 let conn = db_aging.lock().await;
                 aging::run_aging_pass(&conn);
-                compaction::run_compaction(&conn);
                 cleanup_expired_rows(&conn, "Expired cleanup");
+            }
+        });
+    }
+
+    // â”€â”€ Background storage governor every 30 minutes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    {
+        let db_compaction = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let conn = db_compaction.lock().await;
+                let _ = compaction::run_compaction_governor(&conn);
             }
         });
     }

@@ -80,6 +80,10 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
     let db_size_bytes = std::fs::metadata(&state.db_path)
         .map(|meta| meta.len())
         .unwrap_or(0);
+    let db_soft_limit_bytes = crate::compaction::STORAGE_SOFT_LIMIT_BYTES.max(1) as u64;
+    let db_hard_limit_bytes = crate::compaction::STORAGE_HARD_LIMIT_BYTES.max(1) as u64;
+    let db_pressure = crate::compaction::classify_storage_pressure(db_size_bytes as i64);
+    let db_soft_utilization = ((db_size_bytes as f64) / (db_soft_limit_bytes as f64)).min(10.0);
 
     let degraded = state
         .degraded_mode
@@ -130,6 +134,10 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "team_mode": state.team_mode,
         "db_freelist_pages": db_freelist_pages,
         "db_size_bytes": db_size_bytes,
+        "db_soft_limit_bytes": db_soft_limit_bytes,
+        "db_hard_limit_bytes": db_hard_limit_bytes,
+        "db_pressure": db_pressure,
+        "db_soft_utilization": db_soft_utilization,
         "storage_bytes": storage_bytes,
         "backup_count": backup_count,
         "log_bytes": log_bytes,

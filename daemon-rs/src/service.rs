@@ -457,6 +457,18 @@ pub fn ensure() {
     }
 }
 
+/// Service-first daemon ensure for library callers.
+/// Returns true when daemon health is live after ensure.
+#[cfg(windows)]
+pub fn ensure_ready() -> bool {
+    ensure_windows()
+}
+
+#[cfg(not(windows))]
+pub fn ensure_ready() -> bool {
+    false
+}
+
 // ---- Windows Service entry point (called by SCM) ----------------------------
 
 #[cfg(windows)]
