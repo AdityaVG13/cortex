@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AMB_SRC = REPO_ROOT / "benchmarking" / "tools" / "agent-memory-benchmark" / "src"
 ADAPTERS_DIR = REPO_ROOT / "benchmarking" / "adapters"
 RUNS_ROOT = REPO_ROOT / "benchmarking" / "runs"
+BASELINE_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "token-gate-baselines.json"
 TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     # Tighter ratios for providers that tend to carry heavier prompt wrappers/history overhead.
     "claude": {"max_avg_ratio": 0.72, "max_peak_ratio": 0.90},
@@ -164,6 +165,129 @@ def _resolve_token_gate_limits(
     }
 
 
+def _resolve_baseline_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
+def _load_baseline_store(path: Path) -> dict:
+    if not path.exists():
+        return {
+            "version": 1,
+            "updated_at": None,
+            "profiles": {},
+        }
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"baseline file must contain a JSON object: {path}")
+    payload.setdefault("version", 1)
+    payload.setdefault("updated_at", None)
+    payload.setdefault("profiles", {})
+    return payload
+
+
+def _save_baseline_store(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload["updated_at"] = datetime.now().isoformat()
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _scenario_key(args: argparse.Namespace) -> str:
+    category = args.category if args.category else "*"
+    return f"{args.dataset}::{args.split}::{args.mode}::{category}"
+
+
+def _get_baseline_entry(store: dict, provider_profile: str, scenario_key: str) -> dict | None:
+    profiles = store.get("profiles", {})
+    profile_entries = profiles.get(provider_profile, {})
+    entry = profile_entries.get(scenario_key)
+    if isinstance(entry, dict):
+        return entry
+    return None
+
+
+def _derive_effective_constraints(
+    *,
+    args: argparse.Namespace,
+    token_limits: dict[str, object],
+    baseline_entry: dict | None,
+) -> dict[str, object]:
+    min_accuracy = float(args.min_accuracy)
+    max_tokens = token_limits.get("max_recall_tokens")
+    avg_tokens = token_limits.get("max_avg_recall_tokens")
+    baseline_applied = False
+    if baseline_entry is not None and not args.disable_baseline_gates:
+        baseline_applied = True
+        baseline_min_accuracy = baseline_entry.get("min_accuracy")
+        if baseline_min_accuracy is not None:
+            min_accuracy = max(min_accuracy, float(baseline_min_accuracy))
+        baseline_max_tokens = baseline_entry.get("max_recall_tokens")
+        if max_tokens is not None and baseline_max_tokens is not None:
+            max_tokens = min(float(max_tokens), float(baseline_max_tokens))
+        baseline_avg_tokens = baseline_entry.get("max_avg_recall_tokens")
+        if avg_tokens is not None and baseline_avg_tokens is not None:
+            avg_tokens = min(float(avg_tokens), float(baseline_avg_tokens))
+    return {
+        "baseline_applied": baseline_applied,
+        "min_accuracy": round(min_accuracy, 4),
+        "max_recall_tokens": None if max_tokens is None else int(round(float(max_tokens))),
+        "max_avg_recall_tokens": None if avg_tokens is None else round(float(avg_tokens), 2),
+    }
+
+
+def _tighten_baseline_entry(
+    *,
+    store: dict,
+    provider_profile: str,
+    scenario_key: str,
+    accuracy: float,
+    recall_stats: dict[str, float | int],
+    args: argparse.Namespace,
+) -> tuple[dict, bool]:
+    profiles = store.setdefault("profiles", {})
+    profile_entries = profiles.setdefault(provider_profile, {})
+    current = profile_entries.get(scenario_key)
+    if not isinstance(current, dict):
+        current = {}
+    max_tokens_observed = int(recall_stats.get("max_recall_tokens", 0))
+    avg_tokens_observed = float(recall_stats.get("avg_recall_tokens", 0.0))
+    candidate_min_accuracy = max(0.0, accuracy - args.baseline_accuracy_headroom)
+    candidate_max_tokens = max(
+        1,
+        int(round(max_tokens_observed * (1.0 + args.baseline_token_headroom_pct))),
+    )
+    candidate_avg_tokens = max(
+        1.0,
+        round(avg_tokens_observed * (1.0 + args.baseline_token_headroom_pct), 2),
+    )
+    current_min_accuracy = float(current.get("min_accuracy", 0.0))
+    current_max_tokens = current.get("max_recall_tokens")
+    current_avg_tokens = current.get("max_avg_recall_tokens")
+    new_entry = {
+        "min_accuracy": round(max(current_min_accuracy, candidate_min_accuracy), 4),
+        "max_recall_tokens": (
+            candidate_max_tokens
+            if current_max_tokens is None
+            else int(min(int(current_max_tokens), candidate_max_tokens))
+        ),
+        "max_avg_recall_tokens": (
+            candidate_avg_tokens
+            if current_avg_tokens is None
+            else round(min(float(current_avg_tokens), candidate_avg_tokens), 2)
+        ),
+        "runs": int(current.get("runs", 0)) + 1,
+        "last_accuracy": round(accuracy, 4),
+        "last_max_recall_tokens": max_tokens_observed,
+        "last_avg_recall_tokens": round(avg_tokens_observed, 2),
+        "updated_at": datetime.now().isoformat(),
+    }
+    changed = current != new_entry
+    profile_entries[scenario_key] = new_entry
+    return new_entry, changed
+
+
 def _write_run_manifest(run_dir: Path, payload: dict) -> None:
     (run_dir / "run-manifest.json").write_text(
         json.dumps(payload, indent=2),
@@ -209,11 +333,13 @@ def _enforce_quality_gate(
     recall_stats: dict[str, float | int],
     args: argparse.Namespace,
     token_limits: dict[str, object],
+    effective_constraints: dict[str, object],
 ) -> dict[str, object]:
     failures: list[str] = []
-    if accuracy < args.min_accuracy:
+    min_accuracy = float(effective_constraints["min_accuracy"])
+    if accuracy < min_accuracy:
         failures.append(
-            f"accuracy {accuracy:.4f} is below required floor {args.min_accuracy:.4f}"
+            f"accuracy {accuracy:.4f} is below required floor {min_accuracy:.4f}"
         )
     gate_mode = str(token_limits.get("mode", "dynamic"))
     query_count = int(recall_stats.get("queries", 0))
@@ -224,8 +350,8 @@ def _enforce_quality_gate(
     max_tokens = float(recall_stats.get("max_recall_tokens", 0))
     avg_tokens = float(recall_stats.get("avg_recall_tokens", 0.0))
     over_budget = int(recall_stats.get("over_budget_count", 0))
-    max_limit = token_limits.get("max_recall_tokens")
-    avg_limit = token_limits.get("max_avg_recall_tokens")
+    max_limit = effective_constraints.get("max_recall_tokens")
+    avg_limit = effective_constraints.get("max_avg_recall_tokens")
     if gate_mode != "off" and query_count > 0:
         if max_limit is not None and max_tokens > float(max_limit):
             failures.append(
@@ -416,6 +542,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
 
     namespace = args.run_name or f"{args.dataset}-{args.split}-{run_dir.name}"
     recall_metrics_path = run_dir / "retrieval-metrics.jsonl"
+    baseline_path = _resolve_baseline_path(args.baseline_file)
     with IsolatedCortexDaemon(run_dir) as daemon:
         os.environ.update(daemon.export_env(namespace))
         os.environ["CORTEX_RECALL_BUDGET"] = str(args.recall_budget)
@@ -430,6 +557,18 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             provider_profile=provider_profile,
             max_recall_tokens=args.max_recall_tokens,
             max_avg_recall_tokens=args.max_avg_recall_tokens,
+        )
+        scenario_key = _scenario_key(args)
+        baseline_store = _load_baseline_store(baseline_path)
+        baseline_entry = _get_baseline_entry(
+            baseline_store,
+            provider_profile=provider_profile,
+            scenario_key=scenario_key,
+        )
+        effective_constraints = _derive_effective_constraints(
+            args=args,
+            token_limits=token_limits,
+            baseline_entry=baseline_entry,
         )
         _write_run_manifest(
             run_dir,
@@ -449,14 +588,20 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 "doc_limit": args.doc_limit,
                 "namespace": namespace,
                 "llm_provider": llm_provider,
+                "baseline": {
+                    "file": str(baseline_path),
+                    "scenario_key": scenario_key,
+                    "baseline_applied": effective_constraints["baseline_applied"],
+                    "entry": baseline_entry,
+                },
                 "quality_gate": {
                     "enabled": not args.no_enforce_gate,
                     "token_gate_mode": args.token_gate_mode,
                     "provider_profile": provider_profile,
-                    "min_accuracy": args.min_accuracy,
+                    "min_accuracy": effective_constraints["min_accuracy"],
                     "recall_budget": args.recall_budget,
-                    "max_recall_tokens": token_limits["max_recall_tokens"],
-                    "max_avg_recall_tokens": token_limits["max_avg_recall_tokens"],
+                    "max_recall_tokens": effective_constraints["max_recall_tokens"],
+                    "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
                     "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
                 },
                 "legitimacy": {
@@ -505,7 +650,30 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             recall_stats=recall_stats,
             args=args,
             token_limits=token_limits,
+            effective_constraints=effective_constraints,
         )
+        baseline_update: dict | None = None
+        baseline_updated = False
+        can_tighten = (
+            not args.no_auto_tighten_baseline
+            and not args.no_enforce_gate
+            and gate["passed"]
+            and args.token_gate_mode != "off"
+            and args.query_limit is None
+            and args.query_id is None
+            and int(recall_stats.get("queries", 0)) >= args.min_queries_for_baseline_update
+        )
+        if can_tighten:
+            baseline_update, baseline_updated = _tighten_baseline_entry(
+                store=baseline_store,
+                provider_profile=provider_profile,
+                scenario_key=scenario_key,
+                accuracy=float(summary.accuracy),
+                recall_stats=recall_stats,
+                args=args,
+            )
+            if baseline_updated:
+                _save_baseline_store(baseline_path, baseline_store)
         gate_payload = {
             "timestamp": datetime.now().isoformat(),
             "quality_gate": gate,
@@ -514,12 +682,22 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             "limits": {
                 "token_gate_mode": args.token_gate_mode,
                 "provider_profile": provider_profile,
-                "min_accuracy": args.min_accuracy,
+                "min_accuracy": effective_constraints["min_accuracy"],
                 "recall_budget": args.recall_budget,
-                "max_recall_tokens": token_limits["max_recall_tokens"],
-                "max_avg_recall_tokens": token_limits["max_avg_recall_tokens"],
+                "max_recall_tokens": effective_constraints["max_recall_tokens"],
+                "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
                 "token_gate_profile": token_limits.get("profile"),
                 "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
+            },
+            "baseline": {
+                "file": str(baseline_path),
+                "scenario_key": scenario_key,
+                "baseline_applied": effective_constraints["baseline_applied"],
+                "entry": baseline_entry,
+                "auto_tighten_enabled": not args.no_auto_tighten_baseline,
+                "min_queries_for_update": args.min_queries_for_baseline_update,
+                "updated": baseline_updated,
+                "updated_entry": baseline_update,
             },
         }
         (run_dir / "gate-report.json").write_text(
@@ -539,8 +717,13 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                     "token_gate_mode": args.token_gate_mode,
                     "provider_profile": provider_profile,
                     "token_limits": {
-                        "max_recall_tokens": token_limits["max_recall_tokens"],
-                        "max_avg_recall_tokens": token_limits["max_avg_recall_tokens"],
+                        "max_recall_tokens": effective_constraints["max_recall_tokens"],
+                        "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
+                    },
+                    "baseline": {
+                        "scenario_key": scenario_key,
+                        "baseline_applied": effective_constraints["baseline_applied"],
+                        "baseline_updated": baseline_updated,
                     },
                     "quality_gate_passed": gate["passed"],
                     "run_dir": str(run_dir),
@@ -582,6 +765,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider-profile",
         default="auto",
         help="Provider profile for dynamic token gates (auto, claude, openai, codex, gemini, groq, default).",
+    )
+    run.add_argument(
+        "--baseline-file",
+        default=str(BASELINE_FILE_DEFAULT),
+        help="Path to provider/scenario baseline JSON used for non-regression gates and auto-tightening.",
+    )
+    run.add_argument(
+        "--disable-baseline-gates",
+        action="store_true",
+        help="Ignore saved baseline entries when computing effective gates (diagnostics only).",
+    )
+    run.add_argument(
+        "--no-auto-tighten-baseline",
+        action="store_true",
+        help="Do not tighten baseline thresholds after passing runs.",
+    )
+    run.add_argument(
+        "--min-queries-for-baseline-update",
+        type=int,
+        default=20,
+        help="Minimum query count required before a run can tighten baseline thresholds.",
+    )
+    run.add_argument(
+        "--baseline-token-headroom-pct",
+        type=float,
+        default=0.08,
+        help="Headroom added above observed token usage when tightening baseline ceilings.",
+    )
+    run.add_argument(
+        "--baseline-accuracy-headroom",
+        type=float,
+        default=0.02,
+        help="Margin subtracted from observed accuracy when tightening baseline floor.",
     )
     run.add_argument("--recall-budget", type=int, default=300, help="Recall token budget sent to Cortex for each retrieval query.")
     run.add_argument("--min-accuracy", type=float, default=0.90, help="Minimum acceptable benchmark accuracy.")

@@ -58,10 +58,19 @@ Important constraints:
 - Retrieval budget defaults to `300` tokens per query (`--recall-budget`), with strict quality gating enabled by default.
 - Each run emits `retrieval-metrics.jsonl` and `gate-report.json` under the run directory for auditability.
 - The default gate mode is `dynamic` (`--token-gate-mode dynamic`), which applies provider-aware token limits (`--provider-profile auto|claude|openai|codex|gemini|groq|default`).
+- Saved baseline gates are loaded from `benchmarking/configs/token-gate-baselines.json` by default:
+  - keyed by provider profile + dataset/split/mode/category scenario
+  - enforced as non-regression floors/ceilings on top of dynamic profile limits
+  - ignored only when `--disable-baseline-gates` is set (diagnostics only)
 - The quality gate fails the run if:
   - accuracy is below `--min-accuracy` (default `0.90`)
   - token gates fail (dynamic provider profile limits by default, or fixed limits in `absolute` mode)
   - recall token telemetry is missing (unless `--allow-missing-recall-metrics` is explicitly set)
 - Use `--token-gate-mode absolute` for fixed limit enforcement (`--max-recall-tokens`, `--max-avg-recall-tokens`).
 - Use `--token-gate-mode off` only for diagnostics when you explicitly want quality-only gating.
+- Baselines auto-tighten after passing runs (`--no-auto-tighten-baseline` to disable), but only when:
+  - enforcement is enabled
+  - token gating is on
+  - query volume meets `--min-queries-for-baseline-update` (default `20`)
+  - run is not scoped to `--query-limit` / `--query-id`
 - `--no-enforce-gate` is diagnostics-only and must not be used for headline benchmark claims.
