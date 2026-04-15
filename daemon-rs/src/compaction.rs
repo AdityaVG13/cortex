@@ -68,6 +68,12 @@ pub fn classify_storage_pressure(db_size_bytes: i64) -> &'static str {
     }
 }
 
+/// Decide whether the storage governor should run compaction.
+/// Runs when DB size is above soft limit or when reclaimable free pages are high.
+pub fn should_run_compaction_governor(db_size_bytes: i64, freelist_pages: i64) -> bool {
+    db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES || freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES
+}
+
 /// Run compaction only when pressure or reclaimable space justifies IO.
 /// Returns `Some(result)` when a compaction pass ran, `None` when skipped.
 pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
@@ -75,7 +81,7 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
     let freelist_pages = freelist_count(conn);
     let pressure_before = classify_storage_pressure(before);
 
-    if before < STORAGE_SOFT_LIMIT_BYTES && freelist_pages <= VACUUM_FREELIST_THRESHOLD_PAGES {
+    if !should_run_compaction_governor(before, freelist_pages) {
         return None;
     }
 
@@ -487,6 +493,19 @@ mod tests {
             classify_storage_pressure(STORAGE_HARD_LIMIT_BYTES),
             "critical"
         );
+    }
+
+    #[test]
+    fn test_storage_governor_thresholds() {
+        assert!(!should_run_compaction_governor(
+            STORAGE_SOFT_LIMIT_BYTES - 1,
+            VACUUM_FREELIST_THRESHOLD_PAGES
+        ));
+        assert!(should_run_compaction_governor(STORAGE_SOFT_LIMIT_BYTES, 0));
+        assert!(should_run_compaction_governor(
+            STORAGE_SOFT_LIMIT_BYTES - 1,
+            VACUUM_FREELIST_THRESHOLD_PAGES + 1
+        ));
     }
 
     #[test]
