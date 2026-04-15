@@ -1,5 +1,7 @@
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::net::TcpListener;
@@ -13,6 +15,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RECALL_BUDGET: &str = "300";
 const MAX_QUERY_TOKENS: u64 = 300;
 const MAX_AVG_QUERY_TOKENS: f64 = 300.0;
+const PROXY_TOP1_MIN_AGREEMENT: f64 = 0.65;
+const PROXY_MAX_MEAN_ABS_RANK_ERROR: f64 = 0.90;
 
 struct BenchmarkCase {
     slug: &'static str,
@@ -155,6 +159,12 @@ struct TestDaemon {
     client: Client,
 }
 
+#[derive(Clone, Debug)]
+struct ProxyRankPoint {
+    full_rank: usize,
+    proxy_score: f64,
+}
+
 impl TestDaemon {
     async fn spawn() -> Self {
         let client = Client::builder()
@@ -267,6 +277,36 @@ impl TestDaemon {
         );
         response.json::<Value>().await.expect("invalid recall JSON")
     }
+
+    async fn recall_explain_case(&self, case: &BenchmarkCase) -> Value {
+        let response = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.request(
+                self.client
+                    .get(format!("{}/recall/explain", self.base_url))
+                    .query(&[
+                        ("q", case.query),
+                        ("budget", RECALL_BUDGET),
+                        ("k", "6"),
+                        ("pool_k", "24"),
+                    ]),
+            )
+            .send(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("GET /recall/explain timed out for {}", case.slug))
+        .expect("failed to GET /recall/explain");
+        assert!(
+            response.status().is_success(),
+            "recall explain failed for {}: {}",
+            case.slug,
+            response.status()
+        );
+        response
+            .json::<Value>()
+            .await
+            .expect("invalid recall explain JSON")
+    }
 }
 
 impl Drop for TestDaemon {
@@ -373,6 +413,131 @@ async fn recall_different_queries_do_not_cross_dedup_for_same_agent() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn distilled_proxy_tracks_full_recall_ranking() {
+    let daemon = TestDaemon::spawn().await;
+
+    for case in BENCHMARK_CASES {
+        daemon.store_case(case).await;
+    }
+
+    let mut evaluated_queries = 0usize;
+    let mut top1_matches = 0usize;
+    let mut concordant_pairs = 0usize;
+    let mut total_pairs = 0usize;
+    let mut abs_rank_error_sum = 0.0;
+    let mut abs_rank_error_count = 0usize;
+
+    for case in BENCHMARK_CASES {
+        let payload = daemon.recall_explain_case(case).await;
+        let returned = payload["explain"]["returned"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if returned.is_empty() {
+            continue;
+        }
+
+        let max_token_cost = returned
+            .iter()
+            .filter_map(|item| {
+                item["rankingFactors"]["tokenCost"]
+                    .as_u64()
+                    .map(|value| value as f64)
+            })
+            .fold(0.0, f64::max);
+
+        let mut points = Vec::new();
+        for (full_rank, item) in returned.iter().enumerate() {
+            if item["source"].as_str().is_none() {
+                continue;
+            }
+            if let Some(proxy_score) = distilled_proxy_score_from_explain_item(item, max_token_cost)
+            {
+                points.push(ProxyRankPoint {
+                    full_rank,
+                    proxy_score,
+                });
+            }
+        }
+
+        if points.is_empty() {
+            continue;
+        }
+
+        evaluated_queries += 1;
+        let mut proxy_sorted = points.clone();
+        proxy_sorted.sort_by(compare_proxy_points);
+        if proxy_sorted
+            .first()
+            .is_some_and(|point| point.full_rank == 0)
+        {
+            top1_matches += 1;
+        }
+
+        let mut proxy_rank_by_full_rank = HashMap::new();
+        for (idx, point) in proxy_sorted.iter().enumerate() {
+            proxy_rank_by_full_rank.insert(point.full_rank, idx);
+        }
+
+        for point in &points {
+            let proxy_rank = *proxy_rank_by_full_rank
+                .get(&point.full_rank)
+                .expect("missing proxy rank for full rank");
+            abs_rank_error_sum += point.full_rank.abs_diff(proxy_rank) as f64;
+            abs_rank_error_count += 1;
+        }
+
+        for i in 0..points.len() {
+            for j in (i + 1)..points.len() {
+                let left = &points[i];
+                let right = &points[j];
+                let left_proxy_rank = *proxy_rank_by_full_rank
+                    .get(&left.full_rank)
+                    .expect("missing proxy rank for left full rank");
+                let right_proxy_rank = *proxy_rank_by_full_rank
+                    .get(&right.full_rank)
+                    .expect("missing proxy rank for right full rank");
+                if (left.full_rank < right.full_rank) == (left_proxy_rank < right_proxy_rank) {
+                    concordant_pairs += 1;
+                }
+                total_pairs += 1;
+            }
+        }
+    }
+
+    assert!(
+        evaluated_queries >= BENCHMARK_CASES.len() / 2,
+        "proxy comparison evaluated too few queries: {evaluated_queries}"
+    );
+
+    let top1_agreement = top1_matches as f64 / evaluated_queries as f64;
+    let pairwise_agreement = if total_pairs == 0 {
+        1.0
+    } else {
+        concordant_pairs as f64 / total_pairs as f64
+    };
+    let mean_abs_rank_error = if abs_rank_error_count == 0 {
+        0.0
+    } else {
+        abs_rank_error_sum / abs_rank_error_count as f64
+    };
+
+    assert!(
+        top1_agreement >= PROXY_TOP1_MIN_AGREEMENT,
+        "proxy top-1 agreement regression: got {:.3}, need >= {:.2}",
+        top1_agreement,
+        PROXY_TOP1_MIN_AGREEMENT
+    );
+    assert!(
+        mean_abs_rank_error <= PROXY_MAX_MEAN_ABS_RANK_ERROR,
+        "proxy mean absolute rank error regression: got {:.3}, need <= {:.2} (pairwise={:.3})",
+        mean_abs_rank_error,
+        PROXY_MAX_MEAN_ABS_RANK_ERROR,
+        pairwise_agreement
+    );
+}
+
 fn matches_ground_truth(case: &BenchmarkCase, result: &Value) -> bool {
     let source = result["source"].as_str().unwrap_or_default().to_lowercase();
     let excerpt = result["excerpt"]
@@ -390,6 +555,53 @@ fn benchmark_case(slug: &str) -> &'static BenchmarkCase {
         .iter()
         .find(|case| case.slug == slug)
         .unwrap_or_else(|| panic!("missing benchmark case: {slug}"))
+}
+
+fn distilled_proxy_score_from_explain_item(item: &Value, max_token_cost: f64) -> Option<f64> {
+    let factors = item.get("rankingFactors")?;
+    let relevance = factors.get("relevance")?.as_f64()?;
+    let budget_cost_ratio = factors
+        .get("budgetCostRatio")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let entropy_normalized = factors
+        .get("entropy")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0)
+        .clamp(0.0, 6.0)
+        / 6.0;
+    let token_cost = factors
+        .get("tokenCost")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as f64;
+    let token_cost_ratio = if max_token_cost <= f64::EPSILON {
+        0.0
+    } else {
+        (token_cost / max_token_cost).clamp(0.0, 1.0)
+    };
+    let method = factors
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let method_hybrid = f64::from(method.eq_ignore_ascii_case("hybrid"));
+    let method_semantic = f64::from(method.eq_ignore_ascii_case("semantic"));
+
+    // Distilled 6-feature proxy:
+    // relevance, budget-cost ratio, entropy, token-cost ratio, hybrid flag, semantic flag.
+    let proxy_score = (relevance * 1.20) - (budget_cost_ratio * 0.25) + (entropy_normalized * 0.10)
+        - (token_cost_ratio * 0.12)
+        + (method_hybrid * 0.16)
+        + (method_semantic * 0.05);
+    Some(proxy_score)
+}
+
+fn compare_proxy_points(left: &ProxyRankPoint, right: &ProxyRankPoint) -> Ordering {
+    right
+        .proxy_score
+        .partial_cmp(&left.proxy_score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| left.full_rank.cmp(&right.full_rank))
 }
 
 fn reserve_port() -> u16 {
