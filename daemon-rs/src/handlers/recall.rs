@@ -3497,6 +3497,14 @@ fn run_sqlite_vec_shadow_knn_sources(
     result
 }
 
+fn shadow_error_to_unavailable_reason(error: &str) -> Option<&'static str> {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("no such module: vec0") {
+        return Some("sqlite_vec_not_available");
+    }
+    None
+}
+
 fn build_shadow_semantic_explain(
     conn: &Connection,
     query_vector: Option<&[f32]>,
@@ -3564,6 +3572,19 @@ fn build_shadow_semantic_explain(
         match run_sqlite_vec_shadow_knn_sources(conn, query_vector, &compatible_rows, top_k) {
             Ok(sources) => sources,
             Err(error) => {
+                if let Some(reason) = shadow_error_to_unavailable_reason(&error) {
+                    return json!({
+                        "enabled": true,
+                        "status": "unavailable",
+                        "reason": reason,
+                        "detail": error,
+                        "topK": top_k,
+                        "vectorDimension": vector_dim,
+                        "baselineCandidateCount": baseline.len(),
+                        "shadowCandidateCount": compatible_count,
+                        "baselineTopSources": baseline_top_sources,
+                    });
+                }
                 return json!({
                     "enabled": true,
                     "status": "error",
@@ -6079,6 +6100,22 @@ mod tests {
     fn test_round4() {
         assert_eq!(round4(0.12345), 0.1235);
         assert_eq!(round4(1.0), 1.0);
+    }
+
+    #[test]
+    fn shadow_error_to_unavailable_reason_detects_missing_vec_module() {
+        assert_eq!(
+            shadow_error_to_unavailable_reason(
+                "sqlite-vec shadow create failed: no such module: vec0"
+            ),
+            Some("sqlite_vec_not_available")
+        );
+        assert_eq!(
+            shadow_error_to_unavailable_reason(
+                "sqlite-vec shadow row decode failed: malformed row"
+            ),
+            None
+        );
     }
 
     // ── RRF fusion tests ───────────────────────────────────────────
