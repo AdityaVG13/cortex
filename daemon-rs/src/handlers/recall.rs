@@ -726,6 +726,37 @@ fn classify_recall_tier(cached: bool, mode: &str, methods: &Value) -> &'static s
     "unknown"
 }
 
+fn shadow_semantic_telemetry_summary(shadow_semantic: &Value) -> Value {
+    let status = shadow_semantic
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("error");
+
+    let mut summary = json!({
+        "status": status,
+    });
+    if let Some(reason) = shadow_semantic.get("reason").and_then(Value::as_str) {
+        summary["reason"] = json!(reason);
+    }
+    for key in [
+        "topK",
+        "vectorDimension",
+        "baselineCandidateCount",
+        "shadowCandidateCount",
+        "overlapCount",
+        "overlapRatio",
+        "jaccard",
+    ] {
+        if let Some(value) = shadow_semantic.get(key) {
+            summary[key] = value.clone();
+        }
+    }
+    if status == "error" && summary.get("reason").is_none() {
+        summary["reason"] = json!("shadow_payload_invalid");
+    }
+    summary
+}
+
 pub async fn execute_unified_recall(
     state: &RuntimeState,
     query_text: &str,
@@ -762,7 +793,11 @@ pub async fn execute_unified_recall(
                     "cached": true,
                     "method_breakdown": method_breakdown,
                     "tier": tier,
-                    "latency_ms": latency_ms
+                    "latency_ms": latency_ms,
+                    "shadow_semantic": {
+                        "status": "skipped",
+                        "reason": "cache_hit"
+                    }
                 }),
             )
             .await;
@@ -795,6 +830,19 @@ pub async fn execute_unified_recall(
             source_prefix,
             dflag,
         )?
+    };
+    let shadow_semantic = {
+        let shadow_query_vector =
+            engine.and_then(|runtime_engine| runtime_engine.embed(query_text));
+        let shadow_detail = build_shadow_semantic_explain(
+            &conn,
+            shadow_query_vector.as_deref(),
+            query_text,
+            ctx,
+            source_prefix,
+            k,
+        );
+        shadow_semantic_telemetry_summary(&shadow_detail)
     };
 
     // Co-occurrence tracking (recording only -- predictions excluded from response)
@@ -849,7 +897,8 @@ pub async fn execute_unified_recall(
                 "cached": false,
                 "method_breakdown": method_breakdown,
                 "tier": tier,
-                "latency_ms": latency_ms
+                "latency_ms": latency_ms,
+                "shadow_semantic": shadow_semantic
             }),
         )
         .await;
@@ -892,7 +941,8 @@ pub async fn execute_unified_recall(
             "cached": false,
             "method_breakdown": method_breakdown,
             "tier": tier,
-            "latency_ms": latency_ms
+            "latency_ms": latency_ms,
+            "shadow_semantic": shadow_semantic
         }),
     )
     .await;
@@ -4983,6 +5033,17 @@ mod tests {
         }
     }
 
+    fn latest_recall_query_event(conn: &rusqlite::Connection) -> Value {
+        let raw: String = conn
+            .query_row(
+                "SELECT data FROM events WHERE type = 'recall_query' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("latest recall_query event should exist");
+        serde_json::from_str(&raw).expect("recall_query event should be valid json")
+    }
+
     fn insert_memory_with_embedding(
         conn: &rusqlite::Connection,
         text: &str,
@@ -6115,6 +6176,172 @@ mod tests {
                 "sqlite-vec shadow row decode failed: malformed row"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn shadow_semantic_telemetry_summary_compacts_ok_payload() {
+        let summary = shadow_semantic_telemetry_summary(&json!({
+            "enabled": true,
+            "status": "ok",
+            "topK": 6,
+            "vectorDimension": 5,
+            "baselineCandidateCount": 11,
+            "shadowCandidateCount": 9,
+            "baselineTopSources": ["memory::a", "memory::b"],
+            "shadowTopSources": ["memory::b", "memory::c"],
+            "overlapCount": 1,
+            "overlapRatio": 0.1667,
+            "jaccard": 0.3333
+        }));
+
+        assert_eq!(summary["status"].as_str(), Some("ok"));
+        assert_eq!(summary["topK"].as_u64(), Some(6));
+        assert_eq!(summary["vectorDimension"].as_u64(), Some(5));
+        assert_eq!(summary["baselineCandidateCount"].as_u64(), Some(11));
+        assert_eq!(summary["shadowCandidateCount"].as_u64(), Some(9));
+        assert_eq!(summary["overlapCount"].as_u64(), Some(1));
+        assert_eq!(summary["overlapRatio"].as_f64(), Some(0.1667));
+        assert_eq!(summary["jaccard"].as_f64(), Some(0.3333));
+        assert!(
+            summary["baselineTopSources"].is_null(),
+            "telemetry summary should omit baseline source arrays"
+        );
+        assert!(
+            summary["shadowTopSources"].is_null(),
+            "telemetry summary should omit shadow source arrays"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_unified_recall_logs_shadow_semantic_summary_when_uncached() {
+        let state = shared_test_state();
+        {
+            let conn = state.db.lock().await;
+            insert_memory_with_embedding(
+                &conn,
+                "daemon ownership lock protects startup arbitration",
+                "memory::daemon-lock",
+                &[1.0, 0.0, 0.0, 0.0, 0.0],
+            );
+        }
+
+        let _response = execute_unified_recall(
+            &state,
+            "daemon ownership lock",
+            240,
+            6,
+            "codex",
+            &solo_ctx(),
+            None,
+        )
+        .await
+        .expect("unified recall should succeed");
+
+        let conn = state.db.lock().await;
+        let event = latest_recall_query_event(&conn);
+        let shadow_semantic = &event["shadow_semantic"];
+        assert_eq!(shadow_semantic["status"].as_str(), Some("unavailable"));
+        assert_eq!(
+            shadow_semantic["reason"].as_str(),
+            Some("query_embedding_unavailable")
+        );
+        assert!(
+            shadow_semantic["baselineTopSources"].is_null(),
+            "telemetry event payload should not contain baseline source arrays"
+        );
+        assert!(
+            shadow_semantic["shadowTopSources"].is_null(),
+            "telemetry event payload should not contain shadow source arrays"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_unified_recall_logs_shadow_semantic_skip_on_cache_hit() {
+        let state = shared_test_state();
+        let query = "daemon ownership lock";
+        let scope_key = recall_scope_key("codex", &solo_ctx());
+        let cached_item = RecallItem {
+            source: "memory::daemon-lock".to_string(),
+            relevance: 0.91,
+            excerpt: "daemon ownership lock protects startup arbitration".to_string(),
+            method: "semantic".to_string(),
+            tokens: Some(16),
+            entropy: None,
+            family_members: Vec::new(),
+            collapsed_sources: Vec::new(),
+            collapsed_source_scores: Vec::new(),
+        };
+        {
+            let mut pre_cache = state.pre_cache.lock().await;
+            pre_cache.insert(
+                scope_key,
+                crate::state::PreCacheEntry {
+                    query: query.to_string(),
+                    results: json!([recall_to_json(cached_item)]),
+                    expires_at: chrono::Utc::now().timestamp_millis() + 60_000,
+                },
+            );
+        }
+
+        let response = execute_unified_recall(&state, query, 240, 4, "codex", &solo_ctx(), None)
+            .await
+            .expect("cached unified recall should succeed");
+        assert_eq!(response["cached"].as_bool(), Some(true));
+
+        let conn = state.db.lock().await;
+        let event = latest_recall_query_event(&conn);
+        assert_eq!(event["cached"].as_bool(), Some(true));
+        assert_eq!(event["shadow_semantic"]["status"].as_str(), Some("skipped"));
+        assert_eq!(
+            event["shadow_semantic"]["reason"].as_str(),
+            Some("cache_hit")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_unified_recall_logs_shadow_semantic_summary_in_headlines_mode() {
+        let state = shared_test_state();
+        {
+            let conn = state.db.lock().await;
+            insert_memory_with_embedding(
+                &conn,
+                "daemon ownership lock protects startup arbitration",
+                "memory::daemon-lock",
+                &[1.0, 0.0, 0.0, 0.0, 0.0],
+            );
+        }
+
+        let response = execute_unified_recall(
+            &state,
+            "daemon ownership lock",
+            0,
+            6,
+            "codex",
+            &solo_ctx(),
+            None,
+        )
+        .await
+        .expect("headlines unified recall should succeed");
+        assert_eq!(response["mode"].as_str(), Some("headlines"));
+
+        let conn = state.db.lock().await;
+        let event = latest_recall_query_event(&conn);
+        assert_eq!(event["cached"].as_bool(), Some(false));
+        assert_eq!(event["mode"].as_str(), Some("headlines"));
+        let shadow_semantic = &event["shadow_semantic"];
+        assert_eq!(shadow_semantic["status"].as_str(), Some("unavailable"));
+        assert_eq!(
+            shadow_semantic["reason"].as_str(),
+            Some("query_embedding_unavailable")
+        );
+        assert!(
+            shadow_semantic["baselineTopSources"].is_null(),
+            "telemetry event payload should not contain baseline source arrays"
+        );
+        assert!(
+            shadow_semantic["shadowTopSources"].is_null(),
+            "telemetry event payload should not contain shadow source arrays"
         );
     }
 
