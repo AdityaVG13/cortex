@@ -28,7 +28,7 @@ mod tls;
 mod transport;
 
 use chrono::{self, Utc};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BACKUP_RETENTION_COUNT: usize = 3;
@@ -353,6 +353,15 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let paths = auth::CortexPaths::resolve_from_args(&args);
+    if let Ok(current_exe) = std::env::current_exe() {
+        if is_disallowed_startup_binary_path(&current_exe) {
+            eprintln!(
+                "[cortex] Refusing to run from disallowed runtime path: {}",
+                current_exe.display()
+            );
+            std::process::exit(1);
+        }
+    }
 
     match mode {
         // ── HTTP daemon (standalone or via service) ─────────────────
@@ -2206,12 +2215,61 @@ fn plugin_owner_tag(agent: Option<&str>) -> String {
     }
 }
 
+fn normalized_path_for_guard(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn path_is_under_root(path: &Path, root: &Path) -> bool {
+    let normalized_path = normalized_path_for_guard(path);
+    let mut normalized_root = normalized_path_for_guard(root);
+    if !normalized_root.ends_with('/') {
+        normalized_root.push('/');
+    }
+    normalized_path == normalized_root.trim_end_matches('/')
+        || normalized_path.starts_with(&normalized_root)
+}
+
+fn is_disallowed_startup_binary_path(path: &Path) -> bool {
+    let normalized = normalized_path_for_guard(path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if file_name.starts_with("cortex-daemon-run") {
+        return true;
+    }
+    if normalized.contains("/daemon-lifecycle-runtime/") {
+        return true;
+    }
+
+    let mut temp_roots = vec![std::env::temp_dir()];
+    if let Ok(temp) = std::env::var("TEMP") {
+        temp_roots.push(PathBuf::from(temp));
+    }
+    if let Ok(tmp) = std::env::var("TMP") {
+        temp_roots.push(PathBuf::from(tmp));
+    }
+    temp_roots
+        .iter()
+        .any(|root| !root.as_os_str().is_empty() && path_is_under_root(path, root))
+}
+
 #[cfg(not(windows))]
 async fn ensure_local_plugin_spawn_async(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|e| format!("resolve cortex binary: {e}"))?;
+    if is_disallowed_startup_binary_path(&current_exe) {
+        return Err(format!(
+            "refusing to launch daemon from disallowed runtime path: {}",
+            current_exe.display()
+        ));
+    }
     let parent_pid = std::process::id();
     let parent_start = process_pid_start_time(parent_pid)
         .ok_or_else(|| format!("resolve spawn parent start time for pid {parent_pid}"))?;
@@ -3161,6 +3219,28 @@ mod tests {
         assert!(!parse_truthy_flag("0"));
         assert!(!parse_truthy_flag("false"));
         assert!(!parse_truthy_flag(""));
+    }
+
+    #[test]
+    fn disallowed_startup_binary_path_blocks_runtime_wrappers_and_temp_paths() {
+        let wrapper = PathBuf::from(
+            "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",
+        );
+        assert!(is_disallowed_startup_binary_path(&wrapper));
+
+        let wrapper_name_only = PathBuf::from("C:/repo/cortex-daemon-run");
+        assert!(is_disallowed_startup_binary_path(&wrapper_name_only));
+
+        let binary_name = if cfg!(windows) {
+            "cortex.exe"
+        } else {
+            "cortex"
+        };
+        let temp_candidate = std::env::temp_dir().join("cortex").join(binary_name);
+        assert!(is_disallowed_startup_binary_path(&temp_candidate));
+
+        let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
+        assert!(!is_disallowed_startup_binary_path(&safe));
     }
 
     #[test]

@@ -58,6 +58,23 @@ function workspaceBinaryCandidates(workspaceRoot, binaryName) {
   ];
 }
 
+function ensureCanonicalInstallFromSource(sourcePath, binaryName) {
+  const userHome = resolveCanonicalUserHome();
+  if (!userHome) {
+    throw new Error('Cannot resolve user home to install canonical Cortex binary.');
+  }
+  const canonicalDir = path.join(userHome, '.cortex', 'bin');
+  const canonicalPath = path.join(canonicalDir, binaryName);
+  fs.mkdirSync(canonicalDir, { recursive: true });
+  fs.copyFileSync(sourcePath, canonicalPath);
+  if (process.platform !== 'win32') {
+    try {
+      fs.chmodSync(canonicalPath, 0o755);
+    } catch (_) {}
+  }
+  return canonicalPath;
+}
+
 function resolveCortexBinary({
   pluginData,
   binaryName,
@@ -104,8 +121,14 @@ function resolveCortexBinary({
     ensureBundled();
   }
   if (rejectTempCandidates && isLikelyTempPath(bundled)) {
+    try {
+      const canonicalInstalled = ensureCanonicalInstallFromSource(bundled, binaryName);
+      if (!isLikelyTempPath(canonicalInstalled) && fileExists(canonicalInstalled)) {
+        return { binaryPath: canonicalInstalled, source: 'canonical-install-promoted' };
+      }
+    } catch (_) {}
     throw new Error(
-      'Refusing temporary bundled Cortex binary for local attach mode. Install/start Cortex Control Center or set CORTEX_APP_BINARY.'
+      'Refusing temporary bundled Cortex binary for local mode and failed canonical promotion. Install/start Cortex Control Center or set CORTEX_APP_BINARY.'
     );
   }
   return { binaryPath: bundled, source: 'plugin-bundled' };

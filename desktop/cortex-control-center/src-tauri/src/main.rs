@@ -324,6 +324,49 @@ fn cortex_binary_name() -> &'static str {
     }
 }
 
+fn normalized_path_for_guard(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase()
+}
+
+fn path_is_under_root(path: &Path, root: &Path) -> bool {
+    let normalized_path = normalized_path_for_guard(path);
+    let mut normalized_root = normalized_path_for_guard(root);
+    if !normalized_root.ends_with('/') {
+        normalized_root.push('/');
+    }
+    normalized_path == normalized_root.trim_end_matches('/')
+        || normalized_path.starts_with(&normalized_root)
+}
+
+fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
+    let normalized = normalized_path_for_guard(path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if file_name.starts_with("cortex-daemon-run") {
+        return true;
+    }
+    if normalized.contains("/daemon-lifecycle-runtime/") {
+        return true;
+    }
+
+    let mut temp_roots = vec![std::env::temp_dir()];
+    if let Ok(temp) = std::env::var("TEMP") {
+        temp_roots.push(PathBuf::from(temp));
+    }
+    if let Ok(tmp) = std::env::var("TMP") {
+        temp_roots.push(PathBuf::from(tmp));
+    }
+    temp_roots
+        .iter()
+        .any(|root| !root.as_os_str().is_empty() && path_is_under_root(path, root))
+}
+
 fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> {
     let daemon_root = home.join("cortex").join("daemon-rs");
     let release_path = daemon_root
@@ -370,8 +413,21 @@ fn resolve_binary_on_path(binary_name: &str) -> Option<PathBuf> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(PathBuf::from)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let candidate = PathBuf::from(line);
+            if is_disallowed_daemon_binary_path(&candidate) {
+                log_startup_path(
+                    "resolve-binary-on-path",
+                    "reject-disallowed",
+                    &candidate.display().to_string(),
+                );
+                None
+            } else {
+                Some(candidate)
+            }
+        })
+        .next()
 }
 
 fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
@@ -528,6 +584,12 @@ fn ensure_editor_binary_path() -> Result<PathBuf, String> {
     let source = find_cortex_binary().ok_or_else(|| {
         "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/{target-control-center-dev,target-control-center-release,target}/{debug,release}/".to_string()
     })?;
+    if is_disallowed_daemon_binary_path(&source) {
+        return Err(format!(
+            "Refusing disallowed daemon binary source path for editor registration: {}",
+            source.display()
+        ));
+    }
     let installed = installed_plugin_binary_path(&home);
 
     if source != installed {
@@ -554,7 +616,9 @@ fn find_cortex_binary() -> Option<PathBuf> {
             // In dev builds prefer workspace binaries so the app does not
             // silently launch an older installed or copied sidecar daemon.
             let workspace_candidates = workspace_binary_candidates(&home, true);
-            if let Some(candidate) = newest_existing_path(&workspace_candidates) {
+            if let Some(candidate) = newest_existing_path(&workspace_candidates)
+                .filter(|path| !is_disallowed_daemon_binary_path(path))
+            {
                 return Some(candidate);
             }
             candidates.push(plugin_path);
@@ -570,13 +634,24 @@ fn find_cortex_binary() -> Option<PathBuf> {
         }
 
         for candidate in candidates {
-            if candidate.exists() {
-                return Some(candidate);
+            if !candidate.exists() {
+                continue;
             }
+            if is_disallowed_daemon_binary_path(&candidate) {
+                log_startup_path(
+                    "find-cortex-binary",
+                    "reject-disallowed",
+                    &candidate.display().to_string(),
+                );
+                continue;
+            }
+            return Some(candidate);
         }
     }
 
-    if let Some(sidecar) = sidecar_candidate {
+    if let Some(sidecar) =
+        sidecar_candidate.filter(|candidate| !is_disallowed_daemon_binary_path(candidate))
+    {
         return Some(sidecar);
     }
 
@@ -1829,7 +1904,8 @@ mod tests {
     use super::{
         cortex_readiness_state, editor_args, editor_config_path, editor_targets,
         extract_error_detail, interpret_shutdown_response, is_cortex_health_response,
-        workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
+        is_disallowed_daemon_binary_path, workspace_binary_candidates, FetchCortexResponse,
+        ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1858,6 +1934,23 @@ mod tests {
             .to_string_lossy()
             .contains("target-control-center-dev\\debug"));
         assert!(candidates[3].to_string_lossy().contains("target\\debug"));
+    }
+
+    #[test]
+    fn disallowed_daemon_binary_path_blocks_runtime_wrappers_and_temp_paths() {
+        let wrapper = PathBuf::from(
+            "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",
+        );
+        assert!(is_disallowed_daemon_binary_path(&wrapper));
+
+        let wrapper_name_only = PathBuf::from("C:/repo/cortex-daemon-run");
+        assert!(is_disallowed_daemon_binary_path(&wrapper_name_only));
+
+        let temp_candidate = std::env::temp_dir().join("cortex").join("cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&temp_candidate));
+
+        let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
+        assert!(!is_disallowed_daemon_binary_path(&safe));
     }
 
     #[test]
