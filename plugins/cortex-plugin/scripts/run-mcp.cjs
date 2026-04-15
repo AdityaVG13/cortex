@@ -49,7 +49,7 @@ function resolveRoute(config) {
     return { mode: 'remote', url: appUrl, reason: 'app route' };
   }
 
-  return { mode: 'local', url: '', reason: 'local attach-only' };
+  return { mode: 'local', url: '', reason: 'local service-first' };
 }
 
 const PLATFORM = process.platform;
@@ -60,6 +60,7 @@ const cortexApiKey = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
 const pluginAgent = (process.env.CORTEX_PLUGIN_AGENT || 'claude-code').trim() || 'claude-code';
 const dryRun = isTruthy(process.env.CORTEX_PLUGIN_DRY_RUN);
 const allowBundledBinary = isTruthy(process.env.CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY);
+const requireAppBinary = isTruthy(process.env.CORTEX_PLUGIN_REQUIRE_APP_BINARY);
 
 const route = resolveRoute({ cortexUrl });
 
@@ -70,8 +71,8 @@ try {
     pluginData: PLUGIN_DATA,
     binaryName,
     ensureBundled: () => require('./prepare-runtime.cjs'),
-    allowBundled: route.mode !== 'local' || allowBundledBinary,
-    rejectTempCandidates: route.mode === 'local' && !allowBundledBinary
+    allowBundled: route.mode !== 'local' || (!requireAppBinary || allowBundledBinary),
+    rejectTempCandidates: route.mode === 'local'
   });
   binaryPath = resolved.binaryPath;
   binarySource = resolved.source;
@@ -81,8 +82,8 @@ try {
   );
   if (route.mode === 'local') {
     console.error(
-      '[cortex-plugin] Local attach mode requires an app-managed binary. Start Control Center or set CORTEX_APP_BINARY. ' +
-      'Set CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY=1 only if you explicitly accept bundled fallback.'
+      '[cortex-plugin] Local mode could not resolve a safe Cortex binary. Start Control Center or set CORTEX_APP_BINARY. ' +
+      'Plugin-bundled fallback is allowed by default, but temporary runtime locations are blocked.'
     );
   }
   process.exit(1);
@@ -97,7 +98,7 @@ if (route.mode === 'remote') {
 }
 
 const ownerMode = route.mode === 'local'
-  ? 'solo-attach'
+  ? 'solo-service'
   : route.reason === 'explicit plugin URL'
     ? 'team'
     : 'app';
