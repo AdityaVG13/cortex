@@ -41,6 +41,7 @@ struct RecallItem {
     entropy: Option<f64>,
     family_members: Vec<String>,
     collapsed_sources: Vec<String>,
+    collapsed_source_scores: Vec<(String, f64)>,
 }
 
 /// Shannon entropy of text (bits per character).
@@ -112,6 +113,33 @@ fn blend_importance(score: Option<f64>, trust_score: Option<f64>) -> f64 {
     let score = score.unwrap_or(1.0).clamp(0.0, 1.0);
     let trust = trust_score.unwrap_or(score).clamp(0.0, 1.0);
     round4((score * 0.65) + (trust * 0.35))
+}
+
+fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
+    if text.is_empty() || query_text.is_empty() {
+        return (0, 0);
+    }
+    let lower_text = text.to_ascii_lowercase();
+    let lower_query = query_text.to_ascii_lowercase();
+    let exact_phrase = usize::from(lower_text.contains(&lower_query));
+    let mut terms = extract_keywords(query_text);
+    if terms.is_empty() {
+        terms = extract_search_keywords(query_text);
+    }
+    let keyword_hits = terms
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter(|term| lower_text.contains(term))
+        .count();
+    (exact_phrase, keyword_hits)
+}
+
+fn prefer_query_focused_excerpt(current: &str, candidate: &str, query_text: &str) -> bool {
+    let current_score = query_alignment_score(current, query_text);
+    let candidate_score = query_alignment_score(candidate, query_text);
+    candidate_score > current_score
+        || (candidate_score == current_score && candidate.len() < current.len())
 }
 
 // ─── Visibility context ─────────────────────────────────────────────────────
@@ -187,6 +215,45 @@ fn source_matches_prefix(source: &str, source_prefix: Option<&str>) -> bool {
 
 fn crystal_source(crystal_id: i64, label: &str) -> String {
     format!("crystal::{crystal_id}::{label}")
+}
+
+fn dedup_preserve_order(values: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.clone()));
+}
+
+fn normalize_collapsed_source_rank(item: &mut RecallItem) {
+    let mut best_scores: HashMap<String, (f64, usize)> = HashMap::new();
+    for (order, source) in item.collapsed_sources.iter().enumerate() {
+        best_scores.entry(source.clone()).or_insert((0.0, order));
+    }
+    for (order, (source, score)) in item.collapsed_source_scores.iter().enumerate() {
+        best_scores
+            .entry(source.clone())
+            .and_modify(|entry| {
+                entry.0 = entry.0.max(*score);
+                entry.1 = entry.1.min(order);
+            })
+            .or_insert((*score, order));
+    }
+    let mut ranked: Vec<(String, f64, usize)> = best_scores
+        .into_iter()
+        .map(|(source, (score, order))| (source, score, order))
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    item.collapsed_source_scores = ranked
+        .iter()
+        .map(|(source, score, _)| (source.clone(), *score))
+        .collect();
+    item.collapsed_sources = item
+        .collapsed_source_scores
+        .iter()
+        .map(|(source, _)| source.clone())
+        .collect();
 }
 
 fn parse_crystal_source_id(source: &str) -> Option<i64> {
@@ -1174,12 +1241,13 @@ fn run_recall_with_query_vector(
                 RecallItem {
                     source,
                     relevance: scale_sim(relevance as f32),
-                    excerpt: text.chars().take(300).collect(),
+                    excerpt: query_focused_excerpt(&text, query_text, 300),
                     method: "crystal".to_string(),
                     tokens: None,
                     entropy: None,
                     family_members,
                     collapsed_sources: Vec::new(),
+                    collapsed_source_scores: Vec::new(),
                 },
             );
         }
@@ -1342,6 +1410,12 @@ fn run_recall_with_query_vector(
                 {
                     crystal_item.collapsed_sources.push(source.clone());
                 }
+                crystal_item
+                    .collapsed_source_scores
+                    .push((source.clone(), relevance));
+                if prefer_query_focused_excerpt(&crystal_item.excerpt, &excerpt, query_text) {
+                    crystal_item.excerpt = excerpt.clone();
+                }
             }
             continue;
         }
@@ -1357,6 +1431,7 @@ fn run_recall_with_query_vector(
                 entropy: None,
                 family_members: Vec::new(),
                 collapsed_sources: Vec::new(),
+                collapsed_source_scores: Vec::new(),
             },
         );
     }
@@ -1364,8 +1439,8 @@ fn run_recall_with_query_vector(
     // Crystal items bypass RRF (they're already fused/consolidated knowledge);
     // insert after -- they will not be overwritten since crystal:: keys don't appear in kw/sem
     for (src, mut item) in crystal_items {
-        item.collapsed_sources.sort();
-        item.collapsed_sources.dedup();
+        dedup_preserve_order(&mut item.family_members);
+        normalize_collapsed_source_rank(&mut item);
         merged.entry(src).or_insert(item);
     }
 
@@ -1453,6 +1528,7 @@ fn run_semantic_recall_with_query_vector(
             entropy: None,
             family_members: Vec::new(),
             collapsed_sources: Vec::new(),
+            collapsed_source_scores: Vec::new(),
         })
         .collect();
 
@@ -1918,6 +1994,7 @@ fn build_associative_candidates(
             entropy: None,
             family_members: Vec::new(),
             collapsed_sources: Vec::new(),
+            collapsed_source_scores: Vec::new(),
         });
         if associative.len() >= max_associative {
             break;
@@ -2062,6 +2139,7 @@ fn run_budget_recall_trace_with_query_vector(
                 entropy: item.entropy,
                 family_members: item.family_members,
                 collapsed_sources: item.collapsed_sources,
+                collapsed_source_scores: item.collapsed_source_scores,
             });
         }
     }
@@ -3311,6 +3389,22 @@ fn recall_to_json(item: RecallItem) -> Value {
                 ),
             );
         }
+        if !item.collapsed_source_scores.is_empty() {
+            map.insert(
+                "collapsedSourceScores".to_string(),
+                Value::Array(
+                    item.collapsed_source_scores
+                        .into_iter()
+                        .map(|(source, relevance)| {
+                            json!({
+                                "source": source,
+                                "relevance": relevance,
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
     }
     payload
 }
@@ -3328,6 +3422,14 @@ fn hash_content(content: &str) -> u32 {
 
 fn source_dedup_hash(source: &str) -> u32 {
     hash_content(&format!("source::{source}"))
+}
+
+fn collapse_score_is_better(candidate_score: f64, candidate_order: usize, best_score: f64, best_order: usize) -> bool {
+    match candidate_score.total_cmp(&best_score) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => candidate_order < best_order,
+    }
 }
 
 async fn load_collapsed_source_fallback(
@@ -3354,6 +3456,7 @@ async fn load_collapsed_source_fallback(
         entropy: None,
         family_members: Vec::new(),
         collapsed_sources: Vec::new(),
+        collapsed_source_scores: Vec::new(),
     })
 }
 
@@ -3396,10 +3499,27 @@ async fn dedup_and_mark_served(
 
         if already_served {
             if result.method == "crystal" && !result.collapsed_sources.is_empty() {
-                let fallback_relevance = round4((result.relevance * 0.98).max(0.0));
-                let mut fallback_item = None;
-                for collapsed_source in &result.collapsed_sources {
-                    let collapsed_source_hash = source_dedup_hash(collapsed_source);
+                let fallback_candidates: Vec<(usize, String, f64)> = if result
+                    .collapsed_source_scores
+                    .is_empty()
+                {
+                    result
+                        .collapsed_sources
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, source)| (idx, source.clone(), 0.0))
+                        .collect()
+                } else {
+                    result
+                        .collapsed_source_scores
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, (source, score))| (idx, source.clone(), *score))
+                        .collect()
+                };
+                let mut best_candidate: Option<(usize, f64, RecallItem)> = None;
+                for (order, collapsed_source, collapsed_score) in fallback_candidates {
+                    let collapsed_source_hash = source_dedup_hash(&collapsed_source);
                     let collapsed_seen = {
                         let served = state.served_content.lock().await;
                         served
@@ -3410,12 +3530,13 @@ async fn dedup_and_mark_served(
                     if collapsed_seen {
                         continue;
                     }
+                    let candidate_relevance = round4(collapsed_score.max(0.0));
                     let Some(candidate) = load_collapsed_source_fallback(
                         state,
-                        collapsed_source,
+                        &collapsed_source,
                         query,
                         ctx,
-                        fallback_relevance,
+                        candidate_relevance,
                     )
                     .await
                     else {
@@ -3423,21 +3544,36 @@ async fn dedup_and_mark_served(
                     };
                     let candidate_excerpt_hash = hash_content(&candidate.excerpt);
                     let candidate_source_hash = source_dedup_hash(&candidate.source);
+                    let candidate_seen = {
+                        let served = state.served_content.lock().await;
+                        served
+                            .get(&scope_key)
+                            .map(|map| map.contains_key(&candidate_excerpt_hash)
+                                || map.contains_key(&candidate_source_hash))
+                            .unwrap_or(false)
+                    };
+                    if candidate_seen {
+                        continue;
+                    }
+                    let replace = match &best_candidate {
+                        None => true,
+                        Some((best_order, best_score, _)) => {
+                            collapse_score_is_better(candidate_relevance, order, *best_score, *best_order)
+                        }
+                    };
+                    if replace {
+                        best_candidate = Some((order, candidate_relevance, candidate));
+                    }
+                }
+                if let Some((_, _, candidate)) = best_candidate {
+                    let candidate_excerpt_hash = hash_content(&candidate.excerpt);
+                    let candidate_source_hash = source_dedup_hash(&candidate.source);
                     let mut served = state.served_content.lock().await;
                     let map = served
                         .entry(scope_key.clone())
                         .or_insert_with(HashMap::<u32, i64>::new);
-                    if map.contains_key(&candidate_excerpt_hash)
-                        || map.contains_key(&candidate_source_hash)
-                    {
-                        continue;
-                    }
                     map.insert(candidate_excerpt_hash, now);
                     map.insert(candidate_source_hash, now);
-                    fallback_item = Some(candidate);
-                    break;
-                }
-                if let Some(candidate) = fallback_item {
                     filtered.push(candidate);
                 }
             }
@@ -3561,6 +3697,42 @@ fn deserialize_cache_entry(results: &serde_json::Value) -> Option<Vec<RecallItem
     let items: Vec<RecallItem> = arr
         .iter()
         .filter_map(|v| {
+            let collapsed_sources: Vec<String> = v
+                .get("collapsedSources")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let collapsed_source_scores: Vec<(String, f64)> = v
+                .get("collapsedSourceScores")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            let source = item
+                                .get("source")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string)?;
+                            let relevance = item
+                                .get("relevance")
+                                .and_then(|value| value.as_f64())
+                                .unwrap_or(0.0);
+                            Some((source, relevance))
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|| {
+                    collapsed_sources
+                        .iter()
+                        .cloned()
+                        .map(|source| (source, 0.0))
+                        .collect()
+                });
             Some(RecallItem {
                 source: v.get("source")?.as_str()?.to_string(),
                 relevance: v.get("relevance")?.as_f64()?,
@@ -3578,16 +3750,8 @@ fn deserialize_cache_entry(results: &serde_json::Value) -> Option<Vec<RecallItem
                             .collect()
                     })
                     .unwrap_or_default(),
-                collapsed_sources: v
-                    .get("collapsedSources")
-                    .and_then(|value| value.as_array())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|item| item.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                collapsed_sources,
+                collapsed_source_scores,
             })
         })
         .collect();
@@ -4776,7 +4940,17 @@ mod tests {
             .expect("crystal family head should be returned");
         assert_eq!(crystal.method, "crystal");
         assert_eq!(crystal.family_members, member_sources);
-        assert_eq!(crystal.collapsed_sources, crystal.family_members);
+        let mut collapsed_sources = crystal.collapsed_sources.clone();
+        let mut expected_collapsed = crystal.family_members.clone();
+        collapsed_sources.sort();
+        expected_collapsed.sort();
+        assert_eq!(collapsed_sources, expected_collapsed);
+        assert_eq!(crystal.collapsed_source_scores.len(), crystal.collapsed_sources.len());
+        assert_eq!(crystal.collapsed_source_scores[0].0, crystal.collapsed_sources[0]);
+        assert!(
+            crystal.collapsed_source_scores[0].1 >= crystal.collapsed_source_scores[1].1,
+            "collapsed child scores should preserve the ranked collapse order"
+        );
         assert!(
             results.iter().all(|item| !crystal
                 .family_members
@@ -4787,6 +4961,56 @@ mod tests {
                 .iter()
                 .map(|item| item.source.clone())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn crystal_family_head_prefers_best_query_bearing_child_excerpt() {
+        let mut conn = test_conn();
+        let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let (_crystal_id, crystal_key, _) = insert_crystal_with_memory_members(
+            &conn,
+            "daemon lifecycle",
+            "Background memo one. Background memo two. Background memo three. Daemon lifecycle policy covers lease renewal, ownership locks, and recovery. The best detail is plugin reconnect heartbeat because it prevents duplicate daemon startup during recovery.",
+            &query_vector,
+            &[
+                (
+                    "Alpha background note about generic lifecycle concerns.",
+                    "memory::aaa-background",
+                    &[0.88, 0.12, 0.0, 0.0, 0.0],
+                ),
+                (
+                    "Plugin reconnect heartbeat stops duplicate daemon startup during recovery.",
+                    "memory::zzz-plugin-heartbeat",
+                    &query_vector,
+                ),
+            ],
+        );
+
+        let results = run_recall_with_query_vector(
+            &mut conn,
+            "plugin reconnect heartbeat",
+            5,
+            Some(&query_vector),
+            &solo_ctx(),
+            None,
+        )
+        .expect("recall should succeed");
+
+        let crystal = results
+            .iter()
+            .find(|item| item.source == crystal_key)
+            .expect("crystal family head should be returned");
+        let excerpt = crystal.excerpt.to_ascii_lowercase();
+        assert!(
+            excerpt.contains("plugin") || excerpt.contains("heartbeat") || excerpt.contains("reconnect"),
+            "crystal excerpt should surface the best query-bearing family detail, got: {}",
+            crystal.excerpt
+        );
+        assert!(
+            !excerpt.starts_with("background memo one"),
+            "crystal excerpt should not be a raw leading slice, got: {}",
+            crystal.excerpt
         );
     }
 
@@ -4944,6 +5168,143 @@ mod tests {
                 .iter()
                 .any(|item| member_sources.iter().any(|source| source == &item.source)),
             "second serve should fall back to a collapsed child source"
+        );
+    }
+
+    #[tokio::test]
+    async fn deduped_crystal_fallback_prefers_highest_ranked_child_over_lexical_order() {
+        let state = shared_test_state();
+        let query = "daemon lifecycle";
+        let crystal_key;
+        {
+            let conn = state.db.lock().await;
+            let (id, key, _member_sources) = insert_crystal_with_memory_members(
+                &conn,
+                "daemon lifecycle",
+                "Daemon lifecycle summary.",
+                &[1.0, 0.0, 0.0, 0.0, 0.0],
+                &[
+                    (
+                        "Alpha lifecycle background details.",
+                        "memory::aaa-background",
+                        &[0.8, 0.2, 0.0, 0.0, 0.0],
+                    ),
+                    (
+                        "Plugin reconnect heartbeat stops duplicate daemon startup.",
+                        "memory::zzz-plugin-heartbeat",
+                        &[1.0, 0.0, 0.0, 0.0, 0.0],
+                    ),
+                ],
+            );
+            let _ = id;
+            crystal_key = key;
+        }
+
+        let crystal_result = RecallItem {
+            source: crystal_key.clone(),
+            relevance: 0.92,
+            excerpt: "Daemon lifecycle summary.".to_string(),
+            method: "crystal".to_string(),
+            tokens: None,
+            entropy: None,
+            family_members: vec![
+                "memory::aaa-background".to_string(),
+                "memory::zzz-plugin-heartbeat".to_string(),
+            ],
+            collapsed_sources: vec![
+                "memory::aaa-background".to_string(),
+                "memory::zzz-plugin-heartbeat".to_string(),
+            ],
+            collapsed_source_scores: vec![
+                ("memory::aaa-background".to_string(), 0.41),
+                ("memory::zzz-plugin-heartbeat".to_string(), 0.91),
+            ],
+        };
+
+        let first = dedup_and_mark_served(
+            &state,
+            "codex",
+            query,
+            &solo_ctx(),
+            vec![crystal_result.clone()],
+        )
+        .await;
+        assert!(
+            first.iter().any(|item| item.source == crystal_key),
+            "first serve should emit the crystal family head"
+        );
+
+        let second = dedup_and_mark_served(
+            &state,
+            "codex",
+            query,
+            &solo_ctx(),
+            vec![crystal_result],
+        )
+        .await;
+        assert!(
+            second.iter().all(|item| item.source != crystal_key),
+            "second serve should not repeat the crystal summary"
+        );
+        assert!(
+            second
+                .iter()
+                .any(|item| item.source == "memory::zzz-plugin-heartbeat"),
+            "second serve should prefer the highest-ranked collapsed child, got {:?}",
+            second
+                .iter()
+                .map(|item| item.source.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cache_roundtrip_preserves_crystal_collapse_metadata() {
+        let cached = serde_json::Value::Array(vec![recall_to_json(RecallItem {
+            source: "crystal::42::daemon lifecycle".to_string(),
+            relevance: 0.91,
+            excerpt: "Daemon lifecycle summary.".to_string(),
+            method: "crystal".to_string(),
+            tokens: Some(18),
+            entropy: Some(3.7),
+            family_members: vec![
+                "memory::aaa-background".to_string(),
+                "memory::zzz-plugin-heartbeat".to_string(),
+            ],
+            collapsed_sources: vec![
+                "memory::zzz-plugin-heartbeat".to_string(),
+                "memory::aaa-background".to_string(),
+            ],
+            collapsed_source_scores: vec![
+                ("memory::zzz-plugin-heartbeat".to_string(), 0.91),
+                ("memory::aaa-background".to_string(), 0.41),
+            ],
+        })]);
+
+        let items = deserialize_cache_entry(&cached).expect("cache entry should deserialize");
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.source, "crystal::42::daemon lifecycle");
+        assert_eq!(
+            item.family_members,
+            vec![
+                "memory::aaa-background".to_string(),
+                "memory::zzz-plugin-heartbeat".to_string(),
+            ]
+        );
+        assert_eq!(
+            item.collapsed_sources,
+            vec![
+                "memory::zzz-plugin-heartbeat".to_string(),
+                "memory::aaa-background".to_string(),
+            ]
+        );
+        assert_eq!(
+            item.collapsed_source_scores,
+            vec![
+                ("memory::zzz-plugin-heartbeat".to_string(), 0.91),
+                ("memory::aaa-background".to_string(), 0.41),
+            ]
         );
     }
 
