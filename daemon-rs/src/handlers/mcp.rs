@@ -9,7 +9,8 @@ use super::mutate::{
     resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
 };
 use super::recall::{
-    execute_semantic_recall, execute_unified_recall, unfold_source, RecallContext,
+    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, unfold_source,
+    RecallContext,
 };
 use super::store::{
     persist_decision_embedding, store_decision_with_input_embedding_and_provenance,
@@ -121,6 +122,7 @@ fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
         | "cortex_reconnect"
         | "cortex_peek"
         | "cortex_recall"
+        | "cortex_recall_policy_explain"
         | "cortex_semantic_recall"
         | "cortex_health"
         | "cortex_digest"
@@ -655,6 +657,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recall_explain_tool_requires_read_permission_scope() {
+        assert_eq!(
+            required_permission_for_tool("cortex_recall_policy_explain"),
+            Some(ClientPermission::Read)
+        );
+    }
+
     #[tokio::test]
     async fn conflict_list_denies_non_admin_client_permission() {
         let state = test_state();
@@ -876,6 +886,21 @@ pub fn mcp_tools() -> Vec<Value> {
                     "budget": { "type": "number", "description": "Token budget. 0=headlines only, 200=balanced, 500+=full detail" },
                     "k": { "type": "number", "description": "Retrieval depth hint (default adapts to budget for low-token recall)" },
                     "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" }
+                },
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "cortex_recall_policy_explain",
+            "description": "Explain why recall returned specific results: selected policy mode, ranking factors, dropped candidates, and budget reasoning.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query text" },
+                    "budget": { "type": "number", "description": "Token budget used for recall planning (default 200)" },
+                    "k": { "type": "number", "description": "Requested result count (default adapts to budget)" },
+                    "pool_k": { "type": "number", "description": "Candidate pool depth for explain diagnostics (default adaptive, max 128)" },
+                    "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache context" }
                 },
                 "required": ["query"]
             }
@@ -1230,6 +1255,28 @@ async fn mcp_dispatch(
 
             let ctx = RecallContext::from_caller(caller_id, state);
             execute_unified_recall(state, query, budget, k, agent, &ctx, None).await
+        }
+
+        "cortex_recall_policy_explain" => {
+            let query = arg_str(args, &["query", "q"])
+                .ok_or_else(|| "Missing required argument: query".to_string())?;
+            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or({
+                if budget <= 220 {
+                    16
+                } else if budget <= 400 {
+                    12
+                } else {
+                    10
+                }
+            });
+            let pool_k = arg_usize(args, &["pool_k", "poolK", "candidate_pool"])
+                .unwrap_or((k.max(8) * 3).min(64));
+            let agent = arg_str(args, &["agent", "source_agent"])
+                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+
+            let ctx = RecallContext::from_caller(caller_id, state);
+            execute_recall_policy_explain(state, query, budget, k, agent, &ctx, None, pool_k).await
         }
 
         "cortex_semantic_recall" => {

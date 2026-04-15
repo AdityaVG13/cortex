@@ -187,6 +187,7 @@ pub struct RecallQuery {
     pub budget: Option<usize>,
     pub agent: Option<String>,
     pub source_prefix: Option<String>,
+    pub pool_k: Option<usize>,
 }
 
 // ─── GET /recall ─────────────────────────────────────────────────────────────
@@ -328,6 +329,60 @@ pub async fn handle_budget_recall(
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Budget recall failed: {e}") }),
+        ),
+    }
+}
+
+pub async fn handle_recall_explain(
+    State(state): State<RuntimeState>,
+    Query(query): Query<RecallQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let q = query.q.unwrap_or_default();
+    if q.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Missing query parameter: q" }),
+        );
+    }
+
+    let budget = query.budget.unwrap_or(200);
+    let k = query.k.unwrap_or(if budget <= 220 {
+        16
+    } else if budget <= 400 {
+        12
+    } else {
+        10
+    });
+    let pool_k = query.pool_k.unwrap_or((k.max(8) * 3).min(64));
+    let source_prefix = query
+        .source_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
+    let ctx = RecallContext::from_caller(caller_id, &state);
+
+    match execute_recall_policy_explain(
+        &state,
+        q.trim(),
+        budget,
+        k,
+        &agent,
+        &ctx,
+        source_prefix,
+        pool_k,
+    )
+    .await
+    {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Recall explain failed: {err}") }),
         ),
     }
 }
@@ -546,6 +601,176 @@ pub async fn execute_unified_recall(
     });
 
     Ok(payload)
+}
+
+fn recall_mode_for_budget(budget: usize) -> &'static str {
+    if budget == 0 {
+        "headlines"
+    } else if budget <= 220 {
+        "low-token"
+    } else if budget <= 400 {
+        "balanced"
+    } else if budget <= 800 {
+        "rich"
+    } else {
+        "full"
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_recall_policy_explain(
+    state: &RuntimeState,
+    query_text: &str,
+    budget: usize,
+    k: usize,
+    agent: &str,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+    pool_k: usize,
+) -> Result<Value, String> {
+    let requested_k = k.max(1);
+    let pool_k = pool_k.max(requested_k).min(128);
+    let mut conn = state.db.lock().await;
+    let engine = state.embedding_engine.as_deref();
+    let dflag = Some(&state.degraded_mode);
+
+    let (budgeted, candidate_pool, retrieval_depth, min_relevance, top_relevance, max_items) =
+        if budget == 0 {
+            let raw_pool = run_recall_with_engine(
+                &mut conn,
+                query_text,
+                pool_k,
+                engine,
+                ctx,
+                source_prefix,
+                dflag,
+            )?;
+            let budgeted = raw_pool
+                .iter()
+                .take(requested_k)
+                .cloned()
+                .map(|mut item| {
+                    item.excerpt.clear();
+                    item.tokens = Some(estimate_tokens(&item.source));
+                    item
+                })
+                .collect::<Vec<_>>();
+            (budgeted, raw_pool, pool_k, 0.0_f64, 0.0_f64, requested_k)
+        } else {
+            let trace = run_budget_recall_trace_with_engine(
+                &mut conn,
+                query_text,
+                budget,
+                requested_k,
+                engine,
+                ctx,
+                source_prefix,
+                dflag,
+            )?;
+            (
+                trace.budgeted,
+                trace.candidate_pool,
+                trace.retrieval_depth,
+                trace.min_relevance,
+                trace.top_relevance,
+                trace.max_items,
+            )
+        };
+    drop(conn);
+
+    let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
+    let spent: usize = final_results
+        .iter()
+        .map(|item| {
+            item.tokens
+                .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+        })
+        .sum();
+    let saved = budget as i64 - spent as i64;
+    let mode = recall_mode_for_budget(budget);
+    let returned_sources: HashSet<&str> = final_results
+        .iter()
+        .map(|item| item.source.as_str())
+        .collect();
+    let dropped_candidates: Vec<Value> = candidate_pool
+        .iter()
+        .filter(|item| !returned_sources.contains(item.source.as_str()))
+        .take(24)
+        .map(|item| {
+            let estimated_tokens = estimate_tokens(&format!("{}{}", item.source, item.excerpt));
+            json!({
+                "source": item.source,
+                "relevance": item.relevance,
+                "method": item.method,
+                "estimatedTokens": estimated_tokens,
+                "reason": "not_selected_under_current_budget_or_rank_cutoff"
+            })
+        })
+        .collect();
+    let final_with_factors: Vec<Value> = final_results
+        .clone()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, item)| {
+            let tokens = item
+                .tokens
+                .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)));
+            let budget_ratio = if budget == 0 {
+                0.0
+            } else {
+                ((tokens as f64) / (budget as f64)).min(1.0)
+            };
+            json!({
+                "rank": idx + 1,
+                "source": item.source,
+                "relevance": item.relevance,
+                "method": item.method,
+                "tokens": tokens,
+                "rankingFactors": {
+                    "relevance": item.relevance,
+                    "method": item.method,
+                    "tokenCost": tokens,
+                    "budgetCostRatio": round4(budget_ratio),
+                    "entropy": item.entropy
+                }
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "query": query_text,
+        "results": final_results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
+        "budget": budget,
+        "spent": spent,
+        "saved": saved,
+        "mode": mode,
+        "policy": {
+            "name": "adaptive-recall-policy",
+            "mode": mode,
+            "budget": budget,
+            "requestedK": requested_k,
+            "poolK": pool_k,
+            "retrievalDepth": retrieval_depth,
+            "candidateCutoff": {
+                "topRelevance": round4(top_relevance),
+                "minRelevance": round4(min_relevance),
+                "maxItemsBeforeBudget": max_items
+            },
+            "budgetReasoning": {
+                "requestedBudget": budget,
+                "spent": spent,
+                "saved": saved,
+                "budgetPressure": if budget == 0 { 0.0 } else { round4((spent as f64) / (budget as f64)) },
+                "candidateCount": candidate_pool.len(),
+                "returnedCount": final_with_factors.len(),
+                "droppedCount": candidate_pool.len().saturating_sub(final_with_factors.len())
+            }
+        },
+        "explain": {
+            "returned": final_with_factors,
+            "droppedCandidates": dropped_candidates
+        }
+    }))
 }
 
 pub async fn execute_semantic_recall(
@@ -1100,7 +1325,16 @@ fn apply_semantic_budget(
     budgeted
 }
 
-fn run_budget_recall_with_query_vector(
+struct RecallBudgetTrace {
+    budgeted: Vec<RecallItem>,
+    candidate_pool: Vec<RecallItem>,
+    retrieval_depth: usize,
+    top_relevance: f64,
+    min_relevance: f64,
+    max_items: usize,
+}
+
+fn run_budget_recall_trace_with_query_vector(
     conn: &mut Connection,
     query_text: &str,
     token_budget: usize,
@@ -1108,7 +1342,7 @@ fn run_budget_recall_with_query_vector(
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
     source_prefix: Option<&str>,
-) -> Result<Vec<RecallItem>, String> {
+) -> Result<RecallBudgetTrace, String> {
     let retrieval_depth = if token_budget <= 220 {
         (k.max(10) * 3).min(30)
     } else if token_budget <= 400 {
@@ -1125,7 +1359,14 @@ fn run_budget_recall_with_query_vector(
         source_prefix,
     )?;
     if raw.is_empty() {
-        return Ok(vec![]);
+        return Ok(RecallBudgetTrace {
+            budgeted: vec![],
+            candidate_pool: vec![],
+            retrieval_depth,
+            top_relevance: 0.0,
+            min_relevance: 0.0,
+            max_items: 0,
+        });
     }
 
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
@@ -1151,7 +1392,7 @@ fn run_budget_recall_with_query_vector(
         .cloned()
         .collect();
     if candidates.is_empty() {
-        candidates = raw.into_iter().take(max_items).collect();
+        candidates = raw.iter().take(max_items).cloned().collect();
     }
 
     let mut spent = 0usize;
@@ -1180,7 +1421,14 @@ fn run_budget_recall_with_query_vector(
         }
     }
 
-    Ok(budgeted)
+    Ok(RecallBudgetTrace {
+        budgeted,
+        candidate_pool: raw,
+        retrieval_depth,
+        top_relevance,
+        min_relevance,
+        max_items,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1194,12 +1442,36 @@ fn run_budget_recall_with_engine(
     source_prefix: Option<&str>,
     degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
+    Ok(run_budget_recall_trace_with_engine(
+        conn,
+        query_text,
+        token_budget,
+        k,
+        engine,
+        ctx,
+        source_prefix,
+        degraded_flag,
+    )?
+    .budgeted)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_budget_recall_trace_with_engine(
+    conn: &mut Connection,
+    query_text: &str,
+    token_budget: usize,
+    k: usize,
+    engine: Option<&crate::embeddings::EmbeddingEngine>,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<RecallBudgetTrace, String> {
     let query_vector = engine.and_then(|engine| engine.embed(query_text));
     if engine.is_some() {
         update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
     }
 
-    run_budget_recall_with_query_vector(
+    run_budget_recall_trace_with_query_vector(
         conn,
         query_text,
         token_budget,

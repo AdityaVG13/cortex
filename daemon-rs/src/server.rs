@@ -52,6 +52,10 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         .route("/store", post(handlers::store::handle_store))
         .route("/recall", get(handlers::recall::handle_recall))
         .route(
+            "/recall/explain",
+            get(handlers::recall::handle_recall_explain),
+        )
+        .route(
             "/recall/semantic",
             get(handlers::recall::handle_semantic_recall),
         )
@@ -774,6 +778,7 @@ mod tests {
             (Method::GET, "/dump", None),
             (Method::POST, "/store", Some("{}")),
             (Method::GET, "/recall", None),
+            (Method::GET, "/recall/explain", None),
             (Method::GET, "/peek", None),
             (Method::GET, "/unfold", None),
             (Method::GET, "/boot", None),
