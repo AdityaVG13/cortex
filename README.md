@@ -12,7 +12,9 @@
 
 <p align="center">
  v0.4.1 is experimental and the first pass. 
-  
+</p>
+
+<p align="center">
   v0.5.0 is on the way that will significantly upgrade the Cortex experience
 </p>
 
