@@ -55,3 +55,13 @@ Important constraints:
 - Every scored run also records the answer/judge provider selected from `OMB_ANSWER_LLM` / `OMB_JUDGE_LLM`, or auto-detected from available API keys.
 - `--oracle` is allowed only as a diagnostic ceiling. It should not be treated as a headline score.
 - A real scored run still needs one configured model provider key: `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY`, or `GROQ_API_KEY`.
+- Retrieval budget defaults to `300` tokens per query (`--recall-budget`), with strict quality gating enabled by default.
+- Each run emits `retrieval-metrics.jsonl` and `gate-report.json` under the run directory for auditability.
+- The default gate mode is `dynamic` (`--token-gate-mode dynamic`), which applies provider-aware token limits (`--provider-profile auto|claude|openai|codex|gemini|groq|default`).
+- The quality gate fails the run if:
+  - accuracy is below `--min-accuracy` (default `0.90`)
+  - token gates fail (dynamic provider profile limits by default, or fixed limits in `absolute` mode)
+  - recall token telemetry is missing (unless `--allow-missing-recall-metrics` is explicitly set)
+- Use `--token-gate-mode absolute` for fixed limit enforcement (`--max-recall-tokens`, `--max-avg-recall-tokens`).
+- Use `--token-gate-mode off` only for diagnostics when you explicitly want quality-only gating.
+- `--no-enforce-gate` is diagnostics-only and must not be used for headline benchmark claims.

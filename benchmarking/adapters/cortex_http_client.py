@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -28,10 +29,12 @@ class CortexHTTPClient:
         self.base_url = os.environ.get("CORTEX_BASE_URL", "http://127.0.0.1:7437").rstrip("/")
         self.token = self._resolve_token()
         self.timeout = float(os.environ.get("CORTEX_TIMEOUT_SECONDS", "30"))
-        self.budget = int(os.environ.get("CORTEX_RECALL_BUDGET", "1200"))
+        # Keep benchmark runs honest by defaulting retrieval context budget to 300 tokens.
+        self.budget = int(os.environ.get("CORTEX_RECALL_BUDGET", "300"))
         self.source_agent = os.environ.get("CORTEX_SOURCE_AGENT", "amb-cortex")
         self.entry_type = os.environ.get("CORTEX_STORE_TYPE", "benchmark")
         self.namespace = slugify(os.environ.get("CORTEX_BENCHMARK_NAMESPACE", "amb"))
+        self.metrics_file = os.environ.get("CORTEX_BENCHMARK_METRICS_FILE")
         self.client = httpx.Client(timeout=self.timeout)
         self.docs_by_context: dict[str, CortexStoredDocument] = {}
 
@@ -75,6 +78,7 @@ class CortexHTTPClient:
             "/recall",
             params={"q": query, "k": str(raw_k), "budget": str(self.budget)},
         )
+        self._record_recall_metrics(query, payload)
         documents: list[CortexStoredDocument] = []
         seen_ids: set[str] = set()
         for result in payload.get("results") or []:
@@ -98,6 +102,29 @@ class CortexHTTPClient:
             if len(documents) >= k:
                 break
         return documents, payload
+
+    def _record_recall_metrics(self, query: str, payload: dict[str, Any]) -> None:
+        if not self.metrics_file:
+            return
+        path = Path(self.metrics_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        results = payload.get("results") or []
+        token_estimate = 0
+        if isinstance(results, list):
+            token_estimate = sum(
+                int(item.get("tokens", 0))
+                for item in results
+                if isinstance(item, dict)
+            )
+        record = {
+            "query": query,
+            "budget": self.budget,
+            "result_count": len(results) if isinstance(results, list) else 0,
+            "token_estimate": token_estimate,
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True))
+            handle.write("\n")
 
     def request(
         self,

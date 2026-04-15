@@ -10,6 +10,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const RECALL_BUDGET: &str = "300";
+const MAX_QUERY_TOKENS: u64 = 300;
+const MAX_AVG_QUERY_TOKENS: f64 = 300.0;
 
 struct BenchmarkCase {
     slug: &'static str,
@@ -249,7 +252,7 @@ impl TestDaemon {
             self.request(
                 self.client
                     .get(format!("{}/recall", self.base_url))
-                    .query(&[("q", case.query), ("budget", "500"), ("k", "2")]),
+                    .query(&[("q", case.query), ("budget", RECALL_BUDGET), ("k", "2")]),
             )
             .send(),
         )
@@ -284,6 +287,8 @@ async fn recall_benchmark_regression_thresholds_hold() {
 
     let mut precision_sum = 0.0;
     let mut mrr_sum = 0.0;
+    let mut token_sum = 0u64;
+    let mut query_count = 0u64;
 
     for case in BENCHMARK_CASES {
         let payload = daemon.recall_case(case).await;
@@ -302,14 +307,28 @@ async fn recall_benchmark_regression_thresholds_hold() {
             .position(|result| matches_ground_truth(case, result))
             .map(|idx| 1.0 / (idx as f64 + 1.0))
             .unwrap_or(0.0);
+        let query_tokens: u64 = results
+            .iter()
+            .map(|result| result["tokens"].as_u64().unwrap_or(0))
+            .sum();
+        assert!(
+            query_tokens <= MAX_QUERY_TOKENS,
+            "benchmark token regression for {}: got {}, need <= {}",
+            case.slug,
+            query_tokens,
+            MAX_QUERY_TOKENS
+        );
 
         precision_sum += precision;
         mrr_sum += mrr;
+        token_sum += query_tokens;
+        query_count += 1;
     }
 
-    let query_count = BENCHMARK_CASES.len() as f64;
-    let avg_precision = precision_sum / query_count;
-    let avg_mrr = mrr_sum / query_count;
+    let query_count_f64 = BENCHMARK_CASES.len() as f64;
+    let avg_precision = precision_sum / query_count_f64;
+    let avg_mrr = mrr_sum / query_count_f64;
+    let avg_tokens = token_sum as f64 / query_count as f64;
 
     assert!(
         avg_precision >= 0.50,
@@ -320,6 +339,12 @@ async fn recall_benchmark_regression_thresholds_hold() {
         avg_mrr >= 0.70,
         "benchmark MRR regression: got {:.3}, need >= 0.70",
         avg_mrr
+    );
+    assert!(
+        avg_tokens <= MAX_AVG_QUERY_TOKENS,
+        "benchmark avg token regression: got {:.2}, need <= {:.2}",
+        avg_tokens,
+        MAX_AVG_QUERY_TOKENS
     );
 }
 

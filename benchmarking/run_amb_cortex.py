@@ -19,6 +19,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AMB_SRC = REPO_ROOT / "benchmarking" / "tools" / "agent-memory-benchmark" / "src"
 ADAPTERS_DIR = REPO_ROOT / "benchmarking" / "adapters"
 RUNS_ROOT = REPO_ROOT / "benchmarking" / "runs"
+TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
+    # Tighter ratios for providers that tend to carry heavier prompt wrappers/history overhead.
+    "claude": {"max_avg_ratio": 0.72, "max_peak_ratio": 0.90},
+    "openai": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
+    "codex": {"max_avg_ratio": 0.78, "max_peak_ratio": 0.98},
+    "gemini": {"max_avg_ratio": 0.82, "max_peak_ratio": 1.00},
+    "groq": {"max_avg_ratio": 0.84, "max_peak_ratio": 1.00},
+    "default": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
+}
 
 
 def _configure_imports() -> None:
@@ -98,11 +107,142 @@ def _configure_llm_environment() -> str:
     return provider
 
 
+def _normalize_provider_profile(raw: str | None) -> str:
+    if not raw:
+        return "default"
+    value = raw.strip().lower()
+    if value in TOKEN_GATE_PROFILES:
+        return value
+    aliases = {
+        "anthropic": "claude",
+        "sonnet": "claude",
+        "opus": "claude",
+        "gpt": "openai",
+        "oai": "openai",
+        "google": "gemini",
+    }
+    for needle, profile in aliases.items():
+        if needle in value:
+            return profile
+    for profile_name in TOKEN_GATE_PROFILES:
+        if profile_name != "default" and profile_name in value:
+            return profile_name
+    return "default"
+
+
+def _resolve_token_gate_limits(
+    *,
+    mode: str,
+    recall_budget: int,
+    provider_profile: str,
+    max_recall_tokens: int,
+    max_avg_recall_tokens: float,
+) -> dict[str, object]:
+    if mode == "off":
+        return {
+            "mode": mode,
+            "provider_profile": provider_profile,
+            "max_recall_tokens": None,
+            "max_avg_recall_tokens": None,
+            "profile": None,
+        }
+    if mode == "absolute":
+        return {
+            "mode": mode,
+            "provider_profile": provider_profile,
+            "max_recall_tokens": int(max_recall_tokens),
+            "max_avg_recall_tokens": float(max_avg_recall_tokens),
+            "profile": None,
+        }
+    profile = TOKEN_GATE_PROFILES.get(provider_profile, TOKEN_GATE_PROFILES["default"])
+    return {
+        "mode": mode,
+        "provider_profile": provider_profile,
+        "max_recall_tokens": int(round(recall_budget * profile["max_peak_ratio"])),
+        "max_avg_recall_tokens": round(recall_budget * profile["max_avg_ratio"], 2),
+        "profile": profile,
+    }
+
+
 def _write_run_manifest(run_dir: Path, payload: dict) -> None:
     (run_dir / "run-manifest.json").write_text(
         json.dumps(payload, indent=2),
         encoding="utf-8",
     )
+
+
+def _load_recall_metrics(path: Path) -> list[dict]:
+    metrics: list[dict] = []
+    if not path.exists():
+        return metrics
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        metrics.append(json.loads(line))
+    return metrics
+
+
+def _summarize_recall_metrics(metrics: list[dict], budget: int) -> dict[str, float | int]:
+    if not metrics:
+        return {
+            "queries": 0,
+            "avg_recall_tokens": 0.0,
+            "max_recall_tokens": 0,
+            "over_budget_count": 0,
+            "budget": budget,
+        }
+    token_values = [int(item.get("token_estimate", 0)) for item in metrics]
+    over_budget = [value for value in token_values if value > budget]
+    return {
+        "queries": len(metrics),
+        "avg_recall_tokens": round(sum(token_values) / len(token_values), 2),
+        "max_recall_tokens": max(token_values),
+        "over_budget_count": len(over_budget),
+        "budget": budget,
+    }
+
+
+def _enforce_quality_gate(
+    *,
+    accuracy: float,
+    recall_stats: dict[str, float | int],
+    args: argparse.Namespace,
+    token_limits: dict[str, object],
+) -> dict[str, object]:
+    failures: list[str] = []
+    if accuracy < args.min_accuracy:
+        failures.append(
+            f"accuracy {accuracy:.4f} is below required floor {args.min_accuracy:.4f}"
+        )
+    gate_mode = str(token_limits.get("mode", "dynamic"))
+    query_count = int(recall_stats.get("queries", 0))
+    if gate_mode != "off" and query_count == 0 and not args.allow_missing_recall_metrics:
+        failures.append(
+            "no recall token metrics were captured; this run is invalid for token gating"
+        )
+    max_tokens = float(recall_stats.get("max_recall_tokens", 0))
+    avg_tokens = float(recall_stats.get("avg_recall_tokens", 0.0))
+    over_budget = int(recall_stats.get("over_budget_count", 0))
+    max_limit = token_limits.get("max_recall_tokens")
+    avg_limit = token_limits.get("max_avg_recall_tokens")
+    if gate_mode != "off" and query_count > 0:
+        if max_limit is not None and max_tokens > float(max_limit):
+            failures.append(
+                f"max recall tokens {max_tokens:.0f} exceeded limit {float(max_limit):.0f}"
+            )
+        if avg_limit is not None and avg_tokens > float(avg_limit):
+            failures.append(
+                f"avg recall tokens {avg_tokens:.2f} exceeded limit {float(avg_limit):.2f}"
+            )
+        if over_budget > 0:
+            failures.append(
+                f"{over_budget} recall queries exceeded configured recall budget {args.recall_budget}"
+            )
+    return {
+        "passed": not failures,
+        "failures": failures,
+    }
 
 
 class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
@@ -123,7 +263,16 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
         stdout = self.stdout_path.open("w", encoding="utf-8")
         stderr = self.stderr_path.open("w", encoding="utf-8")
         self.proc = subprocess.Popen(
-            [str(self.binary), "serve", "--home", str(self.home), "--port", str(self.port)],
+            [
+                str(self.binary),
+                "serve",
+                "--home",
+                str(self.home),
+                "--port",
+                str(self.port),
+                "--bind",
+                "127.0.0.1",
+            ],
             stdout=stdout,
             stderr=stderr,
             text=True,
@@ -266,9 +415,22 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
     from memory_bench.memory import get_memory_provider
 
     namespace = args.run_name or f"{args.dataset}-{args.split}-{run_dir.name}"
+    recall_metrics_path = run_dir / "retrieval-metrics.jsonl"
     with IsolatedCortexDaemon(run_dir) as daemon:
         os.environ.update(daemon.export_env(namespace))
+        os.environ["CORTEX_RECALL_BUDGET"] = str(args.recall_budget)
+        os.environ["CORTEX_BENCHMARK_METRICS_FILE"] = str(recall_metrics_path)
         llm_provider = _configure_llm_environment()
+        provider_profile = _normalize_provider_profile(
+            args.provider_profile if args.provider_profile != "auto" else llm_provider
+        )
+        token_limits = _resolve_token_gate_limits(
+            mode=args.token_gate_mode,
+            recall_budget=args.recall_budget,
+            provider_profile=provider_profile,
+            max_recall_tokens=args.max_recall_tokens,
+            max_avg_recall_tokens=args.max_avg_recall_tokens,
+        )
         _write_run_manifest(
             run_dir,
             {
@@ -287,6 +449,16 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 "doc_limit": args.doc_limit,
                 "namespace": namespace,
                 "llm_provider": llm_provider,
+                "quality_gate": {
+                    "enabled": not args.no_enforce_gate,
+                    "token_gate_mode": args.token_gate_mode,
+                    "provider_profile": provider_profile,
+                    "min_accuracy": args.min_accuracy,
+                    "recall_budget": args.recall_budget,
+                    "max_recall_tokens": token_limits["max_recall_tokens"],
+                    "max_avg_recall_tokens": token_limits["max_avg_recall_tokens"],
+                    "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
+                },
                 "legitimacy": {
                     "isolated_daemon": True,
                     "uses_live_app_daemon": False,
@@ -326,6 +498,34 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
 
         summary_path = run_dir / "summary.json"
         summary_path.write_text(json.dumps(asdict(summary), indent=2), encoding="utf-8")
+        recall_metrics = _load_recall_metrics(recall_metrics_path)
+        recall_stats = _summarize_recall_metrics(recall_metrics, args.recall_budget)
+        gate = _enforce_quality_gate(
+            accuracy=float(summary.accuracy),
+            recall_stats=recall_stats,
+            args=args,
+            token_limits=token_limits,
+        )
+        gate_payload = {
+            "timestamp": datetime.now().isoformat(),
+            "quality_gate": gate,
+            "accuracy": float(summary.accuracy),
+            "recall_stats": recall_stats,
+            "limits": {
+                "token_gate_mode": args.token_gate_mode,
+                "provider_profile": provider_profile,
+                "min_accuracy": args.min_accuracy,
+                "recall_budget": args.recall_budget,
+                "max_recall_tokens": token_limits["max_recall_tokens"],
+                "max_avg_recall_tokens": token_limits["max_avg_recall_tokens"],
+                "token_gate_profile": token_limits.get("profile"),
+                "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
+            },
+        }
+        (run_dir / "gate-report.json").write_text(
+            json.dumps(gate_payload, indent=2),
+            encoding="utf-8",
+        )
         print(
             json.dumps(
                 {
@@ -335,12 +535,23 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                     "mode": summary.mode,
                     "accuracy": summary.accuracy,
                     "total_queries": summary.total_queries,
+                    "recall_stats": recall_stats,
+                    "token_gate_mode": args.token_gate_mode,
+                    "provider_profile": provider_profile,
+                    "token_limits": {
+                        "max_recall_tokens": token_limits["max_recall_tokens"],
+                        "max_avg_recall_tokens": token_limits["max_avg_recall_tokens"],
+                    },
+                    "quality_gate_passed": gate["passed"],
                     "run_dir": str(run_dir),
                     "output_json": str((run_dir / "outputs" / summary.dataset / summary.run_name / summary.mode / f"{summary.split}.json")),
                 },
                 indent=2,
             )
         )
+        if not args.no_enforce_gate and not gate["passed"]:
+            lines = "\n".join(f"- {failure}" for failure in gate["failures"])
+            raise RuntimeError(f"quality gate failed:\n{lines}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -361,6 +572,23 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--oracle", action="store_true", help="Use oracle mode when the dataset supports it.")
     run.add_argument("--run-name", default=None, help="Optional AMB run name. Defaults to cortex-http.")
     run.add_argument("--description", default=None, help="Optional run description written into the AMB output.")
+    run.add_argument(
+        "--token-gate-mode",
+        choices=["dynamic", "absolute", "off"],
+        default="dynamic",
+        help="Token gate strategy: dynamic (provider-aware), absolute (fixed limits), off (accuracy-only).",
+    )
+    run.add_argument(
+        "--provider-profile",
+        default="auto",
+        help="Provider profile for dynamic token gates (auto, claude, openai, codex, gemini, groq, default).",
+    )
+    run.add_argument("--recall-budget", type=int, default=300, help="Recall token budget sent to Cortex for each retrieval query.")
+    run.add_argument("--min-accuracy", type=float, default=0.90, help="Minimum acceptable benchmark accuracy.")
+    run.add_argument("--max-recall-tokens", type=int, default=300, help="Maximum allowed recall tokens for any single query.")
+    run.add_argument("--max-avg-recall-tokens", type=float, default=300.0, help="Maximum allowed average recall tokens across benchmark queries.")
+    run.add_argument("--allow-missing-recall-metrics", action="store_true", help="Permit runs with missing recall token telemetry (not recommended).")
+    run.add_argument("--no-enforce-gate", action="store_true", help="Skip failing the run when quality gates are violated (diagnostics only).")
     run.set_defaults(func=run_benchmark)
 
     return parser

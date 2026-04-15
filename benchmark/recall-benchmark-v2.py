@@ -10,6 +10,7 @@ import sys
 import time
 import sqlite3
 import struct
+import argparse
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -24,11 +25,70 @@ AUTH_HEADERS = {
     "Authorization": f"Bearer {AUTH_TOKEN}",
     "X-Cortex-Request": "true",
 }
+TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
+    "claude": {"max_avg_ratio": 0.72, "max_peak_ratio": 0.90},
+    "openai": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
+    "codex": {"max_avg_ratio": 0.78, "max_peak_ratio": 0.98},
+    "gemini": {"max_avg_ratio": 0.82, "max_peak_ratio": 1.00},
+    "groq": {"max_avg_ratio": 0.84, "max_peak_ratio": 1.00},
+    "default": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
+}
 
 
 def die(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def normalize_provider_profile(raw: str | None) -> str:
+    if not raw:
+        return "default"
+    value = raw.strip().lower()
+    if value in TOKEN_GATE_PROFILES:
+        return value
+    aliases = {
+        "anthropic": "claude",
+        "sonnet": "claude",
+        "opus": "claude",
+        "gpt": "openai",
+        "oai": "openai",
+        "google": "gemini",
+    }
+    for needle, profile in aliases.items():
+        if needle in value:
+            return profile
+    for profile_name in TOKEN_GATE_PROFILES:
+        if profile_name != "default" and profile_name in value:
+            return profile_name
+    return "default"
+
+
+def resolve_token_limits(args: argparse.Namespace) -> dict[str, object]:
+    if args.token_gate_mode == "off":
+        return {
+            "mode": args.token_gate_mode,
+            "provider_profile": None,
+            "max_query_tokens": None,
+            "max_avg_query_tokens": None,
+            "profile": None,
+        }
+    if args.token_gate_mode == "absolute":
+        return {
+            "mode": args.token_gate_mode,
+            "provider_profile": normalize_provider_profile(args.provider_profile),
+            "max_query_tokens": args.max_query_tokens,
+            "max_avg_query_tokens": args.max_avg_query_tokens,
+            "profile": None,
+        }
+    provider_profile = normalize_provider_profile(args.provider_profile)
+    profile = TOKEN_GATE_PROFILES.get(provider_profile, TOKEN_GATE_PROFILES["default"])
+    return {
+        "mode": args.token_gate_mode,
+        "provider_profile": provider_profile,
+        "max_query_tokens": int(round(args.recall_budget * profile["max_peak_ratio"])),
+        "max_avg_query_tokens": round(args.recall_budget * profile["max_avg_ratio"], 2),
+        "profile": profile,
+    }
 
 
 def request_json(url: str, timeout: int = 5, fatal: bool = True) -> dict | None:
@@ -277,7 +337,7 @@ def naive_baseline_tokens() -> int:
     return total_chars // 4  # ~4 chars per token
 
 
-def run_benchmark():
+def run_benchmark(args: argparse.Namespace) -> int:
     print("=" * 70)
     print("CORTEX RECALL BENCHMARK v2 (keyword + semantic + ground truth)")
     print("=" * 70)
@@ -302,7 +362,7 @@ def run_benchmark():
         category = q["category"]
         ground_truth = q["ground_truth"]
 
-        cortex = cortex_recall(query)
+        cortex = cortex_recall(query, budget=args.recall_budget)
 
         # Score each result
         scored_results = []
@@ -365,6 +425,8 @@ def run_benchmark():
     print("=" * 70)
 
     total_cortex = sum(r["cortex_tokens"] for r in results)
+    max_query_tokens = max((r["cortex_tokens"] for r in results), default=0)
+    avg_query_tokens = total_cortex / len(results) if results else 0
     avg_gt_p = sum(r["gt_precision"] for r in results) / len(results)
     avg_kw_p = sum(r["kw_precision"] for r in results) / len(results)
     avg_mrr = sum(r["mrr"] for r in results) / len(results)
@@ -378,6 +440,8 @@ def run_benchmark():
     print(f"  Hit rate (>=1 relevant): {queries_with_hit}/{len(results)} ({queries_with_hit/len(results):.0%})")
     print(f"  Avg response time:       {avg_ms:.1f}ms")
     print(f"  Avg results per query:   {avg_results:.1f}")
+    print(f"  Max query tokens:        {max_query_tokens}")
+    print(f"  Avg query tokens:        {avg_query_tokens:.1f}")
     print(f"  Total Cortex tokens:     {total_cortex:,}")
     print(f"  Naive baseline tokens:   {baseline_tokens:,}")
     print(f"  Token efficiency:        {total_cortex/baseline_tokens:.1%} of baseline")
@@ -415,6 +479,8 @@ def run_benchmark():
             "hit_rate": round(queries_with_hit / len(results), 3),
             "avg_response_ms": round(avg_ms, 1),
             "avg_results_per_query": round(avg_results, 1),
+            "max_query_tokens": max_query_tokens,
+            "avg_query_tokens": round(avg_query_tokens, 2),
             "total_cortex_tokens": total_cortex,
             "naive_baseline_tokens": baseline_tokens,
             "token_savings_pct": round((1 - total_cortex / baseline_tokens) * 100, 1),
@@ -430,6 +496,46 @@ def run_benchmark():
             for cat, s in cats.items()
         },
         "results": results,
+    }
+    gate_failures = []
+    hit_rate = queries_with_hit / len(results)
+    if avg_gt_p < args.min_gt_precision:
+        gate_failures.append(
+            f"ground truth precision {avg_gt_p:.3f} is below floor {args.min_gt_precision:.3f}"
+        )
+    if avg_mrr < args.min_mrr:
+        gate_failures.append(f"MRR {avg_mrr:.3f} is below floor {args.min_mrr:.3f}")
+    if hit_rate < args.min_hit_rate:
+        gate_failures.append(
+            f"hit rate {hit_rate:.3f} is below floor {args.min_hit_rate:.3f}"
+        )
+    if token_limits["max_query_tokens"] is not None and max_query_tokens > float(
+        token_limits["max_query_tokens"]
+    ):
+        gate_failures.append(
+            f"max query tokens {max_query_tokens} exceed limit {float(token_limits['max_query_tokens']):.0f}"
+        )
+    if token_limits["max_avg_query_tokens"] is not None and avg_query_tokens > float(
+        token_limits["max_avg_query_tokens"]
+    ):
+        gate_failures.append(
+            f"avg query tokens {avg_query_tokens:.2f} exceed limit {float(token_limits['max_avg_query_tokens']):.2f}"
+        )
+    output["quality_gate"] = {
+        "enforced": not args.no_enforce_gate,
+        "passed": len(gate_failures) == 0,
+        "failures": gate_failures,
+        "limits": {
+            "token_gate_mode": args.token_gate_mode,
+            "provider_profile": token_limits["provider_profile"],
+            "recall_budget": args.recall_budget,
+            "min_gt_precision": args.min_gt_precision,
+            "min_mrr": args.min_mrr,
+            "min_hit_rate": args.min_hit_rate,
+            "max_query_tokens": token_limits["max_query_tokens"],
+            "max_avg_query_tokens": token_limits["max_avg_query_tokens"],
+            "token_gate_profile": token_limits["profile"],
+        },
     }
     out_path.write_text(json.dumps(output, indent=2))
     print(f"\n  Results saved to: {out_path}")
@@ -453,7 +559,80 @@ def run_benchmark():
             print(f"    - {c.get('name', '?')} ({c.get('tokens', 0)} tok)")
     except Exception as e:
         print(f"  Boot failed: {e}")
+    print("\n" + "=" * 70)
+    print("QUALITY GATE")
+    print("=" * 70)
+    if gate_failures:
+        print("  FAILED")
+        for failure in gate_failures:
+            print(f"  - {failure}")
+    else:
+        print("  PASSED")
+    if gate_failures and not args.no_enforce_gate:
+        return 2
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run Cortex recall benchmark with strict quality/token gates."
+    )
+    parser.add_argument(
+        "--recall-budget",
+        type=int,
+        default=300,
+        help="Recall token budget used for each query (default: 300).",
+    )
+    parser.add_argument(
+        "--min-gt-precision",
+        type=float,
+        default=0.50,
+        help="Minimum acceptable aggregate ground-truth precision.",
+    )
+    parser.add_argument(
+        "--min-mrr",
+        type=float,
+        default=0.70,
+        help="Minimum acceptable aggregate MRR.",
+    )
+    parser.add_argument(
+        "--min-hit-rate",
+        type=float,
+        default=0.90,
+        help="Minimum acceptable hit rate (queries with >=1 relevant result).",
+    )
+    parser.add_argument(
+        "--token-gate-mode",
+        choices=["dynamic", "absolute", "off"],
+        default="dynamic",
+        help="Token gate strategy: dynamic (provider-aware), absolute (fixed limits), off (quality-only).",
+    )
+    parser.add_argument(
+        "--provider-profile",
+        default="default",
+        help="Provider profile for dynamic token gates (claude, openai, codex, gemini, groq, default).",
+    )
+    parser.add_argument(
+        "--max-query-tokens",
+        type=int,
+        default=300,
+        help="Absolute mode only: max tokens allowed for any single query.",
+    )
+    parser.add_argument(
+        "--max-avg-query-tokens",
+        type=float,
+        default=300.0,
+        help="Absolute mode only: max average tokens allowed across all queries.",
+    )
+    parser.add_argument(
+        "--no-enforce-gate",
+        action="store_true",
+        help="Do not fail process exit when quality gate fails (diagnostics only).",
+    )
+    return parser
 
 
 if __name__ == "__main__":
-    run_benchmark()
+    args = build_parser().parse_args()
+    raise SystemExit(run_benchmark(args))
+    token_limits = resolve_token_limits(args)
