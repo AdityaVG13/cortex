@@ -73,7 +73,6 @@ fn load_or_create_owner_signing_key(paths: &CortexPaths) -> Result<Vec<u8>, Stri
     Ok(key_bytes)
 }
 
-#[cfg(test)]
 fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -124,7 +123,6 @@ fn sign_owner_token_claim(
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
-#[cfg(test)]
 fn build_owner_token(
     key: &[u8],
     owner_tag: &str,
@@ -170,8 +168,7 @@ fn parse_owner_token(token: &str) -> Result<ParsedOwnerToken, String> {
     })
 }
 
-#[cfg(test)]
-fn issue_owner_token_for_spawn(
+pub fn issue_owner_token_for_spawn(
     paths: &CortexPaths,
     owner_tag: &str,
     parent_pid: u32,

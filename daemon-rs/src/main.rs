@@ -1705,9 +1705,9 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
 }
 
 use daemon_lifecycle::{
-    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload,
-    validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
-    SPAWN_PARENT_START_TIME_ENV,
+    daemon_healthy, is_cortex_health_payload, issue_owner_token_for_spawn,
+    readiness_state_from_payload, validate_spawned_owner_claim, wait_for_health,
+    DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV,
 };
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
@@ -2125,10 +2125,7 @@ async fn ensure_daemon(
                 }
                 #[cfg(not(windows))]
                 {
-                    return Err(format!(
-                        "daemon is not healthy on port {} and automatic service ensure is only available on Windows.",
-                        paths.port
-                    ));
+                    ensure_local_plugin_spawn_async(paths, agent).await?;
                 }
             } else {
                 return Err(format!(
@@ -2154,7 +2151,7 @@ async fn ensure_daemon(
                     #[cfg(not(windows))]
                     {
                         return Err(format!(
-                            "daemon is not healthy on port {} and automatic service ensure is only available on Windows.",
+                            "daemon is not healthy on port {} and another process still holds the daemon lock. Retry after the in-flight startup finishes.",
                             paths.port
                         ));
                     }
@@ -2185,6 +2182,75 @@ async fn ensure_service_ready_async() -> bool {
     tokio::task::spawn_blocking(service::ensure_ready)
         .await
         .unwrap_or(false)
+}
+
+fn plugin_owner_tag(agent: Option<&str>) -> String {
+    let normalized = agent
+        .unwrap_or("plugin")
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if normalized.is_empty() {
+        "plugin".to_string()
+    } else {
+        format!("plugin-{normalized}")
+    }
+}
+
+#[cfg(not(windows))]
+async fn ensure_local_plugin_spawn_async(
+    paths: &auth::CortexPaths,
+    agent: Option<&str>,
+) -> Result<(), String> {
+    let current_exe = std::env::current_exe().map_err(|e| format!("resolve cortex binary: {e}"))?;
+    let parent_pid = std::process::id();
+    let parent_start = process_pid_start_time(parent_pid)
+        .ok_or_else(|| format!("resolve spawn parent start time for pid {parent_pid}"))?;
+    let owner_tag = plugin_owner_tag(agent);
+    let owner_token = issue_owner_token_for_spawn(paths, &owner_tag, parent_pid)
+        .map_err(|e| format!("issue owner token: {e}"))?;
+
+    let mut cmd = std::process::Command::new(current_exe);
+    cmd.arg("serve")
+        .arg("--home")
+        .arg(paths.home.display().to_string())
+        .arg("--db")
+        .arg(paths.db.display().to_string())
+        .arg("--port")
+        .arg(paths.port.to_string())
+        .arg("--bind")
+        .arg(paths.bind.as_str())
+        .env("CORTEX_DAEMON_OWNER", &owner_tag)
+        .env("CORTEX_DAEMON_OWNER_SOURCE", "plugin-local")
+        .env("CORTEX_DAEMON_OWNER_AGENT", agent.unwrap_or("plugin"))
+        .env("CORTEX_DAEMON_OWNER_MODE", "local-plugin")
+        .env(SPAWN_PARENT_PID_ENV, parent_pid.to_string())
+        .env(SPAWN_PARENT_START_TIME_ENV, parent_start.to_string())
+        .env(DAEMON_OWNER_TOKEN_ENV, owner_token)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    cmd.spawn()
+        .map_err(|e| format!("spawn local daemon from plugin mode: {e}"))?;
+
+    if wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
+        Ok(())
+    } else {
+        Err(format!(
+            "daemon spawn started but health is still unavailable on port {}",
+            paths.port
+        ))
+    }
 }
 
 // ── Admin CLI helpers ───────────────────────────────────────────────────────

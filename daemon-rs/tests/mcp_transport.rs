@@ -79,21 +79,27 @@ fn plugin_mcp_local_mode_uses_service_first_policy_when_daemon_absent() {
         .expect("run cortex plugin mcp");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "plugin mcp should fail cleanly when daemon is absent and service ensure cannot satisfy health"
-    );
-    assert!(
-        stderr.contains("cannot start it automatically")
-            || stderr.contains("Windows service ensure failed")
-            || stderr.contains("automatic service ensure is only available on Windows")
-            || stderr.contains("another process still holds the daemon lock"),
-        "expected service/ownership policy rejection in stderr, got: {stderr}"
-    );
-    assert!(
-        !health_ok(port),
-        "plugin mcp absent-daemon case must not report healthy target unless ensure succeeded"
-    );
+    if output.status.success() {
+        assert!(
+            health_ok(port),
+            "successful plugin local ensure should leave daemon healthy on target port"
+        );
+        shutdown_daemon(port, &home_dir);
+    } else {
+        assert!(
+            stderr.contains("cannot start it automatically")
+                || stderr.contains("Windows service ensure failed")
+                || stderr.contains("automatic service ensure is only available on Windows")
+                || stderr.contains("another process still holds the daemon lock")
+                || stderr.contains("spawn local daemon from plugin mode")
+                || stderr.contains("daemon spawn started but health is still unavailable"),
+            "expected service/spawn policy rejection in stderr, got: {stderr}"
+        );
+        assert!(
+            !health_ok(port),
+            "plugin mcp absent-daemon failure case must not report healthy target"
+        );
+    }
     let _ = fs::remove_dir_all(&home_dir);
 }
 
