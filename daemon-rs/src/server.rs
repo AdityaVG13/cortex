@@ -48,6 +48,7 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         // their handler bodies directly.
         .route("/digest", get(handlers::health::handle_digest))
         .route("/savings", get(handlers::health::handle_savings))
+        .route("/stats", get(handlers::health::handle_stats))
         .route("/dump", get(handlers::health::handle_dump))
         .route("/store", post(handlers::store::handle_store))
         .route("/recall", get(handlers::recall::handle_recall))
@@ -783,6 +784,7 @@ mod tests {
             (Method::GET, "/readiness", None),
             (Method::GET, "/digest", None),
             (Method::GET, "/savings", None),
+            (Method::GET, "/stats", None),
             (Method::GET, "/dump", None),
             (Method::POST, "/store", Some("{}")),
             (Method::GET, "/recall", None),

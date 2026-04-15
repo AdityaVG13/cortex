@@ -6,7 +6,8 @@ use chrono::{NaiveDateTime, TimeZone, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Instant;
 
 use super::ensure_auth_with_caller;
 use super::{estimate_tokens, json_response, now_iso, resolve_source_identity, truncate_chars};
@@ -445,6 +446,58 @@ async fn emit_recall_query_event(state: &RuntimeState, agent: &str, payload: Val
     }
 }
 
+fn build_method_breakdown(results: &[RecallItem]) -> Value {
+    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+    for item in results {
+        *counts.entry(item.method.clone()).or_insert(0) += 1;
+    }
+    json!(counts)
+}
+
+fn method_count(methods: &Value, method: &str) -> i64 {
+    methods.get(method).and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+fn classify_recall_tier(cached: bool, mode: &str, methods: &Value) -> &'static str {
+    if cached {
+        return "cache_hit";
+    }
+    if mode == "headlines" {
+        return "headlines";
+    }
+    if mode == "semantic" {
+        return "semantic_only";
+    }
+
+    let keyword = method_count(methods, "keyword");
+    let semantic = method_count(methods, "semantic");
+    let hybrid = method_count(methods, "hybrid");
+    let crystal = method_count(methods, "crystal");
+
+    if hybrid > 0 || (keyword > 0 && semantic > 0) {
+        if crystal > 0 {
+            return "hybrid_crystal";
+        }
+        return "hybrid_fusion";
+    }
+    if keyword > 0 {
+        if crystal > 0 {
+            return "keyword_crystal";
+        }
+        return "keyword_only";
+    }
+    if semantic > 0 {
+        if crystal > 0 {
+            return "semantic_crystal";
+        }
+        return "semantic_only";
+    }
+    if crystal > 0 {
+        return "crystal_only";
+    }
+    "unknown"
+}
+
 pub async fn execute_unified_recall(
     state: &RuntimeState,
     query_text: &str,
@@ -454,6 +507,7 @@ pub async fn execute_unified_recall(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
 ) -> Result<Value, String> {
+    let started_at = Instant::now();
     let recall_scope = recall_scope_key(agent, ctx);
     let scope_prefix = recall_owner_scope(ctx);
 
@@ -462,6 +516,10 @@ pub async fn execute_unified_recall(
         if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await
         {
             let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
+            let mode = recall_mode_for_budget(budget);
+            let method_breakdown = build_method_breakdown(&deduped_cached);
+            let tier = classify_recall_tier(true, mode, &method_breakdown);
+            let latency_ms = started_at.elapsed().as_millis() as i64;
             emit_recall_query_event(
                 state,
                 agent,
@@ -472,8 +530,11 @@ pub async fn execute_unified_recall(
                     "spent": 0,
                     "saved": budget as i64,
                     "hits": deduped_cached.len(),
-                    "mode": if budget >= 500 { "full" } else { "balanced" },
-                    "cached": true
+                    "mode": mode,
+                    "cached": true,
+                    "method_breakdown": method_breakdown,
+                    "tier": tier,
+                    "latency_ms": latency_ms
                 }),
             )
             .await;
@@ -482,8 +543,10 @@ pub async fn execute_unified_recall(
                 "budget": budget,
                 "spent": 0,
                 "saved": budget as i64,
-                "mode": if budget >= 500 { "full" } else { "balanced" },
-                "cached": true
+                "mode": mode,
+                "cached": true,
+                "tier": tier,
+                "latencyMs": latency_ms
             }));
         }
     }
@@ -531,6 +594,9 @@ pub async fn execute_unified_recall(
 
     // Headlines mode (budget == 0)
     if budget == 0 {
+        let method_breakdown = build_method_breakdown(&results);
+        let tier = classify_recall_tier(false, "headlines", &method_breakdown);
+        let latency_ms = started_at.elapsed().as_millis() as i64;
         let headlines = results
             .iter()
             .map(|item| {
@@ -552,7 +618,10 @@ pub async fn execute_unified_recall(
                 "saved": 0,
                 "hits": headlines.len(),
                 "mode": "headlines",
-                "cached": false
+                "cached": false,
+                "method_breakdown": method_breakdown,
+                "tier": tier,
+                "latency_ms": latency_ms
             }),
         )
         .await;
@@ -561,7 +630,9 @@ pub async fn execute_unified_recall(
             "results": headlines,
             "budget": 0,
             "spent": 0,
-            "mode": "headlines"
+            "mode": "headlines",
+            "tier": tier,
+            "latencyMs": latency_ms
         }));
     }
 
@@ -576,6 +647,9 @@ pub async fn execute_unified_recall(
         .sum();
     let saved = budget as i64 - spent as i64;
     let mode = if budget >= 500 { "full" } else { "balanced" };
+    let method_breakdown = build_method_breakdown(&results);
+    let tier = classify_recall_tier(false, mode, &method_breakdown);
+    let latency_ms = started_at.elapsed().as_millis() as i64;
     emit_recall_query_event(
         state,
         agent,
@@ -587,7 +661,10 @@ pub async fn execute_unified_recall(
             "saved": saved,
             "hits": results.len(),
             "mode": mode,
-            "cached": false
+            "cached": false,
+            "method_breakdown": method_breakdown,
+            "tier": tier,
+            "latency_ms": latency_ms
         }),
     )
     .await;
@@ -597,7 +674,9 @@ pub async fn execute_unified_recall(
         "budget": budget,
         "spent": spent,
         "saved": saved,
-        "mode": mode
+        "mode": mode,
+        "tier": tier,
+        "latencyMs": latency_ms
     });
 
     Ok(payload)
@@ -782,6 +861,7 @@ pub async fn execute_semantic_recall(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
 ) -> Result<Value, String> {
+    let started_at = Instant::now();
     let query_vector = state
         .embedding_engine
         .as_ref()
@@ -807,17 +887,29 @@ pub async fn execute_semantic_recall(
         })
         .sum();
     let saved = budget as i64 - spent as i64;
+    let mode = "semantic";
+    let method_breakdown = build_method_breakdown(&budgeted);
+    let tier = classify_recall_tier(false, mode, &method_breakdown);
+    let latency_ms = started_at.elapsed().as_millis() as i64;
 
     emit_recall_query_event(
         state,
         agent,
         json!({
-            "query": query_text,
-            "mode": "semantic",
+            "agent": agent,
+            "query": truncate_chars(query_text, 120),
+            "mode": mode,
             "k": k,
             "budget": budget,
+            "spent": spent,
+            "saved": saved,
+            "hits": budgeted.len(),
             "results": budgeted.len(),
             "semantic_available": semantic_available,
+            "cached": false,
+            "method_breakdown": method_breakdown,
+            "tier": tier,
+            "latency_ms": latency_ms,
         }),
     )
     .await;
@@ -829,6 +921,8 @@ pub async fn execute_semantic_recall(
         "spent": spent,
         "saved": saved,
         "semanticAvailable": semantic_available,
+        "tier": tier,
+        "latencyMs": latency_ms,
     }))
 }
 

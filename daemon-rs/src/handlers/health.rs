@@ -446,6 +446,228 @@ fn parse_event_timestamp_utc(raw: &str) -> Option<chrono::DateTime<Utc>> {
     None
 }
 
+fn value_i64_any(payload: &Value, keys: &[&str]) -> i64 {
+    keys.iter()
+        .find_map(|key| payload.get(*key).and_then(|v| v.as_i64()))
+        .unwrap_or(0)
+}
+
+fn method_count(payload: &Value, method: &str) -> i64 {
+    payload
+        .get("method_breakdown")
+        .and_then(|value| value.get(method))
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0)
+}
+
+fn classify_recall_tier_from_payload(payload: &Value) -> String {
+    if let Some(tier) = payload.get("tier").and_then(|value| value.as_str()) {
+        if !tier.trim().is_empty() {
+            return tier.to_string();
+        }
+    }
+
+    if payload
+        .get("cached")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return "cache_hit".to_string();
+    }
+
+    let mode = payload
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if mode == "headlines" {
+        return "headlines".to_string();
+    }
+    if mode == "semantic" {
+        return "semantic_only".to_string();
+    }
+
+    let keyword = method_count(payload, "keyword");
+    let semantic = method_count(payload, "semantic");
+    let hybrid = method_count(payload, "hybrid");
+    let crystal = method_count(payload, "crystal");
+
+    if hybrid > 0 || (keyword > 0 && semantic > 0) {
+        if crystal > 0 {
+            return "hybrid_crystal".to_string();
+        }
+        return "hybrid_fusion".to_string();
+    }
+    if keyword > 0 {
+        if crystal > 0 {
+            return "keyword_crystal".to_string();
+        }
+        return "keyword_only".to_string();
+    }
+    if semantic > 0 {
+        if crystal > 0 {
+            return "semantic_crystal".to_string();
+        }
+        return "semantic_only".to_string();
+    }
+    if crystal > 0 {
+        return "crystal_only".to_string();
+    }
+
+    "unknown".to_string()
+}
+
+fn round1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
+    let mut tier_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut tier_latency_sum: BTreeMap<String, i64> = BTreeMap::new();
+    let mut tier_latency_samples: BTreeMap<String, i64> = BTreeMap::new();
+    let mut mode_counts: BTreeMap<String, i64> = BTreeMap::new();
+
+    let mut total_budget = 0_i64;
+    let mut total_spent = 0_i64;
+    let mut total_saved = 0_i64;
+    let mut total_hits = 0_i64;
+
+    let mut latency_total = 0_i64;
+    let mut latency_samples = 0_i64;
+    let mut recent: Vec<Value> = Vec::new();
+
+    for (data_str, created_at) in rows {
+        let payload: Value = serde_json::from_str(data_str).unwrap_or_else(|_| json!({}));
+        let mode = payload
+            .get("mode")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        *mode_counts.entry(mode.clone()).or_insert(0) += 1;
+
+        let tier = classify_recall_tier_from_payload(&payload);
+        *tier_counts.entry(tier.clone()).or_insert(0) += 1;
+
+        let budget = value_i64_any(&payload, &["budget", "baseline"]);
+        let spent = value_i64_any(&payload, &["spent", "served"]);
+        let saved = value_i64_any(&payload, &["saved"]);
+        let hits = value_i64_any(&payload, &["hits", "results"]);
+
+        total_budget += budget.max(0);
+        total_spent += spent.max(0);
+        total_saved += saved;
+        total_hits += hits.max(0);
+
+        if let Some(latency_ms) = payload.get("latency_ms").and_then(|value| value.as_i64()) {
+            if latency_ms >= 0 {
+                latency_total += latency_ms;
+                latency_samples += 1;
+                *tier_latency_sum.entry(tier.clone()).or_insert(0) += latency_ms;
+                *tier_latency_samples.entry(tier.clone()).or_insert(0) += 1;
+            }
+        }
+
+        recent.push(json!({
+            "timestamp": created_at,
+            "mode": mode,
+            "tier": tier,
+            "budget": budget,
+            "spent": spent,
+            "saved": saved,
+            "hits": hits,
+            "cached": payload.get("cached").and_then(|value| value.as_bool()).unwrap_or(false),
+            "latencyMs": payload.get("latency_ms").and_then(|value| value.as_i64()),
+        }));
+    }
+
+    let total_recalls = rows.len() as i64;
+    let avg_latency_ms = if latency_samples > 0 {
+        round1(latency_total as f64 / latency_samples as f64)
+    } else {
+        0.0
+    };
+    let savings_pct_vs_budget = if total_budget > 0 {
+        round1((total_saved as f64 / total_budget as f64) * 100.0)
+    } else {
+        0.0
+    };
+
+    let tier_distribution: Vec<Value> = tier_counts
+        .iter()
+        .map(|(tier, count)| {
+            let percent = if total_recalls > 0 {
+                round1((*count as f64 / total_recalls as f64) * 100.0)
+            } else {
+                0.0
+            };
+            let avg_tier_latency = match (
+                tier_latency_sum.get(tier).copied(),
+                tier_latency_samples.get(tier).copied(),
+            ) {
+                (Some(sum), Some(samples)) if samples > 0 => round1(sum as f64 / samples as f64),
+                _ => 0.0,
+            };
+            json!({
+                "tier": tier,
+                "count": count,
+                "percent": percent,
+                "avgLatencyMs": avg_tier_latency
+            })
+        })
+        .collect();
+
+    let tier_distribution_map: Value = json!(tier_counts
+        .iter()
+        .map(|(tier, count)| (tier.clone(), json!(count)))
+        .collect::<serde_json::Map<String, Value>>());
+
+    let avg_latency_map: Value = {
+        let mut map = serde_json::Map::new();
+        map.insert("overall".to_string(), json!(avg_latency_ms));
+        for entry in &tier_distribution {
+            if let (Some(tier), Some(avg)) = (
+                entry.get("tier").and_then(|value| value.as_str()),
+                entry.get("avgLatencyMs"),
+            ) {
+                map.insert(tier.to_string(), avg.clone());
+            }
+        }
+        Value::Object(map)
+    };
+
+    recent.sort_by(|a, b| {
+        let a_ts = a
+            .get("timestamp")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let b_ts = b
+            .get("timestamp")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        b_ts.cmp(a_ts)
+    });
+    recent.truncate(30);
+
+    json!({
+        "summary": {
+            "totalRecalls": total_recalls,
+            "totalHits": total_hits,
+            "totalBudget": total_budget,
+            "totalSpent": total_spent,
+            "totalSaved": total_saved,
+            "savingsPctVsBudget": savings_pct_vs_budget,
+            "avgLatencyMs": avg_latency_ms
+        },
+        "tierDistribution": tier_distribution,
+        "tier_distribution": tier_distribution_map,
+        "avg_latency_ms": avg_latency_map,
+        "estimated_savings": {
+            "vs_always_full_pipeline_pct": savings_pct_vs_budget
+        },
+        "modeCounts": mode_counts,
+        "recent": recent
+    })
+}
+
 pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
@@ -803,6 +1025,36 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     )
 }
 
+pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
+
+    let conn = state.db_read.lock().await;
+    let mut stmt = match conn.prepare(
+        "SELECT data, created_at FROM events WHERE type = 'recall_query' ORDER BY created_at ASC",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            return json_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            );
+        }
+    };
+
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            let data_str: String = row.get(0)?;
+            let created_at: Option<String> = row.get(1)?;
+            Ok((data_str, created_at.unwrap_or_default()))
+        })
+        .map(|iter| iter.filter_map(|row| row.ok()).collect())
+        .unwrap_or_default();
+
+    json_response(StatusCode::OK, build_recall_stats_payload_from_rows(&rows))
+}
+
 // ─── GET /dump ───────────────────────────────────────────────────────────────
 
 pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
@@ -1003,6 +1255,7 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1033,5 +1286,69 @@ mod tests {
         assert_eq!(storage_bytes, 15);
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn build_recall_stats_payload_summarizes_tiers_and_latency() {
+        let rows = vec![
+            (
+                json!({
+                    "mode": "balanced",
+                    "budget": 200,
+                    "spent": 60,
+                    "saved": 140,
+                    "hits": 2,
+                    "cached": false,
+                    "method_breakdown": { "keyword": 2 },
+                    "tier": "keyword_only",
+                    "latency_ms": 5
+                })
+                .to_string(),
+                "2026-04-14T10:00:00Z".to_string(),
+            ),
+            (
+                json!({
+                    "mode": "full",
+                    "budget": 300,
+                    "spent": 220,
+                    "saved": 80,
+                    "hits": 3,
+                    "cached": false,
+                    "method_breakdown": { "hybrid": 2, "semantic": 1 },
+                    "tier": "hybrid_fusion",
+                    "latency_ms": 28
+                })
+                .to_string(),
+                "2026-04-14T10:01:00Z".to_string(),
+            ),
+            (
+                json!({
+                    "mode": "balanced",
+                    "budget": 180,
+                    "spent": 0,
+                    "saved": 180,
+                    "hits": 1,
+                    "cached": true,
+                    "tier": "cache_hit",
+                    "latency_ms": 1
+                })
+                .to_string(),
+                "2026-04-14T10:02:00Z".to_string(),
+            ),
+        ];
+
+        let payload = build_recall_stats_payload_from_rows(&rows);
+        assert_eq!(payload["summary"]["totalRecalls"], 3);
+        assert_eq!(payload["summary"]["totalBudget"], 680);
+        assert_eq!(payload["summary"]["totalSpent"], 280);
+        assert_eq!(payload["summary"]["totalSaved"], 400);
+        assert_eq!(payload["tier_distribution"]["cache_hit"], 1);
+        assert_eq!(payload["tier_distribution"]["keyword_only"], 1);
+        assert_eq!(payload["tier_distribution"]["hybrid_fusion"], 1);
+        assert_eq!(payload["avg_latency_ms"]["overall"], 11.3);
+        assert_eq!(
+            payload["estimated_savings"]["vs_always_full_pipeline_pct"],
+            58.8
+        );
     }
 }
