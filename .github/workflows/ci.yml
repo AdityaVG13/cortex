@@ -118,8 +118,12 @@ jobs:
         run: python tools/audit_spawn_paths.py --strict
 
   plugin-validation:
-    name: Plugin validation
-    runs-on: ubuntu-latest
+    name: Plugin validation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -129,6 +133,14 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - name: Build daemon release binary
+        run: cargo build --manifest-path daemon-rs/Cargo.toml --release
+
       - name: Validate plugin scripts
         run: |
           node --check plugins/cortex-plugin/scripts/prepare-runtime.cjs
@@ -137,8 +149,28 @@ jobs:
 
       - name: Validate plugin JSON
         run: |
-          python -m json.tool plugins/cortex-plugin/.claude-plugin/plugin.json > /dev/null
-          python -m json.tool plugins/cortex-plugin/.mcp.json > /dev/null
+          node -e "JSON.parse(require('fs').readFileSync('plugins/cortex-plugin/.claude-plugin/plugin.json', 'utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('plugins/cortex-plugin/.mcp.json', 'utf8'))"
+
+      - name: Plugin local routing dry-run smoke
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CORTEX_BINARY="${PWD}/daemon-rs/target/release/cortex.exe"
+          else
+            CORTEX_BINARY="${PWD}/daemon-rs/target/release/cortex"
+          fi
+          if [ ! -f "${CORTEX_BINARY}" ]; then
+            echo "expected daemon binary missing at ${CORTEX_BINARY}"
+            exit 1
+          fi
+          LOG_FILE="$(mktemp)"
+          CLAUDE_PLUGIN_ROOT="${PWD}/plugins/cortex-plugin" \
+          CLAUDE_PLUGIN_DATA="$(mktemp -d)" \
+          CORTEX_APP_BINARY="${CORTEX_BINARY}" \
+          CORTEX_PLUGIN_DRY_RUN=1 \
+          node plugins/cortex-plugin/scripts/run-mcp.cjs 2>&1 | tee "${LOG_FILE}"
+          grep -q "MCP route: local (local service-first)" "${LOG_FILE}"
+          grep -q "Dry run complete" "${LOG_FILE}"
 
   desktop:
     name: Desktop validation
