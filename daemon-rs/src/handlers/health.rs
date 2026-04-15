@@ -541,6 +541,96 @@ fn round4(value: f64) -> f64 {
     (value * 10_000.0).round() / 10_000.0
 }
 
+const SHADOW_GATE_MIN_PROBED_EVENTS: i64 = 25;
+const SHADOW_GATE_MIN_OK_SAMPLES: i64 = 15;
+const SHADOW_GATE_MAX_UNAVAILABLE_RATE: f64 = 0.35;
+const SHADOW_GATE_MAX_ERROR_RATE: f64 = 0.05;
+const SHADOW_GATE_MIN_OK_OVERLAP_RATIO: f64 = 0.60;
+const SHADOW_GATE_MIN_OK_JACCARD: f64 = 0.45;
+
+fn build_shadow_semantic_gate(
+    shadow_status_counts: &BTreeMap<String, i64>,
+    ok_samples: i64,
+    shadow_overlap_ratio_avg: Option<f64>,
+    shadow_jaccard_avg: Option<f64>,
+) -> Value {
+    let ok_count = *shadow_status_counts.get("ok").unwrap_or(&0);
+    let unavailable_count = *shadow_status_counts.get("unavailable").unwrap_or(&0);
+    let error_count = *shadow_status_counts.get("error").unwrap_or(&0);
+    let unknown_count = *shadow_status_counts.get("unknown").unwrap_or(&0);
+    let skipped_count = *shadow_status_counts.get("skipped").unwrap_or(&0);
+
+    // "Probed" excludes cache-hit skips, because no shadow query was attempted.
+    let probed_events = ok_count + unavailable_count + error_count + unknown_count;
+    let unavailable_rate = if probed_events > 0 {
+        round4(unavailable_count as f64 / probed_events as f64)
+    } else {
+        0.0
+    };
+    let error_rate = if probed_events > 0 {
+        round4(error_count as f64 / probed_events as f64)
+    } else {
+        0.0
+    };
+
+    let mut blockers: Vec<String> = Vec::new();
+    if probed_events < SHADOW_GATE_MIN_PROBED_EVENTS {
+        blockers.push("insufficient_shadow_samples".to_string());
+    }
+    if ok_samples < SHADOW_GATE_MIN_OK_SAMPLES {
+        blockers.push("insufficient_ok_samples".to_string());
+    }
+    if unavailable_rate > SHADOW_GATE_MAX_UNAVAILABLE_RATE {
+        blockers.push("unavailable_rate_above_gate".to_string());
+    }
+    if error_rate > SHADOW_GATE_MAX_ERROR_RATE {
+        blockers.push("error_rate_above_gate".to_string());
+    }
+    match shadow_overlap_ratio_avg {
+        Some(value) if value < SHADOW_GATE_MIN_OK_OVERLAP_RATIO => {
+            blockers.push("overlap_ratio_below_gate".to_string());
+        }
+        None => blockers.push("missing_overlap_signal".to_string()),
+        _ => {}
+    }
+    match shadow_jaccard_avg {
+        Some(value) if value < SHADOW_GATE_MIN_OK_JACCARD => {
+            blockers.push("jaccard_below_gate".to_string());
+        }
+        None => blockers.push("missing_jaccard_signal".to_string()),
+        _ => {}
+    }
+
+    let ready = blockers.is_empty();
+    json!({
+        "ready": ready,
+        "decision": if ready { "ready_for_vec0_trial" } else { "hold" },
+        "target": "sqlite_vec_production_routing",
+        "blockers": blockers,
+        "metrics": {
+            "probed_events": probed_events,
+            "ok_count": ok_count,
+            "unavailable_count": unavailable_count,
+            "error_count": error_count,
+            "unknown_count": unknown_count,
+            "skipped_count": skipped_count,
+            "ok_samples": ok_samples,
+            "ok_overlap_ratio_avg": shadow_overlap_ratio_avg,
+            "ok_jaccard_avg": shadow_jaccard_avg,
+            "unavailable_rate": unavailable_rate,
+            "error_rate": error_rate
+        },
+        "thresholds": {
+            "min_probed_events": SHADOW_GATE_MIN_PROBED_EVENTS,
+            "min_ok_samples": SHADOW_GATE_MIN_OK_SAMPLES,
+            "max_unavailable_rate": SHADOW_GATE_MAX_UNAVAILABLE_RATE,
+            "max_error_rate": SHADOW_GATE_MAX_ERROR_RATE,
+            "min_ok_overlap_ratio": SHADOW_GATE_MIN_OK_OVERLAP_RATIO,
+            "min_ok_jaccard": SHADOW_GATE_MIN_OK_JACCARD
+        }
+    })
+}
+
 fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
     let mut tier_counts: BTreeMap<String, i64> = BTreeMap::new();
     let mut tier_latency_sum: BTreeMap<String, i64> = BTreeMap::new();
@@ -658,6 +748,13 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
     } else {
         None
     };
+    let shadow_ok_samples = shadow_ok_overlap_ratio_samples.max(shadow_ok_jaccard_samples);
+    let shadow_gate = build_shadow_semantic_gate(
+        &shadow_status_counts,
+        shadow_ok_samples,
+        shadow_overlap_ratio_avg,
+        shadow_jaccard_avg,
+    );
 
     let tier_distribution: Vec<Value> = tier_counts
         .iter()
@@ -734,15 +831,43 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
         "modeCounts": mode_counts,
         "shadow_semantic": {
             "status_counts": shadow_status_counts,
-            "ok_samples": shadow_ok_overlap_ratio_samples.max(shadow_ok_jaccard_samples),
+            "ok_samples": shadow_ok_samples,
             "ok_overlap_ratio_avg": shadow_overlap_ratio_avg,
             "ok_jaccard_avg": shadow_jaccard_avg
         },
         "shadowSemantic": {
             "statusCounts": shadow_status_counts,
-            "okSamples": shadow_ok_overlap_ratio_samples.max(shadow_ok_jaccard_samples),
+            "okSamples": shadow_ok_samples,
             "okOverlapRatioAvg": shadow_overlap_ratio_avg,
             "okJaccardAvg": shadow_jaccard_avg
+        },
+        "shadow_semantic_gate": shadow_gate,
+        "shadowSemanticGate": {
+            "ready": shadow_gate["ready"],
+            "decision": shadow_gate["decision"],
+            "target": shadow_gate["target"],
+            "blockers": shadow_gate["blockers"],
+            "metrics": {
+                "probedEvents": shadow_gate["metrics"]["probed_events"],
+                "okCount": shadow_gate["metrics"]["ok_count"],
+                "unavailableCount": shadow_gate["metrics"]["unavailable_count"],
+                "errorCount": shadow_gate["metrics"]["error_count"],
+                "unknownCount": shadow_gate["metrics"]["unknown_count"],
+                "skippedCount": shadow_gate["metrics"]["skipped_count"],
+                "okSamples": shadow_gate["metrics"]["ok_samples"],
+                "okOverlapRatioAvg": shadow_gate["metrics"]["ok_overlap_ratio_avg"],
+                "okJaccardAvg": shadow_gate["metrics"]["ok_jaccard_avg"],
+                "unavailableRate": shadow_gate["metrics"]["unavailable_rate"],
+                "errorRate": shadow_gate["metrics"]["error_rate"]
+            },
+            "thresholds": {
+                "minProbedEvents": shadow_gate["thresholds"]["min_probed_events"],
+                "minOkSamples": shadow_gate["thresholds"]["min_ok_samples"],
+                "maxUnavailableRate": shadow_gate["thresholds"]["max_unavailable_rate"],
+                "maxErrorRate": shadow_gate["thresholds"]["max_error_rate"],
+                "minOkOverlapRatio": shadow_gate["thresholds"]["min_ok_overlap_ratio"],
+                "minOkJaccard": shadow_gate["thresholds"]["min_ok_jaccard"]
+            }
         },
         "recent": recent
     })
@@ -1450,9 +1575,115 @@ mod tests {
         assert_eq!(payload["shadow_semantic"]["ok_jaccard_avg"], 0.4);
         assert_eq!(payload["shadowSemantic"]["statusCounts"]["ok"], 1);
         assert_eq!(payload["shadowSemantic"]["okOverlapRatioAvg"], 0.5);
+        assert_eq!(payload["shadow_semantic_gate"]["decision"], "hold");
+        assert_eq!(payload["shadow_semantic_gate"]["ready"], false);
+        assert!(payload["shadow_semantic_gate"]["blockers"]
+            .as_array()
+            .expect("gate blockers should be an array")
+            .iter()
+            .any(|value| value.as_str() == Some("insufficient_shadow_samples")));
+        assert_eq!(payload["shadowSemanticGate"]["decision"], "hold");
         assert_eq!(
             payload["estimated_savings"]["vs_always_full_pipeline_pct"],
             58.8
         );
+    }
+
+    #[test]
+    fn build_recall_stats_payload_reports_ready_shadow_semantic_gate() {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for idx in 0..30 {
+            rows.push((
+                json!({
+                    "mode": "balanced",
+                    "budget": 220,
+                    "spent": 120,
+                    "saved": 100,
+                    "hits": 3,
+                    "cached": false,
+                    "tier": "hybrid_fusion",
+                    "latency_ms": 12,
+                    "shadow_semantic": {
+                        "status": "ok",
+                        "overlapRatio": 0.72,
+                        "jaccard": 0.61
+                    }
+                })
+                .to_string(),
+                format!("2026-04-14T10:{idx:02}:00Z"),
+            ));
+        }
+        rows.push((
+            json!({
+                "mode": "balanced",
+                "budget": 220,
+                "spent": 110,
+                "saved": 110,
+                "hits": 2,
+                "cached": false,
+                "tier": "hybrid_fusion",
+                "latency_ms": 9,
+                "shadow_semantic": {
+                    "status": "unavailable",
+                    "reason": "query_embedding_unavailable"
+                }
+            })
+            .to_string(),
+            "2026-04-14T11:00:00Z".to_string(),
+        ));
+        rows.push((
+            json!({
+                "mode": "balanced",
+                "budget": 220,
+                "spent": 100,
+                "saved": 120,
+                "hits": 2,
+                "cached": false,
+                "tier": "hybrid_fusion",
+                "latency_ms": 8,
+                "shadow_semantic": {
+                    "status": "error",
+                    "reason": "transient_probe_failure"
+                }
+            })
+            .to_string(),
+            "2026-04-14T11:01:00Z".to_string(),
+        ));
+
+        let payload = build_recall_stats_payload_from_rows(&rows);
+        assert_eq!(
+            payload["shadow_semantic"]["status_counts"]["ok"], 30,
+            "ok status count should include all successful probes"
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["decision"],
+            "ready_for_vec0_trial"
+        );
+        assert_eq!(payload["shadow_semantic_gate"]["ready"], true);
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["probed_events"],
+            32
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["unavailable_rate"],
+            0.0313
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["error_rate"],
+            0.0313
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["ok_overlap_ratio_avg"],
+            0.72
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["ok_jaccard_avg"],
+            0.61
+        );
+        assert_eq!(
+            payload["shadowSemanticGate"]["decision"],
+            "ready_for_vec0_trial"
+        );
+        assert_eq!(payload["shadowSemanticGate"]["metrics"]["probedEvents"], 32);
     }
 }
