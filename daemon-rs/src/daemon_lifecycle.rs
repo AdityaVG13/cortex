@@ -404,8 +404,11 @@ pub(crate) fn readiness_state_from_payload(
     if ready && !(200..300).contains(&status) {
         return None;
     }
-    if !ready && !(status == 503 || (200..300).contains(&status)) {
-        return None;
+    if !ready {
+        let expected_not_ready_status = status == 503 || (200..300).contains(&status);
+        if !expected_not_ready_status {
+            return None;
+        }
     }
 
     let readiness_status = json.get("status").and_then(|value| value.as_str());

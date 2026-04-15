@@ -413,10 +413,15 @@ pub async fn run(
     router: Router,
     bind_addr: &str,
     port: u16,
+    ipc_endpoint: Option<String>,
     db_path: &Path,
     readiness_signal: Option<Arc<AtomicBool>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
+    if let Some(endpoint) = ipc_endpoint {
+        spawn_ipc_listener(router.clone(), endpoint);
+    }
+
     match crate::tls::try_load_tls() {
         Ok(Some(acceptor)) => {
             run_tls(
@@ -476,6 +481,95 @@ fn mark_runtime_ready(readiness_signal: Option<&Arc<AtomicBool>>) {
         if !was_ready {
             eprintln!("[cortex] Runtime readiness gate is open");
         }
+    }
+}
+
+fn spawn_ipc_listener(router: Router, endpoint: String) {
+    tokio::spawn(async move {
+        if let Err(err) = run_ipc_listener(router, endpoint.clone()).await {
+            eprintln!("[cortex] IPC listener disabled for '{endpoint}': {err}");
+        }
+    });
+}
+
+#[cfg(unix)]
+async fn run_ipc_listener(router: Router, endpoint: String) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::net::UnixListener;
+
+    let path = std::path::PathBuf::from(&endpoint);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create IPC dir: {e}"))?;
+    }
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("remove stale IPC socket: {e}"))?;
+    }
+
+    let listener = UnixListener::bind(&path).map_err(|e| format!("bind IPC socket: {e}"))?;
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    eprintln!("[cortex] Listening on unix://{}", path.display());
+
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                let hyper_svc = hyper_util::service::TowerToHyperService::new(router.clone());
+                tokio::spawn(async move {
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_svc)
+                    .await
+                    {
+                        eprintln!("[cortex] IPC unix connection error: {err}");
+                    }
+                });
+            }
+            Err(err) => eprintln!("[cortex] IPC unix accept error: {err}"),
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn run_ipc_listener(router: Router, endpoint: String) -> Result<(), String> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut first_instance = true;
+    eprintln!("[cortex] Listening on pipe://{endpoint}");
+    loop {
+        let mut options = ServerOptions::new();
+        if first_instance {
+            options.first_pipe_instance(true);
+        }
+        let server = match options.create(&endpoint) {
+            Ok(server) => server,
+            Err(err) => {
+                if first_instance {
+                    return Err(format!("create named pipe: {err}"));
+                }
+                eprintln!("[cortex] IPC pipe create error: {err}");
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                continue;
+            }
+        };
+        first_instance = false;
+
+        if let Err(err) = server.connect().await {
+            eprintln!("[cortex] IPC pipe connect error: {err}");
+            continue;
+        }
+
+        let hyper_svc = hyper_util::service::TowerToHyperService::new(router.clone());
+        tokio::spawn(async move {
+            let io = hyper_util::rt::TokioIo::new(server);
+            if let Err(err) =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(io, hyper_svc)
+                    .await
+            {
+                eprintln!("[cortex] IPC pipe connection error: {err}");
+            }
+        });
     }
 }
 
@@ -693,6 +787,7 @@ mod tests {
             (Method::GET, "/storage", None),
             (Method::POST, "/forget", Some("{}")),
             (Method::POST, "/resolve", Some("{}")),
+            (Method::POST, "/conflicts/resolve", Some("{}")),
             (Method::GET, "/conflicts", None),
             (Method::POST, "/archive", Some("{}")),
             (Method::POST, "/focus/start", Some("{}")),
@@ -736,6 +831,26 @@ mod tests {
                 solo_status, team_status,
                 "status drift for route {path}: solo={solo_status} team={team_status}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_permission_routes_are_registered() {
+        let solo_router = build_router(build_state(false).await, 7437);
+        let team_router = build_router(build_state(true).await, 7437);
+
+        let cases: Vec<(Method, &str, Option<&str>)> = vec![
+            (Method::GET, "/permissions", None),
+            (Method::POST, "/permissions/grant", Some("{}")),
+            (Method::POST, "/permissions/revoke", Some("{}")),
+        ];
+
+        for (method, path, body) in cases {
+            let solo_status = route_status(&solo_router, method.clone(), path, body).await;
+            let team_status = route_status(&team_router, method, path, body).await;
+
+            assert_ne!(solo_status, StatusCode::NOT_FOUND, "solo missing {path}");
+            assert_ne!(team_status, StatusCode::NOT_FOUND, "team missing {path}");
         }
     }
 

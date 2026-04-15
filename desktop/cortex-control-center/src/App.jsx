@@ -970,7 +970,7 @@ function AgentItem({ session }) {
         <span className="agent-pulse" style={{ color }}>ACTIVE</span>
       </div>
       <div className="item-detail">
-        {session.description || "Working"} · {session.project || "—"}
+        {session.description || "Working"} - {session.project || "—"}
       </div>
       <div className="item-meta">
         <span className="mono-inline">
@@ -1028,7 +1028,7 @@ function TaskItem({
   const operatorOwnsTask = canFinalizeTask(task, operator);
   const files = Array.isArray(task.files) ? task.files.slice(0, 4) : [];
   const detail = task.claimedBy
-    ? `${task.claimedBy}${task.summary ? ` — ${task.summary}` : ""} · ${timeAgo(task.claimedAt || task.completedAt)}`
+    ? `${task.claimedBy}${task.summary ? ` — ${task.summary}` : ""} - ${timeAgo(task.claimedAt || task.completedAt)}`
     : task.project || "—";
 
   return (
@@ -1173,7 +1173,7 @@ function FeedItem({ entry }) {
       <div className="item-meta">
         <span className="feed-kind">{feedKindLabel(entry.kind)}</span>
         <span className="item-name">{entry.agent || "unknown"}</span>
-        <span className="muted-inline">{metaBits.join(" · ")}</span>
+        <span className="muted-inline">{metaBits.join(" - ")}</span>
       </div>
       <div className="feed-summary">{entry.summary || "(no summary)"}</div>
       {entry.taskId ? <div className="item-detail">task: {entry.taskId}</div> : null}
@@ -1501,6 +1501,7 @@ export function App() {
   const [conflictLoading, setConflictLoading] = useState(false);
   const [permissionGrants, setPermissionGrants] = useState([]);
   const [permissionLoading, setPermissionLoading] = useState(false);
+  const [permissionAccessDenied, setPermissionAccessDenied] = useState(false);
   const [permissionDraft, setPermissionDraft] = useState({
     client: "",
     permission: "read",
@@ -1711,6 +1712,7 @@ export function App() {
     setConflictPairs([]);
     setResolveDrafts({});
     setPermissionGrants([]);
+    setPermissionAccessDenied(false);
     setSavings(null);
     setStats({
       memories: "--",
@@ -1936,9 +1938,19 @@ export function App() {
   }, [api, clearTransientFeedback]);
 
   const refreshPermissions = useCallback(async () => {
-    const result = await api("/permissions", true);
-    setPermissionGrants(normalizePermissionPayload(result));
-    clearTransientFeedback();
+    try {
+      const result = await api("/permissions", true);
+      setPermissionGrants(normalizePermissionPayload(result));
+      setPermissionAccessDenied(false);
+      clearTransientFeedback();
+    } catch (error) {
+      if (String(error?.message || error || "").includes("HTTP 403")) {
+        setPermissionAccessDenied(true);
+        setPermissionGrants([]);
+        return;
+      }
+      throw error;
+    }
   }, [api, clearTransientFeedback]);
 
   const refreshProtectedData = useCallback(
@@ -4066,7 +4078,7 @@ export function App() {
                           <span className={conflictBadgeClass("conflict-pill conflict-class", pair.classification)}>{pair.classification}</span>
                         </div>
                         <div className="item-detail">
-                          {pair.left.sourceAgent || "unknown"} / {pair.right.sourceAgent || "unknown"} · {pair.status}
+                          {pair.left.sourceAgent || "unknown"} / {pair.right.sourceAgent || "unknown"} - {pair.status}
                         </div>
                       </li>
                     )) : <EmptyItem text="No active conflicts" />}
@@ -4078,7 +4090,13 @@ export function App() {
                     <h2>Client Permissions</h2>
                     <span className="badge">{permissionGrants.length}</span>
                   </div>
-                  <div className="permission-form">
+                  {permissionAccessDenied ? (
+                    <ul className="item-list compact-list permission-list">
+                      <EmptyItem text="Permission controls require admin role in team mode." />
+                    </ul>
+                  ) : (
+                    <>
+                      <div className="permission-form">
                     <input
                       type="text"
                       className="memory-input"
@@ -4141,7 +4159,7 @@ export function App() {
                           <span className="badge">{grant.permission}</span>
                         </div>
                         <div className="item-detail">
-                          scope={grant.scope} {grant.grantedBy ? `· by ${grant.grantedBy}` : ""}
+                          scope={grant.scope} {grant.grantedBy ? `- by ${grant.grantedBy}` : ""}
                         </div>
                         <div className="permission-item-actions">
                           <button
@@ -4155,7 +4173,9 @@ export function App() {
                         </div>
                       </li>
                     )) : <EmptyItem text="No explicit grants yet (legacy permissive mode)." />}
-                  </ul>
+                      </ul>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -4770,7 +4790,7 @@ export function App() {
                                     <span
                                       key={`${day}-${hour}`}
                                       className="activity-heatmap-cell"
-                                      title={`${day} ${hour.toString().padStart(2, "0")}:00 · ${count} events`}
+                                      title={`${day} ${hour.toString().padStart(2, "0")}:00 - ${count} events`}
                                       style={{ background: `linear-gradient(180deg, rgba(67, 234, 255, ${alpha}), rgba(58, 109, 255, ${alpha * 0.72}))` }}
                                     />
                                   );
@@ -4804,7 +4824,7 @@ export function App() {
                                   <span className="muted-inline">{Number(row.boots || 0)} boots</span>
                                 </div>
                                 <div className="item-detail">
-                                  {`${Number(row.saved || 0).toLocaleString()}t saved · ${Number(row.served || 0).toLocaleString()}t served`}
+                                  {`${Number(row.saved || 0).toLocaleString()}t saved - ${Number(row.served || 0).toLocaleString()}t served`}
                                 </div>
                               </li>
                             )) : <EmptyItem text="No per-agent savings data yet" />}
@@ -4830,7 +4850,7 @@ export function App() {
                               <div className="item-detail">
                                 {`boot prompt ${Number(s.served || 0).toLocaleString()}t from est. raw ${Number(s.baseline || 0).toLocaleString()}t (${Number(s.saved || 0).toLocaleString()}t saved)`}
                                 {(Number(s.admitted || 0) > 0 || Number(s.rejected || 0) > 0)
-                                  ? ` · capsules ${Number(s.admitted || 0)} in / ${Number(s.rejected || 0)} out`
+                                  ? ` - capsules ${Number(s.admitted || 0)} in / ${Number(s.rejected || 0)} out`
                                   : ""}
                               </div>
                             </li>
@@ -4864,12 +4884,12 @@ export function App() {
                             <div className="operation-bar-row" key={row.operation}>
                               <div className="operation-bar-header">
                                 <span className="item-name">{label}</span>
-                                <span className="muted-inline">{saved.toLocaleString()} tokens · {formatCurrency((saved * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
+                                <span className="muted-inline">{saved.toLocaleString()} tokens - {formatCurrency((saved * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
                               </div>
-                              <div className="operation-bar-track" title={`Raw ${baseline.toLocaleString()} · Compressed ${served.toLocaleString()}`}>
+                              <div className="operation-bar-track" title={`Raw ${baseline.toLocaleString()} - Compressed ${served.toLocaleString()}`}>
                                 <span className="operation-bar-fill" style={{ width: `${width}%` }} />
                               </div>
-                              <div className="item-detail">{`${Number(row.events || 0)} events · raw ${baseline.toLocaleString()} · compressed ${served.toLocaleString()}`}</div>
+                              <div className="item-detail">{`${Number(row.events || 0)} events - raw ${baseline.toLocaleString()} - compressed ${served.toLocaleString()}`}</div>
                             </div>
                           );
                         }) : <EmptyItem text="No operation breakdown data yet" />}
@@ -5200,3 +5220,4 @@ export function App() {
     </div>
   );
 }
+

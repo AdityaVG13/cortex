@@ -90,9 +90,7 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
         }
     };
 
-    if let Err(resp) = ensure_ssrf_protection(headers) {
-        return Err(resp);
-    }
+    ensure_ssrf_protection(headers)?;
 
     Ok(())
 }
@@ -147,9 +145,7 @@ pub fn ensure_auth_with_caller(
         ));
     };
 
-    if let Err(resp) = ensure_ssrf_protection(headers) {
-        return Err(resp);
-    }
+    ensure_ssrf_protection(headers)?;
 
     Ok(caller)
 }

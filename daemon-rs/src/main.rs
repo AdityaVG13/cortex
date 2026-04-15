@@ -1711,6 +1711,10 @@ fn apply_path_env(paths: &auth::CortexPaths) {
     std::env::set_var("CORTEX_DB", &paths.db);
     std::env::set_var("CORTEX_PORT", paths.port.to_string());
     std::env::set_var("CORTEX_BIND", &paths.bind);
+    match &paths.ipc_endpoint {
+        Some(endpoint) => std::env::set_var("CORTEX_IPC_ENDPOINT", endpoint),
+        None => std::env::remove_var("CORTEX_IPC_ENDPOINT"),
+    }
 }
 
 fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String> {
@@ -2554,6 +2558,7 @@ pub(crate) async fn run_daemon(
         router,
         &paths.bind,
         paths.port,
+        paths.ipc_endpoint.clone(),
         &db_path,
         Some(readiness_signal),
         shutdown_future,

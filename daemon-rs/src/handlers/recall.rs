@@ -2773,10 +2773,10 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     None
 }
 
-fn query_memory_for_unfold(
-    conn: &Connection,
-    source: &str,
-) -> Option<(String, String, Option<i64>, Option<String>)> {
+type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
+type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
+
+fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfoldRow> {
     let sql_with_visibility =
         "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
@@ -2810,10 +2810,7 @@ fn query_memory_for_unfold(
     }
 }
 
-fn query_decision_by_id_for_unfold(
-    conn: &Connection,
-    id: i64,
-) -> Option<(String, Option<String>, Option<i64>, Option<String>)> {
+fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<DecisionUnfoldRow> {
     let sql_with_visibility =
         "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))";
@@ -2848,7 +2845,7 @@ fn query_decision_by_id_for_unfold(
 fn query_decision_by_context_for_unfold(
     conn: &Connection,
     source: &str,
-) -> Option<(String, Option<String>, Option<i64>, Option<String>)> {
+) -> Option<DecisionUnfoldRow> {
     let sql_with_visibility =
         "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \

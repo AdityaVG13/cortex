@@ -106,6 +106,19 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let ipc_kind = if ipc_endpoint.is_some() {
+        Some(if cfg!(windows) {
+            "named-pipe"
+        } else {
+            "unix-socket"
+        })
+    } else {
+        None
+    };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
 
     json!({
@@ -134,6 +147,8 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
             "db_path": state.db_path.display().to_string(),
             "token_path": state.token_path.display().to_string(),
             "pid_path": state.pid_path.display().to_string(),
+            "ipc_endpoint": ipc_endpoint,
+            "ipc_kind": ipc_kind,
             "executable": executable,
             "owner": daemon_owner
         }
@@ -153,6 +168,19 @@ pub async fn build_readiness_payload(state: &RuntimeState) -> Value {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let ipc_kind = if ipc_endpoint.is_some() {
+        Some(if cfg!(windows) {
+            "named-pipe"
+        } else {
+            "unix-socket"
+        })
+    } else {
+        None
+    };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
 
     json!({
@@ -165,6 +193,8 @@ pub async fn build_readiness_payload(state: &RuntimeState) -> Value {
             "db_path": state.db_path.display().to_string(),
             "token_path": state.token_path.display().to_string(),
             "pid_path": state.pid_path.display().to_string(),
+            "ipc_endpoint": ipc_endpoint,
+            "ipc_kind": ipc_kind,
             "executable": executable,
             "owner": daemon_owner
         },

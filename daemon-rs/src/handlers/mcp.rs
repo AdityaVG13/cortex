@@ -312,6 +312,7 @@ fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> b
         Err(_) => return false,
     };
     let found = rows.flatten().any(|name| name == column);
+    drop(stmt);
     found
 }
 
@@ -437,6 +438,7 @@ fn fetch_last_call(
     Ok(json!({ "found": false }))
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1436,7 +1438,7 @@ async fn mcp_dispatch(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
-            let limit = arg_usize(args, &["limit"]).unwrap_or(100).max(1).min(500);
+            let limit = arg_usize(args, &["limit"]).unwrap_or(100).clamp(1, 500);
 
             let options = ConflictListOptions {
                 status,

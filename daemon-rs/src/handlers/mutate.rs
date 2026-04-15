@@ -125,10 +125,18 @@ impl Default for ConflictListOptions {
 impl ConflictListOptions {
     fn from_query(query: ConflictListQuery) -> Result<Self, String> {
         let status = ConflictStatusFilter::parse(query.status.as_deref())?;
-        let classification = query
+        let classification = match query
             .classification
             .as_deref()
-            .and_then(normalize_conflict_classification);
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(raw) => Some(normalize_conflict_classification(raw).ok_or_else(|| {
+                "Invalid classification filter. Expected AGREES, CONTRADICTS, REFINES, or UNRELATED."
+                    .to_string()
+            })?),
+            None => None,
+        };
         let conflict_id = query
             .conflict_id
             .as_deref()
@@ -146,7 +154,7 @@ impl ConflictListOptions {
             status,
             classification,
             conflict_id,
-            limit: query.limit.unwrap_or(100).max(1).min(500),
+            limit: query.limit.unwrap_or(100).clamp(1, 500),
         })
     }
 }
@@ -160,7 +168,7 @@ pub struct ResolutionMetadata {
     pub similarity: Option<f64>,
 }
 
-fn normalize_permission_client_id(raw: &str) -> String {
+fn normalize_permission_client_id(raw: &str) -> Option<String> {
     let before_model = raw
         .split('(')
         .next()
@@ -172,9 +180,9 @@ fn normalize_permission_client_id(raw: &str) -> String {
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
         .collect();
     if normalized.is_empty() {
-        "http".to_string()
+        None
     } else {
-        normalized
+        Some(normalized)
     }
 }
 
@@ -290,7 +298,7 @@ fn default_classification_for_action(action: &str) -> &'static str {
     }
 }
 
-fn build_decision_node(
+struct DecisionNodeRecord {
     id: i64,
     decision: String,
     context: Option<String>,
@@ -303,23 +311,28 @@ fn build_decision_node(
     status: Option<String>,
     created_at: Option<String>,
     updated_at: Option<String>,
-) -> Value {
+}
+
+fn build_decision_node(record: DecisionNodeRecord) -> Value {
+    let source_agent_legacy = record.source_agent.clone();
+    let created_at_legacy = record.created_at.clone();
+    let updated_at_legacy = record.updated_at.clone();
     json!({
-        "id": id,
-        "decision": decision,
-        "context": context,
-        "sourceAgent": source_agent.clone(),
-        "source_agent": source_agent,
-        "sourceClient": source_client,
-        "sourceModel": source_model,
-        "reasoningDepth": reasoning_depth,
-        "confidence": confidence,
-        "trustScore": trust_score,
-        "status": status,
-        "createdAt": created_at.clone(),
-        "created_at": created_at,
-        "updatedAt": updated_at.clone(),
-        "updated_at": updated_at,
+        "id": record.id,
+        "decision": record.decision,
+        "context": record.context,
+        "sourceAgent": source_agent_legacy,
+        "source_agent": record.source_agent,
+        "sourceClient": record.source_client,
+        "sourceModel": record.source_model,
+        "reasoningDepth": record.reasoning_depth,
+        "confidence": record.confidence,
+        "trustScore": record.trust_score,
+        "status": record.status,
+        "createdAt": created_at_legacy,
+        "created_at": record.created_at,
+        "updatedAt": updated_at_legacy,
+        "updated_at": record.updated_at,
     })
 }
 
@@ -337,20 +350,20 @@ fn fetch_decision_node(conn: &Connection, id: i64) -> Option<Value> {
          FROM decisions WHERE id = ?1",
         params![id],
         |row| {
-            Ok(build_decision_node(
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, Option<f64>>(7)?,
-                row.get::<_, Option<f64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<String>>(11)?,
-            ))
+            Ok(build_decision_node(DecisionNodeRecord {
+                id: row.get::<_, i64>(0)?,
+                decision: row.get::<_, String>(1)?,
+                context: row.get::<_, Option<String>>(2)?,
+                source_agent: row.get::<_, Option<String>>(3)?,
+                source_client: row.get::<_, Option<String>>(4)?,
+                source_model: row.get::<_, Option<String>>(5)?,
+                reasoning_depth: row.get::<_, Option<String>>(6)?,
+                confidence: row.get::<_, Option<f64>>(7)?,
+                trust_score: row.get::<_, Option<f64>>(8)?,
+                status: row.get::<_, Option<String>>(9)?,
+                created_at: row.get::<_, Option<String>>(10)?,
+                updated_at: row.get::<_, Option<String>>(11)?,
+            }))
         },
     )
     .ok()
@@ -480,34 +493,34 @@ fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, St
             let right_id = row.get::<_, i64>(12)?;
             let right_decision = row.get::<_, String>(13)?;
 
-            let left = build_decision_node(
-                left_id,
-                left_decision.clone(),
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, Option<f64>>(7)?,
-                row.get::<_, Option<f64>>(8)?,
-                row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<String>>(10)?,
-                row.get::<_, Option<String>>(11)?,
-            );
-            let right = build_decision_node(
-                right_id,
-                right_decision.clone(),
-                row.get::<_, Option<String>>(14)?,
-                row.get::<_, Option<String>>(15)?,
-                row.get::<_, Option<String>>(16)?,
-                row.get::<_, Option<String>>(17)?,
-                row.get::<_, Option<String>>(18)?,
-                row.get::<_, Option<f64>>(19)?,
-                row.get::<_, Option<f64>>(20)?,
-                row.get::<_, Option<String>>(21)?,
-                row.get::<_, Option<String>>(22)?,
-                row.get::<_, Option<String>>(23)?,
-            );
+            let left = build_decision_node(DecisionNodeRecord {
+                id: left_id,
+                decision: left_decision.clone(),
+                context: row.get::<_, Option<String>>(2)?,
+                source_agent: row.get::<_, Option<String>>(3)?,
+                source_client: row.get::<_, Option<String>>(4)?,
+                source_model: row.get::<_, Option<String>>(5)?,
+                reasoning_depth: row.get::<_, Option<String>>(6)?,
+                confidence: row.get::<_, Option<f64>>(7)?,
+                trust_score: row.get::<_, Option<f64>>(8)?,
+                status: row.get::<_, Option<String>>(9)?,
+                created_at: row.get::<_, Option<String>>(10)?,
+                updated_at: row.get::<_, Option<String>>(11)?,
+            });
+            let right = build_decision_node(DecisionNodeRecord {
+                id: right_id,
+                decision: right_decision.clone(),
+                context: row.get::<_, Option<String>>(14)?,
+                source_agent: row.get::<_, Option<String>>(15)?,
+                source_client: row.get::<_, Option<String>>(16)?,
+                source_model: row.get::<_, Option<String>>(17)?,
+                reasoning_depth: row.get::<_, Option<String>>(18)?,
+                confidence: row.get::<_, Option<f64>>(19)?,
+                trust_score: row.get::<_, Option<f64>>(20)?,
+                status: row.get::<_, Option<String>>(21)?,
+                created_at: row.get::<_, Option<String>>(22)?,
+                updated_at: row.get::<_, Option<String>>(23)?,
+            });
 
             let similarity = crate::conflict::jaccard_similarity(&left_decision, &right_decision);
             let classification = "CONTRADICTS".to_string();
@@ -690,6 +703,7 @@ pub fn list_conflicts_payload(
     }))
 }
 
+#[allow(clippy::result_large_err)]
 fn ensure_admin_surface(
     headers: &HeaderMap,
     state: &RuntimeState,
@@ -1037,8 +1051,13 @@ pub async fn handle_permissions_grant(
     };
     let client = if raw_client == "*" {
         "*".to_string()
+    } else if let Some(normalized) = normalize_permission_client_id(raw_client) {
+        normalized
     } else {
-        normalize_permission_client_id(raw_client)
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Invalid client id. Use letters, numbers, '-', '_'." }),
+        );
     };
 
     let permission = match body
@@ -1062,7 +1081,7 @@ pub async fn handle_permissions_grant(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(normalize_permission_client_id)
+        .and_then(normalize_permission_client_id)
         .unwrap_or_else(|| "control-center".to_string());
 
     match grant_permission(&conn, owner_id, &client, &permission, &scope, &granted_by) {
@@ -1112,8 +1131,13 @@ pub async fn handle_permissions_revoke(
     };
     let client = if raw_client == "*" {
         "*".to_string()
+    } else if let Some(normalized) = normalize_permission_client_id(raw_client) {
+        normalized
     } else {
-        normalize_permission_client_id(raw_client)
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Invalid client id. Use letters, numbers, '-', '_'." }),
+        );
     };
 
     let permission = match body
@@ -1410,6 +1434,41 @@ mod tests {
         assert_eq!(
             payload["error"].as_str(),
             Some("Admin endpoints require team mode")
+        );
+    }
+
+    #[test]
+    fn conflict_filter_rejects_invalid_classification() {
+        let err = ConflictListOptions::from_query(ConflictListQuery {
+            status: Some("open".to_string()),
+            classification: Some("contradictory".to_string()),
+            conflict_id: None,
+            limit: Some(20),
+        })
+        .expect_err("invalid classification should be rejected");
+        assert!(err.contains("Invalid classification filter"));
+    }
+
+    #[tokio::test]
+    async fn permissions_grant_rejects_invalid_client_shape() {
+        let state = test_state(false);
+        let response = handle_permissions_grant(
+            State(state),
+            auth_headers("test-token"),
+            Json(PermissionGrantRequest {
+                client: Some("!!!".to_string()),
+                permission: Some("read".to_string()),
+                scope: Some("*".to_string()),
+                granted_by: Some("control-center".to_string()),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload = response_json(response).await;
+        assert_eq!(
+            payload["error"].as_str(),
+            Some("Invalid client id. Use letters, numbers, '-', '_'.")
         );
     }
 }

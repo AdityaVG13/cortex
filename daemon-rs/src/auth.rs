@@ -24,6 +24,7 @@ pub struct CortexPaths {
     pub lock: PathBuf,
     pub port: u16,
     pub bind: String,
+    pub ipc_endpoint: Option<String>,
     pub models: PathBuf,
     #[allow(dead_code)]
     pub write_buffer: PathBuf,
@@ -61,11 +62,13 @@ impl CortexPaths {
             .unwrap_or(7437);
         let env_bind = std::env::var("CORTEX_BIND").ok();
         let bind = resolve_bind(bind_override, env_bind.as_deref());
+        let ipc_endpoint = resolve_ipc_endpoint(&home, port);
 
         Self {
             token: home.join("cortex.token"),
             pid: home.join("cortex.pid"),
             lock: home.join("cortex.lock"),
+            ipc_endpoint,
             models: home.join("models"),
             write_buffer: home.join("write_buffer.jsonl"),
             home,
@@ -100,6 +103,12 @@ impl CortexPaths {
             "pid": self.pid.display().to_string(),
             "port": self.port,
             "bind": &self.bind,
+            "ipc_endpoint": self.ipc_endpoint.clone(),
+            "ipc_kind": if self.ipc_endpoint.is_some() {
+                Some(default_ipc_kind())
+            } else {
+                None
+            },
             "models": self.models.display().to_string(),
         })
         .to_string()
@@ -120,6 +129,43 @@ fn resolve_bind(bind_override: Option<&str>, env_bind: Option<&str>) -> String {
         .and_then(normalize_bind)
         .or_else(|| env_bind.and_then(normalize_bind))
         .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn default_ipc_kind() -> &'static str {
+    if cfg!(windows) {
+        "named-pipe"
+    } else {
+        "unix-socket"
+    }
+}
+
+fn env_truthy(key: &str) -> bool {
+    std::env::var(key).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn resolve_ipc_endpoint(home: &std::path::Path, port: u16) -> Option<String> {
+    if env_truthy("CORTEX_DISABLE_IPC") {
+        return None;
+    }
+
+    if let Ok(raw) = std::env::var("CORTEX_IPC_ENDPOINT") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if cfg!(windows) {
+        return Some(format!(r"\\.\pipe\cortex-daemon-{port}"));
+    }
+
+    let socket = home.join("runtime").join(format!("cortexd-{port}.sock"));
+    Some(socket.display().to_string())
 }
 
 // ---------------------------------------------------------------------------
