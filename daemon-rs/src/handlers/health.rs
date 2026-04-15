@@ -57,7 +57,7 @@ fn collect_storage_metrics(home: &std::path::Path) -> (u64, usize, u64) {
 
 pub async fn build_health_payload(state: &RuntimeState) -> Value {
     // Read DB stats in a short lock, then drop it before the network call.
-    let (memories, decisions, embeddings_count, events, db_freelist_pages) = {
+    let (memories, decisions, embeddings_count, events, db_freelist_pages, sqlite_vec_status) = {
         let conn = state.db_read.lock().await;
         let m: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
@@ -74,7 +74,8 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         let freelist: i64 = conn
             .query_row("PRAGMA freelist_count", [], |r| r.get(0))
             .unwrap_or(0);
-        (m, d, e, ev, freelist)
+        let sqlite_vec_status = crate::db::sqlite_vec_status(&conn);
+        (m, d, e, ev, freelist, sqlite_vec_status)
     }; // DB lock released here.
 
     let db_size_bytes = std::fs::metadata(&state.db_path)
@@ -131,6 +132,14 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "degraded": degraded || db_corrupted,
         "db_corrupted": db_corrupted,
         "embedding_status": embedding_status,
+        "vector_search": {
+            "backend": "blob_scan",
+            "sqlite_vec": {
+                "available": sqlite_vec_status.available,
+                "version": sqlite_vec_status.version,
+                "error": sqlite_vec_status.error
+            }
+        },
         "team_mode": state.team_mode,
         "db_freelist_pages": db_freelist_pages,
         "db_size_bytes": db_size_bytes,

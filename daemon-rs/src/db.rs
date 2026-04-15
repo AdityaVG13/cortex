@@ -1,8 +1,39 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use rusqlite::{params, Connection, OptionalExtension};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqliteVecStatus {
+    pub available: bool,
+    pub version: Option<String>,
+    pub error: Option<String>,
+}
+
+static SQLITE_VEC_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
+
+fn ensure_sqlite_vec_registered() -> Result<(), String> {
+    SQLITE_VEC_REGISTRATION
+        .get_or_init(|| unsafe {
+            type SqliteVecEntryPoint = unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut i8,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32;
+            let init = std::mem::transmute::<*const (), SqliteVecEntryPoint>(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            );
+            let rc = rusqlite::ffi::sqlite3_auto_extension(Some(init));
+            if rc == 0 {
+                Ok(())
+            } else {
+                Err(format!("sqlite3_auto_extension returned {rc}"))
+            }
+        })
+        .clone()
+}
 
 /// Result of an auto-repair attempt.
 #[derive(Debug)]
@@ -43,7 +74,31 @@ impl std::fmt::Debug for RepairError {
 
 /// Open a SQLite connection at the given path.
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
+    let _ = ensure_sqlite_vec_registered();
     Connection::open(path)
+}
+
+pub fn sqlite_vec_status(conn: &Connection) -> SqliteVecStatus {
+    if let Err(error) = ensure_sqlite_vec_registered() {
+        return SqliteVecStatus {
+            available: false,
+            version: None,
+            error: Some(error),
+        };
+    }
+
+    match conn.query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0)) {
+        Ok(version) => SqliteVecStatus {
+            available: true,
+            version: Some(version),
+            error: None,
+        },
+        Err(error) => SqliteVecStatus {
+            available: false,
+            version: None,
+            error: Some(error.to_string()),
+        },
+    }
 }
 
 /// Apply WAL mode, NORMAL synchronous writes, and foreign-key enforcement.
@@ -2010,6 +2065,69 @@ mod tests {
         assert!(table_exists(&conn, "focus_sessions"));
         assert!(table_exists(&conn, "memory_clusters"));
         assert!(table_exists(&conn, "cluster_members"));
+    }
+
+    #[test]
+    fn test_open_registers_sqlite_vec_and_supports_vec0_smoke_query() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("cortex_sqlite_vec_smoke_{unique}.db"));
+        let wal_path = db_path.with_extension("db-wal");
+        let shm_path = db_path.with_extension("db-shm");
+
+        let conn = open(&db_path).expect("db open should succeed with sqlite-vec bootstrap");
+        configure(&conn).unwrap();
+
+        let status = sqlite_vec_status(&conn);
+        assert!(
+            status.available,
+            "sqlite-vec should be available on freshly opened connections: {:?}",
+            status.error
+        );
+        assert!(
+            status
+                .version
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            "sqlite-vec version should be reported"
+        );
+
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE vec_examples USING vec0(
+                sample_id INTEGER PRIMARY KEY,
+                sample_embedding FLOAT[3]
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vec_examples(sample_id, sample_embedding) VALUES (1, '[0.1, 0.2, 0.3]')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vec_examples(sample_id, sample_embedding) VALUES (2, '[0.9, 0.1, 0.1]')",
+            [],
+        )
+        .unwrap();
+
+        let (sample_id, distance): (i64, f64) = conn
+            .query_row(
+                "SELECT sample_id, distance
+                 FROM vec_examples
+                 WHERE sample_embedding MATCH '[0.11, 0.19, 0.31]' AND k = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sample_id, 1);
+        assert!(distance >= 0.0);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_file(&shm_path);
     }
 
     #[test]
