@@ -7,6 +7,7 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use super::ensure_auth_with_caller;
@@ -86,6 +87,12 @@ struct SemanticCandidate {
     ts: i64,
 }
 
+#[derive(Clone)]
+struct ShadowSemanticRow {
+    source: String,
+    vector: Vec<f32>,
+}
+
 type MemorySemanticRow = (
     Vec<u8>,
     String,
@@ -109,6 +116,8 @@ type DecisionSemanticRow = (
     Option<String>,
 );
 type CrystalMemberSourceRow = (Option<String>, Option<i64>, Option<String>);
+type ShadowMemoryRow = (Vec<u8>, String, Option<i64>, Option<String>);
+type ShadowDecisionRow = (Vec<u8>, String, Option<String>, Option<i64>, Option<String>);
 
 fn blend_importance(score: Option<f64>, trust_score: Option<f64>) -> f64 {
     let score = score.unwrap_or(1.0).clamp(0.0, 1.0);
@@ -1018,6 +1027,17 @@ async fn execute_recall_policy_explain_inner(
             trace.max_items,
         )
     };
+    let shadow_query_vector = query_vector_override
+        .map(|vector| vector.to_vec())
+        .or_else(|| engine.and_then(|runtime_engine| runtime_engine.embed(query_text)));
+    let shadow_semantic = build_shadow_semantic_explain(
+        &conn,
+        shadow_query_vector.as_deref(),
+        query_text,
+        ctx,
+        source_prefix,
+        pool_k,
+    );
     drop(conn);
 
     let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
@@ -1132,7 +1152,8 @@ async fn execute_recall_policy_explain_inner(
         "explain": {
             "returned": final_with_factors,
             "familyCompactions": family_compactions_json,
-            "droppedCandidates": dropped_candidates
+            "droppedCandidates": dropped_candidates,
+            "shadowSemantic": shadow_semantic
         }
     }))
 }
@@ -3251,6 +3272,308 @@ fn collect_semantic_candidates(
     });
     sorted.truncate(MAX_SEMANTIC_RRF_CANDIDATES);
     sorted
+}
+
+fn collect_shadow_semantic_rows(
+    conn: &Connection,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+) -> Vec<ShadowSemanticRow> {
+    let mut rows_by_source: HashMap<String, Vec<f32>> = HashMap::new();
+
+    let memory_query_with_acl = "SELECT e.vector, m.source, m.owner_id, m.visibility \
+         FROM embeddings e \
+         JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+    let memory_query_without_acl = "SELECT e.vector, m.source, NULL AS owner_id, NULL AS visibility \
+         FROM embeddings e \
+         JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+    let memory_stmt = match conn.prepare(memory_query_with_acl) {
+        Ok(stmt) => Some(stmt),
+        Err(err) if is_missing_team_visibility_columns(&err) => {
+            conn.prepare(memory_query_without_acl).ok()
+        }
+        Err(_) => None,
+    };
+    if let Some(mut stmt) = memory_stmt {
+        let rows: Vec<ShadowMemoryRow> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.ok())
+            .collect();
+
+        for (blob, source, owner_id, visibility) in rows {
+            if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                continue;
+            }
+            if !source_matches_prefix(&source, source_prefix) {
+                continue;
+            }
+            rows_by_source
+                .entry(source)
+                .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
+        }
+    }
+
+    let decision_query_with_acl = "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility \
+         FROM embeddings e \
+         JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+    let decision_query_without_acl = "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility \
+         FROM embeddings e \
+         JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+    let decision_stmt = match conn.prepare(decision_query_with_acl) {
+        Ok(stmt) => Some(stmt),
+        Err(err) if is_missing_team_visibility_columns(&err) => {
+            conn.prepare(decision_query_without_acl).ok()
+        }
+        Err(_) => None,
+    };
+    if let Some(mut stmt) = decision_stmt {
+        let rows: Vec<ShadowDecisionRow> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.ok())
+            .collect();
+
+        for (blob, decision, context, owner_id, visibility) in rows {
+            if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                continue;
+            }
+            let source = context.unwrap_or_else(|| {
+                format!(
+                    "decision::{}",
+                    decision.chars().take(40).collect::<String>()
+                )
+            });
+            if !source_matches_prefix(&source, source_prefix) {
+                continue;
+            }
+            rows_by_source
+                .entry(source)
+                .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
+        }
+    }
+
+    let mut rows: Vec<ShadowSemanticRow> = rows_by_source
+        .into_iter()
+        .map(|(source, vector)| ShadowSemanticRow { source, vector })
+        .collect();
+    rows.sort_by(|a, b| a.source.cmp(&b.source));
+    rows
+}
+
+fn vector_to_vec0_literal(vector: &[f32]) -> String {
+    let mut literal = String::with_capacity(vector.len().saturating_mul(12).saturating_add(2));
+    literal.push('[');
+    for (idx, value) in vector.iter().enumerate() {
+        if idx > 0 {
+            literal.push_str(", ");
+        }
+        let stable = if value.is_finite() { *value } else { 0.0 };
+        let _ = write!(&mut literal, "{stable}");
+    }
+    literal.push(']');
+    literal
+}
+
+fn run_sqlite_vec_shadow_knn_sources(
+    conn: &Connection,
+    query_vector: &[f32],
+    candidates: &[ShadowSemanticRow],
+    top_k: usize,
+) -> Result<Vec<String>, String> {
+    if query_vector.is_empty() || candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    const SHADOW_TABLE: &str = "cortex_shadow_semantic_knn";
+    let k = top_k.max(1).min(candidates.len());
+    let query_literal = vector_to_vec0_literal(query_vector);
+    let result = (|| -> Result<Vec<String>, String> {
+        conn.execute_batch(&format!("DROP TABLE IF EXISTS {SHADOW_TABLE};"))
+            .map_err(|err| format!("sqlite-vec shadow drop failed: {err}"))?;
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE {SHADOW_TABLE} USING vec0(\
+                candidate_id INTEGER PRIMARY KEY,\
+                embedding FLOAT[{}]\
+            );",
+            query_vector.len()
+        ))
+        .map_err(|err| format!("sqlite-vec shadow create failed: {err}"))?;
+
+        for (candidate_id, candidate) in candidates.iter().enumerate() {
+            conn.execute(
+                &format!(
+                    "INSERT INTO {SHADOW_TABLE}(candidate_id, embedding) VALUES ({}, '{}')",
+                    candidate_id + 1,
+                    vector_to_vec0_literal(&candidate.vector)
+                ),
+                [],
+            )
+            .map_err(|err| format!("sqlite-vec shadow insert failed: {err}"))?;
+        }
+
+        let query_sql = format!(
+            "SELECT candidate_id, distance \
+             FROM {SHADOW_TABLE} \
+             WHERE embedding MATCH '{}' AND k = {}",
+            query_literal, k
+        );
+        let mut query_stmt = conn
+            .prepare(&query_sql)
+            .map_err(|err| format!("sqlite-vec shadow query prepare failed: {err}"))?;
+        let rows = query_stmt
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)))
+            .map_err(|err| format!("sqlite-vec shadow query failed: {err}"))?;
+
+        let mut sources = Vec::new();
+        let mut seen = HashSet::new();
+        for row in rows {
+            let (candidate_id, _distance) =
+                row.map_err(|err| format!("sqlite-vec shadow row decode failed: {err}"))?;
+            if candidate_id <= 0 {
+                continue;
+            }
+            let Some(candidate) = candidates.get((candidate_id - 1) as usize) else {
+                continue;
+            };
+            if seen.insert(candidate.source.clone()) {
+                sources.push(candidate.source.clone());
+            }
+        }
+
+        Ok(sources)
+    })();
+
+    let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS {SHADOW_TABLE};"));
+    result
+}
+
+fn build_shadow_semantic_explain(
+    conn: &Connection,
+    query_vector: Option<&[f32]>,
+    query_text: &str,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+    top_k: usize,
+) -> Value {
+    let top_k = top_k.clamp(1, MAX_SEMANTIC_RRF_CANDIDATES);
+    let Some(query_vector) = query_vector else {
+        return json!({
+            "enabled": true,
+            "status": "unavailable",
+            "reason": "query_embedding_unavailable",
+            "topK": top_k
+        });
+    };
+    if query_vector.is_empty() {
+        return json!({
+            "enabled": true,
+            "status": "unavailable",
+            "reason": "query_embedding_empty",
+            "topK": top_k
+        });
+    }
+
+    let baseline = collect_semantic_candidates(conn, query_vector, query_text, ctx, source_prefix);
+    let baseline_top_sources: Vec<String> = baseline
+        .iter()
+        .take(top_k)
+        .map(|candidate| candidate.source.clone())
+        .collect();
+
+    let rows = collect_shadow_semantic_rows(conn, ctx, source_prefix);
+    if rows.is_empty() {
+        return json!({
+            "enabled": true,
+            "status": "unavailable",
+            "reason": "no_shadow_candidates",
+            "topK": top_k,
+            "baselineCandidateCount": baseline.len(),
+            "baselineTopSources": baseline_top_sources,
+        });
+    }
+
+    let vector_dim = query_vector.len();
+    let compatible_rows: Vec<ShadowSemanticRow> = rows
+        .into_iter()
+        .filter(|row| row.vector.len() == vector_dim)
+        .collect();
+    if compatible_rows.is_empty() {
+        return json!({
+            "enabled": true,
+            "status": "unavailable",
+            "reason": "no_dimension_compatible_candidates",
+            "topK": top_k,
+            "vectorDimension": vector_dim,
+            "baselineCandidateCount": baseline.len(),
+            "baselineTopSources": baseline_top_sources,
+        });
+    }
+
+    let compatible_count = compatible_rows.len();
+    let shadow_top_sources =
+        match run_sqlite_vec_shadow_knn_sources(conn, query_vector, &compatible_rows, top_k) {
+            Ok(sources) => sources,
+            Err(error) => {
+                return json!({
+                    "enabled": true,
+                    "status": "error",
+                    "reason": error,
+                    "topK": top_k,
+                    "vectorDimension": vector_dim,
+                    "baselineCandidateCount": baseline.len(),
+                    "shadowCandidateCount": compatible_count,
+                    "baselineTopSources": baseline_top_sources,
+                });
+            }
+        };
+
+    let baseline_set: HashSet<&str> = baseline_top_sources.iter().map(String::as_str).collect();
+    let shadow_set: HashSet<&str> = shadow_top_sources.iter().map(String::as_str).collect();
+    let overlap_count = baseline_set.intersection(&shadow_set).count();
+    let union_count = baseline_set.union(&shadow_set).count();
+    let overlap_ratio = if top_k == 0 {
+        0.0
+    } else {
+        round4(overlap_count as f64 / top_k as f64)
+    };
+    let jaccard = if union_count == 0 {
+        1.0
+    } else {
+        round4(overlap_count as f64 / union_count as f64)
+    };
+
+    json!({
+        "enabled": true,
+        "status": "ok",
+        "topK": top_k,
+        "vectorDimension": vector_dim,
+        "baselineCandidateCount": baseline.len(),
+        "shadowCandidateCount": compatible_count,
+        "baselineTopSources": baseline_top_sources,
+        "shadowTopSources": shadow_top_sources,
+        "overlapCount": overlap_count,
+        "overlapRatio": overlap_ratio,
+        "jaccard": jaccard,
+    })
 }
 
 // ─── Text / keyword utilities ────────────────────────────────────────────────
@@ -6393,6 +6716,136 @@ mod tests {
                 .all(|candidate| candidate["source"].as_str() != Some("memory::plugin-heartbeat")),
             "family compaction should not misreport the sibling as a post-budget drop"
         );
+
+        let shadow_semantic = &explain["explain"]["shadowSemantic"];
+        assert_eq!(shadow_semantic["enabled"].as_bool(), Some(true));
+        let status = shadow_semantic["status"]
+            .as_str()
+            .expect("shadow semantic status should be present");
+        assert!(
+            matches!(status, "ok" | "unavailable" | "error"),
+            "unexpected shadow semantic status: {}",
+            shadow_semantic
+        );
+        if status == "ok" {
+            let overlap_count = shadow_semantic["overlapCount"]
+                .as_u64()
+                .expect("shadow overlap count should be numeric");
+            let baseline_sources = shadow_semantic["baselineTopSources"]
+                .as_array()
+                .expect("baseline top sources should be present");
+            assert!(
+                baseline_sources.is_empty() || overlap_count >= 1,
+                "shadow semantic probe should overlap baseline candidates when baseline exists: {}",
+                shadow_semantic
+            );
+            let shadow_sources = shadow_semantic["shadowTopSources"]
+                .as_array()
+                .expect("shadow top sources should be present");
+            assert!(
+                !shadow_sources.is_empty(),
+                "shadow top sources should not be empty: {}",
+                shadow_semantic
+            );
+        } else {
+            assert!(
+                shadow_semantic["reason"].as_str().is_some(),
+                "non-ok shadow semantic status should include reason: {}",
+                shadow_semantic
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_recall_policy_explain_marks_shadow_semantic_unavailable_without_query_vector()
+    {
+        let state = shared_test_state();
+        {
+            let conn = state.db.lock().await;
+            insert_memory_with_embedding(
+                &conn,
+                "daemon ownership lock protects recovery startup paths",
+                "memory::daemon-lock",
+                &[1.0, 0.0, 0.0, 0.0, 0.0],
+            );
+        }
+
+        let explain = execute_recall_policy_explain_inner(
+            &state,
+            "daemon ownership lock",
+            220,
+            4,
+            "codex",
+            &solo_ctx(),
+            None,
+            6,
+            None,
+        )
+        .await
+        .expect("policy explain should succeed");
+
+        let shadow_semantic = &explain["explain"]["shadowSemantic"];
+        assert_eq!(shadow_semantic["enabled"].as_bool(), Some(true));
+        assert_eq!(shadow_semantic["status"].as_str(), Some("unavailable"));
+        assert_eq!(
+            shadow_semantic["reason"].as_str(),
+            Some("query_embedding_unavailable")
+        );
+    }
+
+    #[test]
+    fn sqlite_vec_shadow_knn_returns_ranked_sources_on_registered_connections() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("cortex-shadow-knn-{unique}.db"));
+        let wal_path = db_path.with_extension("db-wal");
+        let shm_path = db_path.with_extension("db-shm");
+
+        let conn = crate::db::open(&db_path).expect("db open should register sqlite-vec");
+        crate::db::configure(&conn).expect("db configure should succeed");
+        crate::db::initialize_schema(&conn).expect("schema init should succeed");
+        crate::db::run_pending_migrations(&conn);
+        insert_memory_with_embedding(
+            &conn,
+            "daemon ownership lock lease heartbeat",
+            "memory::lock-heartbeat",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "token budgeting and ranking factors",
+            "memory::token-budget",
+            &[0.1, 0.9, 0.0, 0.0, 0.0],
+        );
+
+        let query_vector = [0.98, 0.02, 0.0, 0.0, 0.0];
+        let rows = collect_shadow_semantic_rows(&conn, &solo_ctx(), None);
+        assert!(
+            rows.len() >= 2,
+            "shadow row collection should include inserted vectors"
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.vector.len() == query_vector.len()),
+            "shadow rows should keep expected vector dimensionality"
+        );
+        let ranked_sources = run_sqlite_vec_shadow_knn_sources(&conn, &query_vector, &rows, 2)
+            .expect("shadow knn should succeed");
+        assert!(
+            !ranked_sources.is_empty(),
+            "shadow knn should return ranked sources"
+        );
+        assert_eq!(
+            ranked_sources[0], "memory::lock-heartbeat",
+            "nearest vector should rank first"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_file(&shm_path);
     }
 
     #[test]

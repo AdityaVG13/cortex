@@ -430,6 +430,22 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
 
     for case in BENCHMARK_CASES {
         let payload = daemon.recall_explain_case(case).await;
+        let shadow_status = payload["explain"]["shadowSemantic"]["status"].as_str();
+        assert_eq!(
+            payload["explain"]["shadowSemantic"]["enabled"].as_bool(),
+            Some(true),
+            "missing shadow semantic diagnostics for {}",
+            case.slug
+        );
+        assert!(
+            matches!(
+                shadow_status,
+                Some("ok") | Some("unavailable") | Some("error")
+            ),
+            "unexpected shadow semantic status for {}: {:?}",
+            case.slug,
+            shadow_status
+        );
         let returned = payload["explain"]["returned"]
             .as_array()
             .cloned()
