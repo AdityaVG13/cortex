@@ -5,9 +5,11 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import httpx
+
+from cortex_http_types import HealthResponse, RecallResponse
 
 
 def slugify(value: str) -> str:
@@ -41,8 +43,8 @@ class CortexHTTPClient:
     def close(self) -> None:
         self.client.close()
 
-    def healthcheck(self) -> dict[str, Any]:
-        return self.request("GET", "/health", auth_required=False)
+    def healthcheck(self) -> HealthResponse:
+        return cast(HealthResponse, self.request("GET", "/health", auth_required=False))
 
     def reset_namespace(self, namespace: str) -> None:
         self.namespace = slugify(namespace)
@@ -69,14 +71,17 @@ class CortexHTTPClient:
         *,
         k: int = 10,
         user_id: str | None = None,
-    ) -> tuple[list[CortexStoredDocument], dict[str, Any]]:
+    ) -> tuple[list[CortexStoredDocument], RecallResponse]:
         raw_k = max(k, 10)
         if user_id is not None:
             raw_k = max(raw_k * 5, 25)
-        payload = self.request(
-            "GET",
-            "/recall",
-            params={"q": query, "k": str(raw_k), "budget": str(self.budget)},
+        payload = cast(
+            RecallResponse,
+            self.request(
+                "GET",
+                "/recall",
+                params={"q": query, "k": str(raw_k), "budget": str(self.budget)},
+            ),
         )
         self._record_recall_metrics(query, payload)
         documents: list[CortexStoredDocument] = []
@@ -103,7 +108,7 @@ class CortexHTTPClient:
                 break
         return documents, payload
 
-    def _record_recall_metrics(self, query: str, payload: dict[str, Any]) -> None:
+    def _record_recall_metrics(self, query: str, payload: RecallResponse) -> None:
         if not self.metrics_file:
             return
         path = Path(self.metrics_file)
@@ -132,8 +137,8 @@ class CortexHTTPClient:
         path: str,
         *,
         auth_required: bool = True,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
+        **kwargs: object,
+    ) -> dict[str, object]:
         response = self.client.request(
             method,
             f"{self.base_url}{path}",

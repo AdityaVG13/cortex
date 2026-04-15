@@ -259,18 +259,15 @@ pub fn client_ip(headers: &HeaderMap) -> IpAddr {
 pub async fn ensure_auth_rated(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
     let ip = client_ip(headers);
 
-    // Check auth-failure block first
     if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
         return Err(rate_limit_response(retry_after, 0));
     }
 
-    // Check request volume
     match state.rate_limiter.check_request(ip).await {
         Err(retry_after) => return Err(rate_limit_response(retry_after, 0)),
         Ok(_remaining) => {}
     }
 
-    // Run normal auth (SSRF + Bearer)
     match ensure_auth(headers, state) {
         Ok(()) => Ok(()),
         Err(resp) => {
@@ -397,7 +394,6 @@ pub fn resolve_source_identity(headers: &HeaderMap, fallback_agent: &str) -> Sou
 }
 
 /// Track active agent presence in `sessions` when source headers are provided.
-/// Safe best-effort helper -- failures are intentionally ignored by callers.
 pub async fn register_agent_presence_from_headers(
     state: &RuntimeState,
     headers: &HeaderMap,

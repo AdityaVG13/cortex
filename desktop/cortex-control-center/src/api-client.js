@@ -35,11 +35,12 @@ async function refreshTokenIfChanged(onTokenRefresh, getToken, previousToken) {
 
 /**
  * Creates a GET API caller.
+ * @template TResponse
  * @param {object} deps
  * @param {() => Function|null} deps.getInvoke - returns Tauri invoke fn or null
  * @param {() => string} deps.getToken - returns current auth token
  * @param {string} deps.cortexBase - base URL for browser fallback
- * @returns {(path: string, withAuth?: boolean) => Promise<any>}
+ * @returns {(path: string, withAuth?: boolean) => Promise<TResponse>}
  */
 export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
   return async function api(path, withAuth = false, _retried = false) {
@@ -59,7 +60,6 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
       throw new Error(`${path}: no auth token (Tauri IPC ${invoke ? "available" : "missing"})`);
     }
 
-    // Tauri IPC path
     if (invoke) {
       const response = await invoke("fetch_cortex", {
         path,
@@ -81,7 +81,6 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
       return JSON.parse(response.body);
     }
 
-    // Browser fallback
     const headers = { "X-Cortex-Request": "true" };
     if (withAuth) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(`${cortexBase}${path}`, { headers });
@@ -100,12 +99,13 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
 
 /**
  * Creates a POST API caller.
+ * @template TResponse
  * @param {object} deps
  * @param {() => Function|null} deps.getInvoke - returns Tauri invoke fn or null
  * @param {() => string} deps.getToken - returns current auth token
  * @param {string} deps.cortexBase - base URL for browser fallback
  * @param {() => Promise<void>|void} [deps.onTokenRefresh] - refreshes auth token once on startup/rotation
- * @returns {(path: string, body?: object) => Promise<any>}
+ * @returns {(path: string, body?: Record<string, unknown>) => Promise<TResponse>}
  */
 export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
   return async function postApi(path, body = {}, _retried = false) {
@@ -124,7 +124,6 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       throw new Error(`POST ${path}: no auth token`);
     }
 
-    // Tauri IPC path
     if (invoke) {
       const response = await invoke("post_cortex", {
         path,
@@ -146,7 +145,6 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       return JSON.parse(response.body);
     }
 
-    // Browser fallback
     const response = await fetch(`${cortexBase}${path}`, {
       method: "POST",
       headers: {
@@ -214,8 +212,9 @@ export function summarizeDashboardErrors(errors) {
 
 /**
  * Runs multiple async fns via allSettled, applies partial results,
- * then re-throws if any failed. Used by refreshCoreData.
- * @param {Array<{fn: () => Promise<any>, apply: (value: any) => void}>} tasks
+ * then re-throws if any failed.
+ * @template T
+ * @param {Array<{fn: () => Promise<T>, apply: (value: T | null) => void}>} tasks
  */
 export async function settledWithRethrow(tasks) {
   const results = await Promise.allSettled(tasks.map(t => t.fn()));
@@ -231,7 +230,7 @@ export async function settledWithRethrow(tasks) {
 
 /**
  * Runs multiple async fns via allSettled, collects unique error messages.
- * Never throws. Used by refreshAll.
+ * Never throws.
  * @param {Array<() => Promise<void>>} fns
  * @returns {Promise<string[]>} unique error messages (empty if all succeeded)
  */

@@ -40,19 +40,6 @@ fn detect_identity() -> String {
     format!("User: {user}. Platform: {platform}. Shell: {shell}.")
 }
 
-/// Derive the Claude Code project folder slug from the current working directory.
-/// Claude encodes paths as e.g. `C--Users-jane-cortex` for `C:\Users\jane\cortex`.
-pub(crate) fn claude_project_slug() -> Option<String> {
-    let cwd = env::current_dir().ok()?;
-    let canonical = cwd.to_string_lossy().to_string();
-    let slug = canonical.replace(['\\', ':'], "-");
-    if slug.is_empty() {
-        None
-    } else {
-        Some(slug)
-    }
-}
-
 // ─── Public types ───────────────────────────────────────────────────────────
 
 /// The assembled boot prompt and its metadata.

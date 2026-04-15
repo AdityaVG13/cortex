@@ -4,10 +4,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use rusqlite::{params, Connection};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{ensure_auth_with_caller, json_response, log_event, now_iso, resolve_source_identity};
+use crate::api_types::StoreRequest;
 use crate::conflict::{
     detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
 };
@@ -19,19 +19,6 @@ const REVIEW_MERGE_THRESHOLD: f32 = 0.90;
 const JACCARD_MERGE_THRESHOLD: f64 = 0.70;
 const MERGE_SCORE_BONUS: f64 = 5.0;
 const TOO_VAGUE_THRESHOLD: i32 = 20;
-
-#[derive(Deserialize, Default)]
-pub struct StoreRequest {
-    pub decision: Option<String>,
-    pub context: Option<String>,
-    #[serde(rename = "type")]
-    pub entry_type: Option<String>,
-    pub source_agent: Option<String>,
-    pub source_model: Option<String>,
-    pub confidence: Option<f64>,
-    pub reasoning_depth: Option<String>,
-    pub ttl_seconds: Option<i64>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DecisionProvenance {

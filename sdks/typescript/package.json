@@ -12,6 +12,7 @@
   },
   "files": ["dist"],
   "devDependencies": {
+    "@types/node": "^20.19.0",
     "typescript": "^5.4"
   }
 }

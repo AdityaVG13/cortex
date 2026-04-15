@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from cortex_http_client import CortexHTTPClient, CortexStoredDocument
+from cortex_http_types import RecallResponse
 from memory_bench.memory.base import MemoryProvider
 from memory_bench.models import Document
 
@@ -58,7 +59,7 @@ class CortexHTTPMemoryProvider(MemoryProvider):
         k: int = 10,
         user_id: str | None = None,
         query_timestamp: str | None = None,
-    ) -> tuple[list[Document], dict[str, Any] | None]:
+    ) -> tuple[list[Document], RecallResponse]:
         stored_docs, payload = self._http.recall_documents(query, k=k, user_id=user_id)
         documents = [
             Document(

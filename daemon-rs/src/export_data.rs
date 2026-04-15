@@ -1,83 +1,8 @@
 // SPDX-License-Identifier: MIT
 use rusqlite::{params, Connection};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportFormat {
-    Json,
-    Sql,
-}
-
-impl ExportFormat {
-    pub fn parse(input: &str) -> Option<Self> {
-        match input {
-            "json" => Some(Self::Json),
-            "sql" => Some(Self::Sql),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-pub struct ImportPayload {
-    pub memories: Option<Vec<ImportMemory>>,
-    pub decisions: Option<Vec<ImportDecision>>,
-}
-
-#[derive(Deserialize)]
-pub struct ImportMemory {
-    pub text: String,
-    pub source: Option<String>,
-    #[serde(rename = "type")]
-    pub typ: Option<String>,
-    pub tags: Option<String>,
-    pub source_agent: Option<String>,
-    pub source_client: Option<String>,
-    pub source_model: Option<String>,
-    pub confidence: Option<f64>,
-    pub reasoning_depth: Option<String>,
-    pub trust_score: Option<f64>,
-    pub score: Option<f64>,
-}
-
-#[derive(Deserialize)]
-pub struct ImportDecision {
-    pub decision: String,
-    pub context: Option<String>,
-    #[serde(rename = "type")]
-    pub typ: Option<String>,
-    pub source_agent: Option<String>,
-    pub source_client: Option<String>,
-    pub source_model: Option<String>,
-    pub confidence: Option<f64>,
-    pub reasoning_depth: Option<String>,
-    pub trust_score: Option<f64>,
-    pub score: Option<f64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ImportOptions {
-    pub owner_id: Option<i64>,
-    pub visibility: Option<String>,
-    pub source_agent_fallback: String,
-}
-
-impl Default for ImportOptions {
-    fn default() -> Self {
-        Self {
-            owner_id: None,
-            visibility: None,
-            source_agent_fallback: "import".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ImportCounts {
-    pub memories: usize,
-    pub decisions: usize,
-}
+pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
 
 pub fn export_json_value(conn: &Connection) -> Value {
     let memories = query_table_json(
@@ -234,7 +159,7 @@ pub fn import_payload(
                     params![
                         m.text,
                         m.source,
-                        m.typ.as_deref().unwrap_or("memory"),
+                        m.entry_type.as_deref().unwrap_or("memory"),
                         m.tags,
                         m.source_agent.as_deref().unwrap_or(fallback),
                         m.source_client
@@ -256,7 +181,7 @@ pub fn import_payload(
                     params![
                         m.text,
                         m.source,
-                        m.typ.as_deref().unwrap_or("memory"),
+                        m.entry_type.as_deref().unwrap_or("memory"),
                         m.tags,
                         m.source_agent.as_deref().unwrap_or(fallback),
                         m.source_client
@@ -286,7 +211,7 @@ pub fn import_payload(
                     params![
                         d.decision,
                         d.context,
-                        d.typ.as_deref().unwrap_or("decision"),
+                        d.entry_type.as_deref().unwrap_or("decision"),
                         d.source_agent.as_deref().unwrap_or(fallback),
                         d.source_client
                             .as_deref()
@@ -307,7 +232,7 @@ pub fn import_payload(
                     params![
                         d.decision,
                         d.context,
-                        d.typ.as_deref().unwrap_or("decision"),
+                        d.entry_type.as_deref().unwrap_or("decision"),
                         d.source_agent.as_deref().unwrap_or(fallback),
                         d.source_client
                             .as_deref()

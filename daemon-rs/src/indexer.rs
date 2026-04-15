@@ -7,12 +7,13 @@
 //! **Custom sources** (opt-in): user-defined paths via `~/.cortex/sources.toml` or
 //! `CORTEX_EXTRA_SOURCES` env var. See `config/sources.toml.example`.
 
-use crate::compiler::claude_project_slug;
 use rusqlite::Connection;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::workspace::claude_project_slug;
 
 const STATE_SECTIONS: &[&str] = &[
     "## What Was Done",

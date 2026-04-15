@@ -1,7 +1,7 @@
 """cortex-dream — Memory compaction worker for Cortex.
 
-Reads all active memories/decisions, clusters by similarity,
-and (in future) synthesizes canonical rules via local LLM.
+Reads all active memories and decisions, clusters by similarity,
+and archives duplicates when requested.
 
 Usage:
   python workers/cortex_dream.py              # dry run (default)
@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from urllib.error import URLError
 
-# Allow importing cortex_client from same directory
+# Make repo-local imports work when the worker is run directly.
 sys.path.insert(0, str(Path(__file__).parent))
 import cortex_client
 
@@ -52,7 +52,6 @@ def cluster_entries(entries: list[dict], text_key: str, threshold: float = 0.6) 
         placed = False
 
         for cluster in clusters:
-            # Compare against the first entry in the cluster (centroid)
             centroid_text = cluster[0].get(text_key, "")
             if jaccard(text, centroid_text) >= threshold:
                 cluster.append(entry)
@@ -88,7 +87,6 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
     print("Cortex Dream — Memory Compaction")
     print("=" * 40)
 
-    # Check connectivity
     try:
         h = cortex_client.health()
         stats = h.get("stats", {})
@@ -97,7 +95,6 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         print(f"Cannot connect to Cortex: {e}")
         return 1
 
-    # Dump all active entries
     print(f"\nFetching all active entries...")
     try:
         data = cortex_client.dump()
@@ -109,7 +106,6 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
     decisions = data.get("decisions", [])
     print(f"  Loaded {len(memories)} memories, {len(decisions)} decisions")
 
-    # Cluster memories
     print(f"\nClustering (threshold: {threshold})...")
     mem_clusters = cluster_entries(memories, "text", threshold)
     dec_clusters = cluster_entries(decisions, "decision", threshold)
@@ -117,7 +113,6 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
     print_clusters(mem_clusters, "text", "Memories")
     print_clusters(dec_clusters, "decision", "Decisions")
 
-    # Count duplicates
     mem_dupes = [c for c in mem_clusters if len(c) >= 2]
     dec_dupes = [c for c in dec_clusters if len(c) >= 2]
     total_archivable = sum(len(c) - 1 for c in mem_dupes) + sum(len(c) - 1 for c in dec_dupes)
@@ -132,12 +127,10 @@ def run_dream(threshold: float = 0.6, execute: bool = False):
         print("\n[DRY RUN] No changes made. Run with --execute to archive duplicates.")
         return 0
 
-    # Archive duplicates (keep highest-scored entry in each cluster)
     print("\nArchiving duplicates...")
     archived = 0
 
     for cluster in mem_dupes:
-        # Keep the one with highest score
         cluster.sort(key=lambda e: e.get("score", 0), reverse=True)
         ids_to_archive = [e["id"] for e in cluster[1:]]
         try:

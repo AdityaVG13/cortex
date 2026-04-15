@@ -11,17 +11,15 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ensure_auth, json_error, json_response};
-use crate::export_data::{
-    export_json_value, export_sql_text, import_payload as import_data, ExportFormat, ImportOptions,
-    ImportPayload,
-};
+use super::{ensure_auth, json_response};
+use crate::api_types::{ExportFormat, ImportOptions, ImportPayload};
+use crate::export_data::{export_json_value, export_sql_text, import_payload as import_data};
 use crate::state::RuntimeState;
 use axum::response::IntoResponse;
 
 #[derive(Deserialize)]
 pub struct ExportQuery {
-    pub format: Option<String>,
+    pub format: Option<ExportFormat>,
 }
 
 pub async fn handle_export(
@@ -33,12 +31,11 @@ pub async fn handle_export(
         return resp;
     }
 
-    let format = query.format.as_deref().unwrap_or("json");
     let conn = state.db.lock().await;
 
-    match ExportFormat::parse(format) {
-        Some(ExportFormat::Json) => json_response(StatusCode::OK, export_json_value(&conn)),
-        Some(ExportFormat::Sql) => {
+    match query.format.unwrap_or(ExportFormat::Json) {
+        ExportFormat::Json => json_response(StatusCode::OK, export_json_value(&conn)),
+        ExportFormat::Sql => {
             let body = export_sql_text(&conn);
             let mut resp = (StatusCode::OK, body).into_response();
             if let Ok(v) = "text/plain; charset=utf-8".parse() {
@@ -46,10 +43,6 @@ pub async fn handle_export(
             }
             resp
         }
-        None => json_error(
-            StatusCode::BAD_REQUEST,
-            "Unsupported format: use json or sql",
-        ),
     }
 }
 

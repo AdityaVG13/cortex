@@ -23,8 +23,5 @@
     "mcp",
     "cortex"
   ],
-  "license": "MIT",
-  "dependencies": {
-    "sql.js": "^1.11.0"
-  }
+  "license": "MIT"
 }

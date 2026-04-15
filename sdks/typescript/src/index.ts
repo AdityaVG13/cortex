@@ -12,6 +12,53 @@
 
 import { readFileSync } from "fs";
 import { join } from "path";
+import type {
+  CortexBootResult as BootResult,
+  CortexDiaryResult as DiaryResult,
+  CortexExportResult as ExportResult,
+  CortexForgetResult as ForgetResult,
+  CortexHealthResult as HealthResult,
+  CortexImportPayload as ImportPayload,
+  CortexImportResult as ImportResult,
+  CortexPeekResult as PeekResult,
+  CortexRecallResult as RecallResult,
+  CortexShutdownResult as ShutdownResult,
+  CortexStoreRequest as StoreRequest,
+  CortexStoreResult as StoreResult,
+  JsonObject,
+  JsonPrimitive,
+  JsonValue,
+} from "./types.js";
+
+export type {
+  JsonPrimitive,
+  JsonValue,
+  JsonObject,
+  CortexRecallItem as RecallItem,
+  CortexRecallResult as RecallResult,
+  CortexPeekItem as PeekMatch,
+  CortexPeekResult as PeekResult,
+  CortexStoreConflict as StoreConflict,
+  CortexStoreEntry as StoreEntry,
+  CortexStoreRequest as StoreRequest,
+  CortexStoreResult as StoreResult,
+  CortexHealthStats as HealthStats,
+  CortexHealthRuntime as HealthRuntime,
+  CortexHealthResult as HealthResult,
+  CortexExportMemoryRow as ExportMemoryRow,
+  CortexExportDecisionRow as ExportDecisionRow,
+  CortexExportResult as ExportResult,
+  CortexBootCapsule as BootCapsule,
+  CortexBootSavings as BootSavings,
+  CortexBootResult as BootResult,
+  CortexImportMemory as ImportMemory,
+  CortexImportDecision as ImportDecision,
+  CortexImportPayload as ImportPayload,
+  CortexImportResult as ImportResult,
+  CortexDiaryResult as DiaryResult,
+  CortexForgetResult as ForgetResult,
+  CortexShutdownResult as ShutdownResult,
+} from "./types.js";
 
 const DEFAULT_BASE = "http://127.0.0.1:7437";
 
@@ -22,38 +69,6 @@ function readToken(): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-export interface RecallResult {
-  results: Array<{
-    source: string;
-    relevance: number;
-    excerpt: string;
-    method: string;
-    tokens?: number;
-  }>;
-  budget: number;
-  spent: number;
-  saved: number;
-  mode?: string;
-}
-
-export interface StoreResult {
-  stored: boolean;
-  id?: number;
-}
-
-export interface HealthResult {
-  status: string;
-  version: string;
-  stats: Record<string, number>;
-}
-
-export interface ExportResult {
-  version: number;
-  exported_at: string;
-  memories: unknown[];
-  decisions: unknown[];
 }
 
 export class CortexClient {
@@ -88,7 +103,7 @@ export class CortexClient {
     return resp.json() as Promise<T>;
   }
 
-  private async post<T>(path: string, body?: Record<string, unknown>): Promise<T> {
+  private async post<T>(path: string, body?: JsonObject): Promise<T> {
     const resp = await fetch(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: { ...this.headers(), "Content-Type": "application/json" },
@@ -99,7 +114,7 @@ export class CortexClient {
     return resp.json() as Promise<T>;
   }
 
-  // ── Public API ──────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────────
 
   async health(): Promise<HealthResult> {
     const url = `${this.baseUrl}/health`;
@@ -116,23 +131,40 @@ export class CortexClient {
     return this.get("/recall", params);
   }
 
-  async peek(query: string, k = 10): Promise<{ count: number; matches: unknown[] }> {
+  async peek(query: string, k = 10): Promise<PeekResult> {
     return this.get("/peek", { q: query, k });
   }
 
-  async store(text: string, options?: { source?: string; sourceAgent?: string }): Promise<StoreResult> {
-    return this.post("/store", {
-      text,
-      source: options?.source,
+  async store(
+    decision: string,
+    options?: {
+      context?: string;
+      entryType?: string;
+      sourceAgent?: string;
+      sourceModel?: string;
+      confidence?: number;
+      reasoningDepth?: string;
+      ttlSeconds?: number;
+    },
+  ): Promise<StoreResult> {
+    const body: StoreRequest = {
+      decision,
+      context: options?.context,
+      type: options?.entryType,
       source_agent: options?.sourceAgent ?? "typescript-sdk",
-    });
+      source_model: options?.sourceModel,
+      confidence: options?.confidence,
+      reasoning_depth: options?.reasoningDepth,
+      ttl_seconds: options?.ttlSeconds,
+    };
+    return this.post("/store", body);
   }
 
-  async diary(text: string, agent = "typescript-sdk"): Promise<unknown> {
+  async diary(text: string, agent = "typescript-sdk"): Promise<DiaryResult> {
     return this.post("/diary", { text, agent });
   }
 
-  async boot(agent = "typescript-sdk", budget = 600): Promise<unknown> {
+  async boot(agent = "typescript-sdk", budget = 600): Promise<BootResult> {
     return this.get("/boot", { agent, budget });
   }
 
@@ -140,15 +172,15 @@ export class CortexClient {
     return this.get("/export", { format });
   }
 
-  async importData(data: { memories?: unknown[]; decisions?: unknown[] }): Promise<unknown> {
-    return this.post("/import", data);
+  async importData(data: ImportPayload): Promise<ImportResult> {
+    return this.post("/import", data as JsonObject);
   }
 
-  async forget(source: string): Promise<unknown> {
+  async forget(source: string): Promise<ForgetResult> {
     return this.post("/forget", { source });
   }
 
-  async shutdown(): Promise<unknown> {
+  async shutdown(): Promise<ShutdownResult> {
     return this.post("/shutdown");
   }
 }

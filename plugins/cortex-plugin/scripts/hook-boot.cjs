@@ -69,15 +69,6 @@ try {
   console.error(`[cortex-plugin] SessionStart binary resolution blocked: ${binaryResolutionError}`);
 }
 
-function isCortexHealthResponse(data) {
-  if (!data || typeof data !== 'object') return false;
-  if (data.status !== 'ok' && data.status !== 'degraded') return false;
-  if (!data.stats || typeof data.stats !== 'object') return false;
-  // runtime is optional for backward compatibility with older daemons
-  if (data.runtime !== undefined && typeof data.runtime !== 'object') return false;
-  return true;
-}
-
 function isCortexReadinessResponse(data) {
   if (!data || typeof data !== 'object') return false;
   if (typeof data.ready !== 'boolean') return false;
@@ -115,8 +106,7 @@ function validateHealthIdentity(data, expectedIdentity) {
   const runtime = data.runtime;
   const stats = data.stats || {};
 
-  // Backward-compatible: if runtime block is missing, accept legacy payload.
-  if (!runtime || typeof runtime !== 'object') return true;
+  if (!runtime || typeof runtime !== 'object') return false;
 
   if (Number.isFinite(expectedIdentity.port) && runtime.port !== expectedIdentity.port) {
     return false;
@@ -142,101 +132,66 @@ function formatHostForUrl(host) {
 
 function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
   return new Promise((resolve) => {
-    const requestProbe = (pathSuffix, mode, fallback) => {
-      let target;
-      try {
-        target = new URL(`${url.replace(/\/+$/, '')}${pathSuffix}`);
-      } catch (e) {
-        resolve({ ok: false, error: `Invalid health URL: ${e.message}` });
-        return;
-      }
+    let target;
+    try {
+      target = new URL(`${url.replace(/\/+$/, '')}/readiness`);
+    } catch (e) {
+      resolve({ ok: false, error: `Invalid health URL: ${e.message}` });
+      return;
+    }
 
-      const transport = target.protocol === 'https:' ? https : http;
-      const request = transport.request(
-        target,
-        {
-          method: 'GET',
-          headers: { 'X-Cortex-Request': 'true' }
-        },
-        (response) => {
-          let body = '';
-          response.setEncoding('utf8');
-          response.on('data', (chunk) => {
-            body += chunk;
-          });
-          response.on('end', () => {
-            let data;
-            try {
-              data = body ? JSON.parse(body) : null;
-            } catch (e) {
-              if (fallback) {
-                fallback();
-                return;
-              }
-              resolve({ ok: false, error: `Invalid health response: ${e.message}` });
-              return;
-            }
+    const transport = target.protocol === 'https:' ? https : http;
+    const request = transport.request(
+      target,
+      {
+        method: 'GET',
+        headers: { 'X-Cortex-Request': 'true' }
+      },
+      (response) => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          body += chunk;
+        });
+        response.on('end', () => {
+          let data;
+          try {
+            data = body ? JSON.parse(body) : null;
+          } catch (e) {
+            resolve({ ok: false, error: `Invalid health response: ${e.message}` });
+            return;
+          }
 
-            if (mode === 'readiness') {
-              if (!isCortexReadinessResponse(data)) {
-                if (fallback) {
-                  fallback();
-                  return;
-                }
-                resolve({ ok: false, error: 'Invalid Cortex readiness response' });
-                return;
-              }
-              if (!validateHealthIdentity(data, expectedIdentity)) {
-                resolve({ ok: false, error: 'Invalid Cortex readiness response (identity mismatch)' });
-                return;
-              }
-              if (data.ready === true) {
-                const stats = data.stats || {};
-                resolve({
-                  ok: true,
-                  status: 'ready',
-                  memories: stats.memories,
-                  decisions: stats.decisions
-                });
-                return;
-              }
-              resolve({ ok: false, error: body.trim() || `HTTP ${response.statusCode || 'unknown'}` });
-              return;
-            }
-
-            if (!isCortexHealthResponse(data)) {
-              resolve({ ok: false, error: 'Invalid Cortex health response' });
-              return;
-            }
-            if (!validateHealthIdentity(data, expectedIdentity)) {
-              resolve({ ok: false, error: 'Invalid Cortex health response (identity mismatch)' });
-              return;
-            }
+          if (!isCortexReadinessResponse(data)) {
+            resolve({ ok: false, error: 'Invalid Cortex readiness response' });
+            return;
+          }
+          if (!validateHealthIdentity(data, expectedIdentity)) {
+            resolve({ ok: false, error: 'Invalid Cortex readiness response (identity mismatch)' });
+            return;
+          }
+          if (data.ready === true) {
             const stats = data.stats || {};
             resolve({
               ok: true,
-              status: data.status,
+              status: 'ready',
               memories: stats.memories,
               decisions: stats.decisions
             });
-          });
-        }
-      );
+            return;
+          }
+          resolve({ ok: false, error: body.trim() || `HTTP ${response.statusCode || 'unknown'}` });
+        });
+      }
+    );
 
-      request.setTimeout(timeoutMs, () => {
-        request.destroy(new Error(`Health check timed out after ${timeoutMs}ms`));
-      });
-      request.on('error', (err) => {
-        if (fallback) {
-          fallback();
-          return;
-        }
-        resolve({ ok: false, error: err.message });
-      });
-      request.end();
-    };
-
-    requestProbe('/readiness', 'readiness', () => requestProbe('/health', 'health'));
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`Health check timed out after ${timeoutMs}ms`));
+    });
+    request.on('error', (err) => {
+      resolve({ ok: false, error: err.message });
+    });
+    request.end();
   });
 }
 

@@ -135,6 +135,5 @@ function resolveCortexBinary({
 }
 
 module.exports = {
-  normalizeOption,
   resolveCortexBinary
 };

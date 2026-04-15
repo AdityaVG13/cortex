@@ -19,7 +19,7 @@ except ImportError:
 
 CLIENT_ERRORS = (RuntimeError, URLError, JSONDecodeError, TimeoutError)
 
-# Allow importing cortex_client from same directory
+# Make repo-local imports work when the worker is run directly.
 sys.path.insert(0, str(Path(__file__).parent.parent / "workers"))
 import cortex_client
 
@@ -114,7 +114,6 @@ def render_health_card(stats: CortexStats):
         with col3:
             st.metric("Embeddings", f"{stats.embeddings:,}")
         
-        # Show token savings if available
         try:
             digest = cortex_client.digest()
             ts = digest.get("tokenSavings", {}).get("allTime", {})
@@ -122,8 +121,7 @@ def render_health_card(stats: CortexStats):
             if saved > 0:
                 savings_percent = ts.get("percent", 0)
                 st.markdown(f"💰 **Token Savings:** {saved:,} tokens ({savings_percent}%) across {ts.get('boots', 0)} boots")
-            
-            # Show today's activity
+
             today = digest.get("today", {})
             if today.get("newMemories", 0) > 0 or today.get("newDecisions", 0) > 0:
                 st.markdown(f"📈 **Today:** +{today['newMemories']} memories, +{today['newDecisions']} decisions")
@@ -361,30 +359,17 @@ def render_memory_explorer():
 def render_quick_actions():
     """Render quick action buttons."""
     st.subheader("⚡ Quick Actions")
-    
-    c1, c2, c3 = st.columns(3)
-    
-    with c1:
-        if st.button("📊 Refresh Stats"):
-            st.rerun()
-    
-    with c2:
-        if st.button("🗑️ Clean Old Entries"):
-            st.info("Feature coming soon!")
-    
-    with c3:
-        if st.button("🔄 Run Cortex Dream"):
-            st.info("Feature coming soon!")
+
+    if st.button("📊 Refresh Stats"):
+        st.rerun()
 
 
 def render_messages_tab():
     """Render inter-agent messaging interface."""
     st.subheader("💬 Agent Messages")
     
-    # Get all messages for display - we need to check messages for known agents
     st.markdown("### Inbox")
-    
-    # Agent selector to view messages
+
     agent_to_check = st.text_input("Check messages for agent:", value="droid", key="msg_agent")
     
     if st.button("📬 Check Inbox", key="check_inbox"):
@@ -528,29 +513,23 @@ def main():
     st.title("🧠 Cortex Dashboard")
     st.caption("Real-time monitoring and control for the multi-AI brain")
     
-    # Auto-refresh control
     with st.sidebar:
         st.header("⚙️ Settings")
         refresh = st.number_input("Auto-refresh (seconds)", min_value=0, max_value=60, value=5)
         
         if refresh > 0:
             st.caption(f"🙅 Auto-refresh disabled until Streamlit allows")
-            # Note: Streamlit doesn't support auto-refresh from within the app yet
-            # Users need to use browser refresh or an external auto-reload extension
     
-    # Main content - use tabs for organization
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         ["📊 Dashboard", "👥 Agents & Locks", "📜 Activity", "📋 Task Board", "💬 Messages", "📰 Feed", "⚡ Actions"]
     )
     
     with tab1:
-        # Core dashboard tab
         stats = get_cortex_stats()
         if stats:
             render_health_card(stats)
     
     with tab2:
-        # Agents and locks tab
         st.info("Fetching agent data...")
         try:
             sessions = cortex_client.get_sessions()
@@ -561,7 +540,6 @@ def main():
             st.error(f"Failed to fetch agent data: {e}")
     
     with tab3:
-        # Activity feed tab
         st.info("Fetching activity data...")
         try:
             activity = cortex_client.get_activity(since="1h")
@@ -570,19 +548,15 @@ def main():
             st.error(f"Failed to fetch activity data: {e}")
     
     with tab4:
-        # Task Board tab
         render_task_board()
     
     with tab5:
-        # Inter-agent messaging
         render_messages_tab()
     
     with tab6:
-        # Shared Feed tab
         render_feed_tab()
 
     with tab7:
-        # Quick actions
         render_quick_actions()
         st.markdown("---")
         st.subheader("📖 Cortex Documentation")
@@ -593,7 +567,6 @@ def main():
         - [TODO](../../TODO.md) — Current work items
         """)
     
-    # Footer
     st.markdown("---")
     st.caption("Cortex Dashboard v1.0 | Powered by Streamlit")
 
