@@ -8,6 +8,9 @@
 <p align="center">
   Install Cortex once.
   Your tools stop starting from scratch.
+
+  v0.4.1 is experimental and the first pass. 
+  v0.5.0 is on the way that will significantly upgrade the Cortex experience
 </p>
 
 <p align="center">
