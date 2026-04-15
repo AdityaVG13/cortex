@@ -39,6 +39,8 @@ struct RecallItem {
     method: String,
     tokens: Option<usize>,
     entropy: Option<f64>,
+    family_members: Vec<String>,
+    collapsed_sources: Vec<String>,
 }
 
 /// Shannon entropy of text (bits per character).
@@ -180,6 +182,148 @@ fn source_matches_prefix(source: &str, source_prefix: Option<&str>) -> bool {
     match source_prefix {
         Some(prefix) => source.starts_with(prefix),
         None => true,
+    }
+}
+
+fn crystal_source(crystal_id: i64, label: &str) -> String {
+    format!("crystal::{crystal_id}::{label}")
+}
+
+fn parse_crystal_source_id(source: &str) -> Option<i64> {
+    let rest = source.strip_prefix("crystal::")?;
+    let (id, _) = rest.split_once("::")?;
+    id.parse::<i64>().ok()
+}
+
+fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &RecallContext) -> Vec<String> {
+    let query_rows =
+        |sql: &str,
+         with_visibility: bool|
+         -> Result<Vec<(Option<String>, Option<i64>, Option<String>)>, rusqlite::Error> {
+            let mut stmt = conn.prepare(sql)?;
+            let mapped = stmt.query_map(params![crystal_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    if with_visibility {
+                        row.get::<_, Option<i64>>(1)?
+                    } else {
+                        None
+                    },
+                    if with_visibility {
+                        row.get::<_, Option<String>>(2)?
+                    } else {
+                        None
+                    },
+                ))
+            })?;
+            Ok(mapped.flatten().collect())
+        };
+
+    let sql_with_visibility = "SELECT CASE
+                WHEN cm.target_type = 'memory' THEN COALESCE(m.source, 'memory::' || m.id)
+                ELSE COALESCE(d.context, 'decision::' || d.id)
+            END AS source,
+            CASE
+                WHEN cm.target_type = 'memory' THEN m.owner_id
+                ELSE d.owner_id
+            END AS owner_id,
+            CASE
+                WHEN cm.target_type = 'memory' THEN m.visibility
+                ELSE d.visibility
+            END AS visibility
+     FROM cluster_members cm
+     LEFT JOIN memories m
+       ON cm.target_type = 'memory'
+      AND cm.target_id = m.id
+      AND m.status = 'active'
+      AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))
+     LEFT JOIN decisions d
+       ON cm.target_type = 'decision'
+      AND cm.target_id = d.id
+      AND d.status = 'active'
+      AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))
+     WHERE cm.cluster_id = ?1
+     ORDER BY cm.target_type, cm.target_id";
+
+    let sql_legacy = "SELECT CASE
+                WHEN cm.target_type = 'memory' THEN COALESCE(m.source, 'memory::' || m.id)
+                ELSE COALESCE(d.context, 'decision::' || d.id)
+            END AS source
+     FROM cluster_members cm
+     LEFT JOIN memories m
+       ON cm.target_type = 'memory'
+      AND cm.target_id = m.id
+      AND m.status = 'active'
+      AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))
+     LEFT JOIN decisions d
+       ON cm.target_type = 'decision'
+      AND cm.target_id = d.id
+      AND d.status = 'active'
+      AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))
+     WHERE cm.cluster_id = ?1
+     ORDER BY cm.target_type, cm.target_id";
+
+    let rows = match query_rows(sql_with_visibility, true) {
+        Ok(rows) => rows,
+        Err(err) if is_missing_team_visibility_columns(&err) => {
+            match query_rows(sql_legacy, false) {
+                Ok(rows) => rows,
+                Err(_) => return Vec::new(),
+            }
+        }
+        Err(_) => return Vec::new(),
+    };
+
+    let mut sources = Vec::new();
+    let mut seen = HashSet::new();
+    for (source, owner_id, visibility) in rows {
+        let Some(source) = source else {
+            continue;
+        };
+        if !is_visible(owner_id, visibility.as_deref(), ctx) {
+            continue;
+        }
+        if seen.insert(source.clone()) {
+            sources.push(source);
+        }
+    }
+    sources
+}
+
+type CrystalUnfoldRow = (String, String, i64, Option<i64>, Option<String>);
+
+fn query_crystal_for_unfold(conn: &Connection, crystal_id: i64) -> Option<CrystalUnfoldRow> {
+    let sql_with_visibility = "SELECT label, consolidated_text, member_count, owner_id, visibility
+         FROM memory_clusters
+         WHERE id = ?1";
+    match conn.query_row(sql_with_visibility, params![crystal_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    }) {
+        Ok(row) => Some(row),
+        Err(err) if is_missing_team_visibility_columns(&err) => conn
+            .query_row(
+                "SELECT label, consolidated_text, member_count
+                 FROM memory_clusters
+                 WHERE id = ?1",
+                params![crystal_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        None,
+                        None,
+                    ))
+                },
+            )
+            .ok(),
+        Err(_) => None,
     }
 }
 
@@ -1002,8 +1146,10 @@ fn run_recall_with_query_vector(
                 * ((1.0 - SEMANTIC_SCALE_BASE) / (1.0 - SEMANTIC_SIM_FLOOR))
     };
 
-    // crystal results keyed by source -- inserted into final merged map after fusion
+    // Crystal results keyed by source. Their member sources are tracked so the
+    // final merge can collapse near-duplicate family members under the crystal.
     let mut crystal_items: HashMap<String, RecallItem> = HashMap::new();
+    let mut crystal_family_lookup: HashMap<String, String> = HashMap::new();
 
     if let Some(query_vec) = query_vector {
         for (crystal_id, label, text, relevance) in crate::crystallize::search_crystals_filtered(
@@ -1013,9 +1159,15 @@ fn run_recall_with_query_vector(
             ctx.caller_id,
             ctx.team_mode,
         ) {
-            let source = format!("crystal::{crystal_id}::{label}");
+            let source = crystal_source(crystal_id, &label);
             if !source_matches_prefix(&source, source_prefix) {
                 continue;
+            }
+            let family_members = crystal_member_sources(conn, crystal_id, ctx);
+            for member_source in &family_members {
+                crystal_family_lookup
+                    .entry(member_source.clone())
+                    .or_insert_with(|| source.clone());
             }
             crystal_items.insert(
                 source.clone(),
@@ -1026,6 +1178,8 @@ fn run_recall_with_query_vector(
                     method: "crystal".to_string(),
                     tokens: None,
                     entropy: None,
+                    family_members,
+                    collapsed_sources: Vec::new(),
                 },
             );
         }
@@ -1178,6 +1332,20 @@ fn run_recall_with_query_vector(
             &created_at_str,
         ));
 
+        if let Some(crystal_source) = crystal_family_lookup.get(&source) {
+            if let Some(crystal_item) = crystal_items.get_mut(crystal_source) {
+                crystal_item.relevance = round4(crystal_item.relevance.max(relevance));
+                if !crystal_item
+                    .collapsed_sources
+                    .iter()
+                    .any(|collapsed| collapsed == &source)
+                {
+                    crystal_item.collapsed_sources.push(source.clone());
+                }
+            }
+            continue;
+        }
+
         merged.insert(
             source.clone(),
             RecallItem {
@@ -1187,13 +1355,17 @@ fn run_recall_with_query_vector(
                 method: method.to_string(),
                 tokens: None,
                 entropy: None,
+                family_members: Vec::new(),
+                collapsed_sources: Vec::new(),
             },
         );
     }
 
     // Crystal items bypass RRF (they're already fused/consolidated knowledge);
     // insert after -- they will not be overwritten since crystal:: keys don't appear in kw/sem
-    for (src, item) in crystal_items {
+    for (src, mut item) in crystal_items {
+        item.collapsed_sources.sort();
+        item.collapsed_sources.dedup();
         merged.entry(src).or_insert(item);
     }
 
@@ -1279,6 +1451,8 @@ fn run_semantic_recall_with_query_vector(
             method: "semantic".to_string(),
             tokens: None,
             entropy: None,
+            family_members: Vec::new(),
+            collapsed_sources: Vec::new(),
         })
         .collect();
 
@@ -1742,6 +1916,8 @@ fn build_associative_candidates(
             method: "associative".to_string(),
             tokens: None,
             entropy: None,
+            family_members: Vec::new(),
+            collapsed_sources: Vec::new(),
         });
         if associative.len() >= max_associative {
             break;
@@ -1884,6 +2060,8 @@ fn run_budget_recall_trace_with_query_vector(
                 method: item.method,
                 tokens: Some(tokens),
                 entropy: item.entropy,
+                family_members: item.family_members,
+                collapsed_sources: item.collapsed_sources,
             });
         }
     }
@@ -3114,6 +3292,25 @@ fn recall_to_json(item: RecallItem) -> Value {
         if let Some(tokens) = item.tokens {
             map.insert("tokens".to_string(), Value::Number((tokens as u64).into()));
         }
+        if !item.family_members.is_empty() {
+            let family_size = item.family_members.len() as u64;
+            map.insert(
+                "familyMembers".to_string(),
+                Value::Array(item.family_members.into_iter().map(Value::String).collect()),
+            );
+            map.insert("familySize".to_string(), Value::Number(family_size.into()));
+        }
+        if !item.collapsed_sources.is_empty() {
+            map.insert(
+                "collapsedSources".to_string(),
+                Value::Array(
+                    item.collapsed_sources
+                        .into_iter()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
     }
     payload
 }
@@ -3157,6 +3354,9 @@ async fn dedup_and_mark_served(
     for result in results {
         let hash = hash_content(&result.excerpt);
         if map.contains_key(&hash) {
+            if result.method == "crystal" && !result.collapsed_sources.is_empty() {
+                filtered.push(result);
+            }
             continue;
         }
         map.insert(hash, now);
@@ -3278,6 +3478,26 @@ fn deserialize_cache_entry(results: &serde_json::Value) -> Option<Vec<RecallItem
                 method: v.get("method")?.as_str()?.to_string(),
                 tokens: v.get("tokens").and_then(|t| t.as_u64()).map(|t| t as usize),
                 entropy: v.get("entropy").and_then(|e| e.as_f64()),
+                family_members: v
+                    .get("familyMembers")
+                    .and_then(|value| value.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                collapsed_sources: v
+                    .get("collapsedSources")
+                    .and_then(|value| value.as_array())
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         })
         .collect();
@@ -3419,15 +3639,16 @@ pub async fn handle_unfold(
     let mut total_tokens = 0usize;
 
     for source in &requested {
-        if let Some(item) = unfold_source(&conn, source, &ctx) {
+        if let Some(mut item) = unfold_source(&conn, source, &ctx) {
             let tokens = estimate_tokens(item["text"].as_str().unwrap_or(""));
             total_tokens += tokens;
-            results.push(json!({
-                "source": source,
-                "text": item["text"],
-                "type": item["type"],
-                "tokens": tokens,
-            }));
+            if let Value::Object(ref mut map) = item {
+                if !map.contains_key("source") {
+                    map.insert("source".to_string(), Value::String(source.to_string()));
+                }
+                map.insert("tokens".to_string(), Value::Number((tokens as u64).into()));
+            }
+            results.push(item);
         } else {
             results.push(json!({
                 "source": source,
@@ -3450,6 +3671,40 @@ pub async fn handle_unfold(
 
 /// Look up the full text of a single source string (team visibility applied when `ctx.team_mode`).
 pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Option<Value> {
+    if let Some(crystal_id) = parse_crystal_source_id(source) {
+        if let Some((label, consolidated_text, member_count, owner_id, visibility)) =
+            query_crystal_for_unfold(conn, crystal_id)
+        {
+            if is_visible(owner_id, visibility.as_deref(), ctx) {
+                let members = crystal_member_sources(conn, crystal_id, ctx);
+                let mut full_text = consolidated_text.clone();
+                if !members.is_empty() {
+                    full_text.push_str("\n\nFamily members:\n");
+                    for member in members.iter().take(16) {
+                        full_text.push_str("- ");
+                        full_text.push_str(member);
+                        full_text.push('\n');
+                    }
+                    if member_count as usize > members.len() {
+                        full_text.push_str(&format!(
+                            "... plus {} more hidden or archived member(s)",
+                            (member_count as usize).saturating_sub(members.len())
+                        ));
+                    }
+                }
+                return Some(json!({
+                    "source": crystal_source(crystal_id, &label),
+                    "text": full_text.trim_end().to_string(),
+                    "type": "crystal",
+                    "label": label,
+                    "clusterId": crystal_id,
+                    "members": members,
+                    "memberCount": member_count,
+                }));
+            }
+        }
+    }
+
     if let Some((text, ty, owner_id, visibility)) = query_memory_for_unfold(conn, source) {
         if is_visible(owner_id, visibility.as_deref(), ctx) {
             return Some(json!({"text": text, "type": ty}));
@@ -3758,6 +4013,28 @@ mod tests {
         id
     }
 
+    fn insert_memory_with_optional_source_and_embedding(
+        conn: &rusqlite::Connection,
+        text: &str,
+        source: Option<&str>,
+        vector: &[f32],
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            params![text, source],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model)
+             VALUES ('memory', ?1, ?2, 'test-model')",
+            params![id, crate::embeddings::vector_to_blob(vector)],
+        )
+        .unwrap();
+        id
+    }
+
     fn store_decision_with_embedding(
         conn: &mut rusqlite::Connection,
         decision: &str,
@@ -3780,6 +4057,78 @@ mod tests {
         if let Some(id) = new_id {
             persist_decision_embedding(conn, id, vector).unwrap();
         }
+    }
+
+    fn insert_crystal_with_memory_members(
+        conn: &rusqlite::Connection,
+        label: &str,
+        consolidated_text: &str,
+        crystal_vector: &[f32],
+        members: &[(&str, &str, &[f32])],
+    ) -> (i64, String, Vec<String>) {
+        let mut member_sources = Vec::with_capacity(members.len());
+        let mut member_ids = Vec::with_capacity(members.len());
+        for (text, source, vector) in members {
+            let id = insert_memory_with_embedding(conn, text, source, vector);
+            member_ids.push(id);
+            member_sources.push((*source).to_string());
+        }
+
+        if conn
+            .execute(
+                "INSERT INTO memory_clusters (
+                    label,
+                    centroid,
+                    consolidated_text,
+                    member_count,
+                    owner_id,
+                    visibility,
+                    created_at,
+                    updated_at
+                 ) VALUES (?1, NULL, ?2, ?3, 1, 'shared', datetime('now'), datetime('now'))",
+                params![label, consolidated_text, members.len() as i64],
+            )
+            .is_err()
+        {
+            conn.execute(
+                "INSERT INTO memory_clusters (
+                    label,
+                    centroid,
+                    consolidated_text,
+                    member_count,
+                    created_at,
+                    updated_at
+                 ) VALUES (?1, NULL, ?2, ?3, datetime('now'), datetime('now'))",
+                params![label, consolidated_text, members.len() as i64],
+            )
+            .unwrap();
+        }
+        let crystal_id = conn.last_insert_rowid();
+
+        for member_id in member_ids {
+            conn.execute(
+                "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity)
+                 VALUES (?1, 'memory', ?2, 1.0)",
+                params![crystal_id, member_id],
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model)
+             VALUES ('crystal', ?1, ?2, 'test-model')",
+            params![
+                crystal_id,
+                crate::embeddings::vector_to_blob(crystal_vector)
+            ],
+        )
+        .unwrap();
+
+        (
+            crystal_id,
+            crystal_source(crystal_id, label),
+            member_sources,
+        )
     }
 
     #[test]
@@ -4192,7 +4541,200 @@ mod tests {
         assert_eq!(shared, "shared");
     }
 
+    #[test]
+    fn unfold_source_crystal_returns_summary_and_members() {
+        let conn = test_conn();
+        let (_crystal_id, crystal_key, member_sources) = insert_crystal_with_memory_members(
+            &conn,
+            "daemon lease renewal",
+            "Lease renewal prevents duplicate daemon spawns and stale lock ownership.",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+            &[
+                (
+                    "Daemon lease renewal keeps the single-daemon invariant intact during recovery.",
+                    "memory::daemon-lease-renewal",
+                    &[1.0, 0.0, 0.0, 0.0, 0.0],
+                ),
+                (
+                    "Lock ownership heartbeat stops plugin reconnects from spawning another daemon.",
+                    "memory::plugin-lock-heartbeat",
+                    &[0.98, 0.02, 0.0, 0.0, 0.0],
+                ),
+            ],
+        );
+
+        let crystal =
+            unfold_source(&conn, &crystal_key, &solo_ctx()).expect("crystal should unfold");
+        let text = crystal["text"].as_str().expect("crystal text");
+        let members = crystal["members"]
+            .as_array()
+            .expect("crystal members")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(crystal["type"], "crystal");
+        assert_eq!(crystal["source"], crystal_key);
+        assert_eq!(crystal["label"], "daemon lease renewal");
+        assert_eq!(crystal["memberCount"].as_i64(), Some(2));
+        assert_eq!(
+            members,
+            member_sources
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        assert!(text.contains("Lease renewal prevents duplicate daemon spawns"));
+        assert!(text.contains("Family members:"));
+        for source in &member_sources {
+            assert!(
+                text.contains(source),
+                "crystal unfold should list member source {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn recall_collapses_crystal_family_members_under_family_head() {
+        let mut conn = test_conn();
+        let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let (_crystal_id, crystal_key, member_sources) = insert_crystal_with_memory_members(
+            &conn,
+            "daemon lease renewal",
+            "Lease renewal prevents duplicate daemon spawns and stale lock ownership.",
+            &query_vector,
+            &[
+                (
+                    "Daemon lease renewal keeps the single-daemon invariant intact during recovery.",
+                    "memory::daemon-lease-renewal",
+                    &query_vector,
+                ),
+                (
+                    "Lock ownership heartbeat stops plugin reconnects from spawning another daemon.",
+                    "memory::plugin-lock-heartbeat",
+                    &[0.98, 0.02, 0.0, 0.0, 0.0],
+                ),
+            ],
+        );
+
+        let results = run_recall_with_query_vector(
+            &mut conn,
+            "daemon lease renewal single daemon",
+            5,
+            Some(&query_vector),
+            &solo_ctx(),
+            None,
+        )
+        .expect("recall should succeed");
+
+        let crystal = results
+            .iter()
+            .find(|item| item.source == crystal_key)
+            .expect("crystal family head should be returned");
+        assert_eq!(crystal.method, "crystal");
+        assert_eq!(crystal.family_members, member_sources);
+        assert_eq!(crystal.collapsed_sources, crystal.family_members);
+        assert!(
+            results.iter().all(|item| !crystal
+                .family_members
+                .iter()
+                .any(|source| source == &item.source)),
+            "member hits should collapse under the crystal family head: {:?}",
+            results
+                .iter()
+                .map(|item| item.source.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
     // ── existing tests ─────────────────────────────────────────────
+
+    #[test]
+    fn recall_collapses_null_source_members_using_memory_id_canonical_key() {
+        let mut conn = test_conn();
+        let query_vector = [1.0, 0.0, 0.0, 0.0, 0.0];
+        let member_id = insert_memory_with_optional_source_and_embedding(
+            &conn,
+            "Lease heartbeat ownership prevents duplicate daemon startup after reconnect.",
+            None,
+            &query_vector,
+        );
+        let canonical_member_source = format!("memory::{member_id}");
+
+        if conn
+            .execute(
+                "INSERT INTO memory_clusters (
+                    label,
+                    centroid,
+                    consolidated_text,
+                    member_count,
+                    owner_id,
+                    visibility,
+                    created_at,
+                    updated_at
+                 ) VALUES (?1, NULL, ?2, 1, 1, 'shared', datetime('now'), datetime('now'))",
+                params![
+                    "lease heartbeat",
+                    "Lease heartbeat preserves single-daemon ownership across reconnects."
+                ],
+            )
+            .is_err()
+        {
+            conn.execute(
+                "INSERT INTO memory_clusters (
+                    label,
+                    centroid,
+                    consolidated_text,
+                    member_count,
+                    created_at,
+                    updated_at
+                 ) VALUES (?1, NULL, ?2, 1, datetime('now'), datetime('now'))",
+                params![
+                    "lease heartbeat",
+                    "Lease heartbeat preserves single-daemon ownership across reconnects."
+                ],
+            )
+            .unwrap();
+        }
+        let crystal_id = conn.last_insert_rowid();
+        let crystal_key = crystal_source(crystal_id, "lease heartbeat");
+
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity)
+             VALUES (?1, 'memory', ?2, 1.0)",
+            params![crystal_id, member_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model)
+             VALUES ('crystal', ?1, ?2, 'test-model')",
+            params![crystal_id, crate::embeddings::vector_to_blob(&query_vector)],
+        )
+        .unwrap();
+
+        let results = run_recall_with_query_vector(
+            &mut conn,
+            "lease heartbeat duplicate daemon startup",
+            5,
+            Some(&query_vector),
+            &solo_ctx(),
+            None,
+        )
+        .expect("recall should succeed");
+
+        let crystal = results
+            .iter()
+            .find(|item| item.source == crystal_key)
+            .expect("crystal family head should be returned");
+        assert!(crystal.family_members.contains(&canonical_member_source));
+        assert!(crystal.collapsed_sources.contains(&canonical_member_source));
+        assert!(
+            results
+                .iter()
+                .all(|item| item.source != canonical_member_source),
+            "null-source member should collapse under the crystal family head"
+        );
+    }
 
     #[test]
     fn test_shannon_entropy_empty() {

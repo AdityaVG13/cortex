@@ -42,6 +42,12 @@ const DEDUP_JACCARD: f64 = 0.5;
 /// Relevance boost applied to crystal nodes during recall.
 pub const CRYSTAL_RELEVANCE_BOOST: f64 = 1.15;
 
+fn is_missing_team_visibility_columns(err: &rusqlite::Error) -> bool {
+    let normalized = err.to_string().to_ascii_lowercase();
+    normalized.contains("no such column")
+        && (normalized.contains("owner_id") || normalized.contains("visibility"))
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -536,26 +542,49 @@ pub fn search_crystals_filtered(
     caller_id: Option<i64>,
     team_mode: bool,
 ) -> Vec<(i64, String, String, f64)> {
-    let rows: Vec<(i64, Vec<u8>, String, String, Option<i64>, Option<String>)> = conn
-        .prepare(
-            "SELECT mc.id, e.vector, mc.label, mc.consolidated_text, mc.owner_id, mc.visibility \
-             FROM embeddings e \
-             JOIN memory_clusters mc ON e.target_type = 'crystal' AND e.target_id = mc.id",
-        )
-        .and_then(|mut stmt| {
-            let mapped = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                ))
-            })?;
-            Ok(mapped.flatten().collect())
-        })
-        .unwrap_or_default();
+    let query_rows = |sql: &str,
+                      with_visibility: bool|
+     -> Result<
+        Vec<(i64, Vec<u8>, String, String, Option<i64>, Option<String>)>,
+        rusqlite::Error,
+    > {
+        let mut stmt = conn.prepare(sql)?;
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                if with_visibility {
+                    row.get::<_, Option<i64>>(4)?
+                } else {
+                    None
+                },
+                if with_visibility {
+                    row.get::<_, Option<String>>(5)?
+                } else {
+                    None
+                },
+            ))
+        })?;
+        Ok(mapped.flatten().collect())
+    };
+
+    let sql_with_visibility =
+        "SELECT mc.id, e.vector, mc.label, mc.consolidated_text, mc.owner_id, mc.visibility \
+         FROM embeddings e \
+         JOIN memory_clusters mc ON e.target_type = 'crystal' AND e.target_id = mc.id";
+    let sql_legacy = "SELECT mc.id, e.vector, mc.label, mc.consolidated_text \
+         FROM embeddings e \
+         JOIN memory_clusters mc ON e.target_type = 'crystal' AND e.target_id = mc.id";
+
+    let rows = match query_rows(sql_with_visibility, true) {
+        Ok(rows) => rows,
+        Err(err) if is_missing_team_visibility_columns(&err) => {
+            query_rows(sql_legacy, false).unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    };
 
     let mut results: Vec<(i64, String, String, f64)> = rows
         .into_iter()

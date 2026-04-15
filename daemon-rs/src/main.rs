@@ -1715,13 +1715,13 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
     Ok(Some(value))
 }
 
+#[cfg(not(windows))]
+use daemon_lifecycle::issue_owner_token_for_spawn;
 use daemon_lifecycle::{
     daemon_healthy, is_cortex_health_payload, readiness_state_from_payload,
     validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
     SPAWN_PARENT_START_TIME_ENV,
 };
-#[cfg(not(windows))]
-use daemon_lifecycle::issue_owner_token_for_spawn;
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
