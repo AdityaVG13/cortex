@@ -29,6 +29,11 @@ const MAX_SEMANTIC_RRF_CANDIDATES: usize = 120;
 const MIN_BUDGET_HEADROOM_TOKENS: usize = 8;
 const MIN_EXCERPT_CHARS: usize = 24;
 const ASSOCIATIVE_MIN_BUDGET_TOKENS: usize = 260;
+const MEMORIES_BM25_TEXT_WEIGHT: f64 = 3.8;
+const MEMORIES_BM25_SOURCE_WEIGHT: f64 = 2.4;
+const MEMORIES_BM25_TAGS_WEIGHT: f64 = 2.8;
+const DECISIONS_BM25_DECISION_WEIGHT: f64 = 6.0;
+const DECISIONS_BM25_CONTEXT_WEIGHT: f64 = 1.3;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -2651,8 +2656,8 @@ fn search_memories(
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         // Field-boosted BM25: memories_fts columns are (text, source, tags).
-        // Weights: text=1.0, source=5.0, tags=3.0 -- matches in source (e.g. file paths)
-        // and tags carry higher signal than body text.
+        // Weight tuning favors rich content matches while preserving useful source/tag
+        // signal for code paths and metadata lookups.
         // bm25() returns negative values (more negative = better match), so ORDER BY ASC.
         let mut stmt = conn
             .prepare(
@@ -2661,29 +2666,38 @@ fn search_memories(
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
                  AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
-                 ORDER BY bm25(memories_fts, 1.0, 5.0, 3.0) \
+                 ORDER BY bm25(memories_fts, ?3, ?4, ?5) \
                  LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map(params![&fts_query, limit as i64], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<f64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, Option<i64>>(11)?,
-                    row.get::<_, Option<String>>(12)?,
-                ))
-            })
+            .query_map(
+                params![
+                    &fts_query,
+                    limit as i64,
+                    MEMORIES_BM25_TEXT_WEIGHT,
+                    MEMORIES_BM25_SOURCE_WEIGHT,
+                    MEMORIES_BM25_TAGS_WEIGHT
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, Option<f64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<i64>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                    ))
+                },
+            )
             .map_err(|e| e.to_string())?;
 
         let mut ranked = Vec::new();
@@ -2936,8 +2950,7 @@ fn search_decisions(
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         // Field-boosted BM25: decisions_fts columns are (decision, context).
-        // Weights: decision=5.0, context=1.0 -- the decision text is primary signal;
-        // context is the source/label string and lower priority.
+        // Decision text carries most signal; context acts as a secondary anchor.
         let mut stmt = conn
             .prepare(
                 "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility \
@@ -2945,28 +2958,36 @@ fn search_decisions(
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
                  AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
-                 ORDER BY bm25(decisions_fts, 5.0, 1.0) \
+                 ORDER BY bm25(decisions_fts, ?3, ?4) \
                  LIMIT ?2",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map(params![&fts_query, limit as i64], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<f64>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<i64>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                ))
-            })
+            .query_map(
+                params![
+                    &fts_query,
+                    limit as i64,
+                    DECISIONS_BM25_DECISION_WEIGHT,
+                    DECISIONS_BM25_CONTEXT_WEIGHT
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<f64>>(3)?,
+                        row.get::<_, Option<f64>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<i64>>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                    ))
+                },
+            )
             .map_err(|e| e.to_string())?;
 
         let mut ranked = Vec::new();
@@ -6836,6 +6857,54 @@ mod tests {
             "fts search should match synonym-expanded decision text"
         );
         assert_eq!(results[0].matched_keywords, 2);
+    }
+
+    #[test]
+    fn test_search_memories_bm25_prefers_text_signal_over_source_metadata() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::text-rank', 'note', 'active', 1.0, 1.0, datetime('now'), datetime('now'))",
+            params!["daemon ownership lock handoff policy keeps restarts stable"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'memory::daemon-ownership-lock-path', 'note', 'active', 1.0, 1.0, datetime('now'), datetime('now'))",
+            params!["unrelated metadata only"],
+        )
+        .unwrap();
+
+        let results = search_memories(&conn, "daemon ownership lock", 1, None)
+            .expect("memory search should succeed");
+        assert_eq!(
+            results[0].source, "memory::text-rank",
+            "bm25 tuning should favor text-heavy matches when limit truncates candidates"
+        );
+    }
+
+    #[test]
+    fn test_search_decisions_bm25_prefers_decision_text_over_context_metadata() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'decision::text-rank', 'active', 1.0, 1.0, datetime('now'), datetime('now'))",
+            params!["daemon ownership lock handoff policy remains strict"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'decision::daemon-ownership-lock-context', 'active', 1.0, 1.0, datetime('now'), datetime('now'))",
+            params!["unrelated context metadata only"],
+        )
+        .unwrap();
+
+        let results = search_decisions(&conn, "daemon ownership lock", 1, None)
+            .expect("decision search should succeed");
+        assert_eq!(
+            results[0].source, "decision::text-rank",
+            "bm25 tuning should prioritize decision-text evidence over context-only matches"
+        );
     }
 
     #[test]
