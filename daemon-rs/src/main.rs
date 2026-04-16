@@ -2019,6 +2019,35 @@ fn process_pid_identity_matches(pid: u32, expected_start_time: u64) -> bool {
         .unwrap_or(false)
 }
 
+fn spawn_parent_orphan_watch_task<F>(
+    shutdown_tx: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    parent_pid: u32,
+    parent_start_time: u64,
+    watch_interval: Duration,
+    identity_matches: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(u32, u64) -> bool + Send + Sync + 'static,
+{
+    let identity_matches = std::sync::Arc::new(identity_matches);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(watch_interval);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if !(identity_matches)(parent_pid, parent_start_time) {
+                eprintln!(
+                    "[cortex] Spawn parent process {parent_pid} exited or was recycled; shutting down daemon"
+                );
+                if let Some(tx) = shutdown_tx.lock().await.take() {
+                    let _ = tx.send(());
+                }
+                break;
+            }
+        }
+    })
+}
+
 fn process_looks_like_cortex_daemon(process: &sysinfo::Process) -> bool {
     let cmd: Vec<String> = process
         .cmd()
@@ -2720,24 +2749,13 @@ pub(crate) async fn run_daemon(
 
     if should_watch_spawn_parent(daemon_owner.as_deref()) {
         if let (Some(parent_pid), Some(parent_start_time)) = (parent_pid, parent_start_time) {
-            let shutdown_tx = state.shutdown_tx.clone();
-            tokio::spawn(async move {
-                let mut interval =
-                    tokio::time::interval(Duration::from_secs(ORPHAN_WATCH_INTERVAL_SECS));
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    if !process_pid_identity_matches(parent_pid, parent_start_time) {
-                        eprintln!(
-                            "[cortex] Spawn parent process {parent_pid} exited or was recycled; shutting down daemon"
-                        );
-                        if let Some(tx) = shutdown_tx.lock().await.take() {
-                            let _ = tx.send(());
-                        }
-                        break;
-                    }
-                }
-            });
+            let _watcher = spawn_parent_orphan_watch_task(
+                state.shutdown_tx.clone(),
+                parent_pid,
+                parent_start_time,
+                Duration::from_secs(ORPHAN_WATCH_INTERVAL_SECS),
+                process_pid_identity_matches,
+            );
         }
     }
 
@@ -3164,6 +3182,7 @@ mod tests {
     use std::net::TcpListener;
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -3848,6 +3867,37 @@ mod tests {
         assert!(err.contains("not running during ownership claim validation"));
 
         let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[tokio::test]
+    async fn spawn_parent_orphan_watch_task_triggers_shutdown_when_parent_identity_breaks() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shared_shutdown_tx = Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx)));
+        let probe_count = Arc::new(AtomicUsize::new(0));
+        let probe_count_for_task = Arc::clone(&probe_count);
+        let watcher = spawn_parent_orphan_watch_task(
+            Arc::clone(&shared_shutdown_tx),
+            4242,
+            123,
+            Duration::from_millis(5),
+            move |_, _| probe_count_for_task.fetch_add(1, Ordering::SeqCst) == 0,
+        );
+
+        tokio::time::timeout(Duration::from_millis(250), shutdown_rx)
+            .await
+            .expect("watcher should signal shutdown when parent identity breaks")
+            .expect("shutdown channel should deliver signal");
+        watcher
+            .await
+            .expect("spawn-parent watcher task should exit cleanly");
+        assert!(
+            probe_count.load(Ordering::SeqCst) >= 2,
+            "watcher should probe parent identity more than once"
+        );
+        assert!(
+            shared_shutdown_tx.lock().await.is_none(),
+            "shutdown sender should be consumed after parent identity break"
+        );
     }
 
     #[test]
