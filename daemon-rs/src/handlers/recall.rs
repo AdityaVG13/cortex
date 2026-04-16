@@ -2,6 +2,7 @@
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::Json;
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
@@ -590,6 +591,15 @@ pub struct RecallQuery {
     pub pool_k: Option<usize>,
 }
 
+#[derive(Deserialize, Default)]
+pub struct RecallBody {
+    pub q: Option<String>,
+    pub k: Option<usize>,
+    pub budget: Option<usize>,
+    pub agent: Option<String>,
+    pub source_prefix: Option<String>,
+}
+
 // ─── GET /recall ─────────────────────────────────────────────────────────────
 
 pub async fn handle_recall(
@@ -615,6 +625,44 @@ pub async fn handle_recall(
         return json_response(
             StatusCode::BAD_REQUEST,
             json!({ "error": "Missing query parameter: q" }),
+        );
+    }
+
+    let ctx = RecallContext::from_caller(caller_id, &state);
+    match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(err) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("Recall failed: {err}") }),
+        ),
+    }
+}
+
+// ─── POST /recall ────────────────────────────────────────────────────────────
+
+pub async fn handle_recall_post(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Json(body): Json<RecallBody>,
+) -> Response {
+    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let q = body.q.unwrap_or_default();
+    let k = body.k.unwrap_or(10);
+    let budget = body.budget.unwrap_or(200);
+    let source_prefix = body
+        .source_prefix
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let agent = resolve_source_identity(&headers, body.agent.as_deref().unwrap_or("http")).agent;
+
+    if q.trim().is_empty() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Missing recall payload field: q" }),
         );
     }
 

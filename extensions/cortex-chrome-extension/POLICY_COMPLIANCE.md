@@ -4,26 +4,31 @@ This extension implementation is designed to align with current Chrome extension
 
 ## Design Decisions
 
-1. MV3 service worker architecture only.
-2. No remote code execution or dynamic script loading.
-3. Minimal default host access (`localhost` and `127.0.0.1`).
-4. Optional host permissions are requested only for the configured Cortex origin.
-5. No ad-tech behaviors, no affiliate redirects, no external analytics beacons.
-6. User-triggered memory operations (popup/context-menu), not silent scraping.
+1. Manifest V3 service worker architecture only.
+2. No remotely hosted executable code, dynamic eval, or remote script loading.
+3. Loopback-only host access (`http://127.0.0.1/*`, `http://localhost/*`) for local-first operation.
+4. No wildcard host permissions (`https://*/*`, `<all_urls>`, `*://*/*`) in the Web Store build.
+5. User-triggered operations only (popup actions and explicit context-menu selection).
+6. API key persistence is opt-in; default is session-only storage.
+7. Context-menu collection is scoped to selected text; page metadata is opt-in.
 
 ## Reviewer-Facing Behaviors
 
-- Single purpose: Cortex memory store/recall workflow helper.
+- Single purpose: store and recall Cortex memory.
 - Transparent data flow:
-  - Selected/manual text -> Cortex REST endpoint configured by user.
-  - No third-party relay endpoints.
-- Host access:
-  - Default loopback only.
-  - Additional origins granted by explicit permission prompt.
+  - User-selected/manual text -> user-configured local Cortex endpoint.
+  - No third-party relay and no external analytics beacons.
+- Clear local-first boundaries:
+  - Web Store build accepts loopback endpoints only.
+  - Remote integration is intentionally excluded from this package.
 
 ## Canonical References
 
-- Manifest V3 overview and migration: <https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3>
-- Extension platform security guidance: <https://developer.chrome.com/docs/extensions/develop/security-privacy/stay-secure>
-- Permissions and optional permissions model: <https://developer.chrome.com/docs/extensions/reference/api/permissions>
-- Chrome Web Store Program Policies: <https://developer.chrome.com/docs/webstore/program-policies/>
+- Declare permissions (least privilege): <https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions>
+- User privacy and permission minimization: <https://developer.chrome.com/docs/extensions/develop/security-privacy/user-privacy>
+- Improve extension security / remotely hosted code restrictions: <https://developer.chrome.com/docs/extensions/develop/migrate/improve-security>
+- Chrome Web Store Program Policies: <https://developer.chrome.com/docs/webstore/program-policies/policies>
+- Privacy policy requirement: <https://developer.chrome.com/docs/webstore/program-policies/privacy/>
+- User Data FAQ (secure handling, minimum permissions): <https://developer.chrome.com/docs/webstore/program-policies/user-data-faq>
+- Disclosure requirements: <https://developer.chrome.com/docs/webstore/program-policies/disclosure-requirements/>
+- Web Store review process: <https://developer.chrome.com/docs/webstore/review-process/>

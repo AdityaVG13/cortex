@@ -7,6 +7,7 @@ import {
   isLoopbackUrl,
   normalizeAgent,
   normalizeCortexUrl,
+  normalizeLocalCortexUrl,
   normalizePositiveInteger,
   originPatternForUrl,
   sanitizeDecision
@@ -21,6 +22,17 @@ test("normalizeCortexUrl rejects non-http protocols", () => {
   assert.throws(
     () => normalizeCortexUrl("ftp://127.0.0.1:7437"),
     /must use http or https/i
+  );
+});
+
+test("normalizeLocalCortexUrl accepts loopback and rejects remote hosts", () => {
+  assert.equal(
+    normalizeLocalCortexUrl("http://127.0.0.1:7437/api"),
+    "http://127.0.0.1:7437/api"
+  );
+  assert.throws(
+    () => normalizeLocalCortexUrl("https://team.example.com"),
+    /only supports local cortex urls/i
   );
 });
 

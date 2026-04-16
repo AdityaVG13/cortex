@@ -11,6 +11,8 @@ import {
 const elements = {
   url: document.getElementById("cortex-url"),
   apiKey: document.getElementById("api-key"),
+  rememberApiKey: document.getElementById("remember-api-key"),
+  includePageMetadata: document.getElementById("include-page-metadata"),
   agent: document.getElementById("agent-name"),
   recallBudget: document.getElementById("recall-budget"),
   recallK: document.getElementById("recall-k"),
@@ -22,7 +24,8 @@ document.getElementById("save-settings").addEventListener("click", async () => {
   try {
     const payload = collectPayload();
     const saved = await callBackground("settings:save", payload);
-    setStatus(`Saved settings for ${saved.cortexUrl}`, false);
+    const persistence = saved.rememberApiKey ? "persisted" : "session-only";
+    setStatus(`Saved settings for ${saved.cortexUrl} (API key: ${persistence}).`, false);
   } catch (error) {
     setStatus(String(error.message ?? error), true);
   }
@@ -46,15 +49,17 @@ async function initialize() {
     const settings = await callBackground("settings:get", {});
     elements.url.value = settings.cortexUrl ?? DEFAULT_CORTEX_URL;
     elements.apiKey.value = settings.apiKey ?? "";
+    elements.rememberApiKey.checked = settings.rememberApiKey === true;
+    elements.includePageMetadata.checked = settings.includePageMetadata === true;
     elements.agent.value = settings.agent ?? DEFAULT_AGENT;
     elements.recallBudget.value = String(settings.recallBudget ?? DEFAULT_RECALL_BUDGET);
     elements.recallK.value = String(settings.recallK ?? DEFAULT_RECALL_K);
     elements.timeoutMs.value = String(settings.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     if (settings.hasOriginPermission) {
-      setStatus("Settings loaded. Origin permission already granted.", false);
+      setStatus("Settings loaded. Loopback Cortex URL is ready.", false);
     } else {
       setStatus(
-        "Settings loaded. Save once to grant permission for the configured Cortex origin.",
+        "Settings loaded. This build only supports local loopback Cortex endpoints.",
         true
       );
     }
@@ -67,6 +72,8 @@ function collectPayload() {
   return {
     cortexUrl: elements.url.value.trim() || DEFAULT_CORTEX_URL,
     apiKey: elements.apiKey.value.trim(),
+    rememberApiKey: elements.rememberApiKey.checked,
+    includePageMetadata: elements.includePageMetadata.checked,
     agent: elements.agent.value.trim() || DEFAULT_AGENT,
     recallBudget: Number.parseInt(elements.recallBudget.value, 10) || DEFAULT_RECALL_BUDGET,
     recallK: Number.parseInt(elements.recallK.value, 10) || DEFAULT_RECALL_K,

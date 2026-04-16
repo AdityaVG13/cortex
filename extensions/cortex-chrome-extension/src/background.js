@@ -3,8 +3,7 @@
 import {
   DEFAULT_CORTEX_URL,
   isLoopbackUrl,
-  normalizeCortexUrl,
-  originPatternForUrl
+  normalizeCortexUrl
 } from "./core.js";
 import { healthcheck, recall, storeDecision } from "./cortex-client.js";
 import { loadSettings, saveSettings } from "./storage.js";
@@ -27,9 +26,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     const settings = await loadSettings();
     await ensureOriginPermission(settings.cortexUrl);
-    const pageTitle = tab?.title ? `Page: ${tab.title}` : "";
-    const pageUrl = info.pageUrl ? `URL: ${info.pageUrl}` : "";
-    const context = [pageTitle, pageUrl].filter(Boolean).join(" | ");
+    const context = settings.includePageMetadata
+      ? [tab?.title ? `Page: ${tab.title}` : "", info.pageUrl ? `URL: ${info.pageUrl}` : ""]
+          .filter(Boolean)
+          .join(" | ")
+      : "";
     await storeDecision(settings, {
       decision: selectedText,
       context,
@@ -65,12 +66,7 @@ async function handleMessage(request) {
     }
     case "settings:save": {
       const next = await saveSettings(request?.payload ?? {});
-      const granted = await ensureOriginPermission(next.cortexUrl);
-      if (!granted) {
-        throw new Error(
-          "Origin permission was denied. The extension cannot call Cortex without it."
-        );
-      }
+      await ensureOriginPermission(next.cortexUrl);
       return next;
     }
     case "cortex:health": {
@@ -90,10 +86,8 @@ async function handleMessage(request) {
     }
     case "permissions:ensure": {
       const url = normalizeCortexUrl(request?.payload?.cortexUrl ?? DEFAULT_CORTEX_URL);
-      return {
-        granted: await ensureOriginPermission(url),
-        originPattern: originPatternForUrl(url)
-      };
+      await ensureOriginPermission(url);
+      return { granted: true, originPattern: `${new URL(url).origin}/*` };
     }
     default:
       throw new Error(`Unsupported action: ${action}`);
@@ -115,11 +109,7 @@ async function createContextMenu() {
 
 async function hasOriginPermission(cortexUrl) {
   const normalized = normalizeCortexUrl(cortexUrl);
-  if (isLoopbackUrl(normalized)) {
-    return true;
-  }
-  const originPattern = originPatternForUrl(normalized);
-  return chrome.permissions.contains({ origins: [originPattern] });
+  return isLoopbackUrl(normalized);
 }
 
 async function ensureOriginPermission(cortexUrl) {
@@ -127,12 +117,9 @@ async function ensureOriginPermission(cortexUrl) {
   if (isLoopbackUrl(normalized)) {
     return true;
   }
-  const originPattern = originPatternForUrl(normalized);
-  const alreadyGranted = await chrome.permissions.contains({ origins: [originPattern] });
-  if (alreadyGranted) {
-    return true;
-  }
-  return chrome.permissions.request({ origins: [originPattern] });
+  throw new Error(
+    "This Chrome Web Store build only supports local Cortex URLs (localhost or 127.0.0.1)."
+  );
 }
 
 async function setBadge(text, color) {

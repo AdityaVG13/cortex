@@ -13,9 +13,10 @@
 
 - No remotely hosted executable code
 - No content-script scraping or DOM injection
-- Local loopback host access by default (`localhost`/`127.0.0.1`)
-- Non-loopback origins require explicit runtime permission grant
-- API key stored in `chrome.storage.local`
+- Local loopback host access only (`localhost`/`127.0.0.1`)
+- No broad or wildcard host permissions
+- API key defaults to session-only storage (optional persistence toggle)
+- Context-menu store captures selected text only by default (page metadata is opt-in)
 
 ## Load Unpacked
 

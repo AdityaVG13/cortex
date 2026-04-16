@@ -29,6 +29,16 @@ export function normalizeCortexUrl(rawValue) {
   return parsed.toString().replace(/\/$/, "");
 }
 
+export function normalizeLocalCortexUrl(rawValue) {
+  const normalized = normalizeCortexUrl(rawValue);
+  if (!isLoopbackUrl(normalized)) {
+    throw new Error(
+      "This Chrome Web Store build only supports local Cortex URLs (localhost or 127.0.0.1)."
+    );
+  }
+  return normalized;
+}
+
 export function originPatternForUrl(rawValue) {
   const normalized = normalizeCortexUrl(rawValue);
   const url = new URL(normalized);

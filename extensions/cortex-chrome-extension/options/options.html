@@ -10,8 +10,8 @@
     <main class="root">
       <h1>Cortex Extension Settings</h1>
       <p class="subtitle">
-        This extension only sends requests to your configured Cortex origin. For non-loopback URLs,
-        it requests origin permission at save time.
+        This Chrome Web Store build is local-first and only supports loopback Cortex URLs
+        (`localhost` / `127.0.0.1`).
       </p>
 
       <label for="cortex-url">Cortex URL</label>
@@ -19,6 +19,15 @@
 
       <label for="api-key">API key</label>
       <input id="api-key" type="password" autocomplete="off" />
+      <label class="checkbox-row" for="remember-api-key">
+        <input id="remember-api-key" type="checkbox" />
+        Remember API key across browser restarts
+      </label>
+
+      <label class="checkbox-row" for="include-page-metadata">
+        <input id="include-page-metadata" type="checkbox" />
+        Include page title + URL when storing from context menu
+      </label>
 
       <label for="agent-name">Agent name</label>
       <input id="agent-name" type="text" placeholder="chrome-extension" />

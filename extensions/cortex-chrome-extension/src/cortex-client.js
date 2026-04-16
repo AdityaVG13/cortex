@@ -39,16 +39,16 @@ export async function recall(settings, payload) {
   }
   const budget = normalizePositiveInteger(payload.budget, settings.recallBudget);
   const k = normalizePositiveInteger(payload.k, settings.recallK);
-  const params = new URLSearchParams({
-    q,
-    budget: String(budget),
-    k: String(k),
-    agent: normalizeAgent(payload.agent ?? settings.agent)
-  });
   return requestJson(settings, {
-    method: "GET",
-    path: `/recall?${params.toString()}`,
-    includeAuth: true
+    method: "POST",
+    path: "/recall",
+    includeAuth: true,
+    body: {
+      q,
+      budget,
+      k,
+      agent: normalizeAgent(payload.agent ?? settings.agent)
+    }
   });
 }
 

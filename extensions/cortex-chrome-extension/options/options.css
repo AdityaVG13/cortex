@@ -45,6 +45,20 @@ input {
   font: inherit;
 }
 
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-weight: 500;
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
 .inline-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

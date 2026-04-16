@@ -43,6 +43,12 @@ body {
   color: #991b1b;
 }
 
+.privacy-note {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: #475569;
+}
+
 .panel {
   margin-top: 10px;
   padding: 10px;
