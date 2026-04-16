@@ -2303,8 +2303,8 @@ fn run_semantic_recall_with_query_vector(
     ranked
 }
 
-fn budget_rank_char_cap(token_budget: usize, rank_idx: usize) -> usize {
-    if token_budget <= 220 {
+fn budget_rank_char_cap(token_budget: usize, rank_idx: usize, query_text: &str) -> usize {
+    let base = if token_budget <= 220 {
         match rank_idx {
             0 => 180,
             1 => 120,
@@ -2332,7 +2332,52 @@ fn budget_rank_char_cap(token_budget: usize, rank_idx: usize) -> usize {
             2 => 200,
             _ => 150,
         }
+    };
+    let profile = query_shape_profile(query_text, None);
+    let adjusted = if profile.exactish && !profile.naturalish {
+        ((base as f64) * 1.12).round() as usize
+    } else if profile.naturalish && !profile.exactish {
+        ((base as f64) * 0.86).round() as usize
+    } else {
+        base
+    };
+    adjusted.max(MIN_EXCERPT_CHARS)
+}
+
+fn semantic_budget_min_relevance(top_relevance: f64, query_text: &str) -> f64 {
+    if top_relevance < 0.25 {
+        return 0.0;
     }
+    let profile = query_shape_profile(query_text, None);
+    let (scale, floor) = if profile.naturalish && !profile.exactish {
+        (0.64, 0.14)
+    } else if profile.exactish && !profile.naturalish {
+        (0.78, 0.20)
+    } else {
+        (0.72, 0.18)
+    };
+    (top_relevance * scale).max(floor)
+}
+
+fn semantic_budget_max_items(token_budget: usize, query_text: &str, hard_cap: usize) -> usize {
+    let base: usize = if token_budget <= 220 {
+        4
+    } else if token_budget <= 400 {
+        6
+    } else if token_budget <= 800 {
+        8
+    } else {
+        10
+    };
+    let profile = query_shape_profile(query_text, None);
+    let adjusted = if profile.naturalish && !profile.exactish {
+        base.saturating_add(1)
+    } else if profile.exactish && !profile.naturalish {
+        base.saturating_sub(1).max(3)
+    } else {
+        base
+    };
+    adjusted.clamp(3, 12).min(hard_cap.max(1))
 }
 
 fn fit_excerpt_to_remaining_budget(
@@ -2518,35 +2563,27 @@ fn apply_semantic_budget(
 
     let raw = compact_budget_family_candidates(raw, query_text, token_budget);
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
-    let min_relevance = if top_relevance >= 0.25 {
-        (top_relevance * 0.72).max(0.18)
-    } else {
-        0.0
-    };
-    let max_items = if token_budget <= 220 {
-        4
-    } else if token_budget <= 400 {
-        6
-    } else if token_budget <= 800 {
-        8
-    } else {
-        10
-    };
+    let min_relevance = semantic_budget_min_relevance(top_relevance, query_text);
+    let max_items = semantic_budget_max_items(token_budget, query_text, raw.len());
+    let mut candidates: Vec<RecallItem> = raw
+        .iter()
+        .filter(|item| item.relevance >= min_relevance)
+        .take(max_items)
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        candidates = raw.iter().take(max_items.max(1)).cloned().collect();
+    }
 
     let mut spent = 0usize;
     let mut budgeted = Vec::new();
-    for (idx, mut item) in raw
-        .into_iter()
-        .filter(|item| item.relevance >= min_relevance)
-        .take(max_items)
-        .enumerate()
-    {
+    for (idx, mut item) in candidates.into_iter().enumerate() {
         let remaining = token_budget.saturating_sub(spent);
         if remaining <= 10 {
             break;
         }
 
-        let cap = budget_rank_char_cap(token_budget, idx)
+        let cap = budget_rank_char_cap(token_budget, idx, query_text)
             .min((remaining as f64 * 3.6) as usize)
             .max(MIN_EXCERPT_CHARS);
         if let Some((excerpt, tokens)) =
@@ -2984,20 +3021,8 @@ fn run_budget_recall_trace_with_query_vector(
         compact_budget_family_candidates_with_trace(pre_compaction_pool, query_text, token_budget);
 
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
-    let min_relevance = if top_relevance >= 0.25 {
-        (top_relevance * 0.72).max(0.18)
-    } else {
-        0.0
-    };
-    let max_items = if token_budget <= 220 {
-        k.min(4)
-    } else if token_budget <= 400 {
-        k.min(6)
-    } else if token_budget <= 800 {
-        k.min(8)
-    } else {
-        k.min(12)
-    };
+    let min_relevance = semantic_budget_min_relevance(top_relevance, query_text);
+    let max_items = semantic_budget_max_items(token_budget, query_text, k.max(1));
 
     let mut candidates: Vec<RecallItem> = raw
         .iter()
@@ -3028,7 +3053,7 @@ fn run_budget_recall_trace_with_query_vector(
             break;
         }
 
-        let cap = budget_rank_char_cap(token_budget, idx)
+        let cap = budget_rank_char_cap(token_budget, idx, query_text)
             .min((remaining as f64 * 3.6) as usize)
             .max(MIN_EXCERPT_CHARS);
         if let Some((excerpt, tokens)) =
@@ -3284,14 +3309,14 @@ fn search_memories(
             ];
             let matched = count_matching_term_groups(&haystacks, &term_groups);
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
-            let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-            let keyword_weight = matched as f64 / term_groups.len().max(1) as f64;
-            let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-            let score_weight = effective_score.clamp(0.0, 1.0);
-            let ranking = (keyword_weight * 0.40)
-                + (score_weight * 0.25)
-                + (recency_weight * 0.20)
-                + (retrieval_weight * 0.15);
+            let ranking = fallback_ranking_score(
+                query_text,
+                term_groups.len(),
+                matched,
+                effective_score,
+                recency_d,
+                retrievals,
+            );
 
             ranked.push(SearchCandidate {
                 source: source_key,
@@ -3401,14 +3426,14 @@ fn search_memories_fallback(
         }
 
         let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
-        let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-        let keyword_weight = matched as f64 / term_groups.len() as f64;
-        let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-        let score_weight = effective_score.clamp(0.0, 1.0);
-        let ranking = (keyword_weight * 0.40)
-            + (score_weight * 0.25)
-            + (recency_weight * 0.20)
-            + (retrieval_weight * 0.15);
+        let ranking = fallback_ranking_score(
+            query_text,
+            term_groups.len(),
+            matched,
+            effective_score,
+            recency_d,
+            retrievals,
+        );
 
         ranked.push(SearchCandidate {
             source: source_key,
@@ -3423,7 +3448,17 @@ fn search_memories_fallback(
     }
 
     if term_groups.is_empty() {
-        ranked.sort_by(|a, b| b.ts.cmp(&a.ts));
+        ranked.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(b.ts.cmp(&a.ts))
+        });
     } else {
         ranked.sort_by(|a, b| {
             b.relevance
@@ -3572,14 +3607,14 @@ fn search_decisions(
             ];
             let matched = count_matching_term_groups(&haystacks, &term_groups);
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
-            let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-            let keyword_weight = matched as f64 / term_groups.len().max(1) as f64;
-            let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-            let score_weight = effective_score.clamp(0.0, 1.0);
-            let ranking = (keyword_weight * 0.40)
-                + (score_weight * 0.25)
-                + (recency_weight * 0.20)
-                + (retrieval_weight * 0.15);
+            let ranking = fallback_ranking_score(
+                query_text,
+                term_groups.len(),
+                matched,
+                effective_score,
+                recency_d,
+                retrievals,
+            );
 
             ranked.push(SearchCandidate {
                 source: source_key,
@@ -3686,14 +3721,14 @@ fn search_decisions_fallback(
         }
 
         let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
-        let recency_weight = 1.0 / (1.0 + recency_d as f64 / 7.0);
-        let keyword_weight = matched as f64 / term_groups.len() as f64;
-        let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
-        let score_weight = effective_score.clamp(0.0, 1.0);
-        let ranking = (keyword_weight * 0.40)
-            + (score_weight * 0.25)
-            + (recency_weight * 0.20)
-            + (retrieval_weight * 0.15);
+        let ranking = fallback_ranking_score(
+            query_text,
+            term_groups.len(),
+            matched,
+            effective_score,
+            recency_d,
+            retrievals,
+        );
 
         ranked.push(SearchCandidate {
             source: source_key,
@@ -3708,7 +3743,17 @@ fn search_decisions_fallback(
     }
 
     if term_groups.is_empty() {
-        ranked.sort_by(|a, b| b.ts.cmp(&a.ts));
+        ranked.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(b.ts.cmp(&a.ts))
+        });
     } else {
         ranked.sort_by(|a, b| {
             b.relevance
@@ -5502,6 +5547,36 @@ struct FusionWeights {
     semantic: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct QueryShapeProfile {
+    exactish: bool,
+    naturalish: bool,
+}
+
+fn query_shape_profile(query_text: &str, source_prefix: Option<&str>) -> QueryShapeProfile {
+    let trimmed = query_text.trim();
+    let token_count = trimmed.split_whitespace().count();
+    let char_count = trimmed.chars().count();
+    let lowered = trimmed.to_ascii_lowercase();
+    let has_exact_markers = trimmed.contains('"')
+        || trimmed.contains('`')
+        || trimmed.contains("::")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || lowered.contains(".rs")
+        || lowered.contains(".ts")
+        || lowered.contains(".tsx")
+        || lowered.contains(".js")
+        || lowered.contains(".py");
+    QueryShapeProfile {
+        exactish: has_exact_markers
+            || token_count <= 3
+            || char_count <= 24
+            || source_prefix.is_some(),
+        naturalish: token_count >= 8 || char_count >= 56 || trimmed.ends_with('?'),
+    }
+}
+
 fn adaptive_rrf_weights(
     query_text: &str,
     source_prefix: Option<&str>,
@@ -5514,30 +5589,15 @@ fn adaptive_rrf_weights(
         };
     }
 
-    let trimmed = query_text.trim();
-    let token_count = trimmed.split_whitespace().count();
-    let char_count = trimmed.chars().count();
-    let has_exact_markers = trimmed.contains('"')
-        || trimmed.contains('`')
-        || trimmed.contains("::")
-        || trimmed.contains('/')
-        || trimmed.contains('\\')
-        || trimmed.contains(".rs")
-        || trimmed.contains(".ts")
-        || trimmed.contains(".tsx")
-        || trimmed.contains(".js")
-        || trimmed.contains(".py");
-    let exactish =
-        has_exact_markers || token_count <= 3 || char_count <= 24 || source_prefix.is_some();
-    let naturalish = token_count >= 8 || char_count >= 56 || trimmed.ends_with('?');
+    let profile = query_shape_profile(query_text, source_prefix);
 
     let mut keyword = 1.0_f64;
     let mut semantic = 1.0_f64;
-    if exactish {
+    if profile.exactish {
         keyword += 0.35;
         semantic -= 0.15;
     }
-    if naturalish {
+    if profile.naturalish {
         semantic += 0.35;
         keyword -= 0.15;
     }
@@ -5546,6 +5606,85 @@ fn adaptive_rrf_weights(
         keyword: keyword.clamp(0.35, 1.75),
         semantic: semantic.clamp(0.35, 1.75),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FallbackRankingWeights {
+    keyword: f64,
+    score: f64,
+    recency: f64,
+    retrieval: f64,
+}
+
+fn adaptive_fallback_ranking_weights(
+    query_text: &str,
+    term_group_count: usize,
+) -> FallbackRankingWeights {
+    let profile = query_shape_profile(query_text, None);
+    let mut keyword = 0.40_f64;
+    let mut score = 0.25_f64;
+    let mut recency = 0.20_f64;
+    let mut retrieval = 0.15_f64;
+
+    if profile.exactish && !profile.naturalish {
+        keyword += 0.12;
+        score -= 0.03;
+        recency -= 0.05;
+        retrieval -= 0.04;
+    } else if profile.naturalish && !profile.exactish {
+        keyword -= 0.08;
+        score += 0.05;
+        recency += 0.02;
+        retrieval += 0.01;
+    }
+
+    if term_group_count <= 1 {
+        keyword += 0.05;
+        score += 0.01;
+        recency -= 0.03;
+        retrieval -= 0.03;
+    } else if term_group_count >= 5 {
+        keyword -= 0.04;
+        score += 0.02;
+        recency += 0.01;
+        retrieval += 0.01;
+    }
+
+    keyword = keyword.max(0.05);
+    score = score.max(0.05);
+    recency = recency.max(0.05);
+    retrieval = retrieval.max(0.05);
+
+    let total = keyword + score + recency + retrieval;
+    FallbackRankingWeights {
+        keyword: keyword / total,
+        score: score / total,
+        recency: recency / total,
+        retrieval: retrieval / total,
+    }
+}
+
+fn fallback_ranking_score(
+    query_text: &str,
+    term_group_count: usize,
+    matched: i64,
+    effective_score: f64,
+    recency_days: i64,
+    retrievals: Option<i64>,
+) -> f64 {
+    let keyword_weight = if term_group_count == 0 {
+        0.0
+    } else {
+        matched as f64 / term_group_count as f64
+    };
+    let recency_weight = 1.0 / (1.0 + recency_days.max(0) as f64 / 7.0);
+    let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
+    let score_weight = effective_score.clamp(0.0, 1.0);
+    let weights = adaptive_fallback_ranking_weights(query_text, term_group_count);
+    (keyword_weight * weights.keyword)
+        + (score_weight * weights.score)
+        + (recency_weight * weights.recency)
+        + (retrieval_weight * weights.retrieval)
 }
 
 /// Weighted Reciprocal Rank Fusion (Cormack et al., 2009).
@@ -7315,6 +7454,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_adaptive_fallback_weights_bias_short_exact_queries_toward_keyword() {
+        let weights = adaptive_fallback_ranking_weights("auth.rs", 2);
+        assert!(weights.keyword > weights.score);
+        assert!(weights.keyword > weights.recency);
+        assert!(weights.keyword > weights.retrieval);
+    }
+
+    #[test]
+    fn test_adaptive_fallback_weights_bias_natural_queries_toward_non_keyword_signals() {
+        let weights = adaptive_fallback_ranking_weights(
+            "How does Cortex preserve session truth after a daemon restart and reconnect?",
+            6,
+        );
+        assert!(weights.keyword < 0.40);
+        let total = weights.keyword + weights.score + weights.recency + weights.retrieval;
+        assert!((total - 1.0).abs() < 1e-9);
+    }
+
     // ── compound scoring tests (Task 1.4) ──────────────────────────
 
     #[test]
@@ -7492,6 +7650,30 @@ mod tests {
     }
 
     #[test]
+    fn test_search_memories_fallback_empty_term_groups_prefers_score_signal() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES ('Older high-signal recovery policy', 'memory::older-high-score', 'note', 'active', 1.0, 1.0, datetime('now', '-2 day'), datetime('now', '-2 day'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES ('Newer low-signal note', 'memory::new-low-score', 'note', 'active', 0.1, 0.1, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let results =
+            search_memories_fallback(&conn, "a", 5, None).expect("memory fallback should succeed");
+        assert_eq!(
+            results[0].source, "memory::older-high-score",
+            "empty-term fallback should rank by retained score signal before recency"
+        );
+    }
+
+    #[test]
     fn test_search_memories_fts_scoring_counts_synonym_term_groups() {
         let conn = test_conn();
         conn.execute(
@@ -7531,6 +7713,30 @@ mod tests {
             "fallback should match synonym-expanded decision text"
         );
         assert_eq!(results[0].matched_keywords, 2);
+    }
+
+    #[test]
+    fn test_search_decisions_fallback_empty_term_groups_prefers_score_signal() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES ('Older high-confidence daemon rule', 'decision::older-high-score', 'active', 1.0, 1.0, datetime('now', '-2 day'), datetime('now', '-2 day'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES ('Newer low-confidence rule', 'decision::new-low-score', 'active', 0.1, 0.1, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let results = search_decisions_fallback(&conn, "a", 5, None)
+            .expect("decision fallback should succeed");
+        assert_eq!(
+            results[0].source, "decision::older-high-score",
+            "empty-term fallback should rank by retained score signal before recency"
+        );
     }
 
     #[test]
@@ -8178,6 +8384,43 @@ mod tests {
         assert!(
             results.iter().all(|item| item.method != "associative"),
             "tight token budgets should skip associative expansion"
+        );
+    }
+
+    #[test]
+    fn budget_rank_char_cap_remains_rank_monotonic_and_query_adaptive() {
+        let top = budget_rank_char_cap(200, 0, "daemon ownership lock policy");
+        let second = budget_rank_char_cap(200, 1, "daemon ownership lock policy");
+        let third = budget_rank_char_cap(200, 2, "daemon ownership lock policy");
+        assert!(top > second && second > third);
+
+        let exact = budget_rank_char_cap(200, 0, "auth.rs");
+        let natural = budget_rank_char_cap(
+            200,
+            0,
+            "How does Cortex preserve session truth after a daemon restart and reconnect?",
+        );
+        assert!(
+            exact > natural,
+            "exact identifier-like queries should receive more excerpt budget than broad natural queries"
+        );
+    }
+
+    #[test]
+    fn semantic_budget_max_items_adjusts_by_query_shape() {
+        assert_eq!(
+            semantic_budget_max_items(180, "auth.rs", 10),
+            3,
+            "tight exact query should prefer fewer, denser items"
+        );
+        assert_eq!(
+            semantic_budget_max_items(
+                180,
+                "How does Cortex preserve session truth after a daemon restart and reconnect?",
+                10,
+            ),
+            5,
+            "tight broad query should keep one extra item for coverage"
         );
     }
 
