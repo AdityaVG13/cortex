@@ -2,21 +2,28 @@
 
 This roadmap is public and contributor-focused: enough detail to start building, without exposing internal planning artifacts.
 
----
-
-## Current Release Track -- v0.4.x
-
-Focus: polish and reliability after public launch.
-
-### In-flight priorities
-- Desktop app parity with daemon configuration (`~/.cortex`, dynamic ports, binary discovery)
-- Plugin packaging verification (cross-platform assets + checksum flow)
-- Documentation quality pass (install clarity, team mode onboarding, MCP reference)
-- Release verification sweep (smoke tests + changelog completeness)
+Release-status source of truth lives in `docs/internal/CORTEX-UNIFIED-STATUS-PLAN.md`.
 
 ---
 
-## v0.5.0 -- Foundation Hardening
+## Current Release Track -- v0.5.0 Stabilization Closeout
+
+Focus: ship a reliable, one-daemon, local-first release that is benchmark-honest and adapter-consistent.
+
+### Shipped in the current track
+- One-daemon lifecycle hardening and spawn-path guardrails
+- Cross-surface adapter conformance + contract test coverage
+- OpenAPI/version sweep + clippy/test release gates
+- Chrome extension local-first MV3 companion + CI policy guardrails
+
+### Remaining closeout items
+- Startup matrix + troubleshooting refresh across public docs
+- Team-mode security wording alignment for non-loopback deployment guidance
+- Final release-facing roadmap/docs sync before v0.5.0 close
+
+---
+
+## v0.5.x -- Foundation Hardening (continued)
 
 Goal: make Cortex robust for daily development workflows.
 

@@ -18,6 +18,9 @@ cortex serve
 
 Read the `bootPrompt` from the JSON response -- that is your context. Then read this document for the full API.
 
+Startup/lifecycle truth for `v0.5.0`:
+- See `Info/startup-matrix-troubleshooting.md` for one-daemon startup behavior and troubleshooting.
+
 ---
 
 ## What This Is

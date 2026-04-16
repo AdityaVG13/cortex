@@ -2,33 +2,60 @@
 
 Team mode gives multiple developers a shared Cortex brain with per-user ownership and visibility controls.
 
+## Security First (Read Before Setup)
+
+- Keep Cortex on `127.0.0.1` by default.
+- For remote teammates, use an encrypted private network (Tailscale/WireGuard) or a TLS reverse proxy/tunnel.
+- Never publish a raw `0.0.0.0:7437` listener directly to the internet.
+
 ## 1) Server Setup
 
-Choose one:
+Choose one deployment pattern.
 
-### Option A — Direct binary
+### Option A — Localhost-only daemon (recommended base)
 
 ```bash
 chmod +x cortex
-CORTEX_BIND=0.0.0.0 ./cortex serve
+./cortex serve
 ```
 
-### Option B — Docker
+This is the safest default and works for local app/plugin workflows.
+
+### Option B — Team access over private mesh (Tailscale/WireGuard)
 
 ```bash
-docker run -d -p 7437:7437 \
+TAILSCALE_IP=$(tailscale ip -4)
+CORTEX_BIND=$TAILSCALE_IP ./cortex serve
+```
+
+Use the private mesh address as your team server URL (for example `http://100.x.y.z:7437`).
+
+### Option C — Local daemon behind TLS reverse proxy
+
+```bash
+CORTEX_BIND=127.0.0.1 ./cortex serve
+```
+
+Terminate TLS at your gateway (Caddy, Nginx, Cloudflare Tunnel) and publish only the TLS endpoint.
+
+### Option D — Docker (localhost publish)
+
+```bash
+docker run -d -p 127.0.0.1:7437:7437 \
   -v cortex_data:/root/.cortex \
   -e CORTEX_BIND=0.0.0.0 \
   adityavg13/cortex:latest
 ```
 
-### Option C — Build from source
+Container-only `0.0.0.0` is acceptable because the host port is published on `127.0.0.1`; do not use this pattern with a public host bind.
+
+### Option E — Build from source
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
 cd cortex/daemon-rs
 cargo build --release
-CORTEX_BIND=0.0.0.0 ./target/release/cortex serve
+./target/release/cortex serve
 ```
 
 ## 2) Initialize Team Mode
@@ -39,7 +66,7 @@ Run once on the server:
 ./cortex setup --team
 ```
 
-Create member credentials with:
+Create member credentials:
 
 ```bash
 ./cortex user add alice --role member --display-name "Alice"
@@ -47,7 +74,7 @@ Create member credentials with:
 
 Save the generated `ctx_...` API key for each member.
 
-## 3) Member Onboarding (3 steps)
+## 3) Member Onboarding
 
 1. Install plugin:
    ```bash
@@ -59,6 +86,7 @@ Save the generated `ctx_...` API key for each member.
 
 ## Troubleshooting
 
-- **Connection refused:** verify server is running and reachable on port `7437`, and firewall/VPN rules allow access.
-- **Authentication failed:** confirm the key is correct and includes the `ctx_` prefix.
-- **Cannot see teammate memories:** verify entries are stored with team visibility and that users are in the same team-mode instance.
+- **Connection refused:** verify daemon is running, host/port are reachable, and firewall/VPN rules allow access.
+- **Authentication failed:** confirm key includes the `ctx_` prefix and matches the assigned user.
+- **Cannot see teammate memories:** verify entries were stored with team visibility and both users target the same team-mode instance.
+- **Remote deployment safety:** if using non-loopback bind, ensure transport encryption is provided by your VPN/mesh or TLS gateway.
