@@ -3061,10 +3061,12 @@ mod tests {
     use std::io::{ErrorKind, Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    const SPAWN_PARENT_TEST_CHILD_ENV: &str = "CORTEX_SPAWN_PARENT_TEST_CHILD";
 
     fn openapi_spec_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3161,6 +3163,14 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn spawned_owner_parent_probe_child_process() {
+        if std::env::var(SPAWN_PARENT_TEST_CHILD_ENV).ok().as_deref() != Some("1") {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(300));
     }
 
     #[test]
@@ -3427,6 +3437,50 @@ mod tests {
     }
 
     #[test]
+    fn acquire_runtime_lock_rejects_concurrent_startup_burst() {
+        let _env_guard = env_guard();
+        let home_dir = temp_test_dir("runtime_lock_burst");
+        fs::create_dir_all(&home_dir).unwrap();
+        let global_lock_home = temp_test_dir("runtime_lock_burst_global");
+        fs::create_dir_all(&global_lock_home).unwrap();
+        let global_lock_home_str = global_lock_home.to_string_lossy().to_string();
+        let _global_lock_home = ScopedEnvVar::set("CORTEX_GLOBAL_LOCK_HOME", &global_lock_home_str);
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = Arc::new(auth::CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(7437),
+            None,
+        ));
+
+        let first_lock = acquire_runtime_lock(&paths).expect("first runtime lock must succeed");
+        let workers: Vec<_> = (0..12)
+            .map(|_| {
+                let worker_paths = Arc::clone(&paths);
+                std::thread::spawn(move || acquire_runtime_lock(&worker_paths).is_err())
+            })
+            .collect();
+        let failures = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join worker"))
+            .filter(|failed| *failed)
+            .count();
+        assert_eq!(
+            failures, 12,
+            "all concurrent startups should fail while runtime lock is held"
+        );
+
+        drop(first_lock);
+        let second_lock =
+            acquire_runtime_lock(&paths).expect("lock should be reacquired after release");
+        drop(second_lock);
+
+        let _ = fs::remove_dir_all(&home_dir);
+        let _ = fs::remove_dir_all(&global_lock_home);
+    }
+
+    #[test]
     fn run_stale_pid_cleanup_keeps_lock_file() {
         let home_dir = temp_test_dir("stale_pid_cleanup");
         fs::create_dir_all(&home_dir).unwrap();
@@ -3501,6 +3555,57 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("missing ownership token"));
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn spawned_owner_runtime_claim_rejects_dead_parent_process() {
+        let _env_guard = env_guard();
+        let home_dir = temp_test_dir("owner_runtime_dead_parent");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let current_exe = std::env::current_exe().expect("resolve current test binary path");
+        let mut child = Command::new(current_exe)
+            .arg("--exact")
+            .arg("tests::spawned_owner_parent_probe_child_process")
+            .arg("--nocapture")
+            .env(SPAWN_PARENT_TEST_CHILD_ENV, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn parent probe child");
+        let parent_pid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let parent_start_time = loop {
+            if let Some(start_time) = process_pid_start_time(parent_pid) {
+                break start_time;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("failed to resolve child start time");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        let status = child.wait().expect("wait on parent probe child");
+        assert!(
+            status.success(),
+            "parent probe child should exit successfully"
+        );
+
+        let err = validate_spawned_owner_runtime_claim(
+            &paths,
+            Some("plugin-claude"),
+            Some(parent_pid),
+            Some(parent_start_time),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("not running during ownership claim validation"));
 
         let _ = std::fs::remove_dir_all(&home_dir);
     }
