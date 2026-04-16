@@ -155,6 +155,9 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('extensions/cortex-chrome-extension/manifest.json', 'utf8'))"
           node --test extensions/cortex-chrome-extension/tests/core.test.mjs
 
+      - name: Enforce Chrome Web Store policy guardrails
+        run: python tools/validate_chrome_extension_policy.py
+
   python-sdk:
     name: Python SDK tests
     runs-on: ubuntu-latest
