@@ -117,6 +117,9 @@ jobs:
       - name: Enforce spawn path map
         run: python tools/audit_spawn_paths.py --strict
 
+      - name: Spawn audit regression tests
+        run: python -m pytest tools/tests/test_audit_spawn_paths.py -q
+
   python-sdk:
     name: Python SDK tests
     runs-on: ubuntu-latest

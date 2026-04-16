@@ -4208,6 +4208,67 @@ mod tests {
     }
 
     #[test]
+    fn ensure_daemon_attach_only_policy_holds_under_cross_surface_concurrency() {
+        let _env_guard = env_guard();
+        let _app_required = ScopedEnvVar::set(APP_REQUIRED_ENV, "1");
+        std::env::remove_var(APP_CLIENT_ENV);
+        std::env::remove_var(DAEMON_LOCAL_SPAWN_ENV);
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
+        let port = listener.local_addr().expect("listener addr").port();
+        drop(listener);
+
+        let home_dir = temp_test_dir("app_required_cross_surface_shared_home");
+        fs::create_dir_all(&home_dir).expect("create temp home");
+        let home_str = home_dir.to_string_lossy().to_string();
+        let pid_path = home_dir.join("cortex.pid");
+
+        let workers = vec![
+            ("cli-codex".to_string(), Some("codex".to_string()), false),
+            (
+                "plugin-claude".to_string(),
+                Some("claude-code".to_string()),
+                true,
+            ),
+            ("direct-cli".to_string(), None, false),
+        ];
+
+        let handles: Vec<_> = workers
+            .into_iter()
+            .map(|(label, agent, allow_service_ensure)| {
+                let worker_home = home_str.clone();
+                std::thread::spawn(move || {
+                    let paths = auth::CortexPaths::resolve_with_overrides(
+                        Some(&worker_home),
+                        None,
+                        Some(port),
+                        None,
+                    );
+                    let err =
+                        run_ensure_daemon(&paths, agent.as_deref(), false, allow_service_ensure)
+                            .expect_err(
+                                "cross-surface attach-only callers should not spawn daemon",
+                            );
+                    (label, err)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let (label, err) = handle.join().expect("join worker");
+            assert!(
+                err.contains("APP_INIT_REQUIRED"),
+                "cross-surface attach-only marker missing for {label}: {err}"
+            );
+        }
+        assert!(
+            !pid_path.exists(),
+            "attach-only cross-surface contention should not create daemon pid file"
+        );
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
     fn disallowed_startup_binary_path_blocks_runtime_wrappers_and_temp_paths() {
         let wrapper = PathBuf::from(
             "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",

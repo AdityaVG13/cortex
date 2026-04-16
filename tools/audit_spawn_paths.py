@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+def get_repo_root() -> Path:
+    override = os.environ.get("CORTEX_AUDIT_REPO_ROOT", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
 
 AUTHORIZED_RUNTIME_SPAWN_CALLERS = {
     "daemon-rs/src/daemon_lifecycle.rs",
@@ -34,8 +39,8 @@ class Finding:
     snippet: str
 
 
-def normalize(path: Path) -> str:
-    return path.relative_to(REPO_ROOT).as_posix()
+def normalize(path: Path, repo_root: Path) -> str:
+    return path.relative_to(repo_root).as_posix()
 
 
 def read_lines(path: Path) -> list[str]:
@@ -45,13 +50,16 @@ def read_lines(path: Path) -> list[str]:
 def scan(
     files: Iterable[Path],
     *,
+    repo_root: Path,
     kind: str,
     pattern: re.Pattern[str],
     skip_when: re.Pattern[str] | None = None,
 ) -> list[Finding]:
     out: list[Finding] = []
     for path in files:
-        rel = normalize(path)
+        if not path.exists():
+            continue
+        rel = normalize(path, repo_root)
         lines = read_lines(path)
         for index, line in enumerate(lines, start=1):
             if not pattern.search(line):
@@ -69,73 +77,84 @@ def scan(
     return out
 
 
-def gather_findings() -> dict[str, list[Finding]]:
-    rust_runtime = sorted((REPO_ROOT / "daemon-rs" / "src").rglob("*.rs"))
-    rust_tests = sorted((REPO_ROOT / "daemon-rs" / "tests").rglob("*.rs"))
-    plugin_scripts = sorted((REPO_ROOT / "plugins" / "cortex-plugin" / "scripts").glob("*.cjs"))
+def gather_findings(repo_root: Path) -> dict[str, list[Finding]]:
+    rust_runtime = sorted((repo_root / "daemon-rs" / "src").rglob("*.rs"))
+    rust_tests = sorted((repo_root / "daemon-rs" / "tests").rglob("*.rs"))
+    plugin_scripts = sorted((repo_root / "plugins" / "cortex-plugin" / "scripts").glob("*.cjs"))
     control_center_main = [
-        REPO_ROOT / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "main.rs"
+        repo_root / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "main.rs"
     ]
     control_center_sidecar_file = (
-        REPO_ROOT / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "sidecar.rs"
+        repo_root / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "sidecar.rs"
     )
 
     spawn_def = scan(
         rust_runtime,
+        repo_root=repo_root,
         kind="spawn_definition",
         pattern=re.compile(r"\bfn\s+spawn_daemon\s*\("),
     )
     spawn_call = scan(
         rust_runtime + rust_tests,
+        repo_root=repo_root,
         kind="spawn_callsite",
         pattern=re.compile(r"\bspawn_daemon\s*\("),
         skip_when=re.compile(r"\bfn\s+spawn_daemon\s*\("),
     )
     respawn_call = scan(
         rust_runtime + rust_tests,
+        repo_root=repo_root,
         kind="respawn_callsite",
         pattern=re.compile(r"\btry_respawn\s*\("),
         skip_when=re.compile(r"\bfn\s+try_respawn\s*\("),
     )
     ensure_call = scan(
         rust_runtime,
+        repo_root=repo_root,
         kind="ensure_daemon_callsite",
         pattern=re.compile(r"\bensure_daemon\s*\("),
         skip_when=re.compile(r"\bfn\s+ensure_daemon\s*\("),
     )
     allow_spawn = scan(
         rust_runtime,
+        repo_root=repo_root,
         kind="allow_spawn_flag",
         pattern=re.compile(r"\ballow_spawn\b"),
     )
     plugin_spawn = scan(
         plugin_scripts,
+        repo_root=repo_root,
         kind="plugin_spawn_primitive",
-        pattern=re.compile(r"\bspawn\s*\("),
+        pattern=re.compile(r"\bspawn(?:Impl)?\s*\("),
     )
     owner_token_env = scan(
         rust_runtime + plugin_scripts,
+        repo_root=repo_root,
         kind="owner_token_env_reference",
         pattern=re.compile(r"CORTEX_DAEMON_OWNER_TOKEN|DAEMON_OWNER_TOKEN_ENV"),
     )
     owner_token_validation = scan(
         rust_runtime,
+        repo_root=repo_root,
         kind="owner_token_validation_callsite",
         pattern=re.compile(r"\bvalidate_spawned_owner_claim\s*\("),
         skip_when=re.compile(r"\bfn\s+validate_spawned_owner_claim\s*\("),
     )
     forbidden_control_center_sidecar_spawn = scan(
         control_center_main,
+        repo_root=repo_root,
         kind="forbidden_control_center_sidecar_spawn",
         pattern=re.compile(r"\bstate\.start\s*\("),
     )
     forbidden_control_center_sidecar_env = scan(
         control_center_main,
+        repo_root=repo_root,
         kind="forbidden_control_center_sidecar_env",
         pattern=re.compile(r"CORTEX_ALLOW_SIDECAR_FALLBACK"),
     )
     forbidden_plugin_legacy_app_url = scan(
         plugin_scripts,
+        repo_root=repo_root,
         kind="forbidden_plugin_legacy_app_url",
         pattern=re.compile(r"CORTEX_DEV_APP_URL"),
     )
@@ -144,7 +163,7 @@ def gather_findings() -> dict[str, list[Finding]]:
         forbidden_control_center_sidecar_module.append(
             Finding(
                 kind="forbidden_control_center_sidecar_module",
-                path=normalize(control_center_sidecar_file),
+                path=normalize(control_center_sidecar_file, repo_root),
                 line=1,
                 snippet="legacy sidecar module file exists",
             )
@@ -179,10 +198,10 @@ def unauthorized_paths(
     return offenders
 
 
-def print_markdown_report(findings: dict[str, list[Finding]]) -> None:
+def print_markdown_report(findings: dict[str, list[Finding]], repo_root: Path) -> None:
     print("# Spawn Path Audit")
     print()
-    print(f"- Repo root: `{REPO_ROOT.as_posix()}`")
+    print(f"- Repo root: `{repo_root.as_posix()}`")
     print(
         "- Runtime spawn policy: service-managed daemon lifecycle only (no MCP/plugin/runtime auto-spawn paths)"
     )
@@ -229,12 +248,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    findings = gather_findings()
+    repo_root = get_repo_root()
+    findings = gather_findings(repo_root)
     if args.json:
         serializable = {key: [asdict(value) for value in values] for key, values in findings.items()}
         print(json.dumps(serializable, indent=2))
     else:
-        print_markdown_report(findings)
+        print_markdown_report(findings, repo_root)
 
     if not args.strict:
         return 0
