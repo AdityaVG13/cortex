@@ -117,6 +117,48 @@ jobs:
       - name: Enforce spawn path map
         run: python tools/audit_spawn_paths.py --strict
 
+  python-sdk:
+    name: Python SDK tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Python
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d
+        with:
+          python-version: "3.11"
+
+      - name: Install SDK dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+        working-directory: sdks/python
+
+      - name: Run Python SDK tests
+        run: pytest -q
+        working-directory: sdks/python
+
+  typescript-sdk:
+    name: TypeScript SDK tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install SDK dependencies
+        run: npm install --no-audit --no-fund
+        working-directory: sdks/typescript
+
+      - name: Run TypeScript SDK tests
+        run: npm test
+        working-directory: sdks/typescript
+
   plugin-validation:
     name: Plugin validation (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
