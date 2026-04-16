@@ -517,7 +517,7 @@ mod tests {
             "status": "ready",
             "ready": true,
             "runtime": { "port": 7437 },
-            "stats": { "home": "C:/Users/aditya/.cortex" }
+            "stats": { "home": "C:/Users/example/.cortex" }
         })
         .to_string();
         assert_eq!(
@@ -529,7 +529,7 @@ mod tests {
             "status": "starting",
             "ready": false,
             "runtime": { "port": 7437 },
-            "stats": { "home": "C:/Users/aditya/.cortex" }
+            "stats": { "home": "C:/Users/example/.cortex" }
         })
         .to_string();
         assert_eq!(
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(
             readiness_state_from_payload(
                 200,
-                r#"{"status":"ready","ready":true,"runtime":{"port":9000},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                r#"{"status":"ready","ready":true,"runtime":{"port":9000},"stats":{"home":"C:/Users/example/.cortex"}}"#,
                 Some(7437),
                 None
             ),
@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(
             readiness_state_from_payload(
                 500,
-                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/example/.cortex"}}"#,
                 Some(7437),
                 None
             ),

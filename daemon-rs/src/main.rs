@@ -3807,6 +3807,49 @@ mod tests {
     }
 
     #[test]
+    fn ensure_daemon_attach_only_policy_holds_under_concurrent_app_clients() {
+        let _env_guard = env_guard();
+        let _app_required = ScopedEnvVar::set(APP_REQUIRED_ENV, "1");
+        std::env::remove_var(APP_CLIENT_ENV);
+        std::env::remove_var(DAEMON_LOCAL_SPAWN_ENV);
+
+        let agents = ["codex", "claude", "gpt5"];
+        let workers: Vec<_> = agents
+            .iter()
+            .map(|agent| {
+                let agent_name = (*agent).to_string();
+                std::thread::spawn(move || {
+                    let home_dir = temp_test_dir(&format!("app_required_concurrent_{agent_name}"));
+                    fs::create_dir_all(&home_dir).expect("create temp home");
+                    let home_str = home_dir.to_string_lossy().to_string();
+                    let paths = auth::CortexPaths::resolve_with_overrides(
+                        Some(&home_str),
+                        None,
+                        Some(7437),
+                        None,
+                    );
+                    let err = run_ensure_daemon(&paths, Some(&agent_name), false, false)
+                        .expect_err("attach-only clients should not spawn daemon");
+                    let _ = fs::remove_dir_all(&home_dir);
+                    (agent_name, err)
+                })
+            })
+            .collect();
+
+        for worker in workers {
+            let (agent_name, err) = worker.join().expect("join worker");
+            assert!(
+                err.contains("APP_INIT_REQUIRED"),
+                "missing machine-readable attach-only marker for {agent_name}: {err}"
+            );
+            assert!(
+                err.contains(&agent_name),
+                "attach-only error should identify requesting agent {agent_name}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn disallowed_startup_binary_path_blocks_runtime_wrappers_and_temp_paths() {
         let wrapper = PathBuf::from(
             "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",
@@ -3824,7 +3867,7 @@ mod tests {
         let temp_candidate = std::env::temp_dir().join("cortex").join(binary_name);
         assert!(is_disallowed_startup_binary_path(&temp_candidate));
 
-        let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
+        let safe = PathBuf::from("C:/Users/example/.cortex/bin/cortex.exe");
         assert!(!is_disallowed_startup_binary_path(&safe));
     }
 

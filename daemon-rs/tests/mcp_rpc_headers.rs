@@ -188,6 +188,54 @@ fn mcp_rpc_x_auth_header_alias_is_rejected() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+#[test]
+fn health_runtime_paths_remain_scoped_to_requested_home() {
+    let _guard = daemon_spawn_test_guard();
+    let home_dir = unique_temp_dir("health_runtime_paths");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let port = reserve_port();
+    let home = home_dir.to_string_lossy().to_string();
+    let mut daemon = spawn_daemon(&home, port);
+    wait_for_health(port, &mut daemon);
+
+    let response = http_request(
+        port,
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    )
+    .expect("health request");
+    assert_eq!(http_status(&response), 200);
+    let body = split_http_body(&response).expect("http body");
+    let payload: Value = serde_json::from_str(body.trim()).expect("json payload");
+
+    let runtime = payload
+        .get("runtime")
+        .and_then(|value| value.as_object())
+        .expect("runtime object");
+    let stats = payload
+        .get("stats")
+        .and_then(|value| value.as_object())
+        .expect("stats object");
+
+    let expected_home = normalize_path_for_compare(&home);
+    let reported_home = stats
+        .get("home")
+        .and_then(|value| value.as_str())
+        .expect("stats.home");
+    assert_path_scoped_to_home("stats.home", reported_home, &expected_home);
+
+    for key in ["token_path", "db_path", "pid_path"] {
+        let reported = runtime
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("runtime.{key}"));
+        assert_path_scoped_to_home(key, reported, &expected_home);
+    }
+
+    shutdown_daemon(port, &home_dir);
+    wait_for_exit(&mut daemon, Duration::from_secs(10));
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 fn spawn_daemon(home: &str, port: u16) -> Child {
     Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", home, "--port", &port.to_string()])
@@ -331,6 +379,19 @@ fn reserve_port() -> u16 {
         .local_addr()
         .expect("local addr")
         .port()
+}
+
+fn normalize_path_for_compare(raw: &str) -> String {
+    raw.replace('\\', "/").trim_end_matches('/').to_string()
+}
+
+fn assert_path_scoped_to_home(label: &str, reported: &str, expected_home: &str) {
+    let normalized = normalize_path_for_compare(reported);
+    let home_with_sep = format!("{expected_home}/");
+    assert!(
+        normalized == expected_home || normalized.starts_with(&home_with_sep),
+        "{label} escaped requested home (reported={reported}, expected_home={expected_home})"
+    );
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {
