@@ -1023,6 +1023,12 @@ async fn execute_recall_policy_explain_inner(
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
     let dflag = Some(&state.degraded_mode);
+    let query_vector = query_vector_override
+        .map(|vector| vector.to_vec())
+        .or_else(|| engine.and_then(|runtime_engine| runtime_engine.embed(query_text)));
+    if query_vector_override.is_none() && engine.is_some() {
+        update_semantic_search_health(dflag, query_vector.is_some(), true);
+    }
 
     let (
         budgeted,
@@ -1035,26 +1041,15 @@ async fn execute_recall_policy_explain_inner(
         max_items,
         semantic_baseline,
     ) = if budget == 0 {
-        let raw_pool = if let Some(query_vector) = query_vector_override {
-            run_recall_with_query_vector(
-                &mut conn,
-                query_text,
-                pool_k,
-                Some(query_vector),
-                ctx,
-                source_prefix,
-            )?
-        } else {
-            run_recall_with_engine(
-                &mut conn,
-                query_text,
-                pool_k,
-                engine,
-                ctx,
-                source_prefix,
-                dflag,
-            )?
-        };
+        let trace = run_recall_with_query_vector_trace(
+            &mut conn,
+            query_text,
+            pool_k,
+            query_vector.as_deref(),
+            ctx,
+            source_prefix,
+        )?;
+        let raw_pool = trace.ranked;
         let budgeted = raw_pool
             .iter()
             .take(requested_k)
@@ -1075,31 +1070,18 @@ async fn execute_recall_policy_explain_inner(
             0.0_f64,
             0.0_f64,
             requested_k,
-            None,
+            trace.semantic_baseline,
         )
     } else {
-        let trace = if let Some(query_vector) = query_vector_override {
-            run_budget_recall_trace_with_query_vector(
-                &mut conn,
-                query_text,
-                budget,
-                requested_k,
-                Some(query_vector),
-                ctx,
-                source_prefix,
-            )?
-        } else {
-            run_budget_recall_trace_with_engine(
-                &mut conn,
-                query_text,
-                budget,
-                requested_k,
-                engine,
-                ctx,
-                source_prefix,
-                dflag,
-            )?
-        };
+        let trace = run_budget_recall_trace_with_query_vector(
+            &mut conn,
+            query_text,
+            budget,
+            requested_k,
+            query_vector.as_deref(),
+            ctx,
+            source_prefix,
+        )?;
         (
             trace.budgeted,
             trace.candidate_pool,
@@ -1112,12 +1094,9 @@ async fn execute_recall_policy_explain_inner(
             trace.semantic_baseline,
         )
     };
-    let shadow_query_vector = query_vector_override
-        .map(|vector| vector.to_vec())
-        .or_else(|| engine.and_then(|runtime_engine| runtime_engine.embed(query_text)));
     let shadow_semantic = build_shadow_semantic_explain(
         &conn,
-        shadow_query_vector.as_deref(),
+        query_vector.as_deref(),
         query_text,
         ctx,
         source_prefix,
