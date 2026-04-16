@@ -753,6 +753,14 @@ mod tests {
             crate::db::migration_definitions().len() + 1,
             "boot should add the FTS seed marker before tracked migrations run"
         );
+        let tokenizer_migration_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = '012'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokenizer_migration_count, 1);
 
         let fts_seeded_count: i64 = conn
             .query_row(
@@ -762,6 +770,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fts_seeded_count, 1);
+
+        let memories_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            memories_fts_sql
+                .to_ascii_lowercase()
+                .contains("tokenize='porter unicode61'"),
+            "expected porter/unicode61 tokenizer, got: {memories_fts_sql}"
+        );
+        let decisions_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'decisions_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            decisions_fts_sql
+                .to_ascii_lowercase()
+                .contains("tokenize='porter unicode61'"),
+            "expected porter/unicode61 tokenizer, got: {decisions_fts_sql}"
+        );
 
         let memory_fts_rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get(0))

@@ -123,7 +123,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 11] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 12] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -135,6 +135,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 11] = [
     ("009", "provenance_fields"),
     ("010", "decision_conflict_records"),
     ("011", "agent_feedback_telemetry"),
+    ("012", "fts_tokenizer_porter_unicode61"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -465,6 +466,62 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             )?;
             Ok(())
         }
+        "012" => {
+            conn.execute_batch(
+                r#"
+                DROP TRIGGER IF EXISTS memories_fts_ai;
+                DROP TRIGGER IF EXISTS memories_fts_ad;
+                DROP TRIGGER IF EXISTS memories_fts_au;
+                DROP TRIGGER IF EXISTS decisions_fts_ai;
+                DROP TRIGGER IF EXISTS decisions_fts_ad;
+                DROP TRIGGER IF EXISTS decisions_fts_au;
+                DROP TABLE IF EXISTS memories_fts;
+                DROP TABLE IF EXISTS decisions_fts;
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                  text, source, tags,
+                  content=memories,
+                  content_rowid=id,
+                  tokenize='porter unicode61'
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
+                  decision, context,
+                  content=decisions,
+                  content_rowid=id,
+                  tokenize='porter unicode61'
+                );
+
+                CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+                  INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+                  INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) VALUES('delete', old.id, old.text, old.source, old.tags);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+                  INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) VALUES('delete', old.id, old.text, old.source, old.tags);
+                  INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS decisions_fts_ai AFTER INSERT ON decisions BEGIN
+                  INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS decisions_fts_ad AFTER DELETE ON decisions BEGIN
+                  INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS decisions_fts_au AFTER UPDATE ON decisions BEGIN
+                  INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
+                  INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
+                END;
+                "#,
+            )?;
+            rebuild_fts(conn)?;
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -771,19 +828,19 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
-        -- FTS5 full-text search indexes (trigram tokenizer for code/identifier matching)
+        -- FTS5 full-text search indexes (porter+unicode61 for stemming + unicode tokenization)
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
           text, source, tags,
           content=memories,
           content_rowid=id,
-          tokenize='trigram'
+          tokenize='porter unicode61'
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
           decision, context,
           content=decisions,
           content_rowid=id,
-          tokenize='trigram'
+          tokenize='porter unicode61'
         );
 
         -- Relevance feedback: tracks which recalled results were actually useful
@@ -1775,6 +1832,34 @@ mod tests {
         configure(&conn).unwrap();
         initialize_schema(&conn).unwrap();
 
+        let memories_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            memories_fts_sql
+                .to_ascii_lowercase()
+                .contains("tokenize='porter unicode61'"),
+            "expected porter/unicode61 tokenizer, got: {memories_fts_sql}"
+        );
+
+        let decisions_fts_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'decisions_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            decisions_fts_sql
+                .to_ascii_lowercase()
+                .contains("tokenize='porter unicode61'"),
+            "expected porter/unicode61 tokenizer, got: {decisions_fts_sql}"
+        );
+
         conn.execute(
             "INSERT INTO memories (text, source, type) VALUES (?1, ?2, ?3)",
             params![
@@ -2041,6 +2126,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(recorded as usize, migration_definitions().len());
+        let tokenizer_migration_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = '012'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokenizer_migration_count, 1);
         assert_eq!(
             current_schema_user_version(&conn).unwrap(),
             latest_schema_user_version()
