@@ -128,8 +128,10 @@ Database includes:
 
 ## Team Mode
 
-- Team deployments may bind to `0.0.0.0` (operator configured).
-- TLS is enforced when team mode is detected; invalid TLS config causes startup refusal (`daemon-rs/src/server.rs:358-363`).
+- Non-loopback team binds are allowed only with an explicit secure transport boundary.
+- Public/routed `0.0.0.0` or interface binds require TLS.
+- Private mesh deployments (Tailscale/WireGuard) may use transport-level encryption with explicit operator acknowledgment.
+- Invalid team transport security config causes startup refusal (`daemon-rs/src/server.rs:358-363`).
 
 ## MCP Transport
 
@@ -163,6 +165,7 @@ Cortex does not execute arbitrary outbound HTTP requests from user-provided memo
 ## Team (shared daemon)
 
 - Always enable TLS (self-signed minimum; managed cert preferred).
+- Only use HTTP without Cortex TLS on private encrypted mesh interfaces (for example Tailscale/WireGuard) with explicit exemption policy.
 - Rotate API keys at least quarterly.
 - Restrict access to VPN/private network segments.
 
