@@ -3553,6 +3553,18 @@ mod tests {
     }
 
     #[test]
+    fn local_spawn_policy_respects_allow_service_ensure_short_circuit() {
+        let _env_guard = env_guard();
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "codex");
+        let _local_spawn = ScopedEnvVar::set(DAEMON_LOCAL_SPAWN_ENV, "1");
+        std::env::remove_var(APP_REQUIRED_ENV);
+        assert!(
+            !local_spawn_allowed_for_request(false),
+            "service-ensure gate must disable local spawn regardless of env opt-ins"
+        );
+    }
+
+    #[test]
     fn ensure_daemon_app_required_policy_returns_machine_readable_error() {
         let _env_guard = env_guard();
         let home_dir = temp_test_dir("app_required_policy");
