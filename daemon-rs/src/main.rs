@@ -3900,6 +3900,63 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn spawn_parent_orphan_watch_task_detects_real_parent_exit() {
+        let _env_guard = env_guard();
+        let current_exe = std::env::current_exe().expect("resolve current test binary path");
+        let mut parent_probe_child = Command::new(current_exe)
+            .arg("--exact")
+            .arg("tests::spawned_owner_parent_probe_child_process")
+            .arg("--nocapture")
+            .env(SPAWN_PARENT_TEST_CHILD_ENV, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn parent probe child");
+        let parent_pid = parent_probe_child.id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let parent_start_time = loop {
+            if let Some(start_time) = process_pid_start_time(parent_pid) {
+                break start_time;
+            }
+            if Instant::now() >= deadline {
+                let _ = parent_probe_child.kill();
+                let _ = parent_probe_child.wait();
+                panic!("failed to resolve child process start time");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shared_shutdown_tx = Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx)));
+        let watcher = spawn_parent_orphan_watch_task(
+            Arc::clone(&shared_shutdown_tx),
+            parent_pid,
+            parent_start_time,
+            Duration::from_millis(20),
+            process_pid_identity_matches,
+        );
+
+        let status = parent_probe_child
+            .wait()
+            .expect("wait on parent probe child");
+        assert!(
+            status.success(),
+            "parent probe child should exit successfully"
+        );
+        tokio::time::timeout(Duration::from_secs(2), shutdown_rx)
+            .await
+            .expect("watcher should observe real parent process exit")
+            .expect("shutdown signal should be delivered");
+        watcher
+            .await
+            .expect("spawn-parent watcher task should exit cleanly");
+        assert!(
+            shared_shutdown_tx.lock().await.is_none(),
+            "shutdown sender should be consumed after real parent exit"
+        );
+    }
+
     #[test]
     fn spawned_owner_runtime_claim_allows_unspawned_control_center_mode() {
         let home_dir = temp_test_dir("owner_runtime_unspawned");
