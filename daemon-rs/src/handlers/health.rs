@@ -53,12 +53,90 @@ fn collect_storage_metrics(home: &std::path::Path) -> (u64, usize, u64) {
     (storage_bytes, backup_count, log_bytes)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct EmbeddingInventoryMetrics {
+    active_model_embeddings: i64,
+    other_model_embeddings: i64,
+    unknown_model_embeddings: i64,
+    backlog_memories: i64,
+    backlog_decisions: i64,
+}
+
+fn collect_embedding_inventory(
+    conn: &rusqlite::Connection,
+    active_model_key: &str,
+) -> EmbeddingInventoryMetrics {
+    let total_embeddings: i64 = conn
+        .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+        .unwrap_or(0);
+    let active_model_embeddings: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE LOWER(COALESCE(model, '')) = ?1",
+            params![active_model_key],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let unknown_model_embeddings: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE model IS NULL OR TRIM(model) = ''",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let other_model_embeddings =
+        (total_embeddings - active_model_embeddings - unknown_model_embeddings).max(0);
+    let backlog_memories: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories m \
+             WHERE m.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'memory' \
+                     AND e.target_id = m.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+            params![active_model_key],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let backlog_decisions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions d \
+             WHERE d.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'decision' \
+                     AND e.target_id = d.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+            params![active_model_key],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    EmbeddingInventoryMetrics {
+        active_model_embeddings,
+        other_model_embeddings,
+        unknown_model_embeddings,
+        backlog_memories,
+        backlog_decisions,
+    }
+}
+
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
 pub async fn build_health_payload(state: &RuntimeState) -> Value {
     let embedding_model = crate::embeddings::selected_model_selection();
     // Read DB stats in a short lock, then drop it before the network call.
-    let (memories, decisions, embeddings_count, events, db_freelist_pages, sqlite_vec_status) = {
+    let (
+        memories,
+        decisions,
+        embeddings_count,
+        events,
+        db_freelist_pages,
+        sqlite_vec_status,
+        embedding_inventory,
+    ) = {
         let conn = state.db_read.lock().await;
         let m: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
@@ -76,7 +154,16 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
             .query_row("PRAGMA freelist_count", [], |r| r.get(0))
             .unwrap_or(0);
         let sqlite_vec_status = crate::db::sqlite_vec_status(&conn);
-        (m, d, e, ev, freelist, sqlite_vec_status)
+        let embedding_inventory = collect_embedding_inventory(&conn, embedding_model.key);
+        (
+            m,
+            d,
+            e,
+            ev,
+            freelist,
+            sqlite_vec_status,
+            embedding_inventory,
+        )
     }; // DB lock released here.
 
     let db_size_bytes = std::fs::metadata(&state.db_path)
@@ -86,6 +173,13 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
     let db_hard_limit_bytes = crate::compaction::STORAGE_HARD_LIMIT_BYTES.max(1) as u64;
     let db_pressure = crate::compaction::classify_storage_pressure(db_size_bytes as i64);
     let db_soft_utilization = ((db_size_bytes as f64) / (db_soft_limit_bytes as f64)).min(10.0);
+    let active_model_ratio = if embeddings_count > 0 {
+        (embedding_inventory.active_model_embeddings as f64) / (embeddings_count as f64)
+    } else {
+        0.0
+    };
+    let reembed_backlog_total =
+        embedding_inventory.backlog_memories + embedding_inventory.backlog_decisions;
 
     let degraded = state
         .degraded_mode
@@ -141,6 +235,18 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
                 "dimension": embedding_model.dimension,
                 "model_file": embedding_model.model_file,
                 "tokenizer_file": embedding_model.tokenizer_file
+            },
+            "embedding_inventory": {
+                "active_model_key": embedding_model.key,
+                "active_model_embeddings": embedding_inventory.active_model_embeddings,
+                "other_model_embeddings": embedding_inventory.other_model_embeddings,
+                "unknown_model_embeddings": embedding_inventory.unknown_model_embeddings,
+                "active_model_ratio": active_model_ratio,
+                "reembed_backlog": {
+                    "memories": embedding_inventory.backlog_memories,
+                    "decisions": embedding_inventory.backlog_decisions,
+                    "total": reembed_backlog_total
+                }
             },
             "sqlite_vec": {
                 "available": sqlite_vec_status.available,
@@ -1499,6 +1605,72 @@ mod tests {
         assert_eq!(storage_bytes, 15);
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn collect_embedding_inventory_reports_model_mix_and_backlog() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        crate::db::run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at) \
+             VALUES ('m-active-current', 'memory::current', 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let memory_current_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at) \
+             VALUES ('m-active-other', 'memory::other', 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let memory_other_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at) \
+             VALUES ('d-unknown-model', 'ctx::unknown', 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let decision_unknown_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at) \
+             VALUES ('d-missing-embedding', 'ctx::missing', 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let decision_missing_id = conn.last_insert_rowid();
+
+        let blob = crate::embeddings::vector_to_blob(&[0.2, 0.4, 0.6]);
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('memory', ?1, ?2, 'all-MiniLM-L6-v2')",
+            params![memory_current_id, blob.clone()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('memory', ?1, ?2, 'other-model')",
+            params![memory_other_id, blob.clone()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', ?1, ?2, NULL)",
+            params![decision_unknown_id, blob],
+        )
+        .unwrap();
+
+        let metrics = collect_embedding_inventory(&conn, "all-minilm-l6-v2");
+        assert_eq!(metrics.active_model_embeddings, 1);
+        assert_eq!(metrics.other_model_embeddings, 1);
+        assert_eq!(metrics.unknown_model_embeddings, 1);
+        assert_eq!(metrics.backlog_memories, 1);
+        assert_eq!(metrics.backlog_decisions, 2);
+        assert!(
+            decision_missing_id > 0,
+            "decision without embedding should contribute to backlog"
+        );
     }
 
     #[test]
