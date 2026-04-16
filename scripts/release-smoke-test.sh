@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "=== Cortex v0.4.0 Release Smoke Test ==="
+echo "=== Cortex Release Smoke Test ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -93,10 +93,25 @@ kill_port_process() {
 # 1. Binary exists and runs
 "${CORTEX_BIN}" --help || { echo "FAIL: cortex binary not found"; exit 1; }
 
-# 2. Paths command works (REQUIRES 1B)
-run_cortex paths --json | "${PYTHON_CMD[@]}" -c "import sys,json; d=json.load(sys.stdin); assert 'home' in d and 'db' in d and 'port' in d" \
-  || { echo "FAIL: cortex paths --json invalid"; exit 1; }
-echo "PASS: paths --json"
+# 2. Paths command works and is scoped to smoke home (no host path leaks)
+run_cortex paths --json \
+  | "${PYTHON_CMD[@]}" - "${SMOKE_CORTEX_HOME}" <<'PY' \
+  || { echo "FAIL: cortex paths --json invalid or leaked host paths"; exit 1; }
+import json
+import pathlib
+import sys
+
+expected_home = pathlib.Path(sys.argv[1]).resolve()
+payload = json.load(sys.stdin)
+for required in ("home", "db", "token", "pid", "port"):
+    assert required in payload, f"missing field: {required}"
+actual_home = pathlib.Path(payload["home"]).resolve()
+assert actual_home == expected_home, f"home mismatch: {actual_home} != {expected_home}"
+assert str(payload["db"]).startswith(str(expected_home)), "db path leaked outside smoke home"
+assert str(payload["token"]).startswith(str(expected_home)), "token path leaked outside smoke home"
+assert str(payload["pid"]).startswith(str(expected_home)), "pid path leaked outside smoke home"
+PY
+echo "PASS: paths --json scoped to smoke home"
 
 # 3. Serve starts the daemon
 run_cortex serve --home "${SMOKE_CORTEX_HOME}" --port "${SMOKE_PORT}" &
@@ -107,11 +122,29 @@ wait_for_health "http://127.0.0.1:${SMOKE_PORT}/health" \
   || { echo "FAIL: health check"; exit 1; }
 echo "PASS: health check"
 
-# 5. ensure-daemon attaches to the already-running daemon
+# 5. Duplicate daemon start is rejected (one-daemon invariant)
+set +e
+DUPLICATE_START_OUTPUT="$(run_cortex serve 2>&1)"
+DUPLICATE_START_STATUS=$?
+set -e
+if [ "${DUPLICATE_START_STATUS}" -eq 0 ]; then
+  echo "FAIL: duplicate serve unexpectedly succeeded"
+  echo "${DUPLICATE_START_OUTPUT}"
+  exit 1
+fi
+if echo "${DUPLICATE_START_OUTPUT}" | grep -Eiq "already|active daemon process|another cortex instance|startup denied"; then
+  echo "PASS: duplicate serve rejected"
+else
+  echo "FAIL: duplicate serve rejection message missing expected markers"
+  echo "${DUPLICATE_START_OUTPUT}"
+  exit 1
+fi
+
+# 6. ensure-daemon attaches to the already-running daemon
 run_cortex plugin ensure-daemon --agent smoke-test || { echo "FAIL: ensure-daemon attach"; exit 1; }
 echo "PASS: ensure-daemon attach"
 
-# 6. Store + recall round-trip via MCP (REQUIRES 1B + 1C)
+# 7. Store + recall round-trip via MCP (REQUIRES 1B + 1C)
 STORE_RESPONSE="$(
   echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cortex_store","arguments":{"decision":"smoke test memory","context":"release verification"}},"id":1}' \
     | run_cortex plugin mcp --url "http://127.0.0.1:${SMOKE_PORT}"
@@ -121,7 +154,7 @@ echo "${STORE_RESPONSE}" \
   || { echo "FAIL: store via MCP"; echo "Store response: ${STORE_RESPONSE}"; exit 1; }
 echo "PASS: store"
 
-# 7. Recall what we just stored
+# 8. Recall what we just stored
 RECALL_RESPONSE="$(
   echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cortex_recall","arguments":{"query":"smoke test","budget":100}},"id":2}' \
     | run_cortex plugin mcp --url "http://127.0.0.1:${SMOKE_PORT}"
@@ -133,7 +166,7 @@ echo "PASS: recall"
 kill "${DAEMON_PID}" 2>/dev/null || true
 kill_port_process "${SMOKE_PORT}"
 
-# 8. Custom port works (REQUIRES 1D + 1E)
+# 9. Custom port works (REQUIRES 1D + 1E)
 CUSTOM_HOME="${SMOKE_ROOT}/custom-home"
 mkdir -p "${CUSTOM_HOME}/.cortex"
 "${CORTEX_BIN}" serve --home "${CUSTOM_HOME}/.cortex" --port 9999 &
@@ -142,7 +175,7 @@ wait_for_health "http://127.0.0.1:9999/health" && echo "PASS: custom port" || ec
 kill $DAEMON_PID 2>/dev/null
 kill_port_process 9999
 
-# 9. Legacy migration works (~/cortex -> ~/.cortex)
+# 10. Legacy migration works (~/cortex -> ~/.cortex)
 MIGRATION_ROOT="$(mktemp -d)"
 MIGRATION_HOME="${MIGRATION_ROOT}/home"
 mkdir -p "${MIGRATION_HOME}/cortex"
@@ -168,7 +201,7 @@ kill "${MIGRATION_PID}" 2>/dev/null || true
 kill_port_process "${MIGRATION_PORT}"
 rm -rf "${MIGRATION_ROOT}" || true
 
-# 10. Concurrent ensure-daemon attach is safe once daemon is already healthy
+# 11. Concurrent ensure-daemon attach is safe once daemon is already healthy
 CONCURRENCY_ROOT="$(mktemp -d)"
 CONCURRENCY_HOME="${CONCURRENCY_ROOT}/home"
 mkdir -p "${CONCURRENCY_HOME}"

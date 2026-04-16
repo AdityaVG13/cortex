@@ -14,6 +14,7 @@ cd "${REPO_ROOT}"
 PASS=0
 FAIL=0
 CARGO_CMD=""
+PYTHON_CMD=""
 
 report() {
   if [ "$1" = "ok" ]; then
@@ -45,6 +46,23 @@ resolve_cargo_cmd() {
     return 0
   fi
   CARGO_CMD=""
+  return 1
+}
+
+resolve_python_cmd() {
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+    return 0
+  fi
+  if command -v py >/dev/null 2>&1; then
+    PYTHON_CMD="py -3"
+    return 0
+  fi
+  PYTHON_CMD=""
   return 1
 }
 
@@ -104,7 +122,7 @@ check_pattern_absent() {
 echo "=== Cortex clean-install smoke test ==="
 echo ""
 
-echo "[0/5] Preflight command gate"
+echo "[0/6] Preflight command gate"
 missing_tools=0
 for cmd in git; do
   if ! require_cmd "${cmd}"; then
@@ -115,6 +133,12 @@ if resolve_cargo_cmd; then
   report ok "Found required command: ${CARGO_CMD}"
 else
   report fail "Missing required command: cargo (or cargo.exe)"
+  missing_tools=1
+fi
+if resolve_python_cmd; then
+  report ok "Found required command: ${PYTHON_CMD}"
+else
+  report fail "Missing required command: python3/python/py"
   missing_tools=1
 fi
 if [ "${missing_tools}" -ne 0 ]; then
@@ -138,6 +162,18 @@ check_pattern_absent \
   "daemon-rs/src/" \
   "No 'aditya' in daemon-rs/src" \
   "daemon-rs/src contains 'aditya'"
+
+check_pattern_absent \
+  "C:\\\\Users\\\\aditya|/Users/aditya" \
+  "plugins/cortex-plugin/scripts/" \
+  "No hardcoded developer home paths in plugin startup scripts" \
+  "Plugin startup scripts contain hardcoded developer home path(s)"
+
+check_pattern_absent \
+  "CORTEX_SINGLE_DAEMON_TEST_BYPASS.?=.?1" \
+  "plugins/cortex-plugin/scripts/" \
+  "No singleton test-bypass env forcing in plugin startup scripts" \
+  "Plugin startup scripts contain forced singleton test-bypass env"
 
 # 2. Personal tracked files
 echo ""
@@ -209,7 +245,7 @@ fi
 
 # 5. README documents custom sources
 echo ""
-echo "[5/5] README documentation"
+echo "[5/6] README documentation"
 
 if grep -Eq 'sources\.toml|CORTEX_EXTRA_SOURCES' README.md; then
   report ok "Custom sources documented in README.md"
@@ -219,6 +255,20 @@ else
   else
     report ok "Public README check deferred (set CORTEX_ENFORCE_PUBLIC_README=1 to enforce)"
   fi
+fi
+
+# 6. Strict daemon spawn-path audit
+echo ""
+echo "[6/6] Spawn-path strict audit"
+set +e
+AUDIT_OUTPUT="$(${PYTHON_CMD} tools/audit_spawn_paths.py --strict 2>&1)"
+AUDIT_STATUS=$?
+set -e
+if [ "${AUDIT_STATUS}" -eq 0 ]; then
+  report ok "tools/audit_spawn_paths.py --strict passes"
+else
+  report fail "tools/audit_spawn_paths.py --strict failed"
+  show_output_limited "${AUDIT_OUTPUT}"
 fi
 
 # Summary
