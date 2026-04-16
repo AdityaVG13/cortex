@@ -477,6 +477,7 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
 
 async fn step_init() -> StepResult {
     let cortex_dir = auth::cortex_dir();
+    let embedding_model = embeddings::selected_model_selection();
     let mut notes = Vec::new();
 
     // Create directory
@@ -495,15 +496,24 @@ async fn step_init() -> StepResult {
 
     // Check ONNX model
     let models_dir = cortex_dir.join("models");
-    let model_exists = models_dir.join("all-MiniLM-L6-v2.onnx").exists()
-        && models_dir.join("tokenizer.json").exists();
+    let model_exists = models_dir.join(embedding_model.model_file).exists()
+        && models_dir.join(embedding_model.tokenizer_file).exists();
 
     if model_exists {
-        notes.push("Embedding model: ready".into());
+        notes.push(format!(
+            "Embedding model: ready ({})",
+            embedding_model.display_name
+        ));
     } else {
-        eprintln!("       Downloading embedding model (~23 MB)...");
+        eprintln!(
+            "       Downloading embedding model ({})...",
+            embedding_model.display_name
+        );
         match embeddings::ensure_model_downloaded().await {
-            Some(_) => notes.push("Embedding model: downloaded".into()),
+            Some(_) => notes.push(format!(
+                "Embedding model: downloaded ({})",
+                embedding_model.display_name
+            )),
             None => {
                 notes.push("Embedding model: download failed (will retry on daemon start)".into())
             }

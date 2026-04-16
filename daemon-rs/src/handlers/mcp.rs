@@ -1865,7 +1865,12 @@ async fn mcp_dispatch(
             .map_err(|err| err.to_string())?;
 
             if let (Some(id), Some(vec)) = (new_id, decision_embedding.as_deref()) {
-                let _ = persist_decision_embedding(&conn, id, vec);
+                let model_key = state
+                    .embedding_engine
+                    .as_ref()
+                    .map(|engine| engine.model_key())
+                    .unwrap_or(crate::embeddings::selected_model_key());
+                let _ = persist_decision_embedding(&conn, id, vec, model_key);
             }
 
             // Auto-append to active focus session (sawtooth pattern)

@@ -3117,6 +3117,8 @@ fn collect_semantic_candidates(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
 ) -> Vec<SemanticCandidate> {
+    let selected_model = crate::embeddings::selected_model_key();
+    let expected_vector_bytes = std::mem::size_of_val(query_vector) as i64;
     let scale_sim = |sim: f32| -> f64 {
         SEMANTIC_SCALE_BASE
             + (sim as f64 - SEMANTIC_SIM_FLOOR)
@@ -3135,12 +3137,16 @@ fn collect_semantic_candidates(
         "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
-         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let semantic_memory_query_without_acl =
         "SELECT e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
-         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let semantic_memory_stmt = match conn.prepare(semantic_memory_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -3150,7 +3156,7 @@ fn collect_semantic_candidates(
     };
     if let Some(mut stmt) = semantic_memory_stmt {
         let rows: Vec<MemorySemanticRow> = stmt
-            .query_map([], |row| {
+            .query_map(params![selected_model, expected_vector_bytes], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -3239,12 +3245,16 @@ fn collect_semantic_candidates(
         "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
-         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let semantic_decision_query_without_acl =
         "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
-         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let semantic_decision_stmt = match conn.prepare(semantic_decision_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -3254,7 +3264,7 @@ fn collect_semantic_candidates(
     };
     if let Some(mut stmt) = semantic_decision_stmt {
         let rows: Vec<DecisionSemanticRow> = stmt
-            .query_map([], |row| {
+            .query_map(params![selected_model, expected_vector_bytes], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -3359,17 +3369,24 @@ fn collect_shadow_semantic_rows(
     conn: &Connection,
     ctx: &RecallContext,
     source_prefix: Option<&str>,
+    expected_dimension: usize,
 ) -> Vec<ShadowSemanticRow> {
+    let selected_model = crate::embeddings::selected_model_key();
+    let expected_vector_bytes = (expected_dimension * std::mem::size_of::<f32>()) as i64;
     let mut rows_by_source: HashMap<String, Vec<f32>> = HashMap::new();
 
     let memory_query_with_acl = "SELECT e.vector, m.source, m.owner_id, m.visibility \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
-         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let memory_query_without_acl = "SELECT e.vector, m.source, NULL AS owner_id, NULL AS visibility \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
-         AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))";
+         AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let memory_stmt = match conn.prepare(memory_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -3379,7 +3396,7 @@ fn collect_shadow_semantic_rows(
     };
     if let Some(mut stmt) = memory_stmt {
         let rows: Vec<ShadowMemoryRow> = stmt
-            .query_map([], |row| {
+            .query_map(params![selected_model, expected_vector_bytes], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .ok()
@@ -3404,11 +3421,15 @@ fn collect_shadow_semantic_rows(
     let decision_query_with_acl = "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
-         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let decision_query_without_acl = "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
-         AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))";
+         AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (e.model IS NULL OR LOWER(e.model) = ?1) \
+         AND length(e.vector) = ?2";
     let decision_stmt = match conn.prepare(decision_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -3418,7 +3439,7 @@ fn collect_shadow_semantic_rows(
     };
     if let Some(mut stmt) = decision_stmt {
         let rows: Vec<ShadowDecisionRow> = stmt
-            .query_map([], |row| {
+            .query_map(params![selected_model, expected_vector_bytes], |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -3588,7 +3609,7 @@ fn build_shadow_semantic_explain(
         .map(|candidate| candidate.source.clone())
         .collect();
 
-    let rows = collect_shadow_semantic_rows(conn, ctx, source_prefix);
+    let rows = collect_shadow_semantic_rows(conn, ctx, source_prefix, query_vector.len());
     if rows.is_empty() {
         return json!({
             "enabled": true,
@@ -5050,6 +5071,7 @@ mod tests {
         source: &str,
         vector: &[f32],
     ) -> i64 {
+        let model_key = crate::embeddings::selected_model_key();
         conn.execute(
             "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
              VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
@@ -5059,8 +5081,8 @@ mod tests {
         let id = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO embeddings (target_type, target_id, vector, model)
-             VALUES ('memory', ?1, ?2, 'test-model')",
-            params![id, crate::embeddings::vector_to_blob(vector)],
+             VALUES ('memory', ?1, ?2, ?3)",
+            params![id, crate::embeddings::vector_to_blob(vector), model_key],
         )
         .unwrap();
         id
@@ -5072,6 +5094,7 @@ mod tests {
         source: Option<&str>,
         vector: &[f32],
     ) -> i64 {
+        let model_key = crate::embeddings::selected_model_key();
         conn.execute(
             "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
              VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
@@ -5081,8 +5104,8 @@ mod tests {
         let id = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO embeddings (target_type, target_id, vector, model)
-             VALUES ('memory', ?1, ?2, 'test-model')",
-            params![id, crate::embeddings::vector_to_blob(vector)],
+             VALUES ('memory', ?1, ?2, ?3)",
+            params![id, crate::embeddings::vector_to_blob(vector), model_key],
         )
         .unwrap();
         id
@@ -5108,7 +5131,8 @@ mod tests {
         .unwrap();
 
         if let Some(id) = new_id {
-            persist_decision_embedding(conn, id, vector).unwrap();
+            persist_decision_embedding(conn, id, vector, crate::embeddings::selected_model_key())
+                .unwrap();
         }
     }
 
@@ -5169,10 +5193,11 @@ mod tests {
 
         conn.execute(
             "INSERT INTO embeddings (target_type, target_id, vector, model)
-             VALUES ('crystal', ?1, ?2, 'test-model')",
+             VALUES ('crystal', ?1, ?2, ?3)",
             params![
                 crystal_id,
-                crate::embeddings::vector_to_blob(crystal_vector)
+                crate::embeddings::vector_to_blob(crystal_vector),
+                crate::embeddings::selected_model_key()
             ],
         )
         .unwrap();
@@ -5864,8 +5889,12 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO embeddings (target_type, target_id, vector, model)
-             VALUES ('crystal', ?1, ?2, 'test-model')",
-            params![crystal_id, crate::embeddings::vector_to_blob(&query_vector)],
+             VALUES ('crystal', ?1, ?2, ?3)",
+            params![
+                crystal_id,
+                crate::embeddings::vector_to_blob(&query_vector),
+                crate::embeddings::selected_model_key()
+            ],
         )
         .unwrap();
 
@@ -7152,7 +7181,7 @@ mod tests {
         );
 
         let query_vector = [0.98, 0.02, 0.0, 0.0, 0.0];
-        let rows = collect_shadow_semantic_rows(&conn, &solo_ctx(), None);
+        let rows = collect_shadow_semantic_rows(&conn, &solo_ctx(), None, query_vector.len());
         assert!(
             rows.len() >= 2,
             "shadow row collection should include inserted vectors"

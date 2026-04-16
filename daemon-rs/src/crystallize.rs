@@ -161,10 +161,11 @@ pub fn run_crystallize_pass(
                 if let Some(eng) = engine {
                     if let Some(vec) = eng.embed(&consolidated_text) {
                         let blob = embeddings::vector_to_blob(&vec);
+                        let model_key = eng.model_key();
                         let _ = conn.execute(
                             "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-                             VALUES ('crystal', ?1, ?2, 'all-MiniLM-L6-v2')",
-                            params![crystal_id, blob],
+                             VALUES ('crystal', ?1, ?2, ?3)",
+                            params![crystal_id, blob, model_key],
                         );
                     }
                 }

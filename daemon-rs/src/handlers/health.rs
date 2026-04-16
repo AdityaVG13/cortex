@@ -56,6 +56,7 @@ fn collect_storage_metrics(home: &std::path::Path) -> (u64, usize, u64) {
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
 pub async fn build_health_payload(state: &RuntimeState) -> Value {
+    let embedding_model = crate::embeddings::selected_model_selection();
     // Read DB stats in a short lock, then drop it before the network call.
     let (memories, decisions, embeddings_count, events, db_freelist_pages, sqlite_vec_status) = {
         let conn = state.db_read.lock().await;
@@ -134,6 +135,13 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "embedding_status": embedding_status,
         "vector_search": {
             "backend": "blob_scan",
+            "embedding_model": {
+                "key": embedding_model.key,
+                "display_name": embedding_model.display_name,
+                "dimension": embedding_model.dimension,
+                "model_file": embedding_model.model_file,
+                "tokenizer_file": embedding_model.tokenizer_file
+            },
             "sqlite_vec": {
                 "available": sqlite_vec_status.available,
                 "version": sqlite_vec_status.version,

@@ -2777,38 +2777,62 @@ pub(crate) async fn run_daemon(
 /// Build embeddings for all un-embedded memories and decisions.
 /// IMPORTANT: Does NOT hold the DB lock during ONNX inference.
 /// Reads IDs/text in a short lock, embeds in memory (no lock), then writes in batches.
+type EmbeddingBackfillRows = Vec<(i64, String)>;
+type EmbeddingBackfillTargets = (EmbeddingBackfillRows, EmbeddingBackfillRows);
+
+fn collect_unembedded_targets_for_model(
+    conn: &rusqlite::Connection,
+    model_key: &str,
+) -> EmbeddingBackfillTargets {
+    let mem: EmbeddingBackfillRows = conn
+        .prepare(
+            "SELECT m.id, m.text FROM memories m \
+             WHERE m.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'memory' \
+                     AND e.target_id = m.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(rusqlite::params![model_key], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    let dec: EmbeddingBackfillRows = conn
+        .prepare(
+            "SELECT d.id, d.decision FROM decisions d \
+             WHERE d.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'decision' \
+                     AND e.target_id = d.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(rusqlite::params![model_key], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+
+    (mem, dec)
+}
+
 async fn build_embeddings_async(
     engine: &embeddings::EmbeddingEngine,
     db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
 ) {
+    let model_key = engine.model_key();
     let (unembedded_mem, unembedded_dec) = {
         let conn = db.lock().await;
-
-        let mem: Vec<(i64, String)> = conn
-            .prepare(
-                "SELECT m.id, m.text FROM memories m \
-                 WHERE m.status = 'active' \
-                   AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'memory' AND e.target_id = m.id)",
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            })
-            .unwrap_or_default();
-
-        let dec: Vec<(i64, String)> = conn
-            .prepare(
-                "SELECT d.id, d.decision FROM decisions d \
-                 WHERE d.status = 'active' \
-                   AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.target_type = 'decision' AND e.target_id = d.id)",
-            )
-            .and_then(|mut stmt| {
-                stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            })
-            .unwrap_or_default();
-
-        (mem, dec)
+        collect_unembedded_targets_for_model(&conn, model_key)
     };
 
     let total = unembedded_mem.len() + unembedded_dec.len();
@@ -2840,15 +2864,15 @@ async fn build_embeddings_async(
         for (id, blob) in &mem_results {
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-                 VALUES ('memory', ?1, ?2, 'all-MiniLM-L6-v2')",
-                rusqlite::params![id, blob],
+                 VALUES ('memory', ?1, ?2, ?3)",
+                rusqlite::params![id, blob, model_key],
             );
         }
         for (id, blob) in &dec_results {
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-                 VALUES ('decision', ?1, ?2, 'all-MiniLM-L6-v2')",
-                rusqlite::params![id, blob],
+                 VALUES ('decision', ?1, ?2, ?3)",
+                rusqlite::params![id, blob, model_key],
             );
         }
     }
@@ -2901,6 +2925,89 @@ mod tests {
                 let _ = stream.flush();
             }
         })
+    }
+
+    #[test]
+    fn collect_unembedded_targets_for_model_rebuilds_mismatched_embeddings() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            rusqlite::params!["legacy memory", "memory::legacy"],
+        )
+        .expect("insert memory legacy");
+        let memory_legacy_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            rusqlite::params!["current memory", "memory::current"],
+        )
+        .expect("insert memory current");
+        let memory_current_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
+             VALUES (?1, ?2, 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            rusqlite::params!["legacy decision", "ctx::legacy"],
+        )
+        .expect("insert decision legacy");
+        let decision_legacy_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
+             VALUES (?1, ?2, 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            rusqlite::params!["current decision", "ctx::current"],
+        )
+        .expect("insert decision current");
+        let decision_current_id = conn.last_insert_rowid();
+
+        let sample_blob = crate::embeddings::vector_to_blob(&[0.1, 0.2, 0.3]);
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('memory', ?1, ?2, 'other-model')",
+            rusqlite::params![memory_legacy_id, sample_blob.clone()],
+        )
+        .expect("insert legacy memory embedding");
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('memory', ?1, ?2, 'all-MiniLM-L6-v2')",
+            rusqlite::params![memory_current_id, sample_blob.clone()],
+        )
+        .expect("insert current memory embedding");
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', ?1, ?2, 'OTHER-MODEL')",
+            rusqlite::params![decision_legacy_id, sample_blob.clone()],
+        )
+        .expect("insert legacy decision embedding");
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', ?1, ?2, 'all-minilm-l6-v2')",
+            rusqlite::params![decision_current_id, sample_blob],
+        )
+        .expect("insert current decision embedding");
+
+        let (memories, decisions) = collect_unembedded_targets_for_model(&conn, "all-minilm-l6-v2");
+        let memory_ids: std::collections::HashSet<i64> =
+            memories.iter().map(|(id, _)| *id).collect();
+        let decision_ids: std::collections::HashSet<i64> =
+            decisions.iter().map(|(id, _)| *id).collect();
+
+        assert!(
+            memory_ids.contains(&memory_legacy_id),
+            "mismatched memory model should be queued for re-embedding"
+        );
+        assert!(
+            !memory_ids.contains(&memory_current_id),
+            "matching memory model should not be queued"
+        );
+        assert!(
+            decision_ids.contains(&decision_legacy_id),
+            "mismatched decision model should be queued for re-embedding"
+        );
+        assert!(
+            !decision_ids.contains(&decision_current_id),
+            "matching decision model should not be queued"
+        );
     }
 
     #[test]

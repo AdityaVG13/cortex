@@ -229,6 +229,11 @@ pub async fn handle_store(
     }
 
     let decision_text = decision.trim().to_string();
+    let embedding_model_key = state
+        .embedding_engine
+        .as_ref()
+        .map(|engine| engine.model_key())
+        .unwrap_or(crate::embeddings::selected_model_key());
     let decision_embedding = state
         .embedding_engine
         .as_ref()
@@ -252,7 +257,9 @@ pub async fn handle_store(
         Ok((entry, new_id)) => {
             if let Some(id) = new_id {
                 if let Some(vec) = decision_embedding.as_deref() {
-                    if let Err(err) = persist_decision_embedding(&conn, id, vec) {
+                    if let Err(err) =
+                        persist_decision_embedding(&conn, id, vec, embedding_model_key)
+                    {
                         eprintln!(
                             "[store] Warning: failed to persist decision embedding for {id}: {err}"
                         );
@@ -263,7 +270,7 @@ pub async fn handle_store(
                     tokio::spawn(async move {
                         if let Some(vec) = engine.embed(&text) {
                             let conn = db.lock().await;
-                            let _ = persist_decision_embedding(&conn, id, &vec);
+                            let _ = persist_decision_embedding(&conn, id, &vec, engine.model_key());
                         }
                     });
                 }
@@ -1499,12 +1506,13 @@ pub fn persist_decision_embedding(
     conn: &Connection,
     decision_id: i64,
     vector: &[f32],
+    model_key: &str,
 ) -> Result<(), String> {
     let blob = crate::embeddings::vector_to_blob(vector);
     conn.execute(
         "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-         VALUES ('decision', ?1, ?2, 'all-MiniLM-L6-v2')",
-        params![decision_id, blob],
+         VALUES ('decision', ?1, ?2, ?3)",
+        params![decision_id, blob, model_key],
     )
     .map(|_| ())
     .map_err(|e| format!("Failed to persist decision embedding: {e}"))
@@ -1596,7 +1604,8 @@ mod tests {
         )
         .unwrap();
         let id = conn.last_insert_rowid();
-        persist_decision_embedding(conn, id, vector).unwrap();
+        persist_decision_embedding(conn, id, vector, crate::embeddings::selected_model_key())
+            .unwrap();
         id
     }
 
@@ -1613,6 +1622,29 @@ mod tests {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn persist_decision_embedding_uses_explicit_model_key() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at) \
+             VALUES ('model-tag check', 'ctx', 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+
+        persist_decision_embedding(&conn, id, &[0.3, 0.4, 0.5], "unit-test-model").unwrap();
+
+        let stored_model: String = conn
+            .query_row(
+                "SELECT model FROM embeddings WHERE target_type = 'decision' AND target_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_model, "unit-test-model");
     }
 
     #[test]

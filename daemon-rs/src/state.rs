@@ -293,10 +293,11 @@ fn initialize_with_conn(
     let models_dir = paths.models.clone();
     let embedding_engine = crate::embeddings::EmbeddingEngine::load(&models_dir).map(Arc::new);
 
-    if embedding_engine.is_some() {
+    if let Some(engine) = embedding_engine.as_ref() {
         eprintln!(
-            "[cortex] Embedding engine loaded ({}-dim, in-process ONNX)",
-            crate::embeddings::DIMENSION
+            "[cortex] Embedding engine loaded (model={}, {}-dim, in-process ONNX)",
+            engine.model_key(),
+            engine.dimension()
         );
     } else {
         eprintln!(
@@ -615,7 +616,8 @@ mod tests {
             ],
         )
         .unwrap();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
     }
 
     #[test]
@@ -633,7 +635,10 @@ mod tests {
 
         let (state, shutdown_rx) =
             initialize(&paths, true).expect("current daemon boot should accept a v0.4.1 database");
-        assert!(paths.token.exists(), "boot should materialize a shared auth token");
+        assert!(
+            paths.token.exists(),
+            "boot should materialize a shared auth token"
+        );
         drop(shutdown_rx);
         drop(state);
 
@@ -739,7 +744,9 @@ mod tests {
         assert!(table_has_column(&conn, "decisions", "trust_score"));
 
         let migration_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(
             migration_count as usize,
