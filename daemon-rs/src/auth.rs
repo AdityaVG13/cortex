@@ -3,7 +3,7 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{Algorithm, Argon2, Params, Version};
 use fs2::FileExt;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const CORTEX_DIR_NAME: &str = ".cortex";
@@ -265,8 +265,7 @@ fn global_lock_path() -> PathBuf {
 
 /// Acquire an exclusive global daemon lock to enforce one active Cortex daemon
 /// per user, even when different homes/binaries are involved.
-pub fn acquire_global_daemon_lock() -> Result<fs::File, String> {
-    let path = global_lock_path();
+fn acquire_global_daemon_lock_at(path: &Path) -> Result<fs::File, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create global lock dir: {e}"))?;
     }
@@ -274,12 +273,16 @@ pub fn acquire_global_daemon_lock() -> Result<fs::File, String> {
         .create(true)
         .write(true)
         .truncate(false)
-        .open(&path)
+        .open(path)
         .map_err(|e| format!("open global lock: {e}"))?;
     lock_file
         .try_lock_exclusive()
         .map_err(|_| "another cortex instance holds the lock".to_string())?;
     Ok(lock_file)
+}
+
+pub fn acquire_global_daemon_lock() -> Result<fs::File, String> {
+    acquire_global_daemon_lock_at(&global_lock_path())
 }
 
 /// Returns `~/.cortex` (or `$HOME/.cortex` on non-Windows).
@@ -504,23 +507,6 @@ mod tests {
     const LOCK_CHILD_READY_ENV: &str = "CORTEX_LOCK_TEST_CHILD_READY_FILE";
     const LOCK_CHILD_HOLD_MS_ENV: &str = "CORTEX_LOCK_TEST_CHILD_HOLD_MS";
 
-    struct ScopedEnvVar {
-        key: &'static str,
-    }
-
-    impl ScopedEnvVar {
-        fn set(key: &'static str, value: &str) -> Self {
-            std::env::set_var(key, value);
-            Self { key }
-        }
-    }
-
-    impl Drop for ScopedEnvVar {
-        fn drop(&mut self) {
-            std::env::remove_var(self.key);
-        }
-    }
-
     fn env_guard() -> MutexGuard<'static, ()> {
         match TEST_ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
             Ok(guard) => guard,
@@ -608,15 +594,17 @@ mod tests {
         let _guard = env_guard();
         let global_home = temp_test_dir("global_lock");
         fs::create_dir_all(&global_home).unwrap();
-        let global_home_str = global_home.to_string_lossy().to_string();
-        let _global_lock_home = ScopedEnvVar::set(CORTEX_GLOBAL_LOCK_HOME_ENV, &global_home_str);
+        let lock_path = global_home.join(CORTEX_GLOBAL_LOCK_NAME);
 
-        let first = acquire_global_daemon_lock().expect("first global lock should succeed");
-        let err = acquire_global_daemon_lock().expect_err("second global lock should fail");
+        let first =
+            acquire_global_daemon_lock_at(&lock_path).expect("first global lock should succeed");
+        let err =
+            acquire_global_daemon_lock_at(&lock_path).expect_err("second global lock should fail");
         assert!(err.contains("another cortex instance"));
 
         drop(first);
-        let second = acquire_global_daemon_lock().expect("lock should be reacquired after release");
+        let second = acquire_global_daemon_lock_at(&lock_path)
+            .expect("lock should be reacquired after release");
         drop(second);
 
         let _ = fs::remove_dir_all(&global_home);
@@ -629,7 +617,7 @@ mod tests {
         }
 
         let global_home = std::env::var(LOCK_CHILD_HOME_ENV).expect("child global lock home env");
-        let _global_lock_home = ScopedEnvVar::set(CORTEX_GLOBAL_LOCK_HOME_ENV, &global_home);
+        let lock_path = PathBuf::from(global_home).join(CORTEX_GLOBAL_LOCK_NAME);
         let ready_file =
             PathBuf::from(std::env::var(LOCK_CHILD_READY_ENV).expect("child ready file env"));
         let hold_ms = std::env::var(LOCK_CHILD_HOLD_MS_ENV)
@@ -637,7 +625,7 @@ mod tests {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(1500);
 
-        let lock = acquire_global_daemon_lock().expect("child acquires global lock");
+        let lock = acquire_global_daemon_lock_at(&lock_path).expect("child acquires global lock");
         fs::write(&ready_file, b"locked").expect("write ready marker");
         std::thread::sleep(Duration::from_millis(hold_ms));
         drop(lock);
@@ -649,7 +637,7 @@ mod tests {
         let global_home = temp_test_dir("global_lock_cross_process");
         fs::create_dir_all(&global_home).unwrap();
         let global_home_str = global_home.to_string_lossy().to_string();
-        let _global_lock_home = ScopedEnvVar::set(CORTEX_GLOBAL_LOCK_HOME_ENV, &global_home_str);
+        let lock_path = global_home.join(CORTEX_GLOBAL_LOCK_NAME);
         let ready_file = global_home.join("cross-process-ready");
         let hold_ms = 2000_u64;
 
@@ -680,15 +668,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
 
-        let duplicate =
-            acquire_global_daemon_lock().expect_err("cross-process duplicate must fail");
+        let duplicate = acquire_global_daemon_lock_at(&lock_path)
+            .expect_err("cross-process duplicate must fail");
         assert!(duplicate.contains("another cortex instance"));
 
         let status = child.wait().expect("wait on lock-holder child");
         assert!(status.success(), "child process should exit successfully");
 
-        let after_release =
-            acquire_global_daemon_lock().expect("lock should succeed after child exit");
+        let after_release = acquire_global_daemon_lock_at(&lock_path)
+            .expect("lock should succeed after child exit");
         drop(after_release);
 
         let _ = fs::remove_dir_all(&global_home);
