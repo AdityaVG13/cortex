@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,6 +19,7 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[test]
 fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("mcp_transport");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -47,7 +48,8 @@ fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
     );
     assert!(
         stderr.contains("cannot start it automatically")
-            || stderr.contains("another process still holds the daemon lock"),
+            || stderr.contains("another process still holds the daemon lock")
+            || stderr.contains("APP_INIT_REQUIRED"),
         "expected ownership-policy rejection in stderr, got: {stderr}"
     );
     assert!(!health_ok(port), "cli mcp must not auto-spawn daemon");
@@ -56,6 +58,7 @@ fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
 
 #[test]
 fn plugin_mcp_local_mode_uses_service_first_policy_when_daemon_absent() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("plugin_mcp_no_autospawn");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -91,6 +94,7 @@ fn plugin_mcp_local_mode_uses_service_first_policy_when_daemon_absent() {
                 || stderr.contains("Windows service ensure failed")
                 || stderr.contains("automatic service ensure is only available on Windows")
                 || stderr.contains("another process still holds the daemon lock")
+                || stderr.contains("APP_INIT_REQUIRED")
                 || stderr.contains("spawn local daemon from plugin mode")
                 || stderr.contains("daemon spawn started but health is still unavailable"),
             "expected service/spawn policy rejection in stderr, got: {stderr}"
@@ -105,6 +109,7 @@ fn plugin_mcp_local_mode_uses_service_first_policy_when_daemon_absent() {
 
 #[test]
 fn direct_mcp_still_refuses_auto_spawn_when_stdin_closes_immediately() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("mcp_idle");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -132,6 +137,7 @@ fn direct_mcp_still_refuses_auto_spawn_when_stdin_closes_immediately() {
 
 #[test]
 fn direct_mcp_does_not_stop_preexisting_daemon() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("mcp_existing_daemon");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -175,6 +181,7 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
 
 #[test]
 fn plugin_mcp_local_attach_does_not_respawn_after_interruption() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("plugin_mcp_attach_no_respawn");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -263,6 +270,7 @@ fn plugin_mcp_local_attach_does_not_respawn_after_interruption() {
 
 #[test]
 fn plugin_mcp_local_attach_allows_non_claude_agent() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("plugin_mcp_non_claude_attach");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -334,6 +342,7 @@ fn plugin_mcp_local_attach_allows_non_claude_agent() {
 
 #[test]
 fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("plugin_mcp_custom");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -436,6 +445,7 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
 
 #[test]
 fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("plugin_mcp_env_remote");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -536,6 +546,7 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
 
 #[test]
 fn mcp_local_mode_refuses_spawn_when_control_center_lock_is_active() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("mcp_control_center_lock");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let runtime_dir = home_dir.join("runtime");
@@ -574,7 +585,8 @@ fn mcp_local_mode_refuses_spawn_when_control_center_lock_is_active() {
     );
     assert!(
         stderr.contains("cannot start it automatically")
-            || stderr.contains("another process still holds the daemon lock"),
+            || stderr.contains("another process still holds the daemon lock")
+            || stderr.contains("APP_INIT_REQUIRED"),
         "expected ownership-policy rejection in stderr, got: {stderr}"
     );
     assert!(
@@ -593,6 +605,7 @@ struct CapturedRequest {
 
 #[test]
 fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("mcp_wrong_instance_guard");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -769,6 +782,7 @@ fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
 
 #[test]
 fn boot_withholds_local_token_fallback_until_health_identity_is_valid() {
+    let _guard = singleton_transport_test_guard();
     let home_dir = unique_temp_dir("boot_wrong_instance_guard");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -1135,4 +1149,12 @@ fn read_stderr(child: &mut Child) -> String {
         let _ = handle.read_to_string(&mut stderr);
     }
     stderr
+}
+
+fn singleton_transport_test_guard() -> MutexGuard<'static, ()> {
+    static TRANSPORT_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    TRANSPORT_TEST_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

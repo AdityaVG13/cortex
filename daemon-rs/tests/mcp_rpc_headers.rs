@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,6 +16,7 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[test]
 fn mcp_rpc_missing_auth_returns_jsonrpc_unauthorized() {
+    let _guard = daemon_spawn_test_guard();
     let home_dir = unique_temp_dir("mcp_rpc_missing_auth");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -54,6 +56,7 @@ fn mcp_rpc_missing_auth_returns_jsonrpc_unauthorized() {
 
 #[test]
 fn mcp_rpc_missing_x_cortex_request_with_non_local_origin_returns_forbidden_jsonrpc() {
+    let _guard = daemon_spawn_test_guard();
     let home_dir = unique_temp_dir("mcp_rpc_missing_header_origin");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -98,6 +101,7 @@ fn mcp_rpc_missing_x_cortex_request_with_non_local_origin_returns_forbidden_json
 
 #[test]
 fn mcp_rpc_local_context_without_x_cortex_request_is_forbidden() {
+    let _guard = daemon_spawn_test_guard();
     let home_dir = unique_temp_dir("mcp_rpc_local_missing_header");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -142,6 +146,7 @@ fn mcp_rpc_local_context_without_x_cortex_request_is_forbidden() {
 
 #[test]
 fn mcp_rpc_x_auth_header_alias_is_rejected() {
+    let _guard = daemon_spawn_test_guard();
     let home_dir = unique_temp_dir("mcp_rpc_x_auth_header");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -190,6 +195,14 @@ fn spawn_daemon(home: &str, port: u16) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn_tracked("spawn cortex serve")
+}
+
+fn daemon_spawn_test_guard() -> MutexGuard<'static, ()> {
+    static DAEMON_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+    DAEMON_TEST_MUTEX
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("daemon test mutex poisoned")
 }
 
 fn read_token(home_dir: &std::path::Path) -> String {
