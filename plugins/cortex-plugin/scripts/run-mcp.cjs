@@ -37,9 +37,9 @@ function isTruthy(value) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
-function resolveRoute(config) {
+function resolveRoute(config, env = process.env) {
   const explicitUrl = normalizeOption(config.cortexUrl);
-  const appUrl = normalizeOption(process.env.CORTEX_APP_URL);
+  const appUrl = normalizeOption(env.CORTEX_APP_URL);
 
   if (explicitUrl) {
     return { mode: 'remote', url: explicitUrl, reason: 'explicit plugin URL' };
@@ -52,118 +52,167 @@ function resolveRoute(config) {
   return { mode: 'local', url: '', reason: 'local service-first' };
 }
 
-const PLATFORM = process.platform;
-const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
-// User config from Claude Code
-const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
-const cortexApiKey = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
-const pluginAgent = (process.env.CORTEX_PLUGIN_AGENT || 'claude-code').trim() || 'claude-code';
-const dryRun = isTruthy(process.env.CORTEX_PLUGIN_DRY_RUN);
-const allowBundledBinary = isTruthy(process.env.CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY);
-const requireAppBinary = isTruthy(process.env.CORTEX_PLUGIN_REQUIRE_APP_BINARY);
+function buildMcpArgs(route, pluginAgent, cortexApiKey) {
+  const args = ['plugin', 'mcp', '--agent', pluginAgent];
+  if (route.mode === 'remote') {
+    args.push('--url', route.url);
+    if (normalizeOption(cortexApiKey).length > 0) {
+      args.push('--api-key', normalizeOption(cortexApiKey));
+    }
+  }
+  return args;
+}
 
-const route = resolveRoute({ cortexUrl });
+function resolveOwnerMode(route) {
+  if (route.mode === 'local') {
+    return 'solo-service';
+  }
+  return route.reason === 'explicit plugin URL' ? 'team' : 'app';
+}
 
-let binaryPath = '';
-let binarySource = '';
-try {
-  const resolved = resolveCortexBinary({
-    pluginData: PLUGIN_DATA,
+function buildChildEnv(baseEnv, route, pluginAgent, ownerMode, parentPid) {
+  const childEnv = {
+    ...baseEnv,
+    CORTEX_DAEMON_OWNER_KIND: 'plugin',
+    CORTEX_DAEMON_OWNER_SOURCE: 'claude-plugin',
+    CORTEX_DAEMON_OWNER_AGENT: pluginAgent,
+    CORTEX_DAEMON_OWNER_MODE: ownerMode,
+    CORTEX_DAEMON_OWNER_LOCAL_SPAWN: '0',
+    CORTEX_DAEMON_OWNER_PARENT_PID: String(parentPid)
+  };
+  if (route.mode === 'local') {
+    const userHome = baseEnv.USERPROFILE || baseEnv.HOME || '';
+    if (userHome) {
+      childEnv.CORTEX_HOME = path.join(userHome, '.cortex');
+    }
+    delete childEnv.CORTEX_DB;
+  }
+  return childEnv;
+}
+
+function resolveBinary(route, binaryName, env, resolveCortexBinaryImpl, ensureBundled) {
+  const allowBundledBinary = isTruthy(env.CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY);
+  const requireAppBinary = isTruthy(env.CORTEX_PLUGIN_REQUIRE_APP_BINARY);
+  return resolveCortexBinaryImpl({
+    pluginData: env.CLAUDE_PLUGIN_DATA || PLUGIN_DATA,
     binaryName,
-    ensureBundled: () => require('./prepare-runtime.cjs'),
+    ensureBundled,
     allowBundled: route.mode !== 'local' || (!requireAppBinary || allowBundledBinary),
     rejectTempCandidates: route.mode === 'local'
   });
-  binaryPath = resolved.binaryPath;
-  binarySource = resolved.source;
-} catch (error) {
-  crashLog(
-    `BINARY RESOLUTION FAILED: ${error && error.message ? error.message : error}`
-  );
+}
+
+function runMcpBridge(options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+  const processRef = options.processRef || process;
+  const spawnImpl = options.spawnImpl || spawn;
+  const resolveCortexBinaryImpl = options.resolveCortexBinaryImpl || resolveCortexBinary;
+  const ensureBundled = options.ensureBundled || (() => require('./prepare-runtime.cjs'));
+  const log = options.log || console.error;
+  const crashLogger = options.crashLogger || crashLog;
+  const exit = options.exit || ((code) => process.exit(code));
+
+  const binaryName = platform === 'win32' ? 'cortex.exe' : 'cortex';
+  const cortexUrl = env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
+  const cortexApiKey = env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || '';
+  const pluginAgent = normalizeOption(env.CORTEX_PLUGIN_AGENT) || 'claude-code';
+  const dryRun = isTruthy(env.CORTEX_PLUGIN_DRY_RUN);
+  const route = resolveRoute({ cortexUrl }, env);
+
+  let binaryPath = '';
+  let binarySource = '';
+  try {
+    const resolved = resolveBinary(
+      route,
+      binaryName,
+      env,
+      resolveCortexBinaryImpl,
+      ensureBundled
+    );
+    binaryPath = resolved.binaryPath;
+    binarySource = resolved.source;
+  } catch (error) {
+    crashLogger(`BINARY RESOLUTION FAILED: ${error && error.message ? error.message : error}`);
+    if (route.mode === 'local') {
+      log(
+        '[cortex-plugin] Local mode could not resolve a safe Cortex binary. Start Control Center or set CORTEX_APP_BINARY. ' +
+          'Plugin-bundled fallback is allowed by default, but temporary runtime locations are blocked.'
+      );
+    }
+    if (options.exitOnFailure !== false) {
+      exit(1);
+    }
+    return { ok: false, route, pluginAgent };
+  }
+
+  const args = buildMcpArgs(route, pluginAgent, cortexApiKey);
+  const ownerMode = resolveOwnerMode(route);
+  const childEnv = buildChildEnv(env, route, pluginAgent, ownerMode, processRef.pid);
+
+  log(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
+  log(`[cortex-plugin] Cortex binary: ${binaryPath} (${binarySource})`);
   if (route.mode === 'local') {
-    console.error(
-      '[cortex-plugin] Local mode could not resolve a safe Cortex binary. Start Control Center or set CORTEX_APP_BINARY. ' +
-      'Plugin-bundled fallback is allowed by default, but temporary runtime locations are blocked.'
+    log(
+      `[cortex-plugin] Local attach-only mode active for ${pluginAgent}. ` +
+        'If the daemon is offline you will receive APP_INIT_REQUIRED. Open Cortex Control Center, initialize once, then retry.'
     );
   }
-  process.exit(1);
-}
 
-const args = ['plugin', 'mcp', '--agent', pluginAgent];
-if (route.mode === 'remote') {
-  args.push('--url', route.url);
-  if (normalizeOption(cortexApiKey).length > 0) {
-    args.push('--api-key', normalizeOption(cortexApiKey));
+  if (dryRun) {
+    log(
+      `[cortex-plugin] Dry run complete. agent=${pluginAgent} mode=${route.mode} url=${route.url || '(none)'}`
+    );
+    if (options.exitOnDryRun !== false) {
+      exit(0);
+    }
+    return { ok: true, dryRun: true, route, pluginAgent, binaryPath, binarySource, args, childEnv };
   }
+
+  const child = spawnImpl(binaryPath, args, { stdio: 'inherit', env: childEnv });
+
+  if (options.registerProcessHandlers !== false) {
+    processRef.on('uncaughtException', (err) => {
+      crashLogger(`BRIDGE CRASH: ${err && err.stack ? err.stack : err}`);
+      exit(1);
+    });
+    processRef.on('unhandledRejection', (reason) => {
+      crashLogger(`BRIDGE REJECTION: ${reason && reason.stack ? reason.stack : reason}`);
+      exit(1);
+    });
+  }
+
+  child.on('error', (err) => {
+    crashLogger(`SPAWN FAILED: ${err.message} (binary: ${binaryPath})`);
+    exit(1);
+  });
+
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      crashLogger(`MCP server killed by signal ${signal}`);
+      exit(1);
+      return;
+    }
+    if (code !== 0) {
+      crashLogger(`MCP server exited with code ${code}`);
+    }
+    exit(code || 0);
+  });
+
+  return { ok: true, route, pluginAgent, binaryPath, binarySource, args, childEnv, child };
 }
 
-const ownerMode = route.mode === 'local'
-  ? 'solo-service'
-  : route.reason === 'explicit plugin URL'
-    ? 'team'
-    : 'app';
-
-console.error(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
-console.error(`[cortex-plugin] Cortex binary: ${binaryPath} (${binarySource})`);
-if (route.mode === 'local') {
-  console.error(
-    `[cortex-plugin] Local attach-only mode active for ${pluginAgent}. ` +
-    'If the daemon is offline you will receive APP_INIT_REQUIRED. Open Cortex Control Center, initialize once, then retry.'
-  );
+if (require.main === module) {
+  runMcpBridge();
 }
 
-if (dryRun) {
-  console.error(
-    `[cortex-plugin] Dry run complete. agent=${pluginAgent} mode=${route.mode} url=${route.url || '(none)'}`
-  );
-  process.exit(0);
-}
-
-const childEnv = {
-  ...process.env,
-  CORTEX_DAEMON_OWNER_KIND: 'plugin',
-  CORTEX_DAEMON_OWNER_SOURCE: 'claude-plugin',
-  CORTEX_DAEMON_OWNER_AGENT: pluginAgent,
-  CORTEX_DAEMON_OWNER_MODE: ownerMode,
-  CORTEX_DAEMON_OWNER_LOCAL_SPAWN: '0',
-  CORTEX_DAEMON_OWNER_PARENT_PID: String(process.pid)
+module.exports = {
+  normalizeOption,
+  isTruthy,
+  resolveRoute,
+  buildMcpArgs,
+  resolveOwnerMode,
+  buildChildEnv,
+  resolveBinary,
+  runMcpBridge
 };
-
-if (route.mode === 'local') {
-  const userHome = process.env.USERPROFILE || process.env.HOME || '';
-  if (userHome) {
-    childEnv.CORTEX_HOME = path.join(userHome, '.cortex');
-  }
-  delete childEnv.CORTEX_DB;
-}
-
-const child = spawn(binaryPath, args, {
-  stdio: 'inherit',
-  env: childEnv
-});
-
-process.on('uncaughtException', (err) => {
-  crashLog(`BRIDGE CRASH: ${err && err.stack ? err.stack : err}`);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason) => {
-  crashLog(`BRIDGE REJECTION: ${reason && reason.stack ? reason.stack : reason}`);
-  process.exit(1);
-});
-
-child.on('error', (err) => {
-  crashLog(`SPAWN FAILED: ${err.message} (binary: ${binaryPath})`);
-  process.exit(1);
-});
-
-child.on('exit', (code, signal) => {
-  if (signal) {
-    crashLog(`MCP server killed by signal ${signal}`);
-    process.exit(1);
-  }
-  if (code !== 0) {
-    crashLog(`MCP server exited with code ${code}`);
-  }
-  process.exit(code || 0);
-});

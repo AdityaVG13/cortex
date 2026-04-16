@@ -188,6 +188,7 @@ jobs:
           node --check plugins/cortex-plugin/scripts/prepare-runtime.cjs
           node --check plugins/cortex-plugin/scripts/hook-boot.cjs
           node --check plugins/cortex-plugin/scripts/run-mcp.cjs
+          node --test plugins/cortex-plugin/scripts/run-mcp.contract.test.cjs
 
       - name: Validate plugin JSON
         run: |
