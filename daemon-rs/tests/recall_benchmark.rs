@@ -15,6 +15,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const RECALL_BUDGET: &str = "300";
 const MAX_QUERY_TOKENS: u64 = 300;
 const MAX_AVG_QUERY_TOKENS: f64 = 300.0;
+const MAX_P95_QUERY_TOKENS: u64 = 300;
+const MIN_TOP1_HIT_RATE: f64 = 0.55;
+const MIN_RECALL_COVERAGE: f64 = 0.90;
+const MAX_TOKENS_PER_RELEVANT_HIT: f64 = 250.0;
 const PROXY_TOP1_MIN_AGREEMENT: f64 = 0.65;
 const PROXY_MAX_MEAN_ABS_RANK_ERROR: f64 = 0.90;
 const PROXY_MIN_PAIRWISE_AGREEMENT: f64 = 0.75;
@@ -360,6 +364,10 @@ async fn recall_benchmark_regression_thresholds_hold() {
     let mut mrr_sum = 0.0;
     let mut token_sum = 0u64;
     let mut query_count = 0u64;
+    let mut top1_hits = 0u64;
+    let mut recall_coverage_hits = 0u64;
+    let mut relevant_hits_total = 0u64;
+    let mut query_token_samples = Vec::with_capacity(BENCHMARK_CASES.len());
 
     for case in BENCHMARK_CASES {
         let payload = daemon.recall_case(case).await;
@@ -382,6 +390,17 @@ async fn recall_benchmark_regression_thresholds_hold() {
             .iter()
             .map(|result| result["tokens"].as_u64().unwrap_or(0))
             .sum();
+        if results
+            .first()
+            .is_some_and(|result| matches_ground_truth(case, result))
+        {
+            top1_hits += 1;
+        }
+        if relevant > 0 {
+            recall_coverage_hits += 1;
+        }
+        relevant_hits_total += relevant as u64;
+        query_token_samples.push(query_tokens);
         assert!(
             query_tokens <= MAX_QUERY_TOKENS,
             "benchmark token regression for {}: got {}, need <= {}",
@@ -400,6 +419,14 @@ async fn recall_benchmark_regression_thresholds_hold() {
     let avg_precision = precision_sum / query_count_f64;
     let avg_mrr = mrr_sum / query_count_f64;
     let avg_tokens = token_sum as f64 / query_count as f64;
+    let top1_hit_rate = top1_hits as f64 / query_count as f64;
+    let recall_coverage = recall_coverage_hits as f64 / query_count as f64;
+    let p95_query_tokens = percentile_95(&query_token_samples);
+    let tokens_per_relevant_hit = if relevant_hits_total == 0 {
+        f64::INFINITY
+    } else {
+        token_sum as f64 / relevant_hits_total as f64
+    };
 
     assert!(
         avg_precision >= 0.50,
@@ -416,6 +443,30 @@ async fn recall_benchmark_regression_thresholds_hold() {
         "benchmark avg token regression: got {:.2}, need <= {:.2}",
         avg_tokens,
         MAX_AVG_QUERY_TOKENS
+    );
+    assert!(
+        top1_hit_rate >= MIN_TOP1_HIT_RATE,
+        "benchmark top-1 hit rate regression: got {:.3}, need >= {:.2}",
+        top1_hit_rate,
+        MIN_TOP1_HIT_RATE
+    );
+    assert!(
+        recall_coverage >= MIN_RECALL_COVERAGE,
+        "benchmark recall coverage regression: got {:.3}, need >= {:.2}",
+        recall_coverage,
+        MIN_RECALL_COVERAGE
+    );
+    assert!(
+        p95_query_tokens <= MAX_P95_QUERY_TOKENS,
+        "benchmark p95 token regression: got {}, need <= {}",
+        p95_query_tokens,
+        MAX_P95_QUERY_TOKENS
+    );
+    assert!(
+        tokens_per_relevant_hit <= MAX_TOKENS_PER_RELEVANT_HIT,
+        "benchmark tokens-per-relevant-hit regression: got {:.2}, need <= {:.2}",
+        tokens_per_relevant_hit,
+        MAX_TOKENS_PER_RELEVANT_HIT
     );
 }
 
@@ -507,6 +558,56 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
             .unwrap_or_default();
         if returned.is_empty() {
             continue;
+        }
+        let spent_tokens = payload["policy"]["budgetReasoning"]["spent"]
+            .as_u64()
+            .unwrap_or(0);
+        let returned_tokens: u64 = returned
+            .iter()
+            .map(|item| item["tokens"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(
+            spent_tokens, returned_tokens,
+            "policy spent tokens should equal returned-token sum for {}",
+            case.slug
+        );
+        let dropped_count = payload["policy"]["budgetReasoning"]["droppedCount"]
+            .as_u64()
+            .unwrap_or(0);
+        let family_compacted = payload["policy"]["budgetReasoning"]["familyCompactedCount"]
+            .as_u64()
+            .unwrap_or(0);
+        let total_pre_budget_drops = payload["policy"]["budgetReasoning"]["totalPreBudgetDrops"]
+            .as_u64()
+            .unwrap_or(0);
+        assert_eq!(
+            total_pre_budget_drops,
+            dropped_count + family_compacted,
+            "policy pre-budget drop accounting mismatch for {}",
+            case.slug
+        );
+        for item in &returned {
+            let factors = item["rankingFactors"].as_object().unwrap_or_else(|| {
+                panic!(
+                    "missing rankingFactors object in explain returned item for {}",
+                    case.slug
+                )
+            });
+            assert!(
+                factors.contains_key("tokenCost"),
+                "missing rankingFactors.tokenCost for {}",
+                case.slug
+            );
+            assert!(
+                factors.contains_key("budgetCostRatio"),
+                "missing rankingFactors.budgetCostRatio for {}",
+                case.slug
+            );
+            assert!(
+                factors.contains_key("entityMatches"),
+                "missing rankingFactors.entityMatches for {}",
+                case.slug
+            );
         }
 
         let max_token_cost = returned
@@ -704,6 +805,16 @@ fn compare_proxy_points(left: &ProxyRankPoint, right: &ProxyRankPoint) -> Orderi
         .partial_cmp(&left.proxy_score)
         .unwrap_or(Ordering::Equal)
         .then_with(|| left.full_rank.cmp(&right.full_rank))
+}
+
+fn percentile_95(values: &[u64]) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let idx = ((sorted.len() - 1) as f64 * 0.95).ceil() as usize;
+    sorted[idx.min(sorted.len() - 1)]
 }
 
 fn reserve_port() -> u16 {
