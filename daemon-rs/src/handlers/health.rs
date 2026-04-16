@@ -1960,4 +1960,59 @@ mod tests {
             1.0
         );
     }
+
+    #[test]
+    fn build_recall_stats_payload_holds_shadow_gate_for_rank_drift() {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for idx in 0..30 {
+            rows.push((
+                json!({
+                    "mode": "balanced",
+                    "budget": 220,
+                    "spent": 120,
+                    "saved": 100,
+                    "hits": 3,
+                    "cached": false,
+                    "tier": "hybrid_fusion",
+                    "latency_ms": 12,
+                    "shadow_semantic": {
+                        "status": "ok",
+                        "overlapRatio": 0.78,
+                        "jaccard": 0.68,
+                        "meanAbsRankDelta": 2.2,
+                        "top1Match": false
+                    }
+                })
+                .to_string(),
+                format!("2026-04-14T12:{idx:02}:00Z"),
+            ));
+        }
+
+        let payload = build_recall_stats_payload_from_rows(&rows);
+        assert_eq!(payload["shadow_semantic_gate"]["ready"], false);
+        assert_eq!(payload["shadow_semantic_gate"]["decision"], "hold");
+        let blockers = payload["shadow_semantic_gate"]["blockers"]
+            .as_array()
+            .expect("gate blockers should be present");
+        assert!(
+            blockers
+                .iter()
+                .any(|value| value.as_str() == Some("mean_abs_rank_delta_above_gate")),
+            "rank-delta blocker should be present"
+        );
+        assert!(
+            blockers
+                .iter()
+                .any(|value| value.as_str() == Some("top1_match_rate_below_gate")),
+            "top1-match blocker should be present"
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["ok_mean_abs_rank_delta_avg"],
+            2.2
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["ok_top1_match_rate"],
+            0.0
+        );
+    }
 }
