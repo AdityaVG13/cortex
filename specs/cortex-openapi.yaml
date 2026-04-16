@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Cortex Daemon API
-  version: 0.2.0
+  version: 0.5.0
   description: |
     OpenAPI surface for Custom GPT Actions and generic HTTP integrations.
     Protected routes require both `Authorization: Bearer <token>` and
@@ -24,8 +24,110 @@ paths:
                 properties:
                   status:
                     type: string
+                    enum: [ok, degraded]
+                  ready:
+                    type: boolean
+                  degraded:
+                    type: boolean
+                  embedding_status:
+                    type: string
+                    enum: [available, degraded, unavailable]
+                  vector_search:
+                    type: object
+                    properties:
+                      backend:
+                        type: string
+                      embedding_model:
+                        type: object
+                        properties:
+                          key:
+                            type: string
+                          display_name:
+                            type: string
+                          dimension:
+                            type: integer
+                          model_file:
+                            type: string
+                          tokenizer_file:
+                            type: string
+                      embedding_inventory:
+                        type: object
+                        properties:
+                          active_model_key:
+                            type: string
+                          active_model_embeddings:
+                            type: integer
+                          other_model_embeddings:
+                            type: integer
+                          unknown_model_embeddings:
+                            type: integer
+                          active_model_ratio:
+                            type: number
+                          reembed_backlog:
+                            type: object
+                            properties:
+                              memories:
+                                type: integer
+                              decisions:
+                                type: integer
+                              total:
+                                type: integer
+                      sqlite_vec:
+                        type: object
+                        properties:
+                          available:
+                            type: boolean
+                          version:
+                            type: string
+                            nullable: true
+                          error:
+                            type: string
+                            nullable: true
                   stats:
                     type: object
+                  runtime:
+                    type: object
+                    properties:
+                      version:
+                        type: string
+                      mode:
+                        type: string
+                      port:
+                        type: integer
+                      db_path:
+                        type: string
+                      token_path:
+                        type: string
+                      pid_path:
+                        type: string
+                      ipc_endpoint:
+                        type: string
+                        nullable: true
+                      ipc_kind:
+                        type: string
+                        nullable: true
+                      executable:
+                        type: string
+                      owner:
+                        type: string
+                        nullable: true
+  /readiness:
+    get:
+      summary: Readiness check
+      operationId: readiness
+      responses:
+        '200':
+          description: Daemon is ready to serve traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Daemon is still starting
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
   /recall:
     get:
       summary: Recall memories and decisions
@@ -53,6 +155,65 @@ paths:
       responses:
         '200':
           description: Recall results
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing SSRF protection header
+  /recall/explain:
+    get:
+      summary: Recall with explain payload
+      operationId: recallExplain
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XCortexRequest'
+        - in: query
+          name: q
+          required: true
+          schema:
+            type: string
+          description: Recall query text
+        - in: query
+          name: k
+          schema:
+            type: integer
+            default: 8
+        - in: query
+          name: pool_k
+          schema:
+            type: integer
+            default: 32
+        - in: query
+          name: budget
+          schema:
+            type: integer
+            default: 220
+      responses:
+        '200':
+          description: Recall results with ranking/routing explain metadata
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing SSRF protection header
+  /stats:
+    get:
+      summary: Retrieval and routing telemetry summary
+      operationId: stats
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XCortexRequest'
+      responses:
+        '200':
+          description: Stats snapshot
           content:
             application/json:
               schema:
@@ -147,6 +308,18 @@ components:
         type: string
         enum: ["true"]
   schemas:
+    ReadinessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, starting]
+        ready:
+          type: boolean
+        runtime:
+          type: object
+        stats:
+          type: object
     StoreRequest:
       type: object
       properties:

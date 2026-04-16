@@ -3060,10 +3060,18 @@ mod tests {
     use std::fs;
     use std::io::{ErrorKind, Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn openapi_spec_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("specs")
+            .join("cortex-openapi.yaml")
+    }
 
     struct ScopedEnvVar {
         key: &'static str,
@@ -3914,5 +3922,25 @@ mod tests {
         assert!(query_url.contains("must not include query parameters"));
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn openapi_spec_version_matches_cargo_pkg_version() {
+        let spec = fs::read_to_string(openapi_spec_path()).expect("read OpenAPI spec");
+        assert!(
+            spec.contains(&format!("version: {}", env!("CARGO_PKG_VERSION"))),
+            "OpenAPI version must match Cargo package version"
+        );
+    }
+
+    #[test]
+    fn openapi_spec_declares_readiness_recall_explain_and_stats_paths() {
+        let spec = fs::read_to_string(openapi_spec_path()).expect("read OpenAPI spec");
+        assert!(spec.contains("/readiness:"), "missing /readiness in spec");
+        assert!(
+            spec.contains("/recall/explain:"),
+            "missing /recall/explain in spec"
+        );
+        assert!(spec.contains("/stats:"), "missing /stats in spec");
     }
 }
