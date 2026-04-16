@@ -41,6 +41,7 @@ const binaryName = PLATFORM === 'win32' ? 'cortex.exe' : 'cortex';
 const DEFAULT_DAEMON_PORT = 7437;
 
 const cortexUrl = process.env.CLAUDE_PLUGIN_OPTION_CORTEX_URL || '';
+const pluginAgent = normalizeOption(process.env.CORTEX_PLUGIN_AGENT) || 'claude-code';
 const route = resolveRoute({ cortexUrl });
 const allowBundledBinary = normalizeOption(process.env.CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY)
   .toLowerCase();
@@ -231,7 +232,7 @@ async function getLocalHealth() {
   return healthCheck(`http://${host}:${port}`, 5000, expectedIdentity);
 }
 
-function buildStatusLine(health, routeState) {
+function buildStatusLine(health, routeState, agentName) {
   const parts = [];
 
   if (health.ok) {
@@ -252,6 +253,9 @@ function buildStatusLine(health, routeState) {
     parts.push('| App route');
   } else {
     parts.push('| Solo mode');
+    if (!health.ok) {
+      parts.push(`| Open Cortex Control Center to initialize daemon for ${agentName}`);
+    }
   }
   return `Brain: ${parts.join(' ')} | Cortex`;
 }
@@ -270,12 +274,12 @@ function emitStatus(additionalContext) {
 (async () => {
   if (route.mode === 'team' || route.mode === 'app') {
     const health = await healthCheck(route.url);
-    emitStatus(buildStatusLine(health, route.mode));
+    emitStatus(buildStatusLine(health, route.mode, pluginAgent));
     return;
   }
 
   const health = await getLocalHealth();
-  emitStatus(buildStatusLine(health, 'solo'));
+  emitStatus(buildStatusLine(health, 'solo', pluginAgent));
 })().catch((err) => {
   console.error(`[cortex-plugin] SessionStart hook failed: ${err && err.stack ? err.stack : err}`);
   emitStatus('Brain: UNAVAILABLE | Cortex');

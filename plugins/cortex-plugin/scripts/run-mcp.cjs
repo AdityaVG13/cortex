@@ -105,6 +105,12 @@ const ownerMode = route.mode === 'local'
 
 console.error(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
 console.error(`[cortex-plugin] Cortex binary: ${binaryPath} (${binarySource})`);
+if (route.mode === 'local') {
+  console.error(
+    `[cortex-plugin] Local attach-only mode active for ${pluginAgent}. ` +
+    'If the daemon is offline you will receive APP_INIT_REQUIRED. Open Cortex Control Center, initialize once, then retry.'
+  );
+}
 
 if (dryRun) {
   console.error(

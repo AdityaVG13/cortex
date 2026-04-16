@@ -1423,7 +1423,7 @@ fn cortex_readiness_state(
     if ready && !(200..300).contains(&status) {
         return None;
     }
-    if !ready && !(status == 503 || (200..300).contains(&status)) {
+    if !ready && status != 503 && !(200..300).contains(&status) {
         return None;
     }
 
@@ -1600,6 +1600,13 @@ fn editor_args(target: &EditorTarget) -> [&'static str; 3] {
     ["mcp", "--agent", target.agent_name]
 }
 
+fn editor_env_pairs(_target: &EditorTarget) -> [(&'static str, &'static str); 2] {
+    [
+        ("CORTEX_APP_REQUIRED", "1"),
+        ("CORTEX_DAEMON_OWNER_LOCAL_SPAWN", "0"),
+    ]
+}
+
 fn editor_path_detected(path: &Path) -> bool {
     path.exists() || path.parent().map(|parent| parent.exists()).unwrap_or(false)
 }
@@ -1617,9 +1624,21 @@ fn editor_config_path(target: &EditorTarget) -> PathBuf {
 }
 
 fn cortex_mcp_registration(target: &EditorTarget, cortex_exe: &str) -> serde_json::Value {
+    let mut env = serde_json::Map::new();
+    for (key, value) in editor_env_pairs(target) {
+        env.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+    env.insert(
+        "CORTEX_APP_CLIENT".to_string(),
+        serde_json::Value::String(target.agent_name.to_string()),
+    );
     serde_json::json!({
       "command": cortex_exe,
-      "args": editor_args(target)
+      "args": editor_args(target),
+      "env": env
     })
 }
 
@@ -1780,6 +1799,20 @@ fn json_args_match(config: &serde_json::Value, expected_args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+fn json_env_match(config: &serde_json::Value, target: &EditorTarget) -> bool {
+    let Some(env) = config.get("env").and_then(|value| value.as_object()) else {
+        return false;
+    };
+    let policy_matches = editor_env_pairs(target)
+        .iter()
+        .all(|(key, expected)| env.get(*key).and_then(|value| value.as_str()) == Some(*expected));
+    let client_match = env
+        .get("CORTEX_APP_CLIENT")
+        .and_then(|value| value.as_str())
+        == Some(target.agent_name);
+    policy_matches && client_match
+}
+
 fn toml_args_match(config: &toml::Value, expected_args: &[&str]) -> bool {
     config
         .get("args")
@@ -1792,6 +1825,20 @@ fn toml_args_match(config: &toml::Value, expected_args: &[&str]) -> bool {
                     .all(|(value, expected)| value.as_str() == Some(*expected))
         })
         .unwrap_or(false)
+}
+
+fn toml_env_match(config: &toml::Value, target: &EditorTarget) -> bool {
+    let Some(env) = config.get("env").and_then(|value| value.as_table()) else {
+        return false;
+    };
+    let policy_matches = editor_env_pairs(target)
+        .iter()
+        .all(|(key, expected)| env.get(*key).and_then(|value| value.as_str()) == Some(*expected));
+    let client_match = env
+        .get("CORTEX_APP_CLIENT")
+        .and_then(|value| value.as_str())
+        == Some(target.agent_name);
+    policy_matches && client_match
 }
 
 fn is_editor_registered_at_path(
@@ -1817,6 +1864,7 @@ fn is_editor_registered_at_path(
                         .map(|command| command == cortex_exe)
                         .unwrap_or(false)
                         && json_args_match(value, &expected_args)
+                        && json_env_match(value, target)
                 })
                 .unwrap_or(false))
         }
@@ -1832,6 +1880,7 @@ fn is_editor_registered_at_path(
                         .map(|command| command == cortex_exe)
                         .unwrap_or(false)
                         && toml_args_match(value, &expected_args)
+                        && toml_env_match(value, target)
                 })
                 .unwrap_or(false))
         }
@@ -1940,6 +1989,15 @@ fn register_toml_editor(
                 .collect(),
         ),
     );
+    let mut env_table = toml::map::Map::new();
+    for (key, value) in editor_env_pairs(target) {
+        env_table.insert(key.into(), toml::Value::String(value.to_string()));
+    }
+    env_table.insert(
+        "CORTEX_APP_CLIENT".into(),
+        toml::Value::String(target.agent_name.to_string()),
+    );
+    server.insert("env".into(), toml::Value::Table(env_table));
     servers.insert("cortex".into(), toml::Value::Table(server));
 
     if let Some(parent) = config_path.parent() {
@@ -2171,10 +2229,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        cortex_readiness_state, editor_args, editor_config_path, editor_targets,
-        extract_error_detail, interpret_shutdown_response, is_cortex_health_response,
-        is_disallowed_daemon_binary_path, workspace_binary_candidates, FetchCortexResponse,
-        ResolvedCortexPaths,
+        cortex_mcp_registration, cortex_readiness_state, editor_args, editor_config_path,
+        editor_targets, extract_error_detail, interpret_shutdown_response,
+        is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
+        toml_env_match, workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2363,6 +2421,116 @@ mod tests {
 
         assert_eq!(editor_args(cursor), ["mcp", "--agent", "cursor"]);
         assert_eq!(editor_args(claude), ["mcp", "--agent", "claude"]);
+    }
+
+    #[test]
+    fn editor_registration_includes_attach_only_env_contract() {
+        let home = Path::new("C:/Users/aditya");
+        let targets = editor_targets(home);
+        let codex = targets.iter().find(|target| target.id == "codex").unwrap();
+
+        let registration = cortex_mcp_registration(codex, "C:/Users/aditya/.cortex/bin/cortex.exe");
+        let cortex_entry = registration
+            .as_object()
+            .expect("registration should be an object");
+        let args = cortex_entry
+            .get("args")
+            .and_then(|value| value.as_array())
+            .expect("args should exist");
+        assert_eq!(
+            args.iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mcp", "--agent", "codex"]
+        );
+
+        let env = cortex_entry
+            .get("env")
+            .and_then(|value| value.as_object())
+            .expect("env should exist");
+        assert_eq!(
+            env.get("CORTEX_APP_REQUIRED")
+                .and_then(|value| value.as_str()),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("CORTEX_DAEMON_OWNER_LOCAL_SPAWN")
+                .and_then(|value| value.as_str()),
+            Some("0")
+        );
+        assert_eq!(
+            env.get("CORTEX_APP_CLIENT")
+                .and_then(|value| value.as_str()),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn registration_matchers_require_attach_only_env_contract() {
+        let home = Path::new("C:/Users/aditya");
+        let targets = editor_targets(home);
+        let cursor = targets.iter().find(|target| target.id == "cursor").unwrap();
+        let codex = targets.iter().find(|target| target.id == "codex").unwrap();
+
+        let json_missing_env = serde_json::json!({
+            "env": {
+                "CORTEX_APP_REQUIRED": "1"
+            }
+        });
+        assert!(!json_env_match(&json_missing_env, cursor));
+
+        let json_ok = serde_json::json!({
+            "env": {
+                "CORTEX_APP_REQUIRED": "1",
+                "CORTEX_DAEMON_OWNER_LOCAL_SPAWN": "0",
+                "CORTEX_APP_CLIENT": "cursor"
+            }
+        });
+        assert!(json_env_match(&json_ok, cursor));
+
+        let toml_missing_env = toml::Value::Table(
+            [(
+                "env".to_string(),
+                toml::Value::Table(
+                    [(
+                        "CORTEX_APP_REQUIRED".to_string(),
+                        toml::Value::String("1".to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        assert!(!toml_env_match(&toml_missing_env, codex));
+
+        let toml_ok = toml::Value::Table(
+            [(
+                "env".to_string(),
+                toml::Value::Table(
+                    [
+                        (
+                            "CORTEX_APP_REQUIRED".to_string(),
+                            toml::Value::String("1".to_string()),
+                        ),
+                        (
+                            "CORTEX_DAEMON_OWNER_LOCAL_SPAWN".to_string(),
+                            toml::Value::String("0".to_string()),
+                        ),
+                        (
+                            "CORTEX_APP_CLIENT".to_string(),
+                            toml::Value::String("codex".to_string()),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        assert!(toml_env_match(&toml_ok, codex));
     }
 
     #[test]

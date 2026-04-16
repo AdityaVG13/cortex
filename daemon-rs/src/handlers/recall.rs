@@ -93,6 +93,27 @@ struct ShadowSemanticRow {
     vector: Vec<f32>,
 }
 
+#[derive(Clone)]
+struct ShadowSemanticBaseline {
+    candidate_count: usize,
+    ranked_sources: Vec<String>,
+}
+
+impl ShadowSemanticBaseline {
+    fn top_sources(&self, top_k: usize) -> Vec<String> {
+        self.ranked_sources
+            .iter()
+            .take(top_k.clamp(1, MAX_SEMANTIC_RRF_CANDIDATES))
+            .cloned()
+            .collect()
+    }
+}
+
+struct RecallWithVectorTrace {
+    ranked: Vec<RecallItem>,
+    semantic_baseline: Option<ShadowSemanticBaseline>,
+}
+
 type MemorySemanticRow = (
     Vec<u8>,
     String,
@@ -817,30 +838,41 @@ pub async fn execute_unified_recall(
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
     let dflag = Some(&state.degraded_mode);
-    let results = if budget == 0 {
-        run_recall_with_engine(&mut conn, query_text, k, engine, ctx, source_prefix, dflag)?
+    let query_vector = engine.and_then(|runtime_engine| runtime_engine.embed(query_text));
+    if engine.is_some() {
+        update_semantic_search_health(dflag, query_vector.is_some(), true);
+    }
+    let (results, semantic_baseline) = if budget == 0 {
+        let trace = run_recall_with_query_vector_trace(
+            &mut conn,
+            query_text,
+            k,
+            query_vector.as_deref(),
+            ctx,
+            source_prefix,
+        )?;
+        (trace.ranked, trace.semantic_baseline)
     } else {
-        run_budget_recall_with_engine(
+        let trace = run_budget_recall_trace_with_query_vector(
             &mut conn,
             query_text,
             budget,
             k,
-            engine,
+            query_vector.as_deref(),
             ctx,
             source_prefix,
-            dflag,
-        )?
+        )?;
+        (trace.budgeted, trace.semantic_baseline)
     };
     let shadow_semantic = {
-        let shadow_query_vector =
-            engine.and_then(|runtime_engine| runtime_engine.embed(query_text));
         let shadow_detail = build_shadow_semantic_explain(
             &conn,
-            shadow_query_vector.as_deref(),
+            query_vector.as_deref(),
             query_text,
             ctx,
             source_prefix,
             k,
+            semantic_baseline.as_ref(),
         );
         shadow_semantic_telemetry_summary(&shadow_detail)
     };
@@ -1001,6 +1033,7 @@ async fn execute_recall_policy_explain_inner(
         min_relevance,
         top_relevance,
         max_items,
+        semantic_baseline,
     ) = if budget == 0 {
         let raw_pool = if let Some(query_vector) = query_vector_override {
             run_recall_with_query_vector(
@@ -1042,6 +1075,7 @@ async fn execute_recall_policy_explain_inner(
             0.0_f64,
             0.0_f64,
             requested_k,
+            None,
         )
     } else {
         let trace = if let Some(query_vector) = query_vector_override {
@@ -1075,6 +1109,7 @@ async fn execute_recall_policy_explain_inner(
             trace.min_relevance,
             trace.top_relevance,
             trace.max_items,
+            trace.semantic_baseline,
         )
     };
     let shadow_query_vector = query_vector_override
@@ -1087,6 +1122,7 @@ async fn execute_recall_policy_explain_inner(
         ctx,
         source_prefix,
         pool_k,
+        semantic_baseline.as_ref(),
     );
     drop(conn);
 
@@ -1345,14 +1381,14 @@ fn run_recall_with_engine(
 }
 
 #[allow(clippy::type_complexity)]
-fn run_recall_with_query_vector(
+fn run_recall_with_query_vector_trace(
     conn: &mut Connection,
     query_text: &str,
     k: usize,
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
     source_prefix: Option<&str>,
-) -> Result<Vec<RecallItem>, String> {
+) -> Result<RecallWithVectorTrace, String> {
     let extracted = extract_search_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
         query_text.to_string()
@@ -1484,6 +1520,18 @@ fn run_recall_with_query_vector(
                 collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
             })
             .unwrap_or_default()
+    };
+    let semantic_baseline = if semantic_candidates.is_empty() {
+        None
+    } else {
+        Some(ShadowSemanticBaseline {
+            candidate_count: semantic_candidates.len(),
+            ranked_sources: semantic_candidates
+                .iter()
+                .take(MAX_SEMANTIC_RRF_CANDIDATES)
+                .map(|candidate| candidate.source.clone())
+                .collect(),
+        })
     };
 
     // ── RRF fusion ────────────────────────────────────────────────────────────
@@ -1647,7 +1695,25 @@ fn run_recall_with_query_vector(
 
     bump_retrievals_batch(conn, &ranked);
 
-    Ok(ranked)
+    Ok(RecallWithVectorTrace {
+        ranked,
+        semantic_baseline,
+    })
+}
+
+#[allow(clippy::type_complexity)]
+fn run_recall_with_query_vector(
+    conn: &mut Connection,
+    query_text: &str,
+    k: usize,
+    query_vector: Option<&[f32]>,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+) -> Result<Vec<RecallItem>, String> {
+    Ok(
+        run_recall_with_query_vector_trace(conn, query_text, k, query_vector, ctx, source_prefix)?
+            .ranked,
+    )
 }
 
 fn run_budget_recall(
@@ -2305,6 +2371,7 @@ struct RecallBudgetTrace {
     top_relevance: f64,
     min_relevance: f64,
     max_items: usize,
+    semantic_baseline: Option<ShadowSemanticBaseline>,
 }
 
 #[derive(Clone)]
@@ -2330,7 +2397,7 @@ fn run_budget_recall_trace_with_query_vector(
     } else {
         k.max(12)
     };
-    let raw = run_recall_with_query_vector(
+    let recall_trace = run_recall_with_query_vector_trace(
         conn,
         query_text,
         retrieval_depth,
@@ -2338,6 +2405,8 @@ fn run_budget_recall_trace_with_query_vector(
         ctx,
         source_prefix,
     )?;
+    let raw = recall_trace.ranked;
+    let semantic_baseline = recall_trace.semantic_baseline;
     if raw.is_empty() {
         return Ok(RecallBudgetTrace {
             budgeted: vec![],
@@ -2348,6 +2417,7 @@ fn run_budget_recall_trace_with_query_vector(
             top_relevance: 0.0,
             min_relevance: 0.0,
             max_items: 0,
+            semantic_baseline,
         });
     }
 
@@ -2459,6 +2529,7 @@ fn run_budget_recall_trace_with_query_vector(
         top_relevance,
         min_relevance,
         max_items,
+        semantic_baseline,
     })
 }
 
@@ -3583,6 +3654,7 @@ fn build_shadow_semantic_explain(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
     top_k: usize,
+    baseline_override: Option<&ShadowSemanticBaseline>,
 ) -> Value {
     let top_k = top_k.clamp(1, MAX_SEMANTIC_RRF_CANDIDATES);
     let Some(query_vector) = query_vector else {
@@ -3602,12 +3674,19 @@ fn build_shadow_semantic_explain(
         });
     }
 
-    let baseline = collect_semantic_candidates(conn, query_vector, query_text, ctx, source_prefix);
-    let baseline_top_sources: Vec<String> = baseline
-        .iter()
-        .take(top_k)
-        .map(|candidate| candidate.source.clone())
-        .collect();
+    let (baseline_candidate_count, baseline_top_sources) = if let Some(baseline) = baseline_override
+    {
+        (baseline.candidate_count, baseline.top_sources(top_k))
+    } else {
+        let baseline =
+            collect_semantic_candidates(conn, query_vector, query_text, ctx, source_prefix);
+        let top_sources = baseline
+            .iter()
+            .take(top_k)
+            .map(|candidate| candidate.source.clone())
+            .collect();
+        (baseline.len(), top_sources)
+    };
 
     let rows = collect_shadow_semantic_rows(conn, ctx, source_prefix, query_vector.len());
     if rows.is_empty() {
@@ -3616,7 +3695,7 @@ fn build_shadow_semantic_explain(
             "status": "unavailable",
             "reason": "no_shadow_candidates",
             "topK": top_k,
-            "baselineCandidateCount": baseline.len(),
+            "baselineCandidateCount": baseline_candidate_count,
             "baselineTopSources": baseline_top_sources,
         });
     }
@@ -3633,7 +3712,7 @@ fn build_shadow_semantic_explain(
             "reason": "no_dimension_compatible_candidates",
             "topK": top_k,
             "vectorDimension": vector_dim,
-            "baselineCandidateCount": baseline.len(),
+            "baselineCandidateCount": baseline_candidate_count,
             "baselineTopSources": baseline_top_sources,
         });
     }
@@ -3651,7 +3730,7 @@ fn build_shadow_semantic_explain(
                         "detail": error,
                         "topK": top_k,
                         "vectorDimension": vector_dim,
-                        "baselineCandidateCount": baseline.len(),
+                        "baselineCandidateCount": baseline_candidate_count,
                         "shadowCandidateCount": compatible_count,
                         "baselineTopSources": baseline_top_sources,
                     });
@@ -3662,7 +3741,7 @@ fn build_shadow_semantic_explain(
                     "reason": error,
                     "topK": top_k,
                     "vectorDimension": vector_dim,
-                    "baselineCandidateCount": baseline.len(),
+                    "baselineCandidateCount": baseline_candidate_count,
                     "shadowCandidateCount": compatible_count,
                     "baselineTopSources": baseline_top_sources,
                 });
@@ -3689,7 +3768,7 @@ fn build_shadow_semantic_explain(
         "status": "ok",
         "topK": top_k,
         "vectorDimension": vector_dim,
-        "baselineCandidateCount": baseline.len(),
+        "baselineCandidateCount": baseline_candidate_count,
         "shadowCandidateCount": compatible_count,
         "baselineTopSources": baseline_top_sources,
         "shadowTopSources": shadow_top_sources,
@@ -7150,6 +7229,47 @@ mod tests {
         assert_eq!(
             shadow_semantic["reason"].as_str(),
             Some("query_embedding_unavailable")
+        );
+    }
+
+    #[test]
+    fn shadow_semantic_explain_uses_provided_baseline_override() {
+        let conn = test_conn();
+        let query_vector = [0.9_f32, 0.1_f32, 0.0_f32];
+        let baseline = ShadowSemanticBaseline {
+            candidate_count: 3,
+            ranked_sources: vec![
+                "memory::lock-heartbeat".to_string(),
+                "memory::token-budget".to_string(),
+                "decision::daemon-policy".to_string(),
+            ],
+        };
+
+        let explain = build_shadow_semantic_explain(
+            &conn,
+            Some(&query_vector),
+            "daemon ownership lock",
+            &solo_ctx(),
+            None,
+            2,
+            Some(&baseline),
+        );
+        assert_eq!(explain["status"].as_str(), Some("unavailable"));
+        assert_eq!(explain["reason"].as_str(), Some("no_shadow_candidates"));
+        assert_eq!(explain["baselineCandidateCount"].as_u64(), Some(3));
+        assert_eq!(
+            explain["baselineTopSources"]
+                .as_array()
+                .map(|items| items.len()),
+            Some(2)
+        );
+        assert_eq!(
+            explain["baselineTopSources"][0].as_str(),
+            Some("memory::lock-heartbeat")
+        );
+        assert_eq!(
+            explain["baselineTopSources"][1].as_str(),
+            Some("memory::token-budget")
         );
     }
 

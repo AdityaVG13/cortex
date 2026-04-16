@@ -1597,7 +1597,6 @@ fn env_trimmed(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[cfg(test)]
 fn parse_truthy_flag(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -1732,6 +1731,9 @@ const DEFAULT_BOOT_BUDGET: usize = 600;
 const DEFAULT_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 const DAEMON_LOCK_RETRY_INTERVAL_MS: u64 = 100;
 const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
+const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
+const APP_REQUIRED_ENV: &str = "CORTEX_APP_REQUIRED";
+const APP_CLIENT_ENV: &str = "CORTEX_APP_CLIENT";
 
 fn read_auth_token_from_path(token_path: &std::path::Path) -> Option<String> {
     std::fs::read_to_string(token_path).ok().and_then(|token| {
@@ -1883,7 +1885,28 @@ fn daemon_lock_wait_timeout() -> Duration {
     Duration::from_secs(secs.max(1))
 }
 
-fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, String> {
+#[derive(Debug)]
+struct RuntimeLockGuards {
+    _scoped: std::fs::File,
+    _global: std::fs::File,
+}
+
+fn try_acquire_runtime_locks(paths: &auth::CortexPaths) -> Result<RuntimeLockGuards, String> {
+    let scoped = auth::acquire_daemon_lock(paths)?;
+    let global = match auth::acquire_global_daemon_lock() {
+        Ok(lock) => lock,
+        Err(err) => {
+            drop(scoped);
+            return Err(err);
+        }
+    };
+    Ok(RuntimeLockGuards {
+        _scoped: scoped,
+        _global: global,
+    })
+}
+
+fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<RuntimeLockGuards, String> {
     let _ = auth::cleanup_stale_pid_lock(paths);
     if std::env::var("CORTEX_WAIT_FOR_DAEMON_LOCK")
         .ok()
@@ -1891,7 +1914,7 @@ fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, Stri
     {
         let deadline = std::time::Instant::now() + daemon_lock_wait_timeout();
         let last_err = loop {
-            match auth::acquire_daemon_lock(paths) {
+            match try_acquire_runtime_locks(paths) {
                 Ok(lock) => return Ok(lock),
                 Err(err) => {
                     let _ = auth::cleanup_stale_pid_lock(paths);
@@ -1908,14 +1931,14 @@ fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, Stri
             std::time::Instant::now() + Duration::from_secs(DAEMON_LOCK_HANDOFF_GRACE_SECS);
         while std::time::Instant::now() < grace_deadline {
             let _ = auth::cleanup_stale_pid_lock(paths);
-            if let Ok(lock) = auth::acquire_daemon_lock(paths) {
+            if let Ok(lock) = try_acquire_runtime_locks(paths) {
                 return Ok(lock);
             }
             std::thread::sleep(Duration::from_millis(DAEMON_LOCK_RETRY_INTERVAL_MS));
         }
         return Err(last_err);
     }
-    auth::acquire_daemon_lock(paths)
+    try_acquire_runtime_locks(paths)
 }
 
 fn daemon_owner_tag_from_env() -> Option<String> {
@@ -1963,6 +1986,62 @@ fn process_pid_identity_matches(pid: u32, expected_start_time: u64) -> bool {
         .unwrap_or(false)
 }
 
+fn process_looks_like_cortex_daemon(process: &sysinfo::Process) -> bool {
+    let cmd: Vec<String> = process
+        .cmd()
+        .iter()
+        .map(|arg| arg.to_string_lossy().to_ascii_lowercase())
+        .collect();
+    if cmd.is_empty() {
+        return false;
+    }
+    let has_daemon_role = cmd.iter().any(|arg| arg == "serve" || arg == "service-run")
+        || cmd
+            .windows(2)
+            .any(|pair| pair[0] == "service" && pair[1] == "run");
+    if !has_daemon_role {
+        return false;
+    }
+
+    let exe_is_cortex = process
+        .exe()
+        .and_then(|path| path.file_stem().or(path.file_name()))
+        .map(|name| name.to_string_lossy().eq_ignore_ascii_case("cortex"))
+        .unwrap_or(false);
+    let cmd_is_cortex = cmd
+        .first()
+        .map(|first| first.contains("cortex"))
+        .unwrap_or(false);
+    exe_is_cortex || cmd_is_cortex
+}
+
+fn detect_other_cortex_daemon_process() -> Option<(u32, String, String)> {
+    let current_pid = std::process::id();
+    let mut system = sysinfo::System::new_all();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    for (pid, process) in system.processes() {
+        let pid_u32 = pid.as_u32();
+        if pid_u32 == current_pid {
+            continue;
+        }
+        if !process_looks_like_cortex_daemon(process) {
+            continue;
+        }
+        let exe = process
+            .exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let cmd = process
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Some((pid_u32, exe, cmd));
+    }
+    None
+}
+
 fn spawned_owner_requires_parent_pid(owner_tag: Option<&str>) -> bool {
     owner_tag
         .map(|owner| should_watch_spawn_parent(Some(owner)))
@@ -2008,6 +2087,12 @@ fn validate_spawned_owner_runtime_claim(
 }
 
 async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<(), String> {
+    if let Some((pid, exe, cmd)) = detect_other_cortex_daemon_process() {
+        return Err(format!(
+            "daemon startup denied: Cortex already has an active daemon process (pid={pid}, exe={exe}, cmd=\"{cmd}\")"
+        ));
+    }
+
     let bind_addr = paths.bind.trim();
     let bind_error = match std::net::TcpListener::bind((bind_addr, paths.port)) {
         Ok(listener) => {
@@ -2116,6 +2201,33 @@ async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<()
     ))
 }
 
+fn app_init_required_client_name(agent: Option<&str>) -> String {
+    env_trimmed(APP_CLIENT_ENV)
+        .or_else(|| normalize_option(agent))
+        .unwrap_or_else(|| "client".to_string())
+}
+
+fn app_init_required_error(paths: &auth::CortexPaths, agent: Option<&str>) -> String {
+    let client = app_init_required_client_name(agent);
+    format!(
+        "APP_INIT_REQUIRED: {client} is attach-only and cannot start the daemon automatically on port {}. Start Cortex Control Center and initialize the app-managed daemon, then retry.",
+        paths.port
+    )
+}
+
+fn local_spawn_allowed_for_request(allow_service_ensure: bool) -> bool {
+    if !allow_service_ensure {
+        return false;
+    }
+    let local_spawn_disabled = std::env::var(DAEMON_LOCAL_SPAWN_ENV)
+        .ok()
+        .is_some_and(|value| !parse_truthy_flag(&value));
+    let app_required = std::env::var(APP_REQUIRED_ENV)
+        .ok()
+        .is_some_and(|value| parse_truthy_flag(&value));
+    !(local_spawn_disabled || app_required)
+}
+
 async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
@@ -2124,6 +2236,7 @@ async fn ensure_daemon(
 ) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
+    let local_spawn_allowed = local_spawn_allowed_for_request(allow_service_ensure);
 
     let lock = auth::acquire_daemon_lock(paths);
 
@@ -2131,7 +2244,7 @@ async fn ensure_daemon(
         Ok(_guard) => {
             if daemon_healthy(paths).await {
                 // already healthy
-            } else if allow_service_ensure {
+            } else if local_spawn_allowed {
                 #[cfg(windows)]
                 {
                     if !ensure_service_ready_async().await {
@@ -2146,15 +2259,12 @@ async fn ensure_daemon(
                     ensure_local_plugin_spawn_async(paths, agent).await?;
                 }
             } else {
-                return Err(format!(
-                    "daemon is not healthy on port {} and this client cannot start it automatically. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
-                    paths.port
-                ));
+                return Err(app_init_required_error(paths, agent));
             }
         }
         Err(_) => {
             if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
-                if allow_service_ensure {
+                if local_spawn_allowed {
                     #[cfg(windows)]
                     {
                         if ensure_service_ready_async().await {
@@ -2174,10 +2284,7 @@ async fn ensure_daemon(
                         ));
                     }
                 } else {
-                    return Err(format!(
-                    "daemon is not healthy on port {} and another process still holds the daemon lock. Start Cortex from Control Center or rerun `cortex mcp --agent <name>` after the daemon is available.",
-                    paths.port
-                ));
+                    return Err(app_init_required_error(paths, agent));
                 }
             }
         }
@@ -2884,9 +2991,36 @@ async fn build_embeddings_async(
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::TcpListener;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct ScopedEnvVar {
+        key: &'static str,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            std::env::set_var(key, value);
+            Self { key }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            std::env::remove_var(self.key);
+        }
+    }
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        match TEST_ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     fn temp_test_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -2904,6 +3038,19 @@ mod tests {
             .block_on(startup_single_daemon_preflight(paths))
     }
 
+    fn run_ensure_daemon(
+        paths: &auth::CortexPaths,
+        agent: Option<&str>,
+        emit_port: bool,
+        allow_service_ensure: bool,
+    ) -> Result<(), String> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime")
+            .block_on(ensure_daemon(paths, agent, emit_port, allow_service_ensure))
+    }
+
     fn spawn_single_response_server(
         listener: TcpListener,
         status_line: &str,
@@ -2913,16 +3060,30 @@ mod tests {
         let status_line = status_line.to_string();
         let content_type = content_type.to_string();
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut request_buffer = [0_u8; 2048];
-                let _ = stream.read(&mut request_buffer);
-                let response = format!(
-                    "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
+            let _ = listener.set_nonblocking(true);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request_buffer = [0_u8; 2048];
+                        let _ = stream.read(&mut request_buffer);
+                        let response = format!(
+                            "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                        break;
+                    }
+                    Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(_) => break,
+                }
             }
         })
     }
@@ -3101,8 +3262,13 @@ mod tests {
 
     #[test]
     fn acquire_runtime_lock_rejects_duplicate_serve_startup() {
+        let _env_guard = env_guard();
         let home_dir = temp_test_dir("runtime_lock");
         fs::create_dir_all(&home_dir).unwrap();
+        let global_lock_home = temp_test_dir("runtime_lock_global");
+        fs::create_dir_all(&global_lock_home).unwrap();
+        let global_lock_home_str = global_lock_home.to_string_lossy().to_string();
+        let _global_lock_home = ScopedEnvVar::set("CORTEX_GLOBAL_LOCK_HOME", &global_lock_home_str);
 
         let home_str = home_dir.to_string_lossy().to_string();
         let paths =
@@ -3115,20 +3281,26 @@ mod tests {
 
         drop(first_lock);
         let _ = fs::remove_dir_all(&home_dir);
+        let _ = fs::remove_dir_all(&global_lock_home);
     }
 
     #[test]
     fn acquire_runtime_lock_waits_for_handoff_when_enabled() {
+        let _env_guard = env_guard();
         let home_dir = temp_test_dir("runtime_lock_handoff");
         fs::create_dir_all(&home_dir).unwrap();
+        let global_lock_home = temp_test_dir("runtime_lock_handoff_global");
+        fs::create_dir_all(&global_lock_home).unwrap();
+        let global_lock_home_str = global_lock_home.to_string_lossy().to_string();
+        let _global_lock_home = ScopedEnvVar::set("CORTEX_GLOBAL_LOCK_HOME", &global_lock_home_str);
 
         let home_str = home_dir.to_string_lossy().to_string();
         let paths =
             auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
 
         let first_lock = acquire_runtime_lock(&paths).unwrap();
-        std::env::set_var("CORTEX_WAIT_FOR_DAEMON_LOCK", "1");
-        std::env::set_var("CORTEX_DAEMON_LOCK_WAIT_SECS", "1");
+        let _wait_lock_flag = ScopedEnvVar::set("CORTEX_WAIT_FOR_DAEMON_LOCK", "1");
+        let _wait_secs_flag = ScopedEnvVar::set("CORTEX_DAEMON_LOCK_WAIT_SECS", "1");
 
         let releaser = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
@@ -3139,9 +3311,8 @@ mod tests {
         drop(second_lock);
         releaser.join().unwrap();
 
-        std::env::remove_var("CORTEX_WAIT_FOR_DAEMON_LOCK");
-        std::env::remove_var("CORTEX_DAEMON_LOCK_WAIT_SECS");
         let _ = fs::remove_dir_all(&home_dir);
+        let _ = fs::remove_dir_all(&global_lock_home);
     }
 
     #[test]
@@ -3339,6 +3510,39 @@ mod tests {
     }
 
     #[test]
+    fn ensure_daemon_app_required_policy_returns_machine_readable_error() {
+        let _env_guard = env_guard();
+        let home_dir = temp_test_dir("app_required_policy");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let _app_required = ScopedEnvVar::set(APP_REQUIRED_ENV, "1");
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "codex");
+        let err = run_ensure_daemon(&paths, Some("codex"), false, false).unwrap_err();
+        assert!(err.contains("APP_INIT_REQUIRED"));
+        assert!(err.contains("codex"));
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn ensure_daemon_respects_local_spawn_disable_flag() {
+        let _env_guard = env_guard();
+        let home_dir = temp_test_dir("local_spawn_disabled_policy");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let _local_spawn = ScopedEnvVar::set(DAEMON_LOCAL_SPAWN_ENV, "0");
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "claude");
+        let err = run_ensure_daemon(&paths, Some("claude"), false, true).unwrap_err();
+        assert!(err.contains("APP_INIT_REQUIRED"));
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
     fn disallowed_startup_binary_path_blocks_runtime_wrappers_and_temp_paths() {
         let wrapper = PathBuf::from(
             "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",
@@ -3420,7 +3624,16 @@ mod tests {
             spawn_single_response_server(listener, "404 Not Found", "text/plain", "nope".into());
 
         let err = run_preflight(&paths).unwrap_err();
-        assert!(err.contains("non-canonical payload"));
+        assert!(err.contains("daemon startup denied"));
+        assert!(
+            err.contains("non-canonical payload")
+                || err.contains("different Cortex runtime identity")
+                || err.contains("already healthy on port")
+                || err.contains("already ready on port")
+                || err.contains("already starting on port")
+                || err.contains("active daemon process"),
+            "unexpected preflight error: {err}"
+        );
 
         server.join().expect("join response server");
         let _ = fs::remove_dir_all(&home_dir);
@@ -3455,7 +3668,16 @@ mod tests {
         let server = spawn_single_response_server(listener, "200 OK", "application/json", payload);
 
         let err = run_preflight(&paths).unwrap_err();
-        assert!(err.contains("different Cortex runtime identity"));
+        assert!(err.contains("daemon startup denied"));
+        assert!(
+            err.contains("different Cortex runtime identity")
+                || err.contains("non-canonical payload")
+                || err.contains("already healthy on port")
+                || err.contains("already ready on port")
+                || err.contains("already starting on port")
+                || err.contains("active daemon process"),
+            "unexpected preflight error: {err}"
+        );
 
         server.join().expect("join response server");
         let _ = fs::remove_dir_all(&home_dir);

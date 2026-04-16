@@ -1677,7 +1677,12 @@ export function App() {
           mcpServers: {
             cortex: {
               command: setupCommandPath,
-              args: ["mcp"],
+              args: ["mcp", "--agent", "codex"],
+              env: {
+                CORTEX_APP_REQUIRED: "1",
+                CORTEX_DAEMON_OWNER_LOCAL_SPAWN: "0",
+                CORTEX_APP_CLIENT: "codex",
+              },
             },
           },
         },
@@ -3569,6 +3574,7 @@ export function App() {
                 <span className="editor-setup-kicker">Manual Fallback</span>
                 <p>If a client is missing from the supported list, register this MCP server manually or paste it into that AI’s setup flow:</p>
                 <pre>{manualMcpSnippet}</pre>
+                <p>Replace <code>codex</code> with that AI&apos;s agent ID (for example: <code>claude</code>, <code>cursor</code>, <code>gemini</code>).</p>
               </div>
               <div className="connection-actions">
                 <button type="button" className="btn-sm" onClick={() => setShowEditorSetupWizard(false)} disabled={isSettingUpEditors}>

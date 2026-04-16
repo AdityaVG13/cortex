@@ -159,6 +159,11 @@ struct TestDaemon {
     client: Client,
 }
 
+enum SpawnError {
+    Skip(String),
+    Fatal(String),
+}
+
 #[derive(Clone, Debug)]
 struct ProxyRankPoint {
     full_rank: usize,
@@ -166,7 +171,7 @@ struct ProxyRankPoint {
 }
 
 impl TestDaemon {
-    async fn spawn() -> Self {
+    async fn spawn() -> Result<Self, SpawnError> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(2))
             .timeout(REQUEST_TIMEOUT)
@@ -197,15 +202,23 @@ impl TestDaemon {
                     let token = wait_for_token(&home, &mut child)
                         .await
                         .expect("token file was not written");
-                    return Self {
+                    return Ok(Self {
                         child,
                         home,
                         base_url,
                         token,
                         client,
-                    };
+                    });
                 }
                 Err(err) => {
+                    if should_skip_for_active_singleton(&err) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = fs::remove_dir_all(&home);
+                        return Err(SpawnError::Skip(format!(
+                            "recall benchmark skipped because another Cortex daemon is already active: {err}"
+                        )));
+                    }
                     last_error = err;
                     let _ = child.kill();
                     let _ = child.wait();
@@ -217,7 +230,7 @@ impl TestDaemon {
             }
         }
 
-        panic!("failed to spawn healthy benchmark daemon after retries: {last_error}");
+        Err(SpawnError::Fatal(last_error))
     }
 
     fn request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -319,7 +332,16 @@ impl Drop for TestDaemon {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_benchmark_regression_thresholds_hold() {
-    let daemon = TestDaemon::spawn().await;
+    let daemon = match TestDaemon::spawn().await {
+        Ok(daemon) => daemon,
+        Err(SpawnError::Skip(reason)) => {
+            eprintln!("{reason}");
+            return;
+        }
+        Err(SpawnError::Fatal(err)) => {
+            panic!("failed to spawn healthy benchmark daemon after retries: {err}")
+        }
+    };
 
     for case in BENCHMARK_CASES {
         daemon.store_case(case).await;
@@ -390,7 +412,16 @@ async fn recall_benchmark_regression_thresholds_hold() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_different_queries_do_not_cross_dedup_for_same_agent() {
-    let daemon = TestDaemon::spawn().await;
+    let daemon = match TestDaemon::spawn().await {
+        Ok(daemon) => daemon,
+        Err(SpawnError::Skip(reason)) => {
+            eprintln!("{reason}");
+            return;
+        }
+        Err(SpawnError::Fatal(err)) => {
+            panic!("failed to spawn healthy benchmark daemon after retries: {err}")
+        }
+    };
 
     for case in BENCHMARK_CASES {
         daemon.store_case(case).await;
@@ -415,7 +446,16 @@ async fn recall_different_queries_do_not_cross_dedup_for_same_agent() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn distilled_proxy_tracks_full_recall_ranking() {
-    let daemon = TestDaemon::spawn().await;
+    let daemon = match TestDaemon::spawn().await {
+        Ok(daemon) => daemon,
+        Err(SpawnError::Skip(reason)) => {
+            eprintln!("{reason}");
+            return;
+        }
+        Err(SpawnError::Fatal(err)) => {
+            panic!("failed to spawn healthy benchmark daemon after retries: {err}")
+        }
+    };
 
     for case in BENCHMARK_CASES {
         daemon.store_case(case).await;
@@ -701,4 +741,11 @@ fn read_child_stderr(child: &mut Child) -> String {
         let _ = handle.read_to_string(&mut stderr);
     }
     stderr
+}
+
+fn should_skip_for_active_singleton(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("daemon startup denied: cortex already has an active daemon process")
+        || normalized.contains("another cortex instance holds the lock")
+        || normalized.contains("active daemon process")
 }

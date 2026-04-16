@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 const CORTEX_DIR_NAME: &str = ".cortex";
+const CORTEX_GLOBAL_LOCK_NAME: &str = "cortex.global.lock";
+const CORTEX_GLOBAL_LOCK_HOME_ENV: &str = "CORTEX_GLOBAL_LOCK_HOME";
 const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 // ---------------------------------------------------------------------------
@@ -242,6 +244,44 @@ pub fn acquire_daemon_lock(paths: &CortexPaths) -> Result<fs::File, String> {
     Ok(lock_file)
 }
 
+fn default_home_root() -> PathBuf {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn global_lock_path() -> PathBuf {
+    if let Ok(explicit) = std::env::var(CORTEX_GLOBAL_LOCK_HOME_ENV) {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join(CORTEX_GLOBAL_LOCK_NAME);
+        }
+    }
+    default_home_root()
+        .join(CORTEX_DIR_NAME)
+        .join(CORTEX_GLOBAL_LOCK_NAME)
+}
+
+/// Acquire an exclusive global daemon lock to enforce one active Cortex daemon
+/// per user, even when different homes/binaries are involved.
+pub fn acquire_global_daemon_lock() -> Result<fs::File, String> {
+    let path = global_lock_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create global lock dir: {e}"))?;
+    }
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("open global lock: {e}"))?;
+    lock_file
+        .try_lock_exclusive()
+        .map_err(|_| "another cortex instance holds the lock".to_string())?;
+    Ok(lock_file)
+}
+
 /// Returns `~/.cortex` (or `$HOME/.cortex` on non-Windows).
 pub fn cortex_dir() -> PathBuf {
     if let Ok(explicit) = std::env::var("CORTEX_HOME") {
@@ -249,10 +289,7 @@ pub fn cortex_dir() -> PathBuf {
             return PathBuf::from(explicit);
         }
     }
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(CORTEX_DIR_NAME)
+    default_home_root().join(CORTEX_DIR_NAME)
 }
 
 /// Generate a fresh UUID token, write it to the resolved token path, and
@@ -532,5 +569,23 @@ mod tests {
         assert_eq!(paths.bind, "0.0.0.0");
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn acquire_global_daemon_lock_rejects_duplicate_instances() {
+        let global_home = temp_test_dir("global_lock");
+        fs::create_dir_all(&global_home).unwrap();
+        std::env::set_var(CORTEX_GLOBAL_LOCK_HOME_ENV, global_home.as_os_str());
+
+        let first = acquire_global_daemon_lock().expect("first global lock should succeed");
+        let err = acquire_global_daemon_lock().expect_err("second global lock should fail");
+        assert!(err.contains("another cortex instance"));
+
+        drop(first);
+        let second = acquire_global_daemon_lock().expect("lock should be reacquired after release");
+        drop(second);
+
+        std::env::remove_var(CORTEX_GLOBAL_LOCK_HOME_ENV);
+        let _ = fs::remove_dir_all(&global_home);
     }
 }
