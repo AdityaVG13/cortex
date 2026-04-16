@@ -40,6 +40,9 @@ const SQLITE_VEC_TRIAL_MIN_OVERLAP_RATIO: f64 = 0.60;
 const SQLITE_VEC_TRIAL_MIN_JACCARD: f64 = 0.45;
 const SQLITE_VEC_TRIAL_MAX_MEAN_ABS_RANK_DELTA: f64 = 1.25;
 const SQLITE_VEC_TRIAL_TOP1_MATCH_REQUIRED: bool = true;
+const ENTITY_SIGNAL_OVERLAP_WEIGHT: f64 = 0.10;
+const ENTITY_SIGNAL_MATCH_WEIGHT: f64 = 0.01;
+const ENTITY_SIGNAL_MAX_BOOST: f64 = 0.12;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -180,6 +183,148 @@ fn prefer_query_focused_excerpt(current: &str, candidate: &str, query_text: &str
     let candidate_score = query_alignment_score(candidate, query_text);
     candidate_score > current_score
         || (candidate_score == current_score && candidate.len() < current.len())
+}
+
+fn is_entity_stopword(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "a"
+            | "an"
+            | "and"
+            | "or"
+            | "for"
+            | "with"
+            | "from"
+            | "into"
+            | "this"
+            | "that"
+            | "these"
+            | "those"
+            | "what"
+            | "which"
+            | "when"
+            | "where"
+            | "why"
+            | "how"
+            | "about"
+            | "around"
+            | "there"
+            | "their"
+            | "your"
+            | "our"
+            | "have"
+            | "has"
+            | "had"
+            | "will"
+            | "would"
+            | "could"
+            | "should"
+    )
+}
+
+fn is_short_technical_term(token: &str) -> bool {
+    matches!(
+        token,
+        "ai" | "ml"
+            | "db"
+            | "sql"
+            | "api"
+            | "jwt"
+            | "uid"
+            | "uuid"
+            | "id"
+            | "ip"
+            | "dns"
+            | "tls"
+            | "ssh"
+            | "http"
+            | "https"
+            | "url"
+            | "ui"
+            | "ux"
+            | "cpu"
+            | "gpu"
+            | "ram"
+            | "ios"
+            | "sdk"
+    )
+}
+
+fn extract_entity_like_terms(text: &str) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    for raw in text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':')))
+    {
+        let token = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        if token.len() < 3 {
+            continue;
+        }
+        let lowered = token.to_ascii_lowercase();
+        if is_entity_stopword(&lowered) {
+            continue;
+        }
+        let has_uppercase = token.chars().any(|c| c.is_ascii_uppercase());
+        let has_digit = token.chars().any(|c| c.is_ascii_digit());
+        let has_symbol = token
+            .chars()
+            .any(|c| matches!(c, '_' | '-' | '.' | '/' | ':'));
+        let long_specific = lowered.len() >= 9;
+        if has_uppercase || has_digit || has_symbol || long_specific {
+            terms.insert(lowered);
+        }
+    }
+    terms
+}
+
+fn query_entity_terms(query_text: &str) -> HashSet<String> {
+    let mut terms = extract_entity_like_terms(query_text);
+    if terms.is_empty() {
+        for term in query_focus_terms(query_text) {
+            if !is_entity_stopword(&term) && (term.len() >= 3 || is_short_technical_term(&term)) {
+                terms.insert(term);
+            }
+        }
+    }
+    terms
+}
+
+fn entity_alignment_metrics_with_terms(
+    haystack: &str,
+    query_entities: &HashSet<String>,
+) -> (usize, f64) {
+    if query_entities.is_empty() {
+        return (0, 0.0);
+    }
+    let mut haystack_terms = extract_entity_like_terms(haystack);
+    if haystack_terms.is_empty() {
+        for term in extract_search_keywords(haystack) {
+            if !is_entity_stopword(&term) && (term.len() >= 3 || is_short_technical_term(&term)) {
+                haystack_terms.insert(term);
+            }
+        }
+    }
+    if haystack_terms.is_empty() {
+        return (0, 0.0);
+    }
+    let matches = query_entities
+        .iter()
+        .filter(|term| haystack_terms.contains(*term))
+        .count();
+    if matches == 0 {
+        return (0, 0.0);
+    }
+    let overlap = matches as f64 / query_entities.len().max(1) as f64;
+    (matches, overlap)
+}
+
+fn entity_signal_boost(matches: usize, overlap: f64) -> f64 {
+    if matches == 0 {
+        return 0.0;
+    }
+    let overlap_component = overlap.clamp(0.0, 1.0) * ENTITY_SIGNAL_OVERLAP_WEIGHT;
+    let match_component = matches.min(3) as f64 * ENTITY_SIGNAL_MATCH_WEIGHT;
+    (overlap_component + match_component).min(ENTITY_SIGNAL_MAX_BOOST)
 }
 
 // ─── Visibility context ─────────────────────────────────────────────────────
@@ -1384,6 +1529,18 @@ async fn execute_recall_policy_explain_inner(
             })
         })
         .collect();
+    let query_entities = query_entity_terms(query_text);
+    let mut entity_metrics_by_source: HashMap<String, (usize, f64, f64)> = HashMap::new();
+    for candidate in &candidate_pool {
+        let haystack = format!("{} {}", candidate.source, candidate.excerpt);
+        let (entity_matches, entity_overlap) =
+            entity_alignment_metrics_with_terms(&haystack, &query_entities);
+        let entity_boost = entity_signal_boost(entity_matches, entity_overlap);
+        entity_metrics_by_source.insert(
+            candidate.source.clone(),
+            (entity_matches, round4(entity_overlap), round4(entity_boost)),
+        );
+    }
     let final_with_factors: Vec<Value> = final_results
         .clone()
         .into_iter()
@@ -1397,6 +1554,19 @@ async fn execute_recall_policy_explain_inner(
             } else {
                 ((tokens as f64) / (budget as f64)).min(1.0)
             };
+            let (entity_matches, entity_overlap, entity_boost) = entity_metrics_by_source
+                .get(&item.source)
+                .copied()
+                .unwrap_or_else(|| {
+                    let haystack = format!("{} {}", item.source, item.excerpt);
+                    let (matches, overlap) =
+                        entity_alignment_metrics_with_terms(&haystack, &query_entities);
+                    (
+                        matches,
+                        round4(overlap),
+                        round4(entity_signal_boost(matches, overlap)),
+                    )
+                });
             json!({
                 "rank": idx + 1,
                 "source": item.source,
@@ -1408,7 +1578,10 @@ async fn execute_recall_policy_explain_inner(
                     "method": item.method,
                     "tokenCost": tokens,
                     "budgetCostRatio": round4(budget_ratio),
-                    "entropy": item.entropy
+                    "entropy": item.entropy,
+                    "entityMatches": entity_matches,
+                    "entityOverlap": entity_overlap,
+                    "entityBoost": entity_boost
                 }
             })
         })
@@ -1898,6 +2071,7 @@ fn run_recall_with_query_vector_trace(
     // High-entropy (information-dense) excerpts get a relevance boost (+/-15%
     // around midpoint H=3.5). Applied after compound scoring so entropy acts as
     // a diversity signal on top of the RRF+compound base.
+    let query_entities = query_entity_terms(query_text);
     let mut ranked: Vec<RecallItem> = merged
         .into_values()
         .map(|mut item| {
@@ -1905,6 +2079,15 @@ fn run_recall_with_query_vector_trace(
             item.entropy = Some(round4(h));
             let boost = ((h - 3.5).max(0.0) * 0.08).min(0.12);
             item.relevance = round4(item.relevance * (1.0 + boost));
+            if !query_entities.is_empty() {
+                let haystack = format!("{} {}", item.source, item.excerpt);
+                let (entity_matches, entity_overlap) =
+                    entity_alignment_metrics_with_terms(&haystack, &query_entities);
+                let entity_boost = entity_signal_boost(entity_matches, entity_overlap);
+                if entity_boost > 0.0 {
+                    item.relevance = round4(item.relevance * (1.0 + entity_boost));
+                }
+            }
             item
         })
         .collect();
@@ -2007,11 +2190,21 @@ fn run_semantic_recall_with_query_vector(
         })
         .collect();
 
+    let query_entities = query_entity_terms(query_text);
     for item in &mut ranked {
         let h = shannon_entropy(&item.excerpt);
         item.entropy = Some(round4(h));
         let boost = ((h - 3.5).max(0.0) * 0.05).min(0.08);
         item.relevance = round4(item.relevance * (1.0 + boost));
+        if !query_entities.is_empty() {
+            let haystack = format!("{} {}", item.source, item.excerpt);
+            let (entity_matches, entity_overlap) =
+                entity_alignment_metrics_with_terms(&haystack, &query_entities);
+            let entity_boost = entity_signal_boost(entity_matches, entity_overlap);
+            if entity_boost > 0.0 {
+                item.relevance = round4(item.relevance * (1.0 + entity_boost));
+            }
+        }
     }
 
     ranked.sort_by(|a, b| {
@@ -6571,6 +6764,41 @@ mod tests {
     }
 
     #[test]
+    fn test_entity_alignment_metrics_with_terms_detects_structured_identifiers() {
+        let query_entities = query_entity_terms("sqlite vec migration 012");
+        let (matches, overlap) = entity_alignment_metrics_with_terms(
+            "Schema migration 012 adds sqlite-vec trial routing.",
+            &query_entities,
+        );
+        assert!(
+            matches >= 2,
+            "expected at least two aligned entity-like terms"
+        );
+        assert!(
+            overlap > 0.45,
+            "expected meaningful entity overlap, got {overlap}"
+        );
+    }
+
+    #[test]
+    fn test_entity_signal_boost_is_capped() {
+        let boost = entity_signal_boost(12, 1.0);
+        assert!(
+            (boost - ENTITY_SIGNAL_MAX_BOOST).abs() < f64::EPSILON,
+            "entity boost should be capped at {}",
+            ENTITY_SIGNAL_MAX_BOOST
+        );
+    }
+
+    #[test]
+    fn test_query_entity_terms_fallback_keeps_short_technical_terms() {
+        let terms = query_entity_terms("api sql db auth");
+        assert!(terms.contains("api"));
+        assert!(terms.contains("sql"));
+        assert!(terms.contains("db"));
+    }
+
+    #[test]
     fn test_round4() {
         assert_eq!(round4(0.12345), 0.1235);
         assert_eq!(round4(1.0), 1.0);
@@ -7622,6 +7850,27 @@ mod tests {
                 .iter()
                 .all(|candidate| candidate["source"].as_str() != Some("memory::plugin-heartbeat")),
             "family compaction should not misreport the sibling as a post-budget drop"
+        );
+
+        let returned = explain["explain"]["returned"]
+            .as_array()
+            .expect("returned explain entries should be present");
+        assert!(
+            !returned.is_empty(),
+            "policy explain should include at least one returned result"
+        );
+        let ranking_factors = &returned[0]["rankingFactors"];
+        assert!(
+            ranking_factors.get("entityMatches").is_some(),
+            "ranking factors should expose entity match signal"
+        );
+        assert!(
+            ranking_factors.get("entityOverlap").is_some(),
+            "ranking factors should expose entity overlap signal"
+        );
+        assert!(
+            ranking_factors.get("entityBoost").is_some(),
+            "ranking factors should expose entity boost contribution"
         );
 
         let shadow_semantic = &explain["explain"]["shadowSemantic"];
