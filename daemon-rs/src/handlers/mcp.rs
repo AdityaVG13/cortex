@@ -9,7 +9,7 @@ use super::feedback::{
 };
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{
-    forget_keyword, list_conflicts_payload, parse_conflict_id, resolve_decision,
+    forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision,
     resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
 };
 use super::recall::{
@@ -2046,7 +2046,8 @@ async fn mcp_dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: source".to_string())?;
             let mut conn = state.db.lock().await;
-            let affected = forget_keyword(&mut conn, keyword)?;
+            let owner_id = if state.team_mode { caller_id } else { None };
+            let affected = forget_keyword_scoped(&mut conn, keyword, owner_id)?;
             Ok(json!({ "affected": affected }))
         }
 

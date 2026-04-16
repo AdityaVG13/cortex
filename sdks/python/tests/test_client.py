@@ -64,3 +64,12 @@ def test_health_uses_health_endpoint_without_auth_header(httpx_mock):
     assert req.url.path == "/health"
     assert "Authorization" not in req.headers
     assert "X-Cortex-Request" not in req.headers
+
+
+def test_remote_base_url_requires_explicit_token():
+    try:
+        CortexClient(base_url="https://team.example.com")
+    except ValueError as exc:
+        assert "requires explicit token" in str(exc).lower()
+    else:
+        raise AssertionError("Expected remote base_url without token to fail")

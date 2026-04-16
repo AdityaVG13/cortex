@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
-use super::ensure_auth_with_caller;
+use super::ensure_auth_with_caller_rated;
 use super::{
     estimate_tokens, json_response, now_iso, parse_timestamp_ms, resolve_source_identity,
     truncate_chars,
@@ -366,6 +366,20 @@ impl RecallContext {
     }
 }
 
+#[allow(clippy::result_large_err)]
+fn require_team_caller(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+) -> Result<Option<i64>, Response> {
+    if state.team_mode && caller_id.is_none() {
+        return Err(json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
+        ));
+    }
+    Ok(caller_id)
+}
+
 /// Check whether a record is visible to the current caller.
 /// Solo mode: everything visible (no filtering).
 /// Team mode (fail closed):
@@ -607,8 +621,12 @@ pub async fn handle_recall(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let q = query.q.unwrap_or_default();
@@ -645,8 +663,12 @@ pub async fn handle_recall_post(
     headers: HeaderMap,
     Json(body): Json<RecallBody>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let q = body.q.unwrap_or_default();
@@ -681,8 +703,12 @@ pub async fn handle_semantic_recall(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let q = query.q.unwrap_or_default();
@@ -719,8 +745,12 @@ pub async fn handle_budget_recall(
     headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let q = match query.q.as_deref() {
@@ -786,8 +816,12 @@ pub async fn handle_recall_explain(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let q = query.q.unwrap_or_default();
@@ -842,8 +876,12 @@ pub async fn handle_peek(
     headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let q = match &query.q {
@@ -5169,8 +5207,12 @@ pub async fn handle_unfold(
     Query(query): Query<UnfoldQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
+        Err(resp) => return resp,
+    };
+    let caller_id = match require_team_caller(&state, caller_id) {
+        Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
     let ctx = RecallContext::from_caller(caller_id, &state);

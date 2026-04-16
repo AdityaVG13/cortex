@@ -7,8 +7,8 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ensure_admin, ensure_auth, json_response, log_event, now_iso};
-use crate::db::{archive_entries, checkpoint_wal_best_effort};
+use super::{ensure_admin, ensure_auth_rated, json_response, log_event, now_iso};
+use crate::db::{archive_entries_scoped, checkpoint_wal_best_effort};
 use crate::state::RuntimeState;
 
 // ─── Request types ───────────────────────────────────────────────────────────
@@ -712,7 +712,7 @@ fn ensure_admin_surface(
     if state.team_mode {
         ensure_admin(headers, state, conn).map(Some)
     } else {
-        ensure_auth(headers, state).map(|_| None)
+        Ok(None)
     }
 }
 
@@ -723,10 +723,6 @@ pub async fn handle_forget(
     headers: HeaderMap,
     Json(body): Json<ForgetRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
-
     let keyword = body.keyword.or(body.source).unwrap_or_default();
     if keyword.trim().is_empty() {
         return json_response(
@@ -735,8 +731,15 @@ pub async fn handle_forget(
         );
     }
 
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let mut conn = state.db.lock().await;
-    match forget_keyword(&mut conn, keyword.trim()) {
+    let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
+        Ok(owner_id) => owner_id,
+        Err(resp) => return resp,
+    };
+    match forget_keyword_scoped(&mut conn, keyword.trim(), owner_id) {
         Ok(affected) => json_response(StatusCode::OK, json!({ "affected": affected })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -745,29 +748,52 @@ pub async fn handle_forget(
     }
 }
 
-pub fn forget_keyword(conn: &mut Connection, keyword: &str) -> Result<usize, String> {
+pub fn forget_keyword_scoped(
+    conn: &mut Connection,
+    keyword: &str,
+    owner_id: Option<i64>,
+) -> Result<usize, String> {
     let pattern = format!("%{}%", keyword.to_lowercase());
     let now = now_iso();
-    let memories = conn
-        .execute(
-            "UPDATE memories SET score = score * 0.3, updated_at = ?2 \
-             WHERE status = 'active' AND (lower(text) LIKE ?1 OR lower(source) LIKE ?1)",
-            params![pattern.clone(), now.clone()],
-        )
-        .map_err(|e| e.to_string())?;
-    let decisions = conn
-        .execute(
-            "UPDATE decisions SET score = score * 0.3, updated_at = ?2 \
-             WHERE status = 'active' AND (lower(decision) LIKE ?1 OR lower(context) LIKE ?1)",
-            params![pattern, now],
-        )
-        .map_err(|e| e.to_string())?;
+    let (memories, decisions) = if let Some(owner_id) = owner_id {
+        let memories = conn
+            .execute(
+                "UPDATE memories SET score = score * 0.3, updated_at = ?2 \
+                 WHERE owner_id = ?3 AND status = 'active' AND (lower(text) LIKE ?1 OR lower(source) LIKE ?1)",
+                params![pattern.clone(), now.clone(), owner_id],
+            )
+            .map_err(|e| e.to_string())?;
+        let decisions = conn
+            .execute(
+                "UPDATE decisions SET score = score * 0.3, updated_at = ?2 \
+                 WHERE owner_id = ?3 AND status = 'active' AND (lower(decision) LIKE ?1 OR lower(context) LIKE ?1)",
+                params![pattern, now, owner_id],
+            )
+            .map_err(|e| e.to_string())?;
+        (memories, decisions)
+    } else {
+        let memories = conn
+            .execute(
+                "UPDATE memories SET score = score * 0.3, updated_at = ?2 \
+                 WHERE status = 'active' AND (lower(text) LIKE ?1 OR lower(source) LIKE ?1)",
+                params![pattern.clone(), now.clone()],
+            )
+            .map_err(|e| e.to_string())?;
+        let decisions = conn
+            .execute(
+                "UPDATE decisions SET score = score * 0.3, updated_at = ?2 \
+                 WHERE status = 'active' AND (lower(decision) LIKE ?1 OR lower(context) LIKE ?1)",
+                params![pattern, now],
+            )
+            .map_err(|e| e.to_string())?;
+        (memories, decisions)
+    };
     let affected = memories + decisions;
     if affected > 0 {
         let _ = log_event(
             conn,
             "forget",
-            json!({ "keyword": keyword, "affected": affected }),
+            json!({ "keyword": keyword, "affected": affected, "ownerId": owner_id }),
             "rust-daemon",
         );
         checkpoint_wal_best_effort(conn);
@@ -782,6 +808,9 @@ pub async fn handle_resolve(
     headers: HeaderMap,
     Json(body): Json<ResolveRequest>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let mut conn = state.db.lock().await;
     if let Err(resp) = ensure_admin_surface(&headers, &state, &conn) {
         return resp;
@@ -973,6 +1002,9 @@ pub async fn handle_conflicts(
     headers: HeaderMap,
     Query(query): Query<ConflictListQuery>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin_surface(&headers, &state, &conn) {
         return resp;
@@ -1000,6 +1032,9 @@ pub async fn handle_permissions_list(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
         Ok(user_id) => user_id.unwrap_or(0),
@@ -1029,6 +1064,9 @@ pub async fn handle_permissions_grant(
     headers: HeaderMap,
     Json(body): Json<PermissionGrantRequest>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
         Ok(user_id) => user_id.unwrap_or(0),
@@ -1109,6 +1147,9 @@ pub async fn handle_permissions_revoke(
     headers: HeaderMap,
     Json(body): Json<PermissionRevokeRequest>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
         Ok(user_id) => user_id.unwrap_or(0),
@@ -1182,10 +1223,9 @@ pub async fn handle_archive(
     headers: HeaderMap,
     Json(body): Json<ArchiveRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-
     let table = body.table.unwrap_or_default();
     let ids = body.ids.unwrap_or_default();
 
@@ -1197,7 +1237,11 @@ pub async fn handle_archive(
     }
 
     let conn = state.db.lock().await;
-    match archive_entries(&conn, &table, &ids) {
+    let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
+        Ok(owner_id) => owner_id,
+        Err(resp) => return resp,
+    };
+    match archive_entries_scoped(&conn, &table, &ids, owner_id) {
         Ok(affected) => json_response(StatusCode::OK, json!({ "archived": affected })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1209,15 +1253,17 @@ pub async fn handle_archive(
 // ─── POST /shutdown ──────────────────────────────────────────────────────────
 
 pub async fn handle_shutdown(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
+    let conn = state.db.lock().await;
+    if let Err(resp) = ensure_admin_surface(&headers, &state, &conn) {
         return resp;
     }
 
     // WAL checkpoint before exiting
-    {
-        let conn = state.db.lock().await;
-        checkpoint_wal_best_effort(&conn);
-    }
+    checkpoint_wal_best_effort(&conn);
+    drop(conn);
 
     // Fire the oneshot shutdown signal
     let mut tx_guard = state.shutdown_tx.lock().await;

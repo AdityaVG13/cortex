@@ -8,7 +8,9 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 
-use super::{ensure_auth, json_error, json_response, log_event, now_iso, resolve_source_identity};
+use super::{
+    ensure_auth_rated, json_error, json_response, log_event, now_iso, resolve_source_identity,
+};
 use crate::state::RuntimeState;
 
 // ─── Request type ─────────────────────────────────────────────────────────────
@@ -40,7 +42,7 @@ pub async fn handle_diary(
     headers: HeaderMap,
     Json(body): Json<DiaryRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 

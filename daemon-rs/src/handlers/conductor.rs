@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{ensure_auth, json_response, now_iso, parse_timestamp_ms, resolve_caller_id};
+use super::{ensure_auth_rated, json_response, now_iso, parse_timestamp_ms, resolve_caller_id};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 
@@ -505,7 +505,7 @@ pub async fn handle_lock(
     headers: HeaderMap,
     Json(body): Json<LockRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -666,7 +666,7 @@ pub async fn handle_unlock(
     headers: HeaderMap,
     Json(body): Json<LockRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -743,7 +743,7 @@ pub async fn handle_unlock(
 // ─── GET /locks ─────────────────────────────────────────────────────────────
 
 pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -766,7 +766,7 @@ pub async fn handle_post_activity(
     headers: HeaderMap,
     Json(body): Json<ActivityRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -840,7 +840,7 @@ pub async fn handle_get_activity(
     headers: HeaderMap,
     Query(query): Query<SinceQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -907,7 +907,7 @@ pub async fn handle_post_message(
     headers: HeaderMap,
     Json(body): Json<MessageRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -973,7 +973,7 @@ pub async fn handle_get_messages(
     headers: HeaderMap,
     Query(query): Query<MessagesQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1005,7 +1005,7 @@ pub async fn handle_session_start(
     headers: HeaderMap,
     Json(body): Json<SessionStartRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1116,7 +1116,7 @@ pub async fn handle_session_heartbeat(
     headers: HeaderMap,
     Json(body): Json<SessionHeartbeatRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1219,7 +1219,7 @@ pub async fn handle_session_end(
     headers: HeaderMap,
     Json(body): Json<SessionEndRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1262,7 +1262,7 @@ pub async fn handle_session_end(
 // ─── GET /sessions ──────────────────────────────────────────────────────────
 
 pub async fn handle_sessions(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1285,7 +1285,7 @@ pub async fn handle_create_task(
     headers: HeaderMap,
     Json(body): Json<TaskCreateRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1365,7 +1365,7 @@ pub async fn handle_get_tasks(
     headers: HeaderMap,
     Query(query): Query<TaskQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let status_filter = query.status.unwrap_or_else(|| "pending".to_string());
@@ -1388,7 +1388,7 @@ pub async fn handle_claim_task(
     headers: HeaderMap,
     Json(body): Json<TaskClaimRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let task_id = match body.task_id {
@@ -1497,7 +1497,7 @@ pub async fn handle_complete_task(
     headers: HeaderMap,
     Json(body): Json<TaskCompleteRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let task_id = match body.task_id {
@@ -1667,7 +1667,7 @@ pub async fn handle_delete_task(
     headers: HeaderMap,
     Json(body): Json<TaskDeleteRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1747,7 +1747,7 @@ pub async fn handle_abandon_task(
     headers: HeaderMap,
     Json(body): Json<TaskAbandonRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let task_id = match body.task_id {
@@ -1838,7 +1838,7 @@ pub async fn handle_next_task(
     headers: HeaderMap,
     Query(query): Query<NextTaskQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 

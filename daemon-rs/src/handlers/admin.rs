@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::state::RuntimeState;
 
-use super::{ensure_admin, json_error, json_response};
+use super::{ensure_admin, ensure_auth_rated, json_error, json_response};
 
 // ─── Allowlisted tables for dynamic SQL (prevent injection) ─────────────────
 
@@ -93,6 +93,9 @@ pub async fn handle_user_add(
     headers: HeaderMap,
     Json(body): Json<UserAddBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -166,6 +169,9 @@ pub async fn handle_user_rotate_key(
     headers: HeaderMap,
     Json(body): Json<UsernameBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -228,6 +234,9 @@ pub async fn handle_user_remove(
     headers: HeaderMap,
     Json(body): Json<UsernameBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -274,6 +283,9 @@ pub async fn handle_user_remove(
 }
 
 pub async fn handle_user_list(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -310,6 +322,9 @@ pub async fn handle_team_create(
     headers: HeaderMap,
     Json(body): Json<TeamCreateBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -343,6 +358,9 @@ pub async fn handle_team_add_member(
     headers: HeaderMap,
     Json(body): Json<TeamMemberBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -405,6 +423,9 @@ pub async fn handle_team_remove_member(
     headers: HeaderMap,
     Json(body): Json<TeamRemoveMemberBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -451,6 +472,9 @@ pub async fn handle_team_remove_member(
 }
 
 pub async fn handle_team_list(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -484,6 +508,9 @@ pub async fn handle_team_list(State(state): State<RuntimeState>, headers: Header
 // ─── Data Management ────────────────────────────────────────────────────────
 
 pub async fn handle_unowned(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -504,6 +531,9 @@ pub async fn handle_assign_owner(
     headers: HeaderMap,
     Json(body): Json<AssignOwnerBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -566,6 +596,9 @@ pub async fn handle_set_visibility(
     headers: HeaderMap,
     Json(body): Json<SetVisibilityBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -616,6 +649,9 @@ pub async fn handle_archive(
     headers: HeaderMap,
     Json(body): Json<ArchiveBody>,
 ) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
@@ -658,6 +694,9 @@ pub async fn handle_archive(
 }
 
 pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
+        return resp;
+    }
     let conn = state.db.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;

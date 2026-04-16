@@ -1737,8 +1737,14 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
 
 /// Set `status = 'archived'` for all rows in `table` whose `id` is in `ids`.
 /// Only `memories` and `decisions` are supported; other table names return an
-/// error.  Returns the number of rows actually updated.
-pub fn archive_entries(conn: &Connection, table: &str, ids: &[i64]) -> rusqlite::Result<usize> {
+/// error. Returns the number of rows actually updated. If `owner_id` is
+/// provided, updates are restricted to that owner.
+pub fn archive_entries_scoped(
+    conn: &Connection,
+    table: &str,
+    ids: &[i64],
+    owner_id: Option<i64>,
+) -> rusqlite::Result<usize> {
     if table != "memories" && table != "decisions" {
         return Err(rusqlite::Error::InvalidParameterName(format!(
             "archive_entries: unsupported table '{table}'"
@@ -1755,11 +1761,33 @@ pub fn archive_entries(conn: &Connection, table: &str, ids: &[i64]) -> rusqlite:
         .collect::<Vec<_>>()
         .join(", ");
 
-    let sql = format!("UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})");
+    let sql = if owner_id.is_some() {
+        format!(
+            "UPDATE {table} SET status = 'archived' WHERE owner_id = ?{} AND id IN ({placeholders})",
+            ids.len() + 1
+        )
+    } else {
+        format!("UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})")
+    };
 
     let mut stmt = conn.prepare(&sql)?;
-    let affected = stmt.execute(rusqlite::params_from_iter(ids.iter()))?;
+    let affected = if let Some(owner_id) = owner_id {
+        let mut values: Vec<rusqlite::types::Value> = ids
+            .iter()
+            .copied()
+            .map(rusqlite::types::Value::Integer)
+            .collect();
+        values.push(rusqlite::types::Value::Integer(owner_id));
+        stmt.execute(rusqlite::params_from_iter(values.iter()))?
+    } else {
+        stmt.execute(rusqlite::params_from_iter(ids.iter()))?
+    };
     Ok(affected)
+}
+
+#[allow(dead_code)]
+pub fn archive_entries(conn: &Connection, table: &str, ids: &[i64]) -> rusqlite::Result<usize> {
+    archive_entries_scoped(conn, table, ids, None)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

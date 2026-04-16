@@ -31,6 +31,12 @@ export function normalizeCortexUrl(rawValue) {
 
 export function normalizeLocalCortexUrl(rawValue) {
   const normalized = normalizeCortexUrl(rawValue);
+  const url = new URL(normalized);
+  if (url.protocol !== "http:") {
+    throw new Error(
+      "This Chrome Web Store build only supports http loopback Cortex URLs."
+    );
+  }
   if (!isLoopbackUrl(normalized)) {
     throw new Error(
       "This Chrome Web Store build only supports local Cortex URLs (localhost or 127.0.0.1)."

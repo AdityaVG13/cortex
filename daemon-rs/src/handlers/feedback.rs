@@ -19,7 +19,7 @@ use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{ensure_auth, ensure_auth_with_caller, json_error, json_response};
+use super::{ensure_auth_rated, ensure_auth_with_caller_rated, json_error, json_response};
 use crate::embeddings;
 use crate::state::RuntimeState;
 use std::collections::HashMap;
@@ -58,7 +58,7 @@ pub async fn handle_feedback(
     headers: HeaderMap,
     Json(body): Json<FeedbackRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     if body.sources.is_empty() {
@@ -281,7 +281,7 @@ pub async fn handle_feedback_stats(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db.lock().await;
@@ -879,10 +879,16 @@ pub async fn handle_agent_feedback_record(
     headers: HeaderMap,
     Json(body): Json<AgentFeedbackRecordRequest>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
+    if state.team_mode && caller_id.is_none() {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
+        );
+    }
     let owner_id = if state.team_mode {
         caller_id.unwrap_or_default()
     } else {
@@ -914,10 +920,16 @@ pub async fn handle_agent_feedback_stats(
     headers: HeaderMap,
     Query(query): Query<AgentFeedbackStatsQuery>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
     };
+    if state.team_mode && caller_id.is_none() {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
+        );
+    }
     let owner_id = if state.team_mode {
         caller_id.unwrap_or_default()
     } else {

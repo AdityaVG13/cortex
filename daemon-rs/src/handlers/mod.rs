@@ -80,6 +80,8 @@ pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
 /// when the caller should short-circuit with a 401.
 /// Also enforces SSRF protection (X-Cortex-Request header).
 pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
+    ensure_ssrf_protection(headers)?;
+
     let _candidate = match extract_auth_token(headers) {
         Some(candidate) if token_matches_state(&candidate, state) => candidate,
         _ => {
@@ -89,8 +91,6 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
             ));
         }
     };
-
-    ensure_ssrf_protection(headers)?;
 
     Ok(())
 }
@@ -102,6 +102,8 @@ pub fn ensure_auth_with_caller(
     headers: &HeaderMap,
     state: &RuntimeState,
 ) -> Result<Option<i64>, Response> {
+    ensure_ssrf_protection(headers)?;
+
     let candidate = match extract_auth_token(headers) {
         Some(candidate) => candidate,
         None => {
@@ -144,8 +146,6 @@ pub fn ensure_auth_with_caller(
             serde_json::json!({ "error": "Unauthorized" }),
         ));
     };
-
-    ensure_ssrf_protection(headers)?;
 
     Ok(caller)
 }
@@ -270,6 +270,31 @@ pub async fn ensure_auth_rated(headers: &HeaderMap, state: &RuntimeState) -> Res
 
     match ensure_auth(headers, state) {
         Ok(()) => Ok(()),
+        Err(resp) => {
+            let _ = state.rate_limiter.record_auth_failure(ip).await;
+            Err(resp)
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn ensure_auth_with_caller_rated(
+    headers: &HeaderMap,
+    state: &RuntimeState,
+) -> Result<Option<i64>, Response> {
+    let ip = client_ip(headers);
+
+    if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
+        return Err(rate_limit_response(retry_after, 0));
+    }
+
+    match state.rate_limiter.check_request(ip).await {
+        Err(retry_after) => return Err(rate_limit_response(retry_after, 0)),
+        Ok(_remaining) => {}
+    }
+
+    match ensure_auth_with_caller(headers, state) {
+        Ok(caller) => Ok(caller),
         Err(resp) => {
             let _ = state.rate_limiter.record_auth_failure(ip).await;
             Err(resp)

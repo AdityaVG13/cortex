@@ -124,20 +124,36 @@ pub fn detect_conflict(
     conn: &Connection,
     decision: &str,
     source_agent: &str,
+    owner_id: Option<i64>,
 ) -> Result<ConflictResult, String> {
-    let mut stmt = conn
-        .prepare(
+    let (sql, has_owner_scope) = if owner_id.is_some() {
+        (
+            "SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) \
+             FROM decisions \
+             WHERE owner_id = ?1 \
+             AND status = 'active' \
+             AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             ORDER BY id DESC \
+             LIMIT 50",
+            true,
+        )
+    } else {
+        (
             "SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) \
              FROM decisions \
              WHERE status = 'active' \
              AND (expires_at IS NULL OR expires_at > datetime('now')) \
              ORDER BY id DESC \
              LIMIT 50",
+            false,
         )
+    };
+    let mut stmt = conn
+        .prepare(sql)
         .map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
 
-    let rows: Vec<DecisionCandidate> = stmt
-        .query_map([], |row| {
+    let rows: Vec<DecisionCandidate> = if has_owner_scope {
+        stmt.query_map([owner_id.unwrap_or_default()], |row| {
             Ok(DecisionCandidate {
                 id: row.get(0)?,
                 decision: row.get(1)?,
@@ -147,7 +163,20 @@ pub fn detect_conflict(
         })
         .map_err(|e| format!("Failed to query decisions: {e}"))?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect()
+    } else {
+        stmt.query_map([], |row| {
+            Ok(DecisionCandidate {
+                id: row.get(0)?,
+                decision: row.get(1)?,
+                source_agent: row.get(2)?,
+                trust_score: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query decisions: {e}"))?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
 
     let mut best_sim = 0.0_f64;
     let mut best_candidate: Option<DecisionCandidate> = None;
@@ -438,25 +467,27 @@ mod tests {
         .unwrap();
 
         // Same content, same agent => agreement + compatibility update flag
-        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "claude").unwrap();
+        let result =
+            detect_conflict(&conn, "Cortex uses SQLite for storage", "claude", None).unwrap();
         assert!(result.is_update);
         assert!(!result.is_conflict);
         assert_eq!(result.classification, ConflictClassification::Agrees);
 
         // Same content, different agent => agreement
-        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "droid").unwrap();
+        let result =
+            detect_conflict(&conn, "Cortex uses SQLite for storage", "droid", None).unwrap();
         assert!(!result.is_conflict);
         assert!(!result.is_update);
         assert_eq!(result.classification, ConflictClassification::Agrees);
 
         // Contradicting intent => contradiction
-        let result = detect_conflict(&conn, "Never use SQLite for storage", "droid").unwrap();
+        let result = detect_conflict(&conn, "Never use SQLite for storage", "droid", None).unwrap();
         assert_eq!(result.classification, ConflictClassification::Contradicts);
         assert!(result.is_conflict);
 
         // Different content => no conflict
         let result =
-            detect_conflict(&conn, "Something totally different and new", "claude").unwrap();
+            detect_conflict(&conn, "Something totally different and new", "claude", None).unwrap();
         assert!(!result.is_conflict);
         assert!(!result.is_update);
         assert_eq!(result.classification, ConflictClassification::Unrelated);
@@ -481,8 +512,57 @@ mod tests {
         )
         .unwrap();
 
-        let result = detect_conflict(&conn, "Cortex uses SQLite for storage", "claude").unwrap();
+        let result =
+            detect_conflict(&conn, "Cortex uses SQLite for storage", "claude", None).unwrap();
         assert!(!result.is_conflict);
         assert!(!result.is_update);
+    }
+
+    #[test]
+    fn test_detect_conflict_scopes_by_owner_when_requested() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        conn.execute(
+            "ALTER TABLE decisions ADD COLUMN owner_id INTEGER DEFAULT 0",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, type, source_agent, status, owner_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "Always use sqlite for local memory",
+                "owner-one",
+                "decision",
+                "claude",
+                "active",
+                1_i64
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, type, source_agent, status, owner_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "Never use sqlite for local memory",
+                "owner-two",
+                "decision",
+                "droid",
+                "active",
+                2_i64
+            ],
+        )
+        .unwrap();
+
+        let result = detect_conflict(
+            &conn,
+            "Always use sqlite for local memory",
+            "claude",
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(result.matched_id, Some(1));
     }
 }

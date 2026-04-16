@@ -36,11 +36,10 @@ test('resolveRoute defaults to local service-first mode with no URLs', () => {
   assert.deepEqual(route, { mode: 'local', url: '', reason: 'local service-first' });
 });
 
-test('buildMcpArgs includes remote URL and API key when provided', () => {
+test('buildMcpArgs includes remote URL without exposing API key in args', () => {
   const args = buildMcpArgs(
     { mode: 'remote', url: 'https://team.cortex.example' },
-    'claude-code',
-    'ctx_api_key'
+    'claude-code'
   );
   assert.deepEqual(args, [
     'plugin',
@@ -48,14 +47,12 @@ test('buildMcpArgs includes remote URL and API key when provided', () => {
     '--agent',
     'claude-code',
     '--url',
-    'https://team.cortex.example',
-    '--api-key',
-    'ctx_api_key'
+    'https://team.cortex.example'
   ]);
 });
 
 test('buildMcpArgs keeps local mode attach-only args', () => {
-  const args = buildMcpArgs({ mode: 'local', url: '' }, 'codex', '');
+  const args = buildMcpArgs({ mode: 'local', url: '' }, 'codex');
   assert.deepEqual(args, ['plugin', 'mcp', '--agent', 'codex']);
 });
 
@@ -80,7 +77,8 @@ test('buildChildEnv sets attach-only ownership contract in local mode', () => {
     { mode: 'local', reason: 'local service-first', url: '' },
     'claude-code',
     'solo-service',
-    4242
+    4242,
+    ''
   );
   assert.equal(childEnv.CORTEX_DAEMON_OWNER_KIND, 'plugin');
   assert.equal(childEnv.CORTEX_DAEMON_OWNER_SOURCE, 'claude-plugin');
@@ -90,6 +88,18 @@ test('buildChildEnv sets attach-only ownership contract in local mode', () => {
   assert.equal(childEnv.CORTEX_DAEMON_OWNER_PARENT_PID, '4242');
   assert.equal(childEnv.CORTEX_HOME, 'C:\\Users\\qa\\.cortex');
   assert.equal(childEnv.CORTEX_DB, undefined);
+});
+
+test('buildChildEnv forwards remote API key via env instead of args', () => {
+  const childEnv = buildChildEnv(
+    {},
+    { mode: 'remote', reason: 'explicit plugin URL', url: 'https://team.cortex.example' },
+    'claude-code',
+    'team',
+    99,
+    'ctx_remote'
+  );
+  assert.equal(childEnv.CORTEX_API_KEY, 'ctx_remote');
 });
 
 test('runMcpBridge dry run returns computed contract without spawning', () => {
@@ -173,10 +183,9 @@ test('runMcpBridge spawns with expected args and env in explicit remote mode', a
     '--agent',
     'claude-code',
     '--url',
-    'https://team.cortex.example',
-    '--api-key',
-    'ctx_remote'
+    'https://team.cortex.example'
   ]);
+  assert.equal(call.options.env.CORTEX_API_KEY, 'ctx_remote');
   assert.equal(call.options.env.CORTEX_DAEMON_OWNER_MODE, 'team');
   assert.equal(call.options.env.CORTEX_DAEMON_OWNER_PARENT_PID, '777');
   assert.equal(call.options.env.CORTEX_DAEMON_OWNER_LOCAL_SPAWN, '0');

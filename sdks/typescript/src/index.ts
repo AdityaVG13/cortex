@@ -71,6 +71,19 @@ function readToken(): string | undefined {
   }
 }
 
+function isLoopbackBaseUrl(baseUrl: string): boolean {
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    const host = parsed.hostname.toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 export class CortexClient {
   private baseUrl: string;
   private token?: string;
@@ -78,7 +91,15 @@ export class CortexClient {
 
   constructor(options?: { baseUrl?: string; token?: string; timeout?: number }) {
     this.baseUrl = (options?.baseUrl ?? DEFAULT_BASE).replace(/\/$/, "");
-    this.token = options?.token ?? readToken();
+    if (options?.token) {
+      this.token = options.token;
+    } else if (isLoopbackBaseUrl(this.baseUrl)) {
+      this.token = readToken();
+    } else {
+      throw new Error(
+        "Remote Cortex baseUrl requires explicit token. Pass token when using non-loopback targets."
+      );
+    }
     this.timeout = options?.timeout ?? 10_000;
   }
 

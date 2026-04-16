@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
@@ -98,26 +98,41 @@ function escapePowerShellLiteral(value) {
   return value.replace(/'/g, "''");
 }
 
+function runCommand(command, args, failureMessage) {
+  const result = spawnSync(command, args, { stdio: 'inherit', shell: false });
+  if (result.error) {
+    throw result.error;
+  }
+  if (typeof result.status === 'number' && result.status !== 0) {
+    throw new Error(`${failureMessage}: exit ${result.status}`);
+  }
+}
+
 // Extract archive (cross-platform)
 function extractArchive(archivePath, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
 
   if (archivePath.endsWith('.tar.gz')) {
     // Use tar for .tar.gz (available on Windows 10+ via bash/git-bash/wsl)
-    execSync(`tar xzf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
+    runCommand('tar', ['xzf', archivePath, '-C', destDir], 'Failed to extract tar.gz archive');
   } else if (archivePath.endsWith('.zip')) {
     if (PLATFORM === 'win32') {
       const archiveLiteral = escapePowerShellLiteral(archivePath);
       const destLiteral = escapePowerShellLiteral(destDir);
       try {
-        execSync(
-          `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${archiveLiteral}' -DestinationPath '${destLiteral}' -Force"`,
-          { stdio: 'inherit' },
+        runCommand(
+          'powershell',
+          [
+            '-NoProfile',
+            '-Command',
+            `Expand-Archive -LiteralPath '${archiveLiteral}' -DestinationPath '${destLiteral}' -Force`
+          ],
+          'Failed to extract ZIP archive via PowerShell'
         );
       } catch (_powershellError) {
         console.error('[cortex-plugin] PowerShell Expand-Archive failed; trying tar fallback');
         try {
-          execSync(`tar xf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
+          runCommand('tar', ['xf', archivePath, '-C', destDir], 'Failed to extract ZIP archive via tar fallback');
         } catch (tarError) {
           throw new Error(
             `Failed to extract ZIP via PowerShell and tar fallback. Install Git for Windows (tar) or ensure Expand-Archive works: ${tarError.message}`,
@@ -125,7 +140,7 @@ function extractArchive(archivePath, destDir) {
         }
       }
     } else {
-      execSync(`tar xf "${archivePath}" -C "${destDir}"`, { stdio: 'inherit' });
+      runCommand('tar', ['xf', archivePath, '-C', destDir], 'Failed to extract ZIP archive');
     }
   } else {
     throw new Error(`Unknown archive format: ${archivePath}`);

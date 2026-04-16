@@ -1485,6 +1485,7 @@ function extractMcpToolError(payload) {
 
 export function App() {
   const browserBootstrap = useMemo(() => readBrowserBootstrap(), []);
+  const isTauriRuntime = typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
   const [panel, setPanel] = useState(() => browserBootstrap.panel || "overview");
   const [panelMotionDirection, setPanelMotionDirection] = useState("forward");
   const [daemonState, setDaemonState] = useState(EMPTY_DAEMON);
@@ -2317,6 +2318,19 @@ export function App() {
     localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
     refreshAllRef.current();
   }, [cortexBase]);
+
+  useEffect(() => {
+    if (!isTauriRuntime) {
+      return;
+    }
+    if (cortexBase !== DEFAULT_CORTEX_BASE) {
+      setCortexBase(DEFAULT_CORTEX_BASE);
+    }
+    if (tokenRef.current) {
+      tokenRef.current = "";
+      persistBrowserAuthToken("");
+    }
+  }, [cortexBase, isTauriRuntime]);
 
   useEffect(() => {
     localStorage.setItem("cortex_currency", currency);
@@ -3597,9 +3611,21 @@ export function App() {
           <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
             <div className="connection-dialog" onClick={e => e.stopPropagation()}>
               <h2>Connection Settings</h2>
-              <p className="connection-subtitle">Connect to a local or remote Cortex daemon</p>
+              <p className="connection-subtitle">
+                {isTauriRuntime
+                  ? "Desktop app mode uses the local app-managed Cortex daemon only."
+                  : "Connect to a local or remote Cortex daemon"}
+              </p>
               <form onSubmit={(e) => {
                 e.preventDefault();
+                if (isTauriRuntime) {
+                  setCortexBase(DEFAULT_CORTEX_BASE);
+                  tokenRef.current = "";
+                  persistBrowserAuthToken("");
+                  setShowConnectionDialog(false);
+                  queueMicrotask(() => refreshAllRef.current());
+                  return;
+                }
                 const fd = new FormData(e.target);
                 const host = fd.get("host")?.toString().trim() || "127.0.0.1";
                 const port = fd.get("port")?.toString().trim() || "7437";
@@ -3612,15 +3638,30 @@ export function App() {
               }}>
                 <label className="connection-field">
                   <span>Host</span>
-                  <input name="host" defaultValue={(() => { try { return new URL(cortexBase).hostname; } catch { return "127.0.0.1"; } })()} placeholder="127.0.0.1" />
+                  <input
+                    name="host"
+                    defaultValue={(() => { try { return new URL(cortexBase).hostname; } catch { return "127.0.0.1"; } })()}
+                    placeholder="127.0.0.1"
+                    disabled={isTauriRuntime}
+                  />
                 </label>
                 <label className="connection-field">
                   <span>Port</span>
-                  <input name="port" defaultValue={(() => { try { return new URL(cortexBase).port || "7437"; } catch { return "7437"; } })()} placeholder="7437" />
+                  <input
+                    name="port"
+                    defaultValue={(() => { try { return new URL(cortexBase).port || "7437"; } catch { return "7437"; } })()}
+                    placeholder="7437"
+                    disabled={isTauriRuntime}
+                  />
                 </label>
                 <label className="connection-field">
                   <span>Auth Token</span>
-                  <input name="token" type="password" placeholder="Leave blank for local (auto-read)" />
+                  <input
+                    name="token"
+                    type="password"
+                    placeholder={isTauriRuntime ? "Managed by desktop app token flow" : "Leave blank for local (auto-read)"}
+                    disabled={isTauriRuntime}
+                  />
                 </label>
                 <div className="connection-actions">
                   <button type="button" className="btn-sm" onClick={() => {

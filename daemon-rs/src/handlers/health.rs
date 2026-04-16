@@ -7,7 +7,7 @@ use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 
-use super::{ensure_auth, json_response, truncate_chars};
+use super::{ensure_auth_rated, json_response, truncate_chars};
 use crate::state::RuntimeState;
 
 const STORAGE_LOG_FILES: &[&str] = &[
@@ -352,7 +352,7 @@ pub async fn handle_readiness(State(state): State<RuntimeState>) -> Response {
 // ─── GET /digest ─────────────────────────────────────────────────────────────
 
 pub async fn handle_digest(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
@@ -1127,7 +1127,7 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
 }
 
 pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
@@ -1484,7 +1484,7 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
 }
 
 pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -1516,7 +1516,7 @@ pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap)
 // ─── GET /dump ───────────────────────────────────────────────────────────────
 
 pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 

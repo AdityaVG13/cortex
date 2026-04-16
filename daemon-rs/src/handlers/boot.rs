@@ -5,7 +5,7 @@ use axum::response::Response;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ensure_auth_with_caller, json_response, now_iso};
+use super::{ensure_auth_with_caller_rated, json_response, now_iso};
 use crate::compiler;
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
@@ -26,10 +26,16 @@ pub async fn handle_boot(
     Query(query): Query<BootQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
+    if state.team_mode && caller_id.is_none() {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
+        );
+    }
     let source = super::resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("mcp"));
     let agent = source.agent;
     super::register_agent_presence_from_headers(&state, &headers, caller_id).await;
@@ -41,7 +47,7 @@ pub async fn handle_boot(
     {
         let mut served = state.served_content.lock().await;
         let scope_prefix = if state.team_mode {
-            match caller_id.or(state.default_owner_id) {
+            match caller_id {
                 Some(owner_id) => format!("team:{owner_id}::{agent}::"),
                 None => format!("team:none::{agent}::"),
             }
@@ -71,11 +77,7 @@ pub async fn handle_boot(
         [],
         |row| row.get::<_, String>(0),
     ) {
-        let feed_ack_owner = if state.team_mode {
-            caller_id.or(state.default_owner_id)
-        } else {
-            None
-        };
+        let feed_ack_owner = if state.team_mode { caller_id } else { None };
         if let Some(owner_id) = feed_ack_owner {
             let _ = conn.execute(
                 "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, datetime('now')) \

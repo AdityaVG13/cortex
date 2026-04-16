@@ -32,7 +32,7 @@ test("normalizeLocalCortexUrl accepts loopback and rejects remote hosts", () => 
   );
   assert.throws(
     () => normalizeLocalCortexUrl("https://team.example.com"),
-    /only supports local cortex urls/i
+    /only supports http loopback cortex urls/i
   );
 });
 

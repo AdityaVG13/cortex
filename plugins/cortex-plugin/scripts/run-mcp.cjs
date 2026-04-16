@@ -52,13 +52,10 @@ function resolveRoute(config, env = process.env) {
   return { mode: 'local', url: '', reason: 'local service-first' };
 }
 
-function buildMcpArgs(route, pluginAgent, cortexApiKey) {
+function buildMcpArgs(route, pluginAgent) {
   const args = ['plugin', 'mcp', '--agent', pluginAgent];
   if (route.mode === 'remote') {
     args.push('--url', route.url);
-    if (normalizeOption(cortexApiKey).length > 0) {
-      args.push('--api-key', normalizeOption(cortexApiKey));
-    }
   }
   return args;
 }
@@ -70,7 +67,7 @@ function resolveOwnerMode(route) {
   return route.reason === 'explicit plugin URL' ? 'team' : 'app';
 }
 
-function buildChildEnv(baseEnv, route, pluginAgent, ownerMode, parentPid) {
+function buildChildEnv(baseEnv, route, pluginAgent, ownerMode, parentPid, cortexApiKey) {
   const childEnv = {
     ...baseEnv,
     CORTEX_DAEMON_OWNER_KIND: 'plugin',
@@ -80,12 +77,18 @@ function buildChildEnv(baseEnv, route, pluginAgent, ownerMode, parentPid) {
     CORTEX_DAEMON_OWNER_LOCAL_SPAWN: '0',
     CORTEX_DAEMON_OWNER_PARENT_PID: String(parentPid)
   };
+  delete childEnv.CORTEX_API_KEY;
   if (route.mode === 'local') {
     const userHome = baseEnv.USERPROFILE || baseEnv.HOME || '';
     if (userHome) {
       childEnv.CORTEX_HOME = path.join(userHome, '.cortex');
     }
     delete childEnv.CORTEX_DB;
+  } else {
+    const normalizedApiKey = normalizeOption(cortexApiKey);
+    if (normalizedApiKey.length > 0) {
+      childEnv.CORTEX_API_KEY = normalizedApiKey;
+    }
   }
   return childEnv;
 }
@@ -146,9 +149,9 @@ function runMcpBridge(options = {}) {
     return { ok: false, route, pluginAgent };
   }
 
-  const args = buildMcpArgs(route, pluginAgent, cortexApiKey);
+  const args = buildMcpArgs(route, pluginAgent);
   const ownerMode = resolveOwnerMode(route);
-  const childEnv = buildChildEnv(env, route, pluginAgent, ownerMode, processRef.pid);
+  const childEnv = buildChildEnv(env, route, pluginAgent, ownerMode, processRef.pid, cortexApiKey);
 
   log(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
   log(`[cortex-plugin] Cortex binary: ${binaryPath} (${binarySource})`);

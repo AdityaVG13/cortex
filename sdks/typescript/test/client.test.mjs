@@ -108,3 +108,10 @@ test("health uses health endpoint without cortex auth headers", async () => {
   assert.equal(requestUrl.pathname, "/health");
   assert.equal(init.headers, undefined);
 });
+
+test("remote baseUrl requires explicit token", () => {
+  assert.throws(
+    () => new CortexClient({ baseUrl: "https://team.example.com" }),
+    /requires explicit token/i
+  );
+});

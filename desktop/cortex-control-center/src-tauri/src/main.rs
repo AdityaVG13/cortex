@@ -282,7 +282,8 @@ fn cortex_home() -> Result<PathBuf, String> {
     env::var_os("USERPROFILE")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(PathBuf::from))
-        .ok_or_else(|| "Could not resolve USERPROFILE/HOME".to_string())
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "Could not resolve home directory".to_string())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -900,14 +901,17 @@ fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 fn shutdown_daemon<R: Runtime>(app: &tauri::AppHandle<R>) {
     let daemon_state = app.state::<DaemonState>();
+    let (managed, _) = daemon_state.status().unwrap_or((false, None));
     let port = daemon_port();
-    if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+    if managed && is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         let _ = send_http_shutdown();
         let _ =
             wait_for_reachability_blocking(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS));
     }
-    let _ = daemon_state.stop();
-    let _ = flush_cortex_db_on_shutdown();
+    if managed {
+        let _ = daemon_state.stop();
+        let _ = flush_cortex_db_on_shutdown();
+    }
 }
 
 fn flush_cortex_db_on_shutdown() -> Result<(), String> {
@@ -1013,7 +1017,7 @@ fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, Strin
 #[tauri::command]
 async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
-    let _ = state.status()?;
+    let (managed, pid) = state.status()?;
     if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
         log_startup_path(
             "start_daemon",
@@ -1024,10 +1028,10 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
         return Ok(DaemonCommandResult {
             running: true,
             reachable: true,
-            managed: false,
+            managed,
             auth_token_ready,
-            pid: None,
-            message: describe_daemon_state(false, true, auth_token_ready, None, port),
+            pid,
+            message: describe_daemon_state(managed, true, auth_token_ready, pid, port),
         });
     }
 
@@ -1180,12 +1184,9 @@ fn extract_error_detail(body: &str) -> Option<String> {
 async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
     let (was_running, _) = state.status()?;
-
-    // If daemon is still reachable (started externally by Claude, CLI, etc.),
-    // send a graceful HTTP shutdown signal
     let still_reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
     let mut shutdown_error = None;
-    if still_reachable {
+    if was_running && still_reachable {
         if let Err(err) = send_http_shutdown() {
             shutdown_error = Some(err);
         }
@@ -1193,7 +1194,7 @@ async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResul
             wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
     }
 
-    let managed_stop_error = state.stop().err();
+    let managed_stop_error = if was_running { state.stop().err() } else { None };
     let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
     if reachable {
         if let Some(err) = managed_stop_error.or(shutdown_error) {
@@ -1202,17 +1203,17 @@ async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResul
     }
 
     let message = if was_running && !reachable {
-        "Stopped Cortex daemon.".to_string()
-    } else if !was_running && still_reachable && !reachable {
-        "Sent shutdown to external daemon.".to_string()
-    } else if reachable {
+        "Stopped app-managed Cortex daemon.".to_string()
+    } else if was_running && reachable {
         "Shutdown signal sent, daemon still shutting down...".to_string()
+    } else if !was_running && still_reachable {
+        "Unmanaged daemon is running; Control Center did not stop it.".to_string()
     } else {
         "Daemon is already stopped.".to_string()
     };
 
     Ok(DaemonCommandResult {
-        running: false,
+        running: reachable,
         reachable,
         managed: false,
         auth_token_ready: reachable && auth_token_ready(),

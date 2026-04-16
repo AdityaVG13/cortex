@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{ensure_auth, json_response, now_iso};
+use super::{ensure_auth_with_caller_rated, json_response, now_iso};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 
@@ -19,11 +19,21 @@ use crate::state::RuntimeState;
 const MAX_FEED: i64 = 200;
 const FEED_TTL_SECONDS: i64 = 4 * 60 * 60;
 
-fn owner_id_from_state(state: &RuntimeState) -> Option<i64> {
+#[allow(clippy::result_large_err)]
+fn owner_id_from_request(
+    state: &RuntimeState,
+    caller_id: Option<i64>,
+) -> Result<Option<i64>, Response> {
     if state.team_mode {
-        state.default_owner_id
+        match caller_id {
+            Some(owner_id) => Ok(Some(owner_id)),
+            None => Err(json_response(
+                StatusCode::FORBIDDEN,
+                json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
+            )),
+        }
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -347,9 +357,10 @@ pub async fn handle_post_feed(
     headers: HeaderMap,
     Json(body): Json<FeedRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
+        Ok(caller_id) => caller_id,
+        Err(resp) => return resp,
+    };
     let agent = match body.agent {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
@@ -392,7 +403,10 @@ pub async fn handle_post_feed(
         tokens: ((summary.len() as f64) / 4.0).ceil() as i64,
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = match owner_id_from_request(&state, caller_id) {
+        Ok(owner_id) => owner_id,
+        Err(resp) => return resp,
+    };
     let conn = state.db.lock().await;
     let _ = clean_old_feed(&conn, owner_id);
     let inserted = if let Some(owner_id) = owner_id {
@@ -445,11 +459,15 @@ pub async fn handle_get_feed(
     headers: HeaderMap,
     Query(query): Query<FeedQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
+        Ok(caller_id) => caller_id,
+        Err(resp) => return resp,
+    };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = match owner_id_from_request(&state, caller_id) {
+        Ok(owner_id) => owner_id,
+        Err(resp) => return resp,
+    };
     let conn = state.db.lock().await;
     let _ = clean_old_feed(&conn, owner_id);
     let since = query.since.unwrap_or_else(|| "1h".to_string());
@@ -483,12 +501,16 @@ pub async fn handle_get_feed_by_id(
     headers: HeaderMap,
     Path(feed_id): Path<String>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
+        Ok(caller_id) => caller_id,
+        Err(resp) => return resp,
+    };
 
     let conn = state.db.lock().await;
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = match owner_id_from_request(&state, caller_id) {
+        Ok(owner_id) => owner_id,
+        Err(resp) => return resp,
+    };
     let entry = if let Some(owner_id) = owner_id {
         conn.query_row(
             "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens FROM feed WHERE owner_id = ?1 AND id = ?2",
@@ -553,9 +575,10 @@ pub async fn handle_feed_ack(
     headers: HeaderMap,
     Json(body): Json<FeedAckRequest>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
-        return resp;
-    }
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
+        Ok(caller_id) => caller_id,
+        Err(resp) => return resp,
+    };
     let agent = match body.agent {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
@@ -575,7 +598,10 @@ pub async fn handle_feed_ack(
         }
     };
 
-    let owner_id = owner_id_from_state(&state);
+    let owner_id = match owner_id_from_request(&state, caller_id) {
+        Ok(owner_id) => owner_id,
+        Err(resp) => return resp,
+    };
     let conn = state.db.lock().await;
     let acked = if let Some(owner_id) = owner_id {
         conn.execute(

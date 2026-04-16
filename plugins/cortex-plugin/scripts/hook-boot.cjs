@@ -131,68 +131,104 @@ function formatHostForUrl(host) {
   return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
-function healthCheck(url, timeoutMs = 5000, expectedIdentity = null) {
+function isCortexHealthResponse(data) {
+  if (!data || typeof data !== 'object') return false;
+  const ok = data.ok;
+  const status = typeof data.status === 'string' ? data.status.toLowerCase() : '';
+  return ok === true || status === 'ok' || status === 'healthy' || status === 'ready';
+}
+
+function healthCheck(url, timeoutMs = 5000, expectedIdentity = null, apiKey = '') {
   return new Promise((resolve) => {
-    let target;
+    let baseTarget;
     try {
-      target = new URL(`${url.replace(/\/+$/, '')}/readiness`);
+      baseTarget = new URL(url.replace(/\/+$/, ''));
     } catch (e) {
       resolve({ ok: false, error: `Invalid health URL: ${e.message}` });
       return;
     }
 
-    const transport = target.protocol === 'https:' ? https : http;
-    const request = transport.request(
-      target,
-      {
-        method: 'GET',
-        headers: { 'X-Cortex-Request': 'true' }
-      },
-      (response) => {
-        let body = '';
-        response.setEncoding('utf8');
-        response.on('data', (chunk) => {
-          body += chunk;
-        });
-        response.on('end', () => {
-          let data;
-          try {
-            data = body ? JSON.parse(body) : null;
-          } catch (e) {
-            resolve({ ok: false, error: `Invalid health response: ${e.message}` });
-            return;
-          }
+    const transport = baseTarget.protocol === 'https:' ? https : http;
+    const normalizedApiKey = normalizeOption(apiKey);
+    const baseHeaders = { 'X-Cortex-Request': 'true' };
+    if (normalizedApiKey) {
+      baseHeaders.Authorization = `Bearer ${normalizedApiKey}`;
+    }
 
-          if (!isCortexReadinessResponse(data)) {
-            resolve({ ok: false, error: 'Invalid Cortex readiness response' });
-            return;
-          }
-          if (!validateHealthIdentity(data, expectedIdentity)) {
-            resolve({ ok: false, error: 'Invalid Cortex readiness response (identity mismatch)' });
-            return;
-          }
-          if (data.ready === true) {
-            const stats = data.stats || {};
-            resolve({
-              ok: true,
-              status: 'ready',
-              memories: stats.memories,
-              decisions: stats.decisions
+    function requestEndpoint(path, onSuccess) {
+      return new Promise((innerResolve) => {
+        const target = new URL(path, baseTarget);
+        const request = transport.request(
+          target,
+          { method: 'GET', headers: baseHeaders },
+          (response) => {
+            let body = '';
+            response.setEncoding('utf8');
+            response.on('data', (chunk) => {
+              body += chunk;
             });
-            return;
+            response.on('end', () => {
+              let data;
+              try {
+                data = body ? JSON.parse(body) : null;
+              } catch (e) {
+                innerResolve({ ok: false, error: `Invalid ${path} response: ${e.message}` });
+                return;
+              }
+              onSuccess(response.statusCode || 0, data, body, innerResolve);
+            });
           }
-          resolve({ ok: false, error: body.trim() || `HTTP ${response.statusCode || 'unknown'}` });
+        );
+        request.setTimeout(timeoutMs, () => {
+          request.destroy(new Error(`Health check timed out after ${timeoutMs}ms`));
         });
-      }
-    );
+        request.on('error', (err) => {
+          innerResolve({ ok: false, error: err.message });
+        });
+        request.end();
+      });
+    }
 
-    request.setTimeout(timeoutMs, () => {
-      request.destroy(new Error(`Health check timed out after ${timeoutMs}ms`));
-    });
-    request.on('error', (err) => {
-      resolve({ ok: false, error: err.message });
-    });
-    request.end();
+    requestEndpoint('/readiness', (statusCode, data, body, done) => {
+      if (
+        statusCode >= 200 &&
+        statusCode < 300 &&
+        isCortexReadinessResponse(data) &&
+        validateHealthIdentity(data, expectedIdentity)
+      ) {
+        if (data.ready === true) {
+          const stats = data.stats || {};
+          done({
+            ok: true,
+            status: 'ready',
+            memories: stats.memories,
+            decisions: stats.decisions
+          });
+          return;
+        }
+        done({ ok: false, error: body.trim() || `HTTP ${statusCode}` });
+        return;
+      }
+
+      requestEndpoint('/health', (healthStatus, healthData, healthBody, healthDone) => {
+        if (
+          healthStatus >= 200 &&
+          healthStatus < 300 &&
+          isCortexHealthResponse(healthData) &&
+          (!expectedIdentity || validateHealthIdentity(healthData, expectedIdentity))
+        ) {
+          const stats = healthData?.stats || {};
+          healthDone({
+            ok: true,
+            status: 'healthy',
+            memories: stats.memories,
+            decisions: stats.decisions
+          });
+          return;
+        }
+        healthDone({ ok: false, error: healthBody.trim() || `HTTP ${healthStatus}` });
+      }).then(resolve);
+    }).then(resolve);
   });
 }
 
@@ -273,7 +309,12 @@ function emitStatus(additionalContext) {
 
 (async () => {
   if (route.mode === 'team' || route.mode === 'app') {
-    const health = await healthCheck(route.url);
+    const health = await healthCheck(
+      route.url,
+      5000,
+      null,
+      process.env.CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY || ''
+    );
     emitStatus(buildStatusLine(health, route.mode, pluginAgent));
     return;
   }

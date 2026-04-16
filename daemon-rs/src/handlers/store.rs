@@ -6,7 +6,9 @@ use axum::Json;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
-use super::{ensure_auth_with_caller, json_response, log_event, now_iso, resolve_source_identity};
+use super::{
+    ensure_auth_with_caller_rated, json_response, log_event, now_iso, resolve_source_identity,
+};
 use crate::api_types::StoreRequest;
 use crate::conflict::{
     detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
@@ -195,10 +197,16 @@ pub async fn handle_store(
     headers: HeaderMap,
     Json(body): Json<StoreRequest>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
+    if state.team_mode && caller_id.is_none() {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
+        );
+    }
 
     let decision = body.decision.unwrap_or_default();
     if decision.trim().is_empty() {
@@ -435,7 +443,7 @@ fn store_decision_internal(
     let expires_at = compute_expires_at(conn, ttl_seconds).map_err(StoreError::Internal)?;
 
     if let Some(query_vector) = query_embedding {
-        let candidates = fetch_top_semantic_candidates(conn, query_vector)?;
+        let candidates = fetch_top_semantic_candidates(conn, query_vector, owner_id)?;
         let dedup_action = choose_semantic_dedup_action(&candidates, decision);
         let best_similarity = candidates
             .first()
@@ -458,6 +466,7 @@ fn store_decision_internal(
                 similarity,
                 jaccard,
                 &ts,
+                owner_id,
             );
         }
 
@@ -509,7 +518,8 @@ fn store_decision_legacy(
     ts: &str,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
-    let relation = detect_conflict(conn, decision, source_agent).map_err(StoreError::Internal)?;
+    let relation =
+        detect_conflict(conn, decision, source_agent, owner_id).map_err(StoreError::Internal)?;
 
     match relation.classification {
         ConflictClassification::Contradicts => {
@@ -560,7 +570,21 @@ fn store_decision_legacy(
         ConflictClassification::Unrelated => {}
     }
 
-    let existing: Vec<String> = {
+    let existing: Vec<String> = if let Some(owner_id) = owner_id {
+        let mut stmt = conn
+            .prepare(
+                "SELECT decision FROM decisions \
+                 WHERE owner_id = ?1 \
+                 AND status = 'active' \
+                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                 ORDER BY created_at DESC LIMIT 50",
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![owner_id], |row| row.get(0))
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        rows.filter_map(|row| row.ok()).collect()
+    } else {
         let mut stmt = conn
             .prepare(
                 "SELECT decision FROM decisions \
@@ -571,10 +595,8 @@ fn store_decision_legacy(
             .map_err(|e| StoreError::Internal(e.to_string()))?;
         let rows = stmt
             .query_map([], |row| row.get(0))
-            .map_err(|e| StoreError::Internal(e.to_string()))?
-            .filter_map(|row| row.ok())
-            .collect();
-        rows
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        rows.filter_map(|row| row.ok()).collect()
     };
 
     let max_sim = existing
@@ -657,11 +679,19 @@ fn handle_contradiction_policy(
         .map_err(|e| StoreError::Internal(e.to_string()))?;
 
     if incoming_wins {
-        tx.execute(
-            "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2",
-            params![ts, existing_id],
-        )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        if let Some(owner_id) = owner_id {
+            tx.execute(
+                "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
+                params![ts, existing_id, owner_id],
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        } else {
+            tx.execute(
+                "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2",
+                params![ts, existing_id],
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        }
     }
 
     let new_id = insert_decision_with_state(
@@ -878,11 +908,19 @@ fn handle_refinement_policy(
         .map_err(|e| StoreError::Internal(e.to_string()))?;
 
     if should_supersede {
-        tx.execute(
-            "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2",
-            params![ts, target_id],
-        )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        if let Some(owner_id) = owner_id {
+            tx.execute(
+                "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
+                params![ts, target_id, owner_id],
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        } else {
+            tx.execute(
+                "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2",
+                params![ts, target_id],
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        }
     }
 
     let new_id = insert_decision_with_state(
@@ -1236,41 +1274,81 @@ fn should_merge_candidate(similarity: f32, jaccard: f64) -> bool {
 fn fetch_top_semantic_candidates(
     conn: &Connection,
     query_vector: &[f32],
+    owner_id: Option<i64>,
 ) -> Result<Vec<SemanticCandidate>, StoreError> {
-    let mut stmt = conn
-        .prepare(
+    let (sql, has_owner_scope) = if owner_id.is_some() {
+        (
+            "SELECT d.id, d.decision, d.context, e.vector \
+             FROM decisions d \
+             JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
+             WHERE d.owner_id = ?1 \
+             AND d.status = 'active' \
+             AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
+            true,
+        )
+    } else {
+        (
             "SELECT d.id, d.decision, d.context, e.vector \
              FROM decisions d \
              JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
              WHERE d.status = 'active' \
              AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))",
+            false,
         )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })
+    };
+    let mut stmt = conn
+        .prepare(sql)
         .map_err(|e| StoreError::Internal(e.to_string()))?;
 
     let mut candidates = Vec::new();
-    for row in rows.flatten() {
-        let (id, decision, _context, blob) = row;
-        let existing_vec = crate::embeddings::blob_to_vector(&blob);
-        if existing_vec.len() != query_vector.len() {
-            continue;
+    if has_owner_scope {
+        let rows = stmt
+            .query_map([owner_id.unwrap_or_default()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            })
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        for row in rows.flatten() {
+            let (id, decision, _context, blob) = row;
+            let existing_vec = crate::embeddings::blob_to_vector(&blob);
+            if existing_vec.len() != query_vector.len() {
+                continue;
+            }
+            let similarity = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+            candidates.push(SemanticCandidate {
+                id,
+                decision,
+                similarity,
+            });
         }
-        let similarity = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
-        candidates.push(SemanticCandidate {
-            id,
-            decision,
-            similarity,
-        });
+    } else {
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                ))
+            })
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        for row in rows.flatten() {
+            let (id, decision, _context, blob) = row;
+            let existing_vec = crate::embeddings::blob_to_vector(&blob);
+            if existing_vec.len() != query_vector.len() {
+                continue;
+            }
+            let similarity = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+            candidates.push(SemanticCandidate {
+                id,
+                decision,
+                similarity,
+            });
+        }
     }
 
     candidates.sort_by(|left, right| {
@@ -1294,6 +1372,7 @@ fn merge_into_existing_decision(
     similarity: f32,
     jaccard: f64,
     ts: &str,
+    owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let tx = conn
         .transaction()
@@ -1302,13 +1381,22 @@ fn merge_into_existing_decision(
         String,
         Option<String>,
         i64,
-    ) = tx
-        .query_row(
+    ) = if let Some(owner_id) = owner_id {
+        tx.query_row(
+            "SELECT decision, context, COALESCE(merged_count, 0) \
+                 FROM decisions WHERE id = ?1 AND owner_id = ?2",
+            params![target_id, owner_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| StoreError::Internal(e.to_string()))?
+    } else {
+        tx.query_row(
             "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1",
             params![target_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+        .map_err(|e| StoreError::Internal(e.to_string()))?
+    };
 
     let merged_context = merge_context(
         existing_context,
@@ -1317,24 +1405,46 @@ fn merge_into_existing_decision(
         incoming_text,
     );
     let merged_count = previous_merged_count + 1;
-    tx.execute(
-        "UPDATE decisions \
-         SET context = ?1, \
-             score = COALESCE(score, 0) + ?2, \
-             merged_count = ?3, \
-             quality = MAX(COALESCE(quality, 50), ?4), \
-             updated_at = ?5 \
-         WHERE id = ?6",
-        params![
-            merged_context,
-            MERGE_SCORE_BONUS,
-            merged_count,
-            quality,
-            ts,
-            target_id
-        ],
-    )
-    .map_err(|e| StoreError::Internal(e.to_string()))?;
+    if let Some(owner_id) = owner_id {
+        tx.execute(
+            "UPDATE decisions \
+             SET context = ?1, \
+                 score = COALESCE(score, 0) + ?2, \
+                 merged_count = ?3, \
+                 quality = MAX(COALESCE(quality, 50), ?4), \
+                 updated_at = ?5 \
+             WHERE id = ?6 AND owner_id = ?7",
+            params![
+                merged_context,
+                MERGE_SCORE_BONUS,
+                merged_count,
+                quality,
+                ts,
+                target_id,
+                owner_id
+            ],
+        )
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+    } else {
+        tx.execute(
+            "UPDATE decisions \
+             SET context = ?1, \
+                 score = COALESCE(score, 0) + ?2, \
+                 merged_count = ?3, \
+                 quality = MAX(COALESCE(quality, 50), ?4), \
+                 updated_at = ?5 \
+             WHERE id = ?6",
+            params![
+                merged_context,
+                MERGE_SCORE_BONUS,
+                merged_count,
+                quality,
+                ts,
+                target_id
+            ],
+        )
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+    }
 
     let _ = log_event(
         &tx,

@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional, cast
+from urllib.parse import urlparse
 
 import httpx
 
@@ -37,6 +38,17 @@ def _read_token() -> Optional[str]:
         return None
 
 
+def _is_loopback_base_url(base_url: str) -> bool:
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
 class CortexClient:
     """Synchronous + async Python client for the Cortex daemon.
 
@@ -57,7 +69,15 @@ class CortexClient:
         timeout: float = 10.0,
     ):
         self.base_url = base_url.rstrip("/")
-        self.token = token or _read_token()
+        if token:
+            self.token = token
+        elif _is_loopback_base_url(self.base_url):
+            self.token = _read_token()
+        else:
+            raise ValueError(
+                "Remote Cortex base_url requires explicit token. "
+                "Pass token=... when using non-loopback targets."
+            )
         self.timeout = timeout
 
     def _headers(self) -> dict[str, str]:

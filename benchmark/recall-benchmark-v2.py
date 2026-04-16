@@ -6,6 +6,7 @@ Cortex Recall Benchmark v2
 """
 
 import json
+import os
 import sys
 import time
 import sqlite3
@@ -18,7 +19,7 @@ from urllib.request import Request, urlopen
 CORTEX_URL = "http://127.0.0.1:7437"
 TOKEN_FILE = Path.home() / ".cortex" / "cortex.token"
 DB_PATH = Path.home() / "cortex" / "cortex.db"
-MEMORY_DIR = Path.home() / ".claude" / "projects" / "C--Users-aditya" / "memory"
+MEMORY_DIR_OVERRIDE = os.environ.get("CORTEX_BENCHMARK_MEMORY_DIR", "").strip()
 
 AUTH_TOKEN = TOKEN_FILE.read_text().strip() if TOKEN_FILE.exists() else ""
 AUTH_HEADERS = {
@@ -319,9 +320,19 @@ def score_ground_truth(ground_truth: list[str], excerpt: str, source: str) -> bo
 def naive_baseline_tokens() -> int:
     """Total tokens if you dump all memories + decisions raw."""
     total_chars = 0
-    if MEMORY_DIR.exists():
-        for md in MEMORY_DIR.glob("*.md"):
-            total_chars += md.stat().st_size
+    if MEMORY_DIR_OVERRIDE:
+        memory_dir = Path(MEMORY_DIR_OVERRIDE).expanduser()
+        if memory_dir.exists():
+            for md in memory_dir.glob("*.md"):
+                total_chars += md.stat().st_size
+    else:
+        projects_root = Path.home() / ".claude" / "projects"
+        if projects_root.exists():
+            for memory_dir in projects_root.glob("*/memory"):
+                if not memory_dir.is_dir():
+                    continue
+                for md in memory_dir.glob("*.md"):
+                    total_chars += md.stat().st_size
 
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)

@@ -11,7 +11,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{ensure_auth, json_response};
+use super::{ensure_auth_rated, json_response};
 use crate::api_types::{ExportFormat, ImportOptions, ImportPayload};
 use crate::export_data::{export_json_value, export_sql_text, import_payload as import_data};
 use crate::state::RuntimeState;
@@ -27,7 +27,7 @@ pub async fn handle_export(
     headers: HeaderMap,
     Query(query): Query<ExportQuery>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
@@ -51,7 +51,7 @@ pub async fn handle_import(
     headers: HeaderMap,
     Json(payload): Json<ImportPayload>,
 ) -> Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
 
