@@ -2219,12 +2219,19 @@ fn local_spawn_allowed_for_request(allow_service_ensure: bool) -> bool {
     if !allow_service_ensure {
         return false;
     }
-    let local_spawn_disabled = std::env::var(DAEMON_LOCAL_SPAWN_ENV)
-        .ok()
-        .is_some_and(|value| !parse_truthy_flag(&value));
+    let app_client_marked = env_trimmed(APP_CLIENT_ENV).is_some();
+    let local_spawn_raw = std::env::var(DAEMON_LOCAL_SPAWN_ENV).ok();
+    let local_spawn_disabled = local_spawn_raw
+        .as_ref()
+        .is_some_and(|value| !parse_truthy_flag(value));
     let app_required = std::env::var(APP_REQUIRED_ENV)
         .ok()
         .is_some_and(|value| parse_truthy_flag(&value));
+    // Fail closed for app-marked clients when no explicit local spawn policy exists.
+    // This prevents partial registration env contracts from silently re-enabling local spawn.
+    if app_client_marked && local_spawn_raw.is_none() {
+        return false;
+    }
     !(local_spawn_disabled || app_required)
 }
 
@@ -3507,6 +3514,42 @@ mod tests {
         assert!(!parse_truthy_flag("0"));
         assert!(!parse_truthy_flag("false"));
         assert!(!parse_truthy_flag(""));
+    }
+
+    #[test]
+    fn local_spawn_policy_fails_closed_for_marked_app_client_without_spawn_contract() {
+        let _env_guard = env_guard();
+        std::env::remove_var(APP_REQUIRED_ENV);
+        std::env::remove_var(DAEMON_LOCAL_SPAWN_ENV);
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "codex");
+        assert!(
+            !local_spawn_allowed_for_request(true),
+            "app-marked clients should fail closed when spawn policy is missing"
+        );
+    }
+
+    #[test]
+    fn local_spawn_policy_allows_explicit_opt_in_for_marked_app_client() {
+        let _env_guard = env_guard();
+        std::env::remove_var(APP_REQUIRED_ENV);
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "codex");
+        let _local_spawn = ScopedEnvVar::set(DAEMON_LOCAL_SPAWN_ENV, "1");
+        assert!(
+            local_spawn_allowed_for_request(true),
+            "explicit local spawn opt-in should allow startup when app-required is unset"
+        );
+    }
+
+    #[test]
+    fn local_spawn_policy_app_required_overrides_local_spawn_opt_in() {
+        let _env_guard = env_guard();
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "codex");
+        let _local_spawn = ScopedEnvVar::set(DAEMON_LOCAL_SPAWN_ENV, "1");
+        let _app_required = ScopedEnvVar::set(APP_REQUIRED_ENV, "1");
+        assert!(
+            !local_spawn_allowed_for_request(true),
+            "app-required must force attach-only behavior even when local spawn is enabled"
+        );
     }
 
     #[test]
