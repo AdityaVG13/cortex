@@ -17,6 +17,8 @@ const MAX_QUERY_TOKENS: u64 = 300;
 const MAX_AVG_QUERY_TOKENS: f64 = 300.0;
 const PROXY_TOP1_MIN_AGREEMENT: f64 = 0.65;
 const PROXY_MAX_MEAN_ABS_RANK_ERROR: f64 = 0.90;
+const PROXY_MIN_PAIRWISE_AGREEMENT: f64 = 0.75;
+const PROXY_MIN_EVALUATED_QUERY_COVERAGE: f64 = 0.80;
 const APP_REQUIRED_ENV: &str = "CORTEX_APP_REQUIRED";
 const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
 const APP_CLIENT_ENV: &str = "CORTEX_APP_CLIENT";
@@ -249,11 +251,7 @@ impl TestDaemon {
     }
 
     async fn store_case(&self, case: &BenchmarkCase) {
-        let decision = format!(
-            "{} benchmark note covering {}.",
-            case.query,
-            case.ground_truth.join(", ")
-        );
+        let decision = build_case_decision(case);
         let response = tokio::time::timeout(
             REQUEST_TIMEOUT,
             self.request(
@@ -308,8 +306,8 @@ impl TestDaemon {
                     .query(&[
                         ("q", case.query),
                         ("budget", RECALL_BUDGET),
-                        ("k", "6"),
-                        ("pool_k", "24"),
+                        ("k", "8"),
+                        ("pool_k", "32"),
                     ]),
             )
             .send(),
@@ -343,6 +341,9 @@ async fn recall_benchmark_regression_thresholds_hold() {
     let daemon = match TestDaemon::spawn().await {
         Ok(daemon) => daemon,
         Err(SpawnError::Skip(reason)) => {
+            if should_fail_on_singleton_skip() {
+                panic!("recall benchmark skipped under CI singleton policy: {reason}");
+            }
             eprintln!("{reason}");
             return;
         }
@@ -423,6 +424,9 @@ async fn recall_different_queries_do_not_cross_dedup_for_same_agent() {
     let daemon = match TestDaemon::spawn().await {
         Ok(daemon) => daemon,
         Err(SpawnError::Skip(reason)) => {
+            if should_fail_on_singleton_skip() {
+                panic!("recall benchmark skipped under CI singleton policy: {reason}");
+            }
             eprintln!("{reason}");
             return;
         }
@@ -457,6 +461,9 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
     let daemon = match TestDaemon::spawn().await {
         Ok(daemon) => daemon,
         Err(SpawnError::Skip(reason)) => {
+            if should_fail_on_singleton_skip() {
+                panic!("recall benchmark skipped under CI singleton policy: {reason}");
+            }
             eprintln!("{reason}");
             return;
         }
@@ -570,9 +577,13 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
         }
     }
 
+    let min_evaluated_queries =
+        (BENCHMARK_CASES.len() as f64 * PROXY_MIN_EVALUATED_QUERY_COVERAGE).ceil() as usize;
     assert!(
-        evaluated_queries >= BENCHMARK_CASES.len() / 2,
-        "proxy comparison evaluated too few queries: {evaluated_queries}"
+        evaluated_queries >= min_evaluated_queries,
+        "proxy comparison evaluated too few queries: got {evaluated_queries}, need >= {min_evaluated_queries} ({:.0}% of {})",
+        PROXY_MIN_EVALUATED_QUERY_COVERAGE * 100.0,
+        BENCHMARK_CASES.len()
     );
 
     let top1_agreement = top1_matches as f64 / evaluated_queries as f64;
@@ -600,6 +611,12 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
         PROXY_MAX_MEAN_ABS_RANK_ERROR,
         pairwise_agreement
     );
+    assert!(
+        pairwise_agreement >= PROXY_MIN_PAIRWISE_AGREEMENT,
+        "proxy pairwise agreement regression: got {:.3}, need >= {:.2}",
+        pairwise_agreement,
+        PROXY_MIN_PAIRWISE_AGREEMENT
+    );
 }
 
 fn matches_ground_truth(case: &BenchmarkCase, result: &Value) -> bool {
@@ -612,6 +629,27 @@ fn matches_ground_truth(case: &BenchmarkCase, result: &Value) -> bool {
         let needle = needle.to_lowercase();
         source.contains(&needle) || excerpt.contains(&needle)
     })
+}
+
+fn ci_requires_benchmark_execution(ci_value: Option<&str>) -> bool {
+    ci_value.is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no"
+        )
+    })
+}
+
+fn should_fail_on_singleton_skip() -> bool {
+    ci_requires_benchmark_execution(std::env::var("CI").ok().as_deref())
+}
+
+fn build_case_decision(case: &BenchmarkCase) -> String {
+    format!(
+        "Benchmark fixture for {}. Canonical terms: {}.",
+        case.slug.replace('-', " "),
+        case.ground_truth.join(", ")
+    )
 }
 
 fn benchmark_case(slug: &str) -> &'static BenchmarkCase {
@@ -797,4 +835,26 @@ fn singleton_skip_detection_ignores_unrelated_errors() {
     assert!(!should_skip_for_active_singleton(
         "connection refused while probing readiness endpoint"
     ));
+}
+
+#[test]
+fn ci_requires_execution_parser_matches_expected_values() {
+    assert!(ci_requires_benchmark_execution(Some("true")));
+    assert!(ci_requires_benchmark_execution(Some("1")));
+    assert!(ci_requires_benchmark_execution(Some("yes")));
+    assert!(!ci_requires_benchmark_execution(Some("false")));
+    assert!(!ci_requires_benchmark_execution(Some("0")));
+    assert!(!ci_requires_benchmark_execution(Some("no")));
+    assert!(!ci_requires_benchmark_execution(None));
+}
+
+#[test]
+fn build_case_decision_does_not_embed_query_literal() {
+    let case = benchmark_case("token-optimization");
+    let decision = build_case_decision(case);
+    assert!(
+        !decision.to_ascii_lowercase().contains(case.query),
+        "benchmark fixture should not echo raw query"
+    );
+    assert!(decision.contains("Canonical terms:"));
 }
