@@ -2332,6 +2332,11 @@ async fn ensure_daemon(
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let _ = auth::migrate_legacy_db(paths)?;
     let local_spawn_allowed = local_spawn_allowed_for_request(allow_service_ensure);
+    let control_center_active_snapshot = if local_spawn_allowed {
+        control_center_is_active(paths).ok()
+    } else {
+        None
+    };
 
     let lock = auth::acquire_daemon_lock(paths);
 
@@ -2340,6 +2345,9 @@ async fn ensure_daemon(
             if daemon_healthy(paths).await {
                 // already healthy
             } else if local_spawn_allowed {
+                if control_center_active_snapshot == Some(true) {
+                    return Err(app_init_required_error(paths, agent));
+                }
                 match control_center_is_active(paths) {
                     Ok(true) => return Err(app_init_required_error(paths, agent)),
                     Ok(false) => {}
@@ -2371,6 +2379,9 @@ async fn ensure_daemon(
         Err(_) => {
             if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                 if local_spawn_allowed {
+                    if control_center_active_snapshot == Some(true) {
+                        return Err(app_init_required_error(paths, agent));
+                    }
                     match control_center_is_active(paths) {
                         Ok(true) => return Err(app_init_required_error(paths, agent)),
                         Ok(false) => {}
@@ -3223,17 +3234,20 @@ mod tests {
             .block_on(ensure_daemon(paths, agent, emit_port, allow_service_ensure))
     }
 
-    fn spawn_single_response_server(
+    fn spawn_response_server(
         listener: TcpListener,
         status_line: &str,
         content_type: &str,
         body: String,
+        max_requests: usize,
     ) -> std::thread::JoinHandle<()> {
         let status_line = status_line.to_string();
         let content_type = content_type.to_string();
+        let max_requests = max_requests.max(1);
         std::thread::spawn(move || {
             let _ = listener.set_nonblocking(true);
             let deadline = Instant::now() + Duration::from_secs(3);
+            let mut served = 0_usize;
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -3246,7 +3260,10 @@ mod tests {
                         );
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
-                        break;
+                        served += 1;
+                        if served >= max_requests {
+                            break;
+                        }
                     }
                     Err(err) if err.kind() == ErrorKind::WouldBlock => {
                         if Instant::now() >= deadline {
@@ -3258,6 +3275,25 @@ mod tests {
                 }
             }
         })
+    }
+
+    fn spawn_single_response_server(
+        listener: TcpListener,
+        status_line: &str,
+        content_type: &str,
+        body: String,
+    ) -> std::thread::JoinHandle<()> {
+        spawn_response_server(listener, status_line, content_type, body, 1)
+    }
+
+    fn spawn_multi_response_server(
+        listener: TcpListener,
+        status_line: &str,
+        content_type: &str,
+        body: String,
+        max_requests: usize,
+    ) -> std::thread::JoinHandle<()> {
+        spawn_response_server(listener, status_line, content_type, body, max_requests)
     }
 
     #[test]
@@ -3574,7 +3610,7 @@ mod tests {
                 CONTROL_CENTER_LOCK_TEST_READY_ENV,
                 ready_file.to_string_lossy().to_string(),
             )
-            .env(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV, "2000")
+            .env(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV, "30000")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -4026,6 +4062,8 @@ mod tests {
         let home_dir = temp_test_dir("control_center_lock_blocks_spawn");
         fs::create_dir_all(&home_dir).unwrap();
         let home_str = home_dir.to_string_lossy().to_string();
+        let _home_env = ScopedEnvVar::set("HOME", &home_str);
+        let _userprofile_env = ScopedEnvVar::set("USERPROFILE", &home_str);
         let paths =
             auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
         let ready_file = home_dir.join("control-center-lock-ready");
@@ -4071,11 +4109,8 @@ mod tests {
             "control-center lock should force attach-only error: {err}"
         );
 
-        let status = child.wait().expect("wait lock-holder child");
-        assert!(
-            status.success(),
-            "lock-holder child should exit successfully"
-        );
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = fs::remove_dir_all(&home_dir);
     }
 
@@ -4190,6 +4225,8 @@ mod tests {
 
     #[test]
     fn startup_preflight_rejects_non_canonical_health_payload() {
+        let _env_guard = env_guard();
+        let _bypass = ScopedEnvVar::set(SINGLE_DAEMON_TEST_BYPASS_ENV, "1");
         let home_dir = temp_test_dir("startup_preflight_noncanonical");
         fs::create_dir_all(&home_dir).unwrap();
         let home_str = home_dir.to_string_lossy().to_string();
@@ -4201,17 +4238,11 @@ mod tests {
         let port = listener.local_addr().expect("resolve listener addr").port();
         paths.port = port;
         let server =
-            spawn_single_response_server(listener, "404 Not Found", "text/plain", "nope".into());
+            spawn_multi_response_server(listener, "404 Not Found", "text/plain", "nope".into(), 2);
 
         let err = run_preflight(&paths).unwrap_err();
-        assert!(err.contains("daemon startup denied"));
         assert!(
-            err.contains("non-canonical payload")
-                || err.contains("different Cortex runtime identity")
-                || err.contains("already healthy on port")
-                || err.contains("already ready on port")
-                || err.contains("already starting on port")
-                || err.contains("active daemon process"),
+            err.contains("non-canonical payload"),
             "unexpected preflight error: {err}"
         );
 
@@ -4221,6 +4252,8 @@ mod tests {
 
     #[test]
     fn startup_preflight_rejects_different_cortex_runtime_identity() {
+        let _env_guard = env_guard();
+        let _bypass = ScopedEnvVar::set(SINGLE_DAEMON_TEST_BYPASS_ENV, "1");
         let home_dir = temp_test_dir("startup_preflight_wrong_runtime");
         fs::create_dir_all(&home_dir).unwrap();
         let home_str = home_dir.to_string_lossy().to_string();
@@ -4233,7 +4266,8 @@ mod tests {
         paths.port = port;
 
         let payload = serde_json::json!({
-            "status": "ok",
+            "status": "ready",
+            "ready": true,
             "runtime": {
                 "port": port,
                 "token_path": "C:/other/cortex.token",
@@ -4248,14 +4282,48 @@ mod tests {
         let server = spawn_single_response_server(listener, "200 OK", "application/json", payload);
 
         let err = run_preflight(&paths).unwrap_err();
-        assert!(err.contains("daemon startup denied"));
         assert!(
-            err.contains("different Cortex runtime identity")
-                || err.contains("non-canonical payload")
-                || err.contains("already healthy on port")
-                || err.contains("already ready on port")
-                || err.contains("already starting on port")
-                || err.contains("active daemon process"),
+            err.contains("different Cortex runtime identity"),
+            "unexpected preflight error: {err}"
+        );
+
+        server.join().expect("join response server");
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn startup_preflight_rejects_canonical_ready_readiness_state() {
+        let _env_guard = env_guard();
+        let _bypass = ScopedEnvVar::set(SINGLE_DAEMON_TEST_BYPASS_ENV, "1");
+        let home_dir = temp_test_dir("startup_preflight_ready_state");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let mut paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        paths.bind = "127.0.0.1".to_string();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let port = listener.local_addr().expect("resolve listener addr").port();
+        paths.port = port;
+        let payload = serde_json::json!({
+            "status": "ready",
+            "ready": true,
+            "runtime": {
+                "port": port,
+                "token_path": paths.token.display().to_string(),
+                "pid_path": paths.pid.display().to_string(),
+                "db_path": paths.db.display().to_string()
+            },
+            "stats": {
+                "home": paths.home.display().to_string()
+            }
+        })
+        .to_string();
+        let server = spawn_single_response_server(listener, "200 OK", "application/json", payload);
+
+        let err = run_preflight(&paths).unwrap_err();
+        assert!(
+            err.contains("canonical Cortex instance is already ready"),
             "unexpected preflight error: {err}"
         );
 
