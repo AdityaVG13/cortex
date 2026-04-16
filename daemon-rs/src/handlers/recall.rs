@@ -767,6 +767,9 @@ fn shadow_semantic_telemetry_summary(shadow_semantic: &Value) -> Value {
         "overlapCount",
         "overlapRatio",
         "jaccard",
+        "matchedRankPairs",
+        "meanAbsRankDelta",
+        "top1Match",
     ] {
         if let Some(value) = shadow_semantic.get(key) {
             summary[key] = value.clone();
@@ -3741,6 +3744,36 @@ fn build_shadow_semantic_explain(
     } else {
         round4(overlap_count as f64 / union_count as f64)
     };
+    let baseline_index: HashMap<&str, usize> = baseline_top_sources
+        .iter()
+        .enumerate()
+        .map(|(idx, source)| (source.as_str(), idx))
+        .collect();
+    let shadow_index: HashMap<&str, usize> = shadow_top_sources
+        .iter()
+        .enumerate()
+        .map(|(idx, source)| (source.as_str(), idx))
+        .collect();
+    let mut matched_rank_pairs: usize = 0;
+    let mut rank_delta_sum: usize = 0;
+    for (source, baseline_rank) in &baseline_index {
+        if let Some(shadow_rank) = shadow_index.get(source) {
+            matched_rank_pairs += 1;
+            rank_delta_sum += baseline_rank.abs_diff(*shadow_rank);
+        }
+    }
+    let mean_abs_rank_delta = if matched_rank_pairs > 0 {
+        Some(round4(rank_delta_sum as f64 / matched_rank_pairs as f64))
+    } else {
+        None
+    };
+    let top1_match = match (
+        baseline_top_sources.first().map(String::as_str),
+        shadow_top_sources.first().map(String::as_str),
+    ) {
+        (Some(left), Some(right)) => Some(left == right),
+        _ => None,
+    };
 
     json!({
         "enabled": true,
@@ -3754,6 +3787,9 @@ fn build_shadow_semantic_explain(
         "overlapCount": overlap_count,
         "overlapRatio": overlap_ratio,
         "jaccard": jaccard,
+        "matchedRankPairs": matched_rank_pairs,
+        "meanAbsRankDelta": mean_abs_rank_delta,
+        "top1Match": top1_match,
     })
 }
 
@@ -6279,7 +6315,10 @@ mod tests {
             "shadowTopSources": ["memory::b", "memory::c"],
             "overlapCount": 1,
             "overlapRatio": 0.1667,
-            "jaccard": 0.3333
+            "jaccard": 0.3333,
+            "matchedRankPairs": 1,
+            "meanAbsRankDelta": 1.0,
+            "top1Match": false
         }));
 
         assert_eq!(summary["status"].as_str(), Some("ok"));
@@ -6290,6 +6329,9 @@ mod tests {
         assert_eq!(summary["overlapCount"].as_u64(), Some(1));
         assert_eq!(summary["overlapRatio"].as_f64(), Some(0.1667));
         assert_eq!(summary["jaccard"].as_f64(), Some(0.3333));
+        assert_eq!(summary["matchedRankPairs"].as_u64(), Some(1));
+        assert_eq!(summary["meanAbsRankDelta"].as_f64(), Some(1.0));
+        assert_eq!(summary["top1Match"].as_bool(), Some(false));
         assert!(
             summary["baselineTopSources"].is_null(),
             "telemetry summary should omit baseline source arrays"

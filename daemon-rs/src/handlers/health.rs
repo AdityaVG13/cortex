@@ -661,12 +661,16 @@ const SHADOW_GATE_MAX_UNAVAILABLE_RATE: f64 = 0.35;
 const SHADOW_GATE_MAX_ERROR_RATE: f64 = 0.05;
 const SHADOW_GATE_MIN_OK_OVERLAP_RATIO: f64 = 0.60;
 const SHADOW_GATE_MIN_OK_JACCARD: f64 = 0.45;
+const SHADOW_GATE_MAX_MEAN_ABS_RANK_DELTA: f64 = 1.25;
+const SHADOW_GATE_MIN_TOP1_MATCH_RATE: f64 = 0.60;
 
 fn build_shadow_semantic_gate(
     shadow_status_counts: &BTreeMap<String, i64>,
     ok_samples: i64,
     shadow_overlap_ratio_avg: Option<f64>,
     shadow_jaccard_avg: Option<f64>,
+    shadow_mean_abs_rank_delta_avg: Option<f64>,
+    shadow_top1_match_rate: Option<f64>,
 ) -> Value {
     let ok_count = *shadow_status_counts.get("ok").unwrap_or(&0);
     let unavailable_count = *shadow_status_counts.get("unavailable").unwrap_or(&0);
@@ -714,6 +718,20 @@ fn build_shadow_semantic_gate(
         None => blockers.push("missing_jaccard_signal".to_string()),
         _ => {}
     }
+    match shadow_mean_abs_rank_delta_avg {
+        Some(value) if value > SHADOW_GATE_MAX_MEAN_ABS_RANK_DELTA => {
+            blockers.push("mean_abs_rank_delta_above_gate".to_string());
+        }
+        None => blockers.push("missing_rank_delta_signal".to_string()),
+        _ => {}
+    }
+    match shadow_top1_match_rate {
+        Some(value) if value < SHADOW_GATE_MIN_TOP1_MATCH_RATE => {
+            blockers.push("top1_match_rate_below_gate".to_string());
+        }
+        None => blockers.push("missing_top1_match_signal".to_string()),
+        _ => {}
+    }
 
     let ready = blockers.is_empty();
     json!({
@@ -731,6 +749,8 @@ fn build_shadow_semantic_gate(
             "ok_samples": ok_samples,
             "ok_overlap_ratio_avg": shadow_overlap_ratio_avg,
             "ok_jaccard_avg": shadow_jaccard_avg,
+            "ok_mean_abs_rank_delta_avg": shadow_mean_abs_rank_delta_avg,
+            "ok_top1_match_rate": shadow_top1_match_rate,
             "unavailable_rate": unavailable_rate,
             "error_rate": error_rate
         },
@@ -740,7 +760,9 @@ fn build_shadow_semantic_gate(
             "max_unavailable_rate": SHADOW_GATE_MAX_UNAVAILABLE_RATE,
             "max_error_rate": SHADOW_GATE_MAX_ERROR_RATE,
             "min_ok_overlap_ratio": SHADOW_GATE_MIN_OK_OVERLAP_RATIO,
-            "min_ok_jaccard": SHADOW_GATE_MIN_OK_JACCARD
+            "min_ok_jaccard": SHADOW_GATE_MIN_OK_JACCARD,
+            "max_mean_abs_rank_delta": SHADOW_GATE_MAX_MEAN_ABS_RANK_DELTA,
+            "min_top1_match_rate": SHADOW_GATE_MIN_TOP1_MATCH_RATE
         }
     })
 }
@@ -760,6 +782,10 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
     let mut shadow_ok_overlap_ratio_samples = 0_i64;
     let mut shadow_ok_jaccard_sum = 0.0_f64;
     let mut shadow_ok_jaccard_samples = 0_i64;
+    let mut shadow_ok_rank_delta_sum = 0.0_f64;
+    let mut shadow_ok_rank_delta_samples = 0_i64;
+    let mut shadow_ok_top1_match_sum = 0.0_f64;
+    let mut shadow_ok_top1_match_samples = 0_i64;
 
     let mut latency_total = 0_i64;
     let mut latency_samples = 0_i64;
@@ -821,6 +847,20 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
                     shadow_ok_jaccard_sum += jaccard;
                     shadow_ok_jaccard_samples += 1;
                 }
+                if let Some(mean_abs_rank_delta) = shadow_semantic
+                    .get("meanAbsRankDelta")
+                    .and_then(|value| value.as_f64())
+                {
+                    shadow_ok_rank_delta_sum += mean_abs_rank_delta;
+                    shadow_ok_rank_delta_samples += 1;
+                }
+                if let Some(top1_match) = shadow_semantic
+                    .get("top1Match")
+                    .and_then(|value| value.as_bool())
+                {
+                    shadow_ok_top1_match_sum += if top1_match { 1.0 } else { 0.0 };
+                    shadow_ok_top1_match_samples += 1;
+                }
             }
         }
 
@@ -862,12 +902,31 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
     } else {
         None
     };
-    let shadow_ok_samples = shadow_ok_overlap_ratio_samples.max(shadow_ok_jaccard_samples);
+    let shadow_mean_abs_rank_delta_avg = if shadow_ok_rank_delta_samples > 0 {
+        Some(round4(
+            shadow_ok_rank_delta_sum / shadow_ok_rank_delta_samples as f64,
+        ))
+    } else {
+        None
+    };
+    let shadow_top1_match_rate = if shadow_ok_top1_match_samples > 0 {
+        Some(round4(
+            shadow_ok_top1_match_sum / shadow_ok_top1_match_samples as f64,
+        ))
+    } else {
+        None
+    };
+    let shadow_ok_samples = shadow_ok_overlap_ratio_samples
+        .max(shadow_ok_jaccard_samples)
+        .max(shadow_ok_rank_delta_samples)
+        .max(shadow_ok_top1_match_samples);
     let shadow_gate = build_shadow_semantic_gate(
         &shadow_status_counts,
         shadow_ok_samples,
         shadow_overlap_ratio_avg,
         shadow_jaccard_avg,
+        shadow_mean_abs_rank_delta_avg,
+        shadow_top1_match_rate,
     );
 
     let tier_distribution: Vec<Value> = tier_counts
@@ -947,13 +1006,17 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
             "status_counts": shadow_status_counts,
             "ok_samples": shadow_ok_samples,
             "ok_overlap_ratio_avg": shadow_overlap_ratio_avg,
-            "ok_jaccard_avg": shadow_jaccard_avg
+            "ok_jaccard_avg": shadow_jaccard_avg,
+            "ok_mean_abs_rank_delta_avg": shadow_mean_abs_rank_delta_avg,
+            "ok_top1_match_rate": shadow_top1_match_rate
         },
         "shadowSemantic": {
             "statusCounts": shadow_status_counts,
             "okSamples": shadow_ok_samples,
             "okOverlapRatioAvg": shadow_overlap_ratio_avg,
-            "okJaccardAvg": shadow_jaccard_avg
+            "okJaccardAvg": shadow_jaccard_avg,
+            "okMeanAbsRankDeltaAvg": shadow_mean_abs_rank_delta_avg,
+            "okTop1MatchRate": shadow_top1_match_rate
         },
         "shadow_semantic_gate": shadow_gate,
         "shadowSemanticGate": {
@@ -971,6 +1034,8 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
                 "okSamples": shadow_gate["metrics"]["ok_samples"],
                 "okOverlapRatioAvg": shadow_gate["metrics"]["ok_overlap_ratio_avg"],
                 "okJaccardAvg": shadow_gate["metrics"]["ok_jaccard_avg"],
+                "okMeanAbsRankDeltaAvg": shadow_gate["metrics"]["ok_mean_abs_rank_delta_avg"],
+                "okTop1MatchRate": shadow_gate["metrics"]["ok_top1_match_rate"],
                 "unavailableRate": shadow_gate["metrics"]["unavailable_rate"],
                 "errorRate": shadow_gate["metrics"]["error_rate"]
             },
@@ -980,7 +1045,9 @@ fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) -> Value {
                 "maxUnavailableRate": shadow_gate["thresholds"]["max_unavailable_rate"],
                 "maxErrorRate": shadow_gate["thresholds"]["max_error_rate"],
                 "minOkOverlapRatio": shadow_gate["thresholds"]["min_ok_overlap_ratio"],
-                "minOkJaccard": shadow_gate["thresholds"]["min_ok_jaccard"]
+                "minOkJaccard": shadow_gate["thresholds"]["min_ok_jaccard"],
+                "maxMeanAbsRankDelta": shadow_gate["thresholds"]["max_mean_abs_rank_delta"],
+                "minTop1MatchRate": shadow_gate["thresholds"]["min_top1_match_rate"]
             }
         },
         "recent": recent
@@ -1709,7 +1776,9 @@ mod tests {
                     "shadow_semantic": {
                         "status": "ok",
                         "overlapRatio": 0.5,
-                        "jaccard": 0.4
+                        "jaccard": 0.4,
+                        "meanAbsRankDelta": 0.75,
+                        "top1Match": true
                     }
                 })
                 .to_string(),
@@ -1753,8 +1822,15 @@ mod tests {
         assert_eq!(payload["shadow_semantic"]["ok_samples"], 1);
         assert_eq!(payload["shadow_semantic"]["ok_overlap_ratio_avg"], 0.5);
         assert_eq!(payload["shadow_semantic"]["ok_jaccard_avg"], 0.4);
+        assert_eq!(
+            payload["shadow_semantic"]["ok_mean_abs_rank_delta_avg"],
+            0.75
+        );
+        assert_eq!(payload["shadow_semantic"]["ok_top1_match_rate"], 1.0);
         assert_eq!(payload["shadowSemantic"]["statusCounts"]["ok"], 1);
         assert_eq!(payload["shadowSemantic"]["okOverlapRatioAvg"], 0.5);
+        assert_eq!(payload["shadowSemantic"]["okMeanAbsRankDeltaAvg"], 0.75);
+        assert_eq!(payload["shadowSemantic"]["okTop1MatchRate"], 1.0);
         assert_eq!(payload["shadow_semantic_gate"]["decision"], "hold");
         assert_eq!(payload["shadow_semantic_gate"]["ready"], false);
         assert!(payload["shadow_semantic_gate"]["blockers"]
@@ -1786,7 +1862,9 @@ mod tests {
                     "shadow_semantic": {
                         "status": "ok",
                         "overlapRatio": 0.72,
-                        "jaccard": 0.61
+                        "jaccard": 0.61,
+                        "meanAbsRankDelta": 0.42,
+                        "top1Match": true
                     }
                 })
                 .to_string(),
@@ -1861,9 +1939,25 @@ mod tests {
             0.61
         );
         assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["ok_mean_abs_rank_delta_avg"],
+            0.42
+        );
+        assert_eq!(
+            payload["shadow_semantic_gate"]["metrics"]["ok_top1_match_rate"],
+            1.0
+        );
+        assert_eq!(
             payload["shadowSemanticGate"]["decision"],
             "ready_for_vec0_trial"
         );
         assert_eq!(payload["shadowSemanticGate"]["metrics"]["probedEvents"], 32);
+        assert_eq!(
+            payload["shadowSemanticGate"]["metrics"]["okMeanAbsRankDeltaAvg"],
+            0.42
+        );
+        assert_eq!(
+            payload["shadowSemanticGate"]["metrics"]["okTop1MatchRate"],
+            1.0
+        );
     }
 }
