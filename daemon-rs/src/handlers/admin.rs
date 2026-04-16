@@ -994,4 +994,117 @@ mod tests {
             .expect("count updated visibility rows");
         assert_eq!(updated_count, 2);
     }
+
+    #[tokio::test]
+    async fn handle_assign_owner_backfills_unowned_rows_across_default_tables() {
+        let (state, admin_api_key, _) = test_state_with_admin();
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO users (username, display_name, api_key_hash, role) VALUES (?1, ?2, ?3, 'member')",
+                params![
+                    "to-owner",
+                    "To Owner",
+                    crate::auth::hash_api_key_argon2id(&crate::auth::generate_ctx_api_key())
+                        .expect("hash to-owner key")
+                ],
+            )
+            .expect("insert to-owner user");
+            conn.execute(
+                "INSERT INTO memories (text, source, owner_id, visibility, type, status, score)
+                 VALUES (?1, ?2, NULL, 'private', 'note', 'active', 1.0)",
+                params!["ownerless memory", "tests::admin"],
+            )
+            .expect("insert ownerless memory");
+            conn.execute(
+                "INSERT INTO decisions (decision, context, source_agent, owner_id, visibility, status, score, merged_count, quality)
+                 VALUES (?1, ?2, 'tester', NULL, 'private', 'active', 1.0, 0, 70)",
+                params!["ownerless decision", "tests::admin"],
+            )
+            .expect("insert ownerless decision");
+        }
+
+        let response = handle_assign_owner(
+            State(state.clone()),
+            auth_headers(&admin_api_key),
+            Json(AssignOwnerBody {
+                from_user: None,
+                to_user: "to-owner".to_string(),
+                table: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["assigned"]["memories"], 1);
+        assert_eq!(body["assigned"]["decisions"], 1);
+
+        let conn = state.db.lock().await;
+        let memory_owner: Option<String> = conn
+            .query_row(
+                "SELECT u.username FROM memories m JOIN users u ON u.id = m.owner_id WHERE m.text = 'ownerless memory'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(memory_owner.as_deref(), Some("to-owner"));
+        let decision_owner: Option<String> = conn
+            .query_row(
+                "SELECT u.username FROM decisions d JOIN users u ON u.id = d.owner_id WHERE d.decision = 'ownerless decision'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        assert_eq!(decision_owner.as_deref(), Some("to-owner"));
+    }
+
+    #[tokio::test]
+    async fn handle_assign_owner_rejects_non_allowlisted_table() {
+        let (state, admin_api_key, _) = test_state_with_admin();
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO users (username, display_name, api_key_hash, role) VALUES (?1, ?2, ?3, 'member')",
+                params![
+                    "to-owner",
+                    "To Owner",
+                    crate::auth::hash_api_key_argon2id(&crate::auth::generate_ctx_api_key())
+                        .expect("hash to-owner key")
+                ],
+            )
+            .expect("insert to-owner user");
+        }
+
+        let response = handle_assign_owner(
+            State(state),
+            auth_headers(&admin_api_key),
+            Json(AssignOwnerBody {
+                from_user: None,
+                to_user: "to-owner".to_string(),
+                table: Some("users".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["error"], "table not in allowlist");
+    }
+
+    #[tokio::test]
+    async fn handle_set_visibility_returns_zero_for_empty_target_set() {
+        let (state, admin_api_key, _owner_id) = test_state_with_admin();
+        let response = handle_set_visibility(
+            State(state),
+            auth_headers(&admin_api_key),
+            Json(SetVisibilityBody {
+                table: "memories".to_string(),
+                ids: vec![],
+                visibility: "shared".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["updated"], 0);
+    }
 }
