@@ -17,6 +17,9 @@ const MAX_QUERY_TOKENS: u64 = 300;
 const MAX_AVG_QUERY_TOKENS: f64 = 300.0;
 const PROXY_TOP1_MIN_AGREEMENT: f64 = 0.65;
 const PROXY_MAX_MEAN_ABS_RANK_ERROR: f64 = 0.90;
+const APP_REQUIRED_ENV: &str = "CORTEX_APP_REQUIRED";
+const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
+const APP_CLIENT_ENV: &str = "CORTEX_APP_CLIENT";
 
 struct BenchmarkCase {
     slug: &'static str,
@@ -192,6 +195,11 @@ impl TestDaemon {
                 .arg(&home)
                 .arg("--port")
                 .arg(port.to_string())
+                // Keep benchmark spawning deterministic even when the parent shell
+                // is running attach-only app client env contracts.
+                .env_remove(APP_REQUIRED_ENV)
+                .env_remove(DAEMON_LOCAL_SPAWN_ENV)
+                .env_remove(APP_CLIENT_ENV)
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -746,6 +754,47 @@ fn read_child_stderr(child: &mut Child) -> String {
 fn should_skip_for_active_singleton(error: &str) -> bool {
     let normalized = error.to_ascii_lowercase();
     normalized.contains("daemon startup denied: cortex already has an active daemon process")
+        || normalized.contains("daemon startup denied: canonical cortex instance is already ready")
+        || normalized
+            .contains("daemon startup denied: canonical cortex instance is already starting")
+        || normalized
+            .contains("daemon startup denied: canonical cortex instance is already healthy")
         || normalized.contains("another cortex instance holds the lock")
-        || normalized.contains("active daemon process")
+        || normalized.contains("another process still holds the daemon lock")
+        || normalized.contains("app_init_required:")
+}
+
+#[test]
+fn singleton_skip_detection_matches_known_denial_signals() {
+    assert!(should_skip_for_active_singleton(
+        "daemon startup denied: Cortex already has an active daemon process (PID 1234)"
+    ));
+    assert!(should_skip_for_active_singleton(
+        "APP_INIT_REQUIRED: codex is attach-only and cannot start the daemon automatically"
+    ));
+    assert!(should_skip_for_active_singleton(
+        "another cortex instance holds the lock"
+    ));
+    assert!(should_skip_for_active_singleton(
+        "daemon startup denied: canonical Cortex instance is already ready on port 7437"
+    ));
+    assert!(should_skip_for_active_singleton(
+        "daemon startup denied: canonical Cortex instance is already starting on port 7437"
+    ));
+    assert!(should_skip_for_active_singleton(
+        "daemon startup denied: canonical Cortex instance is already healthy on port 7437"
+    ));
+    assert!(should_skip_for_active_singleton(
+        "daemon is not healthy on port 7437 and another process still holds the daemon lock"
+    ));
+}
+
+#[test]
+fn singleton_skip_detection_ignores_unrelated_errors() {
+    assert!(!should_skip_for_active_singleton(
+        "token file was not written within 15s"
+    ));
+    assert!(!should_skip_for_active_singleton(
+        "connection refused while probing readiness endpoint"
+    ));
 }
