@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cortex Memory Companion</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="root">
+      <header class="header">
+        <h1>Cortex Memory</h1>
+        <button id="open-options" class="secondary" type="button">Options</button>
+      </header>
+
+      <p id="status" class="status">Checking Cortex connection…</p>
+
+      <section class="panel">
+        <h2>Store Memory</h2>
+        <label for="store-decision">Text</label>
+        <textarea id="store-decision" rows="4" placeholder="What should Cortex remember?"></textarea>
+        <label for="store-context">Context (optional)</label>
+        <input id="store-context" type="text" placeholder="e.g. Claude web session troubleshooting" />
+        <button id="store-submit" type="button">Store</button>
+      </section>
+
+      <section class="panel">
+        <h2>Recall</h2>
+        <label for="recall-query">Query</label>
+        <input id="recall-query" type="text" placeholder="Ask Cortex what it knows…" />
+        <div class="inline-controls">
+          <label for="recall-k">k</label>
+          <input id="recall-k" type="number" min="1" max="20" value="6" />
+          <button id="recall-submit" type="button">Recall</button>
+        </div>
+        <ul id="recall-results" class="results"></ul>
+      </section>
+    </main>
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>
