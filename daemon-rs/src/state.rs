@@ -40,6 +40,47 @@ pub struct DaemonEvent {
     pub data: Value,
 }
 
+#[derive(Clone, Debug)]
+pub struct SqliteVecCanaryConfig {
+    pub trial_percent: u8,
+    pub force_off: bool,
+}
+
+impl SqliteVecCanaryConfig {
+    fn from_env() -> Self {
+        let trial_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT")
+            .ok()
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                match trimmed.parse::<u8>() {
+                    Ok(percent) => Some(percent.min(100)),
+                    Err(_) => {
+                        eprintln!(
+                            "[cortex] WARNING: invalid CORTEX_SQLITE_VEC_TRIAL_PERCENT={trimmed:?}; using 0"
+                        );
+                        Some(0)
+                    }
+                }
+            })
+            .unwrap_or(0);
+        let force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+        Self {
+            trial_percent,
+            force_off,
+        }
+    }
+}
+
 // ─── Shared application state ─────────────────────────────────────────────────
 
 /// Shared state threaded through every Axum handler via `axum::extract::State`.
@@ -106,6 +147,8 @@ pub struct RuntimeState {
     /// Used by mcp_proxy via cortex_dir() directly; kept here for discoverability.
     #[allow(dead_code)]
     pub write_buffer_path: std::path::PathBuf,
+    /// Guarded sqlite-vec semantic trial routing controls.
+    pub sqlite_vec_canary: SqliteVecCanaryConfig,
 }
 
 impl RuntimeState {
@@ -306,6 +349,17 @@ fn initialize_with_conn(
     }
 
     let write_buffer_path = paths.write_buffer.clone();
+    let sqlite_vec_canary = SqliteVecCanaryConfig::from_env();
+    if sqlite_vec_canary.force_off {
+        eprintln!("[cortex] sqlite-vec trial routing: force-off");
+    } else if sqlite_vec_canary.trial_percent > 0 {
+        eprintln!(
+            "[cortex] sqlite-vec trial routing enabled at {}%",
+            sqlite_vec_canary.trial_percent
+        );
+    } else {
+        eprintln!("[cortex] sqlite-vec trial routing disabled");
+    }
 
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
@@ -332,6 +386,7 @@ fn initialize_with_conn(
         db_corrupted: Arc::new(AtomicBool::new(false)),
         readiness: Arc::new(AtomicBool::new(false)),
         write_buffer_path,
+        sqlite_vec_canary,
     };
 
     Ok((state, shutdown_rx))
@@ -343,7 +398,17 @@ mod tests {
     use rusqlite::{params, Connection};
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        match TEST_ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     const V041_SCHEMA_SQL: &str = r#"
         PRAGMA journal_mode = WAL;
@@ -809,5 +874,53 @@ mod tests {
 
         drop(conn);
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn sqlite_vec_canary_config_defaults_to_disabled() {
+        let _guard = env_guard();
+        let prev_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT").ok();
+        let prev_force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF").ok();
+        std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT");
+        std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
+
+        let config = SqliteVecCanaryConfig::from_env();
+        assert_eq!(config.trial_percent, 0);
+        assert!(!config.force_off);
+
+        if let Some(value) = prev_percent {
+            std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT");
+        }
+        if let Some(value) = prev_force_off {
+            std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
+        }
+    }
+
+    #[test]
+    fn sqlite_vec_canary_config_parses_and_clamps_env_values() {
+        let _guard = env_guard();
+        let prev_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT").ok();
+        let prev_force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF").ok();
+        std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT", "145");
+        std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF", "yes");
+
+        let config = SqliteVecCanaryConfig::from_env();
+        assert_eq!(config.trial_percent, 100);
+        assert!(config.force_off);
+
+        if let Some(value) = prev_percent {
+            std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT");
+        }
+        if let Some(value) = prev_force_off {
+            std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
+        }
     }
 }

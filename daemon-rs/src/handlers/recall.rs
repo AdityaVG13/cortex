@@ -6,8 +6,10 @@ use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use super::ensure_auth_with_caller;
@@ -17,7 +19,7 @@ use super::{
 };
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
-use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState};
+use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState, SqliteVecCanaryConfig};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -34,6 +36,10 @@ const MEMORIES_BM25_SOURCE_WEIGHT: f64 = 2.4;
 const MEMORIES_BM25_TAGS_WEIGHT: f64 = 2.8;
 const DECISIONS_BM25_DECISION_WEIGHT: f64 = 6.0;
 const DECISIONS_BM25_CONTEXT_WEIGHT: f64 = 1.3;
+const SQLITE_VEC_TRIAL_MIN_OVERLAP_RATIO: f64 = 0.60;
+const SQLITE_VEC_TRIAL_MIN_JACCARD: f64 = 0.45;
+const SQLITE_VEC_TRIAL_MAX_MEAN_ABS_RANK_DELTA: f64 = 1.25;
+const SQLITE_VEC_TRIAL_TOP1_MATCH_REQUIRED: bool = true;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -117,6 +123,7 @@ impl ShadowSemanticBaseline {
 struct RecallWithVectorTrace {
     ranked: Vec<RecallItem>,
     semantic_baseline: Option<ShadowSemanticBaseline>,
+    semantic_route: Value,
 }
 
 type MemorySemanticRow = (
@@ -786,6 +793,204 @@ fn shadow_semantic_telemetry_summary(shadow_semantic: &Value) -> Value {
     summary
 }
 
+fn sqlite_vec_trial_sampled(
+    query_text: &str,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+    trial_percent: u8,
+) -> bool {
+    if trial_percent == 0 {
+        return false;
+    }
+    if trial_percent >= 100 {
+        return true;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    query_text.hash(&mut hasher);
+    ctx.team_mode.hash(&mut hasher);
+    ctx.caller_id.hash(&mut hasher);
+    source_prefix.unwrap_or_default().hash(&mut hasher);
+    let bucket = (hasher.finish() % 100) as u8;
+    bucket < trial_percent
+}
+
+fn parse_shadow_sources(shadow_semantic: &Value, field: &str) -> Vec<String> {
+    shadow_semantic
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn shadow_guard_failure_reason(shadow_semantic: &Value) -> Option<&'static str> {
+    if shadow_semantic
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("error")
+        != "ok"
+    {
+        return Some("shadow_not_ok");
+    }
+
+    let overlap_ratio = shadow_semantic
+        .get("overlapRatio")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if overlap_ratio < SQLITE_VEC_TRIAL_MIN_OVERLAP_RATIO {
+        return Some("overlap_ratio_below_gate");
+    }
+
+    let jaccard = shadow_semantic
+        .get("jaccard")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if jaccard < SQLITE_VEC_TRIAL_MIN_JACCARD {
+        return Some("jaccard_below_gate");
+    }
+
+    let mean_abs_rank_delta = shadow_semantic
+        .get("meanAbsRankDelta")
+        .and_then(Value::as_f64)
+        .unwrap_or(f64::INFINITY);
+    if mean_abs_rank_delta > SQLITE_VEC_TRIAL_MAX_MEAN_ABS_RANK_DELTA {
+        return Some("rank_delta_above_gate");
+    }
+
+    if SQLITE_VEC_TRIAL_TOP1_MATCH_REQUIRED {
+        let top1_match = shadow_semantic
+            .get("top1Match")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !top1_match {
+            return Some("top1_match_required");
+        }
+    }
+
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_apply_sqlite_vec_trial(
+    conn: &Connection,
+    query_text: &str,
+    query_vector: Option<&[f32]>,
+    semantic_candidates: Vec<SemanticCandidate>,
+    ctx: &RecallContext,
+    source_prefix: Option<&str>,
+    top_k: usize,
+    canary: Option<&SqliteVecCanaryConfig>,
+) -> (Vec<SemanticCandidate>, Value) {
+    let baseline_route = |reason: &str, sampled: bool, trial_percent: u8| {
+        json!({
+            "mode": "baseline",
+            "reason": reason,
+            "sampled": sampled,
+            "trialPercent": trial_percent
+        })
+    };
+
+    let Some(canary) = canary else {
+        return (
+            semantic_candidates,
+            baseline_route("trial_not_configured", false, 0),
+        );
+    };
+    if canary.force_off {
+        return (
+            semantic_candidates,
+            baseline_route("trial_force_off", false, canary.trial_percent),
+        );
+    }
+    if canary.trial_percent == 0 {
+        return (
+            semantic_candidates,
+            baseline_route("trial_percent_zero", false, canary.trial_percent),
+        );
+    }
+    let Some(query_vector) = query_vector else {
+        return (
+            semantic_candidates,
+            baseline_route("query_embedding_unavailable", false, canary.trial_percent),
+        );
+    };
+    if semantic_candidates.is_empty() {
+        return (
+            semantic_candidates,
+            baseline_route("no_semantic_candidates", false, canary.trial_percent),
+        );
+    }
+
+    let sampled = sqlite_vec_trial_sampled(query_text, ctx, source_prefix, canary.trial_percent);
+    if !sampled {
+        return (
+            semantic_candidates,
+            baseline_route("not_sampled", false, canary.trial_percent),
+        );
+    }
+
+    let baseline = ShadowSemanticBaseline {
+        candidate_count: semantic_candidates.len(),
+        ranked_sources: semantic_candidates
+            .iter()
+            .take(MAX_SEMANTIC_RRF_CANDIDATES)
+            .map(|candidate| candidate.source.clone())
+            .collect(),
+    };
+    let shadow_semantic = build_shadow_semantic_explain(
+        conn,
+        Some(query_vector),
+        query_text,
+        ctx,
+        source_prefix,
+        top_k,
+        Some(&baseline),
+    );
+    if let Some(reason) = shadow_guard_failure_reason(&shadow_semantic) {
+        return (
+            semantic_candidates,
+            baseline_route(reason, true, canary.trial_percent),
+        );
+    }
+
+    let shadow_sources = parse_shadow_sources(&shadow_semantic, "shadowTopSources");
+    if shadow_sources.is_empty() {
+        return (
+            semantic_candidates,
+            baseline_route("shadow_top_sources_empty", true, canary.trial_percent),
+        );
+    }
+
+    let mut by_source: HashMap<String, SemanticCandidate> = semantic_candidates
+        .iter()
+        .cloned()
+        .map(|candidate| (candidate.source.clone(), candidate))
+        .collect();
+    let mut reordered: Vec<SemanticCandidate> = Vec::new();
+    for source in &shadow_sources {
+        if let Some(candidate) = by_source.remove(source) {
+            reordered.push(candidate);
+        }
+    }
+    reordered.extend(by_source.into_values());
+    reordered.truncate(semantic_candidates.len());
+
+    (
+        reordered,
+        json!({
+            "mode": "vec0_trial",
+            "reason": "guard_passed",
+            "sampled": true,
+            "trialPercent": canary.trial_percent
+        }),
+    )
+}
+
 pub async fn execute_unified_recall(
     state: &RuntimeState,
     query_text: &str,
@@ -808,6 +1013,12 @@ pub async fn execute_unified_recall(
             let method_breakdown = build_method_breakdown(&deduped_cached);
             let tier = classify_recall_tier(true, mode, &method_breakdown);
             let latency_ms = started_at.elapsed().as_millis() as i64;
+            let semantic_route = json!({
+                "mode": "baseline",
+                "reason": "cache_hit",
+                "sampled": false,
+                "trialPercent": state.sqlite_vec_canary.trial_percent
+            });
             emit_recall_query_event(
                 state,
                 agent,
@@ -823,6 +1034,7 @@ pub async fn execute_unified_recall(
                     "method_breakdown": method_breakdown,
                     "tier": tier,
                     "latency_ms": latency_ms,
+                    "semantic_route": semantic_route.clone(),
                     "shadow_semantic": {
                         "status": "skipped",
                         "reason": "cache_hit"
@@ -838,7 +1050,8 @@ pub async fn execute_unified_recall(
                 "mode": mode,
                 "cached": true,
                 "tier": tier,
-                "latencyMs": latency_ms
+                "latencyMs": latency_ms,
+                "semanticRoute": semantic_route
             }));
         }
     }
@@ -850,7 +1063,7 @@ pub async fn execute_unified_recall(
     if engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
-    let (results, semantic_baseline) = if budget == 0 {
+    let (results, semantic_baseline, semantic_route) = if budget == 0 {
         let trace = run_recall_with_query_vector_trace(
             &mut conn,
             query_text,
@@ -858,8 +1071,9 @@ pub async fn execute_unified_recall(
             query_vector.as_deref(),
             ctx,
             source_prefix,
+            Some(&state.sqlite_vec_canary),
         )?;
-        (trace.ranked, trace.semantic_baseline)
+        (trace.ranked, trace.semantic_baseline, trace.semantic_route)
     } else {
         let trace = run_budget_recall_trace_with_query_vector(
             &mut conn,
@@ -869,8 +1083,13 @@ pub async fn execute_unified_recall(
             query_vector.as_deref(),
             ctx,
             source_prefix,
+            Some(&state.sqlite_vec_canary),
         )?;
-        (trace.budgeted, trace.semantic_baseline)
+        (
+            trace.budgeted,
+            trace.semantic_baseline,
+            trace.semantic_route,
+        )
     };
     let shadow_semantic = {
         let shadow_detail = build_shadow_semantic_explain(
@@ -938,6 +1157,7 @@ pub async fn execute_unified_recall(
                 "method_breakdown": method_breakdown,
                 "tier": tier,
                 "latency_ms": latency_ms,
+                "semantic_route": semantic_route.clone(),
                 "shadow_semantic": shadow_semantic
             }),
         )
@@ -949,7 +1169,8 @@ pub async fn execute_unified_recall(
             "spent": 0,
             "mode": "headlines",
             "tier": tier,
-            "latencyMs": latency_ms
+            "latencyMs": latency_ms,
+            "semanticRoute": semantic_route.clone()
         }));
     }
 
@@ -982,6 +1203,7 @@ pub async fn execute_unified_recall(
             "method_breakdown": method_breakdown,
             "tier": tier,
             "latency_ms": latency_ms,
+            "semantic_route": semantic_route.clone(),
             "shadow_semantic": shadow_semantic
         }),
     )
@@ -994,7 +1216,8 @@ pub async fn execute_unified_recall(
         "saved": saved,
         "mode": mode,
         "tier": tier,
-        "latencyMs": latency_ms
+        "latencyMs": latency_ms,
+        "semanticRoute": semantic_route
     });
 
     Ok(payload)
@@ -1048,6 +1271,7 @@ async fn execute_recall_policy_explain_inner(
         top_relevance,
         max_items,
         semantic_baseline,
+        semantic_route,
     ) = if budget == 0 {
         let trace = run_recall_with_query_vector_trace(
             &mut conn,
@@ -1056,6 +1280,7 @@ async fn execute_recall_policy_explain_inner(
             query_vector.as_deref(),
             ctx,
             source_prefix,
+            Some(&state.sqlite_vec_canary),
         )?;
         let raw_pool = trace.ranked;
         let budgeted = raw_pool
@@ -1079,6 +1304,7 @@ async fn execute_recall_policy_explain_inner(
             0.0_f64,
             requested_k,
             trace.semantic_baseline,
+            trace.semantic_route,
         )
     } else {
         let trace = run_budget_recall_trace_with_query_vector(
@@ -1089,6 +1315,7 @@ async fn execute_recall_policy_explain_inner(
             query_vector.as_deref(),
             ctx,
             source_prefix,
+            Some(&state.sqlite_vec_canary),
         )?;
         (
             trace.budgeted,
@@ -1100,6 +1327,7 @@ async fn execute_recall_policy_explain_inner(
             trace.top_relevance,
             trace.max_items,
             trace.semantic_baseline,
+            trace.semantic_route,
         )
     };
     let shadow_semantic = build_shadow_semantic_explain(
@@ -1220,7 +1448,8 @@ async fn execute_recall_policy_explain_inner(
                 "returnedCount": final_with_factors.len(),
                 "droppedCount": post_compaction_dropped_count,
                 "totalPreBudgetDrops": family_compacted_count + post_compaction_dropped_count
-            }
+            },
+            "semanticRoute": semantic_route
         },
         "explain": {
             "returned": final_with_factors,
@@ -1375,6 +1604,7 @@ fn run_recall_with_query_vector_trace(
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
     source_prefix: Option<&str>,
+    canary: Option<&SqliteVecCanaryConfig>,
 ) -> Result<RecallWithVectorTrace, String> {
     let extracted = extract_search_keywords(query_text);
     let keyword_query = if extracted.is_empty() {
@@ -1499,26 +1729,46 @@ fn run_recall_with_query_vector_trace(
     // ── Semantic search (skipped on Tier 2 early exit or no engine) ──────────
     // Produces a ranked list of (source, score) pairs for RRF.
     // Also accumulates per-source metadata (score, ts) for compound scoring.
-    let semantic_candidates = if tier2_resolved {
-        Vec::new()
+    let (semantic_candidates, semantic_route, semantic_baseline) = if tier2_resolved {
+        (
+            Vec::new(),
+            json!({
+                "mode": "baseline",
+                "reason": "tier2_keyword_resolved",
+                "sampled": false,
+                "trialPercent": canary.map(|config| config.trial_percent).unwrap_or(0)
+            }),
+            None,
+        )
     } else {
-        query_vector
+        let baseline_semantic = query_vector
             .map(|query_vec| {
                 collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
             })
-            .unwrap_or_default()
-    };
-    let semantic_baseline = if semantic_candidates.is_empty() {
-        None
-    } else {
-        Some(ShadowSemanticBaseline {
-            candidate_count: semantic_candidates.len(),
-            ranked_sources: semantic_candidates
-                .iter()
-                .take(MAX_SEMANTIC_RRF_CANDIDATES)
-                .map(|candidate| candidate.source.clone())
-                .collect(),
-        })
+            .unwrap_or_default();
+        let semantic_baseline = if baseline_semantic.is_empty() {
+            None
+        } else {
+            Some(ShadowSemanticBaseline {
+                candidate_count: baseline_semantic.len(),
+                ranked_sources: baseline_semantic
+                    .iter()
+                    .take(MAX_SEMANTIC_RRF_CANDIDATES)
+                    .map(|candidate| candidate.source.clone())
+                    .collect(),
+            })
+        };
+        let (semantic_candidates, semantic_route) = maybe_apply_sqlite_vec_trial(
+            conn,
+            query_text,
+            query_vector,
+            baseline_semantic,
+            ctx,
+            source_prefix,
+            k,
+            canary,
+        );
+        (semantic_candidates, semantic_route, semantic_baseline)
     };
 
     // ── RRF fusion ────────────────────────────────────────────────────────────
@@ -1685,6 +1935,7 @@ fn run_recall_with_query_vector_trace(
     Ok(RecallWithVectorTrace {
         ranked,
         semantic_baseline,
+        semantic_route,
     })
 }
 
@@ -1697,10 +1948,16 @@ fn run_recall_with_query_vector(
     ctx: &RecallContext,
     source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
-    Ok(
-        run_recall_with_query_vector_trace(conn, query_text, k, query_vector, ctx, source_prefix)?
-            .ranked,
-    )
+    Ok(run_recall_with_query_vector_trace(
+        conn,
+        query_text,
+        k,
+        query_vector,
+        ctx,
+        source_prefix,
+        None,
+    )?
+    .ranked)
 }
 
 fn run_budget_recall(
@@ -2359,6 +2616,7 @@ struct RecallBudgetTrace {
     min_relevance: f64,
     max_items: usize,
     semantic_baseline: Option<ShadowSemanticBaseline>,
+    semantic_route: Value,
 }
 
 #[derive(Clone)]
@@ -2368,6 +2626,7 @@ struct RecallFamilyCompaction {
     dropped_sources: Vec<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_budget_recall_trace_with_query_vector(
     conn: &mut Connection,
     query_text: &str,
@@ -2376,6 +2635,7 @@ fn run_budget_recall_trace_with_query_vector(
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
     source_prefix: Option<&str>,
+    canary: Option<&SqliteVecCanaryConfig>,
 ) -> Result<RecallBudgetTrace, String> {
     let retrieval_depth = if token_budget <= 220 {
         (k.max(10) * 3).min(30)
@@ -2391,9 +2651,11 @@ fn run_budget_recall_trace_with_query_vector(
         query_vector,
         ctx,
         source_prefix,
+        canary,
     )?;
     let raw = recall_trace.ranked;
     let semantic_baseline = recall_trace.semantic_baseline;
+    let semantic_route = recall_trace.semantic_route;
     if raw.is_empty() {
         return Ok(RecallBudgetTrace {
             budgeted: vec![],
@@ -2405,6 +2667,7 @@ fn run_budget_recall_trace_with_query_vector(
             min_relevance: 0.0,
             max_items: 0,
             semantic_baseline,
+            semantic_route,
         });
     }
 
@@ -2517,6 +2780,7 @@ fn run_budget_recall_trace_with_query_vector(
         min_relevance,
         max_items,
         semantic_baseline,
+        semantic_route,
     })
 }
 
@@ -2568,6 +2832,7 @@ fn run_budget_recall_trace_with_engine(
         query_vector.as_deref(),
         ctx,
         source_prefix,
+        None,
     )
 }
 
@@ -5166,6 +5431,10 @@ mod tests {
             db_corrupted: Arc::new(AtomicBool::new(false)),
             readiness: Arc::new(AtomicBool::new(true)),
             write_buffer_path: PathBuf::from("write_buffer.jsonl"),
+            sqlite_vec_canary: crate::state::SqliteVecCanaryConfig {
+                trial_percent: 0,
+                force_off: false,
+            },
         }
     }
 
@@ -6363,6 +6632,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sqlite_vec_trial_sampled_is_deterministic_for_same_inputs() {
+        let first = sqlite_vec_trial_sampled("daemon lock arbitration", &solo_ctx(), None, 25);
+        let second = sqlite_vec_trial_sampled("daemon lock arbitration", &solo_ctx(), None, 25);
+        assert_eq!(first, second, "canary sampling must be deterministic");
+    }
+
+    #[test]
+    fn shadow_guard_failure_reason_enforces_trial_gates() {
+        let low_overlap = json!({
+            "status": "ok",
+            "overlapRatio": 0.2,
+            "jaccard": 0.8,
+            "meanAbsRankDelta": 0.2,
+            "top1Match": true
+        });
+        assert_eq!(
+            shadow_guard_failure_reason(&low_overlap),
+            Some("overlap_ratio_below_gate")
+        );
+
+        let guard_pass = json!({
+            "status": "ok",
+            "overlapRatio": 0.9,
+            "jaccard": 0.9,
+            "meanAbsRankDelta": 0.4,
+            "top1Match": true
+        });
+        assert_eq!(shadow_guard_failure_reason(&guard_pass), None);
+    }
+
+    #[test]
+    fn maybe_apply_sqlite_vec_trial_force_off_keeps_baseline() {
+        let conn = test_conn();
+        let query_vector = [1.0_f32, 0.0_f32, 0.0_f32];
+        let baseline = vec![SemanticCandidate {
+            source: "memory::daemon-lock".to_string(),
+            excerpt: "daemon ownership lock protects startup arbitration".to_string(),
+            relevance: 0.81,
+            importance: 0.9,
+            ts: 0,
+        }];
+        let (routed, route) = maybe_apply_sqlite_vec_trial(
+            &conn,
+            "daemon ownership lock",
+            Some(&query_vector),
+            baseline.clone(),
+            &solo_ctx(),
+            None,
+            4,
+            Some(&crate::state::SqliteVecCanaryConfig {
+                trial_percent: 100,
+                force_off: true,
+            }),
+        );
+        assert_eq!(routed.len(), baseline.len());
+        assert_eq!(routed[0].source, baseline[0].source);
+        assert_eq!(route["mode"].as_str(), Some("baseline"));
+        assert_eq!(route["reason"].as_str(), Some("trial_force_off"));
+    }
+
+    #[test]
+    fn maybe_apply_sqlite_vec_trial_unsampled_keeps_baseline() {
+        let conn = test_conn();
+        let query_vector = [1.0_f32, 0.0_f32, 0.0_f32];
+        let baseline = vec![SemanticCandidate {
+            source: "memory::daemon-lock".to_string(),
+            excerpt: "daemon ownership lock protects startup arbitration".to_string(),
+            relevance: 0.81,
+            importance: 0.9,
+            ts: 0,
+        }];
+
+        let mut query = "daemon ownership lock".to_string();
+        for _ in 0..256 {
+            if !sqlite_vec_trial_sampled(&query, &solo_ctx(), None, 1) {
+                break;
+            }
+            query.push('x');
+        }
+        assert!(
+            !sqlite_vec_trial_sampled(&query, &solo_ctx(), None, 1),
+            "test should locate an unsampled query for 1% trial buckets"
+        );
+
+        let (routed, route) = maybe_apply_sqlite_vec_trial(
+            &conn,
+            &query,
+            Some(&query_vector),
+            baseline.clone(),
+            &solo_ctx(),
+            None,
+            4,
+            Some(&crate::state::SqliteVecCanaryConfig {
+                trial_percent: 1,
+                force_off: false,
+            }),
+        );
+        assert_eq!(routed.len(), baseline.len());
+        assert_eq!(routed[0].source, baseline[0].source);
+        assert_eq!(route["mode"].as_str(), Some("baseline"));
+        assert_eq!(route["reason"].as_str(), Some("not_sampled"));
+        assert_eq!(route["sampled"].as_bool(), Some(false));
+    }
+
     #[tokio::test]
     async fn execute_unified_recall_logs_shadow_semantic_summary_when_uncached() {
         let state = shared_test_state();
@@ -6391,6 +6765,7 @@ mod tests {
         let conn = state.db.lock().await;
         let event = latest_recall_query_event(&conn);
         let shadow_semantic = &event["shadow_semantic"];
+        assert_eq!(event["semantic_route"]["mode"].as_str(), Some("baseline"));
         assert_eq!(shadow_semantic["status"].as_str(), Some("unavailable"));
         assert_eq!(
             shadow_semantic["reason"].as_str(),
@@ -6442,6 +6817,7 @@ mod tests {
         let conn = state.db.lock().await;
         let event = latest_recall_query_event(&conn);
         assert_eq!(event["cached"].as_bool(), Some(true));
+        assert_eq!(event["semantic_route"]["mode"].as_str(), Some("baseline"));
         assert_eq!(event["shadow_semantic"]["status"].as_str(), Some("skipped"));
         assert_eq!(
             event["shadow_semantic"]["reason"].as_str(),
@@ -6479,6 +6855,7 @@ mod tests {
         let event = latest_recall_query_event(&conn);
         assert_eq!(event["cached"].as_bool(), Some(false));
         assert_eq!(event["mode"].as_str(), Some("headlines"));
+        assert_eq!(event["semantic_route"]["mode"].as_str(), Some("baseline"));
         let shadow_semantic = &event["shadow_semantic"];
         assert_eq!(shadow_semantic["status"].as_str(), Some("unavailable"));
         assert_eq!(
@@ -7110,6 +7487,7 @@ mod tests {
             Some(&query_vector),
             &solo_ctx(),
             None,
+            None,
         )
         .expect("budget trace should succeed");
 
@@ -7314,6 +7692,10 @@ mod tests {
         .expect("policy explain should succeed");
 
         let shadow_semantic = &explain["explain"]["shadowSemantic"];
+        assert_eq!(
+            explain["policy"]["semanticRoute"]["mode"].as_str(),
+            Some("baseline")
+        );
         assert_eq!(shadow_semantic["enabled"].as_bool(), Some(true));
         assert_eq!(shadow_semantic["status"].as_str(), Some("unavailable"));
         assert_eq!(

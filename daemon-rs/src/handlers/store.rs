@@ -1564,6 +1564,10 @@ mod tests {
             db_corrupted: Arc::new(AtomicBool::new(false)),
             readiness: Arc::new(AtomicBool::new(true)),
             write_buffer_path: PathBuf::from("write_buffer.jsonl"),
+            sqlite_vec_canary: crate::state::SqliteVecCanaryConfig {
+                trial_percent: 0,
+                force_off: false,
+            },
         }
     }
 
