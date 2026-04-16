@@ -39,6 +39,9 @@ const LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const SPAWN_PARENT_PID_ENV: &str = "CORTEX_SPAWN_PARENT_PID";
 const ORPHAN_WATCH_INTERVAL_SECS: u64 = 2;
+const DEFAULT_EMBED_BACKFILL_BATCH_SIZE: usize = 200;
+const DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS: usize = 8;
+const DEFAULT_EMBED_BACKFILL_INTERVAL_SECS: u64 = 120;
 const STARTUP_LOG_FILES: &[&str] = &[
     "daemon.log",
     "daemon.err.log",
@@ -1719,6 +1722,22 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
     Ok(Some(value))
 }
 
+fn parse_env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn parse_env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
 #[cfg(not(windows))]
 use daemon_lifecycle::issue_owner_token_for_spawn;
 use daemon_lifecycle::{
@@ -2689,8 +2708,29 @@ pub(crate) async fn run_daemon(
     // ── Background embedding builder ────────────────────────────────
     if let Some(engine) = state.embedding_engine.clone() {
         let db = state.db.clone();
+        let batch_size = parse_env_usize(
+            "CORTEX_EMBED_BACKFILL_BATCH_SIZE",
+            DEFAULT_EMBED_BACKFILL_BATCH_SIZE,
+        )
+        .clamp(1, 10_000);
+        let max_batches_per_pass = parse_env_usize(
+            "CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS",
+            DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS,
+        )
+        .clamp(1, 1000);
+        let interval_secs = parse_env_u64(
+            "CORTEX_EMBED_BACKFILL_INTERVAL_SECS",
+            DEFAULT_EMBED_BACKFILL_INTERVAL_SECS,
+        )
+        .clamp(5, 86_400);
         tokio::spawn(async move {
-            build_embeddings_async(&engine, &db).await;
+            build_embeddings_async(&engine, &db, batch_size, max_batches_per_pass).await;
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+            interval.tick().await; // skip first immediate tick
+            loop {
+                interval.tick().await;
+                build_embeddings_async(&engine, &db, batch_size, max_batches_per_pass).await;
+            }
         });
     } else {
         tokio::spawn(async {
@@ -2897,20 +2937,23 @@ type EmbeddingBackfillTargets = (EmbeddingBackfillRows, EmbeddingBackfillRows);
 fn collect_unembedded_targets_for_model(
     conn: &rusqlite::Connection,
     model_key: &str,
+    limit: usize,
 ) -> EmbeddingBackfillTargets {
     let mem: EmbeddingBackfillRows = conn
         .prepare(
             "SELECT m.id, m.text FROM memories m \
              WHERE m.status = 'active' \
-               AND NOT EXISTS (\
-                   SELECT 1 FROM embeddings e \
-                   WHERE e.target_type = 'memory' \
-                     AND e.target_id = m.id \
-                     AND LOWER(COALESCE(e.model, '')) = ?1\
-               )",
+                AND NOT EXISTS (\
+                    SELECT 1 FROM embeddings e \
+                    WHERE e.target_type = 'memory' \
+                      AND e.target_id = m.id \
+                      AND LOWER(COALESCE(e.model, '')) = ?1\
+                ) \
+             ORDER BY m.id ASC \
+             LIMIT ?2",
         )
         .and_then(|mut stmt| {
-            stmt.query_map(rusqlite::params![model_key], |row| {
+            stmt.query_map(rusqlite::params![model_key, limit as i64], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -2921,15 +2964,17 @@ fn collect_unembedded_targets_for_model(
         .prepare(
             "SELECT d.id, d.decision FROM decisions d \
              WHERE d.status = 'active' \
-               AND NOT EXISTS (\
-                   SELECT 1 FROM embeddings e \
-                   WHERE e.target_type = 'decision' \
-                     AND e.target_id = d.id \
-                     AND LOWER(COALESCE(e.model, '')) = ?1\
-               )",
+                AND NOT EXISTS (\
+                    SELECT 1 FROM embeddings e \
+                    WHERE e.target_type = 'decision' \
+                      AND e.target_id = d.id \
+                      AND LOWER(COALESCE(e.model, '')) = ?1\
+                ) \
+             ORDER BY d.id ASC \
+             LIMIT ?2",
         )
         .and_then(|mut stmt| {
-            stmt.query_map(rusqlite::params![model_key], |row| {
+            stmt.query_map(rusqlite::params![model_key, limit as i64], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -2942,56 +2987,71 @@ fn collect_unembedded_targets_for_model(
 async fn build_embeddings_async(
     engine: &embeddings::EmbeddingEngine,
     db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    batch_size: usize,
+    max_batches_per_pass: usize,
 ) {
     let model_key = engine.model_key();
-    let (unembedded_mem, unembedded_dec) = {
-        let conn = db.lock().await;
-        collect_unembedded_targets_for_model(&conn, model_key)
-    };
+    let mut computed_total = 0usize;
+    let mut queued_total = 0usize;
 
-    let total = unembedded_mem.len() + unembedded_dec.len();
-    if total == 0 {
-        return;
-    }
+    for _ in 0..max_batches_per_pass {
+        let (unembedded_mem, unembedded_dec) = {
+            let conn = db.lock().await;
+            collect_unembedded_targets_for_model(&conn, model_key, batch_size)
+        };
 
-    eprintln!("[embeddings] Building embeddings for {total} entries...");
-    let mut computed = 0;
+        let total = unembedded_mem.len() + unembedded_dec.len();
+        if total == 0 {
+            break;
+        }
+        queued_total += total;
 
-    let mut mem_results: Vec<(i64, Vec<u8>)> = Vec::new();
-    for (id, text) in &unembedded_mem {
-        if let Some(vec) = engine.embed(text) {
-            mem_results.push((*id, embeddings::vector_to_blob(&vec)));
-            computed += 1;
+        let mut computed_batch = 0usize;
+        let mut mem_results: Vec<(i64, Vec<u8>)> = Vec::new();
+        for (id, text) in &unembedded_mem {
+            if let Some(vec) = engine.embed(text) {
+                mem_results.push((*id, embeddings::vector_to_blob(&vec)));
+                computed_batch += 1;
+            }
+        }
+
+        let mut dec_results: Vec<(i64, Vec<u8>)> = Vec::new();
+        for (id, text) in &unembedded_dec {
+            if let Some(vec) = engine.embed(text) {
+                dec_results.push((*id, embeddings::vector_to_blob(&vec)));
+                computed_batch += 1;
+            }
+        }
+
+        {
+            let conn = db.lock().await;
+            for (id, blob) in &mem_results {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
+                     VALUES ('memory', ?1, ?2, ?3)",
+                    rusqlite::params![id, blob, model_key],
+                );
+            }
+            for (id, blob) in &dec_results {
+                let _ = conn.execute(
+                    "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
+                     VALUES ('decision', ?1, ?2, ?3)",
+                    rusqlite::params![id, blob, model_key],
+                );
+            }
+        }
+
+        computed_total += computed_batch;
+        if total < (batch_size * 2) {
+            break;
         }
     }
 
-    let mut dec_results: Vec<(i64, Vec<u8>)> = Vec::new();
-    for (id, text) in &unembedded_dec {
-        if let Some(vec) = engine.embed(text) {
-            dec_results.push((*id, embeddings::vector_to_blob(&vec)));
-            computed += 1;
-        }
+    if queued_total > 0 {
+        eprintln!(
+            "[embeddings] Built {computed_total}/{queued_total} embeddings this pass (batch_size={batch_size}, max_batches={max_batches_per_pass})"
+        );
     }
-
-    {
-        let conn = db.lock().await;
-        for (id, blob) in &mem_results {
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-                 VALUES ('memory', ?1, ?2, ?3)",
-                rusqlite::params![id, blob, model_key],
-            );
-        }
-        for (id, blob) in &dec_results {
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-                 VALUES ('decision', ?1, ?2, ?3)",
-                rusqlite::params![id, blob, model_key],
-            );
-        }
-    }
-
-    eprintln!("[embeddings] Built {computed}/{total} embeddings");
 }
 
 #[cfg(test)]
@@ -3154,7 +3214,8 @@ mod tests {
         )
         .expect("insert current decision embedding");
 
-        let (memories, decisions) = collect_unembedded_targets_for_model(&conn, "all-minilm-l6-v2");
+        let (memories, decisions) =
+            collect_unembedded_targets_for_model(&conn, "all-minilm-l6-v2", 256);
         let memory_ids: std::collections::HashSet<i64> =
             memories.iter().map(|(id, _)| *id).collect();
         let decision_ids: std::collections::HashSet<i64> =
@@ -3175,6 +3236,41 @@ mod tests {
         assert!(
             !decision_ids.contains(&decision_current_id),
             "matching decision model should not be queued"
+        );
+    }
+
+    #[test]
+    fn collect_unembedded_targets_for_model_respects_limit_per_table() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        for idx in 0..3 {
+            conn.execute(
+                "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+                 VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+                rusqlite::params![format!("memory-{idx}"), format!("memory::{idx}")],
+            )
+            .expect("insert memory");
+        }
+        for idx in 0..3 {
+            conn.execute(
+                "INSERT INTO decisions (decision, context, status, score, merged_count, quality, created_at, updated_at)
+                 VALUES (?1, ?2, 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+                rusqlite::params![format!("decision-{idx}"), format!("decision::{idx}")],
+            )
+            .expect("insert decision");
+        }
+
+        let (memories, decisions) =
+            collect_unembedded_targets_for_model(&conn, "all-minilm-l6-v2", 1);
+        assert_eq!(memories.len(), 1, "memory queue should honor LIMIT");
+        assert_eq!(decisions.len(), 1, "decision queue should honor LIMIT");
+        assert_eq!(memories[0].0, 1, "memory selection should be deterministic");
+        assert_eq!(
+            decisions[0].0, 1,
+            "decision selection should be deterministic"
         );
     }
 

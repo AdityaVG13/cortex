@@ -473,10 +473,48 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     None
 }
 
+fn collect_reembed_backlog_counts(db_path: &Path, model_key: &str) -> Option<(i64, i64)> {
+    if !db_path.exists() {
+        return None;
+    }
+    let conn = db::open(db_path).ok()?;
+    db::configure(&conn).ok()?;
+    let backlog_memories: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories m \
+             WHERE m.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'memory' \
+                     AND e.target_id = m.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+            [model_key],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let backlog_decisions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions d \
+             WHERE d.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'decision' \
+                     AND e.target_id = d.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+            [model_key],
+            |row| row.get(0),
+        )
+        .ok()?;
+    Some((backlog_memories, backlog_decisions))
+}
+
 // ─── Step 1: Init ───────────────────────────────────────────────────────────
 
 async fn step_init() -> StepResult {
     let cortex_dir = auth::cortex_dir();
+    let db_path = auth::db_path();
     let embedding_model = embeddings::selected_model_selection();
     let mut notes = Vec::new();
 
@@ -518,6 +556,23 @@ async fn step_init() -> StepResult {
                 notes.push("Embedding model: download failed (will retry on daemon start)".into())
             }
         }
+    }
+
+    notes.push(format!(
+        "Embedding profile: {} [{} | {}d]",
+        embedding_model.display_name, embedding_model.key, embedding_model.dimension
+    ));
+
+    if let Some((backlog_memories, backlog_decisions)) =
+        collect_reembed_backlog_counts(&db_path, embedding_model.key)
+    {
+        notes.push(format!(
+            "Re-embed backlog: memories={backlog_memories}, decisions={backlog_decisions}, total={}",
+            backlog_memories + backlog_decisions
+        ));
+        notes.push(
+            "Backfill policy: daemon drains backlog in bounded background passes (batch + interval controlled by CORTEX_EMBED_BACKFILL_* env vars)".into(),
+        );
     }
 
     StepResult::Ok(notes.join(" | "))

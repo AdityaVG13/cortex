@@ -36,6 +36,18 @@ const ALL_MINILM_L6_V2: EmbeddingModelProfile = EmbeddingModelProfile {
         "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
 };
 
+const ALL_MINILM_L12_V2: EmbeddingModelProfile = EmbeddingModelProfile {
+    key: "all-minilm-l12-v2",
+    display_name: "all-MiniLM-L12-v2",
+    dimension: 384,
+    model_file: "all-MiniLM-L12-v2.onnx",
+    tokenizer_file: "all-MiniLM-L12-v2-tokenizer.json",
+    model_url:
+        "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
+    tokenizer_url:
+        "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/tokenizer.json",
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct EmbeddingModelSelection {
     pub key: &'static str,
@@ -53,6 +65,9 @@ fn resolve_profile() -> &'static EmbeddingModelProfile {
     match std::env::var(MODEL_ENV_KEY) {
         Ok(raw) => match normalize_model_key(&raw).as_str() {
             "all-minilm-l6-v2" | "all-minilm-l6v2" | "minilm" => &ALL_MINILM_L6_V2,
+            "all-minilm-l12-v2" | "all-minilm-l12v2" | "minilm-l12" | "minilm-modern" => {
+                &ALL_MINILM_L12_V2
+            }
             unknown => {
                 eprintln!(
                     "[embeddings] Unknown {MODEL_ENV_KEY}='{unknown}', falling back to {}",
@@ -385,5 +400,15 @@ mod tests {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(Some("unknown-model-key"));
         assert_eq!(selected_model_key(), "all-minilm-l6-v2");
+    }
+
+    #[test]
+    fn selected_model_accepts_l12_aliases() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _restore = set_model_env_for_test(None);
+        std::env::set_var(MODEL_ENV_KEY, "all-minilm-l12-v2");
+        assert_eq!(selected_model_key(), "all-minilm-l12-v2");
+        std::env::set_var(MODEL_ENV_KEY, "minilm-modern");
+        assert_eq!(selected_model_key(), "all-minilm-l12-v2");
     }
 }
