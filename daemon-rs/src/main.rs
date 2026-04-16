@@ -30,13 +30,16 @@ mod transport;
 mod workspace;
 
 use chrono::{self, Utc};
+use fs2::FileExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BACKUP_RETENTION_COUNT: usize = 3;
 const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
 const LOG_ROTATION_BYTES: u64 = 1024 * 1024;
+const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
+const SINGLE_DAEMON_TEST_BYPASS_ENV: &str = "CORTEX_SINGLE_DAEMON_TEST_BYPASS";
 const SPAWN_PARENT_PID_ENV: &str = "CORTEX_SPAWN_PARENT_PID";
 const ORPHAN_WATCH_INTERVAL_SECS: u64 = 2;
 const DEFAULT_EMBED_BACKFILL_BATCH_SIZE: usize = 200;
@@ -1607,6 +1610,13 @@ fn parse_truthy_flag(value: &str) -> bool {
     )
 }
 
+fn single_daemon_test_bypass_enabled() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var(SINGLE_DAEMON_TEST_BYPASS_ENV)
+            .ok()
+            .is_some_and(|value| parse_truthy_flag(&value))
+}
+
 fn normalize_option(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1907,16 +1917,20 @@ fn daemon_lock_wait_timeout() -> Duration {
 #[derive(Debug)]
 struct RuntimeLockGuards {
     _scoped: std::fs::File,
-    _global: std::fs::File,
+    _global: Option<std::fs::File>,
 }
 
 fn try_acquire_runtime_locks(paths: &auth::CortexPaths) -> Result<RuntimeLockGuards, String> {
     let scoped = auth::acquire_daemon_lock(paths)?;
-    let global = match auth::acquire_global_daemon_lock() {
-        Ok(lock) => lock,
-        Err(err) => {
-            drop(scoped);
-            return Err(err);
+    let global = if single_daemon_test_bypass_enabled() {
+        None
+    } else {
+        match auth::acquire_global_daemon_lock() {
+            Ok(lock) => Some(lock),
+            Err(err) => {
+                drop(scoped);
+                return Err(err);
+            }
         }
     };
     Ok(RuntimeLockGuards {
@@ -2107,9 +2121,15 @@ fn validate_spawned_owner_runtime_claim(
 
 async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<(), String> {
     if let Some((pid, exe, cmd)) = detect_other_cortex_daemon_process() {
-        return Err(format!(
-            "daemon startup denied: Cortex already has an active daemon process (pid={pid}, exe={exe}, cmd=\"{cmd}\")"
-        ));
+        if single_daemon_test_bypass_enabled() {
+            eprintln!(
+                "[cortex] Warning: bypassing single-daemon process preflight for debug test run (detected pid={pid}, exe={exe}, cmd=\"{cmd}\")"
+            );
+        } else {
+            return Err(format!(
+                "daemon startup denied: Cortex already has an active daemon process (pid={pid}, exe={exe}, cmd=\"{cmd}\")"
+            ));
+        }
     }
 
     let bind_addr = paths.bind.trim();
@@ -2254,6 +2274,55 @@ fn local_spawn_allowed_for_request(allow_service_ensure: bool) -> bool {
     !(local_spawn_disabled || app_required)
 }
 
+fn control_center_lock_path(paths: &auth::CortexPaths) -> PathBuf {
+    paths.home.join("runtime").join(CONTROL_CENTER_LOCK_FILE)
+}
+
+fn is_lock_contention_error(err: &std::io::Error) -> bool {
+    if matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+    ) {
+        return true;
+    }
+    if cfg!(windows) {
+        return matches!(err.raw_os_error(), Some(32 | 33));
+    }
+    false
+}
+
+fn control_center_is_active(paths: &auth::CortexPaths) -> Result<bool, String> {
+    let lock_path = control_center_lock_path(paths);
+    let lock_file = match std::fs::OpenOptions::new()
+        .create(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if is_lock_contention_error(&err) => return Ok(true),
+        Err(err) => {
+            return Err(format!(
+                "open control-center lock {}: {err}",
+                lock_path.display()
+            ))
+        }
+    };
+
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = lock_file.unlock();
+            Ok(false)
+        }
+        Err(err) if is_lock_contention_error(&err) => Ok(true),
+        Err(err) => Err(format!(
+            "probe control-center lock {}: {err}",
+            lock_path.display()
+        )),
+    }
+}
+
 async fn ensure_daemon(
     paths: &auth::CortexPaths,
     agent: Option<&str>,
@@ -2271,6 +2340,17 @@ async fn ensure_daemon(
             if daemon_healthy(paths).await {
                 // already healthy
             } else if local_spawn_allowed {
+                match control_center_is_active(paths) {
+                    Ok(true) => return Err(app_init_required_error(paths, agent)),
+                    Ok(false) => {}
+                    Err(err) => {
+                        return Err(format!(
+                            "{} (control-center lock probe failed: {})",
+                            app_init_required_error(paths, agent),
+                            err
+                        ));
+                    }
+                }
                 #[cfg(windows)]
                 {
                     if !ensure_service_ready_async().await {
@@ -2291,6 +2371,17 @@ async fn ensure_daemon(
         Err(_) => {
             if !wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
                 if local_spawn_allowed {
+                    match control_center_is_active(paths) {
+                        Ok(true) => return Err(app_init_required_error(paths, agent)),
+                        Ok(false) => {}
+                        Err(err) => {
+                            return Err(format!(
+                                "{} (control-center lock probe failed: {})",
+                                app_init_required_error(paths, agent),
+                                err
+                            ));
+                        }
+                    }
                     #[cfg(windows)]
                     {
                         if ensure_service_ready_async().await {
@@ -3067,6 +3158,10 @@ mod tests {
 
     static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     const SPAWN_PARENT_TEST_CHILD_ENV: &str = "CORTEX_SPAWN_PARENT_TEST_CHILD";
+    const CONTROL_CENTER_LOCK_TEST_CHILD_ENV: &str = "CORTEX_CONTROL_CENTER_LOCK_TEST_CHILD";
+    const CONTROL_CENTER_LOCK_TEST_HOME_ENV: &str = "CORTEX_CONTROL_CENTER_LOCK_TEST_HOME";
+    const CONTROL_CENTER_LOCK_TEST_READY_ENV: &str = "CORTEX_CONTROL_CENTER_LOCK_TEST_READY";
+    const CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV: &str = "CORTEX_CONTROL_CENTER_LOCK_TEST_HOLD_MS";
 
     fn openapi_spec_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3171,6 +3266,54 @@ mod tests {
             return;
         }
         std::thread::sleep(Duration::from_millis(300));
+    }
+
+    #[test]
+    fn control_center_lock_holder_child_process() {
+        if std::env::var(CONTROL_CENTER_LOCK_TEST_CHILD_ENV)
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            return;
+        }
+        let home = std::env::var(CONTROL_CENTER_LOCK_TEST_HOME_ENV)
+            .expect("control-center lock test home env missing");
+        let ready_file = std::env::var(CONTROL_CENTER_LOCK_TEST_READY_ENV)
+            .expect("control-center lock ready marker env missing");
+        let hold_ms = std::env::var(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1500);
+        let lock_path = PathBuf::from(home)
+            .join("runtime")
+            .join(CONTROL_CENTER_LOCK_FILE);
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).expect("create lock parent dir");
+        }
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .expect("open lock file");
+        lock_file
+            .try_lock_exclusive()
+            .expect("acquire control-center lock");
+        std::fs::write(ready_file, b"locked").expect("write lock ready marker");
+        std::thread::sleep(Duration::from_millis(hold_ms));
+    }
+
+    fn wait_for_control_center_lock(paths: &auth::CortexPaths, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if control_center_is_active(paths).unwrap_or(false) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        false
     }
 
     #[test]
@@ -3403,6 +3546,67 @@ mod tests {
         drop(first_lock);
         let _ = fs::remove_dir_all(&home_dir);
         let _ = fs::remove_dir_all(&global_lock_home);
+    }
+
+    #[test]
+    fn control_center_lock_detection_reports_cross_process_holder() {
+        let _env_guard = env_guard();
+        let home_dir = temp_test_dir("control_center_lock_detection");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        let ready_file = home_dir.join("control-center-lock-ready");
+
+        assert!(
+            !control_center_is_active(&paths).expect("probe lock without holder"),
+            "lock should not appear active before holder starts"
+        );
+
+        let current_exe = std::env::current_exe().expect("resolve current test binary path");
+        let mut child = Command::new(current_exe)
+            .arg("--exact")
+            .arg("tests::control_center_lock_holder_child_process")
+            .arg("--nocapture")
+            .env(CONTROL_CENTER_LOCK_TEST_CHILD_ENV, "1")
+            .env(CONTROL_CENTER_LOCK_TEST_HOME_ENV, &home_str)
+            .env(
+                CONTROL_CENTER_LOCK_TEST_READY_ENV,
+                ready_file.to_string_lossy().to_string(),
+            )
+            .env(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV, "2000")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn lock-holder child");
+
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        while !ready_file.exists() {
+            if Instant::now() >= ready_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("lock-holder child never reported readiness");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        assert!(
+            wait_for_control_center_lock(&paths, Duration::from_secs(3)),
+            "lock should appear active while child holds cross-process lock"
+        );
+
+        let status = child.wait().expect("wait lock-holder child");
+        assert!(
+            status.success(),
+            "lock-holder child should exit successfully"
+        );
+
+        assert!(
+            !control_center_is_active(&paths).expect("probe lock after holder exits"),
+            "lock should be released after child exits"
+        );
+
+        let _ = std::fs::remove_dir_all(&home_dir);
     }
 
     #[test]
@@ -3726,6 +3930,16 @@ mod tests {
     }
 
     #[test]
+    fn single_daemon_test_bypass_flag_respects_debug_gate() {
+        let _env_guard = env_guard();
+        std::env::remove_var(SINGLE_DAEMON_TEST_BYPASS_ENV);
+        assert!(!single_daemon_test_bypass_enabled());
+
+        let _bypass = ScopedEnvVar::set(SINGLE_DAEMON_TEST_BYPASS_ENV, "1");
+        assert_eq!(single_daemon_test_bypass_enabled(), cfg!(debug_assertions));
+    }
+
+    #[test]
     fn local_spawn_policy_fails_closed_for_marked_app_client_without_spawn_contract() {
         let _env_guard = env_guard();
         std::env::remove_var(APP_REQUIRED_ENV);
@@ -3803,6 +4017,65 @@ mod tests {
         let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "claude");
         let err = run_ensure_daemon(&paths, Some("claude"), false, true).unwrap_err();
         assert!(err.contains("APP_INIT_REQUIRED"));
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn ensure_daemon_blocks_local_spawn_when_control_center_lock_is_held() {
+        let _env_guard = env_guard();
+        let home_dir = temp_test_dir("control_center_lock_blocks_spawn");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        let ready_file = home_dir.join("control-center-lock-ready");
+        std::env::remove_var(APP_REQUIRED_ENV);
+        std::env::remove_var(APP_CLIENT_ENV);
+        std::env::remove_var(DAEMON_LOCAL_SPAWN_ENV);
+
+        let current_exe = std::env::current_exe().expect("resolve current test binary path");
+        let mut child = Command::new(current_exe)
+            .arg("--exact")
+            .arg("tests::control_center_lock_holder_child_process")
+            .arg("--nocapture")
+            .env(CONTROL_CENTER_LOCK_TEST_CHILD_ENV, "1")
+            .env(CONTROL_CENTER_LOCK_TEST_HOME_ENV, &home_str)
+            .env(
+                CONTROL_CENTER_LOCK_TEST_READY_ENV,
+                ready_file.to_string_lossy().to_string(),
+            )
+            .env(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV, "2000")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn lock-holder child");
+
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        while !ready_file.exists() {
+            if Instant::now() >= ready_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("lock-holder child never reported readiness");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        assert!(
+            wait_for_control_center_lock(&paths, Duration::from_secs(3)),
+            "control-center lock should be active before ensure_daemon call"
+        );
+
+        let err = run_ensure_daemon(&paths, Some("claude"), false, true).unwrap_err();
+        assert!(
+            err.contains("APP_INIT_REQUIRED"),
+            "control-center lock should force attach-only error: {err}"
+        );
+
+        let status = child.wait().expect("wait lock-holder child");
+        assert!(
+            status.success(),
+            "lock-holder child should exit successfully"
+        );
         let _ = fs::remove_dir_all(&home_dir);
     }
 

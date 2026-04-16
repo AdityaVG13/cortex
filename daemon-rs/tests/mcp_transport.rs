@@ -145,6 +145,7 @@ fn direct_mcp_does_not_stop_preexisting_daemon() {
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -189,6 +190,7 @@ fn plugin_mcp_local_attach_does_not_respawn_after_interruption() {
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -278,6 +280,7 @@ fn plugin_mcp_local_attach_allows_non_claude_agent() {
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -350,6 +353,7 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -453,6 +457,7 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
 
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", &home, "--port", &port.to_string()])
+        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
