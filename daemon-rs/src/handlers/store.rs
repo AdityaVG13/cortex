@@ -21,6 +21,11 @@ const REVIEW_MERGE_THRESHOLD: f32 = 0.90;
 const JACCARD_MERGE_THRESHOLD: f64 = 0.70;
 const MERGE_SCORE_BONUS: f64 = 5.0;
 const TOO_VAGUE_THRESHOLD: i32 = 20;
+const BENCHMARK_ENTRY_TYPE: &str = "benchmark";
+
+fn is_benchmark_entry_type(entry_type: &str) -> bool {
+    entry_type.eq_ignore_ascii_case(BENCHMARK_ENTRY_TYPE)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DecisionProvenance {
@@ -427,7 +432,32 @@ fn store_decision_internal(
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let decision = decision.trim();
+    let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let quality = assess_quality(decision);
+    let confidence = confidence.unwrap_or(0.8);
+    let trust_score = provenance.trust_score(confidence);
+    let ts = now_iso();
+    let expires_at = compute_expires_at(conn, ttl_seconds).map_err(StoreError::Internal)?;
+
+    // Benchmark ingestion must preserve corpus fidelity (no dedup/conflict collapse).
+    if is_benchmark_entry_type(&entry_type) {
+        return insert_decision(
+            conn,
+            decision,
+            context,
+            &entry_type,
+            &source_agent,
+            &provenance,
+            confidence,
+            trust_score,
+            quality.score,
+            expires_at,
+            &ts,
+            owner_id,
+            1.0,
+        );
+    }
+
     if quality.score < TOO_VAGUE_THRESHOLD {
         return Err(StoreError::Validation {
             message: "Memory too vague",
@@ -435,12 +465,6 @@ fn store_decision_internal(
             factors: quality.factors,
         });
     }
-
-    let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
-    let confidence = confidence.unwrap_or(0.8);
-    let trust_score = provenance.trust_score(confidence);
-    let ts = now_iso();
-    let expires_at = compute_expires_at(conn, ttl_seconds).map_err(StoreError::Internal)?;
 
     if let Some(query_vector) = query_embedding {
         let candidates = fetch_top_semantic_candidates(conn, query_vector, owner_id)?;
@@ -1812,6 +1836,55 @@ mod tests {
         assert!(should_merge_candidate(0.91, 0.71));
         assert!(should_merge_candidate(0.92, 0.71));
         assert!(should_merge_candidate(0.93, 0.00));
+    }
+
+    #[test]
+    fn benchmark_entries_bypass_semantic_merge() {
+        let mut conn = test_conn();
+        insert_existing_decision(
+            &conn,
+            "store benchmark messages without dedup collapsing",
+            Some("seed"),
+            &[1.0, 0.0],
+        );
+
+        let (_entry, new_id) = store_decision_with_input_embedding(
+            &mut conn,
+            "store benchmark messages without dedup collapsing",
+            Some("bench-doc".to_string()),
+            Some("benchmark".to_string()),
+            "tester".to_string(),
+            None,
+            None,
+            Some(&unit_vector_for_similarity(0.99)),
+            None,
+        )
+        .unwrap();
+
+        assert!(new_id.is_some());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn benchmark_entries_allow_vague_payloads() {
+        let mut conn = test_conn();
+        let (_entry, new_id) = store_decision_with_input_embedding(
+            &mut conn,
+            "?",
+            Some("bench-doc".to_string()),
+            Some("benchmark".to_string()),
+            "tester".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(new_id.is_some());
     }
 
     #[test]

@@ -24,11 +24,14 @@ class CortexHTTPMemoryProvider(MemoryProvider):
     def __init__(self) -> None:
         self._http = CortexHTTPClient()
         self._store_dir: Path | None = None
+        self._pending_docs: list[CortexStoredDocument] = []
+        self._flush_batch_size = max(1, int(os.environ.get("CORTEX_BENCHMARK_INGEST_FLUSH_SIZE", "200")))
 
     def initialize(self) -> None:
         self._http.healthcheck()
 
     def cleanup(self) -> None:
+        self._flush_pending(force=True)
         self._http.close()
 
     def prepare(self, store_dir: Path, unit_ids: set[str] | None = None, reset: bool = True) -> None:
@@ -40,18 +43,31 @@ class CortexHTTPMemoryProvider(MemoryProvider):
                 self._http.reset_namespace(os.environ["CORTEX_BENCHMARK_NAMESPACE"])
 
     def ingest(self, documents: list[Document]) -> None:
-        self._http.store_documents(
-            [
-                CortexStoredDocument(
-                    id=document.id,
-                    content=document.content,
-                    user_id=document.user_id,
-                    timestamp=document.timestamp,
-                    context=document.context,
-                )
-                for document in documents
-            ]
+        self._pending_docs.extend(
+            CortexStoredDocument(
+                id=document.id,
+                content=document.content,
+                user_id=document.user_id,
+                timestamp=document.timestamp,
+                context=document.context,
+            )
+            for document in documents
         )
+        self._flush_pending(force=False)
+
+    def _flush_pending(self, force: bool) -> None:
+        if not self._pending_docs:
+            return
+        if force:
+            while self._pending_docs:
+                chunk = self._pending_docs[: self._flush_batch_size]
+                del self._pending_docs[: self._flush_batch_size]
+                self._http.store_documents(chunk)
+            return
+        while len(self._pending_docs) >= self._flush_batch_size:
+            chunk = self._pending_docs[: self._flush_batch_size]
+            del self._pending_docs[: self._flush_batch_size]
+            self._http.store_documents(chunk)
 
     def retrieve(
         self,
@@ -60,6 +76,7 @@ class CortexHTTPMemoryProvider(MemoryProvider):
         user_id: str | None = None,
         query_timestamp: str | None = None,
     ) -> tuple[list[Document], RecallResponse]:
+        self._flush_pending(force=True)
         stored_docs, payload = self._http.recall_documents(query, k=k, user_id=user_id)
         documents = [
             Document(

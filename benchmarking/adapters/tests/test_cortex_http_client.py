@@ -151,6 +151,7 @@ def test_recall_documents_filters_user_dedupes_and_respects_k(configured_env: Pa
     # user-scoped queries fan out recall depth for better hit coverage.
     assert params["k"] == "50"
     assert params["budget"] == "300"
+    assert params["source_prefix"] == "amb::test-suite-namespace::"
 
 
 def test_recall_documents_writes_metrics_jsonl(configured_env: Path) -> None:

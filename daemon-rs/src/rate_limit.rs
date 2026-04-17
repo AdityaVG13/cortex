@@ -18,6 +18,15 @@ use tokio::sync::Mutex;
 const AUTH_FAIL_LIMIT: usize = 10;
 const REQUEST_LIMIT: usize = 100;
 const WINDOW: Duration = Duration::from_secs(60);
+const LIMIT_MAX: usize = 1_000_000;
+
+fn read_limit_env(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.clamp(1, LIMIT_MAX))
+        .unwrap_or(default)
+}
 
 #[derive(Clone)]
 struct SlidingWindow {
@@ -62,13 +71,25 @@ impl SlidingWindow {
 pub struct RateLimiter {
     auth_failures: Arc<Mutex<HashMap<IpAddr, SlidingWindow>>>,
     requests: Arc<Mutex<HashMap<IpAddr, SlidingWindow>>>,
+    auth_fail_limit: usize,
+    request_limit: usize,
 }
 
 impl RateLimiter {
     pub fn new() -> Self {
+        let auth_fail_limit =
+            read_limit_env("CORTEX_RATE_LIMIT_AUTH_FAILS_PER_MIN", AUTH_FAIL_LIMIT);
+        let request_limit = read_limit_env("CORTEX_RATE_LIMIT_REQUESTS_PER_MIN", REQUEST_LIMIT);
+        if auth_fail_limit != AUTH_FAIL_LIMIT || request_limit != REQUEST_LIMIT {
+            eprintln!(
+                "[cortex] Rate limiter configured: auth_fails/min={auth_fail_limit}, requests/min={request_limit}"
+            );
+        }
         Self {
             auth_failures: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Mutex::new(HashMap::new())),
+            auth_fail_limit,
+            request_limit,
         }
     }
 
@@ -77,8 +98,8 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
-        if window.count(now) >= AUTH_FAIL_LIMIT {
-            let retry = window.seconds_until_slot(now, AUTH_FAIL_LIMIT);
+        if window.count(now) >= self.auth_fail_limit {
+            let retry = window.seconds_until_slot(now, self.auth_fail_limit);
             return Err(retry);
         }
         window.record(now);
@@ -90,8 +111,8 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         if let Some(window) = map.get_mut(ip) {
             let now = Instant::now();
-            if window.count(now) >= AUTH_FAIL_LIMIT {
-                return Some(window.seconds_until_slot(now, AUTH_FAIL_LIMIT));
+            if window.count(now) >= self.auth_fail_limit {
+                return Some(window.seconds_until_slot(now, self.auth_fail_limit));
             }
         }
         None
@@ -103,12 +124,12 @@ impl RateLimiter {
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
         let current = window.count(now);
-        if current >= REQUEST_LIMIT {
-            let retry = window.seconds_until_slot(now, REQUEST_LIMIT);
+        if current >= self.request_limit {
+            let retry = window.seconds_until_slot(now, self.request_limit);
             return Err(retry);
         }
         window.record(now);
-        Ok(REQUEST_LIMIT - current - 1)
+        Ok(self.request_limit - current - 1)
     }
 
     /// Periodic cleanup of stale entries (call from background task).

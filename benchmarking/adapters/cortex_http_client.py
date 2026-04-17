@@ -75,12 +75,16 @@ class CortexHTTPClient:
         raw_k = max(k, 10)
         if user_id is not None:
             raw_k = max(raw_k * 5, 25)
+        params = {"q": query, "k": str(raw_k), "budget": str(self.budget)}
+        # Keep benchmark runs isolated on shared app daemons.
+        if self.namespace:
+            params["source_prefix"] = f"amb::{self.namespace}::"
         payload = cast(
             RecallResponse,
             self.request(
                 "GET",
                 "/recall",
-                params={"q": query, "k": str(raw_k), "budget": str(self.budget)},
+                params=params,
             ),
         )
         self._record_recall_metrics(query, payload)

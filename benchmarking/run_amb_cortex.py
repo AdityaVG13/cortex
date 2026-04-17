@@ -5,6 +5,8 @@ import inspect
 import json
 import os
 import re
+import sqlite3
+import shutil
 import socket
 import subprocess
 import sys
@@ -32,6 +34,17 @@ TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     "groq": {"max_avg_ratio": 0.84, "max_peak_ratio": 1.00},
     "default": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
 }
+
+
+def _ensure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 
 def _filter_kwargs_for_callable(fn: object, kwargs: dict[str, object]) -> dict[str, object]:
@@ -126,6 +139,45 @@ def _apply_dataset_compat_shims(dataset: object) -> object:
 
         setattr(dataset, "build_rag_prompt", longmemeval_prompt_compat)
 
+    if dataset_name == "membench":
+        load_trajectories = getattr(dataset, "_load_trajectories", None)
+        if callable(load_trajectories):
+            split_files = {
+                "FirstAgentLowLevel": "FirstAgentDataLowLevel.json",
+                "FirstAgentHighLevel": "FirstAgentDataHighLevel.json",
+                "ThirdAgentLowLevel": "ThirdAgentDataLowLevel.json",
+                "ThirdAgentHighLevel": "ThirdAgentDataHighLevel.json",
+            }
+
+            def load_trajectories_compat(split: str) -> object:
+                try:
+                    return load_trajectories(split)
+                except UnicodeDecodeError:
+                    data_path = Path(getattr(dataset, "data_path", Path("./MemData")))
+                    filename = split_files.get(split)
+                    if not filename:
+                        raise
+                    source = data_path / filename
+                    with source.open("r", encoding="utf-8") as handle:
+                        data = json.load(handle)
+                    trajectories: list[dict[str, object]] = []
+                    for question_type, scenarios in data.items():
+                        if isinstance(scenarios, list):
+                            flattened = scenarios
+                        elif isinstance(scenarios, dict):
+                            flattened = [item for sublist in scenarios.values() for item in sublist]
+                        else:
+                            continue
+                        for traj in flattened:
+                            if not isinstance(traj, dict):
+                                continue
+                            copied = dict(traj)
+                            copied.setdefault("_question_type", question_type)
+                            trajectories.append(copied)
+                    return trajectories
+
+            setattr(dataset, "_load_trajectories", load_trajectories_compat)
+
     return dataset
 
 
@@ -144,9 +196,9 @@ def _find_free_port() -> int:
 def _resolve_cortex_binary() -> Path:
     candidates = [
         os.environ.get("CORTEX_BIN"),
-        str(Path.home() / ".cortex" / "bin" / ("cortex.exe" if os.name == "nt" else "cortex")),
         str(REPO_ROOT / "daemon-rs" / "target" / "debug" / ("cortex.exe" if os.name == "nt" else "cortex")),
         str(REPO_ROOT / "daemon-rs" / "target" / "release" / ("cortex.exe" if os.name == "nt" else "cortex")),
+        str(Path.home() / ".cortex" / "bin" / ("cortex.exe" if os.name == "nt" else "cortex")),
     ]
     for candidate in candidates:
         if candidate and Path(candidate).exists():
@@ -154,6 +206,107 @@ def _resolve_cortex_binary() -> Path:
     raise FileNotFoundError(
         "Unable to locate a Cortex binary. Set CORTEX_BIN or build/install cortex first."
     )
+
+
+def _seed_model_assets(cache_dir: Path, target_dir: Path) -> int:
+    if not cache_dir.exists():
+        return 0
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for candidate in cache_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() not in {".onnx", ".json"}:
+            continue
+        destination = target_dir / candidate.name
+        if destination.exists():
+            continue
+        shutil.copy2(candidate, destination)
+        copied += 1
+    return copied
+
+
+def _env_flag_enabled(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"0", "false", "off", "no"}:
+        return False
+    if value in {"1", "true", "on", "yes"}:
+        return True
+    return default
+
+
+def _runtime_db_path_from_health(base_url: str) -> Path | None:
+    try:
+        response = httpx.get(f"{base_url.rstrip('/')}/health", timeout=3.0)
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None
+    runtime = payload.get("runtime")
+    if not isinstance(runtime, dict):
+        return None
+    db_path = runtime.get("db_path")
+    if not isinstance(db_path, str) or not db_path.strip():
+        return None
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    return path
+
+
+def _cleanup_benchmark_rows_in_db(db_path: Path, source_agent: str) -> dict[str, int | str]:
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute(
+            "CREATE TEMP TABLE _amb_cleanup_ids AS "
+            "SELECT id FROM decisions WHERE source_agent = ?1",
+            (source_agent,),
+        )
+        cur.execute(
+            "DELETE FROM embeddings WHERE target_type = 'decision' "
+            "AND target_id IN (SELECT id FROM _amb_cleanup_ids)"
+        )
+        embeddings_deleted = int(cur.rowcount)
+        cur.execute("DELETE FROM decisions WHERE id IN (SELECT id FROM _amb_cleanup_ids)")
+        decisions_deleted = int(cur.rowcount)
+        cur.execute("DELETE FROM events WHERE source_agent = ?1", (source_agent,))
+        events_deleted = int(cur.rowcount)
+        cur.execute("DROP TABLE _amb_cleanup_ids")
+        conn.commit()
+        cur.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        return {
+            "source_agent": source_agent,
+            "db_path": str(db_path),
+            "decisions_deleted": decisions_deleted,
+            "embeddings_deleted": embeddings_deleted,
+            "events_deleted": events_deleted,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _cleanup_benchmark_namespace(
+    *,
+    base_url: str,
+    source_agent: str,
+) -> dict[str, int | str | bool]:
+    db_path = _runtime_db_path_from_health(base_url)
+    if db_path is None:
+        return {
+            "cleanup_attempted": False,
+            "cleanup_reason": "runtime_db_path_unavailable",
+            "source_agent": source_agent,
+        }
+    payload = _cleanup_benchmark_rows_in_db(db_path, source_agent)
+    return {"cleanup_attempted": True, **payload}
 
 
 def _git_head_short(repo_root: Path) -> str | None:
@@ -190,6 +343,7 @@ def _configure_llm_environment() -> str:
     if gemini_key:
         provider = "gemini"
         os.environ["GOOGLE_API_KEY"] = gemini_key
+        os.environ.pop("GEMINI_API_KEY", None)
     elif os.environ.get("OPENAI_API_KEY"):
         provider = "openai"
     elif os.environ.get("GROQ_API_KEY"):
@@ -622,8 +776,71 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
         self.token_file = self.home / "cortex.token"
         self.stdout_path = run_dir / "daemon.stdout.log"
         self.stderr_path = run_dir / "daemon.stderr.log"
+        self.attached_existing = False
+
+    @property
+    def daemon_mode(self) -> str:
+        return "app-owned-attached" if self.attached_existing else "isolated-benchmark"
+
+    def _lock_conflict_detected(self) -> bool:
+        if not self.stderr_path.exists():
+            return False
+        try:
+            text = self.stderr_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return "another cortex instance holds the lock" in text.lower()
+
+    def _try_attach_existing_daemon(self) -> bool:
+        try:
+            paths_result = subprocess.run(
+                [str(self.binary), "paths", "--json"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            paths_payload = json.loads(paths_result.stdout)
+            token_path = Path(str(paths_payload.get("token", "")))
+            port = int(paths_payload.get("port", 7437))
+            base_url = os.environ.get("CORTEX_BENCHMARK_BASE_URL", f"http://127.0.0.1:{port}")
+            if not token_path.exists():
+                return False
+            token = token_path.read_text(encoding="utf-8").strip()
+            if not token:
+                return False
+            health = httpx.get(f"{base_url}/health", timeout=2.0)
+            if not health.is_success:
+                return False
+            self.base_url = base_url
+            self.token_file = token_path
+            self.token = token
+            self.attached_existing = True
+            return True
+        except Exception:
+            return False
 
     def __enter__(self) -> "IsolatedCortexDaemon":
+        attach_existing = _env_flag_enabled("CORTEX_BENCHMARK_ATTACH_EXISTING_DAEMON", default=True)
+        require_app_daemon = _env_flag_enabled("CORTEX_BENCHMARK_REQUIRE_APP_DAEMON", default=True)
+        if require_app_daemon:
+            attach_existing = True
+        if attach_existing and self._try_attach_existing_daemon():
+            return self
+        if require_app_daemon:
+            raise RuntimeError(
+                "App-owned Cortex daemon is required for benchmark runs but no live daemon was reachable. "
+                "Open Cortex Control Center first (or set CORTEX_BENCHMARK_REQUIRE_APP_DAEMON=0 for isolated diagnostics)."
+            )
+        _seed_model_assets(Path.home() / ".cortex" / "models", self.home / "models")
+        proc_env = os.environ.copy()
+        proc_env.setdefault(
+            "CORTEX_RATE_LIMIT_REQUESTS_PER_MIN",
+            os.environ.get("CORTEX_BENCHMARK_REQUESTS_PER_MIN", "100000"),
+        )
+        proc_env.setdefault(
+            "CORTEX_RATE_LIMIT_AUTH_FAILS_PER_MIN",
+            os.environ.get("CORTEX_BENCHMARK_AUTH_FAILS_PER_MIN", "10000"),
+        )
         stdout = self.stdout_path.open("w", encoding="utf-8")
         stderr = self.stderr_path.open("w", encoding="utf-8")
         self.proc = subprocess.Popen(
@@ -640,13 +857,19 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
             stdout=stdout,
             stderr=stderr,
             text=True,
+            env=proc_env,
         )
-        self._wait_for_health()
-        self.token = self._wait_for_token()
+        try:
+            self._wait_for_health()
+            self.token = self._wait_for_token()
+        except RuntimeError:
+            if attach_existing and self._lock_conflict_detected() and self._try_attach_existing_daemon():
+                return self
+            raise
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self.proc is not None:
+        if self.proc is not None and not self.attached_existing and self.proc.poll() is None:
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=10)
@@ -716,57 +939,72 @@ def run_smoke(run_dir: Path) -> None:
     from cortex_http_client import CortexHTTPClient, CortexStoredDocument
 
     namespace = f"smoke-{run_dir.name}"
+    source_agent = f"amb-cortex::{namespace}"
+    cleanup_enabled = _env_flag_enabled("CORTEX_BENCHMARK_CLEANUP_ON_EXIT", default=True)
     with IsolatedCortexDaemon(run_dir) as daemon:
         os.environ.update(daemon.export_env(namespace))
-        _write_run_manifest(
-            run_dir,
-            {
-                "command": "smoke",
-                "created_at": datetime.now().isoformat(),
-                "cortex_repo_head": _git_head_short(REPO_ROOT),
-                "cortex_binary": str(daemon.binary),
-                "daemon_mode": "isolated-benchmark",
-                "benchmark_tools": _load_lock_summary(),
-                "namespace": namespace,
-                "legitimacy": {
-                    "isolated_daemon": True,
-                    "uses_live_app_daemon": False,
-                    "oracle_mode": False,
-                    "notes": "Smoke test validates Cortex ingest/retrieve only. It does not run AMB judging.",
+        try:
+            _write_run_manifest(
+                run_dir,
+                {
+                    "command": "smoke",
+                    "created_at": datetime.now().isoformat(),
+                    "cortex_repo_head": _git_head_short(REPO_ROOT),
+                    "cortex_binary": str(daemon.binary),
+                    "daemon_mode": daemon.daemon_mode,
+                    "benchmark_tools": _load_lock_summary(),
+                    "namespace": namespace,
+                    "legitimacy": {
+                        "isolated_daemon": not daemon.attached_existing,
+                        "uses_live_app_daemon": daemon.attached_existing,
+                        "oracle_mode": False,
+                        "notes": "Smoke test validates Cortex ingest/retrieve only. It does not run AMB judging.",
+                    },
                 },
-            },
-        )
-        client = CortexHTTPClient()
-        client.healthcheck()
-        client.reset_namespace(namespace)
-        client.store_documents(
-            [
-                CortexStoredDocument(
-                    id="d1",
-                    content="Cortex uses a Rust daemon with SQLite and ONNX embeddings.",
+            )
+            client = CortexHTTPClient()
+            try:
+                client.healthcheck()
+                client.reset_namespace(namespace)
+                client.store_documents(
+                    [
+                        CortexStoredDocument(
+                            id="d1",
+                            content="Cortex uses a Rust daemon with SQLite and ONNX embeddings.",
+                            user_id="bench-user",
+                        ),
+                        CortexStoredDocument(
+                            id="d2",
+                            content="LongMemEval evaluates information extraction, reasoning, updates, temporal recall, and abstention.",
+                            user_id="bench-user",
+                        ),
+                    ]
+                )
+                docs, raw = client.recall_documents(
+                    "What does LongMemEval evaluate?",
+                    k=2,
                     user_id="bench-user",
-                ),
-                CortexStoredDocument(
-                    id="d2",
-                    content="LongMemEval evaluates information extraction, reasoning, updates, temporal recall, and abstention.",
-                    user_id="bench-user",
-                ),
-            ]
-        )
-        docs, raw = client.recall_documents(
-            "What does LongMemEval evaluate?",
-            k=2,
-            user_id="bench-user",
-        )
-        payload = {
-            "retrieved_ids": [doc.id for doc in docs],
-            "contexts": [doc.content for doc in docs],
-            "raw_result_count": len((raw or {}).get("results") or []),
-            "base_url": daemon.base_url,
-            "run_dir": str(run_dir),
-        }
-        client.close()
-        print(json.dumps(payload, indent=2))
+                )
+                payload = {
+                    "retrieved_ids": [doc.id for doc in docs],
+                    "contexts": [doc.content for doc in docs],
+                    "raw_result_count": len((raw or {}).get("results") or []),
+                    "base_url": daemon.base_url,
+                    "run_dir": str(run_dir),
+                }
+                print(json.dumps(payload, indent=2))
+            finally:
+                client.close()
+        finally:
+            if daemon.attached_existing and cleanup_enabled:
+                cleanup_report = _cleanup_benchmark_namespace(
+                    base_url=daemon.base_url,
+                    source_agent=source_agent,
+                )
+                (run_dir / "namespace-cleanup.json").write_text(
+                    json.dumps(cleanup_report, indent=2),
+                    encoding="utf-8",
+                )
 
 
 def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
@@ -779,200 +1017,224 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
     from memory_bench.memory import get_memory_provider
 
     namespace = args.run_name or f"{args.dataset}-{args.split}-{run_dir.name}"
+    source_agent = f"amb-cortex::{namespace}"
+    cleanup_enabled = _env_flag_enabled("CORTEX_BENCHMARK_CLEANUP_ON_EXIT", default=True)
     recall_metrics_path = run_dir / "retrieval-metrics.jsonl"
     baseline_path = _resolve_baseline_path(args.baseline_file)
     with IsolatedCortexDaemon(run_dir) as daemon:
-        os.environ.update(daemon.export_env(namespace))
-        os.environ["CORTEX_RECALL_BUDGET"] = str(args.recall_budget)
-        os.environ["CORTEX_BENCHMARK_METRICS_FILE"] = str(recall_metrics_path)
-        llm_provider = _configure_llm_environment()
-        provider_profile = _normalize_provider_profile(
-            args.provider_profile if args.provider_profile != "auto" else llm_provider
-        )
-        token_limits = _resolve_token_gate_limits(
-            mode=args.token_gate_mode,
-            recall_budget=args.recall_budget,
-            provider_profile=provider_profile,
-            max_recall_tokens=args.max_recall_tokens,
-            max_avg_recall_tokens=args.max_avg_recall_tokens,
-        )
-        scenario_key = _scenario_key(args)
-        baseline_store = _load_baseline_store(baseline_path)
-        baseline_entry = _get_baseline_entry(
-            baseline_store,
-            provider_profile=provider_profile,
-            scenario_key=scenario_key,
-        )
-        effective_constraints = _derive_effective_constraints(
-            args=args,
-            token_limits=token_limits,
-            baseline_entry=baseline_entry,
-        )
-        _write_run_manifest(
-            run_dir,
-            {
-                "command": "run",
-                "created_at": datetime.now().isoformat(),
-                "cortex_repo_head": _git_head_short(REPO_ROOT),
-                "cortex_binary": str(daemon.binary),
-                "daemon_mode": "isolated-benchmark",
-                "benchmark_tools": _load_lock_summary(),
-                "dataset": args.dataset,
-                "split": args.split,
-                "mode": args.mode,
-                "category": args.category,
-                "query_limit": args.query_limit,
-                "query_id": args.query_id,
-                "doc_limit": args.doc_limit,
-                "namespace": namespace,
-                "llm_provider": llm_provider,
-                "baseline": {
-                    "file": str(baseline_path),
-                    "scenario_key": scenario_key,
-                    "baseline_applied": effective_constraints["baseline_applied"],
-                    "entry": baseline_entry,
+        try:
+            os.environ.update(daemon.export_env(namespace))
+            os.environ["CORTEX_RECALL_BUDGET"] = str(args.recall_budget)
+            os.environ["CORTEX_BENCHMARK_METRICS_FILE"] = str(recall_metrics_path)
+            llm_provider = _configure_llm_environment()
+            provider_profile = _normalize_provider_profile(
+                args.provider_profile if args.provider_profile != "auto" else llm_provider
+            )
+            token_limits = _resolve_token_gate_limits(
+                mode=args.token_gate_mode,
+                recall_budget=args.recall_budget,
+                provider_profile=provider_profile,
+                max_recall_tokens=args.max_recall_tokens,
+                max_avg_recall_tokens=args.max_avg_recall_tokens,
+            )
+            scenario_key = _scenario_key(args)
+            baseline_store = _load_baseline_store(baseline_path)
+            baseline_entry = _get_baseline_entry(
+                baseline_store,
+                provider_profile=provider_profile,
+                scenario_key=scenario_key,
+            )
+            effective_constraints = _derive_effective_constraints(
+                args=args,
+                token_limits=token_limits,
+                baseline_entry=baseline_entry,
+            )
+            _write_run_manifest(
+                run_dir,
+                {
+                    "command": "run",
+                    "created_at": datetime.now().isoformat(),
+                    "cortex_repo_head": _git_head_short(REPO_ROOT),
+                    "cortex_binary": str(daemon.binary),
+                    "daemon_mode": daemon.daemon_mode,
+                    "benchmark_tools": _load_lock_summary(),
+                    "dataset": args.dataset,
+                    "split": args.split,
+                    "mode": args.mode,
+                    "category": args.category,
+                    "query_limit": args.query_limit,
+                    "query_id": args.query_id,
+                    "doc_limit": args.doc_limit,
+                    "namespace": namespace,
+                    "llm_provider": llm_provider,
+                    "baseline": {
+                        "file": str(baseline_path),
+                        "scenario_key": scenario_key,
+                        "baseline_applied": effective_constraints["baseline_applied"],
+                        "entry": baseline_entry,
+                    },
+                    "quality_gate": {
+                        "enabled": not args.no_enforce_gate,
+                        "token_gate_mode": args.token_gate_mode,
+                        "provider_profile": provider_profile,
+                        "min_accuracy": effective_constraints["min_accuracy"],
+                        "recall_budget": args.recall_budget,
+                        "max_recall_tokens": effective_constraints["max_recall_tokens"],
+                        "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
+                        "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
+                    },
+                    "legitimacy": {
+                        "isolated_daemon": not daemon.attached_existing,
+                        "uses_live_app_daemon": daemon.attached_existing,
+                        "oracle_mode": bool(args.oracle),
+                        "notes": (
+                            "Normal benchmark runs should keep oracle_mode=false. "
+                            "If oracle_mode=true, treat the run as a diagnostic ceiling, not a headline score."
+                        ),
+                    },
                 },
-                "quality_gate": {
-                    "enabled": not args.no_enforce_gate,
+            )
+
+            dataset = _apply_dataset_compat_shims(get_dataset(args.dataset))
+            mode = get_mode(args.mode, llm=get_answer_llm())
+            memory = get_memory_provider("cortex-http")
+            runner = EvalRunner(output_dir=run_dir / "outputs")
+
+            summary = runner.run(
+                dataset=dataset,
+                split=args.split,
+                memory=memory,
+                mode=mode,
+                category=args.category,
+                query_limit=args.query_limit,
+                query_id=args.query_id,
+                doc_limit=args.doc_limit,
+                oracle=args.oracle,
+                skip_ingestion=False,
+                skip_ingested=False,
+                skip_retrieval=False,
+                skip_answer=False,
+                only_failed=False,
+                show_raw=False,
+                run_name=args.run_name or "cortex-http",
+                description=args.description,
+            )
+
+            summary_path = run_dir / "summary.json"
+            summary_path.write_text(json.dumps(asdict(summary), indent=2), encoding="utf-8")
+            recall_metrics = _load_recall_metrics(recall_metrics_path)
+            recall_stats = _summarize_recall_metrics(recall_metrics, args.recall_budget)
+            gate = _enforce_quality_gate(
+                accuracy=float(summary.accuracy),
+                recall_stats=recall_stats,
+                args=args,
+                token_limits=token_limits,
+                effective_constraints=effective_constraints,
+            )
+            baseline_update: dict | None = None
+            baseline_updated = False
+            can_tighten = (
+                not args.no_auto_tighten_baseline
+                and not args.no_enforce_gate
+                and gate["passed"]
+                and args.token_gate_mode != "off"
+                and args.query_limit is None
+                and args.query_id is None
+                and int(recall_stats.get("queries", 0)) >= args.min_queries_for_baseline_update
+            )
+            if can_tighten:
+                baseline_update, baseline_updated = _tighten_baseline_entry(
+                    store=baseline_store,
+                    provider_profile=provider_profile,
+                    scenario_key=scenario_key,
+                    accuracy=float(summary.accuracy),
+                    recall_stats=recall_stats,
+                    args=args,
+                )
+                if baseline_updated:
+                    _save_baseline_store(baseline_path, baseline_store)
+            gate_payload = {
+                "timestamp": datetime.now().isoformat(),
+                "quality_gate": gate,
+                "accuracy": float(summary.accuracy),
+                "recall_stats": recall_stats,
+                "limits": {
                     "token_gate_mode": args.token_gate_mode,
                     "provider_profile": provider_profile,
                     "min_accuracy": effective_constraints["min_accuracy"],
                     "recall_budget": args.recall_budget,
                     "max_recall_tokens": effective_constraints["max_recall_tokens"],
                     "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
+                    "token_gate_profile": token_limits.get("profile"),
                     "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
                 },
-                "legitimacy": {
-                    "isolated_daemon": True,
-                    "uses_live_app_daemon": False,
-                    "oracle_mode": bool(args.oracle),
-                    "notes": (
-                        "Normal benchmark runs should keep oracle_mode=false. "
-                        "If oracle_mode=true, treat the run as a diagnostic ceiling, not a headline score."
-                    ),
+                "baseline": {
+                    "file": str(baseline_path),
+                    "scenario_key": scenario_key,
+                    "baseline_applied": effective_constraints["baseline_applied"],
+                    "entry": baseline_entry,
+                    "auto_tighten_enabled": not args.no_auto_tighten_baseline,
+                    "min_queries_for_update": args.min_queries_for_baseline_update,
+                    "updated": baseline_updated,
+                    "updated_entry": baseline_update,
                 },
-            },
-        )
-
-        dataset = _apply_dataset_compat_shims(get_dataset(args.dataset))
-        mode = get_mode(args.mode, llm=get_answer_llm())
-        memory = get_memory_provider("cortex-http")
-        runner = EvalRunner(output_dir=run_dir / "outputs")
-
-        summary = runner.run(
-            dataset=dataset,
-            split=args.split,
-            memory=memory,
-            mode=mode,
-            category=args.category,
-            query_limit=args.query_limit,
-            query_id=args.query_id,
-            doc_limit=args.doc_limit,
-            oracle=args.oracle,
-            skip_ingestion=False,
-            skip_ingested=False,
-            skip_retrieval=False,
-            skip_answer=False,
-            only_failed=False,
-            show_raw=False,
-            run_name=args.run_name or "cortex-http",
-            description=args.description,
-        )
-
-        summary_path = run_dir / "summary.json"
-        summary_path.write_text(json.dumps(asdict(summary), indent=2), encoding="utf-8")
-        recall_metrics = _load_recall_metrics(recall_metrics_path)
-        recall_stats = _summarize_recall_metrics(recall_metrics, args.recall_budget)
-        gate = _enforce_quality_gate(
-            accuracy=float(summary.accuracy),
-            recall_stats=recall_stats,
-            args=args,
-            token_limits=token_limits,
-            effective_constraints=effective_constraints,
-        )
-        baseline_update: dict | None = None
-        baseline_updated = False
-        can_tighten = (
-            not args.no_auto_tighten_baseline
-            and not args.no_enforce_gate
-            and gate["passed"]
-            and args.token_gate_mode != "off"
-            and args.query_limit is None
-            and args.query_id is None
-            and int(recall_stats.get("queries", 0)) >= args.min_queries_for_baseline_update
-        )
-        if can_tighten:
-            baseline_update, baseline_updated = _tighten_baseline_entry(
-                store=baseline_store,
-                provider_profile=provider_profile,
-                scenario_key=scenario_key,
-                accuracy=float(summary.accuracy),
-                recall_stats=recall_stats,
-                args=args,
+            }
+            (run_dir / "gate-report.json").write_text(
+                json.dumps(gate_payload, indent=2),
+                encoding="utf-8",
             )
-            if baseline_updated:
-                _save_baseline_store(baseline_path, baseline_store)
-        gate_payload = {
-            "timestamp": datetime.now().isoformat(),
-            "quality_gate": gate,
-            "accuracy": float(summary.accuracy),
-            "recall_stats": recall_stats,
-            "limits": {
-                "token_gate_mode": args.token_gate_mode,
-                "provider_profile": provider_profile,
-                "min_accuracy": effective_constraints["min_accuracy"],
-                "recall_budget": args.recall_budget,
-                "max_recall_tokens": effective_constraints["max_recall_tokens"],
-                "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
-                "token_gate_profile": token_limits.get("profile"),
-                "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
-            },
-            "baseline": {
-                "file": str(baseline_path),
-                "scenario_key": scenario_key,
-                "baseline_applied": effective_constraints["baseline_applied"],
-                "entry": baseline_entry,
-                "auto_tighten_enabled": not args.no_auto_tighten_baseline,
-                "min_queries_for_update": args.min_queries_for_baseline_update,
-                "updated": baseline_updated,
-                "updated_entry": baseline_update,
-            },
-        }
-        (run_dir / "gate-report.json").write_text(
-            json.dumps(gate_payload, indent=2),
-            encoding="utf-8",
-        )
-        print(
-            json.dumps(
-                {
-                    "dataset": summary.dataset,
-                    "split": summary.split,
-                    "memory_provider": summary.memory_provider,
-                    "mode": summary.mode,
-                    "accuracy": summary.accuracy,
-                    "total_queries": summary.total_queries,
-                    "recall_stats": recall_stats,
-                    "token_gate_mode": args.token_gate_mode,
-                    "provider_profile": provider_profile,
-                    "token_limits": {
-                        "max_recall_tokens": effective_constraints["max_recall_tokens"],
-                        "max_avg_recall_tokens": effective_constraints["max_avg_recall_tokens"],
+            print(
+                json.dumps(
+                    {
+                        "dataset": summary.dataset,
+                        "split": summary.split,
+                        "memory_provider": summary.memory_provider,
+                        "mode": summary.mode,
+                        "accuracy": summary.accuracy,
+                        "total_queries": summary.total_queries,
+                        "recall_stats": recall_stats,
+                        "token_gate_mode": args.token_gate_mode,
+                        "provider_profile": provider_profile,
+                        "token_limits": {
+                            "max_recall_tokens": effective_constraints["max_recall_tokens"],
+                            "max_avg_recall_tokens": effective_constraints[
+                                "max_avg_recall_tokens"
+                            ],
+                        },
+                        "baseline": {
+                            "scenario_key": scenario_key,
+                            "baseline_applied": effective_constraints["baseline_applied"],
+                            "baseline_updated": baseline_updated,
+                        },
+                        "quality_gate_passed": gate["passed"],
+                        "run_dir": str(run_dir),
+                        "output_json": str(
+                            (
+                                run_dir
+                                / "outputs"
+                                / summary.dataset
+                                / summary.run_name
+                                / summary.mode
+                                / f"{summary.split}.json"
+                            )
+                        ),
                     },
-                    "baseline": {
-                        "scenario_key": scenario_key,
-                        "baseline_applied": effective_constraints["baseline_applied"],
-                        "baseline_updated": baseline_updated,
-                    },
-                    "quality_gate_passed": gate["passed"],
-                    "run_dir": str(run_dir),
-                    "output_json": str((run_dir / "outputs" / summary.dataset / summary.run_name / summary.mode / f"{summary.split}.json")),
-                },
-                indent=2,
+                    indent=2,
+                )
             )
-        )
-        if not args.no_enforce_gate and not gate["passed"]:
-            lines = "\n".join(f"- {failure}" for failure in gate["failures"])
-            raise RuntimeError(f"quality gate failed:\n{lines}")
+            if not args.no_enforce_gate and not gate["passed"]:
+                lines = "\n".join(f"- {failure}" for failure in gate["failures"])
+                raise RuntimeError(f"quality gate failed:\n{lines}")
+        finally:
+            if daemon.attached_existing and cleanup_enabled:
+                cleanup_report = _cleanup_benchmark_namespace(
+                    base_url=daemon.base_url,
+                    source_agent=source_agent,
+                )
+                (run_dir / "namespace-cleanup.json").write_text(
+                    json.dumps(cleanup_report, indent=2),
+                    encoding="utf-8",
+                )
 
 
 def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
@@ -1227,6 +1489,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _ensure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

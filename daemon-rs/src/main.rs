@@ -2853,8 +2853,9 @@ pub(crate) async fn run_daemon(
             }
         });
     } else {
-        tokio::spawn(async {
-            if let Some(dir) = embeddings::ensure_model_downloaded().await {
+        let models_dir = paths.models.clone();
+        tokio::spawn(async move {
+            if let Some(dir) = embeddings::ensure_model_downloaded_in(&models_dir).await {
                 eprintln!(
                     "[embeddings] Model ready at {} -- restart to activate",
                     dir.display()

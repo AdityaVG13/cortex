@@ -117,32 +117,44 @@ impl EmbeddingEngine {
     /// Try to load from cached model files.  Returns `None` when files are
     /// missing or corrupt.  Opens `POOL_SIZE` independent ONNX sessions.
     pub fn load(models_dir: &Path) -> Option<Self> {
+        match Self::try_load(models_dir) {
+            Ok(engine) => Some(engine),
+            Err(error) => {
+                eprintln!("[embeddings] Engine load failed: {error}");
+                None
+            }
+        }
+    }
+
+    fn try_load(models_dir: &Path) -> Result<Self, String> {
         let profile = resolve_profile();
         let model_path = models_dir.join(profile.model_file);
         let tok_path = models_dir.join(profile.tokenizer_file);
 
         if !model_path.exists() || !tok_path.exists() {
-            return None;
+            return Err(format!(
+                "model assets missing (model_exists={}, tokenizer_exists={}) at {}",
+                model_path.exists(),
+                tok_path.exists(),
+                models_dir.display()
+            ));
         }
+
+        let tokenizer = Tokenizer::from_file(&tok_path)
+            .map_err(|error| format!("failed to load tokenizer {}: {error}", tok_path.display()))?;
 
         let mut sessions = Vec::with_capacity(POOL_SIZE);
-        for _ in 0..POOL_SIZE {
-            let session = Session::builder()
-                .ok()?
-                .with_intra_threads(2)
-                .ok()?
-                .commit_from_file(&model_path)
-                .ok()?;
+        for index in 0..POOL_SIZE {
+            let session = Self::build_session(&model_path)
+                .map_err(|error| format!("session {} failed: {error}", index + 1))?;
             sessions.push(std::sync::Mutex::new(session));
         }
-
-        let tokenizer = Tokenizer::from_file(&tok_path).ok()?;
 
         eprintln!(
             "[embeddings] Session pool: {POOL_SIZE} sessions loaded for {}",
             profile.display_name
         );
-        Some(Self {
+        Ok(Self {
             sessions,
             next: std::sync::atomic::AtomicUsize::new(0),
             tokenizer,
@@ -151,13 +163,57 @@ impl EmbeddingEngine {
         })
     }
 
+    fn build_session(model_path: &Path) -> Result<Session, String> {
+        let tuned = Session::builder()
+            .map_err(|error| format!("session builder init failed: {error}"))
+            .and_then(|builder| {
+                builder
+                    .with_intra_threads(2)
+                    .map_err(|error| format!("with_intra_threads(2) failed: {error}"))
+            })
+            .and_then(|mut builder| {
+                builder.commit_from_file(model_path).map_err(|error| {
+                    format!(
+                        "commit_from_file (tuned threads) failed for {}: {error}",
+                        model_path.display()
+                    )
+                })
+            });
+
+        match tuned {
+            Ok(session) => Ok(session),
+            Err(tuned_error) => {
+                let fallback = Session::builder()
+                    .map_err(|error| format!("session builder fallback init failed: {error}"))?
+                    .commit_from_file(model_path)
+                    .map_err(|error| {
+                        format!(
+                            "commit_from_file (fallback threads) failed for {}: {error}",
+                            model_path.display()
+                        )
+                    })?;
+                eprintln!(
+                    "[embeddings] Falling back to default ORT session threading after tuned setup failed: {tuned_error}"
+                );
+                Ok(fallback)
+            }
+        }
+    }
+
+    fn truncate_to_char_boundary<'a>(text: &'a str, max_bytes: usize) -> &'a str {
+        if text.len() <= max_bytes {
+            return text;
+        }
+        let mut end = max_bytes;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &text[..end]
+    }
+
     /// Generate an embedding for `text` using the selected profile dimension.
     pub fn embed(&self, text: &str) -> Option<Vec<f32>> {
-        let truncated = if text.len() > 2000 {
-            &text[..2000]
-        } else {
-            text
-        };
+        let truncated = Self::truncate_to_char_boundary(text, 2000);
 
         let encoding = self.tokenizer.encode(truncated, true).ok()?;
 
@@ -286,16 +342,20 @@ pub fn blob_to_vector(blob: &[u8]) -> Vec<f32> {
 /// necessary.  Returns `None` on download failure (keyword-only search will be
 /// used as a fallback).
 pub async fn ensure_model_downloaded() -> Option<PathBuf> {
+    let models_dir = dirs::home_dir()?.join(".cortex").join("models");
+    ensure_model_downloaded_in(&models_dir).await
+}
+
+/// Ensure embedding assets exist in a specific models directory.
+pub async fn ensure_model_downloaded_in(models_dir: &Path) -> Option<PathBuf> {
     let profile = resolve_profile();
-    let cortex_dir = dirs::home_dir()?.join(".cortex");
-    let models_dir = cortex_dir.join("models");
-    std::fs::create_dir_all(&models_dir).ok()?;
+    std::fs::create_dir_all(models_dir).ok()?;
 
     let model_path = models_dir.join(profile.model_file);
     let tok_path = models_dir.join(profile.tokenizer_file);
 
     if model_path.exists() && tok_path.exists() {
-        return Some(models_dir);
+        return Some(models_dir.to_path_buf());
     }
 
     eprintln!(
@@ -323,7 +383,7 @@ pub async fn ensure_model_downloaded() -> Option<PathBuf> {
         }
     }
 
-    Some(models_dir)
+    Some(models_dir.to_path_buf())
 }
 
 async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
@@ -410,5 +470,14 @@ mod tests {
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
         std::env::set_var(MODEL_ENV_KEY, "minilm-modern");
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
+    }
+
+    #[test]
+    fn truncate_to_char_boundary_is_utf8_safe() {
+        let text = "a🧠b";
+        assert_eq!(EmbeddingEngine::truncate_to_char_boundary(text, 6), text);
+        assert_eq!(EmbeddingEngine::truncate_to_char_boundary(text, 5), "a🧠");
+        assert_eq!(EmbeddingEngine::truncate_to_char_boundary(text, 4), "a");
+        assert_eq!(EmbeddingEngine::truncate_to_char_boundary(text, 1), "a");
     }
 }
