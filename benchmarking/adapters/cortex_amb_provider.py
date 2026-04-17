@@ -19,7 +19,9 @@ class CortexHTTPMemoryProvider(MemoryProvider):
     kind = "local"
     provider = "cortex"
     variant = "http"
-    concurrency = 4
+    # Keep benchmark request pressure deterministic and fair against local daemon
+    # limits; callers can opt up for stress runs.
+    concurrency = max(1, int(os.environ.get("CORTEX_BENCHMARK_PROVIDER_CONCURRENCY", "1")))
 
     def __init__(self) -> None:
         self._http = CortexHTTPClient()

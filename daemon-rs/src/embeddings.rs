@@ -13,6 +13,7 @@ use tokenizers::Tokenizer;
 const MAX_INPUT_TOKENS: usize = 256;
 
 const MODEL_ENV_KEY: &str = "CORTEX_EMBEDDING_MODEL";
+const POOL_ENV_KEY: &str = "CORTEX_EMBED_SESSION_POOL_SIZE";
 
 struct EmbeddingModelProfile {
     key: &'static str,
@@ -99,7 +100,24 @@ pub fn selected_model_key() -> &'static str {
 // Engine
 // ---------------------------------------------------------------------------
 
-const POOL_SIZE: usize = 4;
+const DEFAULT_POOL_SIZE: usize = 2;
+const MAX_POOL_SIZE: usize = 8;
+
+fn resolved_pool_size() -> usize {
+    match std::env::var(POOL_ENV_KEY) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(parsed) => parsed.clamp(1, MAX_POOL_SIZE),
+            Err(_) => {
+                eprintln!(
+                    "[embeddings] Invalid {POOL_ENV_KEY}='{}'; using default {}",
+                    raw, DEFAULT_POOL_SIZE
+                );
+                DEFAULT_POOL_SIZE
+            }
+        },
+        Err(_) => DEFAULT_POOL_SIZE,
+    }
+}
 
 /// Shared embedding engine with a pool of ONNX sessions for concurrent access.
 /// Each `embed()` call acquires an available session from the pool, runs
@@ -128,6 +146,7 @@ impl EmbeddingEngine {
 
     fn try_load(models_dir: &Path) -> Result<Self, String> {
         let profile = resolve_profile();
+        let pool_size = resolved_pool_size();
         let model_path = models_dir.join(profile.model_file);
         let tok_path = models_dir.join(profile.tokenizer_file);
 
@@ -143,16 +162,16 @@ impl EmbeddingEngine {
         let tokenizer = Tokenizer::from_file(&tok_path)
             .map_err(|error| format!("failed to load tokenizer {}: {error}", tok_path.display()))?;
 
-        let mut sessions = Vec::with_capacity(POOL_SIZE);
-        for index in 0..POOL_SIZE {
+        let mut sessions = Vec::with_capacity(pool_size);
+        for index in 0..pool_size {
             let session = Self::build_session(&model_path)
                 .map_err(|error| format!("session {} failed: {error}", index + 1))?;
             sessions.push(std::sync::Mutex::new(session));
         }
 
         eprintln!(
-            "[embeddings] Session pool: {POOL_SIZE} sessions loaded for {}",
-            profile.display_name
+            "[embeddings] Session pool: {pool_size} sessions loaded for {}",
+            profile.display_name,
         );
         Ok(Self {
             sessions,
@@ -235,7 +254,7 @@ impl EmbeddingEngine {
         let mask_tensor = Tensor::from_array((shape.clone(), mask_vec)).ok()?;
         let type_tensor = Tensor::from_array((shape, type_vec)).ok()?;
 
-        // Round-robin session selection -- low contention with 4 sessions.
+        // Round-robin session selection across the configured session pool.
         let idx =
             self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.sessions.len();
         let mut session = self.sessions[idx].lock().ok()?;
@@ -433,6 +452,16 @@ mod tests {
         ModelEnvRestore(previous)
     }
 
+    fn set_pool_env_for_test(value: Option<&str>) -> ModelEnvRestore {
+        let previous = std::env::var(POOL_ENV_KEY).ok();
+        if let Some(value) = value {
+            std::env::set_var(POOL_ENV_KEY, value);
+        } else {
+            std::env::remove_var(POOL_ENV_KEY);
+        }
+        ModelEnvRestore(previous)
+    }
+
     #[test]
     fn selected_model_defaults_to_minilm() {
         let _env_lock = ENV_LOCK.lock().unwrap();
@@ -470,6 +499,31 @@ mod tests {
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
         std::env::set_var(MODEL_ENV_KEY, "minilm-modern");
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
+    }
+
+    #[test]
+    fn session_pool_defaults_to_two() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _restore = set_pool_env_for_test(None);
+        assert_eq!(resolved_pool_size(), DEFAULT_POOL_SIZE);
+    }
+
+    #[test]
+    fn session_pool_parses_and_clamps_env_values() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _restore = set_pool_env_for_test(None);
+
+        std::env::set_var(POOL_ENV_KEY, "3");
+        assert_eq!(resolved_pool_size(), 3);
+
+        std::env::set_var(POOL_ENV_KEY, "99");
+        assert_eq!(resolved_pool_size(), MAX_POOL_SIZE);
+
+        std::env::set_var(POOL_ENV_KEY, "0");
+        assert_eq!(resolved_pool_size(), 1);
+
+        std::env::set_var(POOL_ENV_KEY, "invalid");
+        assert_eq!(resolved_pool_size(), DEFAULT_POOL_SIZE);
     }
 
     #[test]

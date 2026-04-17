@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sqlite3
@@ -13,11 +14,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARKING_DIR = REPO_ROOT / "benchmarking"
 if str(BENCHMARKING_DIR) not in sys.path:
     sys.path.insert(0, str(BENCHMARKING_DIR))
+ADAPTERS_DIR = BENCHMARKING_DIR / "adapters"
+if str(ADAPTERS_DIR) not in sys.path:
+    sys.path.insert(0, str(ADAPTERS_DIR))
 
 from run_amb_cortex import (  # noqa: E402
     IsolatedCortexDaemon,
     _apply_dataset_compat_shims,
     _cleanup_benchmark_rows_in_db,
+    _configure_imports,
     _configure_llm_environment,
     _env_flag_enabled,
     _seed_model_assets,
@@ -255,3 +260,18 @@ def test_cleanup_benchmark_rows_in_db_removes_only_matching_source_agent(tmp_pat
         )
     finally:
         check.close()
+
+
+def test_cortex_provider_concurrency_defaults_to_one_and_allows_override(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+
+    monkeypatch.delenv("CORTEX_BENCHMARK_PROVIDER_CONCURRENCY", raising=False)
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    assert module.CortexHTTPMemoryProvider.concurrency == 1
+
+    monkeypatch.setenv("CORTEX_BENCHMARK_PROVIDER_CONCURRENCY", "3")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    assert module.CortexHTTPMemoryProvider.concurrency == 3

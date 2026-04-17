@@ -3782,6 +3782,7 @@ fn collect_semantic_candidates(
 ) -> Vec<SemanticCandidate> {
     let selected_model = crate::embeddings::selected_model_key();
     let expected_vector_bytes = std::mem::size_of_val(query_vector) as i64;
+    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let scale_sim = |sim: f32| -> f64 {
         SEMANTIC_SCALE_BASE
             + (sim as f64 - SEMANTIC_SIM_FLOOR)
@@ -3802,14 +3803,16 @@ fn collect_semantic_candidates(
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR m.source LIKE ?3)";
     let semantic_memory_query_without_acl =
         "SELECT e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR m.source LIKE ?3)";
     let semantic_memory_stmt = match conn.prepare(semantic_memory_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -3818,8 +3821,13 @@ fn collect_semantic_candidates(
         Err(_) => None,
     };
     if let Some(mut stmt) = semantic_memory_stmt {
-        let rows: Vec<MemorySemanticRow> = stmt
-            .query_map(params![selected_model, expected_vector_bytes], |row| {
+        if let Ok(rows) = stmt.query_map(
+            params![
+                selected_model,
+                expected_vector_bytes,
+                source_like.as_deref()
+            ],
+            |row| -> rusqlite::Result<MemorySemanticRow> {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -3831,75 +3839,71 @@ fn collect_semantic_candidates(
                     row.get(7)?,
                     row.get(8)?,
                 ))
-            })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        for (
-            blob,
-            text,
-            source,
-            owner_id,
-            visibility,
-            score,
-            trust_score,
-            last_accessed,
-            created_at,
-        ) in rows
-        {
-            if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                continue;
-            }
-            if !source_matches_prefix(&source, source_prefix) {
-                continue;
-            }
-            let existing_vec = crate::embeddings::blob_to_vector(&blob);
-            let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
-            if sim <= semantic_floor as f32 {
-                continue;
-            }
-
-            let mut scaled = scale_sim(sim);
-            if !keyword_terms.is_empty() {
-                let haystack = text.to_lowercase();
-                let overlap = keyword_terms
-                    .iter()
-                    .filter(|term| haystack.contains(term.as_str()))
-                    .count();
-                if overlap == 0 {
-                    scaled *= 0.82;
-                } else {
-                    let ratio = overlap as f64 / keyword_terms.len().max(1) as f64;
-                    scaled *= 1.0 + ratio * 0.08;
+            },
+        ) {
+            for (
+                blob,
+                text,
+                source,
+                owner_id,
+                visibility,
+                score,
+                trust_score,
+                last_accessed,
+                created_at,
+            ) in rows.flatten()
+            {
+                if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                    continue;
                 }
-            }
-            let excerpt = query_focused_excerpt(&text, query_text, 280);
-            let importance = blend_importance(score, trust_score);
-            let ts_source = last_accessed
-                .as_deref()
-                .or(created_at.as_deref())
-                .unwrap_or_default();
-            let ts = parse_timestamp_ms(ts_source);
-            let entry = candidates
-                .entry(source.clone())
-                .or_insert(SemanticCandidate {
-                    source,
-                    excerpt: excerpt.clone(),
-                    relevance: scaled,
-                    importance,
-                    ts,
-                });
-            if scaled > entry.relevance {
-                *entry = SemanticCandidate {
-                    source: entry.source.clone(),
-                    excerpt,
-                    relevance: scaled,
-                    importance,
-                    ts,
-                };
+                if !source_matches_prefix(&source, source_prefix) {
+                    continue;
+                }
+                let existing_vec = crate::embeddings::blob_to_vector(&blob);
+                let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+                if sim <= semantic_floor as f32 {
+                    continue;
+                }
+
+                let mut scaled = scale_sim(sim);
+                if !keyword_terms.is_empty() {
+                    let haystack = text.to_lowercase();
+                    let overlap = keyword_terms
+                        .iter()
+                        .filter(|term| haystack.contains(term.as_str()))
+                        .count();
+                    if overlap == 0 {
+                        scaled *= 0.82;
+                    } else {
+                        let ratio = overlap as f64 / keyword_terms.len().max(1) as f64;
+                        scaled *= 1.0 + ratio * 0.08;
+                    }
+                }
+                let excerpt = query_focused_excerpt(&text, query_text, 280);
+                let importance = blend_importance(score, trust_score);
+                let ts_source = last_accessed
+                    .as_deref()
+                    .or(created_at.as_deref())
+                    .unwrap_or_default();
+                let ts = parse_timestamp_ms(ts_source);
+                let entry = candidates
+                    .entry(source.clone())
+                    .or_insert(SemanticCandidate {
+                        source,
+                        excerpt: excerpt.clone(),
+                        relevance: scaled,
+                        importance,
+                        ts,
+                    });
+                if scaled > entry.relevance {
+                    *entry = SemanticCandidate {
+                        source: entry.source.clone(),
+                        excerpt,
+                        relevance: scaled,
+                        importance,
+                        ts,
+                    };
+                }
             }
         }
     }
@@ -3910,14 +3914,16 @@ fn collect_semantic_candidates(
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR d.context LIKE ?3)";
     let semantic_decision_query_without_acl =
         "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR d.context LIKE ?3)";
     let semantic_decision_stmt = match conn.prepare(semantic_decision_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -3926,8 +3932,13 @@ fn collect_semantic_candidates(
         Err(_) => None,
     };
     if let Some(mut stmt) = semantic_decision_stmt {
-        let rows: Vec<DecisionSemanticRow> = stmt
-            .query_map(params![selected_model, expected_vector_bytes], |row| {
+        if let Ok(rows) = stmt.query_map(
+            params![
+                selected_model,
+                expected_vector_bytes,
+                source_like.as_deref()
+            ],
+            |row| -> rusqlite::Result<DecisionSemanticRow> {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -3939,81 +3950,77 @@ fn collect_semantic_candidates(
                     row.get(7)?,
                     row.get(8)?,
                 ))
-            })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|r| r.ok())
-            .collect();
-
-        for (
-            blob,
-            decision,
-            context,
-            owner_id,
-            visibility,
-            score,
-            trust_score,
-            last_accessed,
-            created_at,
-        ) in rows
-        {
-            if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                continue;
-            }
-            let existing_vec = crate::embeddings::blob_to_vector(&blob);
-            let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
-            if sim <= semantic_floor as f32 {
-                continue;
-            }
-
-            let source = context.unwrap_or_else(|| {
-                format!(
-                    "decision::{}",
-                    decision.chars().take(40).collect::<String>()
-                )
-            });
-            if !source_matches_prefix(&source, source_prefix) {
-                continue;
-            }
-            let mut scaled = scale_sim(sim);
-            if !keyword_terms.is_empty() {
-                let haystack = decision.to_lowercase();
-                let overlap = keyword_terms
-                    .iter()
-                    .filter(|term| haystack.contains(term.as_str()))
-                    .count();
-                if overlap == 0 {
-                    scaled *= 0.82;
-                } else {
-                    let ratio = overlap as f64 / keyword_terms.len().max(1) as f64;
-                    scaled *= 1.0 + ratio * 0.08;
+            },
+        ) {
+            for (
+                blob,
+                decision,
+                context,
+                owner_id,
+                visibility,
+                score,
+                trust_score,
+                last_accessed,
+                created_at,
+            ) in rows.flatten()
+            {
+                if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                    continue;
                 }
-            }
-            let excerpt = query_focused_excerpt(&decision, query_text, 280);
-            let importance = blend_importance(score, trust_score);
-            let ts_source = last_accessed
-                .as_deref()
-                .or(created_at.as_deref())
-                .unwrap_or_default();
-            let ts = parse_timestamp_ms(ts_source);
-            let entry = candidates
-                .entry(source.clone())
-                .or_insert(SemanticCandidate {
-                    source,
-                    excerpt: excerpt.clone(),
-                    relevance: scaled,
-                    importance,
-                    ts,
+                let existing_vec = crate::embeddings::blob_to_vector(&blob);
+                let sim = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+                if sim <= semantic_floor as f32 {
+                    continue;
+                }
+
+                let source = context.unwrap_or_else(|| {
+                    format!(
+                        "decision::{}",
+                        decision.chars().take(40).collect::<String>()
+                    )
                 });
-            if scaled > entry.relevance {
-                *entry = SemanticCandidate {
-                    source: entry.source.clone(),
-                    excerpt,
-                    relevance: scaled,
-                    importance,
-                    ts,
-                };
+                if !source_matches_prefix(&source, source_prefix) {
+                    continue;
+                }
+                let mut scaled = scale_sim(sim);
+                if !keyword_terms.is_empty() {
+                    let haystack = decision.to_lowercase();
+                    let overlap = keyword_terms
+                        .iter()
+                        .filter(|term| haystack.contains(term.as_str()))
+                        .count();
+                    if overlap == 0 {
+                        scaled *= 0.82;
+                    } else {
+                        let ratio = overlap as f64 / keyword_terms.len().max(1) as f64;
+                        scaled *= 1.0 + ratio * 0.08;
+                    }
+                }
+                let excerpt = query_focused_excerpt(&decision, query_text, 280);
+                let importance = blend_importance(score, trust_score);
+                let ts_source = last_accessed
+                    .as_deref()
+                    .or(created_at.as_deref())
+                    .unwrap_or_default();
+                let ts = parse_timestamp_ms(ts_source);
+                let entry = candidates
+                    .entry(source.clone())
+                    .or_insert(SemanticCandidate {
+                        source,
+                        excerpt: excerpt.clone(),
+                        relevance: scaled,
+                        importance,
+                        ts,
+                    });
+                if scaled > entry.relevance {
+                    *entry = SemanticCandidate {
+                        source: entry.source.clone(),
+                        excerpt,
+                        relevance: scaled,
+                        importance,
+                        ts,
+                    };
+                }
             }
         }
     }
@@ -4036,6 +4043,7 @@ fn collect_shadow_semantic_rows(
 ) -> Vec<ShadowSemanticRow> {
     let selected_model = crate::embeddings::selected_model_key();
     let expected_vector_bytes = (expected_dimension * std::mem::size_of::<f32>()) as i64;
+    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let mut rows_by_source: HashMap<String, Vec<f32>> = HashMap::new();
 
     let memory_query_with_acl = "SELECT e.vector, m.source, m.owner_id, m.visibility \
@@ -4043,13 +4051,15 @@ fn collect_shadow_semantic_rows(
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR m.source LIKE ?3)";
     let memory_query_without_acl = "SELECT e.vector, m.source, NULL AS owner_id, NULL AS visibility \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR m.source LIKE ?3)";
     let memory_stmt = match conn.prepare(memory_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -4058,26 +4068,27 @@ fn collect_shadow_semantic_rows(
         Err(_) => None,
     };
     if let Some(mut stmt) = memory_stmt {
-        let rows: Vec<ShadowMemoryRow> = stmt
-            .query_map(params![selected_model, expected_vector_bytes], |row| {
+        if let Ok(rows) = stmt.query_map(
+            params![
+                selected_model,
+                expected_vector_bytes,
+                source_like.as_deref()
+            ],
+            |row| -> rusqlite::Result<ShadowMemoryRow> {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|row| row.ok())
-            .collect();
-
-        for (blob, source, owner_id, visibility) in rows {
-            if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                continue;
+            },
+        ) {
+            for (blob, source, owner_id, visibility) in rows.flatten() {
+                if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                    continue;
+                }
+                if !source_matches_prefix(&source, source_prefix) {
+                    continue;
+                }
+                rows_by_source
+                    .entry(source)
+                    .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
             }
-            if !source_matches_prefix(&source, source_prefix) {
-                continue;
-            }
-            rows_by_source
-                .entry(source)
-                .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
         }
     }
 
@@ -4086,13 +4097,15 @@ fn collect_shadow_semantic_rows(
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR d.context LIKE ?3)";
     let decision_query_without_acl = "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2";
+         AND length(e.vector) = ?2 \
+         AND (?3 IS NULL OR d.context LIKE ?3)";
     let decision_stmt = match conn.prepare(decision_query_with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => {
@@ -4101,8 +4114,13 @@ fn collect_shadow_semantic_rows(
         Err(_) => None,
     };
     if let Some(mut stmt) = decision_stmt {
-        let rows: Vec<ShadowDecisionRow> = stmt
-            .query_map(params![selected_model, expected_vector_bytes], |row| {
+        if let Ok(rows) = stmt.query_map(
+            params![
+                selected_model,
+                expected_vector_bytes,
+                source_like.as_deref()
+            ],
+            |row| -> rusqlite::Result<ShadowDecisionRow> {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -4110,29 +4128,25 @@ fn collect_shadow_semantic_rows(
                     row.get(3)?,
                     row.get(4)?,
                 ))
-            })
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|row| row.ok())
-            .collect();
-
-        for (blob, decision, context, owner_id, visibility) in rows {
-            if !is_visible(owner_id, visibility.as_deref(), ctx) {
-                continue;
+            },
+        ) {
+            for (blob, decision, context, owner_id, visibility) in rows.flatten() {
+                if !is_visible(owner_id, visibility.as_deref(), ctx) {
+                    continue;
+                }
+                let source = context.unwrap_or_else(|| {
+                    format!(
+                        "decision::{}",
+                        decision.chars().take(40).collect::<String>()
+                    )
+                });
+                if !source_matches_prefix(&source, source_prefix) {
+                    continue;
+                }
+                rows_by_source
+                    .entry(source)
+                    .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
             }
-            let source = context.unwrap_or_else(|| {
-                format!(
-                    "decision::{}",
-                    decision.chars().take(40).collect::<String>()
-                )
-            });
-            if !source_matches_prefix(&source, source_prefix) {
-                continue;
-            }
-            rows_by_source
-                .entry(source)
-                .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
         }
     }
 
@@ -6314,6 +6328,99 @@ mod tests {
             candidates
                 .iter()
                 .map(|candidate| candidate.source.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn semantic_candidate_collection_honors_source_prefix_scope() {
+        let mut conn = test_conn();
+        insert_memory_with_embedding(
+            &conn,
+            "owner daemon lock arbitration handoff policy",
+            "amb::suite::memory::hit",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "owner daemon lock arbitration handoff policy",
+            "other::memory::noise",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "owner lock restart policy",
+            "amb::suite::decision::hit",
+            &[0.9, 0.1, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "owner lock restart policy",
+            "other::decision::noise",
+            &[0.9, 0.1, 0.0, 0.0, 0.0],
+        );
+
+        let query_vector = [0.98, 0.02, 0.0, 0.0, 0.0];
+        let candidates = collect_semantic_candidates(
+            &conn,
+            &query_vector,
+            "owner daemon lock",
+            &solo_ctx(),
+            Some("amb::suite::"),
+        );
+
+        assert!(
+            !candidates.is_empty(),
+            "expected scoped semantic candidates"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.source.starts_with("amb::suite::")),
+            "semantic candidates leaked outside scoped prefix: {:?}",
+            candidates
+                .iter()
+                .map(|candidate| candidate.source.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn shadow_semantic_rows_honor_source_prefix_scope() {
+        let mut conn = test_conn();
+        insert_memory_with_embedding(
+            &conn,
+            "session ownership lock chain",
+            "amb::suite::memory::shadow",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "session ownership lock chain",
+            "other::memory::shadow-noise",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "session ownership lock decision",
+            "amb::suite::decision::shadow",
+            &[0.9, 0.1, 0.0, 0.0, 0.0],
+        );
+        store_decision_with_embedding(
+            &mut conn,
+            "session ownership lock decision",
+            "other::decision::shadow-noise",
+            &[0.9, 0.1, 0.0, 0.0, 0.0],
+        );
+
+        let rows = collect_shadow_semantic_rows(&conn, &solo_ctx(), Some("amb::suite::"), 5);
+        assert!(!rows.is_empty(), "expected scoped shadow semantic rows");
+        assert!(
+            rows.iter()
+                .all(|row| row.source.starts_with("amb::suite::")),
+            "shadow semantic rows leaked outside scoped prefix: {:?}",
+            rows.iter()
+                .map(|row| row.source.clone())
                 .collect::<Vec<_>>()
         );
     }
