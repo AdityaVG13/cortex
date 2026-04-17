@@ -16,7 +16,9 @@ if str(BENCHMARKING_DIR) not in sys.path:
 from run_amb_cortex import (  # noqa: E402
     _build_matrix_run_args,
     _collect_matrix_case_result,
+    _execute_matrix_case,
     _load_matrix_cases,
+    run_matrix,
 )
 
 
@@ -44,6 +46,14 @@ def _base_args() -> argparse.Namespace:
         max_avg_recall_tokens=300.0,
         allow_missing_recall_metrics=False,
         no_enforce_gate=False,
+        start_index=1,
+        max_cases=None,
+        max_runtime_seconds=1200,
+        max_case_runtime_seconds=900,
+        dry_run=False,
+        continue_on_error=False,
+        matrix_file=None,
+        summary_file=None,
     )
 
 
@@ -137,3 +147,56 @@ def test_collect_matrix_case_result_reads_summary_and_gate(tmp_path: Path) -> No
     assert result["over_budget"] == 3
     assert result["quality_gate_passed"] is False
     assert result["error"] == "quality gate failed"
+
+
+def test_run_matrix_dry_run_honors_start_index_and_max_cases(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix.json"
+    summary_path = tmp_path / "summary.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"id": "case-a", "dataset": "longmemeval", "split": "s"},
+                    {"id": "case-b", "dataset": "locomo", "split": "locomo10"},
+                    {"id": "case-c", "dataset": "beam", "split": "100k"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.summary_file = str(summary_path)
+    args.dry_run = True
+    args.start_index = 2
+    args.max_cases = 1
+
+    run_matrix(args, run_dir)
+
+    preview = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert len(preview) == 1
+    assert preview[0]["id"] == "case-b"
+    assert preview[0]["dataset"] == "locomo"
+
+
+def test_execute_matrix_case_returns_error_for_run_benchmark_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    def _boom(_: argparse.Namespace, __: Path) -> None:
+        raise RuntimeError("intentional-case-failure")
+
+    monkeypatch.setattr("run_amb_cortex.run_benchmark", _boom)
+
+    exit_code, error = _execute_matrix_case(
+        run_args=_base_args(),
+        run_dir=run_dir,
+        timeout_seconds=0,
+    )
+    assert exit_code == 1
+    assert error == "intentional-case-failure"

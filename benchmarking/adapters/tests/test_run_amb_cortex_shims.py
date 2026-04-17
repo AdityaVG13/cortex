@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 import os
@@ -24,8 +25,11 @@ from run_amb_cortex import (  # noqa: E402
     _cleanup_benchmark_rows_in_db,
     _configure_imports,
     _configure_llm_environment,
+    _execute_single_run,
     _env_flag_enabled,
+    _resolve_single_run_timeout_seconds,
     _seed_model_assets,
+    build_parser,
 )
 
 
@@ -33,6 +37,23 @@ class _Doc:
     def __init__(self, user_id: str, content: str) -> None:
         self.user_id = user_id
         self.content = content
+
+
+class _ProviderDoc:
+    def __init__(
+        self,
+        *,
+        doc_id: str,
+        content: str,
+        user_id: str | None = None,
+        timestamp: str | None = None,
+        context: str | None = None,
+    ) -> None:
+        self.id = doc_id
+        self.content = content
+        self.user_id = user_id
+        self.timestamp = timestamp
+        self.context = context
 
 
 class _DatasetWithoutUserIds:
@@ -275,3 +296,190 @@ def test_cortex_provider_concurrency_defaults_to_one_and_allows_override(monkeyp
     sys.modules.pop(module_name, None)
     module = importlib.import_module(module_name)
     assert module.CortexHTTPMemoryProvider.concurrency == 3
+
+
+def test_cortex_provider_expands_json_docs_with_fact_extracts(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "2")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d1",
+        user_id="u1",
+        timestamp="2026-04-17T08:00:00Z",
+        context="session-alpha",
+        content=json.dumps(
+            [
+                {"role": "user", "content": "I graduated with Business Administration in 2018."},
+                {"role": "assistant", "content": "You mentioned your commute is 45 minutes each way."},
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    assert len(expanded) >= 2
+    assert expanded[0].id == "d1"
+    assert expanded[1].id == "d1::fact::1"
+    assert any("Business Administration" in item.content for item in expanded[1:])
+    assert any("45 minutes each way" in item.content for item in expanded[1:])
+    assert expanded[1].context.endswith("[fact-extract]")
+
+
+def test_cortex_provider_extracts_late_fact_sentences(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "1")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    long_intro = " ".join(["I like productivity tools."] * 40)
+    doc = _ProviderDoc(
+        doc_id="d2",
+        user_id="u2",
+        timestamp="2026-04-17T08:00:00Z",
+        context="session-beta",
+        content=json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": f"{long_intro} By the way, I graduated with a degree in Business Administration.",
+                }
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    assert len(expanded) == 2
+    assert expanded[1].id == "d2::fact::1"
+    assert "Business Administration" in expanded[1].content
+
+
+def test_cortex_provider_can_disable_fact_extracts(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "0")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d1",
+        user_id="u1",
+        content=json.dumps([{"role": "user", "content": "I packed seven shirts for Costa Rica."}]),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    assert len(expanded) == 1
+    assert expanded[0].id == "d1"
+
+
+def test_cortex_provider_can_disable_full_document_storage(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", "0")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "2")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d1",
+        user_id="u1",
+        content=json.dumps(
+            [
+                {"role": "user", "content": "I packed seven shirts for Costa Rica."},
+                {"role": "user", "content": "I upgraded my home internet to 500 Mbps."},
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    assert len(expanded) >= 1
+    assert all("::fact::" in item.id for item in expanded)
+
+
+def test_run_parser_defaults_single_run_timeout_to_20_minutes(monkeypatch) -> None:
+    monkeypatch.delenv("CORTEX_BENCHMARK_RUN_MAX_RUNTIME_SECONDS", raising=False)
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--dataset", "longmemeval", "--split", "s"])
+
+    assert args.max_runtime_seconds == 1200
+
+
+def test_run_parser_reads_single_run_timeout_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_RUN_MAX_RUNTIME_SECONDS", "900")
+
+    parser = build_parser()
+    args = parser.parse_args(["run", "--dataset", "longmemeval", "--split", "s"])
+
+    assert args.max_runtime_seconds == 900
+
+
+def test_single_run_timeout_validation_enforces_15_to_20_min_window() -> None:
+    assert _resolve_single_run_timeout_seconds(900) == 900
+    assert _resolve_single_run_timeout_seconds(1200) == 1200
+
+    with pytest.raises(ValueError, match="between 900 and 1200"):
+        _resolve_single_run_timeout_seconds(899)
+    with pytest.raises(ValueError, match="between 900 and 1200"):
+        _resolve_single_run_timeout_seconds(1201)
+
+
+def test_execute_single_run_uses_validated_timeout(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_execute(
+        *,
+        run_args: argparse.Namespace,
+        run_dir: Path,
+        timeout_seconds: int,
+        timeout_label: str,
+    ) -> tuple[int, str | None]:
+        captured["run_args"] = run_args
+        captured["run_dir"] = run_dir
+        captured["timeout_seconds"] = timeout_seconds
+        captured["timeout_label"] = timeout_label
+        return 0, None
+
+    monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
+    args = argparse.Namespace(max_runtime_seconds=1000)
+
+    _execute_single_run(args, tmp_path)
+
+    assert captured["run_args"] is args
+    assert captured["run_dir"] == tmp_path
+    assert captured["timeout_seconds"] == 1000
+    assert captured["timeout_label"] == "single run"
+
+
+def test_execute_single_run_raises_when_timeout_guard_fails(monkeypatch, tmp_path: Path) -> None:
+    def _fake_execute(
+        *,
+        run_args: argparse.Namespace,
+        run_dir: Path,
+        timeout_seconds: int,
+        timeout_label: str,
+    ) -> tuple[int, str | None]:
+        _ = (run_args, run_dir, timeout_seconds, timeout_label)
+        return 124, "single run runtime budget exceeded (900s cap)"
+
+    monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
+
+    with pytest.raises(RuntimeError, match="runtime budget exceeded"):
+        _execute_single_run(argparse.Namespace(max_runtime_seconds=900), tmp_path)

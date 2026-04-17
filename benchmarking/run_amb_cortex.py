@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import inspect
 import json
 import os
@@ -34,6 +35,10 @@ TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     "groq": {"max_avg_ratio": 0.84, "max_peak_ratio": 1.00},
     "default": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
 }
+SINGLE_RUN_TIMEOUT_ENV = "CORTEX_BENCHMARK_RUN_MAX_RUNTIME_SECONDS"
+SINGLE_RUN_TIMEOUT_MIN_SECONDS = 900
+SINGLE_RUN_TIMEOUT_MAX_SECONDS = 1200
+SINGLE_RUN_TIMEOUT_DEFAULT_SECONDS = 1200
 
 
 def _ensure_utf8_stdio() -> None:
@@ -115,8 +120,14 @@ def _apply_dataset_compat_shims(dataset: object) -> object:
                 category,
                 prompt_meta,
             )
+            answer_format_block = (
+                "[answer-format] Return only the shortest direct answer phrase from memory context. "
+                "Do not add explanations, qualifiers, or extra details beyond what was asked. "
+                "Do not infer, compute, or normalize values; copy the exact wording from memory "
+                "(for example, keep '45 minutes each way' rather than converting it to '90 minutes')."
+            )
             if not isinstance(raw_payload, dict):
-                return prompt
+                return f"{prompt}\n\n{answer_format_block}"
             metrics = {
                 "budget": raw_payload.get("budget"),
                 "spent": raw_payload.get("spent"),
@@ -131,10 +142,11 @@ def _apply_dataset_compat_shims(dataset: object) -> object:
                 if value is not None
             }
             if not compact_metrics:
-                return prompt
+                return f"{prompt}\n\n{answer_format_block}"
             return (
                 f"{prompt}\n\n"
-                f"[retrieval-metrics] {json.dumps(compact_metrics, ensure_ascii=False)}"
+                f"[retrieval-metrics] {json.dumps(compact_metrics, ensure_ascii=False)}\n\n"
+                f"{answer_format_block}"
             )
 
         setattr(dataset, "build_rag_prompt", longmemeval_prompt_compat)
@@ -436,6 +448,31 @@ def _slug_fragment(value: str) -> str:
     return fragment or "case"
 
 
+def _resolve_single_run_timeout_seconds(raw_timeout: int) -> int:
+    timeout_seconds = int(raw_timeout)
+    if not SINGLE_RUN_TIMEOUT_MIN_SECONDS <= timeout_seconds <= SINGLE_RUN_TIMEOUT_MAX_SECONDS:
+        raise ValueError(
+            "single-run max-runtime-seconds must be between "
+            f"{SINGLE_RUN_TIMEOUT_MIN_SECONDS} and {SINGLE_RUN_TIMEOUT_MAX_SECONDS} seconds "
+            "(15-20 minutes)"
+        )
+    return timeout_seconds
+
+
+def _single_run_timeout_default() -> int:
+    raw_value = os.environ.get(SINGLE_RUN_TIMEOUT_ENV)
+    if raw_value is None:
+        return SINGLE_RUN_TIMEOUT_DEFAULT_SECONDS
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{SINGLE_RUN_TIMEOUT_ENV} must be an integer number of seconds "
+            f"between {SINGLE_RUN_TIMEOUT_MIN_SECONDS} and {SINGLE_RUN_TIMEOUT_MAX_SECONDS}"
+        ) from exc
+    return _resolve_single_run_timeout_seconds(parsed)
+
+
 def _load_matrix_cases(path: Path) -> list[dict[str, object]]:
     if not path.exists():
         raise FileNotFoundError(f"matrix file not found: {path}")
@@ -687,6 +724,71 @@ def _collect_matrix_case_result(
     return result
 
 
+def _run_benchmark_case_worker(run_args: argparse.Namespace, run_dir: str) -> None:
+    run_benchmark(run_args, Path(run_dir))
+
+
+def _execute_benchmark_with_timeout(
+    *,
+    run_args: argparse.Namespace,
+    run_dir: Path,
+    timeout_seconds: int,
+    timeout_label: str,
+) -> tuple[int, str | None]:
+    timeout_cap = max(0, int(timeout_seconds))
+    if timeout_cap == 0:
+        try:
+            run_benchmark(run_args, run_dir)
+            return 0, None
+        except Exception as exc:
+            return 1, str(exc)
+
+    process = multiprocessing.Process(
+        target=_run_benchmark_case_worker,
+        args=(run_args, str(run_dir)),
+        daemon=False,
+    )
+    process.start()
+    process.join(timeout=timeout_cap)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        return 124, f"{timeout_label} runtime budget exceeded ({timeout_cap}s cap)"
+    exit_code = int(process.exitcode or 0)
+    if exit_code == 0:
+        return 0, None
+    return exit_code, f"{timeout_label} exited with code {exit_code}"
+
+
+def _execute_matrix_case(
+    *,
+    run_args: argparse.Namespace,
+    run_dir: Path,
+    timeout_seconds: int,
+) -> tuple[int, str | None]:
+    return _execute_benchmark_with_timeout(
+        run_args=run_args,
+        run_dir=run_dir,
+        timeout_seconds=timeout_seconds,
+        timeout_label="case",
+    )
+
+
+def _execute_single_run(args: argparse.Namespace, run_dir: Path) -> None:
+    timeout_seconds = _resolve_single_run_timeout_seconds(args.max_runtime_seconds)
+    exit_code, error = _execute_benchmark_with_timeout(
+        run_args=args,
+        run_dir=run_dir,
+        timeout_seconds=timeout_seconds,
+        timeout_label="single run",
+    )
+    if exit_code != 0:
+        raise RuntimeError(error or f"single run failed with exit code {exit_code}")
+
+
 def _load_recall_metrics(path: Path) -> list[dict]:
     metrics: list[dict] = []
     if not path.exists():
@@ -808,8 +910,17 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
             token = token_path.read_text(encoding="utf-8").strip()
             if not token:
                 return False
-            health = httpx.get(f"{base_url}/health", timeout=2.0)
-            if not health.is_success:
+            health_ok = False
+            for attempt in range(6):
+                try:
+                    health = httpx.get(f"{base_url}/health", timeout=5.0)
+                    if health.is_success:
+                        health_ok = True
+                        break
+                except httpx.HTTPError:
+                    pass
+                time.sleep(min(1.5, 0.2 * (attempt + 1)))
+            if not health_ok:
                 return False
             self.base_url = base_url
             self.token_file = token_path
@@ -1065,6 +1176,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                     "query_limit": args.query_limit,
                     "query_id": args.query_id,
                     "doc_limit": args.doc_limit,
+                    "max_runtime_seconds": getattr(args, "max_runtime_seconds", None),
                     "namespace": namespace,
                     "llm_provider": llm_provider,
                     "baseline": {
@@ -1239,7 +1351,17 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
 
 def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
     matrix_path = _resolve_matrix_path(args.matrix_file)
-    cases = _load_matrix_cases(matrix_path)
+    all_cases = _load_matrix_cases(matrix_path)
+    start_index = max(1, int(args.start_index))
+    if start_index > len(all_cases):
+        raise ValueError(
+            f"start_index {start_index} exceeds matrix case count {len(all_cases)}"
+        )
+    cases = all_cases[start_index - 1 :]
+    if args.max_cases is not None:
+        cases = cases[: max(1, int(args.max_cases))]
+    max_runtime_seconds = max(0, int(args.max_runtime_seconds))
+    max_case_runtime_seconds = max(0, int(args.max_case_runtime_seconds))
     summary_path = (
         _resolve_matrix_path(args.summary_file)
         if args.summary_file
@@ -1256,7 +1378,12 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
             "summary_file": str(summary_path),
             "dry_run": bool(args.dry_run),
             "continue_on_error": bool(args.continue_on_error),
-            "case_count": len(cases),
+            "case_count_total": len(all_cases),
+            "case_count_selected": len(cases),
+            "start_index": start_index,
+            "max_cases": args.max_cases,
+            "max_runtime_seconds": max_runtime_seconds,
+            "max_case_runtime_seconds": max_case_runtime_seconds,
             "defaults": {
                 "mode": args.mode,
                 "category": args.category,
@@ -1299,18 +1426,44 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
 
     results: list[dict[str, object]] = []
     failed_cases = 0
-    for index, case in enumerate(cases, start=1):
+    started_at = time.monotonic()
+    for case_offset, case in enumerate(cases):
+        elapsed_seconds = time.monotonic() - started_at
+        if max_runtime_seconds > 0 and elapsed_seconds >= max_runtime_seconds:
+            for skipped_case in cases[case_offset:]:
+                results.append(
+                    {
+                        "id": skipped_case["id"],
+                        "dataset": skipped_case["dataset"],
+                        "split": skipped_case["split"],
+                        "exit": 124,
+                        "run_dir": str(run_dir / f"skipped-{_slug_fragment(str(skipped_case['id']))}"),
+                        "accuracy": None,
+                        "correct": None,
+                        "total": None,
+                        "avg_tokens": None,
+                        "max_tokens": None,
+                        "over_budget": None,
+                        "quality_gate_passed": None,
+                        "error": (
+                            "matrix runtime budget exceeded before case start "
+                            f"({elapsed_seconds:.1f}s elapsed, cap={max_runtime_seconds}s)"
+                        ),
+                    }
+                )
+                failed_cases += 1
+            break
+        index = start_index + case_offset
         case_slug = _slug_fragment(str(case["id"]))
         case_run_dir = run_dir / f"{index:02d}-{case_slug}"
         case_run_dir.mkdir(parents=True, exist_ok=True)
         run_args = _build_matrix_run_args(args, case)
-        error_message: str | None = None
-        exit_code = 0
-        try:
-            run_benchmark(run_args, case_run_dir)
-        except Exception as exc:
-            exit_code = 1
-            error_message = str(exc)
+        exit_code, error_message = _execute_matrix_case(
+            run_args=run_args,
+            run_dir=case_run_dir,
+            timeout_seconds=max_case_runtime_seconds,
+        )
+        if exit_code != 0:
             failed_cases += 1
         result = _collect_matrix_case_result(
             case=case,
@@ -1331,6 +1484,7 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
                 "matrix_file": str(matrix_path),
                 "summary_file": str(summary_path),
                 "cases_total": len(results),
+                "cases_selected": len(cases),
                 "cases_passed": passed_cases,
                 "cases_failed": len(results) - passed_cases,
                 "run_dir": str(run_dir),
@@ -1441,6 +1595,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--query-id", default=None, help="Optional single query id.")
     run.add_argument("--doc-limit", type=int, default=None, help="Optional document limit.")
     run.add_argument("--oracle", action="store_true", help="Use oracle mode when the dataset supports it.")
+    run.add_argument(
+        "--max-runtime-seconds",
+        type=int,
+        default=_single_run_timeout_default(),
+        help=(
+            "Hard runtime cap for a single run (seconds). "
+            "Must be between 900 and 1200 (15-20 minutes)."
+        ),
+    )
     run.add_argument("--run-name", default=None, help="Optional AMB run name. Defaults to cortex-http.")
     run.add_argument("--description", default=None, help="Optional run description written into the AMB output.")
     _add_quality_gate_arguments(run)
@@ -1459,6 +1622,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary-file",
         default=None,
         help="Optional output path for matrix summary JSON (defaults to run_dir/matrix-summary.json).",
+    )
+    matrix.add_argument(
+        "--start-index",
+        type=int,
+        default=1,
+        help="1-based case index to start from within the matrix file.",
+    )
+    matrix.add_argument(
+        "--max-cases",
+        type=int,
+        default=None,
+        help="Optional max number of cases to execute from start-index.",
+    )
+    matrix.add_argument(
+        "--max-runtime-seconds",
+        type=int,
+        default=int(os.environ.get("CORTEX_BENCHMARK_MATRIX_MAX_RUNTIME_SECONDS", "1200")),
+        help="Hard runtime cap for a matrix invocation (defaults to 1200 seconds / 20 minutes).",
+    )
+    matrix.add_argument(
+        "--max-case-runtime-seconds",
+        type=int,
+        default=int(os.environ.get("CORTEX_BENCHMARK_MATRIX_MAX_CASE_RUNTIME_SECONDS", "900")),
+        help="Hard runtime cap per matrix case (defaults to 900 seconds / 15 minutes; set 0 to disable).",
     )
     matrix.add_argument(
         "--run-name-prefix",
@@ -1496,7 +1683,12 @@ def main() -> None:
     run_dir = RUNS_ROOT / f"amb-{args.command}-{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     try:
-        args.func(run_dir) if args.command == "smoke" else args.func(args, run_dir)
+        if args.command == "smoke":
+            args.func(run_dir)
+        elif args.command == "run":
+            _execute_single_run(args, run_dir)
+        else:
+            args.func(args, run_dir)
     except Exception as exc:
         print(f"benchmark runner failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
