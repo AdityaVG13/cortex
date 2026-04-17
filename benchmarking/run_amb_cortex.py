@@ -4,6 +4,7 @@ import argparse
 import inspect
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -21,6 +22,7 @@ AMB_SRC = REPO_ROOT / "benchmarking" / "tools" / "agent-memory-benchmark" / "src
 ADAPTERS_DIR = REPO_ROOT / "benchmarking" / "adapters"
 RUNS_ROOT = REPO_ROOT / "benchmarking" / "runs"
 BASELINE_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "token-gate-baselines.json"
+MATRIX_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "amb-eval-matrix.stage1.json"
 TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     # Tighter ratios for providers that tend to carry heavier prompt wrappers/history overhead.
     "claude": {"max_avg_ratio": 0.72, "max_peak_ratio": 0.90},
@@ -268,6 +270,100 @@ def _resolve_baseline_path(raw_path: str) -> Path:
     return (REPO_ROOT / path).resolve()
 
 
+def _resolve_matrix_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
+def _slug_fragment(value: str) -> str:
+    fragment = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip().lower()).strip("-")
+    return fragment or "case"
+
+
+def _load_matrix_cases(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        raise FileNotFoundError(f"matrix file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if isinstance(payload, dict):
+        raw_cases = payload.get("cases")
+        if raw_cases is None:
+            raw_cases = payload.get("scenarios")
+    elif isinstance(payload, list):
+        raw_cases = payload
+    else:
+        raw_cases = None
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError("matrix file must contain a non-empty 'cases' array")
+
+    cases: list[dict[str, object]] = []
+    for index, raw_case in enumerate(raw_cases, start=1):
+        if not isinstance(raw_case, dict):
+            raise ValueError(f"matrix case #{index} must be an object")
+        dataset = raw_case.get("dataset")
+        split = raw_case.get("split")
+        if not isinstance(dataset, str) or not dataset.strip():
+            raise ValueError(f"matrix case #{index} is missing required string field 'dataset'")
+        if not isinstance(split, str) or not split.strip():
+            raise ValueError(f"matrix case #{index} is missing required string field 'split'")
+        normalized: dict[str, object] = {
+            "dataset": dataset.strip(),
+            "split": split.strip(),
+            "id": str(
+                raw_case.get("id")
+                or f"{index:02d}-{_slug_fragment(dataset)}-{_slug_fragment(split)}"
+            ),
+        }
+        for key in ("mode", "category", "query_id", "run_name", "description"):
+            value = raw_case.get(key)
+            if value is not None:
+                normalized[key] = str(value)
+        for key in ("query_limit", "doc_limit", "recall_budget"):
+            value = raw_case.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, int):
+                raise ValueError(f"matrix case #{index} field '{key}' must be an integer")
+            normalized[key] = value
+        if "oracle" in raw_case:
+            normalized["oracle"] = bool(raw_case.get("oracle"))
+        cases.append(normalized)
+    return cases
+
+
+def _build_matrix_run_args(args: argparse.Namespace, case: dict[str, object]) -> argparse.Namespace:
+    run_name = case.get("run_name")
+    if run_name is None and args.run_name_prefix:
+        run_name = f"{args.run_name_prefix}-{case['id']}"
+    return argparse.Namespace(
+        dataset=str(case["dataset"]),
+        split=str(case["split"]),
+        mode=str(case.get("mode", args.mode)),
+        category=case.get("category", args.category),
+        query_limit=case.get("query_limit", args.query_limit),
+        query_id=case.get("query_id", args.query_id),
+        doc_limit=case.get("doc_limit", args.doc_limit),
+        oracle=bool(case.get("oracle", args.oracle)),
+        run_name=run_name,
+        description=case.get("description", args.description),
+        token_gate_mode=args.token_gate_mode,
+        provider_profile=args.provider_profile,
+        baseline_file=args.baseline_file,
+        disable_baseline_gates=args.disable_baseline_gates,
+        no_auto_tighten_baseline=args.no_auto_tighten_baseline,
+        min_queries_for_baseline_update=args.min_queries_for_baseline_update,
+        baseline_token_headroom_pct=args.baseline_token_headroom_pct,
+        baseline_accuracy_headroom=args.baseline_accuracy_headroom,
+        recall_budget=int(case.get("recall_budget", args.recall_budget)),
+        min_accuracy=args.min_accuracy,
+        max_recall_tokens=args.max_recall_tokens,
+        max_avg_recall_tokens=args.max_avg_recall_tokens,
+        allow_missing_recall_metrics=args.allow_missing_recall_metrics,
+        no_enforce_gate=args.no_enforce_gate,
+    )
+
+
 def _load_baseline_store(path: Path) -> dict:
     if not path.exists():
         return {
@@ -389,6 +485,52 @@ def _write_run_manifest(run_dir: Path, payload: dict) -> None:
         json.dumps(payload, indent=2),
         encoding="utf-8",
     )
+
+
+def _read_json_if_exists(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _collect_matrix_case_result(
+    *,
+    case: dict[str, object],
+    run_dir: Path,
+    exit_code: int,
+    error: str | None,
+) -> dict[str, object]:
+    summary = _read_json_if_exists(run_dir / "summary.json") or {}
+    gate = _read_json_if_exists(run_dir / "gate-report.json") or {}
+    recall_stats = gate.get("recall_stats")
+    if not isinstance(recall_stats, dict):
+        recall_stats = {}
+    quality_gate = gate.get("quality_gate")
+    if not isinstance(quality_gate, dict):
+        quality_gate = {}
+    result: dict[str, object] = {
+        "id": case.get("id"),
+        "dataset": case.get("dataset"),
+        "split": case.get("split"),
+        "exit": exit_code,
+        "run_dir": str(run_dir),
+        "accuracy": summary.get("accuracy"),
+        "correct": summary.get("correct"),
+        "total": summary.get("total_queries"),
+        "avg_tokens": recall_stats.get("avg_recall_tokens"),
+        "max_tokens": recall_stats.get("max_recall_tokens"),
+        "over_budget": recall_stats.get("over_budget_count"),
+        "quality_gate_passed": quality_gate.get("passed"),
+    }
+    failures = quality_gate.get("failures")
+    if failures is not None:
+        result["quality_gate_failures"] = failures
+    if error:
+        result["error"] = error
+    return result
 
 
 def _load_recall_metrics(path: Path) -> list[dict]:
@@ -833,6 +975,194 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             raise RuntimeError(f"quality gate failed:\n{lines}")
 
 
+def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
+    matrix_path = _resolve_matrix_path(args.matrix_file)
+    cases = _load_matrix_cases(matrix_path)
+    summary_path = (
+        _resolve_matrix_path(args.summary_file)
+        if args.summary_file
+        else run_dir / "matrix-summary.json"
+    )
+    _write_run_manifest(
+        run_dir,
+        {
+            "command": "matrix",
+            "created_at": datetime.now().isoformat(),
+            "cortex_repo_head": _git_head_short(REPO_ROOT),
+            "benchmark_tools": _load_lock_summary(),
+            "matrix_file": str(matrix_path),
+            "summary_file": str(summary_path),
+            "dry_run": bool(args.dry_run),
+            "continue_on_error": bool(args.continue_on_error),
+            "case_count": len(cases),
+            "defaults": {
+                "mode": args.mode,
+                "category": args.category,
+                "query_limit": args.query_limit,
+                "query_id": args.query_id,
+                "doc_limit": args.doc_limit,
+                "oracle": bool(args.oracle),
+                "recall_budget": args.recall_budget,
+                "token_gate_mode": args.token_gate_mode,
+                "provider_profile": args.provider_profile,
+                "baseline_file": args.baseline_file,
+            },
+        },
+    )
+    if args.dry_run:
+        preview = [
+            {
+                "id": case["id"],
+                "dataset": case["dataset"],
+                "split": case["split"],
+                "mode": case.get("mode", args.mode),
+                "query_limit": case.get("query_limit", args.query_limit),
+            }
+            for case in cases
+        ]
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(preview, indent=2), encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "matrix_file": str(matrix_path),
+                    "summary_file": str(summary_path),
+                    "cases": preview,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    results: list[dict[str, object]] = []
+    failed_cases = 0
+    for index, case in enumerate(cases, start=1):
+        case_slug = _slug_fragment(str(case["id"]))
+        case_run_dir = run_dir / f"{index:02d}-{case_slug}"
+        case_run_dir.mkdir(parents=True, exist_ok=True)
+        run_args = _build_matrix_run_args(args, case)
+        error_message: str | None = None
+        exit_code = 0
+        try:
+            run_benchmark(run_args, case_run_dir)
+        except Exception as exc:
+            exit_code = 1
+            error_message = str(exc)
+            failed_cases += 1
+        result = _collect_matrix_case_result(
+            case=case,
+            run_dir=case_run_dir,
+            exit_code=exit_code,
+            error=error_message,
+        )
+        results.append(result)
+        if exit_code != 0 and not args.continue_on_error:
+            break
+
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    passed_cases = sum(1 for result in results if int(result.get("exit", 1)) == 0)
+    print(
+        json.dumps(
+            {
+                "matrix_file": str(matrix_path),
+                "summary_file": str(summary_path),
+                "cases_total": len(results),
+                "cases_passed": passed_cases,
+                "cases_failed": len(results) - passed_cases,
+                "run_dir": str(run_dir),
+            },
+            indent=2,
+        )
+    )
+    if failed_cases > 0:
+        raise RuntimeError(
+            f"matrix run failed for {failed_cases} case(s); see {summary_path} for details"
+        )
+
+
+def _add_quality_gate_arguments(target: argparse.ArgumentParser) -> None:
+    target.add_argument(
+        "--token-gate-mode",
+        choices=["dynamic", "absolute", "off"],
+        default="dynamic",
+        help="Token gate strategy: dynamic (provider-aware), absolute (fixed limits), off (accuracy-only).",
+    )
+    target.add_argument(
+        "--provider-profile",
+        default="auto",
+        help="Provider profile for dynamic token gates (auto, claude, openai, codex, gemini, groq, default).",
+    )
+    target.add_argument(
+        "--baseline-file",
+        default=str(BASELINE_FILE_DEFAULT),
+        help="Path to provider/scenario baseline JSON used for non-regression gates and auto-tightening.",
+    )
+    target.add_argument(
+        "--disable-baseline-gates",
+        action="store_true",
+        help="Ignore saved baseline entries when computing effective gates (diagnostics only).",
+    )
+    target.add_argument(
+        "--no-auto-tighten-baseline",
+        action="store_true",
+        help="Do not tighten baseline thresholds after passing runs.",
+    )
+    target.add_argument(
+        "--min-queries-for-baseline-update",
+        type=int,
+        default=20,
+        help="Minimum query count required before a run can tighten baseline thresholds.",
+    )
+    target.add_argument(
+        "--baseline-token-headroom-pct",
+        type=float,
+        default=0.08,
+        help="Headroom added above observed token usage when tightening baseline ceilings.",
+    )
+    target.add_argument(
+        "--baseline-accuracy-headroom",
+        type=float,
+        default=0.02,
+        help="Margin subtracted from observed accuracy when tightening baseline floor.",
+    )
+    target.add_argument(
+        "--recall-budget",
+        type=int,
+        default=300,
+        help="Recall token budget sent to Cortex for each retrieval query.",
+    )
+    target.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=0.90,
+        help="Minimum acceptable benchmark accuracy.",
+    )
+    target.add_argument(
+        "--max-recall-tokens",
+        type=int,
+        default=300,
+        help="Maximum allowed recall tokens for any single query.",
+    )
+    target.add_argument(
+        "--max-avg-recall-tokens",
+        type=float,
+        default=300.0,
+        help="Maximum allowed average recall tokens across benchmark queries.",
+    )
+    target.add_argument(
+        "--allow-missing-recall-metrics",
+        action="store_true",
+        help="Permit runs with missing recall token telemetry (not recommended).",
+    )
+    target.add_argument(
+        "--no-enforce-gate",
+        action="store_true",
+        help="Skip failing the run when quality gates are violated (diagnostics only).",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run AMB against an isolated Cortex benchmark daemon.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -840,7 +1170,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke = subparsers.add_parser("smoke", help="Run a retrieval-only smoke test against an isolated Cortex daemon.")
     smoke.set_defaults(func=run_smoke)
 
-    run = subparsers.add_parser("run", help="Run an AMB benchmark against an isolated Cortex daemon.")
+    run = subparsers.add_parser("run", help="Run one AMB benchmark scenario against an isolated Cortex daemon.")
     run.add_argument("--dataset", required=True, help="AMB dataset name, e.g. longmemeval, locomo, membench.")
     run.add_argument("--split", required=True, help="AMB split/domain name for the dataset.")
     run.add_argument("--mode", default="rag", help="AMB response mode. Defaults to rag.")
@@ -851,57 +1181,47 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--oracle", action="store_true", help="Use oracle mode when the dataset supports it.")
     run.add_argument("--run-name", default=None, help="Optional AMB run name. Defaults to cortex-http.")
     run.add_argument("--description", default=None, help="Optional run description written into the AMB output.")
-    run.add_argument(
-        "--token-gate-mode",
-        choices=["dynamic", "absolute", "off"],
-        default="dynamic",
-        help="Token gate strategy: dynamic (provider-aware), absolute (fixed limits), off (accuracy-only).",
-    )
-    run.add_argument(
-        "--provider-profile",
-        default="auto",
-        help="Provider profile for dynamic token gates (auto, claude, openai, codex, gemini, groq, default).",
-    )
-    run.add_argument(
-        "--baseline-file",
-        default=str(BASELINE_FILE_DEFAULT),
-        help="Path to provider/scenario baseline JSON used for non-regression gates and auto-tightening.",
-    )
-    run.add_argument(
-        "--disable-baseline-gates",
-        action="store_true",
-        help="Ignore saved baseline entries when computing effective gates (diagnostics only).",
-    )
-    run.add_argument(
-        "--no-auto-tighten-baseline",
-        action="store_true",
-        help="Do not tighten baseline thresholds after passing runs.",
-    )
-    run.add_argument(
-        "--min-queries-for-baseline-update",
-        type=int,
-        default=20,
-        help="Minimum query count required before a run can tighten baseline thresholds.",
-    )
-    run.add_argument(
-        "--baseline-token-headroom-pct",
-        type=float,
-        default=0.08,
-        help="Headroom added above observed token usage when tightening baseline ceilings.",
-    )
-    run.add_argument(
-        "--baseline-accuracy-headroom",
-        type=float,
-        default=0.02,
-        help="Margin subtracted from observed accuracy when tightening baseline floor.",
-    )
-    run.add_argument("--recall-budget", type=int, default=300, help="Recall token budget sent to Cortex for each retrieval query.")
-    run.add_argument("--min-accuracy", type=float, default=0.90, help="Minimum acceptable benchmark accuracy.")
-    run.add_argument("--max-recall-tokens", type=int, default=300, help="Maximum allowed recall tokens for any single query.")
-    run.add_argument("--max-avg-recall-tokens", type=float, default=300.0, help="Maximum allowed average recall tokens across benchmark queries.")
-    run.add_argument("--allow-missing-recall-metrics", action="store_true", help="Permit runs with missing recall token telemetry (not recommended).")
-    run.add_argument("--no-enforce-gate", action="store_true", help="Skip failing the run when quality gates are violated (diagnostics only).")
+    _add_quality_gate_arguments(run)
     run.set_defaults(func=run_benchmark)
+
+    matrix = subparsers.add_parser(
+        "matrix",
+        help="Run a multi-dataset AMB evaluation matrix against isolated Cortex daemons.",
+    )
+    matrix.add_argument(
+        "--matrix-file",
+        default=str(MATRIX_FILE_DEFAULT),
+        help="Path to JSON matrix spec with cases/scenarios.",
+    )
+    matrix.add_argument(
+        "--summary-file",
+        default=None,
+        help="Optional output path for matrix summary JSON (defaults to run_dir/matrix-summary.json).",
+    )
+    matrix.add_argument(
+        "--run-name-prefix",
+        default="matrix",
+        help="Prefix used for per-case run names when a case does not define run_name.",
+    )
+    matrix.add_argument("--mode", default="rag", help="Default AMB response mode for cases missing mode.")
+    matrix.add_argument("--category", default=None, help="Default AMB category for cases missing category.")
+    matrix.add_argument("--query-limit", type=int, default=None, help="Default query limit for cases missing query_limit.")
+    matrix.add_argument("--query-id", default=None, help="Default query id for cases missing query_id.")
+    matrix.add_argument("--doc-limit", type=int, default=None, help="Default doc limit for cases missing doc_limit.")
+    matrix.add_argument("--oracle", action="store_true", help="Default oracle mode for cases missing oracle.")
+    matrix.add_argument("--description", default=None, help="Default run description for cases missing description.")
+    matrix.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue remaining matrix cases after an individual case fails.",
+    )
+    matrix.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and expand matrix cases without executing AMB runs.",
+    )
+    _add_quality_gate_arguments(matrix)
+    matrix.set_defaults(func=run_matrix)
 
     return parser
 
@@ -913,7 +1233,7 @@ def main() -> None:
     run_dir = RUNS_ROOT / f"amb-{args.command}-{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     try:
-        args.func(args, run_dir) if args.command == "run" else args.func(run_dir)
+        args.func(run_dir) if args.command == "smoke" else args.func(args, run_dir)
     except Exception as exc:
         print(f"benchmark runner failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

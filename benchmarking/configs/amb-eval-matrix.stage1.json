@@ -1,0 +1,82 @@
+{
+  "cases": [
+    {
+      "id": "longmemeval-s",
+      "dataset": "longmemeval",
+      "split": "s",
+      "query_limit": 20
+    },
+    {
+      "id": "locomo-locomo10",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "query_limit": 20
+    },
+    {
+      "id": "membench-first-low",
+      "dataset": "membench",
+      "split": "FirstAgentLowLevel",
+      "query_limit": 20
+    },
+    {
+      "id": "membench-first-high",
+      "dataset": "membench",
+      "split": "FirstAgentHighLevel",
+      "query_limit": 20
+    },
+    {
+      "id": "membench-third-low",
+      "dataset": "membench",
+      "split": "ThirdAgentLowLevel",
+      "query_limit": 20
+    },
+    {
+      "id": "membench-third-high",
+      "dataset": "membench",
+      "split": "ThirdAgentHighLevel",
+      "query_limit": 20
+    },
+    {
+      "id": "personamem-32k",
+      "dataset": "personamem",
+      "split": "32k",
+      "query_limit": 20
+    },
+    {
+      "id": "personamem-128k",
+      "dataset": "personamem",
+      "split": "128k",
+      "query_limit": 20
+    },
+    {
+      "id": "personamem-1m",
+      "dataset": "personamem",
+      "split": "1M",
+      "query_limit": 20
+    },
+    {
+      "id": "memsim-simple",
+      "dataset": "memsim",
+      "split": "simple",
+      "query_limit": 20
+    },
+    {
+      "id": "memsim-noisy",
+      "dataset": "memsim",
+      "split": "noisy",
+      "query_limit": 20
+    },
+    {
+      "id": "lifebench-en",
+      "dataset": "lifebench",
+      "split": "en",
+      "query_limit": 20
+    },
+    {
+      "id": "beam-100k",
+      "dataset": "beam",
+      "split": "100k",
+      "query_limit": 20
+    }
+  ]
+}
