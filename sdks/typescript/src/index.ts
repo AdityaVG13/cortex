@@ -152,6 +152,55 @@ export class CortexClient {
     return this.get("/recall", params);
   }
 
+  formatRecallContext(
+    recall: RecallResult,
+    options?: { includeMetrics?: boolean; maxItems?: number },
+  ): string {
+    const includeMetrics = options?.includeMetrics ?? true;
+    const maxItems = options?.maxItems;
+    const results = Array.isArray(recall?.results) ? recall.results : [];
+    const entries: string[] = [];
+    const limit = maxItems === undefined ? results.length : Math.max(0, maxItems);
+    for (const item of results.slice(0, limit)) {
+      const excerpt = String(item?.excerpt ?? "").trim();
+      if (!excerpt) continue;
+      const source = String(item?.source ?? "").trim();
+      const method = String(item?.method ?? "").trim();
+      const labelParts: string[] = [];
+      if (source) labelParts.push(`source=${source}`);
+      if (method) labelParts.push(`method=${method}`);
+      const suffix = labelParts.length ? ` (${labelParts.join(", ")})` : "";
+      entries.push(`## Memory ${entries.length + 1}${suffix}\n${excerpt}`);
+    }
+    if (includeMetrics) {
+      const metricsKeys = ["budget", "spent", "saved", "count", "mode", "tier", "cached", "latencyMs"] as const;
+      const compactMetrics: Record<string, string | number | boolean> = {};
+      for (const key of metricsKeys) {
+        const value = recall[key];
+        if (value !== undefined && value !== null) compactMetrics[key] = value;
+      }
+      if (Object.keys(compactMetrics).length > 0) {
+        entries.push(`[retrieval-metrics] ${JSON.stringify(compactMetrics)}`);
+      }
+    }
+    return entries.join("\n\n").trim();
+  }
+
+  async recallForPrompt(
+    query: string,
+    options?: { budget?: number; k?: number; agent?: string; includeMetrics?: boolean; maxItems?: number },
+  ): Promise<string> {
+    const recallPayload = await this.recall(query, {
+      budget: options?.budget,
+      k: options?.k,
+      agent: options?.agent,
+    });
+    return this.formatRecallContext(recallPayload, {
+      includeMetrics: options?.includeMetrics,
+      maxItems: options?.maxItems,
+    });
+  }
+
   async peek(query: string, k = 10): Promise<PeekResult> {
     return this.get("/peek", { q: query, k });
   }

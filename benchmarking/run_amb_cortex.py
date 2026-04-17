@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import os
 import socket
@@ -29,6 +30,101 @@ TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     "groq": {"max_avg_ratio": 0.84, "max_peak_ratio": 1.00},
     "default": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
 }
+
+
+def _filter_kwargs_for_callable(fn: object, kwargs: dict[str, object]) -> dict[str, object]:
+    """Return only kwargs accepted by `fn` (or all kwargs for **kwargs callables)."""
+    signature = inspect.signature(fn)  # type: ignore[arg-type]
+    parameters = signature.parameters.values()
+    accepts_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters)
+    if accepts_var_kwargs:
+        return kwargs
+    accepted = {
+        param.name
+        for param in parameters
+        if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {key: value for key, value in kwargs.items() if key in accepted}
+
+
+def _apply_dataset_compat_shims(dataset: object) -> object:
+    """
+    Apply runtime-safe compatibility shims for pinned AMB commits.
+
+    - Some isolation datasets don't yet accept `user_ids` in `load_documents`.
+      We add a wrapper that drops unsupported kwargs and applies best-effort
+      user_id filtering on the returned docs when requested.
+    - LongMemEval prompt construction can over-prioritize raw recall payload
+      telemetry. We enforce context-first prompting and append compact metrics.
+    """
+    load_documents = getattr(dataset, "load_documents", None)
+    if callable(load_documents):
+        original_load_documents = load_documents
+
+        def load_documents_compat(*args: object, **kwargs: object) -> object:
+            requested_user_ids = kwargs.get("user_ids")
+            supported_kwargs = _filter_kwargs_for_callable(original_load_documents, kwargs)
+            docs = original_load_documents(*args, **supported_kwargs)
+            if not isinstance(requested_user_ids, set):
+                return docs
+            if not isinstance(docs, list):
+                return docs
+            return [
+                doc
+                for doc in docs
+                if getattr(doc, "user_id", None) in requested_user_ids
+            ]
+
+        setattr(dataset, "load_documents", load_documents_compat)
+
+    dataset_name = str(getattr(dataset, "name", "")).lower()
+    build_rag_prompt = getattr(dataset, "build_rag_prompt", None)
+    if dataset_name == "longmemeval" and callable(build_rag_prompt):
+        original_build_rag_prompt = build_rag_prompt
+
+        def longmemeval_prompt_compat(
+            query: str,
+            context: str,
+            task_type: str,
+            split: str,
+            category: str | None = None,
+            meta: dict | None = None,
+        ) -> str:
+            prompt_meta = dict(meta or {})
+            raw_payload = prompt_meta.pop("_raw_response", None)
+            prompt = original_build_rag_prompt(
+                query,
+                context,
+                task_type,
+                split,
+                category,
+                prompt_meta,
+            )
+            if not isinstance(raw_payload, dict):
+                return prompt
+            metrics = {
+                "budget": raw_payload.get("budget"),
+                "spent": raw_payload.get("spent"),
+                "saved": raw_payload.get("saved"),
+                "count": raw_payload.get("count"),
+                "mode": raw_payload.get("mode"),
+                "tier": raw_payload.get("tier"),
+            }
+            compact_metrics = {
+                key: value
+                for key, value in metrics.items()
+                if value is not None
+            }
+            if not compact_metrics:
+                return prompt
+            return (
+                f"{prompt}\n\n"
+                f"[retrieval-metrics] {json.dumps(compact_metrics, ensure_ascii=False)}"
+            )
+
+        setattr(dataset, "build_rag_prompt", longmemeval_prompt_compat)
+
+    return dataset
 
 
 def _configure_imports() -> None:
@@ -616,7 +712,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             },
         )
 
-        dataset = get_dataset(args.dataset)
+        dataset = _apply_dataset_compat_shims(get_dataset(args.dataset))
         mode = get_mode(args.mode, llm=get_answer_llm())
         memory = get_memory_provider("cortex-http")
         runner = EvalRunner(output_dir=run_dir / "outputs")

@@ -115,3 +115,55 @@ test("remote baseUrl requires explicit token", () => {
     /requires explicit token/i
   );
 });
+
+test("formatRecallContext keeps memory text and appends compact metrics", () => {
+  const client = new CortexClient({
+    baseUrl: "http://127.0.0.1:7437",
+    token: "ctx_format_token",
+  });
+  const context = client.formatRecallContext(
+    {
+      results: [
+        { source: "memory::1", method: "keyword", excerpt: "Business Administration", relevance: 0.9 },
+        { source: "memory::2", method: "semantic", excerpt: "Volunteer event was Feb 14", relevance: 0.8 },
+      ],
+      budget: 300,
+      spent: 210,
+      saved: 90,
+      mode: "balanced",
+    },
+    { maxItems: 1, includeMetrics: true },
+  );
+  assert.match(context, /Business Administration/);
+  assert.doesNotMatch(context, /Volunteer event/);
+  assert.match(context, /\[retrieval-metrics\]/);
+  assert.match(context, /"budget":300/);
+});
+
+test("recallForPrompt reuses recall payload", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    calls.push({ input, init });
+    return okJson({
+      results: [
+        { source: "memory::1", method: "keyword", excerpt: "Prompt-ready excerpt", relevance: 0.8 },
+      ],
+      budget: 200,
+      spent: 100,
+      saved: 100,
+    });
+  };
+  try {
+    const client = new CortexClient({
+      baseUrl: "http://127.0.0.1:7437",
+      token: "ctx_prompt_token",
+    });
+    const context = await client.recallForPrompt("what happened", { includeMetrics: false });
+    assert.match(context, /Prompt-ready excerpt/);
+    assert.doesNotMatch(context, /\[retrieval-metrics\]/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls.length, 1);
+});

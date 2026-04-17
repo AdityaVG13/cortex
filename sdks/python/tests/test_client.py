@@ -73,3 +73,54 @@ def test_remote_base_url_requires_explicit_token():
         assert "requires explicit token" in str(exc).lower()
     else:
         raise AssertionError("Expected remote base_url without token to fail")
+
+
+def test_format_recall_context_is_content_first_with_optional_metrics():
+    client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_format_token")
+    payload = {
+        "results": [
+            {
+                "source": "memory::1",
+                "method": "keyword",
+                "excerpt": "Business Administration",
+                "relevance": 0.91,
+            },
+            {
+                "source": "memory::2",
+                "method": "semantic",
+                "excerpt": "Valentine's Day volunteer event",
+                "relevance": 0.83,
+            },
+        ],
+        "budget": 300,
+        "spent": 214,
+        "saved": 86,
+        "mode": "balanced",
+    }
+    context = client.format_recall_context(payload, include_metrics=True, max_items=1)
+    assert "Business Administration" in context
+    assert "Valentine's Day" not in context
+    assert "[retrieval-metrics]" in context
+    assert '"budget": 300' in context
+
+
+def test_recall_for_prompt_uses_recall_response(httpx_mock):
+    httpx_mock.add_response(
+        json={
+            "results": [
+                {
+                    "source": "memory::1",
+                    "method": "keyword",
+                    "excerpt": "Prompt-ready excerpt",
+                    "relevance": 0.8,
+                }
+            ],
+            "budget": 200,
+            "spent": 100,
+            "saved": 100,
+        }
+    )
+    client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_prompt_token")
+    context = client.recall_for_prompt("what happened", include_metrics=False)
+    assert "Prompt-ready excerpt" in context
+    assert "[retrieval-metrics]" not in context

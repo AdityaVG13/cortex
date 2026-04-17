@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Optional, cast
@@ -126,6 +127,66 @@ class CortexClient:
         if agent:
             params["agent"] = agent
         return cast(RecallResponse, self._get("/recall", params))
+
+    def format_recall_context(
+        self,
+        recall: RecallResponse,
+        *,
+        include_metrics: bool = True,
+        max_items: Optional[int] = None,
+    ) -> str:
+        """
+        Build a prompt-ready context string from recall payloads.
+
+        Content is always prioritized: each returned excerpt is preserved as
+        primary context. Retrieval telemetry is appended as a compact trailing
+        line, never substituted for the memory text.
+        """
+        entries: list[str] = []
+        results = recall.get("results") or []
+        limit = len(results) if max_items is None else max(0, max_items)
+        for index, item in enumerate(results):
+            if index >= limit:
+                break
+            excerpt = str(item.get("excerpt", "")).strip()
+            if not excerpt:
+                continue
+            source = str(item.get("source", "")).strip()
+            method = str(item.get("method", "")).strip()
+            label_parts: list[str] = []
+            if source:
+                label_parts.append(f"source={source}")
+            if method:
+                label_parts.append(f"method={method}")
+            suffix = f" ({', '.join(label_parts)})" if label_parts else ""
+            entries.append(f"## Memory {len(entries) + 1}{suffix}\n{excerpt}")
+        if include_metrics:
+            metrics = {
+                key: recall.get(key)
+                for key in ("budget", "spent", "saved", "count", "mode", "tier", "cached", "latencyMs")
+                if recall.get(key) is not None
+            }
+            if metrics:
+                entries.append(f"[retrieval-metrics] {json.dumps(metrics, ensure_ascii=False)}")
+        return "\n\n".join(entries).strip()
+
+    def recall_for_prompt(
+        self,
+        query: str,
+        budget: int = 200,
+        k: int = 10,
+        agent: Optional[str] = None,
+        *,
+        include_metrics: bool = True,
+        max_items: Optional[int] = None,
+    ) -> str:
+        """Convenience helper: run recall and return prompt-ready context."""
+        payload = self.recall(query=query, budget=budget, k=k, agent=agent)
+        return self.format_recall_context(
+            payload,
+            include_metrics=include_metrics,
+            max_items=max_items,
+        )
 
     def peek(self, query: str, k: int = 10) -> PeekResponse:
         return cast(PeekResponse, self._get("/peek", {"q": query, "k": k}))
