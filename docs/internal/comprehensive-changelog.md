@@ -2,27 +2,11 @@
 
 Last updated: 2026-04-18
 Baseline: v0.4.1 (2026-04-06)
-Current head: 8a3cb21 (2026-04-18)
-Commit range size: 322 commits
+Current head: 40e8e80 (2026-04-18)
+Commit range size: 319 commits
 ## Purpose
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
-
-## 2026-04-18 17:10 - 8a3cb21
-- Startup fanout and contention hardening landed across daemon + Control Center:
-  - Added global single-flight refresh coalescing in `desktop/cortex-control-center/src/App.jsx` so interval/SSE/recovery triggers do not overlap protected API fanout.
-  - Routed startup-heavy daemon GET endpoints to `state.db_read` and removed write-side cleanup from hot read paths (`conductor`/`feed`/`mutate` handlers).
-  - Added startup-oriented DB indexes (including owner-scoped variants) for sessions/locks/tasks/feed/messages/activity/events surfaces.
-  - Added event-pressure compaction guards in `daemon-rs/src/compaction.rs` (per-event-type caps + global non-boot soft/hard limits).
-  - Scoped `/savings` heavy analytics rollups to a bounded recent window (`30d`) to reduce large-history aggregate cost.
-- Docs/changelog sync:
-  - Updated `CHANGELOG.md` and internal status/readme staging docs for this optimization pass.
-- Validation:
-  - `rtk cargo test` in `daemon-rs` (`367` passing, isolated target dir).
-  - `rtk cargo test compaction` (`11` passing).
-  - `rtk cargo test --test recall_benchmark -- --nocapture` (`7` passing).
-  - `rtk npm --prefix desktop/cortex-control-center test` (`57` passing).
-  - `rtk npm --prefix desktop/cortex-control-center run web:build` (pass).
 
 - Startup contention and high-event-volume analytics hardening:
   - `daemon-rs/src/handlers/health.rs` (`GET /savings`) now avoids full event-log Rust parsing under a long shared DB-read lock.
