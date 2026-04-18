@@ -825,8 +825,16 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_embeddings_target_model_norm
           ON embeddings(target_type, target_id, LOWER(COALESCE(model, '')));
         CREATE INDEX IF NOT EXISTS idx_events_type_created ON events(type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+        CREATE INDEX IF NOT EXISTS idx_events_type_id ON events(type, id);
         CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient);
+        CREATE INDEX IF NOT EXISTS idx_messages_recipient_timestamp ON messages(recipient, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_sessions_heartbeat ON sessions(last_heartbeat);
+        CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON activities(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_feed_timestamp ON feed(timestamp);
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_locks_expires ON locks(expires_at);
 
         CREATE TABLE IF NOT EXISTS context_cache (
           cache_key TEXT PRIMARY KEY,
@@ -1289,6 +1297,18 @@ pub fn migrate_to_team_mode(conn: &Connection, owner_id: i64) -> rusqlite::Resul
         CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id) WHERE owner_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_feed_owner ON feed(owner_id) WHERE owner_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_activities_owner ON activities(owner_id) WHERE owner_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_sessions_owner_heartbeat
+          ON sessions(owner_id, last_heartbeat) WHERE owner_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_activities_owner_timestamp
+          ON activities(owner_id, timestamp) WHERE owner_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_messages_owner_recipient_timestamp
+          ON messages(owner_id, recipient, timestamp) WHERE owner_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_feed_owner_timestamp
+          ON feed(owner_id, timestamp) WHERE owner_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_tasks_owner_status_created
+          ON tasks(owner_id, status, created_at) WHERE owner_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_locks_owner_expires
+          ON locks(owner_id, expires_at) WHERE owner_id IS NOT NULL;
         "#,
     )?;
     conn.execute("INSERT OR IGNORE INTO teams (name) VALUES ('default')", [])?;

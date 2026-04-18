@@ -1567,6 +1567,8 @@ export function App() {
   const invokeRef = useRef(null);
   const tokenRef = useRef(browserBootstrap.authToken || "");
   const refreshAllRef = useRef(async () => {});
+  const refreshAllInFlightRef = useRef(null);
+  const refreshAllQueuedRef = useRef(false);
   const daemonTransitionRef = useRef(false);
   const recoveryRetryTimerRef = useRef(null);
   const skipInitialFeedRefreshRef = useRef(true);
@@ -2331,6 +2333,28 @@ export function App() {
     scheduleRecoveryRetry,
   ]);
 
+  const runRefreshAll = useCallback(() => {
+    if (refreshAllInFlightRef.current) {
+      refreshAllQueuedRef.current = true;
+      return refreshAllInFlightRef.current;
+    }
+
+    let pendingRefresh = null;
+    pendingRefresh = (async () => {
+      do {
+        refreshAllQueuedRef.current = false;
+        await refreshAll();
+      } while (refreshAllQueuedRef.current);
+    })().finally(() => {
+      if (refreshAllInFlightRef.current === pendingRefresh) {
+        refreshAllInFlightRef.current = null;
+      }
+    });
+
+    refreshAllInFlightRef.current = pendingRefresh;
+    return pendingRefresh;
+  }, [refreshAll]);
+
   useEffect(() => {
     localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
     refreshAllRef.current();
@@ -2431,8 +2455,8 @@ export function App() {
   }, [analyticsReady, panel]);
 
   useEffect(() => {
-    refreshAllRef.current = refreshAll;
-  }, [refreshAll]);
+    refreshAllRef.current = runRefreshAll;
+  }, [runRefreshAll]);
 
   useEffect(() => () => {
     clearRecoveryRetry();
@@ -2441,7 +2465,7 @@ export function App() {
   useEffect(() => {
     // Call refreshAll directly on mount -- refreshAllRef.current isn't assigned
     // yet when this effect fires (ref-assignment effect hasn't run).
-    refreshAll();
+    runRefreshAll();
     const interval = setInterval(() => {
       refreshAllRef.current();
     }, FALLBACK_REFRESH_MS);
@@ -3115,9 +3139,9 @@ export function App() {
 
     daemonTransitionRef.current = false;
     await readAuthToken({ suppressFeedback: true });
-    await refreshAll();
+    await runRefreshAll();
     return { ...startResult, restartSkippedExternal };
-  }, [call, clearDisconnectedData, cortexBase, readAuthToken, refreshAll, waitForDaemonOffline, waitForDaemonReachable]);
+  }, [call, clearDisconnectedData, cortexBase, readAuthToken, runRefreshAll, waitForDaemonOffline, waitForDaemonReachable]);
 
   async function handleMemorySearch(e) {
     e?.preventDefault();
@@ -3158,7 +3182,7 @@ export function App() {
       }
       daemonTransitionRef.current = false;
       await readAuthToken({ suppressFeedback: true });
-      await refreshAll();
+      await runRefreshAll();
     } catch (error) {
       setFeedbackMessage(`Start failed: ${error.message || error}`);
     } finally {
@@ -3188,7 +3212,7 @@ export function App() {
         setFeedbackMessage(result.message || "Stopped Cortex daemon.");
       } else {
         setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...");
-        await refreshAll();
+        await runRefreshAll();
       }
     } catch (error) {
       setFeedbackMessage(`Stop failed: ${error.message || error}`);
@@ -3276,7 +3300,7 @@ export function App() {
         }
 
         setFeedbackMessage("Running dev restart/reconnect verification...");
-        await refreshAll();
+        await runRefreshAll();
         await waitForCondition("the initial event stream connection", () => streamConnectedAtRef.current > 0, 10000);
 
         if (!daemonStateRef.current?.reachable) {
@@ -3287,7 +3311,7 @@ export function App() {
             throw new Error("Daemon did not become reachable during verification startup.");
           }
           await readAuthToken({ suppressFeedback: true });
-          await refreshAll();
+          await runRefreshAll();
         } else {
           recordStep("start", { message: "Daemon already reachable before verification." });
         }
@@ -3430,7 +3454,7 @@ export function App() {
         devVerificationStartedRef.current = false;
       }
     };
-  }, [api, call, callMcpTool, cortexBase, readAuthToken, refreshAll, runRestartDaemonSequence, waitForDaemonReachable, writeDevVerificationReport]);
+  }, [api, call, callMcpTool, cortexBase, readAuthToken, runRefreshAll, runRestartDaemonSequence, waitForDaemonReachable, writeDevVerificationReport]);
 
   // Keyboard nav
   useEffect(() => {
@@ -3734,7 +3758,7 @@ export function App() {
                 <p className="panel-subtitle">Command center for analytics, live agent traffic, and memory quality.</p>
               </div>
               <div className="surface-actions">
-                <button type="button" className="btn-sm" onClick={refreshAll}>
+                <button type="button" className="btn-sm" onClick={runRefreshAll}>
                   Refresh
                 </button>
                 <button
@@ -3976,7 +4000,7 @@ export function App() {
                 <span className="panel-subtitle">Command center for live work, recall health, and the brain surface.</span>
               </div>
               <div className="surface-actions">
-                <button type="button" className="btn-sm" onClick={refreshAll}>
+                <button type="button" className="btn-sm" onClick={runRefreshAll}>
                   Refresh
                 </button>
                   <button type="button" className="btn-sm" onClick={() => changePanel("analytics")}>
@@ -4069,7 +4093,7 @@ export function App() {
                 <p className="panel-subtitle">Sessions, messages, and recent activity in one place.</p>
               </div>
               <div className="surface-actions">
-                <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={runRefreshAll}>Refresh</button>
                   <button type="button" className="btn-sm" onClick={() => changePanel("brain")}>Brain View</button>
               </div>
             </div>
@@ -4156,7 +4180,7 @@ export function App() {
                 <p className="panel-subtitle">Queue, inbox, locks, and shared feed run through the same live operator surface.</p>
               </div>
               <div className="surface-actions">
-                <button type="button" className="btn-sm" onClick={refreshAll}>Refresh</button>
+                <button type="button" className="btn-sm" onClick={runRefreshAll}>Refresh</button>
                 <button type="button" className="btn-sm" onClick={() => changePanel("agents")}>Agents</button>
               </div>
             </div>
@@ -4257,7 +4281,7 @@ export function App() {
                               if (failed.length) {
                                 setFeedbackMessage(`${failed.length} task delete(s) failed: ${failed[0].reason}`);
                               }
-                              await refreshAll();
+                              await runRefreshAll();
                             } catch (error) {
                               reportSurfaceError(error);
                             }
@@ -4725,7 +4749,7 @@ export function App() {
                             );
                             const failed = results.filter(r => r.status === "rejected");
                             if (failed.length) setFeedbackMessage(`${failed.length} task delete(s) failed: ${failed[0].reason}`);
-                            await refreshAll();
+                            await runRefreshAll();
                           } catch (err) {
                             setFeedbackMessage(`Clear tasks failed: ${err.message || err}`);
                           }

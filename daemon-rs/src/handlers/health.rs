@@ -23,6 +23,7 @@ const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const HEALTH_HEAVY_CACHE_TTL_SECS: i64 = 30;
 const HEALTH_HEAVY_WARMUP_DELAY_SECS: u64 = 90;
 const SAVINGS_CACHE_TTL_SECS: i64 = 20;
+const SAVINGS_HISTORY_DAYS: i64 = 30;
 static HEALTH_BOOT_INSTANT: OnceLock<Instant> = OnceLock::new();
 static HEALTH_HEAVY_METRICS_CACHE: OnceLock<Mutex<Option<HealthHeavyMetricsSnapshot>>> =
     OnceLock::new();
@@ -231,14 +232,7 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     // Read DB stats in a short lock, then drop it before the network call.
-    let (
-        memories,
-        decisions,
-        embeddings_count,
-        events,
-        db_freelist_pages,
-        sqlite_vec_status,
-    ) = {
+    let (memories, decisions, embeddings_count, events, db_freelist_pages, sqlite_vec_status) = {
         let conn = state.db_read.lock().await;
         let m: i64 = conn
             .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
@@ -259,7 +253,14 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         (m, d, e, ev, freelist, sqlite_vec_status)
     }; // DB lock released here.
 
-    let (embedding_inventory, storage_bytes, backup_count, log_bytes, heavy_metrics_source, cache_age_secs) = {
+    let (
+        embedding_inventory,
+        storage_bytes,
+        backup_count,
+        log_bytes,
+        heavy_metrics_source,
+        cache_age_secs,
+    ) = {
         let cached = match health_heavy_metrics_cache().lock() {
             Ok(guard) => *guard,
             Err(poisoned) => *poisoned.into_inner(),
@@ -1271,9 +1272,14 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     }
 
     let conn = state.db_read.lock().await;
+    let savings_window_modifier = format!("-{SAVINGS_HISTORY_DAYS} days");
 
     let mut stmt = match conn.prepare(
-        "SELECT data, created_at FROM events WHERE type = 'boot_savings' ORDER BY created_at ASC",
+        "SELECT data, created_at
+         FROM events
+         WHERE type = 'boot_savings'
+           AND created_at >= datetime('now', ?1)
+         ORDER BY created_at ASC",
     ) {
         Ok(s) => s,
         Err(e) => {
@@ -1285,7 +1291,7 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     };
 
     let rows: Vec<(String, String)> = stmt
-        .query_map([], |row| {
+        .query_map(params![savings_window_modifier.clone()], |row| {
             let data_str: String = row.get(0)?;
             let created: String = row.get(1)?;
             Ok((data_str, created))
@@ -1306,8 +1312,10 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
                  COUNT(*) \
-             FROM events WHERE type = 'boot_savings'",
-            [],
+             FROM events
+             WHERE type = 'boot_savings'
+               AND created_at >= datetime('now', ?1)",
+            params![savings_window_modifier.clone()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
@@ -1320,8 +1328,10 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.spent') AS INTEGER), COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0))), 0), \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.budget') AS INTEGER), COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0))), 0), \
                  COUNT(*) \
-             FROM events WHERE type = 'recall_query'",
-            [],
+             FROM events
+             WHERE type = 'recall_query'
+               AND created_at >= datetime('now', ?1)",
+            params![savings_window_modifier.clone()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
@@ -1334,15 +1344,20 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
                  COUNT(*) \
-             FROM events WHERE type = 'store_savings'",
-            [],
+             FROM events
+             WHERE type = 'store_savings'
+               AND created_at >= datetime('now', ?1)",
+            params![savings_window_modifier.clone()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
     let store_decision_events: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events WHERE type IN ('decision_stored', 'decision_supersede', 'decision_conflict', 'decision_rejected_duplicate')",
-            [],
+            "SELECT COUNT(*)
+             FROM events
+             WHERE type IN ('decision_stored', 'decision_supersede', 'decision_conflict', 'decision_rejected_duplicate')
+               AND created_at >= datetime('now', ?1)",
+            params![savings_window_modifier.clone()],
             |row| row.get(0),
         )
         .unwrap_or(0);
@@ -1356,8 +1371,10 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
                  COUNT(*) \
-             FROM events WHERE type = 'tool_call_savings'",
-            [],
+             FROM events
+             WHERE type = 'tool_call_savings'
+               AND created_at >= datetime('now', ?1)",
+            params![savings_window_modifier.clone()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
@@ -1373,14 +1390,15 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
                  WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
                  ELSE 0 END), 0) AS saved_delta \
-         FROM events \
-         WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings') \
-           AND created_at IS NOT NULL \
-         GROUP BY day \
-         ORDER BY day ASC",
+          FROM events \
+          WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings') \
+            AND created_at >= datetime('now', ?1) \
+            AND created_at IS NOT NULL \
+          GROUP BY day \
+          ORDER BY day ASC",
     ) {
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![savings_window_modifier.clone()], |row| {
                 let day: Option<String> = row.get(0)?;
                 let saved_delta: i64 = row.get(1)?;
                 Ok((day.unwrap_or_default(), saved_delta))
@@ -1400,13 +1418,15 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
              SUBSTR(created_at, 1, 10) AS day, \
              SUM(CASE WHEN COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 1 ELSE 0 END) AS hits, \
              SUM(CASE WHEN COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 0 ELSE 1 END) AS misses \
-         FROM events \
-         WHERE type = 'recall_query' AND created_at IS NOT NULL \
-         GROUP BY day \
-         ORDER BY day ASC",
+          FROM events \
+          WHERE type = 'recall_query'
+            AND created_at >= datetime('now', ?1)
+            AND created_at IS NOT NULL \
+          GROUP BY day \
+          ORDER BY day ASC",
     ) {
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![savings_window_modifier.clone()], |row| {
                 let day: Option<String> = row.get(0)?;
                 let hits: i64 = row.get(1)?;
                 let misses: i64 = row.get(2)?;
@@ -1427,12 +1447,13 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
              CAST(strftime('%w', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS weekday, \
              CAST(strftime('%H', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS hour, \
              COUNT(*) AS cnt \
-         FROM events \
-         WHERE created_at IS NOT NULL \
-         GROUP BY weekday, hour",
+          FROM events \
+          WHERE created_at >= datetime('now', ?1)
+            AND created_at IS NOT NULL \
+          GROUP BY weekday, hour",
     ) {
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params![savings_window_modifier.clone()], |row| {
                 let weekday: Option<i64> = row.get(0)?;
                 let hour: Option<i64> = row.get(1)?;
                 let count: i64 = row.get(2)?;
@@ -1641,7 +1662,7 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
             "avgServedPerBoot": avg_served_per_boot,
             "avgBaselinePerBoot": avg_baseline_per_boot,
             "scope": "boot_prompt_plus_event_operations",
-            "note": "Boot savings are precise from /boot events. Recall/store/tool figures are event-derived estimates when instrumentation is available."
+            "note": "Boot savings are precise from /boot events. Recall/store/tool figures are event-derived estimates when instrumentation is available. Analytics scope is the last 30 days."
         },
         "daily": daily_arr,
         "byAgent": by_agent_arr,

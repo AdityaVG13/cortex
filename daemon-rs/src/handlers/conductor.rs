@@ -318,19 +318,25 @@ fn clean_old_tasks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 // ─── Fetch helpers ──────────────────────────────────────────────────────────
 
 fn fetch_locks(conn: &rusqlite::Connection, owner_id: Option<i64>) -> Result<Vec<Value>, String> {
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
-        owner_id
-    {
-        (
-            "SELECT id, path, agent, locked_at, expires_at FROM locks WHERE owner_id = ?1 ORDER BY locked_at ASC",
-            vec![Box::new(owner_id)],
-        )
-    } else {
-        (
-            "SELECT id, path, agent, locked_at, expires_at FROM locks ORDER BY locked_at ASC",
-            vec![],
-        )
-    };
+    let now = now_iso();
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) =
+        if let Some(owner_id) = owner_id {
+            (
+                "SELECT id, path, agent, locked_at, expires_at
+             FROM locks
+             WHERE owner_id = ?1 AND (expires_at IS NULL OR expires_at >= ?2)
+             ORDER BY locked_at ASC",
+                vec![Box::new(owner_id), Box::new(now.clone())],
+            )
+        } else {
+            (
+                "SELECT id, path, agent, locked_at, expires_at
+             FROM locks
+             WHERE expires_at IS NULL OR expires_at >= ?1
+             ORDER BY locked_at ASC",
+                vec![Box::new(now)],
+            )
+        };
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
         params_vec.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
@@ -397,19 +403,31 @@ fn fetch_sessions(
 ) -> Result<Vec<Value>, String> {
     let heartbeat_cutoff =
         (Utc::now() - Duration::seconds(ACTIVE_SESSION_WINDOW_SECONDS)).to_rfc3339();
+    let now = now_iso();
     let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
         owner_id
     {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
-             FROM sessions WHERE owner_id = ?1 AND last_heartbeat >= ?2 ORDER BY last_heartbeat DESC",
-            vec![Box::new(owner_id), Box::new(heartbeat_cutoff.clone())],
+             FROM sessions
+             WHERE owner_id = ?1
+               AND last_heartbeat >= ?2
+               AND (expires_at IS NULL OR expires_at >= ?3)
+             ORDER BY last_heartbeat DESC",
+            vec![
+                Box::new(owner_id),
+                Box::new(heartbeat_cutoff.clone()),
+                Box::new(now.clone()),
+            ],
         )
     } else {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
-             FROM sessions WHERE last_heartbeat >= ?1 ORDER BY last_heartbeat DESC",
-            vec![Box::new(heartbeat_cutoff)],
+             FROM sessions
+             WHERE last_heartbeat >= ?1
+               AND (expires_at IS NULL OR expires_at >= ?2)
+             ORDER BY last_heartbeat DESC",
+            vec![Box::new(heartbeat_cutoff), Box::new(now)],
         )
     };
     let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -748,8 +766,7 @@ pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap)
     }
 
     let owner_id = owner_id_from_headers(&headers, &state);
-    let conn = state.db.lock().await;
-    let _ = clean_expired_locks(&conn, owner_id);
+    let conn = state.db_read.lock().await;
     match fetch_locks(&conn, owner_id) {
         Ok(locks) => json_response(StatusCode::OK, json!({ "locks": locks })),
         Err(err) => json_response(
@@ -847,7 +864,7 @@ pub async fn handle_get_activity(
     let since_secs = parse_duration_to_seconds(query.since.as_deref().unwrap_or("1h"));
     let cutoff = (Utc::now() - Duration::seconds(since_secs)).to_rfc3339();
     let owner_id = owner_id_from_headers(&headers, &state);
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
 
     let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
         owner_id
@@ -988,7 +1005,7 @@ pub async fn handle_get_messages(
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     match fetch_messages_for_agent(&conn, &agent, owner_id) {
         Ok(messages) => json_response(StatusCode::OK, json!({ "messages": messages })),
         Err(err) => json_response(
@@ -1267,8 +1284,7 @@ pub async fn handle_sessions(State(state): State<RuntimeState>, headers: HeaderM
     }
 
     let owner_id = owner_id_from_headers(&headers, &state);
-    let conn = state.db.lock().await;
-    let _ = clean_expired_sessions(&conn, owner_id);
+    let conn = state.db_read.lock().await;
     match fetch_sessions(&conn, owner_id) {
         Ok(sessions) => json_response(StatusCode::OK, json!({ "sessions": sessions })),
         Err(err) => json_response(
@@ -1371,7 +1387,7 @@ pub async fn handle_get_tasks(
     let status_filter = query.status.unwrap_or_else(|| "pending".to_string());
     let project_filter = query.project;
     let owner_id = owner_id_from_headers(&headers, &state);
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     match fetch_tasks(&conn, &status_filter, project_filter.as_deref(), owner_id) {
         Ok(tasks) => json_response(StatusCode::OK, json!({ "tasks": tasks })),
         Err(err) => json_response(

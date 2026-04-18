@@ -1005,7 +1005,7 @@ pub async fn handle_conflicts(
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     if let Err(resp) = ensure_admin_surface(&headers, &state, &conn) {
         return resp;
     }
@@ -1035,7 +1035,7 @@ pub async fn handle_permissions_list(
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let owner_id = match ensure_admin_surface(&headers, &state, &conn) {
         Ok(user_id) => user_id.unwrap_or(0),
         Err(resp) => return resp,

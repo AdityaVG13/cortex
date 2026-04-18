@@ -118,3 +118,43 @@ Control Center now prioritizes startup responsiveness in app-managed mode. The a
 
 ### README copy draft (non-public until next release)
 Cortex now treats savings analytics as a heavy lane. The `/savings` path is SQL-aggregated and cached briefly to reduce lock contention, and Control Center keeps savings refresh out of startup-critical dashboard fanout. This keeps core operational panels responsive even with very large event histories.
+
+## 8) Benchmark Compaction Caps + Fail-Closed Fairness (Internal Draft for Next Public README Refresh)
+
+### Why this is the right default
+- Large benchmark corpora can bloat stored payloads and token budgets if ingestion is unconstrained.
+- Shortcut flags that bypass quality/token gates break fair-run comparability and produce misleading benchmark outcomes.
+- Explicit ingestion caps and fail-closed preflight checks keep benchmark evidence credible and reproducible.
+
+### User impact
+- Lower benchmark-side event/payload growth in app-attached evaluation runs.
+- More predictable token usage across single-run and matrix workflows.
+- Clear early failures when a run configuration would violate fair-run policy.
+
+### Product impact
+- Stronger benchmark integrity (quality/token gates cannot be silently bypassed).
+- Better operational safety for long benchmark batches on real operator environments.
+- Cleaner comparison between matrix runs because retrieval policy/cap posture is explicit and consistent.
+
+### README copy draft (non-public until next release)
+Benchmark mode now runs with bounded ingestion and fail-closed fairness checks. Cortex applies storage compaction caps for benchmark writes (`CORTEX_BENCHMARK_STORE_MAX_CHARS` plus tighter fact/context matrix ceilings), and preflight rejects gate-bypass shortcuts such as `no_enforce_gate` and `allow_missing_recall_metrics` in both single and matrix runs.
+
+## 9) Startup Coalescing + Event-Pressure Control (Internal Draft for Next Public README Refresh)
+
+### Why this is the right default
+- Large operator datasets produce bursty startup demand across multiple protected panels at once.
+- Overlapping refresh triggers (timer + SSE + retry) can fan out duplicate protected requests and amplify timeout storms.
+- Event growth concentrated in a few high-volume families (`decision_stored`) must be bounded to preserve first-load responsiveness over time.
+
+### User impact
+- Faster and more stable first-load behavior on large histories.
+- Fewer repeated "IPC request timed out after 8000ms" failures across multiple dashboard panels.
+- Better long-run responsiveness because high-volume event classes are compacted aggressively before they dominate startup queries.
+
+### Product impact
+- Lower read/write contention by moving hot GETs to read-only connections and removing write cleanup from read paths.
+- Better scalability from startup-focused indexes and event-pressure compaction policies.
+- More deterministic startup behavior because refresh fanout is coalesced through a single-flight scheduler.
+
+### README copy draft (non-public until next release)
+Control Center now coalesces dashboard refreshes into a single in-flight cycle, so real-time events, retries, and timer refreshes do not overlap into duplicate protected API bursts. Cortex also enforces event-pressure compaction caps for high-volume event families and uses startup-focused query/index paths to keep first-load panels responsive on large histories.

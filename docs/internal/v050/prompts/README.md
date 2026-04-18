@@ -14,6 +14,12 @@ The v0.5.0 runtime hardening stream now includes launch-path fixes that should b
 - daemon startup heavy maintenance passes are deferred/staggered under app-managed owner flow
 - daemon `/savings` now uses SQL-side aggregation + short TTL cache instead of full event-log Rust parsing under one long shared read lock
 - dev ensure script now handles stale binary rebuilds and Windows locked-binary retry automatically
+- `/health` heavy metrics now use warmup-aware caching (`cache`/`warmup-deferred`) to keep startup responsiveness stable under large event histories
+- benchmark ingestion now enforces payload compaction caps (`CORTEX_BENCHMARK_STORE_MAX_CHARS` + tighter matrix fact/context ceilings) to control event/token growth during evaluation runs
+- fair-run benchmarking is now fail-closed in both single and matrix mode: gate-bypass shortcuts (`no_enforce_gate`, `allow_missing_recall_metrics`) are rejected at preflight time
+- Control Center refresh flow now uses single-flight coalescing to prevent overlapping startup fanout from timer/SSE/retry triggers
+- startup-heavy daemon GET handlers now use read-only DB paths and avoid write-side cleanup in read routes
+- compaction governor now enforces per-event-type and non-boot event pressure caps so large event families do not grow unbounded
 
 ## Agent Roster
 

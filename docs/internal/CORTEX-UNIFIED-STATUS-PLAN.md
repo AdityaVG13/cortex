@@ -129,6 +129,11 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - savings analytics are no longer in startup-critical dashboard fanout; Control Center now refreshes `/savings` only when the Analytics panel is active
   - this removes a primary source of startup timeout cascades where heavy `/savings` reads starved `/sessions`, `/locks`, `/tasks`, and related protected routes on shared read-connection lock contention
   - live-database diagnostics confirm event-volume concentration in `decision_stored` (current ~433k total events with ~420k `decision_stored` rows), validating startup contention root cause
+- Follow-up startup optimization pass is now landed for heavy operator histories:
+  - compaction governor now includes event-pressure controls (per-event-type caps plus global non-boot cap) so large `decision_stored` growth cannot expand unbounded
+  - startup-critical read endpoints now avoid write-side cleanup in GET handlers and run against `state.db_read` to reduce read/write contention
+  - DB schema now includes startup-focused indexes (including owner-scoped variants) for `sessions`, `locks`, `tasks`, `feed`, `messages`, `activity`, and `events`
+  - Control Center refresh now runs through a single-flight queue so interval/SSE/recovery refreshes coalesce instead of overlapping
 
 ---
 
@@ -531,3 +536,38 @@ ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/
   - `rtk npm run web:build`
   - `rtk cargo check --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml`
   - `rtk cargo test --manifest-path daemon-rs/Cargo.toml app_managed_startup_heavy_delay_only_applies_to_control_center_owner`
+
+## 2026-04-18 16:20 - Phase-2A startup analytics + benchmark posture optimization pass
+- Event-volume controls:
+  - `GET /savings` now computes rollups with SQL-side aggregation and short-lived payload caching (`SAVINGS_CACHE_TTL_SECS`) instead of full ordered `events` row parsing in Rust.
+  - `/health` heavy metrics now use cached snapshots (`HEALTH_HEAVY_CACHE_TTL_SECS`) with explicit source tagging (`live`, `cache`, `warmup-deferred`) so startup reads avoid repeated expensive metrics work.
+  - Savings/store telemetry accounting now explicitly includes decision event families (`decision_stored`, `decision_supersede`, `decision_conflict`, `decision_rejected_duplicate`) for volume-aware diagnostics.
+- Compaction caps:
+  - Benchmark ingestion now enforces per-document store compaction caps via `CORTEX_BENCHMARK_STORE_MAX_CHARS` (default `12000`) with deterministic chunked store-part tagging.
+  - Phase-2A matrix profiles tighten extraction/context ceilings (`CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC`, `CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS`, `CORTEX_BENCHMARK_CONTEXT_MAX_CHARS`, `CORTEX_BENCHMARK_QUERY_WINDOW_CHARS`) and set explicit retrieval-policy mode per case.
+- Startup-timeout mitigation:
+  - App-managed daemon startup now staggers index/aging/embed/crystallize passes for Control Center ownership using `CORTEX_APP_MANAGED_STARTUP_DELAY_SECS` with lane offsets, reducing cold-start timeout storms.
+  - Daemon probe reads now accept partial timeout/would-block responses when bytes are already present, reducing false-negative startup probes under slow warmup.
+- Benchmarking posture:
+  - Fair-run preflight now fails closed for both single-run and matrix mode when gate-bypass shortcuts are requested (`no_enforce_gate`, `allow_missing_recall_metrics`).
+  - Matrix preflight now inspects and rejects requested shortcut flags from the matrix spec payload before execution begins, preserving strict quality/token gate posture.
+- Validation:
+  - Follow-up regression `683e938` adds explicit `GET /savings` cache TTL coverage in `daemon-rs/src/handlers/health.rs`.
+
+## 2026-04-18 17:10 - Control Center refresh coalescing + daemon read/compaction hardening pass
+- Control Center refresh scheduling:
+  - Added a global single-flight refresh queue in `desktop/cortex-control-center/src/App.jsx` and routed background/manual refresh triggers through it.
+  - This prevents concurrent fanout overlap from mount interval + SSE + recovery retries, reducing 8s IPC timeout storms on cold start.
+- Daemon read-path contention reductions:
+  - `conductor`/`feed`/`mutate` read handlers now use `state.db_read`.
+  - Removed write-side cleanup work from hot GET paths (expired locks/sessions now filtered in SQL query predicates instead of deleted during reads).
+- Event-growth pressure controls:
+  - `daemon-rs/src/compaction.rs` now enforces soft/hard non-boot event thresholds and per-event-type caps before/within compaction passes.
+  - Added regression coverage for event-pressure trigger, per-type cap pruning, and global non-boot overflow pruning while preserving boot events.
+- Startup query acceleration:
+  - Added targeted indexes in `daemon-rs/src/db.rs` for startup-heavy surfaces (`/sessions`, `/locks`, `/tasks`, `/feed`, `/messages`, `/activity`, `/events`) including owner-scoped variants.
+- Validation:
+  - `rtk cargo test` in `daemon-rs` with isolated target dir (`367 passed`).
+  - `rtk cargo test compaction` (`11 passed`).
+  - `rtk cargo check --release` in `daemon-rs`.
+  - `rtk npm --prefix desktop/cortex-control-center run web:build` (passes; chunk-size warning only).

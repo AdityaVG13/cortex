@@ -468,8 +468,7 @@ pub async fn handle_get_feed(
         Ok(owner_id) => owner_id,
         Err(resp) => return resp,
     };
-    let conn = state.db.lock().await;
-    let _ = clean_old_feed(&conn, owner_id);
+    let conn = state.db_read.lock().await;
     let since = query.since.unwrap_or_else(|| "1h".to_string());
     let cutoff = (Utc::now() - Duration::seconds(parse_duration_to_seconds(&since))).to_rfc3339();
 
@@ -506,7 +505,7 @@ pub async fn handle_get_feed_by_id(
         Err(resp) => return resp,
     };
 
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let owner_id = match owner_id_from_request(&state, caller_id) {
         Ok(owner_id) => owner_id,
         Err(resp) => return resp,

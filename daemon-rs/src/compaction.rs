@@ -39,6 +39,33 @@ const AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS: i64 = 30;
 /// Under critical pressure, aggregate feedback sooner.
 const AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS: i64 = 14;
 
+/// Non-boot event volume triggers compaction even when DB file size is moderate.
+const EVENT_NONBOOT_SOFT_LIMIT_ROWS: i64 = 80_000;
+/// Critical non-boot event pressure threshold.
+const EVENT_NONBOOT_HARD_LIMIT_ROWS: i64 = 140_000;
+/// Keep newest non-boot rows at or under this level during normal governor runs.
+const EVENT_NONBOOT_SOFT_KEEP_ROWS: i64 = 64_000;
+/// Keep newest non-boot rows at or under this level during critical pressure runs.
+const EVENT_NONBOOT_HARD_KEEP_ROWS: i64 = 40_000;
+
+/// Per-event-type row caps to prevent high-frequency streams from dominating storage.
+const EVENT_TYPE_SOFT_CAPS: &[(&str, i64)] = &[
+    ("decision_stored", 25_000),
+    ("recall_query", 20_000),
+    ("merge", 8_000),
+    ("decision_conflict", 8_000),
+    ("decision_rejected_duplicate", 8_000),
+];
+
+/// More aggressive caps used under critical pressure.
+const EVENT_TYPE_HARD_CAPS: &[(&str, i64)] = &[
+    ("decision_stored", 12_000),
+    ("recall_query", 10_000),
+    ("merge", 3_000),
+    ("decision_conflict", 3_000),
+    ("decision_rejected_duplicate", 3_000),
+];
+
 // ─── Result ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
@@ -70,8 +97,19 @@ pub fn classify_storage_pressure(db_size_bytes: i64) -> &'static str {
 
 /// Decide whether the storage governor should run compaction.
 /// Runs when DB size is above soft limit or when reclaimable free pages are high.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn should_run_compaction_governor(db_size_bytes: i64, freelist_pages: i64) -> bool {
-    db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES || freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES
+    should_run_compaction_governor_with_event_pressure(db_size_bytes, freelist_pages, 0)
+}
+
+fn should_run_compaction_governor_with_event_pressure(
+    db_size_bytes: i64,
+    freelist_pages: i64,
+    nonboot_event_rows: i64,
+) -> bool {
+    db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES
+        || freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES
+        || nonboot_event_rows > EVENT_NONBOOT_SOFT_LIMIT_ROWS
 }
 
 /// Run compaction only when pressure or reclaimable space justifies IO.
@@ -79,9 +117,14 @@ pub fn should_run_compaction_governor(db_size_bytes: i64, freelist_pages: i64) -
 pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
     let before = db_size_bytes(conn);
     let freelist_pages = freelist_count(conn);
+    let nonboot_event_rows_before = non_boot_event_count(conn);
     let pressure_before = classify_storage_pressure(before);
 
-    if !should_run_compaction_governor(before, freelist_pages) {
+    if !should_run_compaction_governor_with_event_pressure(
+        before,
+        freelist_pages,
+        nonboot_event_rows_before,
+    ) {
         return None;
     }
 
@@ -89,9 +132,13 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
 
     // Critical pressure gets an additional safe-aggressive pass. We still only touch:
     // old events, archived text, and aged feedback (never active memory content).
-    if before >= STORAGE_HARD_LIMIT_BYTES {
+    if before >= STORAGE_HARD_LIMIT_BYTES
+        || nonboot_event_rows_before >= EVENT_NONBOOT_HARD_LIMIT_ROWS
+    {
         result.events_pruned +=
             prune_old_events_with_retention(conn, AGGRESSIVE_EVENT_RETENTION_DAYS);
+        result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_HARD_CAPS);
+        result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_HARD_KEEP_ROWS);
         result.archived_text_stripped +=
             strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
         result.feedback_aggregated +=
@@ -102,11 +149,13 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
 
     let pressure_after = classify_storage_pressure(result.bytes_after);
     eprintln!(
-        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB",
+        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB, nonboot_events {} -> {}",
         pressure_before,
         pressure_after,
         bytes_to_mb(result.bytes_before),
-        bytes_to_mb(result.bytes_after)
+        bytes_to_mb(result.bytes_after),
+        nonboot_event_rows_before,
+        non_boot_event_count(conn)
     );
 
     Some(result)
@@ -123,6 +172,8 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
 
     // 1. Event log rotation
     result.events_pruned = prune_old_events(conn);
+    result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_SOFT_CAPS);
+    result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_SOFT_KEEP_ROWS);
 
     // 2. Archived entry text cleanup
     result.archived_text_stripped = strip_archived_text(conn);
@@ -180,6 +231,47 @@ fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> us
          WHERE type NOT IN ('agent_boot', 'boot_savings') \
          AND created_at < datetime('now', ?1)",
         params![format!("-{retention_days} days")],
+    )
+    .unwrap_or(0)
+}
+
+fn prune_event_type_caps(conn: &Connection, caps: &[(&str, i64)]) -> usize {
+    let mut total = 0usize;
+    for (event_type, keep_rows) in caps.iter().copied() {
+        if keep_rows <= 0 {
+            continue;
+        }
+        total += conn
+            .execute(
+                "DELETE FROM events
+                 WHERE id IN (
+                   SELECT id
+                   FROM events
+                   WHERE type = ?1
+                   ORDER BY id DESC
+                   LIMIT -1 OFFSET ?2
+                 )",
+                params![event_type, keep_rows],
+            )
+            .unwrap_or(0);
+    }
+    total
+}
+
+fn prune_nonboot_event_overflow(conn: &Connection, keep_rows: i64) -> usize {
+    if keep_rows <= 0 {
+        return 0;
+    }
+    conn.execute(
+        "DELETE FROM events
+         WHERE id IN (
+           SELECT id
+           FROM events
+           WHERE type NOT IN ('agent_boot', 'boot_savings')
+           ORDER BY id DESC
+           LIMIT -1 OFFSET ?1
+         )",
+        params![keep_rows],
     )
     .unwrap_or(0)
 }
@@ -357,6 +449,15 @@ fn freelist_count(conn: &Connection) -> i64 {
         .unwrap_or(0)
 }
 
+fn non_boot_event_count(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE type NOT IN ('agent_boot', 'boot_savings')",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(0)
+}
+
 /// Get storage breakdown by table (for diagnostics).
 pub fn storage_breakdown(conn: &Connection) -> Vec<(String, i64)> {
     let tables = [
@@ -506,6 +607,78 @@ mod tests {
             STORAGE_SOFT_LIMIT_BYTES - 1,
             VACUUM_FREELIST_THRESHOLD_PAGES + 1
         ));
+        assert!(should_run_compaction_governor_with_event_pressure(
+            STORAGE_SOFT_LIMIT_BYTES - 1,
+            VACUUM_FREELIST_THRESHOLD_PAGES,
+            EVENT_NONBOOT_SOFT_LIMIT_ROWS + 1
+        ));
+    }
+
+    #[test]
+    fn test_event_type_caps_prune_oldest_rows() {
+        let conn = setup();
+        for i in 0..10 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent, created_at)
+                 VALUES ('decision_stored', ?1, 'test', datetime('now', ?2))",
+                params![format!("{{\"i\":{i}}}"), format!("-{} minutes", 10 - i)],
+            )
+            .unwrap();
+        }
+
+        let pruned = prune_event_type_caps(&conn, &[("decision_stored", 3)]);
+        assert_eq!(pruned, 7);
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 3);
+    }
+
+    #[test]
+    fn test_nonboot_global_cap_preserves_boot_rows() {
+        let conn = setup();
+        for i in 0..8 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
+                params![format!("{{\"i\":{i}}}")],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('agent_boot', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('boot_savings', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+
+        let pruned = prune_nonboot_event_overflow(&conn, 2);
+        assert_eq!(pruned, 6);
+
+        let decision_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let boot_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type IN ('agent_boot', 'boot_savings')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decision_rows, 2);
+        assert_eq!(boot_rows, 2);
     }
 
     #[test]
