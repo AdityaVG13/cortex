@@ -8,6 +8,35 @@ Commit range size: 319 commits
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
 
+- 2026-04-18 18:20 - Startup timeout-storm hardening + daemon startup scheduling safety pass:
+  - `desktop/cortex-control-center/src/App.jsx`:
+    - startup protected refresh now prioritizes core routes (`/sessions`, `/locks`, `/tasks`) and defers secondary routes (`/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`) to background on first successful core hydration
+    - secondary timeout failures now surface partial-availability feedback instead of forcing global-offline state
+  - `desktop/cortex-control-center/src-tauri/src/main.rs`:
+    - daemon binary path guard now rejects non-runtime test artifact paths (`target-tests`, `target-test`, `nextest`, `target*/deps`) to prevent accidental app-managed launches from test binaries
+  - `daemon-rs/src/state.rs`:
+    - replaced single read-connection mutex with pooled query-only read provider (`Arc<dyn ReadConnectionProvider>`)
+    - runtime now opens a bounded read pool (`CORTEX_DB_READ_POOL_SIZE`, CPU-aware defaults/clamps) to reduce read lock contention under startup fanout
+  - `daemon-rs/src/compaction.rs`:
+    - added startup-safe governor mode (`run_compaction_governor_startup`) that relieves event pressure without VACUUM
+  - `daemon-rs/src/main.rs`:
+    - added startup schedule model and per-lane startup delay controls (`CORTEX_STARTUP_*_DELAY_SECS`)
+    - added bounded opportunistic lock acquisition for background DB tasks (`CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS`) so non-critical jobs skip instead of queuing behind hot request locks
+    - added startup storage-governor catch-up loop using startup-safe compaction for early event-pressure relief
+    - added hard clamp for app-managed heavy startup delay (`APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS=120`) so misconfigured values (for example `777`) cannot defer stabilization for many minutes
+    - stabilized startup preflight tests against live local IPC interference by explicitly disabling IPC endpoint for those fixtures
+- Validation:
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` (`374` passing)
+  - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml --test recall_benchmark -- --nocapture` (`7` passing)
+  - `rtk cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml` (`16` passing)
+  - `rtk npm test` in `desktop/cortex-control-center` (`57` passing)
+  - `rtk npm run web:build` in `desktop/cortex-control-center` (pass)
+  - `rtk python benchmarking/run_amb_cortex.py matrix --dry-run --matrix-file benchmarking/configs/amb-eval-matrix.nonlongmem.q5.json` (strict fair-run preflight passed)
+  - `rtk python benchmarking/run_amb_cortex.py matrix --matrix-file benchmarking/configs/amb-eval-matrix.nonlongmem.q5.json --continue-on-error --summary-file benchmarking/runs/matrix-summary-latest-q5.json` (expected fail-fast: no answer/judge provider keys configured)
+- Notes:
+  - `benchmarking/adapters/tests/test_cortex_http_client.py` currently reports multiple failing cases in this workspace (`_FakeHTTPXClient` queue exhaustion and retrieval-policy expectation mismatch). These failures were observed during validation but are outside the files changed in this optimization batch.
+
 - Startup contention and high-event-volume analytics hardening:
   - `daemon-rs/src/handlers/health.rs` (`GET /savings`) now avoids full event-log Rust parsing under a long shared DB-read lock.
   - `/savings` operation rollups and trends are now SQL-aggregated in SQLite, with a short TTL payload cache to stabilize repeated dashboard refreshes.

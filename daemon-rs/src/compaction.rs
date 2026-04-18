@@ -115,6 +115,20 @@ fn should_run_compaction_governor_with_event_pressure(
 /// Run compaction only when pressure or reclaimable space justifies IO.
 /// Returns `Some(result)` when a compaction pass ran, `None` when skipped.
 pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
+    run_compaction_governor_with_options(conn, true)
+}
+
+/// Startup-safe governor mode that relieves event pressure without forcing VACUUM.
+/// This keeps startup/early-runtime lock windows shorter while still enforcing
+/// retention and event-cap policies.
+pub fn run_compaction_governor_startup(conn: &Connection) -> Option<CompactionResult> {
+    run_compaction_governor_with_options(conn, false)
+}
+
+fn run_compaction_governor_with_options(
+    conn: &Connection,
+    allow_vacuum: bool,
+) -> Option<CompactionResult> {
     let before = db_size_bytes(conn);
     let freelist_pages = freelist_count(conn);
     let nonboot_event_rows_before = non_boot_event_count(conn);
@@ -128,7 +142,7 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
         return None;
     }
 
-    let mut result = run_compaction(conn);
+    let mut result = run_compaction_with_options(conn, allow_vacuum);
 
     // Critical pressure gets an additional safe-aggressive pass. We still only touch:
     // old events, archived text, and aged feedback (never active memory content).
@@ -143,7 +157,11 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
             strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
         result.feedback_aggregated +=
             aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        let _ = if allow_vacuum {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+        } else {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        };
         result.bytes_after = db_size_bytes(conn);
     }
 
@@ -165,6 +183,10 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
 
 /// Run one compaction pass. Safe to call repeatedly.
 pub fn run_compaction(conn: &Connection) -> CompactionResult {
+    run_compaction_with_options(conn, true)
+}
+
+fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> CompactionResult {
     let mut result = CompactionResult {
         bytes_before: db_size_bytes(conn),
         ..CompactionResult::default()
@@ -197,7 +219,7 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
         + result.expired_pruned
         + result.crystal_embeddings_pruned
         + result.feedback_aggregated;
-    if freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES {
+    if allow_vacuum && freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES {
         let _ = conn.execute_batch("VACUUM;");
     }
 
@@ -612,6 +634,37 @@ mod tests {
             VACUUM_FREELIST_THRESHOLD_PAGES,
             EVENT_NONBOOT_SOFT_LIMIT_ROWS + 1
         ));
+    }
+
+    #[test]
+    fn test_startup_governor_relieves_pressure_without_vacuum() {
+        let conn = setup();
+        let payload = "x".repeat(4096);
+        for i in 0..600 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
+                params![format!("{payload}{i}")],
+            )
+            .unwrap();
+        }
+        conn.execute("DELETE FROM events WHERE type = 'decision_stored'", [])
+            .unwrap();
+        let freelist_before = freelist_count(&conn);
+        assert!(
+            freelist_before > VACUUM_FREELIST_THRESHOLD_PAGES,
+            "fixture should create enough reclaimable pages to trigger governor"
+        );
+
+        let result = run_compaction_governor_startup(&conn);
+        assert!(
+            result.is_some(),
+            "startup governor should run when freelist pressure is high"
+        );
+        let freelist_after = freelist_count(&conn);
+        assert!(
+            freelist_after > 0,
+            "startup governor should skip VACUUM to keep early lock windows shorter"
+        );
     }
 
     #[test]

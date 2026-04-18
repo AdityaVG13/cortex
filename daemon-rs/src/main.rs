@@ -45,10 +45,26 @@ const ORPHAN_WATCH_INTERVAL_SECS: u64 = 2;
 const DEFAULT_EMBED_BACKFILL_BATCH_SIZE: usize = 200;
 const DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS: usize = 8;
 const DEFAULT_EMBED_BACKFILL_INTERVAL_SECS: u64 = 120;
+const DEFAULT_STARTUP_INDEX_DELAY_SECS: u64 = 5;
+const DEFAULT_STARTUP_AGING_DELAY_SECS: u64 = 20;
+const DEFAULT_STARTUP_EMBED_DELAY_SECS: u64 = 30;
+const DEFAULT_STARTUP_CRYSTALLIZE_DELAY_SECS: u64 = 45;
+const DEFAULT_STARTUP_STORAGE_GOVERNOR_DELAY_SECS: u64 = 12;
+const STARTUP_STORAGE_GOVERNOR_CATCHUP_PASSES: usize = 3;
+const STARTUP_STORAGE_GOVERNOR_CATCHUP_INTERVAL_SECS: u64 = 90;
+const BACKGROUND_DB_LOCK_RETRY_MS: u64 = 50;
+const BACKGROUND_DB_LOCK_DEFAULT_MAX_WAIT_MS: u64 = 2_000;
 const APP_MANAGED_STARTUP_HEAVY_DELAY_SECS: u64 = 45;
+const APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS: u64 = 120;
 const APP_MANAGED_AGING_STARTUP_OFFSET_SECS: u64 = 15;
 const APP_MANAGED_EMBED_STARTUP_OFFSET_SECS: u64 = 30;
 const APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS: u64 = 45;
+const STARTUP_INDEX_DELAY_ENV: &str = "CORTEX_STARTUP_INDEX_DELAY_SECS";
+const STARTUP_AGING_DELAY_ENV: &str = "CORTEX_STARTUP_AGING_DELAY_SECS";
+const STARTUP_EMBED_DELAY_ENV: &str = "CORTEX_STARTUP_EMBED_DELAY_SECS";
+const STARTUP_CRYSTALLIZE_DELAY_ENV: &str = "CORTEX_STARTUP_CRYSTALLIZE_DELAY_SECS";
+const STARTUP_STORAGE_GOVERNOR_DELAY_ENV: &str = "CORTEX_STARTUP_STORAGE_GOVERNOR_DELAY_SECS";
+const BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV: &str = "CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS";
 const STARTUP_LOG_FILES: &[&str] = &[
     "daemon.log",
     "daemon.err.log",
@@ -2032,8 +2048,90 @@ fn app_managed_startup_heavy_delay(owner_tag: Option<&str>) -> Duration {
         APP_MANAGED_STARTUP_DELAY_ENV,
         APP_MANAGED_STARTUP_HEAVY_DELAY_SECS,
     )
-    .min(3_600);
+    .min(APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS);
     Duration::from_secs(secs)
+}
+
+#[derive(Clone, Copy)]
+struct StartupSchedule {
+    index: Duration,
+    aging: Duration,
+    embed: Duration,
+    crystallize: Duration,
+    storage_governor_initial: Duration,
+}
+
+fn startup_delay_from_env(key: &str, default: u64) -> Duration {
+    Duration::from_secs(parse_env_u64_nonnegative(key, default).min(3_600))
+}
+
+fn startup_schedule(owner_tag: Option<&str>) -> StartupSchedule {
+    let zero = Duration::from_secs(0);
+    let heavy = app_managed_startup_heavy_delay(owner_tag);
+    let index = if heavy > zero {
+        heavy
+    } else {
+        startup_delay_from_env(STARTUP_INDEX_DELAY_ENV, DEFAULT_STARTUP_INDEX_DELAY_SECS)
+    };
+    let aging = if heavy > zero {
+        heavy + Duration::from_secs(APP_MANAGED_AGING_STARTUP_OFFSET_SECS)
+    } else {
+        startup_delay_from_env(STARTUP_AGING_DELAY_ENV, DEFAULT_STARTUP_AGING_DELAY_SECS)
+    };
+    let embed = if heavy > zero {
+        heavy + Duration::from_secs(APP_MANAGED_EMBED_STARTUP_OFFSET_SECS)
+    } else {
+        startup_delay_from_env(STARTUP_EMBED_DELAY_ENV, DEFAULT_STARTUP_EMBED_DELAY_SECS)
+    };
+    let crystallize = if heavy > zero {
+        heavy + Duration::from_secs(APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS)
+    } else {
+        startup_delay_from_env(
+            STARTUP_CRYSTALLIZE_DELAY_ENV,
+            DEFAULT_STARTUP_CRYSTALLIZE_DELAY_SECS,
+        )
+    };
+    let storage_governor_initial = startup_delay_from_env(
+        STARTUP_STORAGE_GOVERNOR_DELAY_ENV,
+        DEFAULT_STARTUP_STORAGE_GOVERNOR_DELAY_SECS,
+    );
+    StartupSchedule {
+        index,
+        aging,
+        embed,
+        crystallize,
+        storage_governor_initial,
+    }
+}
+
+fn background_db_lock_max_wait() -> Duration {
+    let max_wait_ms = parse_env_u64_nonnegative(
+        BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV,
+        BACKGROUND_DB_LOCK_DEFAULT_MAX_WAIT_MS,
+    )
+    .clamp(100, 60_000);
+    Duration::from_millis(max_wait_ms)
+}
+
+async fn acquire_background_db_lock<'a>(
+    db: &'a std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
+    task_name: &str,
+    max_wait: Duration,
+) -> Option<tokio::sync::MutexGuard<'a, rusqlite::Connection>> {
+    let started = std::time::Instant::now();
+    loop {
+        if let Ok(conn) = db.try_lock() {
+            return Some(conn);
+        }
+        if started.elapsed() >= max_wait {
+            eprintln!(
+                "[cortex] Skipping {task_name}: DB lock busy for {}ms",
+                started.elapsed().as_millis()
+            );
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(BACKGROUND_DB_LOCK_RETRY_MS)).await;
+    }
 }
 
 fn process_pid_start_time(pid: u32) -> Option<u64> {
@@ -2789,31 +2887,16 @@ pub(crate) async fn run_daemon(
         }
     }
 
-    let startup_heavy_delay = app_managed_startup_heavy_delay(daemon_owner.as_deref());
-    let startup_aging_delay = if startup_heavy_delay > Duration::from_secs(0) {
-        startup_heavy_delay + Duration::from_secs(APP_MANAGED_AGING_STARTUP_OFFSET_SECS)
-    } else {
-        Duration::from_secs(0)
-    };
-    let startup_embed_delay = if startup_heavy_delay > Duration::from_secs(0) {
-        startup_heavy_delay + Duration::from_secs(APP_MANAGED_EMBED_STARTUP_OFFSET_SECS)
-    } else {
-        Duration::from_secs(0)
-    };
-    let startup_crystallize_delay = if startup_heavy_delay > Duration::from_secs(0) {
-        startup_heavy_delay + Duration::from_secs(APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS)
-    } else {
-        Duration::from_secs(30)
-    };
-    if startup_heavy_delay > Duration::from_secs(0) {
-        eprintln!(
-            "[cortex] App-managed startup scheduling: index={}s, aging={}s, embeddings={}s, crystallize={}s",
-            startup_heavy_delay.as_secs(),
-            startup_aging_delay.as_secs(),
-            startup_embed_delay.as_secs(),
-            startup_crystallize_delay.as_secs()
-        );
-    }
+    let startup_schedule = startup_schedule(daemon_owner.as_deref());
+    let background_lock_wait = background_db_lock_max_wait();
+    eprintln!(
+        "[cortex] Startup scheduling: index={}s, aging={}s, embeddings={}s, crystallize={}s, storage_governor={}s",
+        startup_schedule.index.as_secs(),
+        startup_schedule.aging.as_secs(),
+        startup_schedule.embed.as_secs(),
+        startup_schedule.crystallize.as_secs(),
+        startup_schedule.storage_governor_initial.as_secs()
+    );
 
     if let Some(parent) = paths.pid.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -2866,22 +2949,23 @@ pub(crate) async fn run_daemon(
         let db_index = state.db.clone();
         let home = state.home.clone();
         let owner_id = state.default_owner_id;
-        let startup_delay = startup_heavy_delay;
+        let startup_delay = startup_schedule.index;
+        let lock_wait = background_lock_wait;
         tokio::spawn(async move {
             if startup_delay > Duration::from_secs(0) {
                 tokio::time::sleep(startup_delay).await;
             }
             let started = std::time::Instant::now();
-            let (indexed, decayed) = {
-                let conn = db_index.lock().await;
+            if let Some(conn) =
+                acquire_background_db_lock(&db_index, "startup indexing", lock_wait).await
+            {
                 let indexed = indexer::index_all(&conn, &home, owner_id);
                 let decayed = indexer::decay_pass(&conn);
-                (indexed, decayed)
-            };
-            eprintln!(
-                "[cortex] Startup indexing complete: indexed {indexed}, decayed {decayed} scores in {}ms",
-                started.elapsed().as_millis()
-            );
+                eprintln!(
+                    "[cortex] Startup indexing complete: indexed {indexed}, decayed {decayed} scores in {}ms",
+                    started.elapsed().as_millis()
+                );
+            }
         });
     }
 
@@ -2903,7 +2987,8 @@ pub(crate) async fn run_daemon(
             DEFAULT_EMBED_BACKFILL_INTERVAL_SECS,
         )
         .clamp(5, 86_400);
-        let startup_delay = startup_embed_delay;
+        let startup_delay = startup_schedule.embed;
+        let lock_wait = background_lock_wait;
         let startup_max_batches_per_pass = if startup_delay > Duration::from_secs(0) {
             max_batches_per_pass.min(2)
         } else {
@@ -2913,12 +2998,20 @@ pub(crate) async fn run_daemon(
             if startup_delay > Duration::from_secs(0) {
                 tokio::time::sleep(startup_delay).await;
             }
-            build_embeddings_async(&engine, &db, batch_size, startup_max_batches_per_pass).await;
+            build_embeddings_async(
+                &engine,
+                &db,
+                batch_size,
+                startup_max_batches_per_pass,
+                lock_wait,
+            )
+            .await;
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;
-                build_embeddings_async(&engine, &db, batch_size, max_batches_per_pass).await;
+                build_embeddings_async(&engine, &db, batch_size, max_batches_per_pass, lock_wait)
+                    .await;
             }
         });
     } else {
@@ -2938,6 +3031,7 @@ pub(crate) async fn run_daemon(
         let db_wal = state.db.clone();
         let db_path = db_path.clone();
         let home_dir = paths.home.clone();
+        let lock_wait = background_lock_wait.min(Duration::from_millis(750));
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.tick().await; // skip first immediate tick
@@ -2945,8 +3039,12 @@ pub(crate) async fn run_daemon(
                 interval.tick().await;
 
                 // Checkpoint WAL first to ensure consistency
+                let Some(conn) =
+                    acquire_background_db_lock(&db_wal, "wal checkpoint", lock_wait).await
+                else {
+                    continue;
+                };
                 {
-                    let conn = db_wal.lock().await;
                     db::checkpoint_wal_best_effort(&conn);
                 }
 
@@ -2991,21 +3089,22 @@ pub(crate) async fn run_daemon(
     // ── Background aging pass every 6 hours ──────────────────────────
     {
         let db_aging = state.db.clone();
-        let startup_delay = startup_aging_delay;
+        let startup_delay = startup_schedule.aging;
+        let lock_wait = background_lock_wait;
         tokio::spawn(async move {
             if startup_delay > Duration::from_secs(0) {
                 tokio::time::sleep(startup_delay).await;
             }
             // Run initial aging pass on startup
+            if let Some(conn) =
+                acquire_background_db_lock(&db_aging, "initial aging pass", lock_wait).await
             {
-                let conn = db_aging.lock().await;
                 let (compressed, archived) = aging::run_aging_pass(&conn);
                 if compressed > 0 || archived > 0 {
                     eprintln!(
                         "[cortex] Initial aging: {compressed} compressed, {archived} archived"
                     );
                 }
-                let _ = compaction::run_compaction_governor(&conn);
                 cleanup_expired_rows(&conn, "Initial expired cleanup");
             }
             // Then run every 6 hours
@@ -3013,23 +3112,56 @@ pub(crate) async fn run_daemon(
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let conn = db_aging.lock().await;
-                aging::run_aging_pass(&conn);
-                cleanup_expired_rows(&conn, "Expired cleanup");
+                if let Some(conn) =
+                    acquire_background_db_lock(&db_aging, "aging pass", lock_wait).await
+                {
+                    aging::run_aging_pass(&conn);
+                    cleanup_expired_rows(&conn, "Expired cleanup");
+                }
             }
         });
     }
 
-    // â”€â”€ Background storage governor every 30 minutes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Background storage governor ────────────────────────────────────
     {
         let db_compaction = state.db.clone();
+        let startup_delay = startup_schedule.storage_governor_initial;
+        let lock_wait = background_lock_wait;
         tokio::spawn(async move {
+            if startup_delay > Duration::from_secs(0) {
+                tokio::time::sleep(startup_delay).await;
+            }
+            // Catch-up passes soon after startup to relieve event pressure early.
+            for pass in 0..STARTUP_STORAGE_GOVERNOR_CATCHUP_PASSES {
+                if let Some(conn) = acquire_background_db_lock(
+                    &db_compaction,
+                    "startup storage governor",
+                    lock_wait,
+                )
+                .await
+                {
+                    let ran = compaction::run_compaction_governor_startup(&conn).is_some();
+                    if !ran {
+                        break;
+                    }
+                }
+                if pass + 1 < STARTUP_STORAGE_GOVERNOR_CATCHUP_PASSES {
+                    tokio::time::sleep(Duration::from_secs(
+                        STARTUP_STORAGE_GOVERNOR_CATCHUP_INTERVAL_SECS,
+                    ))
+                    .await;
+                }
+            }
+
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let conn = db_compaction.lock().await;
-                let _ = compaction::run_compaction_governor(&conn);
+                if let Some(conn) =
+                    acquire_background_db_lock(&db_compaction, "storage governor", lock_wait).await
+                {
+                    let _ = compaction::run_compaction_governor(&conn);
+                }
             }
         });
     }
@@ -3039,12 +3171,14 @@ pub(crate) async fn run_daemon(
         let db_crystal = state.db.clone();
         let engine_crystal = state.embedding_engine.clone();
         let crystal_owner_id = state.default_owner_id;
-        let initial_delay = startup_crystallize_delay;
+        let initial_delay = startup_schedule.crystallize;
+        let lock_wait = background_lock_wait;
         tokio::spawn(async move {
             // Initial pass on startup (after embeddings are built, with app-managed delay if needed)
             tokio::time::sleep(initial_delay).await;
+            if let Some(conn) =
+                acquire_background_db_lock(&db_crystal, "initial crystallization", lock_wait).await
             {
-                let conn = db_crystal.lock().await;
                 let result = crystallize::run_crystallize_pass(
                     &conn,
                     engine_crystal.as_deref(),
@@ -3062,12 +3196,15 @@ pub(crate) async fn run_daemon(
             interval.tick().await;
             loop {
                 interval.tick().await;
-                let conn = db_crystal.lock().await;
-                crystallize::run_crystallize_pass(
-                    &conn,
-                    engine_crystal.as_deref(),
-                    crystal_owner_id,
-                );
+                if let Some(conn) =
+                    acquire_background_db_lock(&db_crystal, "crystallization pass", lock_wait).await
+                {
+                    crystallize::run_crystallize_pass(
+                        &conn,
+                        engine_crystal.as_deref(),
+                        crystal_owner_id,
+                    );
+                }
             }
         });
     }
@@ -3184,6 +3321,7 @@ async fn build_embeddings_async(
     db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
     batch_size: usize,
     max_batches_per_pass: usize,
+    lock_wait: Duration,
 ) {
     let model_key = engine.model_key();
     let mut computed_total = 0usize;
@@ -3191,7 +3329,11 @@ async fn build_embeddings_async(
 
     for _ in 0..max_batches_per_pass {
         let (unembedded_mem, unembedded_dec) = {
-            let conn = db.lock().await;
+            let Some(conn) =
+                acquire_background_db_lock(db, "embedding backfill scan", lock_wait).await
+            else {
+                break;
+            };
             collect_unembedded_targets_for_model(&conn, model_key, batch_size)
         };
 
@@ -3219,7 +3361,11 @@ async fn build_embeddings_async(
         }
 
         {
-            let conn = db.lock().await;
+            let Some(conn) =
+                acquire_background_db_lock(db, "embedding backfill persist", lock_wait).await
+            else {
+                break;
+            };
             for (id, blob) in &mem_results {
                 let _ = conn.execute(
                     "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
@@ -3879,6 +4025,84 @@ mod tests {
             app_managed_startup_heavy_delay(Some("control-center")),
             Duration::from_secs(0)
         );
+
+        drop(_startup_delay);
+        let _excessive_delay = ScopedEnvVar::set(APP_MANAGED_STARTUP_DELAY_ENV, "777");
+        assert_eq!(
+            app_managed_startup_heavy_delay(Some("control-center")),
+            Duration::from_secs(APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS)
+        );
+    }
+
+    #[test]
+    fn startup_schedule_uses_non_app_defaults_for_plugin_owner() {
+        let _env_guard = env_guard();
+        let _app_delay = ScopedEnvVar::set(APP_MANAGED_STARTUP_DELAY_ENV, "");
+        let _index_delay = ScopedEnvVar::set(STARTUP_INDEX_DELAY_ENV, "");
+        let _aging_delay = ScopedEnvVar::set(STARTUP_AGING_DELAY_ENV, "");
+        let _embed_delay = ScopedEnvVar::set(STARTUP_EMBED_DELAY_ENV, "");
+        let _crystallize_delay = ScopedEnvVar::set(STARTUP_CRYSTALLIZE_DELAY_ENV, "");
+        let _storage_delay = ScopedEnvVar::set(STARTUP_STORAGE_GOVERNOR_DELAY_ENV, "");
+
+        let schedule = startup_schedule(Some("plugin-claude"));
+        assert_eq!(
+            schedule.index,
+            Duration::from_secs(DEFAULT_STARTUP_INDEX_DELAY_SECS)
+        );
+        assert_eq!(
+            schedule.aging,
+            Duration::from_secs(DEFAULT_STARTUP_AGING_DELAY_SECS)
+        );
+        assert_eq!(
+            schedule.embed,
+            Duration::from_secs(DEFAULT_STARTUP_EMBED_DELAY_SECS)
+        );
+        assert_eq!(
+            schedule.crystallize,
+            Duration::from_secs(DEFAULT_STARTUP_CRYSTALLIZE_DELAY_SECS)
+        );
+        assert_eq!(
+            schedule.storage_governor_initial,
+            Duration::from_secs(DEFAULT_STARTUP_STORAGE_GOVERNOR_DELAY_SECS)
+        );
+    }
+
+    #[test]
+    fn startup_schedule_applies_app_managed_offsets_for_control_center() {
+        let _env_guard = env_guard();
+        let _app_delay = ScopedEnvVar::set(APP_MANAGED_STARTUP_DELAY_ENV, "10");
+        let _index_delay = ScopedEnvVar::set(STARTUP_INDEX_DELAY_ENV, "1");
+        let _aging_delay = ScopedEnvVar::set(STARTUP_AGING_DELAY_ENV, "1");
+        let _embed_delay = ScopedEnvVar::set(STARTUP_EMBED_DELAY_ENV, "1");
+        let _crystallize_delay = ScopedEnvVar::set(STARTUP_CRYSTALLIZE_DELAY_ENV, "1");
+        let _storage_delay = ScopedEnvVar::set(STARTUP_STORAGE_GOVERNOR_DELAY_ENV, "7");
+
+        let schedule = startup_schedule(Some("control-center"));
+        assert_eq!(schedule.index, Duration::from_secs(10));
+        assert_eq!(
+            schedule.aging,
+            Duration::from_secs(10 + APP_MANAGED_AGING_STARTUP_OFFSET_SECS)
+        );
+        assert_eq!(
+            schedule.embed,
+            Duration::from_secs(10 + APP_MANAGED_EMBED_STARTUP_OFFSET_SECS)
+        );
+        assert_eq!(
+            schedule.crystallize,
+            Duration::from_secs(10 + APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS)
+        );
+        assert_eq!(schedule.storage_governor_initial, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn background_db_lock_wait_env_is_clamped() {
+        let _env_guard = env_guard();
+        let _small = ScopedEnvVar::set(BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, "1");
+        assert_eq!(background_db_lock_max_wait(), Duration::from_millis(100));
+        drop(_small);
+
+        let _large = ScopedEnvVar::set(BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, "70000");
+        assert_eq!(background_db_lock_max_wait(), Duration::from_millis(60_000));
     }
 
     #[test]
@@ -4508,6 +4732,8 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
         let port = listener.local_addr().expect("resolve listener addr").port();
         paths.port = port;
+        // Isolate this preflight fixture from any live local daemon IPC endpoint.
+        paths.ipc_endpoint = None;
         let server =
             spawn_multi_response_server(listener, "404 Not Found", "text/plain", "nope".into(), 2);
 
@@ -4535,6 +4761,8 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
         let port = listener.local_addr().expect("resolve listener addr").port();
         paths.port = port;
+        // Isolate this preflight fixture from any live local daemon IPC endpoint.
+        paths.ipc_endpoint = None;
 
         let payload = serde_json::json!({
             "status": "ready",
@@ -4576,6 +4804,8 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
         let port = listener.local_addr().expect("resolve listener addr").port();
         paths.port = port;
+        // Isolate this preflight fixture from any live local daemon IPC endpoint.
+        paths.ipc_endpoint = None;
         let payload = serde_json::json!({
             "status": "ready",
             "ready": true,

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rusqlite::Connection;
@@ -81,6 +84,87 @@ impl SqliteVecCanaryConfig {
     }
 }
 
+const READ_POOL_SIZE_ENV: &str = "CORTEX_DB_READ_POOL_SIZE";
+const READ_POOL_DEFAULT_MIN: usize = 4;
+const READ_POOL_DEFAULT_MAX: usize = 16;
+const READ_POOL_HARD_MAX: usize = 32;
+
+pub type ReadConnLockFuture<'a> =
+    Pin<Box<dyn Future<Output = tokio::sync::MutexGuard<'a, Connection>> + Send + 'a>>;
+
+/// Shared read handle abstraction so runtime can use a pooled implementation
+/// while tests and fixtures can continue to inject a single Mutex connection.
+pub trait ReadConnectionProvider: Send + Sync {
+    fn lock<'a>(&'a self) -> ReadConnLockFuture<'a>;
+
+    fn pool_size(&self) -> usize {
+        1
+    }
+}
+
+impl ReadConnectionProvider for Mutex<Connection> {
+    fn lock<'a>(&'a self) -> ReadConnLockFuture<'a> {
+        Box::pin(async move { tokio::sync::Mutex::lock(self).await })
+    }
+}
+
+struct ReadConnectionPool {
+    connections: Vec<Mutex<Connection>>,
+    next_index: AtomicUsize,
+}
+
+impl ReadConnectionPool {
+    fn new(connections: Vec<Connection>) -> Self {
+        assert!(
+            !connections.is_empty(),
+            "read connection pool requires at least one connection"
+        );
+        Self {
+            connections: connections.into_iter().map(Mutex::new).collect(),
+            next_index: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ReadConnectionProvider for ReadConnectionPool {
+    fn lock<'a>(&'a self) -> ReadConnLockFuture<'a> {
+        let idx = self.next_index.fetch_add(1, Ordering::Relaxed) % self.connections.len();
+        Box::pin(async move { self.connections[idx].lock().await })
+    }
+
+    fn pool_size(&self) -> usize {
+        self.connections.len()
+    }
+}
+
+fn derive_read_pool_size(configured: Option<usize>, cpu_hint: Option<usize>) -> usize {
+    let default = cpu_hint
+        .unwrap_or(READ_POOL_DEFAULT_MIN)
+        .clamp(READ_POOL_DEFAULT_MIN, READ_POOL_DEFAULT_MAX);
+    configured.unwrap_or(default).clamp(1, READ_POOL_HARD_MAX)
+}
+
+fn read_pool_size_from_env() -> usize {
+    let configured = std::env::var(READ_POOL_SIZE_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok());
+    let cpu_hint = std::thread::available_parallelism()
+        .ok()
+        .map(|cpus| cpus.get());
+    derive_read_pool_size(configured, cpu_hint)
+}
+
+fn open_query_only_connection(db_path: &Path) -> Result<Connection, String> {
+    let read_conn =
+        crate::db::open(db_path).map_err(|e| format!("Failed to open read connection: {e}"))?;
+    crate::db::configure(&read_conn)
+        .map_err(|e| format!("Failed to configure read connection: {e}"))?;
+    read_conn
+        .execute_batch("PRAGMA query_only = ON;")
+        .map_err(|e| e.to_string())?;
+    Ok(read_conn)
+}
+
 // ─── Shared application state ─────────────────────────────────────────────────
 
 /// Shared state threaded through every Axum handler via `axum::extract::State`.
@@ -90,9 +174,10 @@ impl SqliteVecCanaryConfig {
 pub struct RuntimeState {
     /// SQLite write connection -- used by store, forget, resolve, diary, indexer.
     pub db: Arc<Mutex<Connection>>,
-    /// SQLite read connection -- used by recall, peek, health, digest, boot.
-    /// Separate from `db` so reads never block on writes (WAL mode).
-    pub db_read: Arc<Mutex<Connection>>,
+    /// SQLite read connection provider -- used by recall, peek, health, digest, boot.
+    /// Runtime uses a small pool of query-only connections so concurrent reads do
+    /// not serialize on one async mutex.
+    pub db_read: Arc<dyn ReadConnectionProvider>,
     /// Auth token loaded from or written to the resolved runtime token path.
     pub token: Arc<String>,
     /// Broadcast channel for SSE events; clone the sender to fan-out.
@@ -271,15 +356,20 @@ fn initialize_with_conn(
         Err(e) => eprintln!("[cortex] WARNING: FTS rebuild check failed: {e}"),
     }
 
-    // Open a separate read-only connection for concurrent reads.
-    let read_conn =
-        crate::db::open(&paths.db).map_err(|e| format!("Failed to open read connection: {e}"))?;
-    crate::db::configure(&read_conn)
-        .map_err(|e| format!("Failed to configure read connection: {e}"))?;
-    read_conn
-        .execute_batch("PRAGMA query_only = ON;")
-        .map_err(|e| e.to_string())?;
-    eprintln!("[cortex] Read connection opened (WAL concurrent reads enabled)");
+    // Open a small query-only read pool so bursty read load does not queue on a
+    // single async mutex.
+    let read_pool_size = read_pool_size_from_env();
+    let mut read_connections = Vec::with_capacity(read_pool_size);
+    for _ in 0..read_pool_size {
+        read_connections.push(open_query_only_connection(&paths.db)?);
+    }
+    let db_read: Arc<dyn ReadConnectionProvider> =
+        Arc::new(ReadConnectionPool::new(read_connections));
+    eprintln!(
+        "[cortex] Read pool opened with {} query-only connection{} (WAL concurrent reads enabled)",
+        db_read.pool_size(),
+        if db_read.pool_size() == 1 { "" } else { "s" }
+    );
 
     let mode = crate::db::current_mode(&conn);
     let team_mode = mode == "team";
@@ -363,7 +453,7 @@ fn initialize_with_conn(
 
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
-        db_read: Arc::new(Mutex::new(read_conn)),
+        db_read,
         token: Arc::new(token),
         events: events_tx,
         mcp_calls: Arc::new(AtomicU64::new(0)),
@@ -922,5 +1012,48 @@ mod tests {
         } else {
             std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
         }
+    }
+
+    #[test]
+    fn derive_read_pool_size_uses_cpu_hint_when_env_unset() {
+        assert_eq!(derive_read_pool_size(None, Some(2)), READ_POOL_DEFAULT_MIN);
+        assert_eq!(derive_read_pool_size(None, Some(64)), READ_POOL_DEFAULT_MAX);
+    }
+
+    #[test]
+    fn derive_read_pool_size_clamps_configured_values() {
+        assert_eq!(derive_read_pool_size(Some(0), Some(8)), 1);
+        assert_eq!(derive_read_pool_size(Some(7), Some(8)), 7);
+        assert_eq!(
+            derive_read_pool_size(Some(READ_POOL_HARD_MAX + 100), Some(8)),
+            READ_POOL_HARD_MAX
+        );
+    }
+
+    #[test]
+    fn read_connection_pool_rotates_connections() {
+        let conn_a = Connection::open_in_memory().unwrap();
+        conn_a.execute_batch("PRAGMA user_version = 101;").unwrap();
+        let conn_b = Connection::open_in_memory().unwrap();
+        conn_b.execute_batch("PRAGMA user_version = 202;").unwrap();
+        let pool = ReadConnectionPool::new(vec![conn_a, conn_b]);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+        let seen_versions = rt.block_on(async {
+            let mut versions = Vec::new();
+            for _ in 0..4 {
+                let conn = pool.lock().await;
+                let version: i64 = conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap();
+                versions.push(version);
+            }
+            versions
+        });
+
+        assert_eq!(seen_versions, vec![101, 202, 101, 202]);
     }
 }

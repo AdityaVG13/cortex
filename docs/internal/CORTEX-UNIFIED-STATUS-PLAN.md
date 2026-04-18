@@ -1,6 +1,6 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-18  
+**Last updated:** 2026-04-18 18:30  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
 
@@ -134,6 +134,12 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - startup-critical read endpoints now avoid write-side cleanup in GET handlers and run against `state.db_read` to reduce read/write contention
   - DB schema now includes startup-focused indexes (including owner-scoped variants) for `sessions`, `locks`, `tasks`, `feed`, `messages`, `activity`, and `events`
   - Control Center refresh now runs through a single-flight queue so interval/SSE/recovery refreshes coalesce instead of overlapping
+- Startup timeout-storm hardening + app-managed spawn/runtime safeguards are now landed:
+  - Control Center first-load fanout now prioritizes core routes (`/sessions`, `/locks`, `/tasks`) and defers secondary routes (`/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`) into non-blocking background refresh
+  - secondary endpoint timeouts now surface partial availability instead of forcing global-offline app state when core daemon connectivity is healthy
+  - desktop daemon path validation now rejects non-runtime test artifacts (`target-tests`, `target-test`, `nextest`, `target*/deps`) so app-managed startup cannot accidentally launch test binaries
+  - daemon runtime now uses a bounded pooled read-connection provider (`CORTEX_DB_READ_POOL_SIZE`) plus bounded background DB-lock waits (`CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS`) to reduce startup contention
+  - startup catch-up now uses a startup-safe storage governor pass (no VACUUM) and clamps app-managed heavy delay to `120s` max so misconfigured values (for example `777`) cannot defer stabilization for many minutes
 
 ---
 
@@ -228,26 +234,22 @@ References:
 
 ## 6) What To Execute Next (Strict Order)
 
-1. Resolve status/doc contradictions first:
-   - ensure team-mode setup docs are aligned with security/TLS rules for non-loopback binds
-   - keep stale closeout/roadmap artifacts explicitly marked as historical where they conflict with live status
-2. Execute the reliability hardening queue with one-daemon invariants as gating criteria:
-   - lock-held cross-process tests
-   - sleep/wake + parent-death regressions
-   - app/plugin/CLI concurrent startup stress
-   - strict spawn-path audit pass
-3. Until credentialed baseline is unblocked, keep landing **credential-free Phase-2A retrieval gains**:
-   - monitor live `/stats` shadow gate outputs and tune thresholds only if needed (still no production vec0 switch)
-   - continue embedding/recall quality upgrades with explicit benchmark deltas
-4. Lock **fair benchmark baseline** as soon as provider credentials are available (credentialed/scored run; no oracle shortcuts), using the explicit operational runbook:
-   - first valid small-scope LongMemEval run
-   - persisted benchmark artifacts/metrics
-   - expansion to LoCoMo/MemBench/MemoryAgentBench after the initial AMB run is stable
-5. Re-run the scored benchmark after each major retrieval step once credentials are present.
-6. Keep shipping targeted app/daemon polish only when validation exposes a real user-facing defect.
-7. Define explicit bridge-track acceptance gates (quality/token deltas, provenance guarantees, failure handling) for the `v0.6+` external memory adapter program.
-8. Only then reopen broader Phase 9/10/11 expansion items.
-9. Keep the unresolved `v1` backlog explicitly mirrored here (do not leave unchecked items only in `CORTEX-v1-PLAN.md`):
+1. Keep fair-benchmark policy strict (no scoring without provider keys, no shortcut flags, no fabricated gate outcomes).
+2. Run and freeze the next credentialed scored matrix baseline as soon as answer/judge keys are present:
+   - first scored LongMemEval checkpoint
+   - persisted artifacts + metrics
+   - expansion to LoCoMo/MemBench/MemoryAgentBench after baseline stability
+3. Close the event-volume remediation loop for power-user databases:
+   - complete root-cause accounting for `decision_stored` growth sources (benchmark, ingest, store-path emission patterns)
+   - add/verify one-time legacy cleanup workflow for oversized historical event tables
+   - validate startup responsiveness on high-event snapshots after cleanup + caps
+4. Continue credential-free retrieval and startup optimizations with measured deltas:
+   - monitor `/stats` shadow gate outputs (no production vec0 switch yet)
+   - continue embedding/recall upgrades with explicit benchmark and latency deltas
+5. Keep targeted app/daemon polish scoped to validated user-facing defects and startup latency regressions.
+6. Define explicit bridge-track acceptance gates (quality/token deltas, provenance guarantees, failure handling) for the `v0.6+` external memory adapter program.
+7. Only then reopen broader Phase 9/10/11 expansion items.
+8. Keep the unresolved `v1` backlog explicitly mirrored here (do not leave unchecked items only in `CORTEX-v1-PLAN.md`):
    - **Step 7 sync primitives**: opt-in changeset export/import commands; watched-folder workflow; transport-agnostic sync design.
    - **Step 8 activation/idle economics**: socket activation (systemd/launchd where applicable); idle shutdown with wake-on-connect; final startup latency + reliability tuning.
    - **Step 9.2 intelligence targets**: Memory Object Model v2; temporal semantics fields; contradiction precision upgrade (embedding + NLI); retrieval policy engine modes (`fast`/`balanced`/`deep`); agent skill graph; cross-agent synthesis pipeline; source reliability learning; deterministic context assembly; explainable recall traces.
@@ -571,3 +573,24 @@ ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/
   - `rtk cargo test compaction` (`11 passed`).
   - `rtk cargo check --release` in `daemon-rs`.
   - `rtk npm --prefix desktop/cortex-control-center run web:build` (passes; chunk-size warning only).
+
+## 2026-04-18 18:20 - Startup timeout-storm hardening + app-managed delay guard batch
+- Control Center startup reliability:
+  - Startup now hydrates core routes first (`/sessions`, `/locks`, `/tasks`) and defers secondary routes (`/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`) to non-blocking background refresh.
+  - Secondary route timeout failures now surface partial availability instead of flipping the app into global-offline state when core daemon connectivity is healthy.
+- App-managed daemon binary safety:
+  - Desktop runtime now rejects test-artifact daemon paths (`target-tests`, `target-test`, `nextest`, `target*/deps`) to prevent accidental startup from non-runtime binaries.
+- Daemon startup/runtime contention reductions:
+  - Replaced single query-read mutex path with bounded pooled read connections (`CORTEX_DB_READ_POOL_SIZE`).
+  - Added bounded background DB lock waits (`CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS`) so non-critical startup tasks skip instead of queuing behind hot locks.
+  - Added startup-safe storage-governor catch-up pass (no VACUUM) and clamped app-managed heavy startup delay to `120s` max.
+  - Stabilized startup preflight fixture tests by disabling live IPC endpoint use in those tests.
+- Validation:
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` (`374` passing)
+  - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml --test recall_benchmark -- --nocapture` (`7` passing)
+  - `rtk cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml` (`16` passing)
+  - `rtk npm test` in `desktop/cortex-control-center` (`57` passing)
+  - `rtk npm run web:build` in `desktop/cortex-control-center` (pass)
+  - `rtk python benchmarking/run_amb_cortex.py matrix --dry-run --matrix-file benchmarking/configs/amb-eval-matrix.nonlongmem.q5.json` (strict fair-run preflight passed)
+  - `rtk python benchmarking/run_amb_cortex.py matrix --matrix-file benchmarking/configs/amb-eval-matrix.nonlongmem.q5.json --continue-on-error --summary-file benchmarking/runs/matrix-summary-latest-q5.json` (expected fail-fast: missing answer/judge provider keys)

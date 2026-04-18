@@ -486,6 +486,32 @@ fn path_is_under_root(path: &Path, root: &Path) -> bool {
         || normalized_path.starts_with(&normalized_root)
 }
 
+fn is_non_runtime_test_artifact_path(path: &Path) -> bool {
+    let mut in_target_tree = false;
+
+    for component in path.components() {
+        let segment = component.as_os_str().to_string_lossy().to_ascii_lowercase();
+        if segment.is_empty() {
+            continue;
+        }
+
+        if matches!(segment.as_str(), "target-tests" | "target-test" | "nextest") {
+            return true;
+        }
+
+        if segment == "target" || segment.starts_with("target-") {
+            in_target_tree = true;
+            continue;
+        }
+
+        if in_target_tree && segment == "deps" {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
     let normalized = normalized_path_for_guard(path);
     let file_name = path
@@ -498,6 +524,9 @@ fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
         return true;
     }
     if normalized.contains("/daemon-lifecycle-runtime/") {
+        return true;
+    }
+    if is_non_runtime_test_artifact_path(path) {
         return true;
     }
 
@@ -1206,7 +1235,11 @@ async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResul
             wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
     }
 
-    let managed_stop_error = if was_running { state.stop().err() } else { None };
+    let managed_stop_error = if was_running {
+        state.stop().err()
+    } else {
+        None
+    };
     let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
     if reachable {
         if let Some(err) = managed_stop_error.or(shutdown_error) {
@@ -1296,11 +1329,11 @@ fn send_cortex_request(
     body: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<FetchCortexResponse, String> {
-    let read_timeout =
-        Duration::from_millis(timeout_ms.unwrap_or(DAEMON_READ_TIMEOUT_MS).clamp(
-            DAEMON_MIN_REQUEST_TIMEOUT_MS,
-            DAEMON_MAX_REQUEST_TIMEOUT_MS,
-        ));
+    let read_timeout = Duration::from_millis(
+        timeout_ms
+            .unwrap_or(DAEMON_READ_TIMEOUT_MS)
+            .clamp(DAEMON_MIN_REQUEST_TIMEOUT_MS, DAEMON_MAX_REQUEST_TIMEOUT_MS),
+    );
     send_cortex_request_with_port(
         daemon_port(),
         method,
@@ -2316,7 +2349,7 @@ mod tests {
     }
 
     #[test]
-    fn disallowed_daemon_binary_path_blocks_runtime_wrappers_and_temp_paths() {
+    fn disallowed_daemon_binary_path_blocks_wrappers_temp_and_test_artifacts() {
         let wrapper = PathBuf::from(
             "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",
         );
@@ -2327,6 +2360,29 @@ mod tests {
 
         let temp_candidate = std::env::temp_dir().join("cortex").join("cortex.exe");
         assert!(is_disallowed_daemon_binary_path(&temp_candidate));
+
+        let target_tests = PathBuf::from("C:/repo/daemon-rs/target-tests/debug/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&target_tests));
+
+        let target_test = PathBuf::from("C:/repo/daemon-rs/target-test/release/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&target_test));
+
+        let nextest = PathBuf::from("C:/repo/daemon-rs/target/nextest/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&nextest));
+
+        let target_deps = PathBuf::from("C:/repo/daemon-rs/target/debug/deps/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&target_deps));
+
+        let isolated_target_deps =
+            PathBuf::from("C:/repo/daemon-rs/target-control-center-dev/debug/deps/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&isolated_target_deps));
+
+        let workspace_runtime = PathBuf::from("C:/repo/daemon-rs/target/debug/cortex.exe");
+        assert!(!is_disallowed_daemon_binary_path(&workspace_runtime));
+
+        let isolated_runtime =
+            PathBuf::from("C:/repo/daemon-rs/target-control-center-dev/debug/cortex.exe");
+        assert!(!is_disallowed_daemon_binary_path(&isolated_runtime));
 
         let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
         assert!(!is_disallowed_daemon_binary_path(&safe));

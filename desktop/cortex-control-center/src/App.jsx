@@ -1571,6 +1571,8 @@ export function App() {
   const refreshAllQueuedRef = useRef(false);
   const daemonTransitionRef = useRef(false);
   const recoveryRetryTimerRef = useRef(null);
+  const startupCoreReadyRef = useRef(false);
+  const startupSecondaryRefreshInFlightRef = useRef(false);
   const skipInitialFeedRefreshRef = useRef(true);
   const skipInitialMessagesRefreshRef = useRef(true);
   const skipInitialActivityRefreshRef = useRef(true);
@@ -1740,6 +1742,25 @@ export function App() {
         text.includes(": HTTP 403")
       ) {
         return fallback;
+      }
+      return current;
+    });
+  }, []);
+
+  const setSecondaryAvailabilityFeedback = useCallback((errors) => {
+    const summary = summarizeDashboardErrors(errors);
+    const message = summary
+      ? `Connected (core ready). Secondary panels may be stale: ${summary}`
+      : "Connected (core ready). Secondary panels may be stale.";
+    setFeedbackMessage((current) => {
+      const text = String(current || "");
+      if (
+        !text ||
+        text === "Checking daemon..." ||
+        text.startsWith("Connected") ||
+        text.startsWith("Waiting for daemon auth token")
+      ) {
+        return message;
       }
       return current;
     });
@@ -2061,10 +2082,7 @@ export function App() {
     }
   }, [api, clearTransientFeedback]);
 
-  const refreshProtectedData = useCallback(async () => {
-    // Core panels first. If these fail, avoid blasting secondary routes.
-    const coreErrors = await settledCollectErrors([refreshCoreData]);
-    if (coreErrors.length) return coreErrors;
+  const refreshSecondaryData = useCallback(async () => {
     const secondaryErrors = await settledCollectErrors([
       refreshFeed,
       refreshMessages,
@@ -2081,7 +2099,6 @@ export function App() {
     return secondaryErrors;
   }, [
     panel,
-    refreshCoreData,
     refreshFeed,
     refreshMessages,
     refreshActivity,
@@ -2089,6 +2106,56 @@ export function App() {
     refreshConflicts,
     refreshPermissions,
   ]);
+
+  const refreshProtectedData = useCallback(async (options = {}) => {
+    const includeSecondary = options?.includeSecondary !== false;
+    const coreErrors = await settledCollectErrors([refreshCoreData]);
+    if (coreErrors.length || !includeSecondary) {
+      return { coreErrors, secondaryErrors: [] };
+    }
+    const secondaryErrors = await refreshSecondaryData();
+    return { coreErrors: [], secondaryErrors };
+  }, [
+    refreshCoreData,
+    refreshSecondaryData,
+  ]);
+
+  const refreshSecondaryDataInBackground = useCallback(() => {
+    if (typeof window === "undefined" || startupSecondaryRefreshInFlightRef.current) {
+      return;
+    }
+    startupSecondaryRefreshInFlightRef.current = true;
+    window.setTimeout(() => {
+      void (async () => {
+        if (!daemonStateRef.current?.reachable) {
+          return;
+        }
+        const secondaryErrors = await refreshSecondaryData();
+        if (!secondaryErrors.length || !daemonStateRef.current?.reachable) {
+          return;
+        }
+        setSecondaryAvailabilityFeedback(secondaryErrors);
+      })().finally(() => {
+        startupSecondaryRefreshInFlightRef.current = false;
+      });
+    }, 0);
+  }, [refreshSecondaryData, setSecondaryAvailabilityFeedback]);
+
+  const refreshProtectedDataForStartup = useCallback(async () => {
+    // First successful pass only waits on core data; secondary calls hydrate in background.
+    const includeSecondary = startupCoreReadyRef.current;
+    let result = await refreshProtectedData({ includeSecondary });
+    if (!includeSecondary && !result.coreErrors.length) {
+      startupCoreReadyRef.current = true;
+      refreshSecondaryDataInBackground();
+      result = { ...result, secondaryErrors: [] };
+    }
+    return result;
+  }, [refreshProtectedData, refreshSecondaryDataInBackground]);
+
+  const clearStartupCoreReady = useCallback(() => {
+    startupCoreReadyRef.current = false;
+  }, []);
 
   const handleResolveConflict = useCallback(async (keepId, action, supersededId, pair = null) => {
     const resolver = selectedOperatorName ? `user:${selectedOperatorName}` : "user:control-center";
@@ -2261,6 +2328,7 @@ export function App() {
     }
 
     if (invokeRef.current && nextDaemonState?.managed && !nextDaemonState?.reachable) {
+      clearStartupCoreReady();
       clearDisconnectedData();
       setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
       scheduleRecoveryRetry(1000);
@@ -2268,6 +2336,7 @@ export function App() {
     }
 
     if (!nextDaemonState?.reachable) {
+      clearStartupCoreReady();
       clearRecoveryRetry();
       if (invokeRef.current) {
         tokenRef.current = "";
@@ -2279,6 +2348,7 @@ export function App() {
     }
 
     if (invokeRef.current && !healthReady) {
+      clearStartupCoreReady();
       clearDisconnectedData();
       setFeedbackMessage("Daemon is reachable but still warming up. Retrying shortly...");
       scheduleRecoveryRetry(1000);
@@ -2287,22 +2357,24 @@ export function App() {
 
     const authToken = await readAuthToken({ suppressFeedback: true });
     if (invokeRef.current && !authToken) {
+      clearStartupCoreReady();
       clearDisconnectedData();
       setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
       scheduleRecoveryRetry(1000);
       return;
     }
 
-    let errors = await refreshProtectedData();
-    if (invokeRef.current && errors.length && errors.every((error) => isAuthFailure(error))) {
+    let { coreErrors, secondaryErrors } = await refreshProtectedDataForStartup();
+    if (invokeRef.current && coreErrors.length && coreErrors.every((error) => isAuthFailure(error))) {
       const refreshedToken = await readAuthToken({ suppressFeedback: true });
       if (refreshedToken) {
-        errors = await refreshProtectedData();
+        ({ coreErrors, secondaryErrors } = await refreshProtectedDataForStartup());
       }
     }
 
-    if (errors.length) {
-      const unique = [...new Set(errors)];
+    if (coreErrors.length) {
+      clearStartupCoreReady();
+      const unique = [...new Set(coreErrors)];
       if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
         clearDisconnectedData();
         clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
@@ -2319,18 +2391,25 @@ export function App() {
       }
     } else {
       clearRecoveryRetry();
-      clearTransientFeedback();
+      const uniqueSecondary = [...new Set(secondaryErrors)];
+      if (uniqueSecondary.length) {
+        setSecondaryAvailabilityFeedback(uniqueSecondary);
+      } else {
+        clearTransientFeedback();
+      }
     }
   }, [
+    clearStartupCoreReady,
     clearRecoveryRetry,
     clearTransientFeedback,
     readAuthToken,
     refreshDaemonState,
     refreshHealth,
-    refreshProtectedData,
+    refreshProtectedDataForStartup,
     clearDisconnectedData,
     cortexBase,
     scheduleRecoveryRetry,
+    setSecondaryAvailabilityFeedback,
   ]);
 
   const runRefreshAll = useCallback(() => {
