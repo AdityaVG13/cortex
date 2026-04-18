@@ -122,8 +122,8 @@ def request_json(url: str, timeout: int = 5, fatal: bool = True) -> dict | None:
         die(f"Cortex returned invalid JSON for {url} -- check daemon logs. Details: {e}")
 
 
-def check_daemon_health() -> None:
-    data = request_json(f"{CORTEX_URL}/health", timeout=3)
+def check_daemon_health(timeout: int = 3) -> None:
+    data = request_json(f"{CORTEX_URL}/health", timeout=timeout)
     if not data or data.get("status") != "ok":
         die(f"Daemon health check failed at {CORTEX_URL}/health -- response was: {data!r}")
 
@@ -239,14 +239,14 @@ QUERIES = [
 ]
 
 
-def cortex_recall(query: str, budget: int = 500) -> dict:
+def cortex_recall(query: str, budget: int = 500, timeout: int = 5) -> dict:
     url = f"{CORTEX_URL}/recall?q={query.replace(' ', '+')}&budget={budget}"
     total_elapsed_ms = 0.0
     data: dict | None = None
     results = []
     for attempt in range(3):
         start = time.perf_counter()
-        data = request_json(url, timeout=5)
+        data = request_json(url, timeout=timeout)
         total_elapsed_ms += (time.perf_counter() - start) * 1000
         results = data.get("results", []) if data else []
         if results or attempt == 2:
@@ -352,7 +352,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
     print("=" * 70)
     print("CORTEX RECALL BENCHMARK v2 (keyword + semantic + ground truth)")
     print("=" * 70)
-    check_daemon_health()
+    check_daemon_health(timeout=max(3, min(args.http_timeout, 10)))
+    token_limits = resolve_token_limits(args)
 
     # Check if embeddings exist in the DB directly (no /embed endpoint needed)
     all_embeddings = load_all_embeddings()
@@ -373,7 +374,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
         category = q["category"]
         ground_truth = q["ground_truth"]
 
-        cortex = cortex_recall(query, budget=args.recall_budget)
+        cortex = cortex_recall(query, budget=args.recall_budget, timeout=args.http_timeout)
 
         # Score each result
         scored_results = []
@@ -558,7 +559,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
     try:
         url = f"{CORTEX_URL}/boot?agent=claude-opus&budget=600"
         start = time.perf_counter()
-        data = request_json(url, timeout=5)
+        data = request_json(url, timeout=args.http_timeout)
         boot_ms = (time.perf_counter() - start) * 1000
         savings = data.get("savings", {})
         print(f"  Boot tokens:    {data.get('tokenEstimate', 0)}")
@@ -587,6 +588,12 @@ def run_benchmark(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run Cortex recall benchmark with strict quality/token gates."
+    )
+    parser.add_argument(
+        "--http-timeout",
+        type=int,
+        default=12,
+        help="Per-request HTTP timeout in seconds for /recall and benchmark probes.",
     )
     parser.add_argument(
         "--recall-budget",
@@ -646,4 +653,3 @@ def build_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     args = build_parser().parse_args()
     raise SystemExit(run_benchmark(args))
-    token_limits = resolve_token_limits(args)

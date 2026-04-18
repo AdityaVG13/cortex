@@ -1,0 +1,103 @@
+{
+  "notes": [
+    "Non-LongMem detail-fidelity quick gate focused on exact-attribute recall under realistic distractors.",
+    "Prioritizes title/item/occupation/location/date style retrieval pressure through information extraction, temporal updates, and profile rationale slices.",
+    "Strict fair-run defaults only: oracle=false, no query pinning, no doc_limit shortcuts."
+  ],
+  "execution_profile": {
+    "max_runtime_seconds": 1200,
+    "max_case_runtime_seconds": 900,
+    "token_gate_mode": "dynamic",
+    "provider_profile": "auto",
+    "quality_token_target": "balanced-detail",
+    "retrieval_profile": "balanced",
+    "recall_budget": 300,
+    "min_accuracy": 0.9,
+    "max_recall_tokens": 300,
+    "max_avg_recall_tokens": 246.0,
+    "allow_missing_recall_metrics": false,
+    "no_enforce_gate": false,
+    "oracle": false
+  },
+  "cases": [
+    {
+      "id": "locomo-locomo10-temporal-q4",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "category": "temporal",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Temporal factual detail recall in long conversations."
+    },
+    {
+      "id": "lifebench-en-information-extraction-q4",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "category": "information-extraction",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Exact item/title/location extraction precision."
+    },
+    {
+      "id": "lifebench-en-temporal-updating-q4",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "category": "temporal-updating",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Most-recent fact selection under profile updates."
+    },
+    {
+      "id": "personamem-128k-ack-latest-q4",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "acknowledge_latest_user_preferences",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Recency-sensitive preference detail tracking."
+    },
+    {
+      "id": "personamem-128k-revisit-reasons-q4",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "revisit_reasons_behind_preference_updates",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Rationale recall for preference changes."
+    },
+    {
+      "id": "beam-100k-information-extraction-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "information_extraction",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Needle-in-context factual extraction stress."
+    },
+    {
+      "id": "beam-100k-event-ordering-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "event_ordering",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Ordering-sensitive detail consistency checks."
+    },
+    {
+      "id": "memsim-noisy-q4",
+      "dataset": "memsim",
+      "split": "noisy",
+      "mode": "rag",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "Distractor robustness for detail retrieval."
+    }
+  ]
+}

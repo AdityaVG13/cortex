@@ -219,7 +219,7 @@ impl EmbeddingEngine {
         }
     }
 
-    fn truncate_to_char_boundary<'a>(text: &'a str, max_bytes: usize) -> &'a str {
+    fn truncate_to_char_boundary(text: &str, max_bytes: usize) -> &str {
         if text.len() <= max_bytes {
             return text;
         }

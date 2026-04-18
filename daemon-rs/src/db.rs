@@ -123,7 +123,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 12] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 13] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -136,6 +136,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 12] = [
     ("010", "decision_conflict_records"),
     ("011", "agent_feedback_telemetry"),
     ("012", "fts_tokenizer_porter_unicode61"),
+    ("013", "embeddings_model_lookup_indexes"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -522,6 +523,17 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             rebuild_fts(conn)?;
             Ok(())
         }
+        "013" => {
+            conn.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_embeddings_model_norm
+                  ON embeddings(LOWER(COALESCE(model, '')));
+                CREATE INDEX IF NOT EXISTS idx_embeddings_target_model_norm
+                  ON embeddings(target_type, target_id, LOWER(COALESCE(model, '')));
+                "#,
+            )?;
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -808,6 +820,10 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_decision_conflicts_target ON decision_conflicts(target_decision_id);
         CREATE INDEX IF NOT EXISTS idx_decision_conflicts_status_created ON decision_conflicts(status, created_at);
         CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_type, target_id);
+        CREATE INDEX IF NOT EXISTS idx_embeddings_model_norm
+          ON embeddings(LOWER(COALESCE(model, '')));
+        CREATE INDEX IF NOT EXISTS idx_embeddings_target_model_norm
+          ON embeddings(target_type, target_id, LOWER(COALESCE(model, '')));
         CREATE INDEX IF NOT EXISTS idx_events_type_created ON events(type, created_at);
         CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient);
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

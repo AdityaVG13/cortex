@@ -66,7 +66,7 @@ _QUERY_SPEED_INTENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _QUERY_ITEM_INTENT_PATTERN = re.compile(
-    r"\b(what.*(item|device|game|thing|play)|which.*(item|device|game|thing|play)|buy|bought|purchased|redeemed|ordered|gift|upgraded to)\b",
+    r"\b(what.*(item|device|game|thing|play)|which.*(item|device|game|thing|play)|buy|bought|purchase|purchased|redeem|redeemed|order|ordered|gift|upgraded to)\b",
     re.IGNORECASE,
 )
 _QUERY_NAME_INTENT_PATTERN = re.compile(
@@ -77,7 +77,24 @@ _QUERY_OCCUPATION_INTENT_PATTERN = re.compile(
     r"\b(occupation|job|career|profession|position|role|title|worked as|work as|previous work)\b",
     re.IGNORECASE,
 )
+_QUERY_PREVIOUS_ROLE_INTENT_PATTERN = re.compile(
+    r"\b(previous|former|earlier|prior|before|used to|old)\b",
+    re.IGNORECASE,
+)
 _QUERY_PERSONAL_PATTERN = re.compile(r"\b(i|my|me)\b", re.IGNORECASE)
+_RELATION_TERM_PATTERN = re.compile(
+    r"\b(sister|brother|mother|mom|father|dad|son|daughter|wife|husband|partner|boyfriend|girlfriend)\b",
+    re.IGNORECASE,
+)
+_RELATION_TERM_CANONICAL = {
+    "mom": "mother",
+    "dad": "father",
+}
+_RELATION_CONFLICT_GROUPS = (
+    {"sister", "brother"},
+    {"mother", "father"},
+    {"son", "daughter"},
+)
 _DATE_DETAIL_PATTERN = re.compile(
     r"\b(?:19|20)\d{2}\b"
     r"|(?:\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b)"
@@ -121,6 +138,17 @@ _ITEM_DETAIL_PATTERN = re.compile(
     r"\b(?:bought|purchased|redeemed|ordered|upgraded to|picked up)\b"
     r"|\b[A-Z][A-Za-z0-9'-]+(?:\s+[A-Z][A-Za-z0-9'-]+){1,3}\b"
 )
+_LOCATION_PURCHASE_CUE_PATTERN = re.compile(
+    r"\b("
+    r"shop|store|market|grocery|coupon|redeem|redeemed|purchase|purchased|"
+    r"bought|ordered|checkout|cart|discount|deal|offer|save|saved|saving|savings|cartwheel"
+    r")\b",
+    re.IGNORECASE,
+)
+_QUERY_ABROAD_INTENT_PATTERN = re.compile(
+    r"\b(study abroad|abroad|exchange program|international program|international study|travel)\b",
+    re.IGNORECASE,
+)
 _NAME_DETAIL_PATTERN = re.compile(
     r"\b(?:name\s+(?:is|was)|called|old name was|last name(?:\s+was)?)\s+[A-Z][A-Za-z0-9'-]+(?:\s+[A-Z][A-Za-z0-9'-]+){0,2}\b",
     re.IGNORECASE,
@@ -128,6 +156,14 @@ _NAME_DETAIL_PATTERN = re.compile(
 _OCCUPATION_DETAIL_PATTERN = re.compile(
     r"\b(?:worked as|work as|occupation(?:\s+was)?|job(?:\s+was)?|career(?:\s+as)?|position(?:\s+as)?|profession(?:\s+as)?)\b"
     r"|\b(?:specialist|engineer|manager|analyst|developer|teacher|nurse|designer|consultant|coordinator)\b",
+    re.IGNORECASE,
+)
+_PREVIOUS_ROLE_DETAIL_PATTERN = re.compile(
+    r"\b(?:previously|formerly|used to|before\b|prior\b|ex-)\b",
+    re.IGNORECASE,
+)
+_CURRENT_ROLE_DETAIL_PATTERN = re.compile(
+    r"\b(?:currently|current|now|presently|at present)\b",
     re.IGNORECASE,
 )
 _ASSISTANT_ROLE_PATTERN = re.compile(r"\[assistant\]|\"role\"\s*:\s*\"assistant\"", re.IGNORECASE)
@@ -140,10 +176,67 @@ _LOW_SIGNAL_ASSISTANT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _OVERLAP_TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}")
+_LOCATION_TOKEN_PATTERN = re.compile(r"[a-z0-9'&.-]{2,}", re.IGNORECASE)
 _ANSWER_SOURCE_ID_PATTERN = re.compile(
     r"(?:^|[:_])answer_[0-9a-f]{6,}(?:$|[:_])",
     re.IGNORECASE,
 )
+_LOCATION_NON_PLACE_TOKENS = {
+    "about",
+    "after",
+    "again",
+    "before",
+    "better",
+    "easy",
+    "eventually",
+    "every",
+    "frequently",
+    "helpful",
+    "last",
+    "navigate",
+    "next",
+    "once",
+    "other",
+    "pretty",
+    "really",
+    "sometimes",
+    "week",
+}
+_LOCATION_PLACE_HINT_TOKENS = {
+    "avenue",
+    "beach",
+    "campus",
+    "cafe",
+    "center",
+    "centre",
+    "city",
+    "club",
+    "college",
+    "country",
+    "county",
+    "district",
+    "downtown",
+    "gym",
+    "hall",
+    "mall",
+    "market",
+    "museum",
+    "park",
+    "plaza",
+    "restaurant",
+    "road",
+    "school",
+    "shop",
+    "state",
+    "store",
+    "street",
+    "studio",
+    "theater",
+    "theatre",
+    "town",
+    "university",
+    "village",
+}
 
 
 def slugify(value: str) -> str:
@@ -183,6 +276,9 @@ class CortexHTTPClient:
         self.max_context_chars = max(
             0,
             int(os.environ.get("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "700")),
+        )
+        self.retrieval_policy = self._normalize_retrieval_policy(
+            os.environ.get("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "standard")
         )
         self.query_window_chars = max(
             80,
@@ -295,10 +391,18 @@ class CortexHTTPClient:
             if user_id is not None:
                 source_prefix = f"amb::{self.namespace}::user::{user_id}::"
         recall_calls: list[dict[str, object]] = []
-        for call_query, call_budget, call_tag in self._build_recall_call_plan(
+        call_plan = self._build_recall_call_plan(
             query,
             query_profile=query_profile,
-        ):
+        )
+        primary_call_payload: RecallResponse | None = None
+        for call_query, call_budget, call_tag in call_plan:
+            if (
+                call_tag == "detail-variant"
+                and primary_call_payload is not None
+                and not self._should_run_detail_variant(primary_call_payload, query_profile=query_profile)
+            ):
+                continue
             params = {
                 "q": call_query,
                 "k": str(raw_k),
@@ -332,7 +436,13 @@ class CortexHTTPClient:
                     "result_count": len(results) if isinstance(results, list) else 0,
                 }
             )
+            if call_tag == "primary":
+                primary_call_payload = call_payload
         payload = self._merge_recall_payloads(recall_calls)
+        payload = self._filter_recall_payload_by_source_scope(
+            payload,
+            source_prefix=source_prefix or None,
+        )
         self._record_recall_metrics(
             query,
             payload,
@@ -355,7 +465,10 @@ class CortexHTTPClient:
                     continue
                 document = CortexStoredDocument(
                     id=source_key,
-                    content=self._clip_text(excerpt),
+                    content=self._clip_text_by_policy(
+                        excerpt,
+                        query_profile=query_profile,
+                    ),
                     user_id=user_id,
                 )
             else:
@@ -382,6 +495,12 @@ class CortexHTTPClient:
                 documents=documents,
             )
         documents = self._rerank_documents(query, documents)
+        if bool(query_profile["wants_location"]):
+            documents = self._promote_location_family_complement(
+                query=query,
+                documents=documents,
+                k=k,
+            )
         return documents[:k], payload
 
     def _record_recall_metrics(
@@ -514,6 +633,12 @@ class CortexHTTPClient:
             return value
         return str(value)
 
+    def _normalize_retrieval_policy(self, value: object | None) -> str:
+        normalized = self._normalize_text(value).strip().lower()
+        if normalized in {"high-detail", "detail-preserving"}:
+            return "high-detail"
+        return "standard"
+
     def _normalize_document(self, document: CortexStoredDocument) -> CortexStoredDocument:
         normalized_id = self._normalize_text(document.id).strip()
         if not normalized_id:
@@ -570,6 +695,62 @@ class CortexHTTPClient:
             (variant_query, variant_budget, "detail-variant"),
         ]
 
+    def _should_run_detail_variant(
+        self,
+        primary_payload: RecallResponse,
+        *,
+        query_profile: dict[str, bool | str],
+    ) -> bool:
+        if not bool(query_profile["is_detail_query"]):
+            return False
+        if self.retrieval_policy == "high-detail" and bool(query_profile.get("wants_previous_role")):
+            # Previous-role questions frequently need contrastive details not present
+            # in the first recall slice, so keep the variant path mandatory.
+            return True
+        results = primary_payload.get("results")
+        if not isinstance(results, list) or not results:
+            return True
+        texts: list[str] = []
+        for item in results[:5]:
+            if not isinstance(item, dict):
+                continue
+            excerpt = self._normalize_text(item.get("excerpt", "")).strip()
+            if excerpt:
+                texts.append(excerpt)
+        if not texts:
+            return True
+        merged_text = "\n".join(texts)
+        query_relation_terms = self._relation_term_set(str(query_profile["normalized_query"]))
+        if query_relation_terms:
+            merged_relation_terms = self._relation_term_set(merged_text)
+            if not (query_relation_terms & merged_relation_terms):
+                return True
+            if self._relation_terms_conflict(query_relation_terms, merged_relation_terms):
+                return True
+
+        if bool(query_profile["wants_numbers"]) and not re.search(r"\d", merged_text):
+            return True
+        if bool(query_profile["wants_date"]) and not self._text_has_date_detail(merged_text):
+            return True
+        if bool(query_profile["wants_speed"]) and not self._text_has_speed_detail(merged_text):
+            return True
+        if bool(query_profile["wants_item"]) and not self._text_has_item_detail(merged_text):
+            return True
+        if bool(query_profile["wants_occupation"]) and not self._text_has_occupation_detail(merged_text):
+            return True
+        if bool(query_profile["wants_name"]) and not self._text_has_name_detail(merged_text):
+            return True
+        if bool(query_profile["wants_location"]):
+            if not self._text_has_location_detail(merged_text):
+                return True
+            if (
+                self._text_has_generic_location_detail(merged_text)
+                and self._location_detail_count(merged_text)
+                <= len(_GENERIC_LOCATION_DETAIL_PATTERN.findall(merged_text))
+            ):
+                return True
+        return False
+
     def _build_detail_query_variant(
         self,
         query: str,
@@ -581,21 +762,53 @@ class CortexHTTPClient:
         token_parts = tokens[:10]
         hint_parts: list[str] = []
         if bool(query_profile["wants_speed"]):
-            hint_parts.extend(["internet", "plan", "speed", "upgraded", "mbps"])
+            hint_parts.extend(
+                [
+                    "internet",
+                    "speed",
+                    "connection",
+                    "plan",
+                    "download",
+                    "mbps",
+                    "exact speed detail",
+                ]
+            )
         if bool(query_profile["wants_location"]):
-            hint_parts.extend(["where", "location", "place", "city", "country", "abroad"])
+            hint_parts.extend(
+                [
+                    "where",
+                    "location",
+                    "place",
+                    "city",
+                    "country",
+                    "specific place detail",
+                ]
+            )
         if bool(query_profile["wants_date"]):
-            hint_parts.extend(["when", "date", "year", "month", "day", "exact date"])
+            hint_parts.extend(["when", "date", "year", "month", "day", "exact date detail"])
         if bool(query_profile["wants_item"]):
-            hint_parts.extend(["item", "bought", "purchased", "gift", "play title"])
+            hint_parts.extend(["item", "purchase", "bought", "gift", "product", "exact item detail"])
         if bool(query_profile["wants_occupation"]):
-            hint_parts.extend(["occupation", "job", "worked as", "career", "role", "position", "startup"])
+            hint_parts.extend(
+                [
+                    "occupation",
+                    "job",
+                    "worked as",
+                    "career",
+                    "role",
+                    "position",
+                    "previous",
+                    "former",
+                    "earlier",
+                    "exact role detail",
+                ]
+            )
         if bool(query_profile["wants_name"]):
-            hint_parts.extend(["name", "last name", "first name", "called", "old name", "surname"])
+            hint_parts.extend(["name", "first name", "last name", "surname", "exact name detail"])
         if bool(query_profile["wants_numbers"]) and not bool(query_profile["wants_speed"]):
-            hint_parts.extend(["exact", "number", "value"])
+            hint_parts.extend(["exact", "number", "numeric value"])
         if bool(query_profile["is_detail_query"]):
-            hint_parts.extend(["user answer", "assistant question", "exact detail"])
+            hint_parts.extend(["user-stated fact", "exact detail"])
 
         merged_parts: list[str] = []
         seen: set[str] = set()
@@ -617,6 +830,18 @@ class CortexHTTPClient:
         if not normalized_id:
             return ""
         return re.sub(r"::fact::\d+$", "", normalized_id, flags=re.IGNORECASE)
+
+    def _fact_index(self, document_id: str) -> int | None:
+        normalized_id = self._normalize_text(document_id).strip()
+        if not normalized_id:
+            return None
+        match = re.search(r"::fact::(\d+)$", normalized_id, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
 
     def _expand_fact_family_candidates(
         self,
@@ -653,6 +878,7 @@ class CortexHTTPClient:
         existing_ids = {self._normalize_text(document.id).lower() for document in documents}
         additions: list[CortexStoredDocument] = []
         added_count = 0
+        query_terms = self._query_terms(query)
         for seed in documents:
             if added_count >= self.detail_max_added_siblings:
                 break
@@ -661,7 +887,23 @@ class CortexHTTPClient:
                 continue
             seed_score = self._document_query_relevance_score(query, seed)
             seed_detail = self._detail_bonus(query_profile, seed.content)
-            sibling_candidates: list[tuple[int, int, CortexStoredDocument]] = []
+            wants_location = bool(query_profile["wants_location"])
+            wants_item = bool(query_profile["wants_item"])
+            seed_location_count = self._location_detail_count(seed.content) if wants_location else 0
+            seed_is_generic_location = self._text_has_generic_location_detail(seed.content) if wants_location else False
+            seed_location_terms = self._location_term_set(seed.content) if wants_location else set()
+            seed_overlap = self._term_overlap_count(query_terms, seed.content.lower()) if query_terms else 0
+            has_seed_signal = seed_overlap > 0 or seed_detail > 0
+            if wants_location and seed_location_count > 0:
+                has_seed_signal = True
+            if wants_location and wants_item and _LOCATION_PURCHASE_CUE_PATTERN.search(seed.content.lower()):
+                has_seed_signal = True
+            if wants_location and wants_item and not has_seed_signal:
+                continue
+            seed_fact_index = self._fact_index(seed.id)
+            sibling_candidates: list[tuple[int, int, int, int, CortexStoredDocument]] = []
+            adjacent_complement_doc: CortexStoredDocument | None = None
+            adjacent_complement_rank: tuple[int, int, int] | None = None
             for sibling in sibling_pool[family]:
                 sibling_id_key = self._normalize_text(sibling.id).lower()
                 if not sibling_id_key or sibling_id_key in existing_ids:
@@ -680,17 +922,87 @@ class CortexHTTPClient:
                 )
                 sibling_score = self._document_query_relevance_score(query, sibling_doc)
                 sibling_detail = self._detail_bonus(query_profile, sibling_doc.content)
+                sibling_location_count = (
+                    self._location_detail_count(sibling_doc.content) if wants_location else 0
+                )
+                sibling_location_terms = self._location_term_set(sibling_doc.content) if wants_location else set()
+                sibling_is_generic_location = (
+                    self._text_has_generic_location_detail(sibling_doc.content)
+                    if wants_location
+                    else False
+                )
+                sibling_fact_index = self._fact_index(sibling_doc.id)
+                adjacent_fact = (
+                    seed_fact_index is not None
+                    and sibling_fact_index is not None
+                    and abs(sibling_fact_index - seed_fact_index) <= 1
+                )
                 detail_is_stronger = sibling_detail > seed_detail
+                location_is_richer = wants_location and sibling_location_count > seed_location_count
+                location_is_more_specific = (
+                    wants_location
+                    and seed_is_generic_location
+                    and bool(sibling_location_terms)
+                    and not sibling_is_generic_location
+                )
+                location_adds_terms = (
+                    wants_location
+                    and bool(sibling_location_terms)
+                    and bool(sibling_location_terms - seed_location_terms)
+                )
+                location_is_adjacent_complement = (
+                    wants_location
+                    and adjacent_fact
+                    and bool(sibling_location_terms - seed_location_terms)
+                )
                 if (
                     sibling_score < (seed_score - self.detail_sibling_score_margin)
                     and not detail_is_stronger
+                    and not location_is_richer
+                    and not location_is_more_specific
+                    and not location_adds_terms
+                    and not location_is_adjacent_complement
                 ):
                     continue
-                sibling_candidates.append((sibling_score, sibling_detail, sibling_doc))
+                sibling_rank_score = sibling_score
+                if location_is_adjacent_complement:
+                    # Adjacent fact shards often contain the missing qualifier/value
+                    # for the same user statement block (for example country/store).
+                    sibling_rank_score += 30
+                    adjacent_rank = (
+                        1 if not sibling_is_generic_location else 0,
+                        len(sibling_location_terms - seed_location_terms),
+                        sibling_score,
+                    )
+                    if adjacent_complement_rank is None or adjacent_rank > adjacent_complement_rank:
+                        adjacent_complement_rank = adjacent_rank
+                        adjacent_complement_doc = sibling_doc
+                if location_is_more_specific:
+                    sibling_rank_score += 4
+                if location_adds_terms:
+                    sibling_rank_score += min(6, len(sibling_location_terms - seed_location_terms) * 3)
+                sibling_candidates.append(
+                    (sibling_rank_score, sibling_score, sibling_detail, sibling_location_count, sibling_doc)
+                )
+            if (
+                adjacent_complement_doc is not None
+                and added_count < self.detail_max_added_siblings
+            ):
+                adjacent_key = self._normalize_text(adjacent_complement_doc.id).lower()
+                if adjacent_key and adjacent_key not in existing_ids:
+                    additions.append(adjacent_complement_doc)
+                    existing_ids.add(adjacent_key)
+                    added_count += 1
+                    if added_count >= self.detail_max_added_siblings:
+                        break
             if not sibling_candidates:
                 continue
-            sibling_candidates.sort(reverse=True, key=lambda item: (item[0], item[1], item[2].id))
-            for _score, _detail, sibling_doc in sibling_candidates[: self.detail_siblings_per_seed]:
+            sibling_candidates.sort(
+                reverse=True,
+                key=lambda item: (item[0], item[2], item[3], item[1], item[4].id),
+            )
+            per_seed_limit = self.detail_siblings_per_seed + (2 if wants_location else 0)
+            for _rank, _score, _detail, _location_count, sibling_doc in sibling_candidates[:per_seed_limit]:
                 sibling_id_key = self._normalize_text(sibling_doc.id).lower()
                 if not sibling_id_key or sibling_id_key in existing_ids:
                     continue
@@ -702,6 +1014,155 @@ class CortexHTTPClient:
         if not additions:
             return documents
         return documents + additions
+
+    def _promote_location_family_complement(
+        self,
+        *,
+        query: str,
+        documents: list[CortexStoredDocument],
+        k: int,
+    ) -> list[CortexStoredDocument]:
+        if k <= 1 or len(documents) <= 1:
+            return documents
+
+        def _promote_to_second_slot(promoted_index: int) -> list[CortexStoredDocument]:
+            if promoted_index <= 0:
+                return documents
+            promoted = documents[promoted_index]
+            reordered: list[CortexStoredDocument] = [documents[0], promoted]
+            seen_ids: set[str] = set()
+            for item in reordered:
+                key = self._normalize_text(item.id).lower()
+                if key:
+                    seen_ids.add(key)
+            for idx, document in enumerate(documents):
+                if idx == 0 or idx == promoted_index:
+                    continue
+                key = self._normalize_text(document.id).lower()
+                if key and key in seen_ids:
+                    continue
+                reordered.append(document)
+                if key:
+                    seen_ids.add(key)
+            return reordered
+
+        top_window = min(k, len(documents))
+        query_profile = self._build_query_profile(query)
+        query_terms = self._query_terms(query)
+        is_abroad_query = bool(_QUERY_ABROAD_INTENT_PATTERN.search(str(query_profile["normalized_query"])))
+        primary_family = self._detail_family_key(documents[0].id)
+        if not primary_family and not is_abroad_query:
+            return documents
+        require_same_family = bool(primary_family)
+        primary_fact_index = self._fact_index(documents[0].id)
+        primary_terms = self._location_term_set(documents[0].content)
+        if len(documents) > top_window:
+            covered_terms: set[str] = set()
+            for document in documents[:top_window]:
+                covered_terms.update(self._location_term_set(document.content))
+        else:
+            covered_terms = set(primary_terms)
+        best_index: int | None = None
+        best_rank: tuple[int, int, int, int, int, int] | None = None
+        for idx, document in enumerate(documents):
+            if idx == 0:
+                continue
+            if require_same_family and self._detail_family_key(document.id) != primary_family:
+                continue
+            location_terms = self._location_term_set(document.content)
+            if not location_terms:
+                continue
+            new_terms = location_terms - primary_terms
+            if not new_terms:
+                continue
+            candidate_fact_index = self._fact_index(document.id)
+            is_adjacent = (
+                primary_fact_index is not None
+                and candidate_fact_index is not None
+                and abs(candidate_fact_index - primary_fact_index) <= 1
+            )
+            non_question = 0 if self._looks_like_question_text(document.content) else 1
+            rank = (
+                non_question,
+                1 if is_adjacent else 0,
+                len(new_terms),
+                1 if self._is_non_generic_location_text(document.content) else 0,
+                self._document_query_relevance_score(query, document),
+                -idx,
+            )
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_index = idx
+        needs_abroad_fallback = best_index is None
+        if (
+            is_abroad_query
+            and best_rank is not None
+            and best_rank[0] == 0
+        ):
+            # Prefer factual (non-question) country qualifiers over question-style snippets.
+            needs_abroad_fallback = True
+        if needs_abroad_fallback and is_abroad_query:
+            primary_text = documents[0].content.lower()
+            primary_is_study_anchor = bool(
+                re.search(r"\b(study abroad|abroad|exchange|university|college|campus|program)\b", primary_text)
+            )
+            if primary_is_study_anchor:
+                cross_rank: tuple[int, int, int, int, int, int] | None = None
+                for idx, document in enumerate(documents):
+                    if idx == 0:
+                        continue
+                    location_terms = self._location_term_set(document.content)
+                    if not location_terms:
+                        continue
+                    new_terms = location_terms - primary_terms
+                    if not new_terms:
+                        continue
+                    overlap = self._term_overlap_count(query_terms, document.content.lower())
+                    non_question = 0 if self._looks_like_question_text(document.content) else 1
+                    rank = (
+                        non_question,
+                        1 if overlap > 0 else 0,
+                        len(new_terms),
+                        1 if self._is_non_generic_location_text(document.content) else 0,
+                        self._document_query_relevance_score(query, document),
+                        -idx,
+                    )
+                    if cross_rank is None or rank > cross_rank:
+                        cross_rank = rank
+                        best_index = idx
+        if best_index is None:
+            return documents
+        if is_abroad_query:
+            if best_index == 1:
+                return documents
+            return _promote_to_second_slot(best_index)
+        if len(documents) <= top_window:
+            if best_index == 1:
+                return documents
+            return _promote_to_second_slot(best_index)
+        if best_index < top_window:
+            return documents
+        promoted = documents[best_index]
+        promoted_key = self._normalize_text(promoted.id).lower()
+        prefix = documents[: top_window - 1] + [promoted]
+        seen_ids = {
+            self._normalize_text(document.id).lower()
+            for document in prefix
+            if self._normalize_text(document.id).strip()
+        }
+        if promoted_key:
+            seen_ids.add(promoted_key)
+        tail: list[CortexStoredDocument] = []
+        for idx, document in enumerate(documents):
+            if idx == best_index:
+                continue
+            key = self._normalize_text(document.id).lower()
+            if key and key in seen_ids:
+                continue
+            tail.append(document)
+            if key:
+                seen_ids.add(key)
+        return prefix + tail
 
     def _merge_recall_payloads(self, recall_calls: list[dict[str, object]]) -> RecallResponse:
         if not recall_calls:
@@ -754,6 +1215,45 @@ class CortexHTTPClient:
             },
         )
 
+    def _is_recall_source_in_scope(
+        self,
+        source: object,
+        *,
+        source_prefix: str | None,
+    ) -> bool:
+        normalized_source = self._normalize_text(source).strip()
+        if not normalized_source:
+            return True
+        if normalized_source.lower().startswith("recall::"):
+            return True
+        if not source_prefix:
+            return True
+        return normalized_source.startswith(source_prefix)
+
+    def _filter_recall_payload_by_source_scope(
+        self,
+        payload: RecallResponse,
+        *,
+        source_prefix: str | None,
+    ) -> RecallResponse:
+        if not source_prefix:
+            return payload
+        results = payload.get("results")
+        if not isinstance(results, list) or not results:
+            return payload
+        filtered_results = [
+            item
+            for item in results
+            if isinstance(item, dict)
+            and self._is_recall_source_in_scope(item.get("source"), source_prefix=source_prefix)
+        ]
+        if not filtered_results:
+            return payload
+        filtered_payload = dict(payload)
+        filtered_payload["results"] = filtered_results
+        filtered_payload["count"] = len(filtered_results)
+        return cast(RecallResponse, filtered_payload)
+
     def _rerank_documents(
         self,
         query: str,
@@ -798,7 +1298,43 @@ class CortexHTTPClient:
         source_adjustment = self._source_quality_adjustment(document.id)
         assistant_penalty = self._assistant_noise_penalty(text)
         location_penalty = self._location_specificity_penalty(profile, text)
-        score = (overlap * 10) + (phrase_bonus * 4) + detail_bonus + personal_bonus + detail_user_bonus
+        item_answer_bonus = self._item_answer_specificity_bonus(
+            query_profile=profile,
+            text=text,
+            overlap=overlap,
+            detail_bonus=detail_bonus,
+        )
+        answer_source_detail_relief = self._answer_source_detail_relief(
+            query_profile=profile,
+            document=document,
+            text=text,
+            overlap=overlap,
+            detail_bonus=detail_bonus,
+        )
+        location_item_affinity_bonus = self._location_item_affinity_bonus(
+            query_profile=profile,
+            text=text,
+        )
+        relation_alignment_adjustment = self._relation_alignment_adjustment(
+            query_profile=profile,
+            text=text,
+        )
+        occupation_temporal_adjustment = self._occupation_temporal_adjustment(
+            query_profile=profile,
+            text=text,
+        )
+        score = (
+            (overlap * 10)
+            + (phrase_bonus * 4)
+            + detail_bonus
+            + personal_bonus
+            + detail_user_bonus
+            + item_answer_bonus
+            + answer_source_detail_relief
+            + location_item_affinity_bonus
+            + relation_alignment_adjustment
+            + occupation_temporal_adjustment
+        )
         return (
             score
             + source_adjustment
@@ -828,6 +1364,7 @@ class CortexHTTPClient:
         wants_item = bool(_QUERY_ITEM_INTENT_PATTERN.search(normalized_query))
         wants_occupation = bool(_QUERY_OCCUPATION_INTENT_PATTERN.search(normalized_query))
         wants_name = bool(_QUERY_NAME_INTENT_PATTERN.search(normalized_query))
+        wants_previous_role = bool(_QUERY_PREVIOUS_ROLE_INTENT_PATTERN.search(normalized_query))
         return {
             "normalized_query": normalized_query,
             "wants_numbers": wants_numbers,
@@ -836,6 +1373,7 @@ class CortexHTTPClient:
             "wants_speed": wants_speed,
             "wants_item": wants_item,
             "wants_occupation": wants_occupation,
+            "wants_previous_role": wants_previous_role and wants_occupation,
             "wants_name": wants_name,
             "is_detail_query": wants_numbers
             or wants_location
@@ -855,9 +1393,8 @@ class CortexHTTPClient:
 
     def _text_has_location_detail(self, text: str) -> bool:
         return bool(
-            _LOCATION_DETAIL_PATTERN.search(text)
-            or _LOCATION_ABBREV_DETAIL_PATTERN.search(text)
-            or _STANDALONE_LOCATION_DETAIL_PATTERN.fullmatch(text.strip())
+            self._location_term_set(text)
+            or _GENERIC_LOCATION_DETAIL_PATTERN.search(text)
         )
 
     def _text_has_generic_location_detail(self, text: str) -> bool:
@@ -904,10 +1441,13 @@ class CortexHTTPClient:
             if self._text_has_exact_date_detail(text):
                 score += 5
         if bool(query_profile["wants_location"]) and self._text_has_location_detail(text):
+            location_detail_count = self._location_detail_count(text)
             if self._text_has_generic_location_detail(text):
                 score += 6
             else:
                 score += 9
+            if location_detail_count > 1:
+                score += min(4, (location_detail_count - 1) * 2)
         if bool(query_profile["wants_speed"]) and self._text_has_speed_detail(text):
             score += 10
         if bool(query_profile["wants_item"]) and self._text_has_item_detail(text):
@@ -917,6 +1457,150 @@ class CortexHTTPClient:
         if bool(query_profile["wants_name"]) and self._text_has_name_detail(text):
             score += 9
         return score
+
+    def _location_item_affinity_bonus(self, *, query_profile: dict[str, bool | str], text: str) -> int:
+        if not (bool(query_profile["wants_location"]) and bool(query_profile["wants_item"])):
+            return 0
+        lowered = text.lower()
+        if not _LOCATION_PURCHASE_CUE_PATTERN.search(lowered):
+            return 0
+        location_terms = self._location_term_set(text)
+        if location_terms:
+            bonus = 6 + min(3, len(location_terms))
+            if self._is_non_generic_location_text(text):
+                bonus += 2
+            return bonus
+        if self._text_has_generic_location_detail(text):
+            return 2
+        return 0
+
+    def _item_answer_specificity_bonus(
+        self,
+        *,
+        query_profile: dict[str, bool | str],
+        text: str,
+        overlap: int,
+        detail_bonus: int,
+    ) -> int:
+        if not bool(query_profile["wants_item"]):
+            return 0
+        lowered = text.lower()
+        if "[user-answer]" not in lowered:
+            return 0
+        if overlap <= 0 and detail_bonus <= 0:
+            return 0
+        bonus = 2
+        answer_match = re.search(
+            r"\[user-answer\]\s*([^\[\n]{1,220})",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if answer_match:
+            answer_value = answer_match.group(1).strip(" \t\r\n.,!?;:\"'")
+            answer_lower = answer_value.lower()
+            answer_words = [word for word in re.findall(r"[a-z0-9'-]+", answer_lower) if word]
+            if re.search(r"\b(gift|gifts|present|item|items|thing|things|something|stuff)\b", answer_lower):
+                bonus -= 1
+            if answer_words and len(answer_words) <= 5 and not re.search(
+                r"\b(i|my|we|bought|purchased|redeemed|ordered|upgraded)\b",
+                answer_lower,
+            ):
+                bonus += 5
+        if _QUERY_BIRTHDAY_DESCRIPTOR_PATTERN.search(str(query_profile["normalized_query"])):
+            bonus += 2
+        return bonus
+
+    def _answer_source_detail_relief(
+        self,
+        *,
+        query_profile: dict[str, bool | str],
+        document: CortexStoredDocument,
+        text: str,
+        overlap: int,
+        detail_bonus: int,
+    ) -> int:
+        if self.retrieval_policy != "high-detail":
+            return 0
+        lowered_id = self._normalize_text(document.id).lower()
+        if not _ANSWER_SOURCE_ID_PATTERN.search(lowered_id):
+            return 0
+        if not bool(query_profile["is_detail_query"]):
+            return 0
+        lowered_text = text.lower()
+        if (
+            "[user-answer]" not in lowered_text
+            and '"role": "user"' not in lowered_text
+            and "[user]" not in lowered_text
+        ):
+            return 0
+        if overlap <= 0 and detail_bonus <= 0:
+            return 0
+        relief = min(self.answer_source_penalty, 16)
+        if bool(query_profile["wants_item"]) and "[user-answer]" in lowered_text:
+            relief += 8
+        if bool(query_profile["wants_location"]) and self._location_detail_count(text) >= 2:
+            relief += 4
+        if bool(query_profile["wants_date"]) and self._text_has_exact_date_detail(text):
+            relief += 3
+        if bool(query_profile["wants_speed"]) and self._text_has_speed_detail(text):
+            relief += 3
+        if bool(query_profile["wants_occupation"]) and self._text_has_occupation_detail(text):
+            relief += 3
+        return relief
+
+    def _occupation_temporal_adjustment(self, *, query_profile: dict[str, bool | str], text: str) -> int:
+        if not bool(query_profile["wants_occupation"]):
+            return 0
+        if not bool(query_profile.get("wants_previous_role")):
+            return 0
+        lowered = text.lower()
+        adjustment = 0
+        if _PREVIOUS_ROLE_DETAIL_PATTERN.search(lowered):
+            adjustment += 6
+        if _CURRENT_ROLE_DETAIL_PATTERN.search(lowered) and not _PREVIOUS_ROLE_DETAIL_PATTERN.search(lowered):
+            adjustment -= 4
+        return adjustment
+
+    def _relation_term_set(self, text: str) -> set[str]:
+        normalized = self._normalize_text(text).lower()
+        if not normalized:
+            return set()
+        terms: set[str] = set()
+        for raw_term in _RELATION_TERM_PATTERN.findall(normalized):
+            terms.add(_RELATION_TERM_CANONICAL.get(raw_term, raw_term))
+        return terms
+
+    def _relation_terms_conflict(self, query_terms: set[str], text_terms: set[str]) -> bool:
+        if not query_terms or not text_terms:
+            return False
+        for group in _RELATION_CONFLICT_GROUPS:
+            query_group = query_terms & group
+            if not query_group:
+                continue
+            text_group = text_terms & group
+            if not text_group:
+                continue
+            if text_group - query_group:
+                return True
+        return False
+
+    def _relation_alignment_adjustment(self, *, query_profile: dict[str, bool | str], text: str) -> int:
+        query_terms = self._relation_term_set(str(query_profile["normalized_query"]))
+        if not query_terms:
+            return 0
+        text_terms = self._relation_term_set(text)
+        if not text_terms:
+            return 0
+        overlap = query_terms & text_terms
+        has_conflict = self._relation_terms_conflict(query_terms, text_terms)
+        if overlap:
+            bonus = 3
+            if has_conflict:
+                bonus -= 2
+            return bonus
+        if has_conflict:
+            return -8
+        return -4
 
     def _source_quality_adjustment(self, document_id: str) -> int:
         lowered = self._normalize_text(document_id).lower()
@@ -952,11 +1636,55 @@ class CortexHTTPClient:
     def _location_detail_count(self, text: str) -> int:
         if not text:
             return 0
-        count = len(_LOCATION_DETAIL_PATTERN.findall(text))
-        count += len(_LOCATION_ABBREV_DETAIL_PATTERN.findall(text))
-        if _STANDALONE_LOCATION_DETAIL_PATTERN.fullmatch(text.strip()):
-            count += 1
-        return count
+        return len(self._location_term_set(text))
+
+    def _looks_like_question_text(self, text: str) -> bool:
+        normalized = self._normalize_text(text).lower()
+        if not normalized:
+            return False
+        if "[user-answer]" in normalized:
+            return False
+        return "?" in normalized
+
+    def _is_non_generic_location_text(self, text: str) -> bool:
+        return self._text_has_location_detail(text) and not self._text_has_generic_location_detail(text)
+
+    def _is_location_term_candidate(self, *, raw_match: str, normalized_term: str) -> bool:
+        term_text = self._normalize_text(normalized_term).strip()
+        if not term_text:
+            return False
+        tokens = [token.lower() for token in _LOCATION_TOKEN_PATTERN.findall(term_text)]
+        if not tokens:
+            return False
+        if all(token in _LOCATION_NON_PLACE_TOKENS for token in tokens):
+            return False
+        if any(token in _LOCATION_PLACE_HINT_TOKENS for token in tokens):
+            return True
+        raw_tokens = [token for token in re.split(r"\s+", raw_match.strip()) if token]
+        if any(re.search(r"[A-Z]", token) for token in raw_tokens):
+            return True
+        return False
+
+    def _location_term_set(self, text: str) -> set[str]:
+        if not text:
+            return set()
+        terms: set[str] = set()
+        for pattern in (_LOCATION_DETAIL_PATTERN, _LOCATION_ABBREV_DETAIL_PATTERN):
+            for match in pattern.finditer(text):
+                value = match.group(0).strip(" \t\r\n.,!?;:\"'")
+                value = re.sub(r"^(?:at|in|from|to|near)\s+", "", value, flags=re.IGNORECASE).strip()
+                if not value:
+                    continue
+                if not self._is_location_term_candidate(raw_match=match.group(0), normalized_term=value):
+                    continue
+                terms.add(value.lower())
+        stripped = text.strip(" \t\r\n.,!?;:\"'")
+        if _STANDALONE_LOCATION_DETAIL_PATTERN.fullmatch(stripped) and self._is_location_term_candidate(
+            raw_match=stripped,
+            normalized_term=stripped,
+        ):
+            terms.add(stripped.lower())
+        return terms
 
     def _assistant_noise_penalty(self, text: str) -> int:
         lowered = text.lower()
@@ -1048,12 +1776,24 @@ class CortexHTTPClient:
         detail_bonus = self._detail_bonus(query_profile, candidate)
         personal_bonus = 2 if "\"role\": \"user\"" in lowered or "[user]" in lowered else 0
         personal_bonus += 1 if re.search(r"\b(i|my)\b", lowered) else 0
+        item_answer_bonus = self._item_answer_specificity_bonus(
+            query_profile=query_profile,
+            text=candidate,
+            overlap=overlap,
+            detail_bonus=detail_bonus,
+        )
+        occupation_temporal_adjustment = self._occupation_temporal_adjustment(
+            query_profile=query_profile,
+            text=candidate,
+        )
         location_penalty = self._location_specificity_penalty(query_profile, candidate)
         return (
             (overlap * 10)
             + (phrase_bonus * 4)
             + detail_bonus
             + personal_bonus
+            + item_answer_bonus
+            + occupation_temporal_adjustment
             - self._assistant_noise_penalty(candidate)
             - location_penalty
         )
@@ -1090,9 +1830,15 @@ class CortexHTTPClient:
                     )
                 )
             ):
-                return self._clip_text(normalized_excerpt)
+                return self._clip_text_by_policy(
+                    normalized_excerpt,
+                    query_profile=query_profile,
+                )
         if not normalized_full:
-            return self._clip_text(normalized_excerpt)
+            return self._clip_text_by_policy(
+                normalized_excerpt,
+                query_profile=query_profile,
+            )
 
         candidates: list[str] = []
         seen_candidates: set[str] = set()
@@ -1141,7 +1887,10 @@ class CortexHTTPClient:
                     windows_added += 1
 
         if not candidates:
-            return self._clip_text(normalized_full)
+            return self._clip_text_by_policy(
+                normalized_full,
+                query_profile=query_profile,
+            )
 
         scored_candidates: list[tuple[int, int, str]] = []
         for idx, candidate in enumerate(candidates):
@@ -1150,7 +1899,126 @@ class CortexHTTPClient:
 
         scored_candidates.sort(reverse=True, key=lambda item: (item[0], item[1]))
         best = scored_candidates[0][2]
-        return self._clip_text(best)
+        return self._clip_text_by_policy(
+            best,
+            query_profile=query_profile,
+        )
+
+    def _clip_text_by_policy(
+        self,
+        text: str,
+        *,
+        query_profile: dict[str, bool | str] | None = None,
+    ) -> str:
+        if self.retrieval_policy != "high-detail":
+            return self._clip_text(text)
+        if not query_profile or not bool(query_profile.get("is_detail_query")):
+            return self._clip_text(text)
+        return self._clip_text_preserve_detail(text, query_profile=query_profile)
+
+    def _detail_anchor_spans(self, query_profile: dict[str, bool | str], text: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        if bool(query_profile["wants_date"]):
+            spans.extend(match.span() for match in _DATE_DETAIL_PATTERN.finditer(text))
+            spans.extend(match.span() for match in _DATE_EXACT_DETAIL_PATTERN.finditer(text))
+        if bool(query_profile["wants_location"]):
+            spans.extend(match.span() for match in _LOCATION_DETAIL_PATTERN.finditer(text))
+            spans.extend(match.span() for match in _LOCATION_ABBREV_DETAIL_PATTERN.finditer(text))
+        if bool(query_profile["wants_speed"]):
+            spans.extend(match.span() for match in _SPEED_DETAIL_PATTERN.finditer(text))
+        if bool(query_profile["wants_item"]):
+            spans.extend(match.span() for match in _ITEM_DETAIL_PATTERN.finditer(text))
+            spans.extend(
+                match.span()
+                for match in re.finditer(
+                    r"\[user-answer\]\s*([^\[\n]{1,220})",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+            )
+        if bool(query_profile["wants_occupation"]):
+            spans.extend(match.span() for match in _OCCUPATION_DETAIL_PATTERN.finditer(text))
+        if bool(query_profile["wants_name"]):
+            spans.extend(match.span() for match in _NAME_DETAIL_PATTERN.finditer(text))
+        if bool(query_profile["wants_numbers"]):
+            spans.extend(match.span() for match in re.finditer(r"\d+", text))
+        return spans
+
+    def _clip_text_preserve_detail(
+        self,
+        text: str,
+        *,
+        query_profile: dict[str, bool | str],
+    ) -> str:
+        if self.max_context_chars <= 0 or len(text) <= self.max_context_chars:
+            return text
+        if self.max_context_chars <= 8:
+            return text[: self.max_context_chars]
+
+        spans = self._detail_anchor_spans(query_profile, text)
+        if not spans:
+            return self._clip_text(text)
+
+        target_width = self.max_context_chars - 5
+        if target_width <= 0:
+            return text[: self.max_context_chars]
+        candidate_bounds: list[tuple[int, int]] = []
+        seen_bounds: set[tuple[int, int]] = set()
+
+        def add_bound(center: int) -> None:
+            left = max(0, center - (target_width // 2))
+            right = min(len(text), left + target_width)
+            if (right - left) < target_width:
+                left = max(0, right - target_width)
+            bound = (left, right)
+            if bound in seen_bounds:
+                return
+            seen_bounds.add(bound)
+            candidate_bounds.append(bound)
+
+        for start, end in spans:
+            add_bound((start + end) // 2)
+        add_bound(min(start for start, _ in spans))
+        add_bound(max(end for _, end in spans))
+
+        if len(spans) >= 2:
+            sorted_spans = sorted(spans, key=lambda item: item[0])
+            for idx in range(len(sorted_spans) - 1):
+                cluster_center = (sorted_spans[idx][0] + sorted_spans[idx + 1][1]) // 2
+                add_bound(cluster_center)
+
+        if not candidate_bounds:
+            return self._clip_text(text)
+
+        def score_bound(left: int, right: int) -> int:
+            window = text[left:right]
+            score = self._detail_bonus(query_profile, window)
+            for span_start, span_end in spans:
+                if span_end <= left or span_start >= right:
+                    continue
+                score += 2
+                if span_start >= left and span_end <= right:
+                    score += 1
+            if bool(query_profile["wants_item"]) and "[user-answer]" in window.lower():
+                score += 8
+            if bool(query_profile["wants_location"]):
+                score += min(8, self._location_detail_count(window) * 2)
+            if bool(query_profile["wants_date"]) and self._text_has_exact_date_detail(window):
+                score += 3
+            return score
+
+        left, right = max(
+            candidate_bounds,
+            key=lambda bound: (score_bound(bound[0], bound[1]), -bound[0]),
+        )
+        chunk = text[left:right]
+        if left <= 0 and right >= len(text):
+            return chunk
+        if left <= 0:
+            return f"{chunk.rstrip()} ..."
+        if right >= len(text):
+            return f"... {chunk.lstrip()}"
+        return f"... {chunk.strip()} ..."
 
     def _clip_text(self, text: str) -> str:
         if self.max_context_chars <= 0 or len(text) <= self.max_context_chars:

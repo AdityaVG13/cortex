@@ -1,212 +1,212 @@
 {
   "aggregate": {
-    "avg_recall": 0.105,
-    "avg_precision": 0.498,
-    "avg_f1": 0.143,
-    "macro_recall": 0.068,
-    "total_relevant_in_db": 1701,
-    "total_found": 116
+    "avg_recall": 0.132,
+    "avg_precision": 0.382,
+    "avg_f1": 0.15,
+    "macro_recall": 0.106,
+    "total_relevant_in_db": 414,
+    "total_found": 44
   },
   "results": [
     {
       "query": "token optimization settings",
-      "db_relevant": 35,
-      "found": 11,
-      "returned": 10,
-      "returned_relevant": 4,
-      "recall": 0.314,
-      "precision": 0.4,
-      "f1": 0.352
+      "db_relevant": 10,
+      "found": 1,
+      "returned": 4,
+      "returned_relevant": 0,
+      "recall": 0.1,
+      "precision": 0.0,
+      "f1": 0.0
     },
     {
       "query": "cache expiry guard hook",
-      "db_relevant": 19,
-      "found": 6,
-      "returned": 8,
-      "returned_relevant": 4,
-      "recall": 0.316,
-      "precision": 0.5,
-      "f1": 0.387
+      "db_relevant": 3,
+      "found": 0,
+      "returned": 7,
+      "returned_relevant": 2,
+      "recall": 0.0,
+      "precision": 0.286,
+      "f1": 0.0
     },
     {
       "query": "RTK path fix bashrc",
-      "db_relevant": 74,
-      "found": 7,
+      "db_relevant": 19,
+      "found": 1,
       "returned": 6,
-      "returned_relevant": 1,
-      "recall": 0.095,
-      "precision": 0.167,
-      "f1": 0.121
+      "returned_relevant": 4,
+      "recall": 0.053,
+      "precision": 0.667,
+      "f1": 0.098
     },
     {
       "query": "CCMeter analytics dashboard",
-      "db_relevant": 125,
-      "found": 5,
-      "returned": 2,
-      "returned_relevant": 1,
-      "recall": 0.04,
-      "precision": 0.5,
-      "f1": 0.074
+      "db_relevant": 36,
+      "found": 6,
+      "returned": 7,
+      "returned_relevant": 6,
+      "recall": 0.167,
+      "precision": 0.857,
+      "f1": 0.279
     },
     {
       "query": "browser cleanup playwright",
-      "db_relevant": 31,
-      "found": 8,
-      "returned": 8,
-      "returned_relevant": 7,
-      "recall": 0.258,
-      "precision": 0.875,
-      "f1": 0.399
+      "db_relevant": 5,
+      "found": 2,
+      "returned": 4,
+      "returned_relevant": 2,
+      "recall": 0.4,
+      "precision": 0.5,
+      "f1": 0.444
     },
     {
       "query": "uv python package management",
-      "db_relevant": 54,
-      "found": 12,
-      "returned": 9,
-      "returned_relevant": 4,
-      "recall": 0.222,
-      "precision": 0.444,
-      "f1": 0.296
+      "db_relevant": 22,
+      "found": 4,
+      "returned": 8,
+      "returned_relevant": 3,
+      "recall": 0.182,
+      "precision": 0.375,
+      "f1": 0.245
     },
     {
       "query": "never use em-dashes",
-      "db_relevant": 166,
-      "found": 3,
-      "returned": 2,
-      "returned_relevant": 1,
-      "recall": 0.018,
-      "precision": 0.5,
-      "f1": 0.035
+      "db_relevant": 60,
+      "found": 5,
+      "returned": 3,
+      "returned_relevant": 0,
+      "recall": 0.083,
+      "precision": 0.0,
+      "f1": 0.0
     },
     {
       "query": "cortex recall before investigation",
-      "db_relevant": 104,
-      "found": 14,
-      "returned": 6,
-      "returned_relevant": 2,
-      "recall": 0.135,
-      "precision": 0.333,
-      "f1": 0.192
+      "db_relevant": 19,
+      "found": 2,
+      "returned": 4,
+      "returned_relevant": 1,
+      "recall": 0.105,
+      "precision": 0.25,
+      "f1": 0.148
     },
     {
       "query": "codex agent contributions",
-      "db_relevant": 171,
-      "found": 8,
-      "returned": 4,
-      "returned_relevant": 1,
-      "recall": 0.047,
-      "precision": 0.25,
-      "f1": 0.079
-    },
-    {
-      "query": "gemini agent decisions",
-      "db_relevant": 160,
-      "found": 8,
-      "returned": 4,
-      "returned_relevant": 2,
-      "recall": 0.05,
-      "precision": 0.5,
-      "f1": 0.091
-    },
-    {
-      "query": "factory droid builds",
-      "db_relevant": 127,
-      "found": 3,
-      "returned": 2,
-      "returned_relevant": 1,
-      "recall": 0.024,
-      "precision": 0.5,
-      "f1": 0.045
-    },
-    {
-      "query": "multi-agent shared state",
-      "db_relevant": 151,
-      "found": 3,
-      "returned": 2,
-      "returned_relevant": 0,
-      "recall": 0.02,
-      "precision": 0.0,
-      "f1": 0.0
-    },
-    {
-      "query": "boot compiler capsule system",
-      "db_relevant": 46,
-      "found": 5,
-      "returned": 1,
-      "returned_relevant": 0,
-      "recall": 0.109,
-      "precision": 0.0,
-      "f1": 0.0
-    },
-    {
-      "query": "conflict detection jaccard cosine",
-      "db_relevant": 28,
-      "found": 3,
-      "returned": 3,
-      "returned_relevant": 2,
-      "recall": 0.107,
-      "precision": 0.667,
-      "f1": 0.185
-    },
-    {
-      "query": "embedding engine MiniLM",
       "db_relevant": 38,
       "found": 2,
       "returned": 3,
-      "returned_relevant": 1,
+      "returned_relevant": 2,
       "recall": 0.053,
-      "precision": 0.333,
-      "f1": 0.091
+      "precision": 0.667,
+      "f1": 0.098
     },
     {
-      "query": "crystal cluster formation",
-      "db_relevant": 98,
+      "query": "gemini agent decisions",
+      "db_relevant": 39,
+      "found": 3,
+      "returned": 4,
+      "returned_relevant": 3,
+      "recall": 0.077,
+      "precision": 0.75,
+      "f1": 0.14
+    },
+    {
+      "query": "factory droid builds",
+      "db_relevant": 23,
+      "found": 3,
+      "returned": 4,
+      "returned_relevant": 2,
+      "recall": 0.13,
+      "precision": 0.5,
+      "f1": 0.207
+    },
+    {
+      "query": "multi-agent shared state",
+      "db_relevant": 39,
+      "found": 4,
+      "returned": 4,
+      "returned_relevant": 2,
+      "recall": 0.103,
+      "precision": 0.5,
+      "f1": 0.17
+    },
+    {
+      "query": "boot compiler capsule system",
+      "db_relevant": 2,
       "found": 0,
-      "returned": 0,
+      "returned": 3,
       "returned_relevant": 0,
       "recall": 0.0,
-      "precision": 0,
+      "precision": 0.0,
       "f1": 0
     },
     {
-      "query": "user writing voice style",
-      "db_relevant": 34,
+      "query": "conflict detection jaccard cosine",
+      "db_relevant": 2,
+      "found": 0,
+      "returned": 6,
+      "returned_relevant": 0,
+      "recall": 0.0,
+      "precision": 0.0,
+      "f1": 0
+    },
+    {
+      "query": "embedding engine MiniLM",
+      "db_relevant": 2,
+      "found": 1,
+      "returned": 7,
+      "returned_relevant": 5,
+      "recall": 0.5,
+      "precision": 0.714,
+      "f1": 0.588
+    },
+    {
+      "query": "crystal cluster formation",
+      "db_relevant": 25,
       "found": 2,
-      "returned": 2,
+      "returned": 6,
       "returned_relevant": 2,
-      "recall": 0.059,
-      "precision": 1.0,
-      "f1": 0.111
+      "recall": 0.08,
+      "precision": 0.333,
+      "f1": 0.129
+    },
+    {
+      "query": "user writing voice style",
+      "db_relevant": 14,
+      "found": 2,
+      "returned": 5,
+      "returned_relevant": 0,
+      "recall": 0.143,
+      "precision": 0.0,
+      "f1": 0.0
     },
     {
       "query": "self improvement engine goals",
-      "db_relevant": 74,
-      "found": 1,
-      "returned": 1,
-      "returned_relevant": 1,
-      "recall": 0.014,
-      "precision": 1.0,
-      "f1": 0.027
+      "db_relevant": 21,
+      "found": 3,
+      "returned": 3,
+      "returned_relevant": 0,
+      "recall": 0.143,
+      "precision": 0.0,
+      "f1": 0.0
     },
     {
       "query": "tauri dashboard control center",
-      "db_relevant": 63,
-      "found": 11,
-      "returned": 6,
-      "returned_relevant": 6,
-      "recall": 0.175,
-      "precision": 1.0,
-      "f1": 0.297
+      "db_relevant": 4,
+      "found": 1,
+      "returned": 4,
+      "returned_relevant": 2,
+      "recall": 0.25,
+      "precision": 0.5,
+      "f1": 0.333
     },
     {
       "query": "job applicator skill",
-      "db_relevant": 103,
-      "found": 4,
-      "returned": 3,
+      "db_relevant": 31,
+      "found": 2,
+      "returned": 4,
       "returned_relevant": 3,
-      "recall": 0.039,
-      "precision": 1.0,
-      "f1": 0.075
+      "recall": 0.065,
+      "precision": 0.75,
+      "f1": 0.119
     }
   ]
 }

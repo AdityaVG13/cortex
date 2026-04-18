@@ -61,6 +61,21 @@ describe("createApi - api()", () => {
     await expect(api("/health")).rejects.toThrow("/health: invalid IPC response");
   });
 
+  it("times out hung IPC GET requests", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(() => new Promise(() => {}));
+      const api = createApi(makeDeps({ invoke, token: "tok" }));
+      const assertion = expect(api("/health")).rejects.toThrow(
+        "/health: IPC request: timed out after 12000ms"
+      );
+      await vi.advanceTimersByTimeAsync(12000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws on invalid IPC response (missing body string)", async () => {
     const invoke = vi.fn(() => Promise.resolve({ status: 200, body: 42 }));
     const api = createApi(makeDeps({ invoke, token: "tok" }));
@@ -90,6 +105,19 @@ describe("createApi - api()", () => {
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     const result = await api("/sessions", true);
     expect(result).toEqual({ sessions: [] });
+  });
+
+  it("uses an extended transport timeout for MCP RPC IPC GET requests", async () => {
+    const invoke = vi.fn(() =>
+      Promise.resolve({ status: 200, body: '{"ok":true}' })
+    );
+    const api = createApi(makeDeps({ invoke, token: "tok" }));
+    await api("/mcp-rpc", true);
+    expect(invoke).toHaveBeenCalledWith("fetch_cortex", {
+      path: "/mcp-rpc",
+      authToken: "tok",
+      timeoutMs: 29500,
+    });
   });
 
   it("throws on browser fetch HTTP non-2xx", async () => {
@@ -188,6 +216,7 @@ describe("createPostApi - postApi()", () => {
       path: "/resolve",
       authToken: "fresh-token",
       body: '{"keepId":"a"}',
+      timeoutMs: 7500,
     });
   });
 
@@ -197,6 +226,21 @@ describe("createPostApi - postApi()", () => {
     await expect(postApi("/resolve")).rejects.toThrow(
       "POST /resolve: invalid IPC response"
     );
+  });
+
+  it("times out hung IPC POST requests", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(() => new Promise(() => {}));
+      const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
+      const assertion = expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow(
+        "POST /resolve: IPC request: timed out after 8000ms"
+      );
+      await vi.advanceTimersByTimeAsync(8000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("throws on IPC HTTP non-2xx", async () => {
@@ -218,6 +262,7 @@ describe("createPostApi - postApi()", () => {
       path: "/resolve",
       authToken: "tok",
       body: '{"keepId":"a"}',
+      timeoutMs: 7500,
     });
   });
 
@@ -246,11 +291,27 @@ describe("createPostApi - postApi()", () => {
       path: "/resolve",
       authToken: "stale-token",
       body: '{"keepId":"a"}',
+      timeoutMs: 7500,
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "post_cortex", {
       path: "/resolve",
       authToken: "fresh-token",
       body: '{"keepId":"a"}',
+      timeoutMs: 7500,
+    });
+  });
+
+  it("uses an extended transport timeout for MCP RPC IPC POST requests", async () => {
+    const invoke = vi.fn(() =>
+      Promise.resolve({ status: 200, body: '{"ok":true}' })
+    );
+    const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
+    await postApi("/mcp-rpc", { jsonrpc: "2.0", id: "1" });
+    expect(invoke).toHaveBeenCalledWith("post_cortex", {
+      path: "/mcp-rpc",
+      authToken: "tok",
+      body: '{"jsonrpc":"2.0","id":"1"}',
+      timeoutMs: 29500,
     });
   });
 

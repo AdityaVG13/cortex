@@ -31,6 +31,8 @@ const DAEMON_REACHABILITY_TIMEOUT_MS: u64 = 400;
 const DAEMON_CONNECT_TIMEOUT_MS: u64 = 1_200;
 const DAEMON_READ_TIMEOUT_MS: u64 = 10_000;
 const DAEMON_WRITE_TIMEOUT_MS: u64 = 3_000;
+const DAEMON_MIN_REQUEST_TIMEOUT_MS: u64 = 500;
+const DAEMON_MAX_REQUEST_TIMEOUT_MS: u64 = 120_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
 const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
@@ -132,10 +134,9 @@ impl DaemonState {
         let db = paths.db.clone().ok_or_else(|| {
             "Could not resolve Cortex database path for app-managed local mode.".to_string()
         })?;
-        let bind = paths
-            .bind
-            .clone()
-            .unwrap_or_else(|| "127.0.0.1".to_string());
+        // App-managed mode is intentionally local-only. We always bind to loopback
+        // so Control Center can own daemon lifecycle without exposing it on LAN.
+        let bind = "127.0.0.1".to_string();
         let port = paths.port.unwrap_or(DEFAULT_DAEMON_PORT);
 
         let mut command = Command::new(&exe_path);
@@ -997,11 +998,21 @@ fn hide_to_tray(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn daemon_status(state: State<DaemonState>) -> Result<DaemonCommandResult, String> {
+async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let (managed, pid) = state.status()?;
     let port = daemon_port();
-    let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
-    let auth_token_ready = reachable && auth_token_ready();
+    let reachable = tauri::async_runtime::spawn_blocking(move || {
+        is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS)
+    })
+    .await
+    .map_err(|err| format!("daemon_status reachability task failed: {err}"))?;
+    let auth_token_ready = if reachable {
+        tauri::async_runtime::spawn_blocking(auth_token_ready)
+            .await
+            .map_err(|err| format!("daemon_status token task failed: {err}"))?
+    } else {
+        false
+    };
     let message = describe_daemon_state(managed, reachable, auth_token_ready, pid, port);
 
     Ok(DaemonCommandResult {
@@ -1122,7 +1133,7 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
 /// fails (daemon already gone).
 fn send_http_shutdown() -> Result<(), String> {
     let token = read_auth_token_once().unwrap_or_default();
-    let initial = send_cortex_request("POST", "/shutdown", &token, Some("{}"));
+    let initial = send_cortex_request("POST", "/shutdown", &token, Some("{}"), None);
     if matches!(
         initial,
         Ok(FetchCortexResponse {
@@ -1139,6 +1150,7 @@ fn send_http_shutdown() -> Result<(), String> {
                     "/shutdown",
                     &refreshed_token,
                     Some("{}"),
+                    None,
                 ));
             }
         }
@@ -1230,17 +1242,30 @@ async fn read_auth_token() -> Result<String, String> {
 // ─── HTTP Proxy (bypasses WebView2 mixed-content restrictions) ──────────────
 
 #[tauri::command]
-fn fetch_cortex(path: String, auth_token: String) -> Result<FetchCortexResponse, String> {
-    send_cortex_request("GET", &path, &auth_token, None)
+async fn fetch_cortex(
+    path: String,
+    auth_token: String,
+    timeout_ms: Option<u64>,
+) -> Result<FetchCortexResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        send_cortex_request("GET", &path, &auth_token, None, timeout_ms)
+    })
+    .await
+    .map_err(|err| format!("fetch_cortex task failed: {err}"))?
 }
 
 #[tauri::command]
-fn post_cortex(
+async fn post_cortex(
     path: String,
     auth_token: String,
     body: String,
+    timeout_ms: Option<u64>,
 ) -> Result<FetchCortexResponse, String> {
-    send_cortex_request("POST", &path, &auth_token, Some(&body))
+    tauri::async_runtime::spawn_blocking(move || {
+        send_cortex_request("POST", &path, &auth_token, Some(&body), timeout_ms)
+    })
+    .await
+    .map_err(|err| format!("post_cortex task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -1269,7 +1294,13 @@ fn send_cortex_request(
     path: &str,
     auth_token: &str,
     body: Option<&str>,
+    timeout_ms: Option<u64>,
 ) -> Result<FetchCortexResponse, String> {
+    let read_timeout =
+        Duration::from_millis(timeout_ms.unwrap_or(DAEMON_READ_TIMEOUT_MS).clamp(
+            DAEMON_MIN_REQUEST_TIMEOUT_MS,
+            DAEMON_MAX_REQUEST_TIMEOUT_MS,
+        ));
     send_cortex_request_with_port(
         daemon_port(),
         method,
@@ -1278,10 +1309,18 @@ fn send_cortex_request(
         body,
         RequestTimeouts {
             connect: Duration::from_millis(DAEMON_CONNECT_TIMEOUT_MS),
-            read: Duration::from_millis(DAEMON_READ_TIMEOUT_MS),
+            read: read_timeout,
             write: Duration::from_millis(DAEMON_WRITE_TIMEOUT_MS),
         },
     )
+}
+
+fn should_use_partial_response_on_read_timeout(err: &std::io::Error, response_len: usize) -> bool {
+    response_len > 0
+        && matches!(
+            err.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        )
 }
 
 fn send_cortex_request_with_port(
@@ -1327,9 +1366,11 @@ fn send_cortex_request_with_port(
         .map_err(|e| format!("Write failed: {e}"))?;
 
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|e| format!("Read failed: {e}"))?;
+    if let Err(err) = stream.read_to_end(&mut response) {
+        if !should_use_partial_response_on_read_timeout(&err, response.len()) {
+            return Err(format!("Read failed: {err}"));
+        }
+    }
 
     // Split headers from body
     if let Some(pos) = find_bytes(&response, b"\r\n\r\n") {
@@ -2098,6 +2139,70 @@ fn detect_editors() -> Result<Vec<EditorDetection>, String> {
     Ok(results)
 }
 
+fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
+    let port = daemon_port();
+    if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+        let daemon_state = app_handle.state::<DaemonState>();
+        match try_service_ensure(port) {
+            Ok(true) => {
+                log_startup_path(
+                    "setup",
+                    "service-ensure",
+                    "daemon started or validated via service ensure",
+                );
+            }
+            Ok(false) => match try_local_app_managed_ensure(&daemon_state, port) {
+                Ok(true) => {
+                    log_startup_path(
+                        "setup",
+                        "app-managed-spawn",
+                        "daemon started via Control Center local mode",
+                    );
+                }
+                Ok(false) => {
+                    eprintln!(
+                        "[cortex-control-center] neither service ensure nor app-managed local start is available; daemon remains offline"
+                    );
+                    log_startup_path("setup", "blocked", "service ensure unavailable");
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[cortex-control-center] app-managed local start failed at startup: {err}"
+                    );
+                    log_startup_path("setup", "blocked", "app-managed spawn failed");
+                }
+            },
+            Err(err) => match try_local_app_managed_ensure(&daemon_state, port) {
+                Ok(true) => {
+                    log_startup_path(
+                        "setup",
+                        "app-managed-spawn",
+                        "daemon started via Control Center after service ensure failure",
+                    );
+                }
+                Ok(false) => {
+                    eprintln!(
+                        "[cortex-control-center] service ensure failed at startup and app-managed local start was unavailable: {err}"
+                    );
+                    log_startup_path("setup", "blocked", "service ensure failed");
+                }
+                Err(local_err) => {
+                    eprintln!(
+                        "[cortex-control-center] service ensure failed at startup and app-managed local start also failed: {err}; {local_err}"
+                    );
+                    log_startup_path("setup", "blocked", "app-managed spawn failed");
+                }
+            },
+        }
+    } else {
+        log_startup_path(
+            "setup",
+            "existing-daemon",
+            "daemon already reachable at application startup",
+        );
+    }
+}
+
 fn main() {
     let _instance_guard = match AppInstanceGuard::acquire() {
         Ok(Some(guard)) => guard,
@@ -2118,68 +2223,13 @@ fn main() {
         .manage(LifecycleState::default())
         .setup(|app| {
             setup_tray(app)?;
-
-            let port = daemon_port();
-            if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
-                let daemon_state = app.state::<DaemonState>();
-                match try_service_ensure(port) {
-                    Ok(true) => {
-                        log_startup_path(
-                            "setup",
-                            "service-ensure",
-                            "daemon started or validated via service ensure",
-                        );
-                    }
-                    Ok(false) => match try_local_app_managed_ensure(&daemon_state, port) {
-                        Ok(true) => {
-                            log_startup_path(
-                                "setup",
-                                "app-managed-spawn",
-                                "daemon started via Control Center local mode",
-                            );
-                        }
-                        Ok(false) => {
-                            eprintln!(
-                                "[cortex-control-center] neither service ensure nor app-managed local start is available; daemon remains offline"
-                            );
-                            log_startup_path("setup", "blocked", "service ensure unavailable");
-                        }
-                        Err(err) => {
-                            eprintln!(
-                                "[cortex-control-center] app-managed local start failed at startup: {err}"
-                            );
-                            log_startup_path("setup", "blocked", "app-managed spawn failed");
-                        }
-                    },
-                    Err(err) => match try_local_app_managed_ensure(&daemon_state, port) {
-                        Ok(true) => {
-                            log_startup_path(
-                                "setup",
-                                "app-managed-spawn",
-                                "daemon started via Control Center after service ensure failure",
-                            );
-                        }
-                        Ok(false) => {
-                            eprintln!(
-                                "[cortex-control-center] service ensure failed at startup and app-managed local start was unavailable: {err}"
-                            );
-                            log_startup_path("setup", "blocked", "service ensure failed");
-                        }
-                        Err(local_err) => {
-                            eprintln!(
-                                "[cortex-control-center] service ensure failed at startup and app-managed local start also failed: {err}; {local_err}"
-                            );
-                            log_startup_path("setup", "blocked", "app-managed spawn failed");
-                        }
-                    },
-                }
-            } else {
-                log_startup_path(
-                    "setup",
-                    "existing-daemon",
-                    "daemon already reachable at application startup",
-                );
-            }
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    bootstrap_daemon_on_startup(&app_handle);
+                })
+                .await;
+            });
 
             Ok(())
         })
@@ -2233,7 +2283,8 @@ mod tests {
         cortex_mcp_registration, cortex_readiness_state, editor_args, editor_config_path,
         editor_targets, extract_error_detail, interpret_shutdown_response,
         is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
-        toml_env_match, workspace_binary_candidates, FetchCortexResponse, ResolvedCortexPaths,
+        should_use_partial_response_on_read_timeout, toml_env_match, workspace_binary_candidates,
+        FetchCortexResponse, ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2290,6 +2341,18 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("Refresh the token"));
+    }
+
+    #[test]
+    fn partial_response_timeout_only_applies_when_bytes_exist() {
+        let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        let would_block = std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block");
+        let reset = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+
+        assert!(should_use_partial_response_on_read_timeout(&timeout, 8));
+        assert!(should_use_partial_response_on_read_timeout(&would_block, 8));
+        assert!(!should_use_partial_response_on_read_timeout(&timeout, 0));
+        assert!(!should_use_partial_response_on_read_timeout(&reset, 8));
     }
 
     #[test]

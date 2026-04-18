@@ -1450,7 +1450,8 @@ function isDaemonOfflineErrorMessage(message) {
     value.includes("cannot reach daemon") ||
     value.includes("actively refused") ||
     value.includes("os error 10061") ||
-    value.includes("connection refused")
+    value.includes("connection refused") ||
+    value.includes("ipc request: timed out")
   );
 }
 
@@ -1927,7 +1928,7 @@ export function App() {
         decisions: "--",
         events: "--",
       });
-      return;
+      return false;
     }
 
     const next = health.stats;
@@ -1942,6 +1943,7 @@ export function App() {
       decisions: next.decisions ?? 0,
       events: next.events ?? 0,
     });
+    return true;
   }, [api]);
 
   const refreshCoreData = useCallback(async () => {
@@ -2057,26 +2059,34 @@ export function App() {
     }
   }, [api, clearTransientFeedback]);
 
-  const refreshProtectedData = useCallback(
-    () => settledCollectErrors([
-      refreshCoreData,
+  const refreshProtectedData = useCallback(async () => {
+    // Core panels first. If these fail, avoid blasting secondary routes.
+    const coreErrors = await settledCollectErrors([refreshCoreData]);
+    if (coreErrors.length) return coreErrors;
+    const secondaryErrors = await settledCollectErrors([
       refreshFeed,
       refreshMessages,
       refreshActivity,
-      refreshSavings,
       refreshConflicts,
       refreshPermissions,
-    ]),
-    [
-      refreshCoreData,
-      refreshFeed,
-      refreshMessages,
-      refreshActivity,
-      refreshSavings,
-      refreshConflicts,
-      refreshPermissions,
-    ]
-  );
+    ]);
+    // Savings is the heaviest analytics endpoint on large event logs.
+    // Keep it out of startup-critical fanout and refresh lazily only
+    // after the analytics panel has actually been visited.
+    if (panel === "analytics") {
+      void refreshSavings().catch(() => {});
+    }
+    return secondaryErrors;
+  }, [
+    panel,
+    refreshCoreData,
+    refreshFeed,
+    refreshMessages,
+    refreshActivity,
+    refreshSavings,
+    refreshConflicts,
+    refreshPermissions,
+  ]);
 
   const handleResolveConflict = useCallback(async (keepId, action, supersededId, pair = null) => {
     const resolver = selectedOperatorName ? `user:${selectedOperatorName}` : "user:control-center";
@@ -2242,7 +2252,7 @@ export function App() {
     }
 
     const nextDaemonState = await refreshDaemonState();
-    await refreshHealth();
+    const healthReady = await refreshHealth();
 
     if (daemonTransitionRef.current) {
       return;
@@ -2263,6 +2273,13 @@ export function App() {
       }
       clearDisconnectedData();
       clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
+      return;
+    }
+
+    if (invokeRef.current && !healthReady) {
+      clearDisconnectedData();
+      setFeedbackMessage("Daemon is reachable but still warming up. Retrying shortly...");
+      scheduleRecoveryRetry(1000);
       return;
     }
 
@@ -3027,6 +3044,9 @@ export function App() {
 
     const statusBefore = await call("daemon_status").catch(() => null);
     const shouldStop = Boolean(statusBefore?.running || statusBefore?.reachable);
+    const managedBefore = Boolean(statusBefore?.managed);
+    let restartSkippedExternal = false;
+    let startResult = null;
 
     if (shouldStop) {
       setFeedbackMessage("Restarting daemon: stopping...");
@@ -3043,40 +3063,60 @@ export function App() {
       } else if (!stopResult?.ok) {
         stopFailure = stopResult?.error || "Existing daemon rejected shutdown.";
       }
-      const stopped = await waitForDaemonOffline();
+      const stopState = stopResult?.ok ? stopResult.result : null;
+      const unmanagedStillReachable = Boolean(stopState?.reachable && !stopState?.managed);
+      const stopped = unmanagedStillReachable ? false : await waitForDaemonOffline();
       if (!stopped) {
-        throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
+        if (unmanagedStillReachable && !managedBefore) {
+          restartSkippedExternal = true;
+          setFeedbackMessage("Daemon is externally managed and remained online. Continuing without forced shutdown.");
+        } else {
+          throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
+        }
       }
-      tokenRef.current = "";
-      persistBrowserAuthToken("");
-      clearDisconnectedData();
-      setDaemonState({
-        running: false,
-        reachable: false,
-        managed: false,
-        authTokenReady: false,
-        pid: null,
-        message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
-      });
+      if (!restartSkippedExternal) {
+        tokenRef.current = "";
+        persistBrowserAuthToken("");
+        clearDisconnectedData();
+        setDaemonState({
+          running: false,
+          reachable: false,
+          managed: false,
+          authTokenReady: false,
+          pid: null,
+          message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+        });
+      }
     } else {
       setFeedbackMessage("Daemon already stopped. Starting...");
     }
 
-    setFeedbackMessage("Restarting daemon: starting...");
-    const startResult = await call("start_daemon");
-    if (startResult?.message) {
-      setFeedbackMessage(startResult.message);
-    }
+    if (!restartSkippedExternal) {
+      setFeedbackMessage("Restarting daemon: starting...");
+      startResult = await call("start_daemon");
+      if (startResult?.message) {
+        setFeedbackMessage(startResult.message);
+      }
 
-    const reachable = await waitForDaemonReachable();
-    if (!reachable) {
-      throw new Error("Daemon did not become reachable after restart.");
+      const reachable = await waitForDaemonReachable();
+      if (!reachable) {
+        throw new Error("Daemon did not become reachable after restart.");
+      }
+    } else {
+      startResult = await call("daemon_status").catch(() => ({
+        running: true,
+        reachable: true,
+        managed: false,
+        authTokenReady: Boolean(tokenRef.current),
+        pid: null,
+        message: "Daemon remained online (externally managed).",
+      }));
     }
 
     daemonTransitionRef.current = false;
     await readAuthToken({ suppressFeedback: true });
     await refreshAll();
-    return startResult;
+    return { ...startResult, restartSkippedExternal };
   }, [call, clearDisconnectedData, cortexBase, readAuthToken, refreshAll, waitForDaemonOffline, waitForDaemonReachable]);
 
   async function handleMemorySearch(e) {
@@ -3284,20 +3324,26 @@ export function App() {
         const disconnectedBeforeRestart = streamDisconnectedAtRef.current;
         const sessionEventCountBeforeReconnect = streamSessionEventCountRef.current;
 
-        await runRestartDaemonSequence();
-
-        await waitForCondition(
-          "the event stream disconnect during restart",
-          () => streamDisconnectedAtRef.current > disconnectedBeforeRestart
-        );
-        await waitForCondition(
-          "the event stream reconnect after restart",
-          () => streamConnectedAtRef.current > connectedBeforeRestart
-        );
-        recordStep("restart", {
-          disconnectedAt: new Date(streamDisconnectedAtRef.current).toISOString(),
-          reconnectedAt: new Date(streamConnectedAtRef.current).toISOString(),
-        });
+        const restartResult = await runRestartDaemonSequence();
+        if (restartResult?.restartSkippedExternal) {
+          recordStep("restart", {
+            skipped: true,
+            reason: restartResult?.message || "Daemon remained online (externally managed).",
+          });
+        } else {
+          await waitForCondition(
+            "the event stream disconnect during restart",
+            () => streamDisconnectedAtRef.current > disconnectedBeforeRestart
+          );
+          await waitForCondition(
+            "the event stream reconnect after restart",
+            () => streamConnectedAtRef.current > connectedBeforeRestart
+          );
+          recordStep("restart", {
+            disconnectedAt: new Date(streamDisconnectedAtRef.current).toISOString(),
+            reconnectedAt: new Date(streamConnectedAtRef.current).toISOString(),
+          });
+        }
 
         const reconnectResult = await callMcpTool("cortex_reconnect", {
           agent: verificationAgent,

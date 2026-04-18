@@ -45,6 +45,10 @@ const ORPHAN_WATCH_INTERVAL_SECS: u64 = 2;
 const DEFAULT_EMBED_BACKFILL_BATCH_SIZE: usize = 200;
 const DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS: usize = 8;
 const DEFAULT_EMBED_BACKFILL_INTERVAL_SECS: u64 = 120;
+const APP_MANAGED_STARTUP_HEAVY_DELAY_SECS: u64 = 45;
+const APP_MANAGED_AGING_STARTUP_OFFSET_SECS: u64 = 15;
+const APP_MANAGED_EMBED_STARTUP_OFFSET_SECS: u64 = 30;
+const APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS: u64 = 45;
 const STARTUP_LOG_FILES: &[&str] = &[
     "daemon.log",
     "daemon.err.log",
@@ -1763,6 +1767,7 @@ const DAEMON_LOCK_HANDOFF_GRACE_SECS: u64 = 3;
 const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
 const APP_REQUIRED_ENV: &str = "CORTEX_APP_REQUIRED";
 const APP_CLIENT_ENV: &str = "CORTEX_APP_CLIENT";
+const APP_MANAGED_STARTUP_DELAY_ENV: &str = "CORTEX_APP_MANAGED_STARTUP_DELAY_SECS";
 
 fn read_auth_token_from_path(token_path: &std::path::Path) -> Option<String> {
     std::fs::read_to_string(token_path).ok().and_then(|token| {
@@ -2004,6 +2009,31 @@ fn should_watch_spawn_parent(owner_tag: Option<&str>) -> bool {
     owner_tag
         .map(|owner| !owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
         .unwrap_or(true)
+}
+
+fn is_control_center_owner(owner_tag: Option<&str>) -> bool {
+    owner_tag
+        .map(|owner| owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
+        .unwrap_or(false)
+}
+
+fn parse_env_u64_nonnegative(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn app_managed_startup_heavy_delay(owner_tag: Option<&str>) -> Duration {
+    if !is_control_center_owner(owner_tag) {
+        return Duration::from_secs(0);
+    }
+    let secs = parse_env_u64_nonnegative(
+        APP_MANAGED_STARTUP_DELAY_ENV,
+        APP_MANAGED_STARTUP_HEAVY_DELAY_SECS,
+    )
+    .min(3_600);
+    Duration::from_secs(secs)
 }
 
 fn process_pid_start_time(pid: u32) -> Option<u64> {
@@ -2759,6 +2789,32 @@ pub(crate) async fn run_daemon(
         }
     }
 
+    let startup_heavy_delay = app_managed_startup_heavy_delay(daemon_owner.as_deref());
+    let startup_aging_delay = if startup_heavy_delay > Duration::from_secs(0) {
+        startup_heavy_delay + Duration::from_secs(APP_MANAGED_AGING_STARTUP_OFFSET_SECS)
+    } else {
+        Duration::from_secs(0)
+    };
+    let startup_embed_delay = if startup_heavy_delay > Duration::from_secs(0) {
+        startup_heavy_delay + Duration::from_secs(APP_MANAGED_EMBED_STARTUP_OFFSET_SECS)
+    } else {
+        Duration::from_secs(0)
+    };
+    let startup_crystallize_delay = if startup_heavy_delay > Duration::from_secs(0) {
+        startup_heavy_delay + Duration::from_secs(APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS)
+    } else {
+        Duration::from_secs(30)
+    };
+    if startup_heavy_delay > Duration::from_secs(0) {
+        eprintln!(
+            "[cortex] App-managed startup scheduling: index={}s, aging={}s, embeddings={}s, crystallize={}s",
+            startup_heavy_delay.as_secs(),
+            startup_aging_delay.as_secs(),
+            startup_embed_delay.as_secs(),
+            startup_crystallize_delay.as_secs()
+        );
+    }
+
     if let Some(parent) = paths.pid.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -2810,7 +2866,11 @@ pub(crate) async fn run_daemon(
         let db_index = state.db.clone();
         let home = state.home.clone();
         let owner_id = state.default_owner_id;
+        let startup_delay = startup_heavy_delay;
         tokio::spawn(async move {
+            if startup_delay > Duration::from_secs(0) {
+                tokio::time::sleep(startup_delay).await;
+            }
             let started = std::time::Instant::now();
             let (indexed, decayed) = {
                 let conn = db_index.lock().await;
@@ -2843,8 +2903,17 @@ pub(crate) async fn run_daemon(
             DEFAULT_EMBED_BACKFILL_INTERVAL_SECS,
         )
         .clamp(5, 86_400);
+        let startup_delay = startup_embed_delay;
+        let startup_max_batches_per_pass = if startup_delay > Duration::from_secs(0) {
+            max_batches_per_pass.min(2)
+        } else {
+            max_batches_per_pass
+        };
         tokio::spawn(async move {
-            build_embeddings_async(&engine, &db, batch_size, max_batches_per_pass).await;
+            if startup_delay > Duration::from_secs(0) {
+                tokio::time::sleep(startup_delay).await;
+            }
+            build_embeddings_async(&engine, &db, batch_size, startup_max_batches_per_pass).await;
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
             interval.tick().await; // skip first immediate tick
             loop {
@@ -2922,7 +2991,11 @@ pub(crate) async fn run_daemon(
     // ── Background aging pass every 6 hours ──────────────────────────
     {
         let db_aging = state.db.clone();
+        let startup_delay = startup_aging_delay;
         tokio::spawn(async move {
+            if startup_delay > Duration::from_secs(0) {
+                tokio::time::sleep(startup_delay).await;
+            }
             // Run initial aging pass on startup
             {
                 let conn = db_aging.lock().await;
@@ -2966,9 +3039,10 @@ pub(crate) async fn run_daemon(
         let db_crystal = state.db.clone();
         let engine_crystal = state.embedding_engine.clone();
         let crystal_owner_id = state.default_owner_id;
+        let initial_delay = startup_crystallize_delay;
         tokio::spawn(async move {
-            // Initial pass on startup (after embeddings are built)
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            // Initial pass on startup (after embeddings are built, with app-managed delay if needed)
+            tokio::time::sleep(initial_delay).await;
             {
                 let conn = db_crystal.lock().await;
                 let result = crystallize::run_crystallize_pass(
@@ -3777,6 +3851,34 @@ mod tests {
         assert!(spawned_owner_requires_parent_pid(Some("plugin-claude")));
         assert!(!spawned_owner_requires_parent_pid(Some("control-center")));
         assert!(!spawned_owner_requires_parent_pid(None));
+    }
+
+    #[test]
+    fn is_control_center_owner_is_case_insensitive() {
+        assert!(is_control_center_owner(Some("control-center")));
+        assert!(is_control_center_owner(Some("CoNtRoL-CeNtEr")));
+        assert!(!is_control_center_owner(Some("plugin-claude")));
+        assert!(!is_control_center_owner(None));
+    }
+
+    #[test]
+    fn app_managed_startup_heavy_delay_only_applies_to_control_center_owner() {
+        let _env_guard = env_guard();
+        std::env::remove_var(APP_MANAGED_STARTUP_DELAY_ENV);
+        assert_eq!(
+            app_managed_startup_heavy_delay(Some("control-center")),
+            Duration::from_secs(APP_MANAGED_STARTUP_HEAVY_DELAY_SECS)
+        );
+        assert_eq!(
+            app_managed_startup_heavy_delay(Some("plugin-claude")),
+            Duration::from_secs(0)
+        );
+
+        let _startup_delay = ScopedEnvVar::set(APP_MANAGED_STARTUP_DELAY_ENV, "0");
+        assert_eq!(
+            app_managed_startup_heavy_delay(Some("control-center")),
+            Duration::from_secs(0)
+        );
     }
 
     #[test]

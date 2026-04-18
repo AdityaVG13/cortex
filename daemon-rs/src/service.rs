@@ -146,6 +146,14 @@ fn parse_http_probe_response(raw: &[u8]) -> Result<(u16, String), String> {
     Ok((status, body))
 }
 
+fn should_use_partial_probe_response(err: &std::io::Error, response_len: usize) -> bool {
+    response_len > 0
+        && matches!(
+            err.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        )
+}
+
 fn daemon_probe(path: &str) -> Result<(u16, String), String> {
     use std::io::{Read, Write};
 
@@ -173,9 +181,11 @@ fn daemon_probe(path: &str) -> Result<(u16, String), String> {
         .map_err(|e| format!("write failed: {e}"))?;
 
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|e| format!("read failed: {e}"))?;
+    if let Err(err) = stream.read_to_end(&mut response) {
+        if !should_use_partial_probe_response(&err, response.len()) {
+            return Err(format!("read failed: {err}"));
+        }
+    }
     parse_http_probe_response(&response)
 }
 
@@ -779,5 +789,17 @@ mod tests {
     fn parse_http_probe_response_rejects_invalid_payloads() {
         let err = parse_http_probe_response(b"not-http").unwrap_err();
         assert!(err.contains("invalid HTTP response"));
+    }
+
+    #[test]
+    fn partial_probe_timeout_only_applies_when_bytes_exist() {
+        let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        let would_block = std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block");
+        let reset = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
+
+        assert!(should_use_partial_probe_response(&timeout, 16));
+        assert!(should_use_partial_probe_response(&would_block, 16));
+        assert!(!should_use_partial_probe_response(&timeout, 0));
+        assert!(!should_use_partial_probe_response(&reset, 16));
     }
 }

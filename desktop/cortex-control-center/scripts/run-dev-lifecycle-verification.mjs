@@ -5,6 +5,7 @@ import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { cleanupDevRuntime } from "./cleanup-dev-runtime.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectDir = resolve(scriptDir, "..");
@@ -55,16 +56,25 @@ function spawnProcess(command, args, label, extraEnv = {}) {
 }
 
 async function stopChild(child, label) {
-  if (!child || child.killed || child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  const exited = Promise.race([
-    once(child, "exit"),
-    wait(10000).then(() => null),
-  ]);
-  const result = await exited;
-  if (result === null && child.exitCode === null) {
-    child.kill("SIGKILL");
-    await once(child, "exit").catch(() => {});
+  if (!child) return;
+
+  if (process.platform === "win32" && child.pid) {
+    const killer = spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    await once(killer, "exit").catch(() => {});
+  } else if (!child.killed && child.exitCode === null) {
+    child.kill("SIGTERM");
+    const exited = Promise.race([
+      once(child, "exit"),
+      wait(10000).then(() => null),
+    ]);
+    const result = await exited;
+    if (result === null && child.exitCode === null) {
+      child.kill("SIGKILL");
+      await once(child, "exit").catch(() => {});
+    }
   }
   console.log(`[dev-verify] stopped ${label}`);
 }
@@ -87,6 +97,8 @@ const npmArgs = process.platform === "win32"
   ? ["/d", "/s", "/c", "npm run dev"]
   : ["run", "dev"];
 
+cleanupDevRuntime();
+
 const child = spawnProcess(
   npmCommand,
   npmArgs,
@@ -106,4 +118,5 @@ try {
   }
 } finally {
   await stopChild(child, "tauri dev");
+  cleanupDevRuntime({ quiet: true });
 }

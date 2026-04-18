@@ -62,6 +62,35 @@ class _ProviderDoc:
         self.context = context
 
 
+class _CaptureStoreClient:
+    def __init__(self) -> None:
+        self.stored_docs: list[object] = []
+        self.calls: list[list[str]] = []
+
+    def healthcheck(self) -> dict[str, object]:
+        return {"status": "ok"}
+
+    def close(self) -> None:
+        return None
+
+    def reset_namespace(self, namespace: str) -> None:
+        _ = namespace
+
+    def store_documents(self, documents: list[object]) -> None:
+        self.calls.append([str(getattr(doc, "id", "")) for doc in documents])
+        self.stored_docs.extend(documents)
+
+    def recall_documents(
+        self,
+        query: str,
+        *,
+        k: int = 10,
+        user_id: str | None = None,
+    ) -> tuple[list[object], dict[str, object]]:
+        _ = (query, k, user_id)
+        return [], {"results": []}
+
+
 class _DatasetWithoutUserIds:
     name = "compat-dataset"
 
@@ -143,8 +172,10 @@ def test_longmemeval_shim_keeps_context_and_appends_compact_metrics() -> None:
     assert "\"count\": 2" in prompt
     assert "[answer-format]" in prompt
     assert "Rules:" in prompt
-    assert "Valentine's Day" in prompt
-    assert "country/state qualifiers" in prompt
+    assert "match the requested time frame" in prompt
+    assert "include available city/state/country qualifiers" in prompt
+    assert "concrete item phrase" in prompt
+    assert "Valentine's Day" not in prompt
 
 
 def test_seed_model_assets_copies_only_supported_files(tmp_path: Path) -> None:
@@ -183,6 +214,8 @@ def test_membench_shim_recovers_from_windows_decode_errors(tmp_path: Path) -> No
 def test_configure_llm_environment_normalizes_gemini_keys(monkeypatch) -> None:
     monkeypatch.delenv("OMB_ANSWER_LLM", raising=False)
     monkeypatch.delenv("OMB_JUDGE_LLM", raising=False)
+    monkeypatch.delenv("OMB_ANSWER_MODEL", raising=False)
+    monkeypatch.delenv("OMB_JUDGE_MODEL", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
@@ -193,6 +226,23 @@ def test_configure_llm_environment_normalizes_gemini_keys(monkeypatch) -> None:
     assert os.environ.get("GEMINI_API_KEY") is None
     assert os.environ.get("OMB_ANSWER_LLM") == "gemini"
     assert os.environ.get("OMB_JUDGE_LLM") == "gemini"
+    assert os.environ.get("OMB_ANSWER_MODEL") == "gemini-2.5-pro"
+    assert os.environ.get("OMB_JUDGE_MODEL") == "gemini-2.5-flash"
+
+
+def test_configure_llm_environment_preserves_explicit_model_overrides(monkeypatch) -> None:
+    monkeypatch.delenv("OMB_ANSWER_LLM", raising=False)
+    monkeypatch.delenv("OMB_JUDGE_LLM", raising=False)
+    monkeypatch.setenv("OMB_ANSWER_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("OMB_JUDGE_MODEL", "gemini-2.5-flash-lite")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    provider = _configure_llm_environment()
+
+    assert provider == "gemini"
+    assert os.environ.get("OMB_ANSWER_MODEL") == "gemini-2.5-flash"
+    assert os.environ.get("OMB_JUDGE_MODEL") == "gemini-2.5-flash-lite"
 
 
 def test_lock_conflict_detection_reads_stderr(tmp_path: Path) -> None:
@@ -652,6 +702,119 @@ def test_cortex_provider_can_disable_full_document_storage(monkeypatch) -> None:
     assert all("::fact::" in item.id for item in expanded)
 
 
+def test_cortex_provider_splits_oversized_store_documents_deterministically(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "0")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_MAX_CHARS", "120")
+    monkeypatch.setenv("CORTEX_BENCHMARK_INGEST_FLUSH_SIZE", "1")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    capture = _CaptureStoreClient()
+    provider._http = capture
+    oversized = (
+        "I attended the University of Melbourne in Australia and stayed near campus. "
+        "I also tracked my commute details for each weekday while studying abroad. "
+        "These details should be split deterministically for store ingestion."
+    )
+    doc = _ProviderDoc(
+        doc_id="oversized-doc",
+        user_id="u-oversized",
+        context="beam-session",
+        content=oversized,
+    )
+
+    provider.ingest([doc])
+    provider.cleanup()
+
+    stored = [item for item in capture.stored_docs if str(getattr(item, "id", "")).startswith("oversized-doc")]
+    assert len(stored) >= 2
+    assert "".join(str(getattr(item, "content", "")) for item in stored) == oversized
+    assert all(len(str(getattr(item, "content", ""))) <= 120 for item in stored)
+    expected_ids = [f"oversized-doc::part::{idx:02d}" for idx in range(1, len(stored) + 1)]
+    assert [str(getattr(item, "id", "")) for item in stored] == expected_ids
+    assert all("[store-part " in str(getattr(item, "context", "")) for item in stored)
+
+
+def test_cortex_provider_splits_oversized_fact_extracts_without_dropping_detail(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", "0")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS", "500")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_MAX_CHARS", "90")
+    monkeypatch.setenv("CORTEX_BENCHMARK_INGEST_FLUSH_SIZE", "10")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    capture = _CaptureStoreClient()
+    provider._http = capture
+    doc = _ProviderDoc(
+        doc_id="gift-doc",
+        user_id="u-gift",
+        context="beam-gift",
+        content=json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "I bought a yellow dress from Nordstrom in Seattle on March 5, 2024 "
+                        "for my sister's birthday and matched it with silver accessories."
+                    ),
+                }
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    assert len(expanded) == 1
+    expected_fact = expanded[0].content
+
+    provider.ingest([doc])
+    provider.cleanup()
+
+    fact_parts = [item for item in capture.stored_docs if str(getattr(item, "id", "")).startswith("gift-doc::fact::1::part::")]
+    assert len(fact_parts) >= 2
+    assert "".join(str(getattr(item, "content", "")) for item in fact_parts) == expected_fact
+    assert all(len(str(getattr(item, "content", ""))) <= 90 for item in fact_parts)
+    assert any("yellow dress" in str(getattr(item, "content", "")).lower() for item in fact_parts)
+    assert any("seattle" in str(getattr(item, "content", "")).lower() for item in fact_parts)
+
+
+def test_cortex_provider_keeps_small_store_documents_unsplit(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "0")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_MAX_CHARS", "500")
+    monkeypatch.setenv("CORTEX_BENCHMARK_INGEST_FLUSH_SIZE", "1")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    capture = _CaptureStoreClient()
+    provider._http = capture
+    doc = _ProviderDoc(
+        doc_id="small-doc",
+        user_id="u-small",
+        context="beam-small",
+        content="I moved to Denver in 2021.",
+    )
+
+    provider.ingest([doc])
+    provider.cleanup()
+
+    assert len(capture.stored_docs) == 1
+    stored = capture.stored_docs[0]
+    assert str(getattr(stored, "id", "")) == "small-doc"
+    assert str(getattr(stored, "content", "")) == "I moved to Denver in 2021."
+
+
 def test_apply_retrieval_profile_defaults_is_non_destructive(monkeypatch) -> None:
     monkeypatch.delenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", raising=False)
     monkeypatch.delenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", raising=False)
@@ -672,6 +835,7 @@ def test_apply_retrieval_profile_defaults_is_non_destructive(monkeypatch) -> Non
     monkeypatch.delenv("CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM", raising=False)
     monkeypatch.delenv("CORTEX_BENCHMARK_USE_RECALL_EXCERPTS", raising=False)
     monkeypatch.delenv("CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", raising=False)
     monkeypatch.setenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "999")
 
     effective = _apply_retrieval_profile_defaults("balanced")
@@ -695,6 +859,27 @@ def test_apply_retrieval_profile_defaults_is_non_destructive(monkeypatch) -> Non
     assert effective["CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM"] == "3"
     assert effective["CORTEX_BENCHMARK_USE_RECALL_EXCERPTS"] == "1"
     assert effective["CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY"] == "24"
+    assert effective["CORTEX_BENCHMARK_RETRIEVAL_POLICY"] == "high-detail"
+
+
+def test_apply_efficiency_5pct_profile_uses_detail_recovery_tuning(monkeypatch) -> None:
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_QUERY_WINDOW_CHARS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", raising=False)
+
+    effective = _apply_retrieval_profile_defaults("efficiency-5pct")
+
+    assert effective["CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER"] == "11"
+    assert effective["CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN"] == "110"
+    assert effective["CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED"] == "2"
+    assert effective["CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS"] == "8"
+    assert effective["CORTEX_BENCHMARK_CONTEXT_MAX_CHARS"] == "540"
+    assert effective["CORTEX_BENCHMARK_QUERY_WINDOW_CHARS"] == "220"
+    assert effective["CORTEX_BENCHMARK_RETRIEVAL_POLICY"] == "high-detail"
 
 
 def test_context_efficiency_metrics_derives_score_per_token() -> None:
@@ -953,3 +1138,79 @@ def test_execute_single_run_rejects_oracle_shortcut_before_execution(
     preflight = json.loads((tmp_path / "fair-run-preflight.json").read_text(encoding="utf-8"))
     assert preflight["passed"] is False
     assert any("oracle=true" in item for item in preflight["violations"])
+
+
+def test_execute_single_run_rejects_no_enforce_gate_shortcut_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = {"value": False}
+
+    def _fake_execute(
+        *,
+        run_args: argparse.Namespace,
+        run_dir: Path,
+        timeout_seconds: int,
+        timeout_label: str,
+    ) -> tuple[int, str | None]:
+        _ = (run_args, run_dir, timeout_seconds, timeout_label)
+        called["value"] = True
+        return 0, None
+
+    monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
+
+    with pytest.raises(ValueError, match="fair-run preflight failed"):
+        _execute_single_run(
+            argparse.Namespace(
+                max_runtime_seconds=900,
+                oracle=False,
+                query_id=None,
+                doc_limit=None,
+                no_enforce_gate=True,
+                allow_missing_recall_metrics=False,
+            ),
+            tmp_path,
+        )
+
+    assert called["value"] is False
+    preflight = json.loads((tmp_path / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert any("no_enforce_gate=true" in item for item in preflight["violations"])
+
+
+def test_execute_single_run_rejects_missing_metrics_shortcut_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = {"value": False}
+
+    def _fake_execute(
+        *,
+        run_args: argparse.Namespace,
+        run_dir: Path,
+        timeout_seconds: int,
+        timeout_label: str,
+    ) -> tuple[int, str | None]:
+        _ = (run_args, run_dir, timeout_seconds, timeout_label)
+        called["value"] = True
+        return 0, None
+
+    monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
+
+    with pytest.raises(ValueError, match="fair-run preflight failed"):
+        _execute_single_run(
+            argparse.Namespace(
+                max_runtime_seconds=900,
+                oracle=False,
+                query_id=None,
+                doc_limit=None,
+                no_enforce_gate=False,
+                allow_missing_recall_metrics=True,
+            ),
+            tmp_path,
+        )
+
+    assert called["value"] is False
+    preflight = json.loads((tmp_path / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert any("allow_missing_recall_metrics=true" in item for item in preflight["violations"])

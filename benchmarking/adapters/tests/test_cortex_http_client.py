@@ -322,6 +322,455 @@ def test_recall_documents_detail_queries_expand_fact_family_from_base_seed(confi
     assert any("500 Mbps" in doc.content for doc in docs)
 
 
+def test_recall_documents_location_queries_add_richer_family_sibling(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dloc::fact::1"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dloc::fact::1",
+        content="[user] I redeemed a $5 coupon on coffee creamer last Sunday.",
+        user_id="user-1",
+    )
+    client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::dloc::fact::2"] = CortexStoredDocument(
+        id="dloc::fact::2",
+        content="[user] I've been using the Cartwheel app from Target for savings.",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": "[user] I redeemed a $5 coupon on coffee creamer last Sunday.",
+            }
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I redeem a $5 coupon on coffee creamer?", k=2, user_id="user-1")
+
+    assert len(docs) == 2
+    assert any(doc.id == "dloc::fact::2" for doc in docs)
+    assert any("target" in doc.content.lower() for doc in docs)
+
+
+def test_recall_documents_location_queries_keep_specific_sibling_when_seed_location_is_generic(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dloc2::fact::1"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dloc2::fact::1",
+        content=(
+            "[user] I actually redeemed a $5 coupon on coffee creamer last Sunday, "
+            "which was a nice surprise since I didn't know I had it in my email inbox."
+        ),
+        user_id="user-1",
+    )
+    client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::dloc2::fact::2"] = CortexStoredDocument(
+        id="dloc2::fact::2",
+        content="[user] I shop at Target pretty frequently, maybe every other week.",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": (
+                    "[user] I actually redeemed a $5 coupon on coffee creamer last Sunday, "
+                    "which was a nice surprise since I didn't know I had it in my email inbox."
+                ),
+            }
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I redeem a $5 coupon on coffee creamer?", k=2, user_id="user-1")
+
+    assert len(docs) == 2
+    assert any(doc.id == "dloc2::fact::2" for doc in docs)
+    assert any("target" in doc.content.lower() for doc in docs)
+
+
+def test_recall_documents_location_queries_keep_target_when_non_place_phrase_is_present(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    prefix = "amb::test-suite-namespace::user::user-1::doc::"
+
+    def add_document(doc_id: str, content: str) -> str:
+        source = f"{prefix}{doc_id}"
+        client.docs_by_context[source] = CortexStoredDocument(
+            id=doc_id,
+            content=content,
+            user_id="user-1",
+        )
+        return source
+
+    # Primary coupon/location family where Target must stay in top-k.
+    seed_source = add_document(
+        "dloc3::fact::1",
+        "[user] I actually redeemed a $5 coupon on coffee creamer last Sunday, "
+        "which was a nice surprise since I didn't know I had it in my email inbox.",
+    )
+    add_document(
+        "dloc3::fact::2",
+        "[user] I shop at Target pretty frequently, maybe every other week.",
+    )
+    add_document(
+        "dloc3::fact::3",
+        "[user] I've been using the Cartwheel app from Target and it's been really helpful.",
+    )
+    add_document(
+        "dloc3::fact::4",
+        "[user] I think the Cartwheel app is really user-friendly and easy to navigate.",
+    )
+    add_document(
+        "dloc3::fact::10",
+        "[user] One thing I wish they would add is a way to sort offers by expiration date.",
+    )
+
+    # Competing families to mimic realistic high-noise top-k pressure.
+    movie_seed = add_document("dmovie::fact::1", "[user] I've been watching a lot of movies lately.")
+    add_document("dmovie::fact::2", "[user] I'm rewatching Marvel movies in chronological order.")
+    add_document("dmovie::fact::3", "[user] I'm trying to figure out what to watch next.")
+    add_document("dmovie::fact::5", "[user] I'm planning to watch more movies before Endgame.")
+    add_document("dmovie::fact::6", "[user] I've got a long way to go before Endgame.")
+
+    story_seed = add_document("dstory::fact::1", "[user] I know I typed a lot and would love suggestions.")
+    add_document("dstory::fact::4", "[user] I'm hopeful the maps can stay ambiguous until players piece clues together.")
+    add_document("dstory::fact::9", "[user] Just to make sure, I'm talking about the Jugernaut and Hydra paths.")
+
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": (
+                    "[user] I actually redeemed a $5 coupon on coffee creamer last Sunday, "
+                    "which was a nice surprise since I didn't know I had it in my email inbox."
+                ),
+            },
+            {"source": movie_seed, "excerpt": "[user] I've been watching a lot of movies lately."},
+            {"source": story_seed, "excerpt": "[user] I know I typed a lot and would love suggestions."},
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I redeem a $5 coupon on coffee creamer?", k=10, user_id="user-1")
+
+    returned_ids = {doc.id for doc in docs}
+    assert "dloc3::fact::2" in returned_ids
+    assert any("target" in doc.content.lower() for doc in docs)
+    assert client._location_term_set(
+        "[user] I think the Cartwheel app is really user-friendly and easy to navigate."
+    ) == set()
+
+
+def test_recall_documents_location_queries_promote_same_family_country_qualifier_into_top_k(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dstudy::fact::1"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dstudy::fact::1",
+        content="[user] I attended the University of Melbourne during my study abroad program.",
+        user_id="user-1",
+    )
+    client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::dstudy::fact::2"] = CortexStoredDocument(
+        id="dstudy::fact::2",
+        content="[user] I've been to the Great Ocean Road before, and it's definitely a must-see in Australia.",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+            },
+            {
+                "source": "recall::noise-1",
+                "excerpt": "[user] Study abroad planning tips for university assignments and deadlines.",
+            },
+            {
+                "source": "recall::noise-2",
+                "excerpt": "[user] I stayed organized with class schedules during my study abroad semester.",
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=2, user_id="user-1")
+
+    assert len(docs) == 2
+    assert any(doc.id == "dstudy::fact::2" for doc in docs)
+    assert any("australia" in doc.content.lower() for doc in docs)
+
+
+def test_recall_documents_location_queries_promote_country_qualifier_when_all_docs_fit_within_k(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dstudy::fact::1"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dstudy::fact::1",
+        content="[user] I attended the University of Melbourne during my study abroad program.",
+        user_id="user-1",
+    )
+    qualifier_source = "amb::test-suite-namespace::user::user-1::doc::dstudy::fact::2"
+    client.docs_by_context[qualifier_source] = CortexStoredDocument(
+        id="dstudy::fact::2",
+        content="[user] I've been to the Great Ocean Road before, and it's definitely a must-see in Australia.",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+            },
+            {"source": "recall::noise-1", "excerpt": "[user] I stayed organized with class schedules."},
+            {"source": qualifier_source, "excerpt": "[user] ...must-see in Australia."},
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=10, user_id="user-1")
+
+    assert len(docs) == 3
+    assert docs[0].id == "dstudy::fact::1"
+    assert docs[1].id == "dstudy::fact::2"
+    assert "australia" in docs[1].content.lower()
+
+
+def test_recall_documents_location_queries_promote_abroad_country_qualifier_across_families(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dstudyx::fact::1"
+    qualifier_source = "amb::test-suite-namespace::user::user-1::doc::dtripx::fact::2"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dstudyx::fact::1",
+        content="[user] I attended the University of Melbourne during my study abroad program.",
+        user_id="user-1",
+    )
+    client.docs_by_context[qualifier_source] = CortexStoredDocument(
+        id="dtripx::fact::2",
+        content="[user] I've been to the Great Ocean Road before, and it's definitely a must-see in Australia.",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+            },
+            {
+                "source": "recall::noise-study",
+                "excerpt": "[user] I stayed organized with class schedules during my study abroad semester.",
+            },
+            {
+                "source": qualifier_source,
+                "excerpt": "[user] ...must-see in Australia.",
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=2, user_id="user-1")
+
+    assert len(docs) == 2
+    assert docs[0].id == "dstudyx::fact::1"
+    assert docs[1].id == "dtripx::fact::2"
+    assert "australia" in docs[1].content.lower()
+
+
+def test_recall_documents_location_queries_promote_abroad_country_qualifier_when_within_k_window(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dstudyw::fact::1"
+    qualifier_source = "amb::test-suite-namespace::user::user-1::doc::dtripw::fact::2"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dstudyw::fact::1",
+        content="[user] I attended the University of Melbourne during my study abroad program.",
+        user_id="user-1",
+    )
+    client.docs_by_context[qualifier_source] = CortexStoredDocument(
+        id="dtripw::fact::2",
+        content="[user] I've been to the Great Ocean Road before, and it's definitely a must-see in Australia.",
+        user_id="user-1",
+    )
+
+    results: list[dict[str, str]] = [
+        {
+            "source": seed_source,
+            "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+        }
+    ]
+    for idx in range(1, 9):
+        source = f"amb::test-suite-namespace::user::user-1::doc::dnoisew::{idx}"
+        client.docs_by_context[source] = CortexStoredDocument(
+            id=f"dnoisew::{idx}",
+            content=f"[user] Noise memory {idx} about meal prep and scheduling.",
+            user_id="user-1",
+        )
+        results.append({"source": source, "excerpt": f"[user] Noise memory {idx} about meal prep."})
+    results.append({"source": qualifier_source, "excerpt": "[user] ...must-see in Australia."})
+    for idx in range(9, 24):
+        source = f"amb::test-suite-namespace::user::user-1::doc::dnoisew::{idx}"
+        client.docs_by_context[source] = CortexStoredDocument(
+            id=f"dnoisew::{idx}",
+            content=f"[user] Additional filler memory {idx}.",
+            user_id="user-1",
+        )
+        results.append({"source": source, "excerpt": f"[user] Additional filler memory {idx}."})
+
+    payload = {"results": results}
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=20, user_id="user-1")
+
+    assert len(docs) >= 2
+    assert docs[0].id == "dstudyw::fact::1"
+    assert docs[1].id == "dtripw::fact::2"
+    assert "australia" in docs[1].content.lower()
+
+
+def test_recall_documents_location_item_queries_skip_weak_seed_expansion_and_keep_store_inference(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    coupon_seed = "amb::test-suite-namespace::user::user-1::doc::dloc4::fact::1"
+    noise_seed = "amb::test-suite-namespace::user::user-1::doc::dnoise4::fact::1"
+    client.docs_by_context[coupon_seed] = CortexStoredDocument(
+        id="dloc4::fact::1",
+        content="[user] I actually redeemed a $5 coupon on coffee creamer last Sunday.",
+        user_id="user-1",
+    )
+    client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::dloc4::fact::2"] = CortexStoredDocument(
+        id="dloc4::fact::2",
+        content="[user] I shop at Target pretty frequently, maybe every other week.",
+        user_id="user-1",
+    )
+    client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::dloc4::fact::3"] = CortexStoredDocument(
+        id="dloc4::fact::3",
+        content="[user] I've been using the Cartwheel app from Target and it's been really helpful for savings.",
+        user_id="user-1",
+    )
+    client.docs_by_context[noise_seed] = CortexStoredDocument(
+        id="dnoise4::fact::1",
+        content="[user] I know I typed a lot and would love suggestions.",
+        user_id="user-1",
+    )
+    client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::dnoise4::fact::2"] = CortexStoredDocument(
+        id="dnoise4::fact::2",
+        content=(
+            "[user] Just to make sure you remember, I'm talking about the Jugernaut, "
+            "the Hydra, the Skullcrawler, the Beserker, the Lasher, the Hoplite, and the Fissionator."
+        ),
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": coupon_seed,
+                "excerpt": "[user] I actually redeemed a $5 coupon on coffee creamer last Sunday.",
+            },
+            {
+                "source": noise_seed,
+                "excerpt": "[user] I know I typed a lot and would love suggestions.",
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I redeem a $5 coupon on coffee creamer?", k=6, user_id="user-1")
+
+    returned_ids = {doc.id for doc in docs}
+    assert "dloc4::fact::2" in returned_ids
+    assert "dloc4::fact::3" in returned_ids
+    assert "dnoise4::fact::2" not in returned_ids
+    assert any("target" in doc.content.lower() for doc in docs)
+
+
+def test_location_item_affinity_bonus_boosts_store_location_purchase_context(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    query_profile = client._build_query_profile("Where did I redeem a $5 coupon on coffee creamer?")
+
+    store_bonus = client._location_item_affinity_bonus(
+        query_profile=query_profile,
+        text="[user] I shop at Target pretty frequently, maybe every other week.",
+    )
+    generic_bonus = client._location_item_affinity_bonus(
+        query_profile=query_profile,
+        text="[user] I redeemed a coupon while at home last weekend.",
+    )
+    no_location_bonus = client._location_item_affinity_bonus(
+        query_profile=query_profile,
+        text="[user] I redeemed a coupon last weekend.",
+    )
+
+    assert store_bonus > generic_bonus
+    assert generic_bonus > no_location_bonus
+
+
+def test_recall_documents_high_detail_prefers_user_answer_sources_for_item_queries(
+    configured_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "high-detail")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY", "26")
+    client = CortexHTTPClient()
+    payload = {
+        "results": [
+            {
+                "source": "amb::test-suite-namespace::user::user-1::doc::d9::answer_fea2e4d3::fact::8",
+                "excerpt": "[assistant-question] What did I buy for my sister's birthday gift? [user-answer] A yellow dress.",
+            },
+            {
+                "source": "amb::test-suite-namespace::user::user-1::doc::d9::fact::3",
+                "excerpt": "[user] I bought gifts for my sister's birthday.",
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("What did I buy for my sister's birthday gift?", k=1, user_id="user-1")
+
+    assert len(docs) == 1
+    assert docs[0].id.endswith("answer_fea2e4d3::fact::8")
+    assert "yellow dress" in docs[0].content.lower()
+
+
+def test_answer_source_detail_relief_requires_high_detail_policy(
+    configured_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "standard")
+    client = CortexHTTPClient()
+    query_profile = client._build_query_profile("What did I buy for my sister's birthday gift?")
+    doc = CortexStoredDocument(
+        id="d9::answer_fea2e4d3::fact::8",
+        content="[assistant-question] What did I buy for my sister's birthday gift? [user-answer] A yellow dress.",
+        user_id="user-1",
+    )
+
+    relief = client._answer_source_detail_relief(
+        query_profile=query_profile,
+        document=doc,
+        text=doc.content,
+        overlap=3,
+        detail_bonus=8,
+    )
+
+    assert relief == 0
+
+
 def test_recall_documents_reranks_by_query_overlap(configured_env: Path) -> None:
     client = CortexHTTPClient()
     payload = {
@@ -713,6 +1162,301 @@ def test_recall_documents_detail_query_variants_trigger_for_occupation_queries(
     assert any("marketing specialist" in doc.content.lower() for doc in docs)
 
 
+def test_recall_documents_prefers_previous_occupation_over_current_role_for_previous_query(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    payload = {
+        "results": [
+            {
+                "source": "memory::current-role",
+                "excerpt": "[user] I currently work as a product manager.",
+            },
+            {
+                "source": "memory::previous-role",
+                "excerpt": "[user] I previously worked as a marketing specialist.",
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("What was my previous occupation?", k=1, user_id="user-1")
+
+    assert len(docs) == 1
+    assert docs[0].id == "memory::previous-role"
+    assert "marketing specialist" in docs[0].content.lower()
+
+
+def test_recall_documents_prefers_concrete_user_answer_for_sister_gift_query(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    payload = {
+        "results": [
+            {
+                "source": "memory::gift-generic",
+                "excerpt": (
+                    "[assistant-question] What did I buy for my sister's birthday gift? "
+                    "[user-answer] I bought gifts for my sister's birthday."
+                ),
+            },
+            {
+                "source": "memory::gift-concrete",
+                "excerpt": (
+                    "[assistant-question] What did I buy for my sister's birthday gift? "
+                    "[user-answer] A yellow dress."
+                ),
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("What did I buy for my sister's birthday gift?", k=1, user_id="user-1")
+
+    assert len(docs) == 1
+    assert docs[0].id == "memory::gift-concrete"
+    assert "yellow dress" in docs[0].content.lower()
+
+
+def test_recall_documents_runs_variant_when_primary_relations_conflict(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "standard")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO", "0.4")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET", "96")
+    client = CortexHTTPClient()
+    fake = _FakeHTTPXClient(
+        [
+            _FakeResponse(
+                {
+                    "results": [
+                        {
+                            "source": "memory::gift-primary",
+                            "excerpt": (
+                                "[assistant-question] What did I buy for my sister's birthday gift? "
+                                "[user-answer] I bought gifts for my sister's birthday."
+                            ),
+                            "tokens": 60,
+                        },
+                        {
+                            "source": "memory::gift-conflict",
+                            "excerpt": (
+                                "[user] I bought a customized phone case for my brother's birthday last month."
+                            ),
+                            "tokens": 55,
+                        },
+                    ],
+                    "budget": 180,
+                    "spent": 180,
+                    "saved": 0,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "results": [
+                        {
+                            "source": "memory::gift-concrete",
+                            "excerpt": (
+                                "[assistant-question] What did I buy for my sister's birthday gift? "
+                                "[user-answer] A yellow dress."
+                            ),
+                            "tokens": 45,
+                        },
+                    ],
+                    "budget": 120,
+                    "spent": 120,
+                    "saved": 0,
+                }
+            ),
+        ]
+    )
+    client.client = fake
+
+    docs, payload = client.recall_documents("What did I buy for my sister's birthday gift?", k=1, user_id="user-1")
+
+    assert len(fake.calls) == 2
+    variant_params = fake.calls[1]["kwargs"]["params"]
+    assert variant_params["q"] != "What did I buy for my sister's birthday gift?"
+    assert "sister" in variant_params["q"]
+    assert len(docs) == 1
+    assert docs[0].id == "memory::gift-concrete"
+    assert "yellow dress" in docs[0].content.lower()
+    assert payload["budget"] == 300
+
+
+def test_recall_documents_skips_detail_variant_when_primary_already_has_required_detail(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "standard")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO", "0.4")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET", "96")
+    client = CortexHTTPClient()
+    fake = _FakeHTTPXClient(
+        [
+            _FakeResponse(
+                {
+                    "results": [
+                        {
+                            "source": "memory::primary",
+                            "excerpt": "[user] I upgraded to 500 Mbps about three weeks ago.",
+                            "tokens": 40,
+                        },
+                    ],
+                    "budget": 180,
+                    "spent": 180,
+                    "saved": 0,
+                }
+            )
+        ]
+    )
+    client.client = fake
+
+    docs, payload = client.recall_documents("What speed is my new internet plan?", k=1, user_id="user-1")
+
+    assert len(fake.calls) == 1
+    assert payload["budget"] == 180
+    assert len(docs) == 1
+    record = json.loads(configured_env.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["recall_call_count"] == 1
+    assert record["recall_variant_queries"] == []
+
+
+def test_recall_documents_high_detail_policy_keeps_variant_for_detail_queries(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "high-detail")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO", "0.4")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET", "96")
+    client = CortexHTTPClient()
+    fake = _FakeHTTPXClient(
+        [
+            _FakeResponse(
+                {
+                    "results": [
+                        {
+                            "source": "memory::primary",
+                            "excerpt": "[user] I attended the University of Melbourne during study abroad.",
+                            "tokens": 40,
+                        },
+                    ],
+                    "budget": 180,
+                    "spent": 180,
+                    "saved": 0,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "results": [
+                        {
+                            "source": "memory::variant",
+                            "excerpt": "[user] I attended the University of Melbourne in Australia.",
+                            "tokens": 30,
+                        }
+                    ],
+                    "budget": 120,
+                    "spent": 120,
+                    "saved": 0,
+                }
+            ),
+        ]
+    )
+    client.client = fake
+
+    docs, payload = client.recall_documents(
+        "Where did I attend for my study abroad program?",
+        k=1,
+        user_id="user-1",
+    )
+
+    assert len(fake.calls) == 2
+    assert len(docs) == 1
+    assert docs[0].id in {"memory::primary", "memory::variant"}
+    assert payload["budget"] == 300
+    record = json.loads(configured_env.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["recall_call_count"] == 2
+    assert len(record["recall_variant_queries"]) == 1
+
+
+def test_recall_documents_high_detail_policy_skips_variant_when_primary_has_specific_location_detail(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "high-detail")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO", "0.4")
+    monkeypatch.setenv("CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET", "96")
+    client = CortexHTTPClient()
+    fake = _FakeHTTPXClient(
+        [
+            _FakeResponse(
+                {
+                    "results": [
+                        {
+                            "source": "memory::primary",
+                            "excerpt": "[user] I attended the University of Melbourne in Australia during my study abroad program.",
+                            "tokens": 40,
+                        },
+                    ],
+                    "budget": 180,
+                    "spent": 180,
+                    "saved": 0,
+                }
+            )
+        ]
+    )
+    client.client = fake
+
+    docs, payload = client.recall_documents(
+        "Where did I attend for my study abroad program?",
+        k=1,
+        user_id="user-1",
+    )
+
+    assert len(fake.calls) == 1
+    assert len(docs) == 1
+    assert payload["budget"] == 180
+    record = json.loads(configured_env.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["recall_call_count"] == 1
+    assert record["recall_variant_queries"] == []
+
+
+def test_recall_documents_drops_out_of_scope_sources_when_user_scoped(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    payload = {
+        "results": [
+            {
+                "source": "amb::test-suite-namespace::user::user-1::doc::d1",
+                "excerpt": "In-scope detail",
+            },
+            {
+                "source": "self-improvement::session-log",
+                "excerpt": "Out-of-scope noise",
+            },
+            {
+                "source": "recall::unknown",
+                "excerpt": "Recovered from excerpt only",
+            },
+        ],
+        "budget": 300,
+        "spent": 210,
+        "saved": 90,
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _raw_payload = client.recall_documents("where did I redeem the coupon?", k=3, user_id="user-1")
+
+    assert len(docs) == 2
+    assert all(doc.id != "self-improvement::session-log" for doc in docs)
+    assert any(doc.id == "recall::unknown" for doc in docs)
+
+
 def test_build_query_profile_avoids_birthday_date_bias_for_item_queries(configured_env: Path) -> None:
     client = CortexHTTPClient()
     profile = client._build_query_profile("What did I buy for my sister's birthday gift?")
@@ -833,3 +1577,86 @@ def test_recall_documents_clips_long_content(configured_env: Path, monkeypatch: 
 
     assert len(docs) == 1
     assert docs[0].content == "this ... lipped"
+
+
+def test_retrieval_policy_defaults_to_standard(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+
+    assert client.retrieval_policy == "standard"
+
+
+def test_high_detail_retrieval_policy_preserves_precise_fact_snippet_near_budget_limit(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "64")
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "high-detail")
+    client = CortexHTTPClient()
+    source = "amb::test-suite-namespace::user::user-1::doc::detail-fact"
+    client.docs_by_context[source] = CortexStoredDocument(
+        id="detail-fact",
+        content=(
+            "Background notes before the fact. "
+            "I moved to Seattle on March 5, 2024 (ID ZX-91Q). "
+            "Additional unrelated tail notes after the fact."
+        ),
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": source,
+                "excerpt": "I moved recently.",
+            }
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents(
+        "When did I move to Seattle and what was the ID?",
+        k=1,
+        user_id="user-1",
+    )
+
+    assert len(docs) == 1
+    assert len(docs[0].content) <= 64
+    assert "Seattle" in docs[0].content
+    assert "March 5, 2024" in docs[0].content
+    assert "ZX-91Q" in docs[0].content
+
+
+def test_high_detail_retrieval_policy_preserves_study_abroad_country_qualifier_under_budget(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "72")
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "high-detail")
+    client = CortexHTTPClient()
+    source = "amb::test-suite-namespace::user::user-1::doc::study-abroad"
+    client.docs_by_context[source] = CortexStoredDocument(
+        id="study-abroad",
+        content=(
+            "Background detail. "
+            "For my study abroad program, I attended the University of Melbourne in Australia. "
+            "More unrelated trailing text."
+        ),
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": source,
+                "excerpt": "For my study abroad program, I attended the University of Melbourne.",
+            }
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=1, user_id="user-1")
+
+    assert len(docs) == 1
+    assert len(docs[0].content) <= 72
+    assert "Melbourne" in docs[0].content
+    assert "Australia" in docs[0].content

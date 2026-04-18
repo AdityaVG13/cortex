@@ -290,9 +290,57 @@ def test_strict_nonlongmem_q5_matrix_execution_profile_is_strict() -> None:
     assert profile["allow_missing_recall_metrics"] is False
 
 
-def test_run_matrix_applies_execution_profile_and_clears_oracle_default(tmp_path: Path) -> None:
+def test_run_matrix_applies_execution_profile_with_strict_shortcut_defaults(tmp_path: Path) -> None:
     matrix_path = tmp_path / "matrix-profile.json"
     summary_path = tmp_path / "summary.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "execution_profile": {
+                    "max_runtime_seconds": 1200,
+                    "max_case_runtime_seconds": 900,
+                    "oracle": False,
+                    "no_enforce_gate": False,
+                    "allow_missing_recall_metrics": False,
+                },
+                "cases": [
+                    {"id": "case-a", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.summary_file = str(summary_path)
+    args.max_runtime_seconds = 9999
+    args.max_case_runtime_seconds = 9999
+    args.oracle = False
+    args.no_enforce_gate = False
+    args.allow_missing_recall_metrics = False
+    args.dry_run = True
+
+    run_matrix(args, run_dir)
+
+    assert args.max_runtime_seconds == 1200
+    assert args.max_case_runtime_seconds == 900
+    assert args.oracle is False
+    assert args.no_enforce_gate is False
+    assert args.allow_missing_recall_metrics is False
+    preview = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert len(preview) == 1
+    assert preview[0]["dataset"] == "locomo"
+    preflight = json.loads((run_dir / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is True
+    assert preflight["requested_shortcuts"]["oracle"] is False
+    assert preflight["requested_shortcuts"]["no_enforce_gate"] is False
+    assert preflight["requested_shortcuts"]["allow_missing_recall_metrics"] is False
+
+
+def test_run_matrix_rejects_requested_oracle_even_when_profile_resets_it(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-profile-oracle-reset.json"
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
     matrix_path.write_text(
@@ -312,20 +360,82 @@ def test_run_matrix_applies_execution_profile_and_clears_oracle_default(tmp_path
     )
     args = _base_args()
     args.matrix_file = str(matrix_path)
-    args.summary_file = str(summary_path)
-    args.max_runtime_seconds = 9999
-    args.max_case_runtime_seconds = 9999
     args.oracle = True
     args.dry_run = True
 
-    run_matrix(args, run_dir)
+    with pytest.raises(ValueError, match="requested oracle=true"):
+        run_matrix(args, run_dir)
 
-    assert args.max_runtime_seconds == 1200
-    assert args.max_case_runtime_seconds == 900
-    assert args.oracle is False
-    preview = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert len(preview) == 1
-    assert preview[0]["dataset"] == "locomo"
+    preflight = json.loads((run_dir / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert preflight["requested_shortcuts"]["oracle"] is True
+    assert any("requested oracle=true" in item for item in preflight["violations"])
+
+
+def test_run_matrix_rejects_requested_no_enforce_gate_even_when_profile_resets_it(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-profile-no-enforce-reset.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "execution_profile": {
+                    "max_runtime_seconds": 1200,
+                    "max_case_runtime_seconds": 900,
+                    "no_enforce_gate": False,
+                },
+                "cases": [
+                    {"id": "case-a", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.no_enforce_gate = True
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="requested no_enforce_gate=true"):
+        run_matrix(args, run_dir)
+
+    preflight = json.loads((run_dir / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert preflight["requested_shortcuts"]["no_enforce_gate"] is True
+    assert any("requested no_enforce_gate=true" in item for item in preflight["violations"])
+
+
+def test_run_matrix_rejects_requested_missing_metrics_even_when_profile_resets_it(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-profile-missing-metrics-reset.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "execution_profile": {
+                    "max_runtime_seconds": 1200,
+                    "max_case_runtime_seconds": 900,
+                    "allow_missing_recall_metrics": False,
+                },
+                "cases": [
+                    {"id": "case-a", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.allow_missing_recall_metrics = True
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="requested allow_missing_recall_metrics=true"):
+        run_matrix(args, run_dir)
+
+    preflight = json.loads((run_dir / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert preflight["requested_shortcuts"]["allow_missing_recall_metrics"] is True
+    assert any("requested allow_missing_recall_metrics=true" in item for item in preflight["violations"])
 
 
 def test_run_matrix_rejects_oracle_case_even_in_dry_run(tmp_path: Path) -> None:
@@ -381,6 +491,94 @@ def test_run_matrix_rejects_default_doc_limit_even_in_dry_run(tmp_path: Path) ->
     args.dry_run = True
 
     with pytest.raises(ValueError, match="doc_limit"):
+        run_matrix(args, run_dir)
+
+
+def test_run_matrix_rejects_default_no_enforce_gate_even_in_dry_run(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-no-enforce-gate.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps({"cases": [{"id": "case-a", "dataset": "locomo", "split": "locomo10"}]}),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.no_enforce_gate = True
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="no_enforce_gate"):
+        run_matrix(args, run_dir)
+
+
+def test_run_matrix_rejects_default_missing_metrics_flag_even_in_dry_run(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-missing-metrics.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps({"cases": [{"id": "case-a", "dataset": "locomo", "split": "locomo10"}]}),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.allow_missing_recall_metrics = True
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="allow_missing_recall_metrics"):
+        run_matrix(args, run_dir)
+
+
+def test_run_matrix_rejects_execution_profile_no_enforce_gate_even_in_dry_run(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-profile-no-enforce-gate.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "execution_profile": {
+                    "max_runtime_seconds": 1200,
+                    "max_case_runtime_seconds": 900,
+                    "no_enforce_gate": True,
+                },
+                "cases": [
+                    {"id": "case-a", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="no_enforce_gate"):
+        run_matrix(args, run_dir)
+
+
+def test_run_matrix_rejects_execution_profile_missing_metrics_flag_even_in_dry_run(tmp_path: Path) -> None:
+    matrix_path = tmp_path / "matrix-profile-missing-metrics.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "execution_profile": {
+                    "max_runtime_seconds": 1200,
+                    "max_case_runtime_seconds": 900,
+                    "allow_missing_recall_metrics": True,
+                },
+                "cases": [
+                    {"id": "case-a", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="allow_missing_recall_metrics"):
         run_matrix(args, run_dir)
 
 

@@ -6,6 +6,7 @@ recall = returned_relevant / total_relevant_in_db
 """
 
 import json
+import argparse
 import sqlite3
 import sys
 import time
@@ -57,8 +58,8 @@ def request_json(url: str, timeout: int = 5) -> dict:
         die(f"Cortex returned invalid JSON for {url} -- check daemon logs. Details: {e}")
 
 
-def check_daemon_health() -> None:
-    data = request_json(f"{CORTEX_URL}/health", timeout=3)
+def check_daemon_health(timeout: int = 3) -> None:
+    data = request_json(f"{CORTEX_URL}/health", timeout=timeout)
     if data.get("status") != "ok":
         die(f"Daemon health check failed at {CORTEX_URL}/health -- response was: {data!r}")
 
@@ -131,10 +132,10 @@ def find_all_relevant_in_db(gt_patterns: list[str]) -> list[dict]:
     return relevant
 
 
-def cortex_recall(query: str, budget: int = 500) -> list[dict]:
+def cortex_recall(query: str, budget: int = 500, timeout: int = 5) -> list[dict]:
     url = f"{CORTEX_URL}/recall?q={query.replace(' ', '+')}&budget={budget}"
     for attempt in range(3):
-        data = request_json(url, timeout=5)
+        data = request_json(url, timeout=timeout)
         results = data.get("results", [])
         if results or attempt == 2:
             if not results:
@@ -163,11 +164,11 @@ def check_returned(returned_results: list[dict], db_item: dict) -> bool:
     return False
 
 
-def run():
+def run(http_timeout: int = 12):
     print("=" * 70)
     print("RECALL METRIC: How much of what exists does Cortex find?")
     print("=" * 70)
-    check_daemon_health()
+    check_daemon_health(timeout=max(3, min(http_timeout, 10)))
     print()
 
     all_results = []
@@ -179,7 +180,7 @@ def run():
         # Find ALL relevant items in DB
         db_relevant = find_all_relevant_in_db(gt)
         # Get Cortex results
-        returned = cortex_recall(query)
+        returned = cortex_recall(query, timeout=http_timeout)
         # Check which DB items were found
         found = sum(1 for item in db_relevant if check_returned(returned, item))
 
@@ -253,6 +254,19 @@ def run():
     Path(out_path).write_text(json.dumps(output, indent=2))
     print(f"\n  Saved to: {out_path}")
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Measure recall against DB-grounded relevant items."
+    )
+    parser.add_argument(
+        "--http-timeout",
+        type=int,
+        default=12,
+        help="Per-request HTTP timeout in seconds for /recall and /health probes.",
+    )
+    return parser
+
 
 if __name__ == "__main__":
-    run()
+    args = build_parser().parse_args()
+    run(http_timeout=args.http_timeout)

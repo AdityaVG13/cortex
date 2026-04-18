@@ -2,10 +2,12 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::Utc;
 use rusqlite::params;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::{ensure_auth_rated, json_response, truncate_chars};
 use crate::state::RuntimeState;
@@ -17,6 +19,14 @@ const STORAGE_LOG_FILES: &[&str] = &[
     "mcp-crash.log",
     "rust-daemon.err.log",
 ];
+const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
+const HEALTH_HEAVY_CACHE_TTL_SECS: i64 = 30;
+const HEALTH_HEAVY_WARMUP_DELAY_SECS: u64 = 90;
+const SAVINGS_CACHE_TTL_SECS: i64 = 20;
+static HEALTH_BOOT_INSTANT: OnceLock<Instant> = OnceLock::new();
+static HEALTH_HEAVY_METRICS_CACHE: OnceLock<Mutex<Option<HealthHeavyMetricsSnapshot>>> =
+    OnceLock::new();
+static SAVINGS_PAYLOAD_CACHE: OnceLock<Mutex<Option<SavingsPayloadSnapshot>>> = OnceLock::new();
 
 fn directory_size_bytes(path: &std::path::Path) -> u64 {
     match std::fs::metadata(path) {
@@ -60,6 +70,94 @@ struct EmbeddingInventoryMetrics {
     unknown_model_embeddings: i64,
     backlog_memories: i64,
     backlog_decisions: i64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HealthHeavyMetricsSnapshot {
+    computed_at_unix_secs: i64,
+    embedding_inventory: EmbeddingInventoryMetrics,
+    storage_bytes: u64,
+    backup_count: usize,
+    log_bytes: u64,
+}
+
+impl HealthHeavyMetricsSnapshot {
+    fn cache_age_secs(self, now_unix_secs: i64) -> i64 {
+        (now_unix_secs - self.computed_at_unix_secs).max(0)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SavingsPayloadSnapshot {
+    computed_at_unix_secs: i64,
+    payload: Value,
+}
+
+impl SavingsPayloadSnapshot {
+    fn cache_age_secs(&self, now_unix_secs: i64) -> i64 {
+        (now_unix_secs - self.computed_at_unix_secs).max(0)
+    }
+}
+
+fn is_control_center_owner(owner_tag: Option<&str>) -> bool {
+    owner_tag
+        .map(|owner| owner.eq_ignore_ascii_case(CONTROL_CENTER_OWNER_TAG))
+        .unwrap_or(false)
+}
+
+fn health_heavy_metrics_cache() -> &'static Mutex<Option<HealthHeavyMetricsSnapshot>> {
+    HEALTH_HEAVY_METRICS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn savings_payload_cache() -> &'static Mutex<Option<SavingsPayloadSnapshot>> {
+    SAVINGS_PAYLOAD_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn app_managed_warmup_active(daemon_owner: Option<&str>) -> bool {
+    if !is_control_center_owner(daemon_owner) {
+        return false;
+    }
+    let started = HEALTH_BOOT_INSTANT.get_or_init(Instant::now);
+    started.elapsed() < Duration::from_secs(HEALTH_HEAVY_WARMUP_DELAY_SECS)
+}
+
+fn cache_snapshot_if_fresh(
+    snapshot: Option<HealthHeavyMetricsSnapshot>,
+    now_unix_secs: i64,
+) -> Option<HealthHeavyMetricsSnapshot> {
+    snapshot.and_then(|entry| {
+        if entry.cache_age_secs(now_unix_secs) <= HEALTH_HEAVY_CACHE_TTL_SECS {
+            Some(entry)
+        } else {
+            None
+        }
+    })
+}
+
+fn savings_payload_cache_if_fresh(
+    snapshot: Option<SavingsPayloadSnapshot>,
+    now_unix_secs: i64,
+) -> Option<SavingsPayloadSnapshot> {
+    snapshot.and_then(|entry| {
+        if entry.cache_age_secs(now_unix_secs) <= SAVINGS_CACHE_TTL_SECS {
+            Some(entry)
+        } else {
+            None
+        }
+    })
+}
+
+fn weekday_name_from_sqlite(weekday: i64) -> &'static str {
+    match weekday {
+        0 => "Sun",
+        1 => "Mon",
+        2 => "Tue",
+        3 => "Wed",
+        4 => "Thu",
+        5 => "Fri",
+        6 => "Sat",
+        _ => "Unknown",
+    }
 }
 
 fn collect_embedding_inventory(
@@ -127,6 +225,11 @@ fn collect_embedding_inventory(
 
 pub async fn build_health_payload(state: &RuntimeState) -> Value {
     let embedding_model = crate::embeddings::selected_model_selection();
+    let now_unix_secs = Utc::now().timestamp();
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     // Read DB stats in a short lock, then drop it before the network call.
     let (
         memories,
@@ -135,7 +238,6 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         events,
         db_freelist_pages,
         sqlite_vec_status,
-        embedding_inventory,
     ) = {
         let conn = state.db_read.lock().await;
         let m: i64 = conn
@@ -154,17 +256,66 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
             .query_row("PRAGMA freelist_count", [], |r| r.get(0))
             .unwrap_or(0);
         let sqlite_vec_status = crate::db::sqlite_vec_status(&conn);
-        let embedding_inventory = collect_embedding_inventory(&conn, embedding_model.key);
-        (
-            m,
-            d,
-            e,
-            ev,
-            freelist,
-            sqlite_vec_status,
-            embedding_inventory,
-        )
+        (m, d, e, ev, freelist, sqlite_vec_status)
     }; // DB lock released here.
+
+    let (embedding_inventory, storage_bytes, backup_count, log_bytes, heavy_metrics_source, cache_age_secs) = {
+        let cached = match health_heavy_metrics_cache().lock() {
+            Ok(guard) => *guard,
+            Err(poisoned) => *poisoned.into_inner(),
+        };
+        if let Some(snapshot) = cache_snapshot_if_fresh(cached, now_unix_secs) {
+            (
+                snapshot.embedding_inventory,
+                snapshot.storage_bytes,
+                snapshot.backup_count,
+                snapshot.log_bytes,
+                "cache",
+                snapshot.cache_age_secs(now_unix_secs),
+            )
+        } else if app_managed_warmup_active(daemon_owner.as_deref()) {
+            let fallback = cached.unwrap_or(HealthHeavyMetricsSnapshot {
+                computed_at_unix_secs: now_unix_secs,
+                embedding_inventory: EmbeddingInventoryMetrics::default(),
+                storage_bytes: 0,
+                backup_count: 0,
+                log_bytes: 0,
+            });
+            (
+                fallback.embedding_inventory,
+                fallback.storage_bytes,
+                fallback.backup_count,
+                fallback.log_bytes,
+                "warmup-deferred",
+                fallback.cache_age_secs(now_unix_secs),
+            )
+        } else {
+            let embedding_inventory = {
+                let conn = state.db_read.lock().await;
+                collect_embedding_inventory(&conn, embedding_model.key)
+            };
+            let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&state.home);
+            let snapshot = HealthHeavyMetricsSnapshot {
+                computed_at_unix_secs: now_unix_secs,
+                embedding_inventory,
+                storage_bytes,
+                backup_count,
+                log_bytes,
+            };
+            match health_heavy_metrics_cache().lock() {
+                Ok(mut guard) => *guard = Some(snapshot),
+                Err(poisoned) => *poisoned.into_inner() = Some(snapshot),
+            }
+            (
+                embedding_inventory,
+                storage_bytes,
+                backup_count,
+                log_bytes,
+                "live",
+                0,
+            )
+        }
+    };
 
     let db_size_bytes = std::fs::metadata(&state.db_path)
         .map(|meta| meta.len())
@@ -197,15 +348,10 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "unavailable"
     };
 
-    let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&state.home);
     let executable = std::env::current_exe()
         .ok()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
     let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
         .ok()
         .map(|value| value.trim().to_string())
@@ -252,7 +398,12 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
                 "available": sqlite_vec_status.available,
                 "version": sqlite_vec_status.version,
                 "error": sqlite_vec_status.error
-            }
+            },
+            "health_heavy_metrics": {
+                "source": heavy_metrics_source,
+                "cache_ttl_secs": HEALTH_HEAVY_CACHE_TTL_SECS,
+                "cache_age_secs": cache_age_secs
+            },
         },
         "team_mode": state.team_mode,
         "db_freelist_pages": db_freelist_pages,
@@ -556,26 +707,6 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
 }
 
 // ─── GET /savings ────────────────────────────────────────────────────────────
-
-fn parse_event_timestamp_utc(raw: &str) -> Option<chrono::DateTime<Utc>> {
-    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(raw) {
-        return Some(ts.with_timezone(&Utc));
-    }
-
-    if let Ok(naive) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") {
-        return Some(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
-            naive, Utc,
-        ));
-    }
-
-    if let Ok(naive) = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f") {
-        return Some(chrono::DateTime::<Utc>::from_naive_utc_and_offset(
-            naive, Utc,
-        ));
-    }
-
-    None
-}
 
 fn value_i64_any(payload: &Value, keys: &[&str]) -> i64 {
     keys.iter()
@@ -1130,6 +1261,15 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
+    let now_unix_secs = Utc::now().timestamp();
+    let cached_snapshot = match savings_payload_cache().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => None,
+    };
+    if let Some(snapshot) = savings_payload_cache_if_fresh(cached_snapshot, now_unix_secs) {
+        return json_response(StatusCode::OK, snapshot.payload);
+    }
+
     let conn = state.db_read.lock().await;
 
     let mut stmt = match conn.prepare(
@@ -1152,6 +1292,163 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         })
         .map(|iter| iter.filter_map(|r| r.ok()).collect())
         .unwrap_or_default();
+    drop(stmt);
+
+    let mut by_operation: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
+    for op in ["recall", "store", "boot", "tool"] {
+        by_operation.insert(op.to_string(), (0, 0, 0, 0));
+    }
+
+    let boot_agg = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
+                 COUNT(*) \
+             FROM events WHERE type = 'boot_savings'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0));
+    by_operation.insert("boot".to_string(), boot_agg);
+
+    let recall_agg = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.spent') AS INTEGER), COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0))), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.budget') AS INTEGER), COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0))), 0), \
+                 COUNT(*) \
+             FROM events WHERE type = 'recall_query'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0));
+    by_operation.insert("recall".to_string(), recall_agg);
+
+    let mut store_agg = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
+                 COUNT(*) \
+             FROM events WHERE type = 'store_savings'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0));
+    let store_decision_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE type IN ('decision_stored', 'decision_supersede', 'decision_conflict', 'decision_rejected_duplicate')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    store_agg.3 += store_decision_events;
+    by_operation.insert("store".to_string(), store_agg);
+
+    let tool_agg = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
+                 COUNT(*) \
+             FROM events WHERE type = 'tool_call_savings'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0));
+    by_operation.insert("tool".to_string(), tool_agg);
+
+    let mut daily_savings_all: BTreeMap<String, i64> = BTreeMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT \
+             SUBSTR(created_at, 1, 10) AS day, \
+             COALESCE(SUM(CASE \
+                 WHEN type = 'boot_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 ELSE 0 END), 0) AS saved_delta \
+         FROM events \
+         WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings') \
+           AND created_at IS NOT NULL \
+         GROUP BY day \
+         ORDER BY day ASC",
+    ) {
+        let rows = stmt
+            .query_map([], |row| {
+                let day: Option<String> = row.get(0)?;
+                let saved_delta: i64 = row.get(1)?;
+                Ok((day.unwrap_or_default(), saved_delta))
+            })
+            .map(|iter| iter.filter_map(|row| row.ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for (day, saved_delta) in rows {
+            if !day.is_empty() {
+                daily_savings_all.insert(day, saved_delta);
+            }
+        }
+    }
+
+    let mut recall_daily: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT \
+             SUBSTR(created_at, 1, 10) AS day, \
+             SUM(CASE WHEN COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 1 ELSE 0 END) AS hits, \
+             SUM(CASE WHEN COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 0 ELSE 1 END) AS misses \
+         FROM events \
+         WHERE type = 'recall_query' AND created_at IS NOT NULL \
+         GROUP BY day \
+         ORDER BY day ASC",
+    ) {
+        let rows = stmt
+            .query_map([], |row| {
+                let day: Option<String> = row.get(0)?;
+                let hits: i64 = row.get(1)?;
+                let misses: i64 = row.get(2)?;
+                Ok((day.unwrap_or_default(), hits, misses))
+            })
+            .map(|iter| iter.filter_map(|row| row.ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for (day, hits, misses) in rows {
+            if !day.is_empty() {
+                recall_daily.insert(day, (hits, misses));
+            }
+        }
+    }
+
+    let mut activity_heatmap_map: BTreeMap<(String, i64), i64> = BTreeMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT \
+             CAST(strftime('%w', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS weekday, \
+             CAST(strftime('%H', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS hour, \
+             COUNT(*) AS cnt \
+         FROM events \
+         WHERE created_at IS NOT NULL \
+         GROUP BY weekday, hour",
+    ) {
+        let rows = stmt
+            .query_map([], |row| {
+                let weekday: Option<i64> = row.get(0)?;
+                let hour: Option<i64> = row.get(1)?;
+                let count: i64 = row.get(2)?;
+                Ok((weekday, hour, count))
+            })
+            .map(|iter| iter.filter_map(|row| row.ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for (weekday, hour, count) in rows {
+            if let (Some(day), Some(hour)) = (weekday, hour) {
+                let day_name = weekday_name_from_sqlite(day).to_string();
+                *activity_heatmap_map.entry((day_name, hour)).or_insert(0) += count;
+            }
+        }
+    }
+
+    drop(conn);
 
     let points: Vec<Value> = rows
         .into_iter()
@@ -1269,130 +1566,6 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
 
     let recent: Vec<Value> = points.iter().rev().take(20).cloned().collect();
 
-    let mut by_operation: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
-    for op in ["recall", "store", "boot", "tool"] {
-        by_operation.insert(op.to_string(), (0, 0, 0, 0));
-    }
-    let mut daily_savings_all: BTreeMap<String, i64> = BTreeMap::new();
-    let mut recall_daily: BTreeMap<String, (i64, i64)> = BTreeMap::new();
-    let mut activity_heatmap_map: BTreeMap<(String, i64), i64> = BTreeMap::new();
-
-    let mut event_stmt = match conn
-        .prepare("SELECT type, data, source_agent, created_at FROM events ORDER BY created_at ASC")
-    {
-        Ok(s) => s,
-        Err(e) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": e.to_string() }),
-            );
-        }
-    };
-
-    let event_rows: Vec<(String, Option<String>, Option<String>, String)> = event_stmt
-        .query_map([], |row| {
-            let event_type: String = row.get(0)?;
-            let data: Option<String> = row.get(1)?;
-            let source_agent: Option<String> = row.get(2)?;
-            let created_at: Option<String> = row.get(3)?;
-            Ok((
-                event_type,
-                data,
-                source_agent,
-                created_at.unwrap_or_default(),
-            ))
-        })
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
-
-    for (event_type, data_str, source_agent, created_at) in event_rows {
-        let parsed = data_str
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            .unwrap_or_else(|| json!({}));
-
-        let (operation, saved, served, baseline) = match event_type.as_str() {
-            "boot_savings" => (
-                Some("boot"),
-                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
-            ),
-            "recall_query" => (
-                Some("recall"),
-                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed
-                    .get("spent")
-                    .or_else(|| parsed.get("served"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-                parsed
-                    .get("budget")
-                    .or_else(|| parsed.get("baseline"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-            ),
-            "store_savings" => (
-                Some("store"),
-                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
-            ),
-            "decision_stored"
-            | "decision_supersede"
-            | "decision_conflict"
-            | "decision_rejected_duplicate" => (Some("store"), 0, 0, 0),
-            "tool_call_savings" => (
-                Some("tool"),
-                parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0),
-                parsed.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0),
-            ),
-            _ => (None, 0, 0, 0),
-        };
-
-        if let Some(op) = operation {
-            let entry = by_operation.entry(op.to_string()).or_insert((0, 0, 0, 0));
-            entry.0 += saved;
-            entry.1 += served;
-            entry.2 += baseline;
-            entry.3 += 1;
-        }
-
-        if saved > 0 {
-            let day = &created_at[..created_at.len().min(10)];
-            if !day.is_empty() {
-                *daily_savings_all.entry(day.to_string()).or_insert(0) += saved;
-            }
-        }
-
-        if event_type == "recall_query" {
-            let day = &created_at[..created_at.len().min(10)];
-            if !day.is_empty() {
-                let row = recall_daily.entry(day.to_string()).or_insert((0, 0));
-                if parsed.get("hits").and_then(|v| v.as_i64()).unwrap_or(0) > 0 {
-                    row.0 += 1;
-                } else {
-                    row.1 += 1;
-                }
-            }
-        }
-
-        if !created_at.is_empty() {
-            if let Some(ts) = parse_event_timestamp_utc(&created_at) {
-                let day = ts.format("%a").to_string();
-                let hour = ts.hour() as i64;
-                *activity_heatmap_map.entry((day, hour)).or_insert(0) += 1;
-            }
-        } else if let Some(agent) = source_agent {
-            if !agent.is_empty() {
-                *activity_heatmap_map
-                    .entry(("Unknown".to_string(), 0))
-                    .or_insert(0) += 1;
-            }
-        }
-    }
-
     let by_operation_arr: Vec<Value> = ["recall", "store", "boot", "tool"]
         .iter()
         .map(|op| {
@@ -1457,30 +1630,36 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         })
         .collect();
 
-    json_response(
-        StatusCode::OK,
-        json!({
-            "summary": {
-                "totalSaved": total_saved,
-                "totalServed": total_served,
-                "totalBaseline": total_baseline,
-                "avgPercent": avg_percent,
-                "totalBoots": points.len(),
-                "avgSavedPerBoot": avg_saved_per_boot,
-                "avgServedPerBoot": avg_served_per_boot,
-                "avgBaselinePerBoot": avg_baseline_per_boot,
-                "scope": "boot_prompt_plus_event_operations",
-                "note": "Boot savings are precise from /boot events. Recall/store/tool figures are event-derived estimates when instrumentation is available."
-            },
-            "daily": daily_arr,
-            "byAgent": by_agent_arr,
-            "recent": recent,
-            "byOperation": by_operation_arr,
-            "cumulative": cumulative,
-            "recallTrend": recall_trend,
-            "activityHeatmap": activity_heatmap,
-        }),
-    )
+    let payload = json!({
+        "summary": {
+            "totalSaved": total_saved,
+            "totalServed": total_served,
+            "totalBaseline": total_baseline,
+            "avgPercent": avg_percent,
+            "totalBoots": points.len(),
+            "avgSavedPerBoot": avg_saved_per_boot,
+            "avgServedPerBoot": avg_served_per_boot,
+            "avgBaselinePerBoot": avg_baseline_per_boot,
+            "scope": "boot_prompt_plus_event_operations",
+            "note": "Boot savings are precise from /boot events. Recall/store/tool figures are event-derived estimates when instrumentation is available."
+        },
+        "daily": daily_arr,
+        "byAgent": by_agent_arr,
+        "recent": recent,
+        "byOperation": by_operation_arr,
+        "cumulative": cumulative,
+        "recallTrend": recall_trend,
+        "activityHeatmap": activity_heatmap,
+    });
+
+    if let Ok(mut cache) = savings_payload_cache().lock() {
+        *cache = Some(SavingsPayloadSnapshot {
+            computed_at_unix_secs: now_unix_secs,
+            payload: payload.clone(),
+        });
+    }
+
+    json_response(StatusCode::OK, payload)
 }
 
 pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
@@ -1810,6 +1989,37 @@ mod tests {
             decision_missing_id > 0,
             "decision without embedding should contribute to backlog"
         );
+    }
+
+    #[test]
+    fn cache_snapshot_if_fresh_enforces_ttl() {
+        let now = Utc::now().timestamp();
+        let fresh = HealthHeavyMetricsSnapshot {
+            computed_at_unix_secs: now - 2,
+            embedding_inventory: EmbeddingInventoryMetrics::default(),
+            storage_bytes: 10,
+            backup_count: 1,
+            log_bytes: 2,
+        };
+        let stale = HealthHeavyMetricsSnapshot {
+            computed_at_unix_secs: now - (HEALTH_HEAVY_CACHE_TTL_SECS + 5),
+            embedding_inventory: EmbeddingInventoryMetrics::default(),
+            storage_bytes: 10,
+            backup_count: 1,
+            log_bytes: 2,
+        };
+
+        assert!(cache_snapshot_if_fresh(Some(fresh), now).is_some());
+        assert!(cache_snapshot_if_fresh(Some(stale), now).is_none());
+        assert!(cache_snapshot_if_fresh(None, now).is_none());
+    }
+
+    #[test]
+    fn is_control_center_owner_is_case_insensitive() {
+        assert!(is_control_center_owner(Some("control-center")));
+        assert!(is_control_center_owner(Some("CoNtRoL-CeNtEr")));
+        assert!(!is_control_center_owner(Some("plugin-codex")));
+        assert!(!is_control_center_owner(None));
     }
 
     #[test]

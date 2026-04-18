@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Control Center startup timeout cascades on large event histories by moving `/savings` out of startup-critical refresh fanout and loading it only when the Analytics panel is active.
+- Daemon savings analytics lock contention by replacing full event-log Rust parsing with SQL-side aggregation and short-lived payload caching in `GET /savings`.
+
+### Performance
+- Improved high-volume analytics behavior on large `events` tables, reducing shared read-lock occupancy and lowering cross-endpoint timeout risk during cold start.
+
 ## [0.4.1] - 2026-04-06
 
 ### Features

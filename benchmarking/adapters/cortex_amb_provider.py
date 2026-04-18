@@ -53,6 +53,10 @@ class CortexHTTPMemoryProvider(MemoryProvider):
             48,
             int(os.environ.get("CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS", "180")),
         )
+        self._store_max_chars = max(
+            0,
+            int(os.environ.get("CORTEX_BENCHMARK_STORE_MAX_CHARS", "12000")),
+        )
 
     def initialize(self) -> None:
         self._http.healthcheck()
@@ -71,7 +75,8 @@ class CortexHTTPMemoryProvider(MemoryProvider):
 
     def ingest(self, documents: list[Document]) -> None:
         for document in documents:
-            self._pending_docs.extend(self._expand_document(document))
+            for expanded in self._expand_document(document):
+                self._pending_docs.extend(self._split_for_store(expanded))
         self._flush_pending(force=False)
 
     @staticmethod
@@ -395,6 +400,69 @@ class CortexHTTPMemoryProvider(MemoryProvider):
             if len(snippets) >= self._max_fact_extracts_per_doc:
                 break
         return snippets
+
+    def _split_for_store(self, document: CortexStoredDocument) -> list[CortexStoredDocument]:
+        content = self._normalize_text(document.content)
+        if self._store_max_chars <= 0 or len(content) <= self._store_max_chars:
+            return [
+                CortexStoredDocument(
+                    id=document.id,
+                    content=content,
+                    user_id=document.user_id,
+                    timestamp=document.timestamp,
+                    context=document.context,
+                )
+            ]
+        chunks = self._split_content_for_store(content)
+        if len(chunks) <= 1:
+            return [
+                CortexStoredDocument(
+                    id=document.id,
+                    content=content,
+                    user_id=document.user_id,
+                    timestamp=document.timestamp,
+                    context=document.context,
+                )
+            ]
+        width = max(2, len(str(len(chunks))))
+        base_context = self._normalize_text(document.context)
+        chunked: list[CortexStoredDocument] = []
+        for idx, chunk in enumerate(chunks, start=1):
+            part_context = f"{base_context} [store-part {idx}/{len(chunks)}]".strip()
+            chunked.append(
+                CortexStoredDocument(
+                    id=f"{document.id}::part::{idx:0{width}d}",
+                    content=chunk,
+                    user_id=document.user_id,
+                    timestamp=document.timestamp,
+                    context=part_context or None,
+                )
+            )
+        return chunked
+
+    def _split_content_for_store(self, content: str) -> list[str]:
+        if self._store_max_chars <= 0 or len(content) <= self._store_max_chars:
+            return [content]
+        chunks: list[str] = []
+        start = 0
+        hard_cap = self._store_max_chars
+        while start < len(content):
+            remaining = len(content) - start
+            if remaining <= hard_cap:
+                chunks.append(content[start:])
+                break
+            end = start + hard_cap
+            search_start = start + max(1, hard_cap // 3)
+            boundary = -1
+            for idx in range(end - 1, search_start - 1, -1):
+                if content[idx] in "\n.!?;":
+                    boundary = idx + 1
+                    break
+            if boundary <= start:
+                boundary = end
+            chunks.append(content[start:boundary])
+            start = boundary
+        return chunks
 
     def _flush_pending(self, force: bool) -> None:
         if not self._pending_docs:

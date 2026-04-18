@@ -5,6 +5,11 @@
 
 const TOKEN_REFRESH_ATTEMPTS = 4;
 const TOKEN_REFRESH_DELAY_MS = 250;
+const IPC_ABORT_TIMEOUT_MS = 8_000;
+const IPC_ABORT_TIMEOUT_HEALTH_MS = 12_000;
+const IPC_ABORT_TIMEOUT_MCP_MS = 30_000;
+const IPC_ABORT_TIMEOUT_RECALL_MS = 20_000;
+const IPC_TRANSPORT_MARGIN_MS = 500;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -12,6 +17,34 @@ function wait(ms) {
 
 function isAuthStatus(status) {
   return status === 401 || status === 403;
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label}: timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function resolveIpcTimeoutMs(path) {
+  const normalized = String(path || "").toLowerCase();
+  if (normalized === "/health" || normalized.startsWith("/health?")) return IPC_ABORT_TIMEOUT_HEALTH_MS;
+  if (normalized.startsWith("/mcp-rpc")) return IPC_ABORT_TIMEOUT_MCP_MS;
+  if (normalized.startsWith("/recall")) return IPC_ABORT_TIMEOUT_RECALL_MS;
+  return IPC_ABORT_TIMEOUT_MS;
+}
+
+function resolveIpcTransportTimeoutMs(path) {
+  return Math.max(500, resolveIpcTimeoutMs(path) - IPC_TRANSPORT_MARGIN_MS);
 }
 
 async function refreshTokenIfChanged(onTokenRefresh, getToken, previousToken) {
@@ -61,10 +94,13 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
     }
 
     if (invoke) {
-      const response = await invoke("fetch_cortex", {
+      const timeoutMs = resolveIpcTimeoutMs(path);
+      const transportTimeoutMs = resolveIpcTransportTimeoutMs(path);
+      const response = await withTimeout(invoke("fetch_cortex", {
         path,
         authToken: withAuth ? token : "",
-      });
+        timeoutMs: transportTimeoutMs,
+      }), timeoutMs, `${path}: IPC request`);
       if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
         throw new Error(`${path}: invalid IPC response`);
       }
@@ -125,11 +161,14 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
     }
 
     if (invoke) {
-      const response = await invoke("post_cortex", {
+      const timeoutMs = resolveIpcTimeoutMs(path);
+      const transportTimeoutMs = resolveIpcTransportTimeoutMs(path);
+      const response = await withTimeout(invoke("post_cortex", {
         path,
         authToken: token,
         body: JSON.stringify(body),
-      });
+        timeoutMs: transportTimeoutMs,
+      }), timeoutMs, `POST ${path}: IPC request`);
       if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
         throw new Error(`POST ${path}: invalid IPC response`);
       }

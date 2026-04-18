@@ -41,8 +41,8 @@ RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
     "max-quality": {
         "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
         "CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS": "1",
-        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "24",
-        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "1120",
+        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "18",
+        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "900",
         "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS": "0",
         "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "1",
         "CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO": "0.45",
@@ -53,11 +53,12 @@ RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
         "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "10",
         "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
         "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "160",
-        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "1024",
-        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "360",
-        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "5",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "760",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "280",
+        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
         "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
         "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "26",
+        "CORTEX_BENCHMARK_RETRIEVAL_POLICY": "high-detail",
     },
     "balanced": {
         "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
@@ -79,6 +80,7 @@ RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
         "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
         "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
         "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "24",
+        "CORTEX_BENCHMARK_RETRIEVAL_POLICY": "high-detail",
     },
     # Lower-token mode targeting roughly <=3% quality loss versus balanced.
     "efficiency-3pct": {
@@ -101,6 +103,7 @@ RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
         "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
         "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
         "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "22",
+        "CORTEX_BENCHMARK_RETRIEVAL_POLICY": "high-detail",
     },
     # Explicit low-loss efficiency profile intended for ~3-5% accuracy tradeoff windows.
     "efficiency-5pct": {
@@ -112,17 +115,18 @@ RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
         "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "1",
         "CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO": "0.30",
         "CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET": "88",
-        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "10",
-        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "100",
-        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "1",
-        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "6",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "11",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "110",
+        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "2",
+        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "8",
         "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
         "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "140",
-        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "500",
-        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "200",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "540",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "220",
         "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
         "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
         "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "20",
+        "CORTEX_BENCHMARK_RETRIEVAL_POLICY": "high-detail",
     },
     "token-saver": {
         "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
@@ -142,6 +146,7 @@ RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
         "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "2",
         "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
         "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "18",
+        "CORTEX_BENCHMARK_RETRIEVAL_POLICY": "standard",
     },
 }
 QUALITY_TOKEN_TARGETS: dict[str, dict[str, object]] = {
@@ -301,10 +306,17 @@ def _apply_dataset_compat_shims(dataset: object) -> object:
                 "Rules:\n"
                 "1) Prefer direct user-stated spans and avoid 'not found' when support exists in context.\n"
                 "2) Preserve critical qualifiers present in context (employer/location/date/unit), not a shortened form.\n"
-                "3) For previous/former/old questions, return only the prior value phrase (exclude follow-up contrast text).\n"
-                "4) For date aliases that map directly to a calendar date (for example Valentine's Day), use the explicit date.\n"
-                "5) For where/location questions, include country/state qualifiers when they appear anywhere in context.\n"
-                "6) Return only the answer text, no explanation or extra narrative."
+                "3) For time-sensitive wording (for example previous/former/current), match the requested time frame.\n"
+                "4) For where/location questions, include available city/state/country qualifiers when context supports the same place.\n"
+                "   If the answer is an institution and context includes one matching country mention, include the country.\n"
+                "5) For where/location questions, if one location is the only supported candidate across related memories,\n"
+                "   return that location directly and avoid uncertainty disclaimers.\n"
+                "6) For study-abroad/institution location questions, if context contains a single country mention,\n"
+                "   append it as 'Institution in Country'.\n"
+                "7) For item questions, prefer the concrete item phrase over generic summaries.\n"
+                "8) If the question asks for a single item and context lists multiple items, return only the primary item phrase.\n"
+                "9) Do not add lead-in text like 'Based on the context' or 'According to the memories'.\n"
+                "10) Return only the answer text, no explanation or extra narrative."
             )
             if not isinstance(raw_payload, dict):
                 return f"{prompt}\n\n{answer_format_block}"
@@ -574,6 +586,11 @@ def _configure_llm_environment() -> str:
 
     os.environ.setdefault("OMB_ANSWER_LLM", provider)
     os.environ.setdefault("OMB_JUDGE_LLM", provider)
+    if provider == "gemini":
+        # Keep benchmark answer/judge behavior stable and detail-oriented unless
+        # the caller explicitly overrides models in the environment.
+        os.environ.setdefault("OMB_ANSWER_MODEL", "gemini-2.5-pro")
+        os.environ.setdefault("OMB_JUDGE_MODEL", "gemini-2.5-flash")
     return provider
 
 
@@ -952,6 +969,10 @@ def _single_run_fairness_violations(args: argparse.Namespace) -> list[str]:
         violations.append("query_id pinning is not allowed for fair scored runs")
     if getattr(args, "doc_limit", None) is not None:
         violations.append("doc_limit shortcuts are not allowed for fair scored runs")
+    if bool(getattr(args, "no_enforce_gate", False)):
+        violations.append("no_enforce_gate=true bypasses quality/token caps and is not allowed")
+    if bool(getattr(args, "allow_missing_recall_metrics", False)):
+        violations.append("allow_missing_recall_metrics=true bypasses recall-token accounting and is not allowed")
     return violations
 
 
@@ -1000,20 +1021,59 @@ def _build_single_run_preflight(args: argparse.Namespace) -> tuple[dict[str, obj
                 "passed": getattr(args, "doc_limit", None) is None,
                 "value": getattr(args, "doc_limit", None),
             },
+            {
+                "name": "quality_gate_enforced",
+                "passed": not bool(getattr(args, "no_enforce_gate", False)),
+                "value": bool(getattr(args, "no_enforce_gate", False)),
+            },
+            {
+                "name": "recall_metrics_required",
+                "passed": not bool(getattr(args, "allow_missing_recall_metrics", False)),
+                "value": bool(getattr(args, "allow_missing_recall_metrics", False)),
+            },
         ],
         "violations": violations,
     }
     return payload, timeout_seconds
 
 
-def _matrix_fairness_violations(args: argparse.Namespace, cases: list[dict[str, object]]) -> list[str]:
+def _matrix_fairness_violations(
+    args: argparse.Namespace,
+    cases: list[dict[str, object]],
+    *,
+    requested_shortcuts: dict[str, bool] | None = None,
+) -> list[str]:
     violations: list[str] = []
+    requested = requested_shortcuts or {}
+    requested_oracle = bool(requested.get("oracle", False))
+    requested_no_enforce_gate = bool(requested.get("no_enforce_gate", False))
+    requested_allow_missing_metrics = bool(requested.get("allow_missing_recall_metrics", False))
+
+    if requested_oracle and not bool(args.oracle):
+        violations.append(
+            "matrix invocation requested oracle=true; oracle shortcuts are not allowed"
+        )
+    if requested_no_enforce_gate and not bool(getattr(args, "no_enforce_gate", False)):
+        violations.append(
+            "matrix invocation requested no_enforce_gate=true; gate bypass shortcuts are not allowed"
+        )
+    if requested_allow_missing_metrics and not bool(
+        getattr(args, "allow_missing_recall_metrics", False)
+    ):
+        violations.append(
+            "matrix invocation requested allow_missing_recall_metrics=true; missing-metrics shortcuts are not allowed"
+        )
+
     if bool(args.oracle):
         violations.append("matrix mode does not permit oracle runs")
     if _has_query_id(getattr(args, "query_id", None)):
         violations.append("matrix mode does not permit default query_id pinning")
     if getattr(args, "doc_limit", None) is not None:
         violations.append("matrix mode does not permit default doc_limit shortcuts")
+    if bool(getattr(args, "no_enforce_gate", False)):
+        violations.append("matrix mode does not permit no_enforce_gate=true")
+    if bool(getattr(args, "allow_missing_recall_metrics", False)):
+        violations.append("matrix mode does not permit allow_missing_recall_metrics=true")
     for index, case in enumerate(cases, start=1):
         if bool(case.get("oracle", False)):
             violations.append(
@@ -1038,8 +1098,17 @@ def _build_matrix_preflight(
     start_index: int,
     max_runtime_seconds: int,
     max_case_runtime_seconds: int,
+    requested_shortcuts: dict[str, bool] | None = None,
 ) -> dict[str, object]:
-    fairness_violations = _matrix_fairness_violations(args, cases)
+    requested = requested_shortcuts or {}
+    requested_oracle = bool(requested.get("oracle", False))
+    requested_no_enforce_gate = bool(requested.get("no_enforce_gate", False))
+    requested_allow_missing_metrics = bool(requested.get("allow_missing_recall_metrics", False))
+    fairness_violations = _matrix_fairness_violations(
+        args,
+        cases,
+        requested_shortcuts=requested,
+    )
     oracle_case_count = sum(1 for case in cases if bool(case.get("oracle", False)))
     query_id_case_count = sum(1 for case in cases if _has_query_id(case.get("query_id")))
     doc_limit_case_count = sum(1 for case in cases if "doc_limit" in case)
@@ -1071,6 +1140,11 @@ def _build_matrix_preflight(
                 "value": bool(args.oracle),
             },
             {
+                "name": "requested_oracle_flag_disabled",
+                "passed": not requested_oracle,
+                "value": requested_oracle,
+            },
+            {
                 "name": "default_query_id_unset",
                 "passed": not _has_query_id(getattr(args, "query_id", None)),
                 "value": getattr(args, "query_id", None),
@@ -1079,6 +1153,26 @@ def _build_matrix_preflight(
                 "name": "default_doc_limit_unset",
                 "passed": getattr(args, "doc_limit", None) is None,
                 "value": getattr(args, "doc_limit", None),
+            },
+            {
+                "name": "quality_gate_enforced",
+                "passed": not bool(getattr(args, "no_enforce_gate", False)),
+                "value": bool(getattr(args, "no_enforce_gate", False)),
+            },
+            {
+                "name": "requested_no_enforce_gate_flag_disabled",
+                "passed": not requested_no_enforce_gate,
+                "value": requested_no_enforce_gate,
+            },
+            {
+                "name": "recall_metrics_required",
+                "passed": not bool(getattr(args, "allow_missing_recall_metrics", False)),
+                "value": bool(getattr(args, "allow_missing_recall_metrics", False)),
+            },
+            {
+                "name": "requested_allow_missing_recall_metrics_flag_disabled",
+                "passed": not requested_allow_missing_metrics,
+                "value": requested_allow_missing_metrics,
             },
             {
                 "name": "cases_without_oracle",
@@ -1096,6 +1190,11 @@ def _build_matrix_preflight(
                 "violating_cases": doc_limit_case_count,
             },
         ],
+        "requested_shortcuts": {
+            "oracle": requested_oracle,
+            "no_enforce_gate": requested_no_enforce_gate,
+            "allow_missing_recall_metrics": requested_allow_missing_metrics,
+        },
         "violations": fairness_violations,
     }
     return payload
@@ -2034,6 +2133,11 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
 def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
     matrix_path = _resolve_matrix_path(args.matrix_file)
     all_cases, execution_profile = _load_matrix_spec(matrix_path)
+    requested_shortcuts = {
+        "oracle": bool(getattr(args, "oracle", False)),
+        "no_enforce_gate": bool(getattr(args, "no_enforce_gate", False)),
+        "allow_missing_recall_metrics": bool(getattr(args, "allow_missing_recall_metrics", False)),
+    }
     _apply_matrix_execution_profile(args, execution_profile)
     start_index = max(1, int(args.start_index))
     if start_index > len(all_cases):
@@ -2060,6 +2164,7 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
         start_index=start_index,
         max_runtime_seconds=max_runtime_seconds,
         max_case_runtime_seconds=max_case_runtime_seconds,
+        requested_shortcuts=requested_shortcuts,
     )
     _write_fair_run_preflight(run_dir, preflight)
     if not bool(preflight.get("passed", False)):

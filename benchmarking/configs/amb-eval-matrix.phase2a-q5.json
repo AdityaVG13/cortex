@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "id": "longmemeval-s-q5",
+      "dataset": "longmemeval",
+      "split": "s",
+      "query_limit": 5
+    },
+    {
+      "id": "locomo-locomo10-q5",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "query_limit": 5
+    },
+    {
+      "id": "personamem-32k-q5",
+      "dataset": "personamem",
+      "split": "32k",
+      "query_limit": 5
+    },
+    {
+      "id": "memsim-simple-q5",
+      "dataset": "memsim",
+      "split": "simple",
+      "query_limit": 5
+    }
+  ]
+}

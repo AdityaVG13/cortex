@@ -1,0 +1,208 @@
+{
+  "notes": [
+    "Fuller non-LongMem matrix for broader fair benchmark expansion beyond LongMemEval.",
+    "All cases are strict fair-run defaults (no oracle, no query pinning, no doc_limit shortcuts).",
+    "Intended to be sharded into <=20 minute chunks via --start-index/--max-cases."
+  ],
+  "execution_profile": {
+    "max_runtime_seconds": 1200,
+    "max_case_runtime_seconds": 900,
+    "token_gate_mode": "dynamic",
+    "provider_profile": "auto",
+    "quality_token_target": "balanced-detail",
+    "retrieval_profile": "balanced",
+    "recall_budget": 300,
+    "min_accuracy": 0.9,
+    "max_recall_tokens": 300,
+    "max_avg_recall_tokens": 246.0,
+    "allow_missing_recall_metrics": false,
+    "no_enforce_gate": false,
+    "oracle": false
+  },
+  "cases": [
+    {
+      "id": "locomo-locomo10-overall-q5",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LoCoMo broad long-conversation recall."
+    },
+    {
+      "id": "locomo-locomo10-single-hop-q5",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "category": "single-hop",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LoCoMo single-hop detail retrieval."
+    },
+    {
+      "id": "locomo-locomo10-multi-hop-q5",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "category": "multi-hop",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LoCoMo multi-hop memory chaining."
+    },
+    {
+      "id": "locomo-locomo10-temporal-q5",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "category": "temporal",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LoCoMo temporal detail recall."
+    },
+    {
+      "id": "lifebench-en-overall-q5",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LifeBench broad user-memory coverage."
+    },
+    {
+      "id": "lifebench-en-information-extraction-q5",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "category": "information-extraction",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LifeBench fact extraction precision."
+    },
+    {
+      "id": "lifebench-en-multi-hop-q5",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "category": "multi-hop",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LifeBench multi-hop recall/reasoning."
+    },
+    {
+      "id": "lifebench-en-temporal-updating-q5",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "category": "temporal-updating",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LifeBench temporal update tracking."
+    },
+    {
+      "id": "personamem-128k-ack-latest-q5",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "acknowledge_latest_user_preferences",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "PersonaMem latest preference capture."
+    },
+    {
+      "id": "personamem-128k-revisit-reasons-q5",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "revisit_reasons_behind_preference_updates",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "PersonaMem rationale recall for updates."
+    },
+    {
+      "id": "personamem-128k-track-evolution-q5",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "track_full_preference_evolution",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "PersonaMem longitudinal preference evolution."
+    },
+    {
+      "id": "memsim-simple-q5",
+      "dataset": "memsim",
+      "split": "simple",
+      "mode": "rag",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemSim simple baseline."
+    },
+    {
+      "id": "memsim-conditional-q5",
+      "dataset": "memsim",
+      "split": "conditional",
+      "mode": "rag",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemSim conditional reasoning."
+    },
+    {
+      "id": "memsim-noisy-q5",
+      "dataset": "memsim",
+      "split": "noisy",
+      "mode": "rag",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemSim noisy distractor robustness."
+    },
+    {
+      "id": "beam-100k-overall-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM 100k broad capability mix."
+    },
+    {
+      "id": "beam-100k-information-extraction-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "information_extraction",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM information extraction precision."
+    },
+    {
+      "id": "beam-100k-temporal-reasoning-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "temporal_reasoning",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM temporal detail reasoning."
+    },
+    {
+      "id": "beam-100k-knowledge-update-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "knowledge_update",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM knowledge overwrite/update handling."
+    },
+    {
+      "id": "beam-100k-event-ordering-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "event_ordering",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM event ordering detail consistency."
+    }
+  ]
+}
