@@ -607,6 +607,7 @@ ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/
     - events: `433,479 -> 1,133`
     - decisions: `31,185 -> 489`
     - decision embeddings: `11,946 -> 483`
+  - purged legacy `boot_savings` rows generated under old baseline math (`441` rows), bringing total events to `692` and clearing inflated historical savings totals
 - Compiler savings accounting hardening:
   - `daemon-rs/src/compiler.rs` baseline estimator now uses active memories + active decisions only (no custom-source filesystem-size heuristic inflation)
 - Validation:
