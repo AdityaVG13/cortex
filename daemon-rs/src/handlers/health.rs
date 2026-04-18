@@ -2015,6 +2015,23 @@ mod tests {
     }
 
     #[test]
+    fn savings_payload_cache_if_fresh_enforces_ttl() {
+        let now = Utc::now().timestamp();
+        let fresh = SavingsPayloadSnapshot {
+            computed_at_unix_secs: now - 1,
+            payload: json!({ "ok": true }),
+        };
+        let stale = SavingsPayloadSnapshot {
+            computed_at_unix_secs: now - (SAVINGS_CACHE_TTL_SECS + 5),
+            payload: json!({ "ok": false }),
+        };
+
+        assert!(savings_payload_cache_if_fresh(Some(fresh), now).is_some());
+        assert!(savings_payload_cache_if_fresh(Some(stale), now).is_none());
+        assert!(savings_payload_cache_if_fresh(None, now).is_none());
+    }
+
+    #[test]
     fn is_control_center_owner_is_case_insensitive() {
         assert!(is_control_center_owner(Some("control-center")));
         assert!(is_control_center_owner(Some("CoNtRoL-CeNtEr")));
