@@ -18,7 +18,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::handlers::estimate_tokens;
-use crate::indexer::custom_source_paths;
 
 fn detect_identity() -> String {
     let user = env::var("USERNAME")
@@ -629,9 +628,13 @@ fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, usize, String
 // ─── Raw baseline estimation ────────────────────────────────────────────────
 
 /// Estimate what raw context would cost — the baseline Cortex replaces.
-/// Counts chars in DB memories + decisions + any user-configured custom sources.
-/// Uses DB query (not filesystem) so baseline is correct regardless of agent CWD.
-fn estimate_raw_baseline(conn: &Connection, home: &Path) -> usize {
+/// Counts chars in the same DB-backed context families the compiler actually
+/// assembles for boot prompts (active memories + active decisions).
+///
+/// We intentionally do not include filesystem-size heuristics from custom
+/// source directories here, because that can drastically overstate savings
+/// without reflecting prompt payload reality.
+fn estimate_raw_baseline(conn: &Connection, _home: &Path) -> usize {
     let mut total_chars: usize = 0;
 
     // DB memories: active entries only
@@ -653,23 +656,6 @@ fn estimate_raw_baseline(conn: &Connection, home: &Path) -> usize {
         )
         .unwrap_or(0);
     total_chars += dec_chars as usize;
-
-    // Custom sources from ~/.cortex/sources.toml or CORTEX_EXTRA_SOURCES
-    for path in custom_source_paths(home) {
-        if path.is_file() {
-            if let Ok(meta) = std::fs::metadata(&path) {
-                total_chars += meta.len() as usize;
-            }
-        } else if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                for entry in entries.flatten() {
-                    if let Ok(meta) = entry.metadata() {
-                        total_chars += meta.len() as usize;
-                    }
-                }
-            }
-        }
-    }
 
     estimate_tokens(&"x".repeat(total_chars))
 }

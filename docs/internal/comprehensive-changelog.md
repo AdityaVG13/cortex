@@ -37,6 +37,28 @@ Keep this file additive. Do not delete history; append updates as Cortex evolves
 - Notes:
   - `benchmarking/adapters/tests/test_cortex_http_client.py` currently reports multiple failing cases in this workspace (`_FakeHTTPXClient` queue exhaustion and retrieval-policy expectation mismatch). These failures were observed during validation but are outside the files changed in this optimization batch.
 
+- 2026-04-18 18:45 - Savings telemetry realism + benchmark bloat remediation pass:
+  - Operational live-DB remediation (`~/.cortex/cortex.db`) executed with backup:
+    - backup created: `~/.cortex/backups/cortex-pre-amb-cleanup-20260418-181602.db`
+    - deleted benchmark namespace rows (`source_agent = 'amb-cortex' OR 'amb-cortex::%'`) across decisions + linked decision embeddings + JSON-encoded event rows
+    - before/after totals:
+      - events: `433,479 -> 1,133`
+      - decisions: `31,185 -> 489`
+      - decision embeddings: `11,946 -> 483`
+  - `daemon-rs/src/compiler.rs`:
+    - boot savings baseline estimation no longer counts filesystem-size heuristics from custom source directories
+    - baseline now reflects DB-backed boot context families actually assembled into prompt flow (active memories + active decisions), preventing exaggerated token/$ savings telemetry
+  - `daemon-rs/src/indexer.rs`:
+    - marked `custom_source_paths` helper with `#[allow(dead_code)]` after compiler baseline decoupling to keep strict warning gates clean
+  - Validation:
+    - protected endpoint latency spot-check after cleanup:
+      - `/sessions`, `/locks`, `/tasks`, `/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`, `/savings` all returned `200` (roughly `0.9ms` to `34.8ms` in local probe)
+    - `rtk cargo check --manifest-path daemon-rs/Cargo.toml` (pass)
+    - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
+    - `rtk cargo test --manifest-path daemon-rs/Cargo.toml --test recall_benchmark -- --nocapture` (`7` passing)
+  - Commit:
+    - pending (this optimization batch)
+
 - Startup contention and high-event-volume analytics hardening:
   - `daemon-rs/src/handlers/health.rs` (`GET /savings`) now avoids full event-log Rust parsing under a long shared DB-read lock.
   - `/savings` operation rollups and trends are now SQL-aggregated in SQLite, with a short TTL payload cache to stabilize repeated dashboard refreshes.

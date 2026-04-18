@@ -140,6 +140,10 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - desktop daemon path validation now rejects non-runtime test artifacts (`target-tests`, `target-test`, `nextest`, `target*/deps`) so app-managed startup cannot accidentally launch test binaries
   - daemon runtime now uses a bounded pooled read-connection provider (`CORTEX_DB_READ_POOL_SIZE`) plus bounded background DB-lock waits (`CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS`) to reduce startup contention
   - startup catch-up now uses a startup-safe storage governor pass (no VACUUM) and clamps app-managed heavy delay to `120s` max so misconfigured values (for example `777`) cannot defer stabilization for many minutes
+- Savings telemetry realism + benchmark-bloat remediation are now landed:
+  - live benchmark namespace bloat cleanup path is validated with backup-first procedure for oversized local DBs
+  - boot savings baseline accounting now excludes custom-source filesystem-size heuristics and tracks only DB-backed boot context families actually assembled in prompt flow
+  - local protected-route probe after cleanup is stable (`/sessions`, `/locks`, `/tasks`, `/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`, `/savings` all healthy in local measurement window)
 
 ---
 
@@ -594,3 +598,19 @@ ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/
   - `rtk npm run web:build` in `desktop/cortex-control-center` (pass)
   - `rtk python benchmarking/run_amb_cortex.py matrix --dry-run --matrix-file benchmarking/configs/amb-eval-matrix.nonlongmem.q5.json` (strict fair-run preflight passed)
   - `rtk python benchmarking/run_amb_cortex.py matrix --matrix-file benchmarking/configs/amb-eval-matrix.nonlongmem.q5.json --continue-on-error --summary-file benchmarking/runs/matrix-summary-latest-q5.json` (expected fail-fast: missing answer/judge provider keys)
+
+## 2026-04-18 18:45 - Savings telemetry realism + benchmark-bloat cleanup batch
+- Live DB remediation (backup-first) completed on local operator database:
+  - backup: `~/.cortex/backups/cortex-pre-amb-cleanup-20260418-181602.db`
+  - removed benchmark namespace rows (`amb-cortex` and `amb-cortex::%`) across decisions + linked decision embeddings + JSON-tagged events
+  - before/after:
+    - events: `433,479 -> 1,133`
+    - decisions: `31,185 -> 489`
+    - decision embeddings: `11,946 -> 483`
+- Compiler savings accounting hardening:
+  - `daemon-rs/src/compiler.rs` baseline estimator now uses active memories + active decisions only (no custom-source filesystem-size heuristic inflation)
+- Validation:
+  - protected endpoint probe (auth-bound): `/sessions`, `/locks`, `/tasks`, `/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`, `/savings` returned `200` in local checks
+  - `rtk cargo check --manifest-path daemon-rs/Cargo.toml` (pass)
+  - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml --test recall_benchmark -- --nocapture` (`7` passing)

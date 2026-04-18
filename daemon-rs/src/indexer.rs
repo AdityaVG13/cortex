@@ -380,7 +380,8 @@ fn matches_glob(path: &Path, pattern: &str) -> bool {
     name == pattern
 }
 
-/// Collect resolved paths from custom sources config (used by compiler baseline).
+/// Collect resolved paths from custom sources config.
+#[allow(dead_code)]
 pub fn custom_source_paths(home: &Path) -> Vec<PathBuf> {
     load_custom_sources(home)
         .iter()
