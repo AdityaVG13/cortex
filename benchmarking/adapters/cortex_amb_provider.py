@@ -45,6 +45,14 @@ class CortexHTTPMemoryProvider(MemoryProvider):
             120,
             int(os.environ.get("CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS", "640")),
         )
+        self._include_assistant_fact_extracts = os.environ.get(
+            "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS",
+            "0",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        self._short_reply_question_max_chars = max(
+            48,
+            int(os.environ.get("CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS", "180")),
+        )
 
     def initialize(self) -> None:
         self._http.healthcheck()
@@ -154,7 +162,7 @@ class CortexHTTPMemoryProvider(MemoryProvider):
         )
         sentence_split = re.compile(r"(?<=[.!?])\s+")
         fact_verb_pattern = re.compile(
-            r"\bi\s+(?:was|am|have|had|got|bought|took|attended|graduated|upgraded|packed|changed|remember|used to|redeemed|repainted|volunteered|worked|studied|moved)\b"
+            r"\bi\s+(?:was|am|have|had|got|bought|take|takes|took|attend|attends|attended|graduated|upgraded|packed|changed|remember|used to|redeemed|repainted|volunteered|worked|studied|moved)\b"
         )
         date_measure_pattern = re.compile(
             r"\b(?:19|20)\d{2}\b"
@@ -163,8 +171,14 @@ class CortexHTTPMemoryProvider(MemoryProvider):
             r"|\b\d+(?:\.\d+)?\s*(?:kbps|mbps|gbps|minutes?|hours?|days?|weeks?|months?|years?|km|miles?|dollars?)\b",
             re.IGNORECASE,
         )
+        item_detail_pattern = re.compile(
+            r"\b(?:gift|present)\s+(?:was|is)\s+(?:a|an|the)\s+[a-z][a-z0-9'-]{2,}(?:\s+[a-z][a-z0-9'-]{2,}){0,3}\b"
+            r"|\b(?:a|an|the)\s+(?:yellow|blue|red|green|black|white|silver|gold|pink|purple|orange|navy|brown|gray|grey)\s+[a-z][a-z0-9'-]{2,}\b",
+            re.IGNORECASE,
+        )
         location_pattern = re.compile(
-            r"\b(?:at|in|from|to|near)\s+[A-Z][A-Za-z0-9'-]*(?:\s+[A-Z][A-Za-z0-9'-]*){0,2}\b"
+            r"\b(?:at|in|from|to|near)\s+[A-Za-z][A-Za-z0-9'-]*(?:\s+[A-Za-z][A-Za-z0-9'-]*){0,2}\b",
+            re.IGNORECASE,
         )
         assistant_fact_pattern = re.compile(r"\b(?:you|your|yours)\b", re.IGNORECASE)
         assistant_reflection_pattern = re.compile(
@@ -186,6 +200,20 @@ class CortexHTTPMemoryProvider(MemoryProvider):
             "i just ",
             "i recently ",
             "my ",
+        )
+        short_fact_pattern = re.compile(
+            r"^(?:"
+            r"\$?\d+(?:\.\d+)?\s*(?:kbps|mbps|gbps|minutes?|hours?|days?|weeks?|months?|years?|miles?|km|%)?"
+            r"|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?"
+            r"|(?:\d{1,2}(?:st|nd|rd|th)?\s+of\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*)"
+            r"|(?:a|an|the)\s+[a-z][a-z0-9'-]{2,}(?:\s+[a-z][a-z0-9'-]{2,}){0,4}"
+            r"|[A-Z][A-Za-z0-9'&.-]{2,}(?:\s+[A-Z][A-Za-z0-9'&.-]{2,}){0,3}"
+            r")\.?$",
+            re.IGNORECASE,
+        )
+        short_non_answer_pattern = re.compile(
+            r"^(?:yes|no|ok|okay|sure|maybe|thanks|thank you|got it|sounds good)\.?$",
+            re.IGNORECASE,
         )
 
         def _clip_snippet(value: str) -> str:
@@ -209,25 +237,57 @@ class CortexHTTPMemoryProvider(MemoryProvider):
                 continue
             role = self._normalize_text(turn.get("role") or turn.get("speaker")).strip().lower()
             normalized = re.sub(r"\s+", " ", message_text).strip().replace("\u2019", "'")
-            if len(normalized) < 20:
+            if role == "user":
+                if len(normalized) < 4:
+                    continue
+            elif len(normalized) < 20:
                 continue
             parsed_turns.append((role, normalized))
 
         if not parsed_turns:
             return []
 
-        user_turns = [(role, text) for role, text in parsed_turns if role == "user"]
-        candidate_turns = user_turns if user_turns else parsed_turns
-        for role, normalized in candidate_turns:
+        user_turns = [(idx, role, text) for idx, (role, text) in enumerate(parsed_turns) if role == "user"]
+        candidate_turns = user_turns if user_turns else [
+            (idx, role, text) for idx, (role, text) in enumerate(parsed_turns)
+        ]
+        for turn_index, role, normalized in candidate_turns:
             role_prefix = role if role else "message"
             role_score = 6 if role_prefix == "user" else 1
             for sentence in sentence_split.split(normalized):
                 compact = sentence.strip()
+                short_reply_candidate = False
+                previous_text = ""
+                previous_is_question = False
+                if turn_index > 0:
+                    previous_text = parsed_turns[turn_index - 1][1]
+                    previous_is_question = bool(
+                        "?" in previous_text
+                        or re.search(r"\b(where|when|what|which|who|how)\b", previous_text.lower())
+                    )
                 if len(compact) < 24:
-                    continue
+                    if role_prefix == "user":
+                        compact_value = compact.rstrip(".!?").strip()
+                        if (
+                            compact_value
+                            and len(compact_value) >= 3
+                            and not short_non_answer_pattern.fullmatch(compact_value)
+                            and (
+                                short_fact_pattern.fullmatch(compact_value)
+                                or (
+                                    previous_is_question
+                                    and len(compact_value) <= 48
+                                    and not low_signal_pattern.search(compact_value)
+                                )
+                            )
+                        ):
+                            short_reply_candidate = True
+                    if not short_reply_candidate:
+                        continue
                 marker_haystack = f" {compact.lower()} "
+                has_personal_marker = any(marker in marker_haystack for marker in personal_markers)
                 if role_prefix == "user":
-                    if not any(marker in marker_haystack for marker in personal_markers):
+                    if not has_personal_marker and not short_reply_candidate:
                         continue
                 else:
                     if not any(marker in marker_haystack for marker in (" i ", " my ", " by the way ")):
@@ -244,20 +304,40 @@ class CortexHTTPMemoryProvider(MemoryProvider):
                     score += 2
                 if location_pattern.search(compact):
                     score += 2
+                if item_detail_pattern.search(compact):
+                    score += 2
                 if low_signal_pattern.search(compact):
                     score -= 4
+                if short_reply_candidate:
+                    score += 5
+                    if previous_is_question:
+                        score += 3
                 if len(compact) <= 220:
                     score += 1
                 if score <= 0:
                     continue
 
-                snippet_text = _clip_snippet(compact)
+                snippet_source = compact
+                if short_reply_candidate and previous_text:
+                    question_text = previous_text.strip()
+                    if len(question_text) > self._short_reply_question_max_chars:
+                        if self._short_reply_question_max_chars <= 5:
+                            question_text = question_text[: self._short_reply_question_max_chars]
+                        else:
+                            question_text = (
+                                question_text[: self._short_reply_question_max_chars - 3].rstrip()
+                                + "..."
+                            )
+                    snippet_source = f"[user-answer] {compact}"
+                    if question_text:
+                        snippet_source = f"{snippet_source} [assistant-question] {question_text}"
+                snippet_text = _clip_snippet(snippet_source)
                 snippet = f"[{role_prefix}] {snippet_text}".strip()
                 ranked_candidates.append((score, sequence, snippet))
                 sequence += 1
 
         if not ranked_candidates:
-            for role, normalized in candidate_turns[:4]:
+            for _turn_index, role, normalized in candidate_turns[:4]:
                 marker_haystack = f" {normalized.lower()} "
                 role_prefix = role if role else "message"
                 role_score = 2 if role_prefix == "user" else 0
@@ -270,7 +350,7 @@ class CortexHTTPMemoryProvider(MemoryProvider):
                 ranked_candidates.append((role_score, sequence, snippet))
                 sequence += 1
 
-        if user_turns:
+        if user_turns and self._include_assistant_fact_extracts:
             for idx, (role, normalized) in enumerate(parsed_turns):
                 if role != "assistant":
                     continue

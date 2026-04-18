@@ -1,0 +1,225 @@
+﻿{
+    "notes":  [
+                  "Stage-2 matrix expands benchmark breadth beyond a single LongMemEval run while staying local-cap friendly.",
+                  "No case uses oracle mode. All cases are intended for fair, transparent RAG evaluation.",
+                  "Query limits are intentionally capped for local runs; use --start-index/--max-cases to shard if needed."
+              ],
+    "cases":  [
+                  {
+                      "id":  "longmemeval-s-overall-q12",
+                      "dataset":  "longmemeval",
+                      "split":  "s",
+                      "query_limit":  12,
+                      "description":  "LongMemEval broad sanity slice across all question types.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "longmemeval-s-temporal-q8",
+                      "dataset":  "longmemeval",
+                      "split":  "s",
+                      "category":  "temporal-reasoning",
+                      "query_limit":  8,
+                      "description":  "LongMemEval temporal reasoning category stress.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "longmemeval-s-knowledge-update-q8",
+                      "dataset":  "longmemeval",
+                      "split":  "s",
+                      "category":  "knowledge-update",
+                      "query_limit":  8,
+                      "description":  "LongMemEval knowledge-update category for recency and overwrite behavior.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "locomo-locomo10-overall-q10",
+                      "dataset":  "locomo",
+                      "split":  "locomo10",
+                      "query_limit":  10,
+                      "description":  "LoCoMo broad coverage over full split.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "locomo-locomo10-multi-hop-q8",
+                      "dataset":  "locomo",
+                      "split":  "locomo10",
+                      "category":  "multi-hop",
+                      "query_limit":  8,
+                      "description":  "LoCoMo query-category slice for multi-hop memory reasoning.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "locomo-locomo10-temporal-q8",
+                      "dataset":  "locomo",
+                      "split":  "locomo10",
+                      "category":  "temporal",
+                      "query_limit":  8,
+                      "description":  "LoCoMo temporal category slice.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "membench-first-low-q8",
+                      "dataset":  "membench",
+                      "split":  "FirstAgentLowLevel",
+                      "query_limit":  8,
+                      "description":  "MemBench first-agent low-level perspective.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "membench-first-high-q8",
+                      "dataset":  "membench",
+                      "split":  "FirstAgentHighLevel",
+                      "query_limit":  8,
+                      "description":  "MemBench first-agent high-level perspective.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "membench-third-low-q8",
+                      "dataset":  "membench",
+                      "split":  "ThirdAgentLowLevel",
+                      "query_limit":  8,
+                      "description":  "MemBench third-agent low-level perspective.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "membench-third-high-q8",
+                      "dataset":  "membench",
+                      "split":  "ThirdAgentHighLevel",
+                      "query_limit":  8,
+                      "description":  "MemBench third-agent high-level perspective.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "personamem-32k-q8",
+                      "dataset":  "personamem",
+                      "split":  "32k",
+                      "query_limit":  8,
+                      "description":  "PersonaMem short-context baseline.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "personamem-128k-q8",
+                      "dataset":  "personamem",
+                      "split":  "128k",
+                      "query_limit":  8,
+                      "description":  "PersonaMem mid-context scale test.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "personamem-1m-q6",
+                      "dataset":  "personamem",
+                      "split":  "1M",
+                      "query_limit":  6,
+                      "description":  "PersonaMem long-context stress with tighter cap for local runtime.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "memsim-simple-q8",
+                      "dataset":  "memsim",
+                      "split":  "simple",
+                      "query_limit":  8,
+                      "description":  "MemSim baseline simple split.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "memsim-conditional-q8",
+                      "dataset":  "memsim",
+                      "split":  "conditional",
+                      "query_limit":  8,
+                      "description":  "MemSim conditional reasoning split.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "memsim-comparative-q8",
+                      "dataset":  "memsim",
+                      "split":  "comparative",
+                      "query_limit":  8,
+                      "description":  "MemSim comparative reasoning split.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "memsim-aggregative-q8",
+                      "dataset":  "memsim",
+                      "split":  "aggregative",
+                      "query_limit":  8,
+                      "description":  "MemSim aggregative reasoning split.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "memsim-post-processing-q8",
+                      "dataset":  "memsim",
+                      "split":  "post_processing",
+                      "query_limit":  8,
+                      "description":  "MemSim post-processing split.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "memsim-noisy-q8",
+                      "dataset":  "memsim",
+                      "split":  "noisy",
+                      "query_limit":  8,
+                      "description":  "MemSim noisy split for distractor resilience.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "lifebench-en-overall-q10",
+                      "dataset":  "lifebench",
+                      "split":  "en",
+                      "query_limit":  10,
+                      "description":  "LifeBench broad user-memory slice.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "lifebench-en-multi-hop-q8",
+                      "dataset":  "lifebench",
+                      "split":  "en",
+                      "category":  "multi-hop",
+                      "query_limit":  8,
+                      "description":  "LifeBench multi-hop category slice.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "lifebench-en-unanswerable-q8",
+                      "dataset":  "lifebench",
+                      "split":  "en",
+                      "category":  "unanswerable",
+                      "query_limit":  8,
+                      "description":  "LifeBench unanswerable category for abstention behavior.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "beam-100k-overall-q8",
+                      "dataset":  "beam",
+                      "split":  "100k",
+                      "query_limit":  8,
+                      "description":  "BEAM 100k broad category mix.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "beam-100k-event-ordering-q6",
+                      "dataset":  "beam",
+                      "split":  "100k",
+                      "category":  "event_ordering",
+                      "query_limit":  6,
+                      "description":  "BEAM event ordering category slice.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "beam-100k-knowledge-update-q6",
+                      "dataset":  "beam",
+                      "split":  "100k",
+                      "category":  "knowledge_update",
+                      "query_limit":  6,
+                      "description":  "BEAM knowledge update category slice.",
+                      "oracle":  false
+                  },
+                  {
+                      "id":  "beam-500k-overall-q5",
+                      "dataset":  "beam",
+                      "split":  "500k",
+                      "query_limit":  5,
+                      "description":  "BEAM larger-context split with strict local cap.",
+                      "oracle":  false
+                  }
+              ]
+}

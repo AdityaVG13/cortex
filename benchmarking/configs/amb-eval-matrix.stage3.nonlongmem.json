@@ -1,0 +1,149 @@
+{
+  "_notes": [
+    "Stage-3 non-LongMemEval expansion for fair, realistic AMB coverage.",
+    "Focuses on uncovered BEAM scale/category slices and PersonaMem category-level evaluation.",
+    "All cases are RAG mode with explicit oracle=false and capped query limits for timeout-friendly sharding.",
+    "Run with --start-index/--max-cases to split across workers without changing case definitions."
+  ],
+  "cases": [
+    {
+      "id": "beam-10m-overall-q2",
+      "dataset": "beam",
+      "split": "10m",
+      "mode": "rag",
+      "query_limit": 2,
+      "description": "Largest BEAM split smoke for index/latency pressure.",
+      "oracle": false
+    },
+    {
+      "id": "beam-10m-temporal-reasoning-q2",
+      "dataset": "beam",
+      "split": "10m",
+      "mode": "rag",
+      "category": "temporal_reasoning",
+      "query_limit": 2,
+      "description": "Temporal stress at max context scale.",
+      "oracle": false
+    },
+    {
+      "id": "beam-1m-instruction-following-q3",
+      "dataset": "beam",
+      "split": "1m",
+      "mode": "rag",
+      "category": "instruction_following",
+      "query_limit": 3,
+      "description": "Instruction fidelity under long-memory retrieval.",
+      "oracle": false
+    },
+    {
+      "id": "beam-1m-summarization-q3",
+      "dataset": "beam",
+      "split": "1m",
+      "mode": "rag",
+      "category": "summarization",
+      "query_limit": 3,
+      "description": "Summary synthesis on high-volume memories.",
+      "oracle": false
+    },
+    {
+      "id": "beam-500k-preference-following-q3",
+      "dataset": "beam",
+      "split": "500k",
+      "mode": "rag",
+      "category": "preference_following",
+      "query_limit": 3,
+      "description": "Preference consistency and policy adherence.",
+      "oracle": false
+    },
+    {
+      "id": "beam-500k-abstention-q3",
+      "dataset": "beam",
+      "split": "500k",
+      "mode": "rag",
+      "category": "abstention",
+      "query_limit": 3,
+      "description": "Abstention behavior when support is weak or absent.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-multi-session-reasoning-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "multi_session_reasoning",
+      "query_limit": 4,
+      "description": "Cross-session chaining at manageable scale.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-summarization-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "summarization",
+      "query_limit": 4,
+      "description": "Summary quality baseline at smaller BEAM split.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-128k-ack-latest-q5",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "acknowledge_latest_user_preferences",
+      "query_limit": 5,
+      "description": "Recency tracking for preference updates.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-128k-revisit-reasons-q5",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "revisit_reasons_behind_preference_updates",
+      "query_limit": 5,
+      "description": "Reason-trace retention for changed preferences.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-128k-track-evolution-q5",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "track_full_preference_evolution",
+      "query_limit": 5,
+      "description": "Preference evolution over extended interactions.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-1m-track-updates-q4",
+      "dataset": "personamem",
+      "split": "1M",
+      "mode": "rag",
+      "category": "track_full_preference_updates",
+      "query_limit": 4,
+      "description": "Long-horizon update tracking at 1M context scale.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-1m-recall-shared-facts-q4",
+      "dataset": "personamem",
+      "split": "1M",
+      "mode": "rag",
+      "category": "recall_user_shared_facts",
+      "query_limit": 4,
+      "description": "Fact recall reliability under very long transcripts.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-32k-reasons-previous-updates-q5",
+      "dataset": "personamem",
+      "split": "32k",
+      "mode": "rag",
+      "category": "recalling_the_reasons_behind_previous_updates",
+      "query_limit": 5,
+      "description": "Historical rationale retrieval at lower context scale.",
+      "oracle": false
+    }
+  ]
+}

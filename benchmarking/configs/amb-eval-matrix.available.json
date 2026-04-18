@@ -1,0 +1,75 @@
+﻿{
+    "notes": [
+        "Available-datasets matrix for this local environment (deterministic local data preferred; no oracle runs).",
+        "Excluded as unavailable here: MemBench (MEMBENCH_DATA_PATH unset and ./MemData files not present), BEAM 500k/1m cache files missing.",
+        "Query limits are intentionally capped for <=20 minute local batches with --max-runtime-seconds 1200."
+    ],
+    "cases": [
+        {
+            "id": "longmemeval-s-overall-q6",
+            "dataset": "longmemeval",
+            "split": "s",
+            "query_limit": 6,
+            "description": "LongMemEval broad sanity slice.",
+            "oracle": false
+        },
+        {
+            "id": "longmemeval-s-temporal-q4",
+            "dataset": "longmemeval",
+            "split": "s",
+            "category": "temporal-reasoning",
+            "query_limit": 4,
+            "description": "LongMemEval temporal reasoning slice.",
+            "oracle": false
+        },
+        {
+            "id": "locomo-locomo10-overall-q5",
+            "dataset": "locomo",
+            "split": "locomo10",
+            "query_limit": 5,
+            "description": "LoCoMo broad coverage.",
+            "oracle": false
+        },
+        {
+            "id": "lifebench-en-overall-q5",
+            "dataset": "lifebench",
+            "split": "en",
+            "query_limit": 5,
+            "description": "LifeBench broad user-memory slice.",
+            "oracle": false
+        },
+        {
+            "id": "personamem-128k-q4",
+            "dataset": "personamem",
+            "split": "128k",
+            "query_limit": 4,
+            "description": "PersonaMem mid-context response-selection slice.",
+            "oracle": false
+        },
+        {
+            "id": "memsim-simple-q4",
+            "dataset": "memsim",
+            "split": "simple",
+            "query_limit": 4,
+            "description": "MemSim baseline simple split.",
+            "oracle": false
+        },
+        {
+            "id": "beam-100k-overall-q4",
+            "dataset": "beam",
+            "split": "100k",
+            "query_limit": 4,
+            "description": "BEAM 100k broad category mix.",
+            "oracle": false
+        },
+        {
+            "id": "beam-100k-event-ordering-q3",
+            "dataset": "beam",
+            "split": "100k",
+            "category": "event_ordering",
+            "query_limit": 3,
+            "description": "BEAM event-ordering focused slice.",
+            "oracle": false
+        }
+    ]
+}

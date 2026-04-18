@@ -1,0 +1,86 @@
+{
+  "notes": [
+    "Strict non-LongMem quick smoke matrix (q5) for fair local runs.",
+    "Keeps one or two comparable cases per non-LongMem dataset family already supported in AMB.",
+    "No query_id pinning or doc_limit shortcuts; all cases are transparent capped slices."
+  ],
+  "execution_profile": {
+    "max_runtime_seconds": 1200,
+    "max_case_runtime_seconds": 900,
+    "token_gate_mode": "dynamic",
+    "provider_profile": "auto",
+    "recall_budget": 300,
+    "min_accuracy": 0.9,
+    "max_recall_tokens": 300,
+    "max_avg_recall_tokens": 300.0,
+    "allow_missing_recall_metrics": false,
+    "no_enforce_gate": false,
+    "oracle": false
+  },
+  "cases": [
+    {
+      "id": "locomo-locomo10-q5",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LoCoMo broad long-conversation memory smoke."
+    },
+    {
+      "id": "lifebench-en-q5",
+      "dataset": "lifebench",
+      "split": "en",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LifeBench broad user-memory smoke."
+    },
+    {
+      "id": "personamem-32k-q5",
+      "dataset": "personamem",
+      "split": "32k",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "PersonaMem short-context response-selection smoke."
+    },
+    {
+      "id": "membench-first-low-q5",
+      "dataset": "membench",
+      "split": "FirstAgentLowLevel",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemBench first-agent low-level smoke."
+    },
+    {
+      "id": "membench-third-high-q5",
+      "dataset": "membench",
+      "split": "ThirdAgentHighLevel",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemBench third-agent high-level smoke."
+    },
+    {
+      "id": "memsim-simple-q5",
+      "dataset": "memsim",
+      "split": "simple",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemSim simple split smoke."
+    },
+    {
+      "id": "memsim-noisy-q5",
+      "dataset": "memsim",
+      "split": "noisy",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "MemSim noisy split smoke."
+    },
+    {
+      "id": "beam-100k-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM 100k broad category smoke."
+    }
+  ]
+}

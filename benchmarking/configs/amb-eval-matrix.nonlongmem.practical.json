@@ -1,0 +1,135 @@
+{
+  "notes": [
+    "Practical non-LongMem matrix for fair AMB expansion runs.",
+    "All cases keep oracle=false and modest query limits for timeout-friendly local execution.",
+    "Use --start-index/--max-cases to shard across machines without changing case definitions."
+  ],
+  "execution_profile": {
+    "max_runtime_seconds": 1200,
+    "max_case_runtime_seconds": 900,
+    "token_gate_mode": "dynamic",
+    "provider_profile": "gemini",
+    "recall_budget": 300,
+    "min_accuracy": 0.9,
+    "max_recall_tokens": 300,
+    "max_avg_recall_tokens": 246.0,
+    "allow_missing_recall_metrics": false,
+    "no_enforce_gate": false,
+    "oracle": false
+  },
+  "cases": [
+    {
+      "id": "locomo-locomo10-overall-q6",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "LoCoMo broad long-conversation memory slice."
+    },
+    {
+      "id": "locomo-locomo10-multi-hop-q6",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "mode": "rag",
+      "category": "multi-hop",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "LoCoMo multi-hop reasoning slice."
+    },
+    {
+      "id": "lifebench-en-overall-q6",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "LifeBench broad user-memory slice."
+    },
+    {
+      "id": "lifebench-en-multi-hop-q5",
+      "dataset": "lifebench",
+      "split": "en",
+      "mode": "rag",
+      "category": "multi-hop",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "LifeBench multi-hop slice."
+    },
+    {
+      "id": "membench-first-low-q6",
+      "dataset": "membench",
+      "split": "FirstAgentLowLevel",
+      "mode": "rag",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "MemBench first-agent low-level trajectory slice."
+    },
+    {
+      "id": "membench-third-high-q6",
+      "dataset": "membench",
+      "split": "ThirdAgentHighLevel",
+      "mode": "rag",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "MemBench third-agent high-level trajectory slice."
+    },
+    {
+      "id": "personamem-128k-ack-latest-q6",
+      "dataset": "personamem",
+      "split": "128k",
+      "mode": "rag",
+      "category": "acknowledge_latest_user_preferences",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "PersonaMem recency tracking slice."
+    },
+    {
+      "id": "personamem-1m-recall-shared-facts-q4",
+      "dataset": "personamem",
+      "split": "1M",
+      "mode": "rag",
+      "category": "recall_user_shared_facts",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "PersonaMem long-context fact recall slice."
+    },
+    {
+      "id": "memsim-simple-q6",
+      "dataset": "memsim",
+      "split": "simple",
+      "mode": "rag",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "MemSim simple split slice."
+    },
+    {
+      "id": "memsim-conditional-q6",
+      "dataset": "memsim",
+      "split": "conditional",
+      "mode": "rag",
+      "query_limit": 6,
+      "oracle": false,
+      "description": "MemSim conditional split slice."
+    },
+    {
+      "id": "beam-100k-event-ordering-q5",
+      "dataset": "beam",
+      "split": "100k",
+      "mode": "rag",
+      "category": "event_ordering",
+      "query_limit": 5,
+      "oracle": false,
+      "description": "BEAM event ordering slice."
+    },
+    {
+      "id": "beam-500k-overall-q4",
+      "dataset": "beam",
+      "split": "500k",
+      "mode": "rag",
+      "query_limit": 4,
+      "oracle": false,
+      "description": "BEAM larger-scale broad slice."
+    }
+  ]
+}

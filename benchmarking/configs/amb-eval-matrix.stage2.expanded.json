@@ -1,0 +1,350 @@
+{
+  "notes": [
+    "Expanded stage-2 matrix with broader cross-suite category coverage beyond baseline stage2.",
+    "All cases are fair-eval defaults: oracle=false, no query_id pinning, no doc_limit shortcuts.",
+    "Use --start-index/--max-cases and runtime caps to shard this matrix into repeatable local batches."
+  ],
+  "cases": [
+    {
+      "id": "longmemeval-s-overall-q10",
+      "dataset": "longmemeval",
+      "split": "s",
+      "query_limit": 10,
+      "description": "LongMemEval broad sanity slice across all question types.",
+      "oracle": false
+    },
+    {
+      "id": "longmemeval-s-temporal-q6",
+      "dataset": "longmemeval",
+      "split": "s",
+      "category": "temporal-reasoning",
+      "query_limit": 6,
+      "description": "LongMemEval temporal reasoning slice.",
+      "oracle": false
+    },
+    {
+      "id": "longmemeval-s-knowledge-update-q6",
+      "dataset": "longmemeval",
+      "split": "s",
+      "category": "knowledge-update",
+      "query_limit": 6,
+      "description": "LongMemEval knowledge update slice.",
+      "oracle": false
+    },
+    {
+      "id": "longmemeval-s-multi-session-q6",
+      "dataset": "longmemeval",
+      "split": "s",
+      "category": "multi-session",
+      "query_limit": 6,
+      "description": "LongMemEval multi-session recall slice.",
+      "oracle": false
+    },
+    {
+      "id": "longmemeval-s-single-user-q6",
+      "dataset": "longmemeval",
+      "split": "s",
+      "category": "single-session-user",
+      "query_limit": 6,
+      "description": "LongMemEval single-session user fact slice.",
+      "oracle": false
+    },
+    {
+      "id": "longmemeval-s-single-assistant-q6",
+      "dataset": "longmemeval",
+      "split": "s",
+      "category": "single-session-assistant",
+      "query_limit": 6,
+      "description": "LongMemEval assistant-history slice.",
+      "oracle": false
+    },
+    {
+      "id": "longmemeval-s-preference-q6",
+      "dataset": "longmemeval",
+      "split": "s",
+      "category": "single-session-preference",
+      "query_limit": 6,
+      "description": "LongMemEval preference tracking slice.",
+      "oracle": false
+    },
+    {
+      "id": "locomo-locomo10-overall-q8",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "query_limit": 8,
+      "description": "LoCoMo broad coverage over full split.",
+      "oracle": false
+    },
+    {
+      "id": "locomo-locomo10-single-hop-q6",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "category": "single-hop",
+      "query_limit": 6,
+      "description": "LoCoMo single-hop category slice.",
+      "oracle": false
+    },
+    {
+      "id": "locomo-locomo10-multi-hop-q6",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "category": "multi-hop",
+      "query_limit": 6,
+      "description": "LoCoMo multi-hop category slice.",
+      "oracle": false
+    },
+    {
+      "id": "locomo-locomo10-temporal-q6",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "category": "temporal",
+      "query_limit": 6,
+      "description": "LoCoMo temporal category slice.",
+      "oracle": false
+    },
+    {
+      "id": "locomo-locomo10-open-domain-q6",
+      "dataset": "locomo",
+      "split": "locomo10",
+      "category": "open-domain",
+      "query_limit": 6,
+      "description": "LoCoMo open-domain category slice.",
+      "oracle": false
+    },
+    {
+      "id": "membench-first-low-q6",
+      "dataset": "membench",
+      "split": "FirstAgentLowLevel",
+      "query_limit": 6,
+      "description": "MemBench first-agent low-level split.",
+      "oracle": false
+    },
+    {
+      "id": "membench-first-high-q6",
+      "dataset": "membench",
+      "split": "FirstAgentHighLevel",
+      "query_limit": 6,
+      "description": "MemBench first-agent high-level split.",
+      "oracle": false
+    },
+    {
+      "id": "membench-third-low-q6",
+      "dataset": "membench",
+      "split": "ThirdAgentLowLevel",
+      "query_limit": 6,
+      "description": "MemBench third-agent low-level split.",
+      "oracle": false
+    },
+    {
+      "id": "membench-third-high-q6",
+      "dataset": "membench",
+      "split": "ThirdAgentHighLevel",
+      "query_limit": 6,
+      "description": "MemBench third-agent high-level split.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-32k-q6",
+      "dataset": "personamem",
+      "split": "32k",
+      "query_limit": 6,
+      "description": "PersonaMem 32k context split.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-128k-q6",
+      "dataset": "personamem",
+      "split": "128k",
+      "query_limit": 6,
+      "description": "PersonaMem 128k context split.",
+      "oracle": false
+    },
+    {
+      "id": "personamem-1m-q4",
+      "dataset": "personamem",
+      "split": "1M",
+      "query_limit": 4,
+      "description": "PersonaMem 1M context stress slice with strict cap.",
+      "oracle": false
+    },
+    {
+      "id": "memsim-simple-q6",
+      "dataset": "memsim",
+      "split": "simple",
+      "query_limit": 6,
+      "description": "MemSim simple split.",
+      "oracle": false
+    },
+    {
+      "id": "memsim-conditional-q6",
+      "dataset": "memsim",
+      "split": "conditional",
+      "query_limit": 6,
+      "description": "MemSim conditional split.",
+      "oracle": false
+    },
+    {
+      "id": "memsim-comparative-q6",
+      "dataset": "memsim",
+      "split": "comparative",
+      "query_limit": 6,
+      "description": "MemSim comparative split.",
+      "oracle": false
+    },
+    {
+      "id": "memsim-aggregative-q6",
+      "dataset": "memsim",
+      "split": "aggregative",
+      "query_limit": 6,
+      "description": "MemSim aggregative split.",
+      "oracle": false
+    },
+    {
+      "id": "memsim-post-processing-q6",
+      "dataset": "memsim",
+      "split": "post_processing",
+      "query_limit": 6,
+      "description": "MemSim post-processing split.",
+      "oracle": false
+    },
+    {
+      "id": "memsim-noisy-q6",
+      "dataset": "memsim",
+      "split": "noisy",
+      "query_limit": 6,
+      "description": "MemSim noisy split.",
+      "oracle": false
+    },
+    {
+      "id": "lifebench-en-overall-q8",
+      "dataset": "lifebench",
+      "split": "en",
+      "query_limit": 8,
+      "description": "LifeBench broad slice.",
+      "oracle": false
+    },
+    {
+      "id": "lifebench-en-information-extraction-q6",
+      "dataset": "lifebench",
+      "split": "en",
+      "category": "information-extraction",
+      "query_limit": 6,
+      "description": "LifeBench information extraction category slice.",
+      "oracle": false
+    },
+    {
+      "id": "lifebench-en-multi-hop-q6",
+      "dataset": "lifebench",
+      "split": "en",
+      "category": "multi-hop",
+      "query_limit": 6,
+      "description": "LifeBench multi-hop category slice.",
+      "oracle": false
+    },
+    {
+      "id": "lifebench-en-temporal-updating-q6",
+      "dataset": "lifebench",
+      "split": "en",
+      "category": "temporal-updating",
+      "query_limit": 6,
+      "description": "LifeBench temporal updating category slice.",
+      "oracle": false
+    },
+    {
+      "id": "lifebench-en-nondeclarative-q6",
+      "dataset": "lifebench",
+      "split": "en",
+      "category": "nondeclarative",
+      "query_limit": 6,
+      "description": "LifeBench nondeclarative category slice.",
+      "oracle": false
+    },
+    {
+      "id": "lifebench-en-unanswerable-q6",
+      "dataset": "lifebench",
+      "split": "en",
+      "category": "unanswerable",
+      "query_limit": 6,
+      "description": "LifeBench unanswerable category slice.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-overall-q6",
+      "dataset": "beam",
+      "split": "100k",
+      "query_limit": 6,
+      "description": "BEAM 100k broad category mix.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-event-ordering-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "category": "event_ordering",
+      "query_limit": 4,
+      "description": "BEAM event ordering category slice.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-knowledge-update-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "category": "knowledge_update",
+      "query_limit": 4,
+      "description": "BEAM knowledge update category slice.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-temporal-reasoning-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "category": "temporal_reasoning",
+      "query_limit": 4,
+      "description": "BEAM temporal reasoning category slice.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-information-extraction-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "category": "information_extraction",
+      "query_limit": 4,
+      "description": "BEAM information extraction category slice.",
+      "oracle": false
+    },
+    {
+      "id": "beam-100k-contradiction-resolution-q4",
+      "dataset": "beam",
+      "split": "100k",
+      "category": "contradiction_resolution",
+      "query_limit": 4,
+      "description": "BEAM contradiction resolution category slice.",
+      "oracle": false
+    },
+    {
+      "id": "beam-500k-overall-q4",
+      "dataset": "beam",
+      "split": "500k",
+      "query_limit": 4,
+      "description": "BEAM 500k broad slice with strict cap.",
+      "oracle": false
+    },
+    {
+      "id": "beam-500k-temporal-reasoning-q3",
+      "dataset": "beam",
+      "split": "500k",
+      "category": "temporal_reasoning",
+      "query_limit": 3,
+      "description": "BEAM 500k temporal reasoning slice with strict cap.",
+      "oracle": false
+    },
+    {
+      "id": "beam-1m-overall-q3",
+      "dataset": "beam",
+      "split": "1m",
+      "query_limit": 3,
+      "description": "BEAM 1m context stress slice with strict cap.",
+      "oracle": false
+    }
+  ]
+}

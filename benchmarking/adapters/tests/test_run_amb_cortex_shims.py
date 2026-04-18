@@ -19,14 +19,20 @@ ADAPTERS_DIR = BENCHMARKING_DIR / "adapters"
 if str(ADAPTERS_DIR) not in sys.path:
     sys.path.insert(0, str(ADAPTERS_DIR))
 
+import run_amb_cortex
+
 from run_amb_cortex import (  # noqa: E402
     IsolatedCortexDaemon,
     _apply_dataset_compat_shims,
+    _build_profile_delta_report,
+    _apply_retrieval_profile_defaults,
     _cleanup_benchmark_rows_in_db,
     _configure_imports,
     _configure_llm_environment,
+    _context_efficiency_metrics,
     _execute_single_run,
     _env_flag_enabled,
+    _resolve_quality_token_target,
     _resolve_single_run_timeout_seconds,
     _seed_model_assets,
     build_parser,
@@ -135,6 +141,10 @@ def test_longmemeval_shim_keeps_context_and_appends_compact_metrics() -> None:
     assert "[retrieval-metrics]" in prompt
     assert "\"budget\": 300" in prompt
     assert "\"count\": 2" in prompt
+    assert "[answer-format]" in prompt
+    assert "Rules:" in prompt
+    assert "Valentine's Day" in prompt
+    assert "country/state qualifiers" in prompt
 
 
 def test_seed_model_assets_copies_only_supported_files(tmp_path: Path) -> None:
@@ -283,6 +293,66 @@ def test_cleanup_benchmark_rows_in_db_removes_only_matching_source_agent(tmp_pat
         check.close()
 
 
+def test_cleanup_benchmark_rows_in_db_retries_transient_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "cortex.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE decisions (id INTEGER PRIMARY KEY, source_agent TEXT, status TEXT)")
+    conn.execute(
+        "CREATE TABLE embeddings (id INTEGER PRIMARY KEY, target_type TEXT, target_id INTEGER)"
+    )
+    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, source_agent TEXT)")
+    conn.execute("INSERT INTO decisions (id, source_agent, status) VALUES (1, 'amb-cortex::run-a', 'active')")
+    conn.execute("INSERT INTO embeddings (target_type, target_id) VALUES ('decision', 1)")
+    conn.execute("INSERT INTO events (source_agent) VALUES ('amb-cortex::run-a')")
+    conn.commit()
+    conn.close()
+
+    real_connect = sqlite3.connect
+    attempts = {"count": 0}
+
+    def flaky_connect(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(run_amb_cortex.sqlite3, "connect", flaky_connect)
+    monkeypatch.setattr(run_amb_cortex.time, "sleep", lambda _: None)
+
+    result = _cleanup_benchmark_rows_in_db(db_path, "amb-cortex::run-a")
+
+    assert attempts["count"] >= 2
+    assert result["cleanup_retry_attempts"] == 1
+    assert result["decisions_deleted"] == 1
+
+
+def test_cleanup_benchmark_namespace_captures_cleanup_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "cortex.db"
+    db_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(run_amb_cortex, "_runtime_db_path_from_health", lambda _base_url: db_path)
+    monkeypatch.setattr(
+        run_amb_cortex,
+        "_cleanup_benchmark_rows_in_db",
+        lambda _db_path, _source_agent: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    report = run_amb_cortex._cleanup_benchmark_namespace(
+        base_url="http://127.0.0.1:7437",
+        source_agent="amb-cortex::run-a",
+    )
+
+    assert report["cleanup_attempted"] is True
+    assert report["cleanup_failed"] is True
+    assert "database is locked" in str(report["cleanup_error"])
+
+
 def test_cortex_provider_concurrency_defaults_to_one_and_allows_override(monkeypatch) -> None:
     module_name = "cortex_amb_provider"
     _configure_imports()
@@ -304,6 +374,7 @@ def test_cortex_provider_expands_json_docs_with_fact_extracts(monkeypatch) -> No
     monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
     monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
     monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "2")
+    monkeypatch.setenv("CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS", "1")
     sys.modules.pop(module_name, None)
     module = importlib.import_module(module_name)
     provider = module.CortexHTTPMemoryProvider()
@@ -329,6 +400,36 @@ def test_cortex_provider_expands_json_docs_with_fact_extracts(monkeypatch) -> No
     assert any("Business Administration" in item.content for item in expanded[1:])
     assert any("45 minutes each way" in item.content for item in expanded[1:])
     assert expanded[1].context.endswith("[fact-extract]")
+
+
+def test_cortex_provider_default_fact_extracts_exclude_assistant_summaries(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "3")
+    monkeypatch.delenv("CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS", raising=False)
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d1",
+        user_id="u1",
+        content=json.dumps(
+            [
+                {"role": "user", "content": "I upgraded my home internet to 500 Mbps."},
+                {"role": "assistant", "content": "You mentioned your commute is 45 minutes each way."},
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    fact_contents = [item.content for item in expanded if "::fact::" in item.id]
+    assert fact_contents
+    assert any("500 Mbps" in content for content in fact_contents)
+    assert all("45 minutes each way" not in content for content in fact_contents)
 
 
 def test_cortex_provider_extracts_late_fact_sentences(monkeypatch) -> None:
@@ -362,6 +463,144 @@ def test_cortex_provider_extracts_late_fact_sentences(monkeypatch) -> None:
     assert len(expanded) == 2
     assert expanded[1].id == "d2::fact::1"
     assert "Business Administration" in expanded[1].content
+
+
+def test_cortex_provider_extracts_take_verb_location_facts(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "1")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d3",
+        user_id="u3",
+        content=json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": "I take yoga classes at serenity yoga every Tuesday evening.",
+                }
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    assert len(expanded) == 2
+    assert expanded[1].id == "d3::fact::1"
+    assert "serenity yoga" in expanded[1].content.lower()
+
+
+def test_cortex_provider_extracts_item_facts_from_gift_statements(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "1")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d4",
+        user_id="u4",
+        content=json.dumps(
+            [
+                {
+                    "role": "user",
+                    "content": "My sister's birthday gift was a yellow dress from last weekend.",
+                }
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    assert len(expanded) == 2
+    assert expanded[1].id == "d4::fact::1"
+    assert "yellow dress" in expanded[1].content.lower()
+
+
+def test_cortex_provider_extracts_short_user_detail_replies(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "3")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", "0")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d5",
+        user_id="u5",
+        content=json.dumps(
+            [
+                {"role": "assistant", "content": "Where did you redeem the $5 coffee creamer coupon?"},
+                {"role": "user", "content": "Target."},
+                {"role": "assistant", "content": "What did you buy for your sister's birthday gift?"},
+                {"role": "user", "content": "A yellow dress."},
+                {"role": "assistant", "content": "When was the fundraiser dinner?"},
+                {"role": "user", "content": "February 14th."},
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    fact_contents = [item.content.lower() for item in expanded if "::fact::" in item.id]
+    assert fact_contents
+    assert any("target" in content for content in fact_contents)
+    assert any("yellow dress" in content for content in fact_contents)
+    assert any("february 14th" in content for content in fact_contents)
+    assert any("[assistant-question]" in content for content in fact_contents)
+    assert any(
+        content.index("[user-answer]") < content.index("[assistant-question]")
+        for content in fact_contents
+        if "[assistant-question]" in content and "[user-answer]" in content
+    )
+
+
+def test_cortex_provider_short_reply_snippets_prioritize_user_answer(monkeypatch) -> None:
+    module_name = "cortex_amb_provider"
+    _configure_imports()
+    monkeypatch.setenv("CORTEX_AUTH_TOKEN", "test-token")
+    monkeypatch.setenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", "2")
+    monkeypatch.setenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", "0")
+    monkeypatch.setenv("CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS", "40")
+    sys.modules.pop(module_name, None)
+    module = importlib.import_module(module_name)
+    provider = module.CortexHTTPMemoryProvider()
+    doc = _ProviderDoc(
+        doc_id="d6",
+        user_id="u6",
+        content=json.dumps(
+            [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "What speed is your new internet plan after the upgrade, "
+                        "and does it help when streaming movies?"
+                    ),
+                },
+                {"role": "user", "content": "I upgraded to 500 Mbps."},
+            ]
+        ),
+    )
+
+    expanded = provider._expand_document(doc)
+    provider.cleanup()
+
+    fact_contents = [item.content.lower() for item in expanded if "::fact::" in item.id]
+    assert fact_contents
+    assert any("[user-answer] i upgraded to 500 mbps" in content for content in fact_contents)
+    assert any("[assistant-question]" in content for content in fact_contents)
 
 
 def test_cortex_provider_can_disable_fact_extracts(monkeypatch) -> None:
@@ -413,6 +652,130 @@ def test_cortex_provider_can_disable_full_document_storage(monkeypatch) -> None:
     assert all("::fact::" in item.id for item in expanded)
 
 
+def test_apply_retrieval_profile_defaults_is_non_destructive(monkeypatch) -> None:
+    monkeypatch.delenv("CORTEX_BENCHMARK_STORE_FULL_DOCS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_QUERY_WINDOW_CHARS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_USE_RECALL_EXCERPTS", raising=False)
+    monkeypatch.delenv("CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY", raising=False)
+    monkeypatch.setenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "999")
+
+    effective = _apply_retrieval_profile_defaults("balanced")
+
+    assert effective["CORTEX_BENCHMARK_STORE_FULL_DOCS"] == "0"
+    assert effective["CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS"] == "1"
+    assert effective["CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC"] == "14"
+    assert effective["CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS"] == "800"
+    assert effective["CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS"] == "0"
+    assert effective["CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS"] == "1"
+    assert effective["CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO"] == "0.35"
+    assert effective["CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET"] == "96"
+    assert effective["CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER"] == "12"
+    assert effective["CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN"] == "120"
+    assert effective["CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED"] == "2"
+    assert effective["CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS"] == "10"
+    assert effective["CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN"] == "18"
+    assert effective["CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS"] == "160"
+    assert effective["CORTEX_BENCHMARK_CONTEXT_MAX_CHARS"] == "999"
+    assert effective["CORTEX_BENCHMARK_QUERY_WINDOW_CHARS"] == "240"
+    assert effective["CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM"] == "3"
+    assert effective["CORTEX_BENCHMARK_USE_RECALL_EXCERPTS"] == "1"
+    assert effective["CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY"] == "24"
+
+
+def test_context_efficiency_metrics_derives_score_per_token() -> None:
+    summary = argparse.Namespace(
+        correct=13,
+        results=[
+            argparse.Namespace(context_tokens=120),
+            argparse.Namespace(context_tokens=80),
+            {"context_tokens": 100},
+        ],
+    )
+
+    metrics = _context_efficiency_metrics(summary)
+
+    assert metrics["context_tokens_total"] == 300
+    assert metrics["context_tokens_avg"] == 100.0
+    assert metrics["score_per_1k_context_tokens"] == 43.3333
+
+
+def test_recall_summarization_and_efficiency_metrics_track_total_tokens() -> None:
+    recall_stats = run_amb_cortex._summarize_recall_metrics(
+        [
+            {"token_estimate": 120, "recall_call_count": 1},
+            {"token_estimate": 180, "recall_call_count": 2},
+        ],
+        budget=300,
+    )
+    summary = argparse.Namespace(correct=15)
+
+    efficiency = run_amb_cortex._recall_efficiency_metrics(summary, recall_stats)
+
+    assert recall_stats["queries"] == 2
+    assert recall_stats["total_recall_tokens"] == 300
+    assert recall_stats["avg_recall_tokens"] == 150.0
+    assert recall_stats["recall_calls"] == 3
+    assert recall_stats["avg_recall_calls_per_query"] == 1.5
+    assert recall_stats["avg_recall_tokens_per_call"] == 100.0
+    assert efficiency["recall_tokens_total"] == 300
+    assert efficiency["score_per_1k_recall_tokens"] == 50.0
+
+
+def test_profile_delta_report_compares_effective_limits_cleanly() -> None:
+    report = _build_profile_delta_report(
+        token_limits={
+            "mode": "dynamic",
+            "max_recall_tokens": 330,
+            "max_avg_recall_tokens": 260.0,
+        },
+        effective_constraints={
+            "max_recall_tokens": 300,
+            "max_avg_recall_tokens": 240.0,
+        },
+        baseline_entry={
+            "max_recall_tokens": 310,
+            "max_avg_recall_tokens": 250.0,
+        },
+        recall_stats={
+            "max_recall_tokens": 280,
+            "avg_recall_tokens": 220.0,
+        },
+    )
+
+    delta_vs_gate = report["delta_vs_token_gate"]["max_recall_tokens"]
+    observed_vs_effective = report["observed_vs_effective"]["max_recall_tokens"]
+    assert delta_vs_gate["absolute"] == -30.0
+    assert observed_vs_effective["absolute"] == -20.0
+
+
+def test_quality_token_target_resolver_maps_to_detail_safe_profile() -> None:
+    plan = _resolve_quality_token_target(
+        target="lean-detail",
+        retrieval_profile="token-saver",
+        min_accuracy=0.84,
+    )
+
+    assert plan["target"] == "lean-detail"
+    assert plan["effective_retrieval_profile"] == "efficiency-5pct"
+    assert plan["effective_min_accuracy"] == 0.88
+    assert plan["applied"] is True
+
+
 def test_run_parser_defaults_single_run_timeout_to_20_minutes(monkeypatch) -> None:
     monkeypatch.delenv("CORTEX_BENCHMARK_RUN_MAX_RUNTIME_SECONDS", raising=False)
 
@@ -420,6 +783,8 @@ def test_run_parser_defaults_single_run_timeout_to_20_minutes(monkeypatch) -> No
     args = parser.parse_args(["run", "--dataset", "longmemeval", "--split", "s"])
 
     assert args.max_runtime_seconds == 1200
+    assert args.quality_token_target == "custom"
+    assert args.retrieval_profile == "max-quality"
 
 
 def test_run_parser_reads_single_run_timeout_from_env(monkeypatch) -> None:
@@ -429,6 +794,70 @@ def test_run_parser_reads_single_run_timeout_from_env(monkeypatch) -> None:
     args = parser.parse_args(["run", "--dataset", "longmemeval", "--split", "s"])
 
     assert args.max_runtime_seconds == 900
+
+
+def test_run_parser_accepts_retrieval_profile_override() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--dataset",
+            "longmemeval",
+            "--split",
+            "s",
+            "--retrieval-profile",
+            "token-saver",
+        ]
+    )
+    assert args.retrieval_profile == "token-saver"
+
+
+def test_run_parser_accepts_efficiency_retrieval_profile() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--dataset",
+            "longmemeval",
+            "--split",
+            "s",
+            "--retrieval-profile",
+            "efficiency-5pct",
+        ]
+    )
+    assert args.retrieval_profile == "efficiency-5pct"
+
+
+def test_run_parser_accepts_quality_token_target() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--dataset",
+            "longmemeval",
+            "--split",
+            "s",
+            "--quality-token-target",
+            "balanced-detail",
+        ]
+    )
+    assert args.quality_token_target == "balanced-detail"
+
+
+def test_run_parser_accepts_efficiency_3pct_retrieval_profile() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--dataset",
+            "longmemeval",
+            "--split",
+            "s",
+            "--retrieval-profile",
+            "efficiency-3pct",
+        ]
+    )
+    assert args.retrieval_profile == "efficiency-3pct"
 
 
 def test_single_run_timeout_validation_enforces_15_to_20_min_window() -> None:
@@ -458,7 +887,12 @@ def test_execute_single_run_uses_validated_timeout(monkeypatch, tmp_path: Path) 
         return 0, None
 
     monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
-    args = argparse.Namespace(max_runtime_seconds=1000)
+    args = argparse.Namespace(
+        max_runtime_seconds=1000,
+        oracle=False,
+        query_id=None,
+        doc_limit=None,
+    )
 
     _execute_single_run(args, tmp_path)
 
@@ -466,6 +900,8 @@ def test_execute_single_run_uses_validated_timeout(monkeypatch, tmp_path: Path) 
     assert captured["run_dir"] == tmp_path
     assert captured["timeout_seconds"] == 1000
     assert captured["timeout_label"] == "single run"
+    preflight = json.loads((tmp_path / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is True
 
 
 def test_execute_single_run_raises_when_timeout_guard_fails(monkeypatch, tmp_path: Path) -> None:
@@ -482,4 +918,38 @@ def test_execute_single_run_raises_when_timeout_guard_fails(monkeypatch, tmp_pat
     monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
 
     with pytest.raises(RuntimeError, match="runtime budget exceeded"):
-        _execute_single_run(argparse.Namespace(max_runtime_seconds=900), tmp_path)
+        _execute_single_run(
+            argparse.Namespace(max_runtime_seconds=900, oracle=False, query_id=None, doc_limit=None),
+            tmp_path,
+        )
+
+
+def test_execute_single_run_rejects_oracle_shortcut_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = {"value": False}
+
+    def _fake_execute(
+        *,
+        run_args: argparse.Namespace,
+        run_dir: Path,
+        timeout_seconds: int,
+        timeout_label: str,
+    ) -> tuple[int, str | None]:
+        _ = (run_args, run_dir, timeout_seconds, timeout_label)
+        called["value"] = True
+        return 0, None
+
+    monkeypatch.setattr("run_amb_cortex._execute_benchmark_with_timeout", _fake_execute)
+
+    with pytest.raises(ValueError, match="fair-run preflight failed"):
+        _execute_single_run(
+            argparse.Namespace(max_runtime_seconds=900, oracle=True, query_id=None, doc_limit=None),
+            tmp_path,
+        )
+
+    assert called["value"] is False
+    preflight = json.loads((tmp_path / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert any("oracle=true" in item for item in preflight["violations"])

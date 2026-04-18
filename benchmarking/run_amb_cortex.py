@@ -16,6 +16,7 @@ from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -35,10 +36,179 @@ TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     "groq": {"max_avg_ratio": 0.84, "max_peak_ratio": 1.00},
     "default": {"max_avg_ratio": 0.80, "max_peak_ratio": 1.00},
 }
+RETRIEVAL_PROFILES: dict[str, dict[str, str]] = {
+    # Default profile favors answer completeness and non-lossy user-fact shaping.
+    "max-quality": {
+        "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
+        "CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS": "1",
+        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "24",
+        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "1120",
+        "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS": "0",
+        "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "1",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO": "0.45",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET": "128",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "14",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "140",
+        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "2",
+        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "10",
+        "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
+        "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "160",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "1024",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "360",
+        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "5",
+        "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
+        "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "26",
+    },
+    "balanced": {
+        "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
+        "CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS": "1",
+        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "14",
+        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "800",
+        "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS": "0",
+        "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "1",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO": "0.35",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET": "96",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "12",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "120",
+        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "2",
+        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "10",
+        "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
+        "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "160",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "620",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "240",
+        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
+        "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
+        "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "24",
+    },
+    # Lower-token mode targeting roughly <=3% quality loss versus balanced.
+    "efficiency-3pct": {
+        "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
+        "CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS": "1",
+        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "12",
+        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "740",
+        "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS": "0",
+        "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "1",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO": "0.32",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET": "92",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "11",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "110",
+        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "2",
+        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "8",
+        "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
+        "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "150",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "560",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "220",
+        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
+        "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
+        "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "22",
+    },
+    # Explicit low-loss efficiency profile intended for ~3-5% accuracy tradeoff windows.
+    "efficiency-5pct": {
+        "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
+        "CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS": "1",
+        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "10",
+        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "680",
+        "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS": "0",
+        "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "1",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_BUDGET_RATIO": "0.30",
+        "CORTEX_BENCHMARK_DETAIL_QUERY_MIN_BUDGET": "88",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "10",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "100",
+        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "1",
+        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "6",
+        "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
+        "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "140",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "500",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "200",
+        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "3",
+        "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
+        "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "20",
+    },
+    "token-saver": {
+        "CORTEX_BENCHMARK_STORE_FULL_DOCS": "0",
+        "CORTEX_BENCHMARK_ENABLE_FACT_EXTRACTS": "1",
+        "CORTEX_BENCHMARK_MAX_FACT_EXTRACTS_PER_DOC": "8",
+        "CORTEX_BENCHMARK_FACT_EXTRACT_MAX_CHARS": "520",
+        "CORTEX_BENCHMARK_INCLUDE_ASSISTANT_FACT_EXTRACTS": "0",
+        "CORTEX_BENCHMARK_ENABLE_DETAIL_QUERY_VARIANTS": "0",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MULTIPLIER": "8",
+        "CORTEX_BENCHMARK_DETAIL_RECALL_FANOUT_MIN": "80",
+        "CORTEX_BENCHMARK_DETAIL_SIBLINGS_PER_SEED": "1",
+        "CORTEX_BENCHMARK_DETAIL_MAX_ADDED_SIBLINGS": "4",
+        "CORTEX_BENCHMARK_DETAIL_SIBLING_SCORE_MARGIN": "18",
+        "CORTEX_BENCHMARK_SHORT_REPLY_QUESTION_MAX_CHARS": "120",
+        "CORTEX_BENCHMARK_CONTEXT_MAX_CHARS": "420",
+        "CORTEX_BENCHMARK_QUERY_WINDOW_CHARS": "160",
+        "CORTEX_BENCHMARK_MAX_QUERY_WINDOWS_PER_TERM": "2",
+        "CORTEX_BENCHMARK_USE_RECALL_EXCERPTS": "1",
+        "CORTEX_BENCHMARK_ANSWER_SOURCE_PENALTY": "18",
+    },
+}
+QUALITY_TOKEN_TARGETS: dict[str, dict[str, object]] = {
+    "custom": {
+        "retrieval_profile": None,
+        "min_accuracy_floor": None,
+        "description": "Use explicit retrieval/profile gate settings as provided.",
+    },
+    "detail-first": {
+        "retrieval_profile": "max-quality",
+        "min_accuracy_floor": 0.92,
+        "description": "Prioritize exact detail recall with stricter quality floor.",
+    },
+    "balanced-detail": {
+        "retrieval_profile": "balanced",
+        "min_accuracy_floor": 0.90,
+        "description": "Balance recall-token efficiency while keeping detail-safe retrieval shaping.",
+    },
+    "lean-detail": {
+        "retrieval_profile": "efficiency-5pct",
+        "min_accuracy_floor": 0.88,
+        "description": "Lower token cost with detail-preserving retrieval shaping and guarded quality floor.",
+    },
+}
 SINGLE_RUN_TIMEOUT_ENV = "CORTEX_BENCHMARK_RUN_MAX_RUNTIME_SECONDS"
 SINGLE_RUN_TIMEOUT_MIN_SECONDS = 900
 SINGLE_RUN_TIMEOUT_MAX_SECONDS = 1200
 SINGLE_RUN_TIMEOUT_DEFAULT_SECONDS = 1200
+MATRIX_TIMEOUT_MAX_SECONDS = 1200
+MATRIX_CASE_TIMEOUT_MAX_SECONDS = 900
+FAIR_RUN_PREFLIGHT_FILENAME = "fair-run-preflight.json"
+CLEANUP_DB_RETRY_ATTEMPTS = 4
+CLEANUP_DB_RETRY_BASE_DELAY_SECONDS = 0.25
+
+
+def _resolve_quality_token_target(
+    *,
+    target: str,
+    retrieval_profile: str,
+    min_accuracy: float,
+) -> dict[str, object]:
+    normalized_target = str(target or "custom").strip().lower()
+    if normalized_target not in QUALITY_TOKEN_TARGETS:
+        known = ", ".join(sorted(QUALITY_TOKEN_TARGETS))
+        raise ValueError(
+            f"unknown quality/token target '{target}'. Expected one of: {known}"
+        )
+    plan = QUALITY_TOKEN_TARGETS[normalized_target]
+    selected_retrieval_profile = str(retrieval_profile)
+    selected_min_accuracy = float(min_accuracy)
+    target_profile = plan.get("retrieval_profile")
+    target_min_accuracy = plan.get("min_accuracy_floor")
+    if isinstance(target_profile, str):
+        selected_retrieval_profile = target_profile
+    if isinstance(target_min_accuracy, (int, float)):
+        selected_min_accuracy = max(selected_min_accuracy, float(target_min_accuracy))
+    return {
+        "target": normalized_target,
+        "description": str(plan.get("description", "")),
+        "requested_retrieval_profile": str(retrieval_profile),
+        "effective_retrieval_profile": selected_retrieval_profile,
+        "requested_min_accuracy": round(float(min_accuracy), 4),
+        "effective_min_accuracy": round(selected_min_accuracy, 4),
+        "target_retrieval_profile": target_profile,
+        "target_min_accuracy_floor": target_min_accuracy,
+        "applied": normalized_target != "custom",
+    }
 
 
 def _ensure_utf8_stdio() -> None:
@@ -50,6 +220,12 @@ def _ensure_utf8_stdio() -> None:
                 reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
+
+
+def _prepare_worker_runtime_env() -> None:
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    _ensure_utf8_stdio()
 
 
 def _filter_kwargs_for_callable(fn: object, kwargs: dict[str, object]) -> dict[str, object]:
@@ -121,10 +297,14 @@ def _apply_dataset_compat_shims(dataset: object) -> object:
                 prompt_meta,
             )
             answer_format_block = (
-                "[answer-format] Return only the shortest direct answer phrase from memory context. "
-                "Do not add explanations, qualifiers, or extra details beyond what was asked. "
-                "Do not infer, compute, or normalize values; copy the exact wording from memory "
-                "(for example, keep '45 minutes each way' rather than converting it to '90 minutes')."
+                "[answer-format] Return one short answer span copied from memory context.\n"
+                "Rules:\n"
+                "1) Prefer direct user-stated spans and avoid 'not found' when support exists in context.\n"
+                "2) Preserve critical qualifiers present in context (employer/location/date/unit), not a shortened form.\n"
+                "3) For previous/former/old questions, return only the prior value phrase (exclude follow-up contrast text).\n"
+                "4) For date aliases that map directly to a calendar date (for example Valentine's Day), use the explicit date.\n"
+                "5) For where/location questions, include country/state qualifiers when they appear anywhere in context.\n"
+                "6) Return only the answer text, no explanation or extra narrative."
             )
             if not isinstance(raw_payload, dict):
                 return f"{prompt}\n\n{answer_format_block}"
@@ -269,9 +449,10 @@ def _runtime_db_path_from_health(base_url: str) -> Path | None:
     return path
 
 
-def _cleanup_benchmark_rows_in_db(db_path: Path, source_agent: str) -> dict[str, int | str]:
+def _cleanup_benchmark_rows_in_db_once(db_path: Path, source_agent: str) -> dict[str, int | str]:
     conn = sqlite3.connect(str(db_path), timeout=30.0)
     try:
+        conn.execute("PRAGMA busy_timeout = 5000")
         cur = conn.cursor()
         cur.execute("BEGIN")
         cur.execute(
@@ -305,6 +486,21 @@ def _cleanup_benchmark_rows_in_db(db_path: Path, source_agent: str) -> dict[str,
         conn.close()
 
 
+def _cleanup_benchmark_rows_in_db(db_path: Path, source_agent: str) -> dict[str, int | str]:
+    attempts = max(1, int(CLEANUP_DB_RETRY_ATTEMPTS))
+    for attempt in range(1, attempts + 1):
+        try:
+            payload = _cleanup_benchmark_rows_in_db_once(db_path, source_agent)
+            payload["cleanup_retry_attempts"] = attempt - 1
+            return payload
+        except sqlite3.OperationalError as exc:
+            is_locked = "database is locked" in str(exc).lower()
+            if not is_locked or attempt >= attempts:
+                raise
+            time.sleep(CLEANUP_DB_RETRY_BASE_DELAY_SECONDS * attempt)
+    raise RuntimeError("unreachable cleanup retry path")
+
+
 def _cleanup_benchmark_namespace(
     *,
     base_url: str,
@@ -317,8 +513,17 @@ def _cleanup_benchmark_namespace(
             "cleanup_reason": "runtime_db_path_unavailable",
             "source_agent": source_agent,
         }
-    payload = _cleanup_benchmark_rows_in_db(db_path, source_agent)
-    return {"cleanup_attempted": True, **payload}
+    try:
+        payload = _cleanup_benchmark_rows_in_db(db_path, source_agent)
+    except Exception as exc:
+        return {
+            "cleanup_attempted": True,
+            "cleanup_failed": True,
+            "cleanup_error": str(exc),
+            "source_agent": source_agent,
+            "db_path": str(db_path),
+        }
+    return {"cleanup_attempted": True, "cleanup_failed": False, **payload}
 
 
 def _git_head_short(repo_root: Path) -> str | None:
@@ -429,6 +634,120 @@ def _resolve_token_gate_limits(
     }
 
 
+def _apply_retrieval_profile_defaults(retrieval_profile: str) -> dict[str, str]:
+    profile = RETRIEVAL_PROFILES.get(retrieval_profile)
+    if profile is None:
+        known = ", ".join(sorted(RETRIEVAL_PROFILES))
+        raise ValueError(
+            f"unknown retrieval profile '{retrieval_profile}'. Expected one of: {known}"
+        )
+    effective: dict[str, str] = {}
+    for env_name, default_value in profile.items():
+        os.environ.setdefault(env_name, str(default_value))
+        effective[env_name] = os.environ[env_name]
+    return effective
+
+
+def _context_efficiency_metrics(summary: object) -> dict[str, float | int | None]:
+    results = getattr(summary, "results", [])
+    context_tokens: list[int] = []
+    if isinstance(results, list):
+        for result in results:
+            value = (
+                result.get("context_tokens")
+                if isinstance(result, dict)
+                else getattr(result, "context_tokens", None)
+            )
+            if isinstance(value, (int, float)):
+                context_tokens.append(int(value))
+    context_tokens_total = int(sum(context_tokens))
+    context_tokens_avg = (
+        round(context_tokens_total / len(context_tokens), 2) if context_tokens else 0.0
+    )
+    correct_count = int(getattr(summary, "correct", 0) or 0)
+    score_per_1k_context_tokens = (
+        round((correct_count * 1000.0) / context_tokens_total, 4)
+        if context_tokens_total > 0
+        else None
+    )
+    return {
+        "context_tokens_total": context_tokens_total,
+        "context_tokens_avg": context_tokens_avg,
+        "score_per_1k_context_tokens": score_per_1k_context_tokens,
+    }
+
+
+def _recall_efficiency_metrics(
+    summary: object,
+    recall_stats: dict[str, float | int],
+) -> dict[str, float | int | None]:
+    correct_count = int(getattr(summary, "correct", 0) or 0)
+    recall_tokens_total = int(recall_stats.get("total_recall_tokens", 0) or 0)
+    score_per_1k_recall_tokens = (
+        round((correct_count * 1000.0) / recall_tokens_total, 4)
+        if recall_tokens_total > 0
+        else None
+    )
+    return {
+        "recall_tokens_total": recall_tokens_total,
+        "score_per_1k_recall_tokens": score_per_1k_recall_tokens,
+    }
+
+
+def _build_profile_delta_report(
+    *,
+    token_limits: dict[str, object],
+    effective_constraints: dict[str, object],
+    baseline_entry: dict | None,
+    recall_stats: dict[str, float | int],
+) -> dict[str, object]:
+    def _as_number(value: object | None) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    def _delta(current: object | None, reference: object | None) -> dict[str, object] | None:
+        current_value = _as_number(current)
+        reference_value = _as_number(reference)
+        if current_value is None or reference_value is None:
+            return None
+        absolute = round(current_value - reference_value, 2)
+        percent = (
+            round((absolute / reference_value) * 100.0, 2)
+            if reference_value != 0
+            else None
+        )
+        return {
+            "current": current_value,
+            "reference": reference_value,
+            "absolute": absolute,
+            "percent": percent,
+        }
+
+    effective_max = effective_constraints.get("max_recall_tokens")
+    effective_avg = effective_constraints.get("max_avg_recall_tokens")
+    gate_max = token_limits.get("max_recall_tokens")
+    gate_avg = token_limits.get("max_avg_recall_tokens")
+    baseline_max = baseline_entry.get("max_recall_tokens") if isinstance(baseline_entry, dict) else None
+    baseline_avg = baseline_entry.get("max_avg_recall_tokens") if isinstance(baseline_entry, dict) else None
+    observed_max = recall_stats.get("max_recall_tokens")
+    observed_avg = recall_stats.get("avg_recall_tokens")
+    return {
+        "delta_vs_token_gate": {
+            "max_recall_tokens": _delta(effective_max, gate_max),
+            "max_avg_recall_tokens": _delta(effective_avg, gate_avg),
+        },
+        "delta_vs_baseline": {
+            "max_recall_tokens": _delta(effective_max, baseline_max),
+            "max_avg_recall_tokens": _delta(effective_avg, baseline_avg),
+        },
+        "observed_vs_effective": {
+            "max_recall_tokens": _delta(observed_max, effective_max),
+            "max_avg_recall_tokens": _delta(observed_avg, effective_avg),
+        },
+    }
+
+
 def _resolve_baseline_path(raw_path: str) -> Path:
     path = Path(raw_path)
     if path.is_absolute():
@@ -473,14 +792,20 @@ def _single_run_timeout_default() -> int:
     return _resolve_single_run_timeout_seconds(parsed)
 
 
-def _load_matrix_cases(path: Path) -> list[dict[str, object]]:
+def _load_matrix_spec(path: Path) -> tuple[list[dict[str, object]], dict[str, object]]:
     if not path.exists():
         raise FileNotFoundError(f"matrix file not found: {path}")
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    execution_profile: dict[str, object] = {}
     if isinstance(payload, dict):
         raw_cases = payload.get("cases")
         if raw_cases is None:
             raw_cases = payload.get("scenarios")
+        raw_profile = payload.get("execution_profile")
+        if raw_profile is not None:
+            if not isinstance(raw_profile, dict):
+                raise ValueError("matrix execution_profile must be an object")
+            execution_profile = cast(dict[str, object], raw_profile)
     elif isinstance(payload, list):
         raw_cases = payload
     else:
@@ -506,7 +831,15 @@ def _load_matrix_cases(path: Path) -> list[dict[str, object]]:
                 or f"{index:02d}-{_slug_fragment(dataset)}-{_slug_fragment(split)}"
             ),
         }
-        for key in ("mode", "category", "query_id", "run_name", "description"):
+        for key in (
+            "mode",
+            "category",
+            "query_id",
+            "run_name",
+            "description",
+            "retrieval_profile",
+            "quality_token_target",
+        ):
             value = raw_case.get(key)
             if value is not None:
                 normalized[key] = str(value)
@@ -520,7 +853,258 @@ def _load_matrix_cases(path: Path) -> list[dict[str, object]]:
         if "oracle" in raw_case:
             normalized["oracle"] = bool(raw_case.get("oracle"))
         cases.append(normalized)
+    return cases, execution_profile
+
+
+def _load_matrix_cases(path: Path) -> list[dict[str, object]]:
+    cases, _ = _load_matrix_spec(path)
     return cases
+
+
+def _profile_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"matrix execution_profile field '{field_name}' must be an integer")
+    return int(value)
+
+
+def _profile_float(value: object, *, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"matrix execution_profile field '{field_name}' must be numeric")
+    return float(value)
+
+
+def _profile_bool(value: object, *, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"matrix execution_profile field '{field_name}' must be a boolean")
+    return value
+
+
+def _profile_str(value: object, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"matrix execution_profile field '{field_name}' must be a non-empty string")
+    return value.strip()
+
+
+def _apply_matrix_execution_profile(args: argparse.Namespace, profile: dict[str, object]) -> None:
+    if not profile:
+        return
+
+    int_fields = (
+        "max_runtime_seconds",
+        "max_case_runtime_seconds",
+        "recall_budget",
+        "max_recall_tokens",
+    )
+    float_fields = ("min_accuracy", "max_avg_recall_tokens")
+    bool_fields = ("allow_missing_recall_metrics", "no_enforce_gate", "oracle")
+    str_fields = (
+        "token_gate_mode",
+        "provider_profile",
+        "retrieval_profile",
+        "quality_token_target",
+    )
+
+    for field in int_fields:
+        if field in profile:
+            setattr(args, field, _profile_int(profile[field], field_name=field))
+    for field in float_fields:
+        if field in profile:
+            setattr(args, field, _profile_float(profile[field], field_name=field))
+    for field in bool_fields:
+        if field in profile:
+            setattr(args, field, _profile_bool(profile[field], field_name=field))
+    for field in str_fields:
+        if field in profile:
+            setattr(args, field, _profile_str(profile[field], field_name=field))
+
+
+def _resolve_matrix_timeout_seconds(raw_timeout: int, *, max_timeout: int, field_name: str) -> int:
+    timeout_seconds = int(raw_timeout)
+    if timeout_seconds <= 0 or timeout_seconds > max_timeout:
+        raise ValueError(
+            f"matrix {field_name} must be between 1 and {max_timeout} seconds"
+        )
+    return timeout_seconds
+
+
+def _format_preflight_failures(header: str, failures: list[str]) -> str:
+    lines = "\n".join(f"- {failure}" for failure in failures)
+    return f"{header}:\n{lines}"
+
+
+def _write_fair_run_preflight(run_dir: Path, payload: dict[str, object]) -> None:
+    (run_dir / FAIR_RUN_PREFLIGHT_FILENAME).write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
+    print(json.dumps({"fair_run_preflight": payload}, indent=2))
+
+
+def _has_query_id(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _single_run_fairness_violations(args: argparse.Namespace) -> list[str]:
+    violations: list[str] = []
+    if bool(getattr(args, "oracle", False)):
+        violations.append("oracle=true is not allowed for fair scored runs")
+    if _has_query_id(getattr(args, "query_id", None)):
+        violations.append("query_id pinning is not allowed for fair scored runs")
+    if getattr(args, "doc_limit", None) is not None:
+        violations.append("doc_limit shortcuts are not allowed for fair scored runs")
+    return violations
+
+
+def _build_single_run_preflight(args: argparse.Namespace) -> tuple[dict[str, object], int | None]:
+    violations: list[str] = []
+    timeout_seconds: int | None = None
+    timeout_error: str | None = None
+    timeout_value = int(getattr(args, "max_runtime_seconds", 0))
+    try:
+        timeout_seconds = _resolve_single_run_timeout_seconds(timeout_value)
+    except ValueError as exc:
+        timeout_error = str(exc)
+        violations.append(timeout_error)
+
+    fairness_violations = _single_run_fairness_violations(args)
+    violations.extend(fairness_violations)
+
+    payload: dict[str, object] = {
+        "command": "run",
+        "timestamp": datetime.now().isoformat(),
+        "passed": len(violations) == 0,
+        "max_runtime_seconds": timeout_value,
+        "checks": [
+            {
+                "name": "runtime_cap_within_15_to_20_minutes",
+                "passed": timeout_error is None,
+                "value": timeout_value,
+                "required_range_seconds": [
+                    SINGLE_RUN_TIMEOUT_MIN_SECONDS,
+                    SINGLE_RUN_TIMEOUT_MAX_SECONDS,
+                ],
+                "error": timeout_error,
+            },
+            {
+                "name": "oracle_mode_disabled",
+                "passed": not bool(getattr(args, "oracle", False)),
+                "value": bool(getattr(args, "oracle", False)),
+            },
+            {
+                "name": "query_id_unset",
+                "passed": not _has_query_id(getattr(args, "query_id", None)),
+                "value": getattr(args, "query_id", None),
+            },
+            {
+                "name": "doc_limit_unset",
+                "passed": getattr(args, "doc_limit", None) is None,
+                "value": getattr(args, "doc_limit", None),
+            },
+        ],
+        "violations": violations,
+    }
+    return payload, timeout_seconds
+
+
+def _matrix_fairness_violations(args: argparse.Namespace, cases: list[dict[str, object]]) -> list[str]:
+    violations: list[str] = []
+    if bool(args.oracle):
+        violations.append("matrix mode does not permit oracle runs")
+    if _has_query_id(getattr(args, "query_id", None)):
+        violations.append("matrix mode does not permit default query_id pinning")
+    if getattr(args, "doc_limit", None) is not None:
+        violations.append("matrix mode does not permit default doc_limit shortcuts")
+    for index, case in enumerate(cases, start=1):
+        if bool(case.get("oracle", False)):
+            violations.append(
+                f"matrix case #{index} sets oracle=true; oracle is not allowed in matrix mode"
+            )
+        if _has_query_id(case.get("query_id")):
+            violations.append(
+                f"matrix case #{index} sets query_id; pinned query shortcuts are not allowed"
+            )
+        if "doc_limit" in case:
+            violations.append(
+                f"matrix case #{index} sets doc_limit; ingestion shortcuts are not allowed"
+            )
+    return violations
+
+
+def _build_matrix_preflight(
+    *,
+    args: argparse.Namespace,
+    cases: list[dict[str, object]],
+    selected_cases: list[dict[str, object]],
+    start_index: int,
+    max_runtime_seconds: int,
+    max_case_runtime_seconds: int,
+) -> dict[str, object]:
+    fairness_violations = _matrix_fairness_violations(args, cases)
+    oracle_case_count = sum(1 for case in cases if bool(case.get("oracle", False)))
+    query_id_case_count = sum(1 for case in cases if _has_query_id(case.get("query_id")))
+    doc_limit_case_count = sum(1 for case in cases if "doc_limit" in case)
+    payload: dict[str, object] = {
+        "command": "matrix",
+        "timestamp": datetime.now().isoformat(),
+        "passed": len(fairness_violations) == 0,
+        "case_count_total": len(cases),
+        "case_count_selected": len(selected_cases),
+        "start_index": start_index,
+        "max_runtime_seconds": max_runtime_seconds,
+        "max_case_runtime_seconds": max_case_runtime_seconds,
+        "checks": [
+            {
+                "name": "matrix_runtime_cap_within_20_minutes",
+                "passed": 1 <= max_runtime_seconds <= MATRIX_TIMEOUT_MAX_SECONDS,
+                "value": max_runtime_seconds,
+                "max_allowed_seconds": MATRIX_TIMEOUT_MAX_SECONDS,
+            },
+            {
+                "name": "matrix_case_runtime_cap_within_15_minutes",
+                "passed": 1 <= max_case_runtime_seconds <= MATRIX_CASE_TIMEOUT_MAX_SECONDS,
+                "value": max_case_runtime_seconds,
+                "max_allowed_seconds": MATRIX_CASE_TIMEOUT_MAX_SECONDS,
+            },
+            {
+                "name": "oracle_mode_disabled",
+                "passed": not bool(args.oracle),
+                "value": bool(args.oracle),
+            },
+            {
+                "name": "default_query_id_unset",
+                "passed": not _has_query_id(getattr(args, "query_id", None)),
+                "value": getattr(args, "query_id", None),
+            },
+            {
+                "name": "default_doc_limit_unset",
+                "passed": getattr(args, "doc_limit", None) is None,
+                "value": getattr(args, "doc_limit", None),
+            },
+            {
+                "name": "cases_without_oracle",
+                "passed": oracle_case_count == 0,
+                "violating_cases": oracle_case_count,
+            },
+            {
+                "name": "cases_without_query_id",
+                "passed": query_id_case_count == 0,
+                "violating_cases": query_id_case_count,
+            },
+            {
+                "name": "cases_without_doc_limit",
+                "passed": doc_limit_case_count == 0,
+                "violating_cases": doc_limit_case_count,
+            },
+        ],
+        "violations": fairness_violations,
+    }
+    return payload
+
+
+def _validate_matrix_fairness(args: argparse.Namespace, cases: list[dict[str, object]]) -> None:
+    violations = _matrix_fairness_violations(args, cases)
+    if violations:
+        raise ValueError(_format_preflight_failures("matrix fair-run preflight failed", violations))
 
 
 def _build_matrix_run_args(args: argparse.Namespace, case: dict[str, object]) -> argparse.Namespace:
@@ -538,6 +1122,8 @@ def _build_matrix_run_args(args: argparse.Namespace, case: dict[str, object]) ->
         oracle=bool(case.get("oracle", args.oracle)),
         run_name=run_name,
         description=case.get("description", args.description),
+        retrieval_profile=case.get("retrieval_profile", args.retrieval_profile),
+        quality_token_target=case.get("quality_token_target", args.quality_token_target),
         token_gate_mode=args.token_gate_mode,
         provider_profile=args.provider_profile,
         baseline_file=args.baseline_file,
@@ -596,8 +1182,9 @@ def _derive_effective_constraints(
     args: argparse.Namespace,
     token_limits: dict[str, object],
     baseline_entry: dict | None,
+    min_accuracy_override: float | None = None,
 ) -> dict[str, object]:
-    min_accuracy = float(args.min_accuracy)
+    min_accuracy = float(args.min_accuracy if min_accuracy_override is None else min_accuracy_override)
     max_tokens = token_limits.get("max_recall_tokens")
     avg_tokens = token_limits.get("max_avg_recall_tokens")
     baseline_applied = False
@@ -702,6 +1289,15 @@ def _collect_matrix_case_result(
     quality_gate = gate.get("quality_gate")
     if not isinstance(quality_gate, dict):
         quality_gate = {}
+    recall_efficiency = gate.get("recall_efficiency")
+    if not isinstance(recall_efficiency, dict):
+        recall_efficiency = {}
+    tradeoff = gate.get("tradeoff")
+    if not isinstance(tradeoff, dict):
+        tradeoff = {}
+    profile_delta = tradeoff.get("profile_delta")
+    if not isinstance(profile_delta, dict):
+        profile_delta = {}
     result: dict[str, object] = {
         "id": case.get("id"),
         "dataset": case.get("dataset"),
@@ -714,8 +1310,17 @@ def _collect_matrix_case_result(
         "avg_tokens": recall_stats.get("avg_recall_tokens"),
         "max_tokens": recall_stats.get("max_recall_tokens"),
         "over_budget": recall_stats.get("over_budget_count"),
+        "score_per_1k_recall_tokens": gate.get(
+            "score_per_1k_recall_tokens",
+            recall_efficiency.get("score_per_1k_recall_tokens"),
+        ),
+        "quality_token_target": tradeoff.get("quality_token_target"),
+        "retrieval_profile_effective": tradeoff.get("effective_retrieval_profile"),
         "quality_gate_passed": quality_gate.get("passed"),
     }
+    delta_vs_token_gate = profile_delta.get("delta_vs_token_gate")
+    if isinstance(delta_vs_token_gate, dict):
+        result["profile_delta_vs_token_gate"] = delta_vs_token_gate
     failures = quality_gate.get("failures")
     if failures is not None:
         result["quality_gate_failures"] = failures
@@ -725,6 +1330,7 @@ def _collect_matrix_case_result(
 
 
 def _run_benchmark_case_worker(run_args: argparse.Namespace, run_dir: str) -> None:
+    _prepare_worker_runtime_env()
     run_benchmark(run_args, Path(run_dir))
 
 
@@ -735,6 +1341,7 @@ def _execute_benchmark_with_timeout(
     timeout_seconds: int,
     timeout_label: str,
 ) -> tuple[int, str | None]:
+    _prepare_worker_runtime_env()
     timeout_cap = max(0, int(timeout_seconds))
     if timeout_cap == 0:
         try:
@@ -778,7 +1385,16 @@ def _execute_matrix_case(
 
 
 def _execute_single_run(args: argparse.Namespace, run_dir: Path) -> None:
-    timeout_seconds = _resolve_single_run_timeout_seconds(args.max_runtime_seconds)
+    preflight, timeout_seconds = _build_single_run_preflight(args)
+    _write_fair_run_preflight(run_dir, preflight)
+    if not bool(preflight.get("passed", False)):
+        raw_violations = preflight.get("violations")
+        failures = [str(item) for item in raw_violations] if isinstance(raw_violations, list) else []
+        if not failures:
+            failures = ["single-run fair-run preflight failed with unknown violation"]
+        raise ValueError(_format_preflight_failures("single-run fair-run preflight failed", failures))
+    if timeout_seconds is None:
+        raise ValueError("single-run fair-run preflight did not produce a valid timeout cap")
     exit_code, error = _execute_benchmark_with_timeout(
         run_args=args,
         run_dir=run_dir,
@@ -807,17 +1423,28 @@ def _summarize_recall_metrics(metrics: list[dict], budget: int) -> dict[str, flo
             "queries": 0,
             "avg_recall_tokens": 0.0,
             "max_recall_tokens": 0,
+            "total_recall_tokens": 0,
             "over_budget_count": 0,
             "budget": budget,
+            "recall_calls": 0,
+            "avg_recall_calls_per_query": 0.0,
+            "avg_recall_tokens_per_call": 0.0,
         }
     token_values = [int(item.get("token_estimate", 0)) for item in metrics]
+    total_recall_tokens = sum(token_values)
     over_budget = [value for value in token_values if value > budget]
+    recall_calls = [max(1, int(item.get("recall_call_count", 1))) for item in metrics]
+    total_calls = sum(recall_calls)
     return {
         "queries": len(metrics),
-        "avg_recall_tokens": round(sum(token_values) / len(token_values), 2),
+        "avg_recall_tokens": round(total_recall_tokens / len(token_values), 2),
         "max_recall_tokens": max(token_values),
+        "total_recall_tokens": total_recall_tokens,
         "over_budget_count": len(over_budget),
         "budget": budget,
+        "recall_calls": total_calls,
+        "avg_recall_calls_per_query": round(total_calls / len(metrics), 3),
+        "avg_recall_tokens_per_call": round(total_recall_tokens / total_calls, 2) if total_calls > 0 else 0.0,
     }
 
 
@@ -1138,6 +1765,14 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             os.environ["CORTEX_RECALL_BUDGET"] = str(args.recall_budget)
             os.environ["CORTEX_BENCHMARK_METRICS_FILE"] = str(recall_metrics_path)
             llm_provider = _configure_llm_environment()
+            quality_target_plan = _resolve_quality_token_target(
+                target=args.quality_token_target,
+                retrieval_profile=args.retrieval_profile,
+                min_accuracy=float(args.min_accuracy),
+            )
+            effective_retrieval_profile = str(
+                quality_target_plan["effective_retrieval_profile"]
+            )
             provider_profile = _normalize_provider_profile(
                 args.provider_profile if args.provider_profile != "auto" else llm_provider
             )
@@ -1147,6 +1782,9 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 provider_profile=provider_profile,
                 max_recall_tokens=args.max_recall_tokens,
                 max_avg_recall_tokens=args.max_avg_recall_tokens,
+            )
+            retrieval_profile_env = _apply_retrieval_profile_defaults(
+                effective_retrieval_profile
             )
             scenario_key = _scenario_key(args)
             baseline_store = _load_baseline_store(baseline_path)
@@ -1159,6 +1797,9 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 args=args,
                 token_limits=token_limits,
                 baseline_entry=baseline_entry,
+                min_accuracy_override=float(
+                    quality_target_plan["effective_min_accuracy"]
+                ),
             )
             _write_run_manifest(
                 run_dir,
@@ -1188,7 +1829,11 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                     "quality_gate": {
                         "enabled": not args.no_enforce_gate,
                         "token_gate_mode": args.token_gate_mode,
+                        "quality_token_target": quality_target_plan["target"],
+                        "retrieval_profile_requested": args.retrieval_profile,
+                        "retrieval_profile_effective": effective_retrieval_profile,
                         "provider_profile": provider_profile,
+                        "min_accuracy_requested": float(args.min_accuracy),
                         "min_accuracy": effective_constraints["min_accuracy"],
                         "recall_budget": args.recall_budget,
                         "max_recall_tokens": effective_constraints["max_recall_tokens"],
@@ -1236,6 +1881,25 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
             summary_path.write_text(json.dumps(asdict(summary), indent=2), encoding="utf-8")
             recall_metrics = _load_recall_metrics(recall_metrics_path)
             recall_stats = _summarize_recall_metrics(recall_metrics, args.recall_budget)
+            efficiency = _context_efficiency_metrics(summary)
+            recall_efficiency = _recall_efficiency_metrics(summary, recall_stats)
+            profile_delta = _build_profile_delta_report(
+                token_limits=token_limits,
+                effective_constraints=effective_constraints,
+                baseline_entry=baseline_entry,
+                recall_stats=recall_stats,
+            )
+            tradeoff = {
+                "quality_token_target": quality_target_plan["target"],
+                "quality_token_target_applied": quality_target_plan["applied"],
+                "quality_token_target_description": quality_target_plan["description"],
+                "requested_retrieval_profile": quality_target_plan["requested_retrieval_profile"],
+                "effective_retrieval_profile": quality_target_plan["effective_retrieval_profile"],
+                "requested_min_accuracy": quality_target_plan["requested_min_accuracy"],
+                "effective_min_accuracy": quality_target_plan["effective_min_accuracy"],
+                "score_per_1k_recall_tokens": recall_efficiency.get("score_per_1k_recall_tokens"),
+                "profile_delta": profile_delta,
+            }
             gate = _enforce_quality_gate(
                 accuracy=float(summary.accuracy),
                 recall_stats=recall_stats,
@@ -1270,9 +1934,18 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 "quality_gate": gate,
                 "accuracy": float(summary.accuracy),
                 "recall_stats": recall_stats,
+                **recall_efficiency,
+                **efficiency,
+                "efficiency": efficiency,
+                "recall_efficiency": recall_efficiency,
+                "tradeoff": tradeoff,
                 "limits": {
                     "token_gate_mode": args.token_gate_mode,
+                    "quality_token_target": quality_target_plan["target"],
+                    "retrieval_profile_requested": args.retrieval_profile,
+                    "retrieval_profile": effective_retrieval_profile,
                     "provider_profile": provider_profile,
+                    "min_accuracy_requested": float(args.min_accuracy),
                     "min_accuracy": effective_constraints["min_accuracy"],
                     "recall_budget": args.recall_budget,
                     "max_recall_tokens": effective_constraints["max_recall_tokens"],
@@ -1280,6 +1953,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                     "token_gate_profile": token_limits.get("profile"),
                     "allow_missing_recall_metrics": args.allow_missing_recall_metrics,
                 },
+                "retrieval_profile_env": retrieval_profile_env,
                 "baseline": {
                     "file": str(baseline_path),
                     "scenario_key": scenario_key,
@@ -1305,7 +1979,15 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                         "accuracy": summary.accuracy,
                         "total_queries": summary.total_queries,
                         "recall_stats": recall_stats,
+                        **recall_efficiency,
+                        **efficiency,
+                        "efficiency": efficiency,
+                        "recall_efficiency": recall_efficiency,
+                        "tradeoff": tradeoff,
                         "token_gate_mode": args.token_gate_mode,
+                        "quality_token_target": quality_target_plan["target"],
+                        "retrieval_profile_requested": args.retrieval_profile,
+                        "retrieval_profile": effective_retrieval_profile,
                         "provider_profile": provider_profile,
                         "token_limits": {
                             "max_recall_tokens": effective_constraints["max_recall_tokens"],
@@ -1351,7 +2033,8 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
 
 def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
     matrix_path = _resolve_matrix_path(args.matrix_file)
-    all_cases = _load_matrix_cases(matrix_path)
+    all_cases, execution_profile = _load_matrix_spec(matrix_path)
+    _apply_matrix_execution_profile(args, execution_profile)
     start_index = max(1, int(args.start_index))
     if start_index > len(all_cases):
         raise ValueError(
@@ -1360,8 +2043,31 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
     cases = all_cases[start_index - 1 :]
     if args.max_cases is not None:
         cases = cases[: max(1, int(args.max_cases))]
-    max_runtime_seconds = max(0, int(args.max_runtime_seconds))
-    max_case_runtime_seconds = max(0, int(args.max_case_runtime_seconds))
+    max_runtime_seconds = _resolve_matrix_timeout_seconds(
+        int(args.max_runtime_seconds),
+        max_timeout=MATRIX_TIMEOUT_MAX_SECONDS,
+        field_name="max-runtime-seconds",
+    )
+    max_case_runtime_seconds = _resolve_matrix_timeout_seconds(
+        int(args.max_case_runtime_seconds),
+        max_timeout=MATRIX_CASE_TIMEOUT_MAX_SECONDS,
+        field_name="max-case-runtime-seconds",
+    )
+    preflight = _build_matrix_preflight(
+        args=args,
+        cases=all_cases,
+        selected_cases=cases,
+        start_index=start_index,
+        max_runtime_seconds=max_runtime_seconds,
+        max_case_runtime_seconds=max_case_runtime_seconds,
+    )
+    _write_fair_run_preflight(run_dir, preflight)
+    if not bool(preflight.get("passed", False)):
+        raw_violations = preflight.get("violations")
+        failures = [str(item) for item in raw_violations] if isinstance(raw_violations, list) else []
+        if not failures:
+            failures = ["matrix fair-run preflight failed with unknown violation"]
+        raise ValueError(_format_preflight_failures("matrix fair-run preflight failed", failures))
     summary_path = (
         _resolve_matrix_path(args.summary_file)
         if args.summary_file
@@ -1384,6 +2090,7 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
             "max_cases": args.max_cases,
             "max_runtime_seconds": max_runtime_seconds,
             "max_case_runtime_seconds": max_case_runtime_seconds,
+            "execution_profile": execution_profile,
             "defaults": {
                 "mode": args.mode,
                 "category": args.category,
@@ -1392,6 +2099,8 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
                 "doc_limit": args.doc_limit,
                 "oracle": bool(args.oracle),
                 "recall_budget": args.recall_budget,
+                "quality_token_target": args.quality_token_target,
+                "retrieval_profile": args.retrieval_profile,
                 "token_gate_mode": args.token_gate_mode,
                 "provider_profile": args.provider_profile,
                 "baseline_file": args.baseline_file,
@@ -1550,6 +2259,24 @@ def _add_quality_gate_arguments(target: argparse.ArgumentParser) -> None:
         help="Recall token budget sent to Cortex for each retrieval query.",
     )
     target.add_argument(
+        "--quality-token-target",
+        choices=sorted(QUALITY_TOKEN_TARGETS),
+        default="custom",
+        help=(
+            "High-level quality-vs-token preset: custom, detail-first, balanced-detail, lean-detail. "
+            "Non-custom targets map to detail-safe retrieval profiles and minimum accuracy floors."
+        ),
+    )
+    target.add_argument(
+        "--retrieval-profile",
+        choices=sorted(RETRIEVAL_PROFILES),
+        default="max-quality",
+        help=(
+            "Retrieval shaping profile applied as non-destructive env defaults: "
+            "max-quality (detail-safe), balanced, efficiency-3pct, efficiency-5pct, token-saver."
+        ),
+    )
+    target.add_argument(
         "--min-accuracy",
         type=float,
         default=0.90,
@@ -1645,7 +2372,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-case-runtime-seconds",
         type=int,
         default=int(os.environ.get("CORTEX_BENCHMARK_MATRIX_MAX_CASE_RUNTIME_SECONDS", "900")),
-        help="Hard runtime cap per matrix case (defaults to 900 seconds / 15 minutes; set 0 to disable).",
+        help="Hard runtime cap per matrix case (defaults to 900 seconds / 15 minutes).",
     )
     matrix.add_argument(
         "--run-name-prefix",
