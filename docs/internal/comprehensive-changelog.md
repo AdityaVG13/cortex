@@ -2,8 +2,8 @@
 
 Last updated: 2026-04-19
 Baseline: v0.4.1 (2026-04-06)
-Current head: 40e8e80 (2026-04-18)
-Commit range size: 319 commits
+Current head: cc7ccb0 (2026-04-19)
+Commit range size: 332 commits
 ## Purpose
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
