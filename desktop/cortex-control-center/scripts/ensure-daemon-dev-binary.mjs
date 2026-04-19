@@ -86,11 +86,18 @@ function runCargoBuild() {
       "  Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue",
       "}",
     ].join("; ");
-    spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
+    const cleanupResult = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
       cwd: projectDir,
-      stdio: "inherit",
+      stdio: "pipe",
+      encoding: "utf8",
       windowsHide: true,
     });
+    if (cleanupResult.stdout) {
+      process.stdout.write(cleanupResult.stdout);
+    }
+    if (cleanupResult.stderr) {
+      process.stderr.write(cleanupResult.stderr);
+    }
   };
 
   stopConflictingDevDaemons();

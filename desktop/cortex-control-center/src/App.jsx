@@ -32,6 +32,7 @@ import {
   daemonSystemStatus,
   daemonUtilityPill,
   isDaemonStartingState,
+  isTransientDaemonFeedback,
 } from "./daemon-startup.js";
 import { buildMonteCarloProjection } from "./analytics-projection.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.js";
@@ -1639,15 +1640,7 @@ export function App() {
 
   const clearTransientFeedback = useCallback((fallback = "Connected to daemon.") => {
     setFeedbackMessage((current) => {
-      const text = String(current || "");
-      if (
-        text === "Checking daemon..." ||
-        text.includes("could not authenticate") ||
-        text.startsWith("Auth token read failed:") ||
-        text.startsWith("Waiting for daemon auth token") ||
-        text.includes(": HTTP 401") ||
-        text.includes(": HTTP 403")
-      ) {
+      if (isTransientDaemonFeedback(current)) {
         return fallback;
       }
       return current;

@@ -3,8 +3,27 @@ const DEFAULT_STARTUP_MAX_WINDOW_MS = 45000;
 const DEFAULT_STARTUP_BASE_DELAY_MS = 750;
 const DEFAULT_STARTUP_MAX_DELAY_MS = 3000;
 
+const TRANSIENT_FEEDBACK_PREFIXES = [
+  "Auth token read failed:",
+  "Waiting for daemon auth token",
+  "Daemon is still starting.",
+  "Daemon startup timed out after",
+  "Daemon is reachable but still warming up.",
+];
+
 export function isDaemonStartingState(daemonState) {
   return Boolean(daemonState?.running) && !Boolean(daemonState?.reachable);
+}
+
+export function isTransientDaemonFeedback(message) {
+  const text = String(message || "");
+  return (
+    text === "Checking daemon..."
+    || text.includes("could not authenticate")
+    || text.includes(": HTTP 401")
+    || text.includes(": HTTP 403")
+    || TRANSIENT_FEEDBACK_PREFIXES.some((prefix) => text.startsWith(prefix))
+  );
 }
 
 export function daemonStatusPill(daemonState) {

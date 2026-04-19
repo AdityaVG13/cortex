@@ -6,6 +6,7 @@ import {
   daemonSystemStatus,
   daemonUtilityPill,
   isDaemonStartingState,
+  isTransientDaemonFeedback,
 } from "./daemon-startup.js";
 
 describe("daemon startup state helpers", () => {
@@ -121,5 +122,19 @@ describe("computeStartupRetryStep", () => {
 
     expect(step.elapsedMs).toBe(46000);
     expect(step.exhausted).toBe(true);
+  });
+});
+
+describe("isTransientDaemonFeedback", () => {
+  it("treats startup and warmup notices as transient", () => {
+    expect(isTransientDaemonFeedback("Daemon is still starting. Reconnect will continue automatically.")).toBe(true);
+    expect(isTransientDaemonFeedback("Daemon startup timed out after 46s. Check Cortex logs, then restart from Control Center.")).toBe(true);
+    expect(isTransientDaemonFeedback("Waiting for daemon auth token to finish rotating...")).toBe(true);
+    expect(isTransientDaemonFeedback("Daemon is reachable but still warming up. Retrying shortly...")).toBe(true);
+  });
+
+  it("keeps durable operator messages intact", () => {
+    expect(isTransientDaemonFeedback("Connected (core ready).")).toBe(false);
+    expect(isTransientDaemonFeedback("Restart failed: Existing daemon did not stop cleanly.")).toBe(false);
   });
 });

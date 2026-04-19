@@ -59,7 +59,7 @@ describe("buildMonteCarloProjection", () => {
     expect(projection).not.toBeNull();
     expect(Number.isFinite(projection.summary.p50Gain)).toBe(true);
     expect(projection.summary.p50Gain).toBeGreaterThan(0);
-    expect(projection.summary.p50Gain).toBeLessThan(1_000_000_000_000_000);
+    expect(projection.summary.p50Gain).toBeLessThan(200_000_000_000);
   });
 
   it("suppresses explosive outliers and keeps gains finite", () => {
@@ -80,8 +80,8 @@ describe("buildMonteCarloProjection", () => {
     expect(projection).not.toBeNull();
     expect(Number.isFinite(projection.summary.p50Gain)).toBe(true);
     expect(Number.isFinite(projection.summary.p90Gain)).toBe(true);
-    expect(projection.summary.p50Gain).toBeLessThan(1_000_000_000_000_000);
-    expect(projection.summary.p90Gain).toBeLessThan(2_000_000_000_000_000);
+    expect(projection.summary.p50Gain).toBeLessThan(200_000_000_000);
+    expect(projection.summary.p90Gain).toBeLessThan(200_000_000_000);
   });
 
   it("returns null when there is not enough history", () => {

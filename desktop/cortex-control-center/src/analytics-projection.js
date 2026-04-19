@@ -30,6 +30,9 @@ function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+const ABSOLUTE_DAILY_BASIS_CAP = 1_000_000_000;
+const ABSOLUTE_PROJECTED_GAIN_CAP = ABSOLUTE_DAILY_BASIS_CAP * 90 * 2;
+
 function projectionBasisFromSeries(dailySeries, cumulativeSeries) {
   const dailyBasis = (Array.isArray(dailySeries) ? dailySeries : [])
     .map((point) => Number(point?.saved || 0))
@@ -48,7 +51,7 @@ function sanitizeProjectionBasis(basis) {
 
   const sorted = [...finite].sort((left, right) => left - right);
   const median = percentileFromSorted(sorted, 0.5);
-  const upperLimit = Math.max(median * 40, 1);
+  const upperLimit = Math.min(Math.max(median * 40, 1), ABSOLUTE_DAILY_BASIS_CAP);
   const lowerLimit = Math.max(median * 0.02, 1);
   return finite.map((value) => clampNumber(value, lowerLimit, upperLimit));
 }
@@ -93,8 +96,11 @@ export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizon
     : 0;
   const rng = createSeededRng(Math.round(boundedSeedBase + lastDaily + recent.length * 13));
   const meanReversionStrength = shortHistory ? 0.03 : 0.04;
-  const dailyCeiling = Math.max(recentPeak * 4, recentAverage * 6, recentMedian * 10, 1);
-  const maxProjectedGain = dailyCeiling * safeHorizonDays * 2;
+  const dailyCeiling = Math.min(
+    Math.max(recentPeak * 4, recentAverage * 6, recentMedian * 10, 1),
+    ABSOLUTE_DAILY_BASIS_CAP
+  );
+  const maxProjectedGain = Math.min(dailyCeiling * safeHorizonDays * 2, ABSOLUTE_PROJECTED_GAIN_CAP);
 
   const runs = Array.from({ length: safeSimulationCount }, (_, simIndex) => {
     let dailyValue = lastDaily;
