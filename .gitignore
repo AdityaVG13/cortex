@@ -65,6 +65,23 @@ desktop/cortex-control-center/dist/
 # Environment files
 .env
 .env.*
+.envrc
+.secrets
+.secrets.*
+*.secret
+*.secret.*
+*.secrets
+*.secrets.*
+*.credentials
+*.credentials.*
+*credential*.json
+*credentials*.json
+service-account*.json
+firebase-admin*.json
+.aws/
+.azure/
+.gcp/
+.config/gcloud/
 
 # Personal config (users create their own)
 CLAUDE.md
@@ -94,6 +111,10 @@ Cortex?Ingester?Instructions.txt
 .tmp-*
 .tmp/
 tmp/
+.venv/
+**/.venv/
+venv/
+**/venv/
 __pycache__/
 .npmrc
 
