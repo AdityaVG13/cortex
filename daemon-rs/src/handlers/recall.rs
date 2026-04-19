@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use chrono::{TimeZone, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
@@ -1133,6 +1133,137 @@ fn shadow_guard_failure_reason(shadow_semantic: &Value) -> Option<&'static str> 
     None
 }
 
+fn sqlite_vec_source_fallback_candidate(
+    conn: &Connection,
+    source: &str,
+    query_text: &str,
+    fallback_relevance: f64,
+) -> Option<SemanticCandidate> {
+    let build_candidate = |excerpt_text: String,
+                           score: Option<f64>,
+                           trust_score: Option<f64>,
+                           last_accessed: Option<String>,
+                           created_at: Option<String>| {
+        let ts_source = last_accessed
+            .as_deref()
+            .or(created_at.as_deref())
+            .unwrap_or_default();
+        SemanticCandidate {
+            source: source.to_string(),
+            excerpt: query_focused_excerpt(&excerpt_text, query_text, 280),
+            relevance: fallback_relevance,
+            importance: blend_importance(score, trust_score),
+            ts: parse_timestamp_ms(ts_source),
+        }
+    };
+
+    let memory_by_id = source
+        .strip_prefix("memory::")
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .and_then(|id| {
+            conn.query_row(
+                "SELECT text, score, trust_score, last_accessed, created_at
+                 FROM memories
+                 WHERE id = ?1 AND status = 'active'
+                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+                 LIMIT 1",
+                params![id],
+                |row| {
+                    Ok(build_candidate(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+        });
+    if let Some(candidate) = memory_by_id {
+        return Some(candidate);
+    }
+
+    let memory_by_source = conn
+        .query_row(
+            "SELECT text, score, trust_score, last_accessed, created_at
+             FROM memories
+             WHERE source = ?1 AND status = 'active'
+             AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY COALESCE(last_accessed, created_at) DESC
+             LIMIT 1",
+            params![source],
+            |row| {
+                Ok(build_candidate(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<f64>>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .ok()
+        .flatten();
+    if let Some(candidate) = memory_by_source {
+        return Some(candidate);
+    }
+
+    let decision_by_id = source
+        .strip_prefix("decision::")
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .and_then(|id| {
+            conn.query_row(
+                "SELECT decision, score, trust_score, last_accessed, created_at
+                 FROM decisions
+                 WHERE id = ?1 AND status = 'active'
+                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+                 LIMIT 1",
+                params![id],
+                |row| {
+                    Ok(build_candidate(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .ok()
+            .flatten()
+        });
+    if let Some(candidate) = decision_by_id {
+        return Some(candidate);
+    }
+
+    conn.query_row(
+        "SELECT decision, score, trust_score, last_accessed, created_at
+         FROM decisions
+         WHERE context = ?1 AND status = 'active'
+         AND (expires_at IS NULL OR expires_at > datetime('now'))
+         ORDER BY COALESCE(last_accessed, created_at) DESC
+         LIMIT 1",
+        params![source],
+        |row| {
+            Ok(build_candidate(
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<f64>>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn maybe_apply_sqlite_vec_trial(
     conn: &Connection,
@@ -1255,12 +1386,48 @@ fn maybe_apply_sqlite_vec_trial(
         .map(|candidate| (candidate.source.clone(), candidate))
         .collect();
     let mut reordered: Vec<SemanticCandidate> = Vec::new();
-    for source in &shadow_sources {
+    let baseline_max = semantic_candidates
+        .first()
+        .map(|candidate| candidate.relevance)
+        .unwrap_or(SEMANTIC_SCALE_BASE);
+    let baseline_min = semantic_candidates
+        .last()
+        .map(|candidate| candidate.relevance)
+        .unwrap_or(SEMANTIC_SIM_FLOOR);
+    let relevance_span = (baseline_max - baseline_min).abs().max(0.02);
+    let rank_denominator = shadow_sources.len().saturating_sub(1).max(1) as f64;
+    let fallback_relevance_for_rank = |rank_idx: usize| {
+        let rank_weight = 1.0 - (rank_idx as f64 / rank_denominator);
+        round4(
+            (baseline_min + (relevance_span * rank_weight))
+                .clamp(SEMANTIC_SIM_FLOOR, baseline_max.max(SEMANTIC_SIM_FLOOR)),
+        )
+    };
+    for (rank_idx, source) in shadow_sources.iter().enumerate() {
         if let Some(candidate) = by_source.remove(source) {
             reordered.push(candidate);
+            continue;
+        }
+        let fallback_relevance = fallback_relevance_for_rank(rank_idx);
+        if let Some(candidate) =
+            sqlite_vec_source_fallback_candidate(conn, source, query_text, fallback_relevance)
+        {
+            reordered.push(candidate);
+            continue;
+        }
+        reordered.push(SemanticCandidate {
+            source: source.clone(),
+            excerpt: query_focused_excerpt(source, query_text, 160),
+            relevance: fallback_relevance,
+            importance: 0.5,
+            ts: 0,
+        });
+    }
+    for candidate in &semantic_candidates {
+        if let Some(remaining) = by_source.remove(&candidate.source) {
+            reordered.push(remaining);
         }
     }
-    reordered.extend(by_source.into_values());
     reordered.truncate(semantic_candidates.len());
 
     (
@@ -7408,6 +7575,97 @@ mod tests {
         assert_eq!(route["mode"].as_str(), Some("baseline"));
         assert_eq!(route["reason"].as_str(), Some("not_sampled"));
         assert_eq!(route["sampled"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn maybe_apply_sqlite_vec_primary_includes_shadow_only_sources() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("cortex-sqlite-vec-primary-{unique}.db"));
+        let wal_path = db_path.with_extension("db-wal");
+        let shm_path = db_path.with_extension("db-shm");
+
+        let conn = crate::db::open(&db_path).expect("db open should register sqlite-vec");
+        crate::db::configure(&conn).expect("db configure should succeed");
+        crate::db::initialize_schema(&conn).expect("schema init should succeed");
+        crate::db::run_pending_migrations(&conn);
+
+        insert_memory_with_embedding(
+            &conn,
+            "daemon ownership lock protects startup arbitration",
+            "memory::daemon-lock",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "token budget windows tune startup telemetry visibility",
+            "memory::token-budget",
+            &[0.7, 0.3, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "sqlite vec rollout adds deterministic fallback hydration",
+            "memory::vector-upgrade",
+            &[0.2, 0.8, 0.0, 0.0, 0.0],
+        );
+
+        let baseline = vec![
+            SemanticCandidate {
+                source: "memory::daemon-lock".to_string(),
+                excerpt: "daemon ownership lock protects startup arbitration".to_string(),
+                relevance: 0.91,
+                importance: 0.9,
+                ts: 0,
+            },
+            SemanticCandidate {
+                source: "memory::token-budget".to_string(),
+                excerpt: "token budget windows tune startup telemetry visibility".to_string(),
+                relevance: 0.73,
+                importance: 0.8,
+                ts: 0,
+            },
+            SemanticCandidate {
+                source: "memory::legacy-route".to_string(),
+                excerpt: "legacy semantic route for startup diagnostics".to_string(),
+                relevance: 0.62,
+                importance: 0.7,
+                ts: 0,
+            },
+        ];
+
+        let query_vector = [0.95_f32, 0.05_f32, 0.0_f32, 0.0_f32, 0.0_f32];
+        let (routed, route) = maybe_apply_sqlite_vec_trial(
+            &conn,
+            "daemon ownership lock",
+            Some(&query_vector),
+            baseline.clone(),
+            &solo_ctx(),
+            None,
+            3,
+            Some(&crate::state::SqliteVecCanaryConfig {
+                trial_percent: 20,
+                force_off: false,
+                route_mode: crate::state::SqliteVecRouteMode::Primary,
+            }),
+        );
+
+        assert_eq!(route["mode"].as_str(), Some("vec0_primary"));
+        assert_eq!(route["reason"].as_str(), Some("route_mode_primary"));
+        assert_eq!(routed.len(), baseline.len());
+        assert_eq!(routed[0].source, "memory::daemon-lock");
+        assert_eq!(routed[1].source, "memory::token-budget");
+        assert_eq!(routed[2].source, "memory::vector-upgrade");
+        assert!(
+            routed[2].excerpt.contains("sqlite vec rollout"),
+            "shadow-only source should hydrate excerpt from persisted memory text"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_file(&shm_path);
     }
 
     #[tokio::test]
