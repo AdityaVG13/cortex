@@ -597,7 +597,16 @@ async fn main() {
         }
         "cleanup" => {
             let dry_run = args.iter().any(|a| a == "--dry-run");
-            run_cleanup_cli(&paths, dry_run);
+            let include_events = args.iter().any(|a| a == "--events");
+            let max_event_passes = match parse_flag_usize(&args[2..], "--max-passes") {
+                Ok(Some(value)) => value.clamp(1, 12),
+                Ok(None) => 3,
+                Err(err) => {
+                    eprintln!("Error: {err}");
+                    std::process::exit(1);
+                }
+            };
+            run_cleanup_cli(&paths, dry_run, include_events, max_event_passes);
         }
         "embeddings" => {
             let remaining: Vec<String> = args[2..].to_vec();
@@ -1208,8 +1217,9 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
+    eprintln!("  cleanup [--dry-run] [--events] [--max-passes <n>]");
     eprintln!(
-        "  cleanup [--dry-run]  Cleanup backups, logs, legacy bridge data, and stale PID files"
+        "                  Cleanup backups/logs/stale PID files; optionally compact oversized events"
     );
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
@@ -1260,7 +1270,128 @@ fn print_usage_and_exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
-fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool) {
+fn event_type_count(conn: &rusqlite::Connection, event_type: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE type = ?1",
+        rusqlite::params![event_type],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+}
+
+fn top_event_type_counts(conn: &rusqlite::Connection, limit: usize) -> Vec<(String, i64)> {
+    let mut statement = match conn.prepare(
+        "SELECT type, COUNT(*) AS cnt FROM events GROUP BY type ORDER BY cnt DESC LIMIT ?1",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Vec::new(),
+    };
+
+    let rows = match statement.query_map([limit as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return Vec::new(),
+    };
+
+    rows.filter_map(Result::ok).collect()
+}
+
+fn run_event_compaction_cleanup(
+    db_path: &Path,
+    dry_run: bool,
+    max_passes: usize,
+) -> Result<Vec<String>, String> {
+    if !db_path.exists() {
+        return Ok(vec![
+            "EVENTS skip: database file is missing; nothing to compact".to_string(),
+        ]);
+    }
+
+    let conn = db::open(db_path).map_err(|e| format!("events cleanup open db: {e}"))?;
+    db::configure(&conn).map_err(|e| format!("events cleanup configure db: {e}"))?;
+
+    let before_nonboot = compaction::non_boot_event_count(&conn);
+    let before_decision_stored = event_type_count(&conn, "decision_stored");
+    let mut lines = vec![format!(
+        "EVENTS before: pressure={} nonboot_rows={} decision_stored_rows={} (soft={} hard={})",
+        compaction::classify_event_pressure(before_nonboot),
+        before_nonboot,
+        before_decision_stored,
+        compaction::EVENT_NONBOOT_SOFT_LIMIT_ROWS,
+        compaction::EVENT_NONBOOT_HARD_LIMIT_ROWS,
+    )];
+
+    let top_before = top_event_type_counts(&conn, 5);
+    if !top_before.is_empty() {
+        lines.push("EVENTS top types before:".to_string());
+        for (event_type, count) in top_before {
+            lines.push(format!("  {event_type:<24} {count}"));
+        }
+    }
+
+    if dry_run {
+        lines.push(format!(
+            "EVENTS dry-run only: rerun with `cortex cleanup --events --max-passes {max_passes}` to apply compaction"
+        ));
+        return Ok(lines);
+    }
+
+    for pass in 1..=max_passes.max(1) {
+        let nonboot_before_pass = compaction::non_boot_event_count(&conn);
+        let maybe_result = compaction::run_compaction_governor(&conn);
+        let Some(result) = maybe_result else {
+            lines.push(format!(
+                "EVENTS pass {pass}: no additional compaction needed (pressure={})",
+                compaction::classify_event_pressure(nonboot_before_pass)
+            ));
+            break;
+        };
+
+        let nonboot_after_pass = compaction::non_boot_event_count(&conn);
+        let pressure_after_pass = compaction::classify_event_pressure(nonboot_after_pass);
+        lines.push(format!(
+            "EVENTS pass {pass}: pruned events={} benchmark={} archived={} expired={} feedback={} | nonboot {} -> {} ({pressure_after_pass})",
+            result.events_pruned,
+            result.benchmark_pruned,
+            result.archived_text_stripped,
+            result.expired_pruned,
+            result.feedback_aggregated,
+            nonboot_before_pass,
+            nonboot_after_pass,
+        ));
+
+        if nonboot_after_pass >= nonboot_before_pass || pressure_after_pass == "normal" {
+            break;
+        }
+    }
+
+    let after_nonboot = compaction::non_boot_event_count(&conn);
+    let after_decision_stored = event_type_count(&conn, "decision_stored");
+    lines.push(format!(
+        "EVENTS after: pressure={} nonboot_rows={} decision_stored_rows={}",
+        compaction::classify_event_pressure(after_nonboot),
+        after_nonboot,
+        after_decision_stored,
+    ));
+
+    let top_after = top_event_type_counts(&conn, 5);
+    if !top_after.is_empty() {
+        lines.push("EVENTS top types after:".to_string());
+        for (event_type, count) in top_after {
+            lines.push(format!("  {event_type:<24} {count}"));
+        }
+    }
+
+    Ok(lines)
+}
+
+fn run_cleanup_cli(
+    paths: &auth::CortexPaths,
+    dry_run: bool,
+    include_events: bool,
+    max_event_passes: usize,
+) {
     let schema_version = if paths.db.exists() {
         db::open(&paths.db)
             .and_then(|conn| db::current_schema_user_version(&conn))
@@ -1278,6 +1409,12 @@ fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool) {
         dry_run,
     ));
     lines.extend(run_stale_pid_cleanup(paths, dry_run));
+    if include_events {
+        match run_event_compaction_cleanup(&paths.db, dry_run, max_event_passes) {
+            Ok(event_lines) => lines.extend(event_lines),
+            Err(err) => lines.push(format!("EVENTS cleanup failed: {err}")),
+        }
+    }
 
     if lines.is_empty() {
         println!("No cleanup actions needed");
@@ -1416,6 +1553,30 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
         println!("[doctor] OK fts indexes");
     } else {
         println!("[doctor] FAIL fts indexes");
+    }
+
+    let nonboot_event_rows = compaction::non_boot_event_count(&conn);
+    let decision_stored_rows = event_type_count(&conn, "decision_stored");
+    let event_pressure = compaction::classify_event_pressure(nonboot_event_rows);
+    println!(
+        "[doctor] EVENT pressure={} nonboot_rows={} decision_stored_rows={} (soft={} hard={})",
+        event_pressure,
+        nonboot_event_rows,
+        decision_stored_rows,
+        compaction::EVENT_NONBOOT_SOFT_LIMIT_ROWS,
+        compaction::EVENT_NONBOOT_HARD_LIMIT_ROWS,
+    );
+    let top_event_types = top_event_type_counts(&conn, 5);
+    if !top_event_types.is_empty() {
+        println!("[doctor] EVENT top types:");
+        for (event_type, count) in top_event_types {
+            println!("  {:<24} {}", event_type, count);
+        }
+    }
+    if event_pressure != "normal" {
+        println!(
+            "[doctor] WARN elevated event pressure detected; run `cortex cleanup --events --dry-run` to preview one-time remediation."
+        );
     }
 
     let all_ok = missing_tables.is_empty() && schema_current && integrity_ok && fts_ok;
@@ -4771,6 +4932,87 @@ mod tests {
         assert!(parse_flag_usize(&zero_value, "--budget")
             .unwrap_err()
             .contains("must be >= 1"));
+    }
+
+    #[test]
+    fn event_type_count_helpers_return_expected_rows() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        conn.execute(
+            "CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                data TEXT,
+                source_agent TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .expect("create events table");
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('recall_query', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(event_type_count(&conn, "decision_stored"), 2);
+        assert_eq!(event_type_count(&conn, "recall_query"), 1);
+        assert_eq!(event_type_count(&conn, "missing"), 0);
+
+        let top = top_event_type_counts(&conn, 2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0], ("decision_stored".to_string(), 2));
+        assert_eq!(top[1], ("recall_query".to_string(), 1));
+    }
+
+    #[test]
+    fn run_event_compaction_cleanup_dry_run_reports_preview_lines() {
+        let home_dir = temp_test_dir("event_cleanup_dry_run");
+        fs::create_dir_all(&home_dir).expect("create temp home");
+        let db_path = home_dir.join("cortex.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("open db");
+        db::configure(&conn).expect("configure db");
+        conn.execute(
+            "CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                data TEXT,
+                source_agent TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .expect("create events table");
+        for _ in 0..5 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', '{}', 'test')",
+                [],
+            )
+            .expect("insert event");
+        }
+        drop(conn);
+
+        let lines =
+            run_event_compaction_cleanup(&db_path, true, 2).expect("event cleanup dry run lines");
+        assert!(
+            lines.iter().any(|line| line.starts_with("EVENTS before:")),
+            "missing before summary: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("dry-run only")),
+            "missing dry-run hint: {lines:?}"
+        );
+
+        let _ = fs::remove_dir_all(&home_dir);
     }
 
     #[test]

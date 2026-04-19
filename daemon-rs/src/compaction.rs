@@ -66,9 +66,9 @@ const AGGRESSIVE_BENCHMARK_RETENTION_DAYS: i64 = 1;
 pub const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex";
 
 /// Non-boot event volume triggers compaction even when DB file size is moderate.
-const EVENT_NONBOOT_SOFT_LIMIT_ROWS: i64 = 72_000;
+pub const EVENT_NONBOOT_SOFT_LIMIT_ROWS: i64 = 72_000;
 /// Critical non-boot event pressure threshold.
-const EVENT_NONBOOT_HARD_LIMIT_ROWS: i64 = 120_000;
+pub const EVENT_NONBOOT_HARD_LIMIT_ROWS: i64 = 120_000;
 /// Keep newest non-boot rows at or under this level during normal governor runs.
 const EVENT_NONBOOT_SOFT_KEEP_ROWS: i64 = 52_000;
 /// Keep newest non-boot rows at or under this level during critical pressure runs.
@@ -167,6 +167,17 @@ pub fn classify_storage_pressure(db_size_bytes: i64) -> &'static str {
     if db_size_bytes >= STORAGE_HARD_LIMIT_BYTES {
         "critical"
     } else if db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES {
+        "elevated"
+    } else {
+        "normal"
+    }
+}
+
+/// Classify non-boot event pressure so callers can explain when compaction is needed.
+pub fn classify_event_pressure(nonboot_event_rows: i64) -> &'static str {
+    if nonboot_event_rows >= EVENT_NONBOOT_HARD_LIMIT_ROWS {
+        "critical"
+    } else if nonboot_event_rows >= EVENT_NONBOOT_SOFT_LIMIT_ROWS {
         "elevated"
     } else {
         "normal"
@@ -1128,7 +1139,7 @@ fn freelist_count(conn: &Connection) -> i64 {
         .unwrap_or(0)
 }
 
-fn non_boot_event_count(conn: &Connection) -> i64 {
+pub(crate) fn non_boot_event_count(conn: &Connection) -> i64 {
     conn.query_row(
         "SELECT COUNT(*) FROM events WHERE type NOT IN ('boot_savings', 'boot_savings_rollup')",
         [],
@@ -1433,6 +1444,22 @@ mod tests {
         );
         assert_eq!(
             classify_storage_pressure(STORAGE_HARD_LIMIT_BYTES),
+            "critical"
+        );
+    }
+
+    #[test]
+    fn test_event_pressure_classification() {
+        assert_eq!(
+            classify_event_pressure(EVENT_NONBOOT_SOFT_LIMIT_ROWS - 1),
+            "normal"
+        );
+        assert_eq!(
+            classify_event_pressure(EVENT_NONBOOT_SOFT_LIMIT_ROWS),
+            "elevated"
+        );
+        assert_eq!(
+            classify_event_pressure(EVENT_NONBOOT_HARD_LIMIT_ROWS),
             "critical"
         );
     }
