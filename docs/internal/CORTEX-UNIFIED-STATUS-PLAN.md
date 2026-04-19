@@ -198,8 +198,10 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
 
 Source of target sequence: `docs/internal/PHASE-2A-RESEARCH.md`
 
-1. **AMB adapter + baseline:** **PARTIAL**  
-   - Benchmark runner/hardening exists, but no fully scored AMB baseline is frozen in a credentialed run.
+1. **AMB adapter + baseline:** **DONE (strict LongMemEval gate path)**  
+   - credentialed strict fair-run baselines are now frozen for both benchmark backends:
+     - tuned helper path (`cortex-http`): `benchmarking/runs/amb-run-20260419-073924` -> `20/20`, gate passed
+     - raw no-helper path (`cortex-http-base`): `benchmarking/runs/amb-run-20260419-074548` -> `20/20`, gate passed
 2. **sqlite-vec integration:** **PARTIAL**  
    - bootstrap/health/smoke-test groundwork, explain-surface shadow diagnostics, unified-recall shadow telemetry mirror, and semantic-baseline reuse in shadow explain are landed; production semantic recall/dedup are not routed through vec0 yet.
 3. **Embedding model upgrade (MiniLM -> modern model):** **PARTIAL**  
@@ -212,6 +214,7 @@ Source of target sequence: `docs/internal/PHASE-2A-RESEARCH.md`
 7. **Weighted/query-adaptive RRF:** **DONE (first cut)**  
    - adaptive weighting now ships in the unified recall fusion path; historical hit-rate tuning is still open.
 8. **Benchmark reruns after each retrieval step:** **PARTIAL**
+   - strict reruns are now in place for the key LongMemEval gate path (both tuned + raw backends); broader cross-dataset matrix rerun cadence remains open.
 9. **`/stats` transparency endpoint (tier hit rates + latency + savings):** **DONE (first cut)**  
    - `GET /stats` now ships with tier/mode distribution, avg latency, and savings vs budget.
    - New recall events now emit `tier`, `method_breakdown`, and `latency_ms` fields for accurate tier attribution over time.
