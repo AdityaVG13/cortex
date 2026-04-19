@@ -44,13 +44,49 @@ pub struct DaemonEvent {
 }
 
 #[derive(Clone, Debug)]
+pub enum SqliteVecRouteMode {
+    Baseline,
+    Trial,
+    Primary,
+}
+
+impl SqliteVecRouteMode {
+    fn from_env() -> Self {
+        match std::env::var("CORTEX_SQLITE_VEC_ROUTE") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "baseline" | "off" | "disabled" => Self::Baseline,
+                "trial" | "canary" | "sampled" => Self::Trial,
+                "primary" | "vec0" | "production" | "on" => Self::Primary,
+                unknown => {
+                    eprintln!(
+                        "[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using trial"
+                    );
+                    Self::Trial
+                }
+            },
+            Err(_) => Self::Trial,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::Trial => "trial",
+            Self::Primary => "primary",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SqliteVecCanaryConfig {
     pub trial_percent: u8,
     pub force_off: bool,
+    pub route_mode: SqliteVecRouteMode,
 }
 
 impl SqliteVecCanaryConfig {
     fn from_env() -> Self {
+        let route_mode = SqliteVecRouteMode::from_env();
         let trial_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT")
             .ok()
             .and_then(|value| {
@@ -80,6 +116,15 @@ impl SqliteVecCanaryConfig {
         Self {
             trial_percent,
             force_off,
+            route_mode,
+        }
+    }
+
+    pub fn effective_route_mode(&self) -> SqliteVecRouteMode {
+        if self.force_off {
+            SqliteVecRouteMode::Baseline
+        } else {
+            self.route_mode.clone()
         }
     }
 }
@@ -444,14 +489,33 @@ fn initialize_with_conn(
     let write_buffer_path = paths.write_buffer.clone();
     let sqlite_vec_canary = SqliteVecCanaryConfig::from_env();
     if sqlite_vec_canary.force_off {
-        eprintln!("[cortex] sqlite-vec trial routing: force-off");
-    } else if sqlite_vec_canary.trial_percent > 0 {
         eprintln!(
-            "[cortex] sqlite-vec trial routing enabled at {}%",
-            sqlite_vec_canary.trial_percent
+            "[cortex] sqlite-vec routing force-off (configured mode={}, effective mode=baseline)",
+            sqlite_vec_canary.route_mode.as_str()
         );
     } else {
-        eprintln!("[cortex] sqlite-vec trial routing disabled");
+        match sqlite_vec_canary.route_mode {
+            SqliteVecRouteMode::Baseline => {
+                eprintln!("[cortex] sqlite-vec routing mode=baseline (shadow diagnostics only)");
+            }
+            SqliteVecRouteMode::Trial => {
+                if sqlite_vec_canary.trial_percent > 0 {
+                    eprintln!(
+                        "[cortex] sqlite-vec routing mode=trial ({}% sampled)",
+                        sqlite_vec_canary.trial_percent
+                    );
+                } else {
+                    eprintln!(
+                        "[cortex] sqlite-vec routing mode=trial but trial percent is 0 (baseline-only)"
+                    );
+                }
+            }
+            SqliteVecRouteMode::Primary => {
+                eprintln!(
+                    "[cortex] sqlite-vec routing mode=primary (guarded vec0 routing enabled)"
+                );
+            }
+        }
     }
 
     let state = RuntimeState {
@@ -978,12 +1042,19 @@ mod tests {
         let _guard = env_guard();
         let prev_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT").ok();
         let prev_force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF").ok();
+        let prev_route = std::env::var("CORTEX_SQLITE_VEC_ROUTE").ok();
         std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT");
         std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
+        std::env::remove_var("CORTEX_SQLITE_VEC_ROUTE");
 
         let config = SqliteVecCanaryConfig::from_env();
         assert_eq!(config.trial_percent, 0);
         assert!(!config.force_off);
+        assert!(matches!(config.route_mode, SqliteVecRouteMode::Trial));
+        assert!(matches!(
+            config.effective_route_mode(),
+            SqliteVecRouteMode::Trial
+        ));
 
         if let Some(value) = prev_percent {
             std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT", value);
@@ -994,6 +1065,11 @@ mod tests {
             std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF", value);
         } else {
             std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
+        }
+        if let Some(value) = prev_route {
+            std::env::set_var("CORTEX_SQLITE_VEC_ROUTE", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_ROUTE");
         }
     }
 
@@ -1002,12 +1078,19 @@ mod tests {
         let _guard = env_guard();
         let prev_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT").ok();
         let prev_force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF").ok();
+        let prev_route = std::env::var("CORTEX_SQLITE_VEC_ROUTE").ok();
         std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT", "145");
         std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF", "yes");
+        std::env::set_var("CORTEX_SQLITE_VEC_ROUTE", "primary");
 
         let config = SqliteVecCanaryConfig::from_env();
         assert_eq!(config.trial_percent, 100);
         assert!(config.force_off);
+        assert!(matches!(config.route_mode, SqliteVecRouteMode::Primary));
+        assert!(matches!(
+            config.effective_route_mode(),
+            SqliteVecRouteMode::Baseline
+        ));
 
         if let Some(value) = prev_percent {
             std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_PERCENT", value);
@@ -1018,6 +1101,28 @@ mod tests {
             std::env::set_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF", value);
         } else {
             std::env::remove_var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF");
+        }
+        if let Some(value) = prev_route {
+            std::env::set_var("CORTEX_SQLITE_VEC_ROUTE", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_ROUTE");
+        }
+    }
+
+    #[test]
+    fn sqlite_vec_canary_config_route_mode_aliases_are_supported() {
+        let _guard = env_guard();
+        let prev_route = std::env::var("CORTEX_SQLITE_VEC_ROUTE").ok();
+        std::env::set_var("CORTEX_SQLITE_VEC_ROUTE", "vec0");
+
+        let config = SqliteVecCanaryConfig::from_env();
+        assert!(matches!(config.route_mode, SqliteVecRouteMode::Primary));
+        assert_eq!(config.route_mode.as_str(), "primary");
+
+        if let Some(value) = prev_route {
+            std::env::set_var("CORTEX_SQLITE_VEC_ROUTE", value);
+        } else {
+            std::env::remove_var("CORTEX_SQLITE_VEC_ROUTE");
         }
     }
 

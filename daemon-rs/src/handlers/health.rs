@@ -375,13 +375,26 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         "db_corrupted": db_corrupted,
         "embedding_status": embedding_status,
         "vector_search": {
-            "backend": "blob_scan",
+            "backend": if matches!(
+                state.sqlite_vec_canary.effective_route_mode(),
+                crate::state::SqliteVecRouteMode::Primary
+            ) {
+                "sqlite_vec_primary"
+            } else {
+                "blob_scan"
+            },
             "embedding_model": {
                 "key": embedding_model.key,
                 "display_name": embedding_model.display_name,
                 "dimension": embedding_model.dimension,
                 "model_file": embedding_model.model_file,
                 "tokenizer_file": embedding_model.tokenizer_file
+            },
+            "routing": {
+                "mode": state.sqlite_vec_canary.route_mode.as_str(),
+                "effective_mode": state.sqlite_vec_canary.effective_route_mode().as_str(),
+                "trial_percent": state.sqlite_vec_canary.trial_percent,
+                "force_off": state.sqlite_vec_canary.force_off
             },
             "embedding_inventory": {
                 "active_model_key": embedding_model.key,

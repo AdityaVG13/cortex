@@ -20,7 +20,9 @@ use super::{
 };
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
-use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState, SqliteVecCanaryConfig};
+use crate::state::{
+    PreCacheEntry, RecallHistoryEntry, RuntimeState, SqliteVecCanaryConfig, SqliteVecRouteMode,
+};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -1142,53 +1144,78 @@ fn maybe_apply_sqlite_vec_trial(
     top_k: usize,
     canary: Option<&SqliteVecCanaryConfig>,
 ) -> (Vec<SemanticCandidate>, Value) {
+    let Some(canary) = canary else {
+        return (
+            semantic_candidates,
+            json!({
+                "mode": "baseline",
+                "reason": "trial_not_configured",
+                "sampled": false,
+                "trialPercent": 0,
+                "routeMode": "baseline"
+            }),
+        );
+    };
+    let effective_route_mode = canary.effective_route_mode();
+    let route_mode = effective_route_mode.as_str();
+    let active_trial_percent = if matches!(effective_route_mode, SqliteVecRouteMode::Primary) {
+        100
+    } else {
+        canary.trial_percent
+    };
     let baseline_route = |reason: &str, sampled: bool, trial_percent: u8| {
         json!({
             "mode": "baseline",
             "reason": reason,
             "sampled": sampled,
-            "trialPercent": trial_percent
+            "trialPercent": trial_percent,
+            "routeMode": route_mode
         })
     };
 
-    let Some(canary) = canary else {
+    if matches!(effective_route_mode, SqliteVecRouteMode::Baseline) {
+        let reason = if canary.force_off {
+            "trial_force_off"
+        } else {
+            "route_mode_baseline"
+        };
         return (
             semantic_candidates,
-            baseline_route("trial_not_configured", false, 0),
-        );
-    };
-    if canary.force_off {
-        return (
-            semantic_candidates,
-            baseline_route("trial_force_off", false, canary.trial_percent),
-        );
-    }
-    if canary.trial_percent == 0 {
-        return (
-            semantic_candidates,
-            baseline_route("trial_percent_zero", false, canary.trial_percent),
+            baseline_route(reason, false, active_trial_percent),
         );
     }
     let Some(query_vector) = query_vector else {
         return (
             semantic_candidates,
-            baseline_route("query_embedding_unavailable", false, canary.trial_percent),
+            baseline_route("query_embedding_unavailable", false, active_trial_percent),
         );
     };
     if semantic_candidates.is_empty() {
         return (
             semantic_candidates,
-            baseline_route("no_semantic_candidates", false, canary.trial_percent),
+            baseline_route("no_semantic_candidates", false, active_trial_percent),
         );
     }
 
-    let sampled = sqlite_vec_trial_sampled(query_text, ctx, source_prefix, canary.trial_percent);
-    if !sampled {
-        return (
-            semantic_candidates,
-            baseline_route("not_sampled", false, canary.trial_percent),
-        );
-    }
+    let sampled = if matches!(effective_route_mode, SqliteVecRouteMode::Trial) {
+        if canary.trial_percent == 0 {
+            return (
+                semantic_candidates,
+                baseline_route("trial_percent_zero", false, active_trial_percent),
+            );
+        }
+        let sampled =
+            sqlite_vec_trial_sampled(query_text, ctx, source_prefix, canary.trial_percent);
+        if !sampled {
+            return (
+                semantic_candidates,
+                baseline_route("not_sampled", false, active_trial_percent),
+            );
+        }
+        true
+    } else {
+        true
+    };
 
     let baseline = ShadowSemanticBaseline {
         candidate_count: semantic_candidates.len(),
@@ -1210,7 +1237,7 @@ fn maybe_apply_sqlite_vec_trial(
     if let Some(reason) = shadow_guard_failure_reason(&shadow_semantic) {
         return (
             semantic_candidates,
-            baseline_route(reason, true, canary.trial_percent),
+            baseline_route(reason, sampled, active_trial_percent),
         );
     }
 
@@ -1218,7 +1245,7 @@ fn maybe_apply_sqlite_vec_trial(
     if shadow_sources.is_empty() {
         return (
             semantic_candidates,
-            baseline_route("shadow_top_sources_empty", true, canary.trial_percent),
+            baseline_route("shadow_top_sources_empty", sampled, active_trial_percent),
         );
     }
 
@@ -1239,10 +1266,19 @@ fn maybe_apply_sqlite_vec_trial(
     (
         reordered,
         json!({
-            "mode": "vec0_trial",
-            "reason": "guard_passed",
-            "sampled": true,
-            "trialPercent": canary.trial_percent
+            "mode": if matches!(effective_route_mode, SqliteVecRouteMode::Primary) {
+                "vec0_primary"
+            } else {
+                "vec0_trial"
+            },
+            "reason": if matches!(effective_route_mode, SqliteVecRouteMode::Primary) {
+                "route_mode_primary"
+            } else {
+                "guard_passed"
+            },
+            "sampled": sampled,
+            "trialPercent": active_trial_percent,
+            "routeMode": route_mode
         }),
     )
 }
@@ -1273,7 +1309,15 @@ pub async fn execute_unified_recall(
                 "mode": "baseline",
                 "reason": "cache_hit",
                 "sampled": false,
-                "trialPercent": state.sqlite_vec_canary.trial_percent
+                "trialPercent": if matches!(
+                    state.sqlite_vec_canary.effective_route_mode(),
+                    SqliteVecRouteMode::Primary
+                ) {
+                    100
+                } else {
+                    state.sqlite_vec_canary.trial_percent
+                },
+                "routeMode": state.sqlite_vec_canary.effective_route_mode().as_str()
             });
             emit_recall_query_event(
                 state,
@@ -1787,17 +1831,21 @@ pub async fn execute_semantic_recall(
         .as_ref()
         .and_then(|engine| engine.embed(query_text));
     let semantic_available = query_vector.is_some();
-    let budgeted = {
+    let (budgeted, semantic_route) = {
         let conn = state.db.lock().await;
-        let results = run_semantic_recall_with_query_vector(
+        let (results, semantic_route) = run_semantic_recall_with_query_vector(
             &conn,
             query_text,
             k,
             query_vector.as_deref(),
             ctx,
             source_prefix,
+            Some(&state.sqlite_vec_canary),
         );
-        apply_semantic_budget(results, budget, query_text)
+        (
+            apply_semantic_budget(results, budget, query_text),
+            semantic_route,
+        )
     };
     let spent: usize = budgeted
         .iter()
@@ -1831,6 +1879,7 @@ pub async fn execute_semantic_recall(
             "method_breakdown": method_breakdown,
             "tier": tier,
             "latency_ms": latency_ms,
+            "semantic_route": semantic_route.clone(),
         }),
     )
     .await;
@@ -1842,6 +1891,7 @@ pub async fn execute_semantic_recall(
         "spent": spent,
         "saved": saved,
         "semanticAvailable": semantic_available,
+        "semanticRoute": semantic_route,
         "tier": tier,
         "latencyMs": latency_ms,
     }))
@@ -2024,7 +2074,18 @@ fn run_recall_with_query_vector_trace(
                 "mode": "baseline",
                 "reason": "tier2_keyword_resolved",
                 "sampled": false,
-                "trialPercent": canary.map(|config| config.trial_percent).unwrap_or(0)
+                "trialPercent": canary
+                    .map(|config| {
+                        if matches!(config.effective_route_mode(), SqliteVecRouteMode::Primary) {
+                            100
+                        } else {
+                            config.trial_percent
+                        }
+                    })
+                    .unwrap_or(0),
+                "routeMode": canary
+                    .map(|config| config.effective_route_mode().as_str())
+                    .unwrap_or("baseline")
             }),
             None,
         )
@@ -2285,12 +2346,24 @@ fn run_semantic_recall_with_query_vector(
     query_vector: Option<&[f32]>,
     ctx: &RecallContext,
     source_prefix: Option<&str>,
-) -> Vec<RecallItem> {
-    let mut ranked: Vec<RecallItem> = query_vector
+    canary: Option<&SqliteVecCanaryConfig>,
+) -> (Vec<RecallItem>, Value) {
+    let baseline_semantic = query_vector
         .map(|query_vec| {
             collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let (semantic_candidates, semantic_route) = maybe_apply_sqlite_vec_trial(
+        conn,
+        query_text,
+        query_vector,
+        baseline_semantic,
+        ctx,
+        source_prefix,
+        k,
+        canary,
+    );
+    let mut ranked: Vec<RecallItem> = semantic_candidates
         .into_iter()
         .map(|candidate| RecallItem {
             source: candidate.source,
@@ -2329,7 +2402,7 @@ fn run_semantic_recall_with_query_vector(
     });
     ranked.truncate(k);
     bump_retrievals_batch(conn, &ranked);
-    ranked
+    (ranked, semantic_route)
 }
 
 fn budget_rank_char_cap(token_budget: usize, rank_idx: usize, query_text: &str) -> usize {
@@ -4226,29 +4299,33 @@ fn run_sqlite_vec_shadow_knn_sources(
         ))
         .map_err(|err| format!("sqlite-vec shadow create failed: {err}"))?;
 
-        for (candidate_id, candidate) in candidates.iter().enumerate() {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {SHADOW_TABLE}(candidate_id, embedding) VALUES ({}, '{}')",
-                    candidate_id + 1,
-                    vector_to_vec0_literal(&candidate.vector)
-                ),
-                [],
-            )
-            .map_err(|err| format!("sqlite-vec shadow insert failed: {err}"))?;
+        let insert_sql =
+            format!("INSERT INTO {SHADOW_TABLE}(candidate_id, embedding) VALUES (?1, ?2)");
+        let mut insert_stmt = conn
+            .prepare(&insert_sql)
+            .map_err(|err| format!("sqlite-vec shadow insert prepare failed: {err}"))?;
+        for (candidate_idx, candidate) in candidates.iter().enumerate() {
+            let candidate_id = i64::try_from(candidate_idx + 1)
+                .map_err(|_| "sqlite-vec shadow candidate id overflow".to_string())?;
+            let embedding_literal = vector_to_vec0_literal(&candidate.vector);
+            insert_stmt
+                .execute(params![candidate_id, embedding_literal])
+                .map_err(|err| format!("sqlite-vec shadow insert failed: {err}"))?;
         }
 
+        let k_i64 = i64::try_from(k).map_err(|_| "sqlite-vec shadow k overflow".to_string())?;
         let query_sql = format!(
             "SELECT candidate_id, distance \
              FROM {SHADOW_TABLE} \
-             WHERE embedding MATCH '{}' AND k = {}",
-            query_literal, k
+             WHERE embedding MATCH ?1 AND k = ?2"
         );
         let mut query_stmt = conn
             .prepare(&query_sql)
             .map_err(|err| format!("sqlite-vec shadow query prepare failed: {err}"))?;
         let rows = query_stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)))
+            .query_map(params![query_literal, k_i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            })
             .map_err(|err| format!("sqlite-vec shadow query failed: {err}"))?;
 
         let mut sources = Vec::new();
@@ -5899,6 +5976,7 @@ mod tests {
             sqlite_vec_canary: crate::state::SqliteVecCanaryConfig {
                 trial_percent: 0,
                 force_off: false,
+                route_mode: crate::state::SqliteVecRouteMode::Trial,
             },
         }
     }
@@ -7278,6 +7356,7 @@ mod tests {
             Some(&crate::state::SqliteVecCanaryConfig {
                 trial_percent: 100,
                 force_off: true,
+                route_mode: crate::state::SqliteVecRouteMode::Trial,
             }),
         );
         assert_eq!(routed.len(), baseline.len());
@@ -7321,6 +7400,7 @@ mod tests {
             Some(&crate::state::SqliteVecCanaryConfig {
                 trial_percent: 1,
                 force_off: false,
+                route_mode: crate::state::SqliteVecRouteMode::Trial,
             }),
         );
         assert_eq!(routed.len(), baseline.len());

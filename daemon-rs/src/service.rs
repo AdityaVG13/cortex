@@ -22,6 +22,18 @@ const ENSURE_HEALTH_TIMEOUT_SECS: u64 = 12;
 const ENSURE_POLL_MILLIS: u64 = 250;
 const HEALTH_PROBE_TIMEOUT_SECS: u64 = 2;
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn apply_hidden_process_flags(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(CREATE_NO_WINDOW_FLAG);
+}
+
+#[cfg(not(windows))]
+fn apply_hidden_process_flags(_command: &mut std::process::Command) {}
+
 fn daemon_base_url() -> String {
     let port = crate::auth::CortexPaths::resolve().port;
     format!("http://127.0.0.1:{port}")
@@ -111,8 +123,10 @@ fn parse_service_state(output_text: &str) -> ServiceState {
 }
 
 fn query_service_state() -> Result<ServiceState, String> {
-    let output = std::process::Command::new("sc.exe")
-        .args(["query", SERVICE_NAME])
+    let mut command = std::process::Command::new("sc.exe");
+    command.args(["query", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("Failed to run sc.exe query: {e}"))?;
 
@@ -225,8 +239,10 @@ fn wait_for_daemon_health(timeout: std::time::Duration) -> bool {
 }
 
 fn start_service_once() -> Result<(), String> {
-    let output = std::process::Command::new("sc.exe")
-        .args(["start", SERVICE_NAME])
+    let mut command = std::process::Command::new("sc.exe");
+    command.args(["start", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("Failed to run sc.exe start: {e}"))?;
 
@@ -243,8 +259,10 @@ fn start_service_once() -> Result<(), String> {
 }
 
 fn stop_service_once() -> Result<(), String> {
-    let output = std::process::Command::new("sc.exe")
-        .args(["stop", SERVICE_NAME])
+    let mut command = std::process::Command::new("sc.exe");
+    command.args(["stop", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut command);
+    let output = command
         .output()
         .map_err(|e| format!("Failed to run sc.exe stop: {e}"))?;
 
@@ -334,9 +352,10 @@ pub fn install() {
     // sc.exe has non-standard argument parsing that fights with Rust's Command.
     let sc_cmd = build_sc_create_command(&exe_path, &username);
 
-    let output = std::process::Command::new("cmd")
-        .args(["/C", &sc_cmd])
-        .output();
+    let mut create_cmd = std::process::Command::new("cmd");
+    create_cmd.args(["/C", &sc_cmd]);
+    apply_hidden_process_flags(&mut create_cmd);
+    let output = create_cmd.output();
 
     match output {
         Ok(o) if o.status.success() => {
@@ -344,17 +363,22 @@ pub fn install() {
             eprintln!("[cortex] Runs as: .\\{}", username);
 
             // Set description
-            let _ = std::process::Command::new("sc.exe")
-                .args(["description", SERVICE_NAME, DESCRIPTION])
-                .output();
+            let mut description_cmd = std::process::Command::new("sc.exe");
+            description_cmd.args(["description", SERVICE_NAME, DESCRIPTION]);
+            apply_hidden_process_flags(&mut description_cmd);
+            let _ = description_cmd.output();
 
             // Configure recovery: restart on failure (5s, 10s, 30s)
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", &format!(
+            let mut failure_cmd = std::process::Command::new("cmd");
+            failure_cmd.args([
+                "/C",
+                &format!(
                     "sc.exe failure {} reset= 86400 actions= restart/5000/restart/10000/restart/30000",
                     SERVICE_NAME
-                )])
-                .output();
+                ),
+            ]);
+            apply_hidden_process_flags(&mut failure_cmd);
+            let _ = failure_cmd.output();
 
             eprintln!("[cortex] Auto-start on boot: disabled (manual start mode)");
             eprintln!("[cortex] To opt in later: sc.exe config CortexDaemon start= auto");
@@ -378,15 +402,16 @@ pub fn install() {
 
 pub fn uninstall() {
     // Stop first (ignore errors if not running)
-    let _ = std::process::Command::new("sc.exe")
-        .args(["stop", SERVICE_NAME])
-        .output();
+    let mut stop_cmd = std::process::Command::new("sc.exe");
+    stop_cmd.args(["stop", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut stop_cmd);
+    let _ = stop_cmd.output();
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    match std::process::Command::new("sc.exe")
-        .args(["delete", SERVICE_NAME])
-        .output()
-    {
+    let mut delete_cmd = std::process::Command::new("sc.exe");
+    delete_cmd.args(["delete", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut delete_cmd);
+    match delete_cmd.output() {
         Ok(o) if o.status.success() => eprintln!("[cortex] Service uninstalled"),
         Ok(o) => {
             eprintln!("[cortex] Failed to uninstall");
@@ -397,10 +422,10 @@ pub fn uninstall() {
 }
 
 pub fn start() {
-    match std::process::Command::new("sc.exe")
-        .args(["start", SERVICE_NAME])
-        .output()
-    {
+    let mut command = std::process::Command::new("sc.exe");
+    command.args(["start", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut command);
+    match command.output() {
         Ok(o) if o.status.success() => {
             eprintln!("[cortex] Service started");
             // Wait and verify
@@ -429,10 +454,10 @@ pub fn start() {
 }
 
 pub fn stop() {
-    match std::process::Command::new("sc.exe")
-        .args(["stop", SERVICE_NAME])
-        .output()
-    {
+    let mut command = std::process::Command::new("sc.exe");
+    command.args(["stop", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut command);
+    match command.output() {
         Ok(o) if o.status.success() => eprintln!("[cortex] Service stopped"),
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
@@ -448,10 +473,10 @@ pub fn stop() {
 }
 
 pub fn status() {
-    match std::process::Command::new("sc.exe")
-        .args(["query", SERVICE_NAME])
-        .output()
-    {
+    let mut command = std::process::Command::new("sc.exe");
+    command.args(["query", SERVICE_NAME]);
+    apply_hidden_process_flags(&mut command);
+    match command.output() {
         Ok(o) if o.status.success() => {
             let stdout = String::from_utf8_lossy(&o.stdout);
             let state = if stdout.contains("RUNNING") {

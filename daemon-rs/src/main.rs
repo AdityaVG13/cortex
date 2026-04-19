@@ -45,6 +45,7 @@ const ORPHAN_WATCH_INTERVAL_SECS: u64 = 2;
 const DEFAULT_EMBED_BACKFILL_BATCH_SIZE: usize = 200;
 const DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS: usize = 8;
 const DEFAULT_EMBED_BACKFILL_INTERVAL_SECS: u64 = 120;
+const DEFAULT_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES: usize = 64;
 const DEFAULT_STARTUP_INDEX_DELAY_SECS: u64 = 5;
 const DEFAULT_STARTUP_AGING_DELAY_SECS: u64 = 20;
 const DEFAULT_STARTUP_EMBED_DELAY_SECS: u64 = 30;
@@ -65,6 +66,9 @@ const STARTUP_EMBED_DELAY_ENV: &str = "CORTEX_STARTUP_EMBED_DELAY_SECS";
 const STARTUP_CRYSTALLIZE_DELAY_ENV: &str = "CORTEX_STARTUP_CRYSTALLIZE_DELAY_SECS";
 const STARTUP_STORAGE_GOVERNOR_DELAY_ENV: &str = "CORTEX_STARTUP_STORAGE_GOVERNOR_DELAY_SECS";
 const BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV: &str = "CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS";
+const EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV: &str = "CORTEX_EMBED_BACKFILL_DRAIN_ON_STARTUP";
+const EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES_ENV: &str =
+    "CORTEX_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES";
 const STARTUP_LOG_FILES: &[&str] = &[
     "daemon.log",
     "daemon.err.log",
@@ -2987,6 +2991,15 @@ pub(crate) async fn run_daemon(
             DEFAULT_EMBED_BACKFILL_INTERVAL_SECS,
         )
         .clamp(5, 86_400);
+        let drain_on_startup = std::env::var(EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV)
+            .ok()
+            .map(|value| parse_truthy_flag(&value))
+            .unwrap_or(false);
+        let startup_drain_max_batches = parse_env_usize(
+            EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES_ENV,
+            DEFAULT_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES,
+        )
+        .clamp(1, 10_000);
         let startup_delay = startup_schedule.embed;
         let lock_wait = background_lock_wait;
         let startup_max_batches_per_pass = if startup_delay > Duration::from_secs(0) {
@@ -2998,7 +3011,7 @@ pub(crate) async fn run_daemon(
             if startup_delay > Duration::from_secs(0) {
                 tokio::time::sleep(startup_delay).await;
             }
-            build_embeddings_async(
+            let startup_pass = build_embeddings_async(
                 &engine,
                 &db,
                 batch_size,
@@ -3006,6 +3019,35 @@ pub(crate) async fn run_daemon(
                 lock_wait,
             )
             .await;
+            if startup_pass.queued_total > 0 && !startup_pass.exhausted {
+                if drain_on_startup {
+                    let drain_pass = build_embeddings_async(
+                        &engine,
+                        &db,
+                        batch_size,
+                        startup_drain_max_batches,
+                        lock_wait,
+                    )
+                    .await;
+                    if drain_pass.exhausted {
+                        eprintln!(
+                            "[embeddings] Startup drain completed backlog in {} batches",
+                            drain_pass.passes_ran
+                        );
+                    } else if drain_pass.queued_total > 0 {
+                        eprintln!(
+                            "[embeddings] Startup drain reached cap with backlog still pending (passes={}, queued={})",
+                            drain_pass.passes_ran,
+                            drain_pass.queued_total
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "[embeddings] Startup pass left backlog pending; set {}=1 to run a one-time extended drain",
+                        EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV
+                    );
+                }
+            }
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
             interval.tick().await; // skip first immediate tick
             loop {
@@ -3266,6 +3308,22 @@ pub(crate) async fn run_daemon(
 type EmbeddingBackfillRows = Vec<(i64, String)>;
 type EmbeddingBackfillTargets = (EmbeddingBackfillRows, EmbeddingBackfillRows);
 
+#[derive(Clone, Copy, Debug, Default)]
+struct EmbeddingBackfillPassResult {
+    queued_total: usize,
+    computed_total: usize,
+    passes_ran: usize,
+    exhausted: bool,
+}
+
+fn backfill_batch_may_have_more(
+    memory_count: usize,
+    decision_count: usize,
+    batch_size: usize,
+) -> bool {
+    memory_count >= batch_size || decision_count >= batch_size
+}
+
 fn collect_unembedded_targets_for_model(
     conn: &rusqlite::Connection,
     model_key: &str,
@@ -3322,10 +3380,9 @@ async fn build_embeddings_async(
     batch_size: usize,
     max_batches_per_pass: usize,
     lock_wait: Duration,
-) {
+) -> EmbeddingBackfillPassResult {
     let model_key = engine.model_key();
-    let mut computed_total = 0usize;
-    let mut queued_total = 0usize;
+    let mut result = EmbeddingBackfillPassResult::default();
 
     for _ in 0..max_batches_per_pass {
         let (unembedded_mem, unembedded_dec) = {
@@ -3337,11 +3394,15 @@ async fn build_embeddings_async(
             collect_unembedded_targets_for_model(&conn, model_key, batch_size)
         };
 
-        let total = unembedded_mem.len() + unembedded_dec.len();
+        let memory_count = unembedded_mem.len();
+        let decision_count = unembedded_dec.len();
+        let total = memory_count + decision_count;
         if total == 0 {
+            result.exhausted = true;
             break;
         }
-        queued_total += total;
+        result.passes_ran += 1;
+        result.queued_total += total;
 
         let mut computed_batch = 0usize;
         let mut mem_results: Vec<(i64, Vec<u8>)> = Vec::new();
@@ -3382,17 +3443,25 @@ async fn build_embeddings_async(
             }
         }
 
-        computed_total += computed_batch;
-        if total < (batch_size * 2) {
+        result.computed_total += computed_batch;
+        if !backfill_batch_may_have_more(memory_count, decision_count, batch_size) {
+            result.exhausted = true;
             break;
         }
     }
 
-    if queued_total > 0 {
+    if result.queued_total > 0 {
         eprintln!(
-            "[embeddings] Built {computed_total}/{queued_total} embeddings this pass (batch_size={batch_size}, max_batches={max_batches_per_pass})"
+            "[embeddings] Built {}/{} embeddings this pass (passes={}, batch_size={}, max_batches={}, exhausted={})",
+            result.computed_total,
+            result.queued_total,
+            result.passes_ran,
+            batch_size,
+            max_batches_per_pass,
+            result.exhausted
         );
     }
+    result
 }
 
 #[cfg(test)]
@@ -3590,6 +3659,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(25));
         }
         false
+    }
+
+    #[test]
+    fn backfill_batch_may_have_more_only_when_a_table_hits_limit() {
+        assert!(!backfill_batch_may_have_more(0, 0, 32));
+        assert!(!backfill_batch_may_have_more(31, 8, 32));
+        assert!(!backfill_batch_may_have_more(8, 31, 32));
+        assert!(backfill_batch_may_have_more(32, 8, 32));
+        assert!(backfill_batch_may_have_more(8, 32, 32));
+        assert!(backfill_batch_may_have_more(32, 32, 32));
     }
 
     #[test]

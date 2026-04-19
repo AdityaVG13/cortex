@@ -1386,6 +1386,7 @@ mod tests {
             sqlite_vec_canary: crate::state::SqliteVecCanaryConfig {
                 trial_percent: 0,
                 force_off: false,
+                route_mode: crate::state::SqliteVecRouteMode::Trial,
             },
         }
     }
