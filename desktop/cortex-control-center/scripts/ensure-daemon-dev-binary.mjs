@@ -53,14 +53,36 @@ function runCargoBuild() {
       text.includes("access is denied")
     );
   };
-  const stopLockedDevBinary = () => {
+  const stopConflictingDevDaemons = () => {
     if (process.platform !== "win32") return;
+    const repoRootLiteral = repoRoot.replace(/'/g, "''");
     const daemonPathLiteral = daemonBinary.replace(/'/g, "''");
+    const sharedDebugLiteral = resolve(repoRoot, "daemon-rs", "target", "debug", "cortex.exe")
+      .replace(/'/g, "''");
+    const runtimeRootLiteral = resolve(
+      process.env.USERPROFILE || process.env.HOME || "",
+      ".cortex",
+      "runtime",
+      "control-center-dev",
+    ).replace(/'/g, "''");
     const script = [
+      `$repoRoot='${repoRootLiteral}'.ToLower()`,
       `$target='${daemonPathLiteral}'`,
+      `$sharedDebug='${sharedDebugLiteral}'.ToLower()`,
+      `$runtimeRoot='${runtimeRootLiteral}'.ToLower()`,
       "$matches = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $target }",
+      "$stale = Get-CimInstance Win32_Process | Where-Object {",
+      "  if (-not $_.ExecutablePath) { return $false }",
+      "  $exe = $_.ExecutablePath.ToLower()",
+      "  ($exe.StartsWith($repoRoot) -and $exe -eq $sharedDebug) -or",
+      "  ($runtimeRoot -and $exe.StartsWith($runtimeRoot) -and [System.IO.Path]::GetFileName($exe).StartsWith('cortex-dev-run'))",
+      "}",
       "foreach ($proc in $matches) {",
       "  Write-Host \"[ensure-daemon] stopping locked dev daemon pid=$($proc.ProcessId) path=$($proc.ExecutablePath)\"",
+      "  Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue",
+      "}",
+      "foreach ($proc in $stale) {",
+      "  Write-Host \"[ensure-daemon] stopping stale conflicting daemon pid=$($proc.ProcessId) path=$($proc.ExecutablePath)\"",
       "  Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue",
       "}",
     ].join("; ");
@@ -71,6 +93,7 @@ function runCargoBuild() {
     });
   };
 
+  stopConflictingDevDaemons();
   let result = invokeBuild();
   emitBuildOutput(result);
   if (typeof result.status === "number" && result.status === 0) {
@@ -79,7 +102,7 @@ function runCargoBuild() {
 
   if (isWindowsDevBinaryLockError(result)) {
     console.warn("[ensure-daemon] dev daemon binary is locked; stopping old process and retrying build once");
-    stopLockedDevBinary();
+    stopConflictingDevDaemons();
     result = invokeBuild();
     emitBuildOutput(result);
     if (typeof result.status === "number" && result.status === 0) {

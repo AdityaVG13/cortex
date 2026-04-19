@@ -42,6 +42,7 @@ const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const PATH_BINARY_FALLBACK_ENV: &str = "CORTEX_ALLOW_PATH_BINARY_FALLBACK";
+const SERVICE_ENSURE_FALLBACK_ENV: &str = "CORTEX_ALLOW_SERVICE_ENSURE_FALLBACK";
 #[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
 
@@ -93,7 +94,13 @@ impl DaemonState {
                 Ok((false, None))
             }
             Ok(None) => Ok((true, Some(managed_child.id()))),
-            Err(err) => Err(format!("Failed to poll managed daemon process: {err}")),
+            Err(err) => {
+                eprintln!(
+                    "[cortex-control-center] failed to poll managed daemon process; clearing stale handle: {err}"
+                );
+                *child = None;
+                Ok((false, None))
+            }
         }
     }
 
@@ -111,7 +118,10 @@ impl DaemonState {
                     return Ok(Some(existing.id()));
                 }
                 Err(err) => {
-                    return Err(format!("Failed to poll managed daemon process: {err}"));
+                    eprintln!(
+                        "[cortex-control-center] failed to poll existing managed daemon before spawn; clearing stale handle: {err}"
+                    );
+                    *child = None;
                 }
             }
         }
@@ -181,14 +191,18 @@ impl DaemonState {
                     *child = None;
                 }
                 Ok(None) => {
-                    managed_child
-                        .kill()
-                        .map_err(|err| format!("Failed to stop managed daemon process: {err}"))?;
+                    if let Err(err) = managed_child.kill() {
+                        *child = None;
+                        return Err(format!("Failed to stop managed daemon process: {err}"));
+                    }
                     let _ = managed_child.wait();
                     *child = None;
                 }
                 Err(err) => {
-                    return Err(format!("Failed to poll managed daemon process: {err}"));
+                    eprintln!(
+                        "[cortex-control-center] failed to poll managed daemon process during stop; clearing stale handle: {err}"
+                    );
+                    *child = None;
                 }
             }
         }
@@ -712,6 +726,12 @@ fn path_binary_fallback_enabled_from_value(value: Option<&str>) -> bool {
 
 fn path_binary_fallback_enabled() -> bool {
     path_binary_fallback_enabled_from_value(std::env::var(PATH_BINARY_FALLBACK_ENV).ok().as_deref())
+}
+
+fn service_ensure_fallback_enabled() -> bool {
+    path_binary_fallback_enabled_from_value(
+        std::env::var(SERVICE_ENSURE_FALLBACK_ENV).ok().as_deref(),
+    )
 }
 
 fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
@@ -1265,115 +1285,86 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
         });
     }
 
-    match try_service_ensure(port) {
-        Ok(true) => {
+    match try_local_app_managed_ensure(&state, port) {
+        Ok(local_probe) => {
             log_startup_path(
                 "start_daemon",
-                "service-ensure",
-                "daemon started or validated via service ensure",
+                "app-managed-spawn",
+                if local_probe.reachable {
+                    "daemon started via Control Center local mode"
+                } else {
+                    "daemon spawned via Control Center local mode and is still starting"
+                },
             );
-            let auth_token_ready = auth_token_ready();
-            Ok(DaemonCommandResult {
-                running: true,
-                reachable: true,
-                managed: false,
+            let (managed, pid) = state.status()?;
+            let auth_token_ready = if local_probe.reachable {
+                auth_token_ready()
+            } else {
+                false
+            };
+            let mut message = describe_daemon_state(
+                managed,
+                local_probe.reachable,
+                local_probe.starting,
                 auth_token_ready,
-                pid: None,
-                message: "Daemon started via Windows service.".to_string(),
+                pid,
+                port,
+            );
+            if local_probe.identity_mismatch {
+                message.push_str(
+                    " Runtime identity metadata mismatch detected; using loose local daemon probe.",
+                );
+            }
+            Ok(DaemonCommandResult {
+                running: managed || local_probe.reachable || local_probe.starting,
+                reachable: local_probe.reachable,
+                managed,
+                auth_token_ready,
+                pid,
+                message,
             })
         }
-        Ok(false) => match try_local_app_managed_ensure(&state, port) {
-            Ok(local_probe) => {
+        Err(local_err) => {
+            if service_ensure_fallback_enabled() {
+                match try_service_ensure(port) {
+                    Ok(true) => {
+                        log_startup_path(
+                            "start_daemon",
+                            "service-ensure",
+                            "daemon started or validated via service ensure after app-managed fallback",
+                        );
+                        let auth_token_ready = auth_token_ready();
+                        Ok(DaemonCommandResult {
+                            running: true,
+                            reachable: true,
+                            managed: false,
+                            auth_token_ready,
+                            pid: None,
+                            message: "Daemon started via Windows service.".to_string(),
+                        })
+                    }
+                    Ok(false) => {
+                        log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
+                        Err(format!(
+                            "App-managed local start failed and Windows service ensure was unavailable: {local_err}"
+                        ))
+                    }
+                    Err(service_err) => {
+                        log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
+                        Err(format!(
+                            "App-managed local start failed: {local_err}. Windows service ensure failed: {service_err}"
+                        ))
+                    }
+                }
+            } else {
                 log_startup_path(
                     "start_daemon",
-                    "app-managed-spawn",
-                    if local_probe.reachable {
-                        "daemon started via Control Center local mode"
-                    } else {
-                        "daemon spawned via Control Center local mode and is still starting"
-                    },
+                    "blocked",
+                    "app-managed spawn failed (service fallback disabled)",
                 );
-                let (managed, pid) = state.status()?;
-                let auth_token_ready = if local_probe.reachable {
-                    auth_token_ready()
-                } else {
-                    false
-                };
-                let mut message = describe_daemon_state(
-                    managed,
-                    local_probe.reachable,
-                    local_probe.starting,
-                    auth_token_ready,
-                    pid,
-                    port,
-                );
-                if local_probe.identity_mismatch {
-                    message.push_str(
-                        " Runtime identity metadata mismatch detected; using loose local daemon probe.",
-                    );
-                }
-                Ok(DaemonCommandResult {
-                    running: managed || local_probe.reachable || local_probe.starting,
-                    reachable: local_probe.reachable,
-                    managed,
-                    auth_token_ready,
-                    pid,
-                    message,
-                })
+                Err(format!("App-managed local start failed: {local_err}"))
             }
-            Err(local_err) => {
-                log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
-                Err(format!(
-                    "Service ensure unavailable and app-managed local start failed: {local_err}"
-                ))
-            }
-        },
-        Err(err) => match try_local_app_managed_ensure(&state, port) {
-            Ok(local_probe) => {
-                log_startup_path(
-                    "start_daemon",
-                    "app-managed-spawn",
-                    if local_probe.reachable {
-                        "daemon started via Control Center after service ensure failure"
-                    } else {
-                        "daemon spawned via Control Center after service ensure failure and is still starting"
-                    },
-                );
-                let (managed, pid) = state.status()?;
-                let auth_token_ready = if local_probe.reachable {
-                    auth_token_ready()
-                } else {
-                    false
-                };
-                let mut message = describe_daemon_state(
-                    managed,
-                    local_probe.reachable,
-                    local_probe.starting,
-                    auth_token_ready,
-                    pid,
-                    port,
-                );
-                if local_probe.identity_mismatch {
-                    message.push_str(
-                        " Runtime identity metadata mismatch detected; using loose local daemon probe.",
-                    );
-                }
-                Ok(DaemonCommandResult {
-                    running: managed || local_probe.reachable || local_probe.starting,
-                    reachable: local_probe.reachable,
-                    managed,
-                    auth_token_ready,
-                    pid,
-                    message,
-                })
-            }
-            Err(local_err) => {
-                log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
-                Err(format!(
-                    "Service ensure failed: {err}. App-managed local start also failed: {local_err}"
-                ))
-            }
-        },
+        }
     }
 }
 
@@ -2431,52 +2422,48 @@ fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
     }
 
     let daemon_state = app_handle.state::<DaemonState>();
-    match try_service_ensure(port) {
-        Ok(true) => {
+    match try_local_app_managed_ensure(&daemon_state, port) {
+        Ok(local_probe) => {
             log_startup_path(
                 "setup",
-                "service-ensure",
-                "daemon started or validated via service ensure",
+                "app-managed-spawn",
+                if local_probe.reachable {
+                    "daemon started via Control Center local mode"
+                } else {
+                    "daemon spawned via Control Center local mode and is still starting"
+                },
             );
         }
-        Ok(false) => match try_local_app_managed_ensure(&daemon_state, port) {
-            Ok(local_probe) => {
-                log_startup_path(
-                    "setup",
-                    "app-managed-spawn",
-                    if local_probe.reachable {
-                        "daemon started via Control Center local mode"
-                    } else {
-                        "daemon spawned via Control Center local mode and is still starting"
-                    },
-                );
-            }
-            Err(err) => {
+        Err(local_err) => {
+            if service_ensure_fallback_enabled() {
+                match try_service_ensure(port) {
+                    Ok(true) => {
+                        log_startup_path(
+                            "setup",
+                            "service-ensure",
+                            "daemon started or validated via service ensure after app-managed fallback",
+                        );
+                    }
+                    Ok(false) => {
+                        eprintln!(
+                            "[cortex-control-center] app-managed local start failed at startup and Windows service ensure was unavailable: {local_err}"
+                        );
+                        log_startup_path("setup", "blocked", "app-managed spawn failed");
+                    }
+                    Err(service_err) => {
+                        eprintln!(
+                            "[cortex-control-center] app-managed local start failed at startup and service ensure also failed: {local_err}; {service_err}"
+                        );
+                        log_startup_path("setup", "blocked", "app-managed spawn failed");
+                    }
+                }
+            } else {
                 eprintln!(
-                    "[cortex-control-center] app-managed local start failed at startup: {err}"
+                    "[cortex-control-center] app-managed local start failed at startup (service fallback disabled): {local_err}"
                 );
                 log_startup_path("setup", "blocked", "app-managed spawn failed");
             }
-        },
-        Err(err) => match try_local_app_managed_ensure(&daemon_state, port) {
-            Ok(local_probe) => {
-                log_startup_path(
-                    "setup",
-                    "app-managed-spawn",
-                    if local_probe.reachable {
-                        "daemon started via Control Center after service ensure failure"
-                    } else {
-                        "daemon spawned via Control Center after service ensure failure and is still starting"
-                    },
-                );
-            }
-            Err(local_err) => {
-                eprintln!(
-                    "[cortex-control-center] service ensure failed at startup and app-managed local start also failed: {err}; {local_err}"
-                );
-                log_startup_path("setup", "blocked", "app-managed spawn failed");
-            }
-        },
+        }
     }
 }
 
