@@ -2379,13 +2379,28 @@ export function App() {
       setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       if (!scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.")) {
+        let timeoutMessage = `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`;
+        try {
+          const stopResult = await call("stop_daemon");
+          if (stopResult?.message) {
+            timeoutMessage = `${timeoutMessage}. ${stopResult.message}`;
+          }
+        } catch (error) {
+          const detail = error?.message || String(error || "");
+          if (detail) {
+            timeoutMessage = `${timeoutMessage}. Startup recovery cleanup failed: ${detail}`;
+          }
+        }
+        tokenRef.current = "";
+        persistBrowserAuthToken("");
+        clearDisconnectedData();
         setDaemonState({
           running: false,
           reachable: false,
           managed: false,
           authTokenReady: false,
           pid: null,
-          message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+          message: timeoutMessage,
         });
       }
       return;
@@ -2513,6 +2528,7 @@ export function App() {
       }
     }
   }, [
+    call,
     clearStartupCoreReady,
     clearRecoveryRetry,
     clearTransientFeedback,

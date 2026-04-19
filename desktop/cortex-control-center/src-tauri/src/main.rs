@@ -1014,16 +1014,19 @@ fn try_local_app_managed_ensure(
         ));
     }
 
-    let (managed, pid) = state.status()?;
-    if managed {
-        return Ok(CortexReachabilityProbe {
-            reachable: false,
-            starting: true,
-            identity_mismatch: false,
-        });
+    // Re-probe once after the initial wait before declaring "still starting".
+    // A surviving child process alone is not enough signal; it can be stale.
+    let post_wait_probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
+    if local_probe_allows_starting_retry(&post_wait_probe) {
+        return Ok(post_wait_probe);
     }
 
+    let (_, pid) = state.status()?;
     Err(local_app_managed_start_timeout_message(state, pid, port))
+}
+
+fn local_probe_allows_starting_retry(probe: &CortexReachabilityProbe) -> bool {
+    probe.reachable || probe.starting
 }
 
 fn local_app_managed_start_timeout_message(
@@ -2561,10 +2564,10 @@ mod tests {
         editor_config_path, editor_targets, extract_error_detail,
         health_state_with_identity_fallback, interpret_shutdown_response,
         is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
-        local_app_managed_start_timeout_message, path_binary_fallback_enabled_from_value,
-        readiness_state_with_identity_fallback, should_use_partial_response_on_read_timeout,
-        toml_env_match, workspace_binary_candidates, DaemonState, FetchCortexResponse,
-        ResolvedCortexPaths,
+        local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
+        path_binary_fallback_enabled_from_value, readiness_state_with_identity_fallback,
+        should_use_partial_response_on_read_timeout, toml_env_match, workspace_binary_candidates,
+        CortexReachabilityProbe, DaemonState, FetchCortexResponse, ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2713,6 +2716,31 @@ mod tests {
 
         let external_message = describe_daemon_state(false, false, true, false, None, 7437);
         assert!(external_message.contains("still starting"));
+    }
+
+    #[test]
+    fn local_probe_retry_requires_reachability_or_starting_signal() {
+        assert!(local_probe_allows_starting_retry(
+            &CortexReachabilityProbe {
+                reachable: true,
+                starting: false,
+                identity_mismatch: false,
+            }
+        ));
+        assert!(local_probe_allows_starting_retry(
+            &CortexReachabilityProbe {
+                reachable: false,
+                starting: true,
+                identity_mismatch: false,
+            }
+        ));
+        assert!(!local_probe_allows_starting_retry(
+            &CortexReachabilityProbe {
+                reachable: false,
+                starting: false,
+                identity_mismatch: false,
+            }
+        ));
     }
 
     #[test]
