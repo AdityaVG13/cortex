@@ -20,6 +20,7 @@ export function cleanupDevRuntime({ quiet = false } = {}) {
 $project = '${psProject}'
 $selfPid = ${psSelfPid}
 $killed = @()
+$cleanedSessions = @()
 $errors = @()
 
 $procMatches = Get-CimInstance Win32_Process | Where-Object {
@@ -49,8 +50,47 @@ foreach ($entry in $listeners) {
   }
 }
 
+$runtimeRoots = @()
+if ($env:USERPROFILE) {
+  $runtimeRoots += (Join-Path $env:USERPROFILE '.cortex\\runtime\\control-center-dev')
+}
+if ($env:HOME) {
+  $homeRuntime = Join-Path $env:HOME '.cortex\\runtime\\control-center-dev'
+  if ($runtimeRoots -notcontains $homeRuntime) {
+    $runtimeRoots += $homeRuntime
+  }
+}
+
+foreach ($runtimeRoot in $runtimeRoots) {
+  if (-not (Test-Path $runtimeRoot)) { continue }
+  $sessionDirs = Get-ChildItem -Path $runtimeRoot -Directory -Filter 'session-*' -ErrorAction SilentlyContinue
+  foreach ($sessionDir in $sessionDirs) {
+    $sessionPath = $sessionDir.FullName
+    $sessionProcs = Get-CimInstance Win32_Process | Where-Object {
+      $_.ProcessId -ne $selfPid -and
+      $_.ExecutablePath -and
+      $_.ExecutablePath.ToLower().StartsWith($sessionPath.ToLower())
+    }
+    foreach ($proc in $sessionProcs) {
+      try {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+        $killed += ('{0}:{1}' -f $proc.Name, $proc.ProcessId)
+      } catch {
+        $errors += ('session-proc:{0}:{1}' -f $proc.ProcessId, $_.Exception.Message)
+      }
+    }
+    try {
+      Remove-Item -LiteralPath $sessionPath -Recurse -Force -ErrorAction Stop
+      $cleanedSessions += $sessionPath
+    } catch {
+      $errors += ('session-dir:{0}:{1}' -f $sessionPath, $_.Exception.Message)
+    }
+  }
+}
+
 $result = [pscustomobject]@{
   killed = $killed
+  cleanedSessions = $cleanedSessions
   errors = $errors
 }
 $result | ConvertTo-Json -Compress
@@ -77,9 +117,9 @@ $result | ConvertTo-Json -Compress
     console.warn(`[dev-cleanup] ${result.stderr.trim()}`);
   }
 
-  let payload = { killed: [], errors: [] };
+  let payload = { killed: [], cleanedSessions: [], errors: [] };
   try {
-    payload = JSON.parse(result.stdout?.trim() || "{\"killed\":[],\"errors\":[]}");
+    payload = JSON.parse(result.stdout?.trim() || "{\"killed\":[],\"cleanedSessions\":[],\"errors\":[]}");
   } catch {
     // Keep defaults if parsing fails.
   }
@@ -87,13 +127,17 @@ $result | ConvertTo-Json -Compress
   if (!quiet && payload.killed.length) {
     console.log(`[dev-cleanup] removed stale processes: ${payload.killed.join(", ")}`);
   }
+  if (!quiet && payload.cleanedSessions.length) {
+    console.log(`[dev-cleanup] removed stale session wrappers: ${payload.cleanedSessions.length}`);
+  }
   if (!quiet && payload.errors.length) {
     console.warn(`[dev-cleanup] cleanup warnings: ${payload.errors.join("; ")}`);
   }
 
   return {
-    cleaned: payload.killed.length > 0,
+    cleaned: payload.killed.length > 0 || payload.cleanedSessions.length > 0,
     killed: payload.killed,
+    cleanedSessions: payload.cleanedSessions,
     errors: payload.errors,
   };
 }
