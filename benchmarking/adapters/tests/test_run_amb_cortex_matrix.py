@@ -613,7 +613,7 @@ def test_run_matrix_rejects_execution_profile_missing_metrics_flag_even_in_dry_r
         run_matrix(args, run_dir)
 
 
-def test_run_matrix_rejects_membench_case_without_dataset_files(
+def test_run_matrix_skips_membench_case_without_dataset_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -641,12 +641,26 @@ def test_run_matrix_rejects_membench_case_without_dataset_files(
     args.matrix_file = str(matrix_path)
     args.dry_run = True
 
-    with pytest.raises(ValueError, match="missing required files"):
-        run_matrix(args, run_dir)
+    run_matrix(args, run_dir)
 
     preflight = json.loads((run_dir / "fair-run-preflight.json").read_text(encoding="utf-8"))
-    assert preflight["passed"] is False
-    assert any("membench" in str(item).lower() for item in preflight["violations"])
+    assert preflight["passed"] is True
+    assert preflight["case_count_selected"] == 1
+    assert preflight["case_count_runnable"] == 0
+    assert preflight["case_count_skipped_prereq"] == 1
+    assert preflight["violations"] == []
+    assert len(preflight["dataset_skips"]) == 1
+    assert preflight["dataset_skips"][0]["id"] == "membench-case"
+    assert any(
+        "missing required files" in item
+        for item in preflight["dataset_skips"][0]["violations"]
+    )
+
+    summary = json.loads((run_dir / "matrix-summary.json").read_text(encoding="utf-8"))
+    assert len(summary) == 1
+    assert summary[0]["id"] == "membench-case"
+    assert summary[0]["status"] == "skipped-prereq"
+    assert "missing required files" in str(summary[0]["skip_reason"])
 
 
 def test_run_matrix_rejects_matrix_runtime_cap_above_ceiling(tmp_path: Path) -> None:

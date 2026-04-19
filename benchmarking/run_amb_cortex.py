@@ -1157,11 +1157,38 @@ def _matrix_fairness_violations(
     return violations
 
 
+def _resolve_matrix_dataset_prereq_skips(
+    selected_cases: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    runnable_cases: list[dict[str, object]] = []
+    skipped_cases: list[dict[str, object]] = []
+    for case in selected_cases:
+        case_violations = _dataset_prereq_violations(
+            dataset=str(case.get("dataset", "")),
+            split=cast(str | None, case.get("split")),
+            case_id=case.get("id"),
+        )
+        if case_violations:
+            skipped_cases.append(
+                {
+                    "id": str(case.get("id", "")),
+                    "dataset": str(case.get("dataset", "")),
+                    "split": str(case.get("split", "")),
+                    "violations": case_violations,
+                }
+            )
+            continue
+        runnable_cases.append(case)
+    return runnable_cases, skipped_cases
+
+
 def _build_matrix_preflight(
     *,
     args: argparse.Namespace,
     cases: list[dict[str, object]],
     selected_cases: list[dict[str, object]],
+    runnable_cases: list[dict[str, object]],
+    skipped_cases: list[dict[str, object]],
     start_index: int,
     max_runtime_seconds: int,
     max_case_runtime_seconds: int,
@@ -1176,16 +1203,7 @@ def _build_matrix_preflight(
         cases,
         requested_shortcuts=requested,
     )
-    dataset_violations: list[str] = []
-    for case in selected_cases:
-        dataset_violations.extend(
-            _dataset_prereq_violations(
-                dataset=str(case.get("dataset", "")),
-                split=cast(str | None, case.get("split")),
-                case_id=case.get("id"),
-            )
-        )
-    violations = [*fairness_violations, *dataset_violations]
+    violations = [*fairness_violations]
     oracle_case_count = sum(1 for case in cases if bool(case.get("oracle", False)))
     query_id_case_count = sum(1 for case in cases if _has_query_id(case.get("query_id")))
     doc_limit_case_count = sum(1 for case in cases if "doc_limit" in case)
@@ -1195,6 +1213,8 @@ def _build_matrix_preflight(
         "passed": len(violations) == 0,
         "case_count_total": len(cases),
         "case_count_selected": len(selected_cases),
+        "case_count_runnable": len(runnable_cases),
+        "case_count_skipped_prereq": len(skipped_cases),
         "start_index": start_index,
         "max_runtime_seconds": max_runtime_seconds,
         "max_case_runtime_seconds": max_case_runtime_seconds,
@@ -1267,10 +1287,12 @@ def _build_matrix_preflight(
                 "violating_cases": doc_limit_case_count,
             },
             {
-                "name": "dataset_prerequisites_available",
-                "passed": len(dataset_violations) == 0,
-                "violating_cases": len(dataset_violations),
-                "violations": dataset_violations,
+                "name": "dataset_prerequisites_resolved_via_skip",
+                "passed": True,
+                "advisory_only": True,
+                "runnable_cases": len(runnable_cases),
+                "skipped_cases": len(skipped_cases),
+                "skipped": skipped_cases,
             },
         ],
         "requested_shortcuts": {
@@ -1278,6 +1300,7 @@ def _build_matrix_preflight(
             "no_enforce_gate": requested_no_enforce_gate,
             "allow_missing_recall_metrics": requested_allow_missing_metrics,
         },
+        "dataset_skips": skipped_cases,
         "violations": violations,
     }
     return payload
@@ -2326,9 +2349,10 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
         raise ValueError(
             f"start_index {start_index} exceeds matrix case count {len(all_cases)}"
         )
-    cases = all_cases[start_index - 1 :]
+    selected_cases = all_cases[start_index - 1 :]
     if args.max_cases is not None:
-        cases = cases[: max(1, int(args.max_cases))]
+        selected_cases = selected_cases[: max(1, int(args.max_cases))]
+    runnable_cases, skipped_cases = _resolve_matrix_dataset_prereq_skips(selected_cases)
     max_runtime_seconds = _resolve_matrix_timeout_seconds(
         int(args.max_runtime_seconds),
         max_timeout=MATRIX_TIMEOUT_MAX_SECONDS,
@@ -2343,7 +2367,9 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
     preflight = _build_matrix_preflight(
         args=args,
         cases=all_cases,
-        selected_cases=cases,
+        selected_cases=selected_cases,
+        runnable_cases=runnable_cases,
+        skipped_cases=skipped_cases,
         start_index=start_index,
         max_runtime_seconds=max_runtime_seconds,
         max_case_runtime_seconds=max_case_runtime_seconds,
@@ -2373,7 +2399,9 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
             "dry_run": bool(args.dry_run),
             "continue_on_error": bool(args.continue_on_error),
             "case_count_total": len(all_cases),
-            "case_count_selected": len(cases),
+            "case_count_selected": len(selected_cases),
+            "case_count_runnable": len(runnable_cases),
+            "case_count_skipped_prereq": len(skipped_cases),
             "start_index": start_index,
             "max_cases": args.max_cases,
             "max_runtime_seconds": max_runtime_seconds,
@@ -2397,6 +2425,9 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
         },
     )
     if args.dry_run:
+        skipped_lookup = {
+            str(item.get("id", "")): item for item in skipped_cases
+        }
         preview = [
             {
                 "id": case["id"],
@@ -2405,8 +2436,19 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
                 "mode": case.get("mode", args.mode),
                 "memory_backend": str(case.get("memory_backend", default_memory_backend)),
                 "query_limit": case.get("query_limit", args.query_limit),
+                "status": "skipped-prereq"
+                if str(case["id"]) in skipped_lookup
+                else "ready",
+                "skip_reason": "; ".join(
+                    cast(
+                        list[str],
+                        skipped_lookup.get(str(case["id"]), {}).get("violations", []),
+                    )
+                )
+                if str(case["id"]) in skipped_lookup
+                else None,
             }
-            for case in cases
+            for case in selected_cases
         ]
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(json.dumps(preview, indent=2), encoding="utf-8")
@@ -2425,11 +2467,31 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
 
     results: list[dict[str, object]] = []
     failed_cases = 0
+    for skipped in skipped_cases:
+        case_slug = _slug_fragment(str(skipped["id"]))
+        results.append(
+            {
+                "id": skipped["id"],
+                "dataset": skipped["dataset"],
+                "split": skipped["split"],
+                "exit": 0,
+                "run_dir": str(run_dir / f"skipped-{case_slug}"),
+                "accuracy": None,
+                "correct": None,
+                "total": None,
+                "avg_tokens": None,
+                "max_tokens": None,
+                "over_budget": None,
+                "quality_gate_passed": None,
+                "error": "; ".join(cast(list[str], skipped.get("violations", []))),
+                "skipped": True,
+            }
+        )
     started_at = time.monotonic()
-    for case_offset, case in enumerate(cases):
+    for case_offset, case in enumerate(runnable_cases):
         elapsed_seconds = time.monotonic() - started_at
         if max_runtime_seconds > 0 and elapsed_seconds >= max_runtime_seconds:
-            for skipped_case in cases[case_offset:]:
+            for skipped_case in runnable_cases[case_offset:]:
                 results.append(
                     {
                         "id": skipped_case["id"],
@@ -2476,16 +2538,21 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
 
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    passed_cases = sum(1 for result in results if int(result.get("exit", 1)) == 0)
+    executed_results = [result for result in results if not bool(result.get("skipped", False))]
+    passed_cases = sum(1 for result in executed_results if int(result.get("exit", 1)) == 0)
+    failed_case_count = sum(1 for result in executed_results if int(result.get("exit", 1)) != 0)
+    skipped_case_count = sum(1 for result in results if bool(result.get("skipped", False)))
     print(
         json.dumps(
             {
                 "matrix_file": str(matrix_path),
                 "summary_file": str(summary_path),
                 "cases_total": len(results),
-                "cases_selected": len(cases),
+                "cases_selected": len(selected_cases),
+                "cases_runnable": len(runnable_cases),
+                "cases_skipped_prereq": skipped_case_count,
                 "cases_passed": passed_cases,
-                "cases_failed": len(results) - passed_cases,
+                "cases_failed": failed_case_count,
                 "run_dir": str(run_dir),
             },
             indent=2,
