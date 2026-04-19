@@ -9,6 +9,9 @@ const IPC_ABORT_TIMEOUT_MS = 8_000;
 const IPC_ABORT_TIMEOUT_HEALTH_MS = 12_000;
 const IPC_ABORT_TIMEOUT_MCP_MS = 30_000;
 const IPC_ABORT_TIMEOUT_RECALL_MS = 20_000;
+const IPC_ABORT_TIMEOUT_CORE_MS = 15_000;
+const IPC_ABORT_TIMEOUT_SECONDARY_MS = 20_000;
+const IPC_ABORT_TIMEOUT_ANALYTICS_MS = 60_000;
 const IPC_TRANSPORT_MARGIN_MS = 500;
 
 function wait(ms) {
@@ -35,9 +38,41 @@ async function withTimeout(promise, timeoutMs, label) {
   }
 }
 
+function normalizePathForTimeoutRouting(path) {
+  const raw = String(path || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    try {
+      const parsed = new URL(raw);
+      return `${parsed.pathname || "/"}`.toLowerCase() + (parsed.search || "");
+    } catch {
+      return raw;
+    }
+  }
+  if (raw.startsWith("/")) return raw;
+  return `/${raw}`;
+}
+
 function resolveIpcTimeoutMs(path) {
-  const normalized = String(path || "").toLowerCase();
+  const normalized = normalizePathForTimeoutRouting(path);
   if (normalized === "/health" || normalized.startsWith("/health?")) return IPC_ABORT_TIMEOUT_HEALTH_MS;
+  if (
+    normalized === "/sessions"
+    || normalized === "/locks"
+    || normalized.startsWith("/tasks")
+  ) {
+    return IPC_ABORT_TIMEOUT_CORE_MS;
+  }
+  if (
+    normalized.startsWith("/feed")
+    || normalized.startsWith("/messages")
+    || normalized.startsWith("/activity")
+    || normalized.startsWith("/conflicts")
+    || normalized.startsWith("/permissions")
+  ) {
+    return IPC_ABORT_TIMEOUT_SECONDARY_MS;
+  }
+  if (normalized.startsWith("/savings")) return IPC_ABORT_TIMEOUT_ANALYTICS_MS;
   if (normalized.startsWith("/mcp-rpc")) return IPC_ABORT_TIMEOUT_MCP_MS;
   if (normalized.startsWith("/recall")) return IPC_ABORT_TIMEOUT_RECALL_MS;
   return IPC_ABORT_TIMEOUT_MS;
@@ -45,6 +80,15 @@ function resolveIpcTimeoutMs(path) {
 
 function resolveIpcTransportTimeoutMs(path) {
   return Math.max(500, resolveIpcTimeoutMs(path) - IPC_TRANSPORT_MARGIN_MS);
+}
+
+function shouldFallbackToHttp(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("ipc request") ||
+    message.includes("task failed") ||
+    message.includes("invalid ipc response")
+  );
 }
 
 async function refreshTokenIfChanged(onTokenRefresh, getToken, previousToken) {
@@ -93,43 +137,60 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
       throw new Error(`${path}: no auth token (Tauri IPC ${invoke ? "available" : "missing"})`);
     }
 
-    if (invoke) {
-      const timeoutMs = resolveIpcTimeoutMs(path);
-      const transportTimeoutMs = resolveIpcTransportTimeoutMs(path);
-      const response = await withTimeout(invoke("fetch_cortex", {
-        path,
-        authToken: withAuth ? token : "",
-        timeoutMs: transportTimeoutMs,
-      }), timeoutMs, `${path}: IPC request`);
-      if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
-        throw new Error(`${path}: invalid IPC response`);
-      }
-      // On 401, re-read token and retry once (handles daemon token rotation on startup)
+    const requestViaHttp = async () => {
+      const headers = { "X-Cortex-Request": "true" };
+      if (withAuth) headers.Authorization = `Bearer ${token}`;
+      const response = await fetch(`${cortexBase}${path}`, { headers });
       if (isAuthStatus(response.status) && withAuth && !_retried) {
         const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
         if (refreshed) {
           return api(path, withAuth, true);
         }
       }
-      if (response.status < 200 || response.status >= 300) {
+      if (!response.ok) {
         throw new Error(`${path}: HTTP ${response.status}`);
       }
-      return JSON.parse(response.body);
-    }
+      return await response.json();
+    };
 
-    const headers = { "X-Cortex-Request": "true" };
-    if (withAuth) headers.Authorization = `Bearer ${token}`;
-    const response = await fetch(`${cortexBase}${path}`, { headers });
-    if (isAuthStatus(response.status) && withAuth && !_retried) {
-      const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
-      if (refreshed) {
-        return api(path, withAuth, true);
+    if (invoke) {
+      try {
+        const timeoutMs = resolveIpcTimeoutMs(path);
+        const transportTimeoutMs = resolveIpcTransportTimeoutMs(path);
+        const response = await withTimeout(invoke("fetch_cortex", {
+          path,
+          authToken: withAuth ? token : "",
+          timeoutMs: transportTimeoutMs,
+        }), timeoutMs, `${path}: IPC request`);
+        if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
+          throw new Error(`${path}: invalid IPC response`);
+        }
+        // On 401, re-read token and retry once (handles daemon token rotation on startup)
+        if (isAuthStatus(response.status) && withAuth && !_retried) {
+          const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+          if (refreshed) {
+            return api(path, withAuth, true);
+          }
+        }
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`${path}: HTTP ${response.status}`);
+        }
+        return JSON.parse(response.body);
+      } catch (ipcError) {
+        if (!shouldFallbackToHttp(ipcError)) {
+          throw ipcError;
+        }
+        try {
+          return await requestViaHttp();
+        } catch (httpError) {
+          const ipcMessage = ipcError?.message || String(ipcError);
+          const httpMessage = httpError?.message || String(httpError);
+          throw new Error(`${ipcMessage}; HTTP fallback failed: ${httpMessage}`);
+        }
       }
     }
-    if (!response.ok) {
-      throw new Error(`${path}: HTTP ${response.status}`);
-    }
-    return await response.json();
+
+    return requestViaHttp();
   };
 }
 
@@ -160,49 +221,66 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
       throw new Error(`POST ${path}: no auth token`);
     }
 
-    if (invoke) {
-      const timeoutMs = resolveIpcTimeoutMs(path);
-      const transportTimeoutMs = resolveIpcTransportTimeoutMs(path);
-      const response = await withTimeout(invoke("post_cortex", {
-        path,
-        authToken: token,
+    const requestViaHttp = async () => {
+      const response = await fetch(`${cortexBase}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Cortex-Request": "true",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(body),
-        timeoutMs: transportTimeoutMs,
-      }), timeoutMs, `POST ${path}: IPC request`);
-      if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
-        throw new Error(`POST ${path}: invalid IPC response`);
-      }
+      });
       if (isAuthStatus(response.status) && !_retried) {
         const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
         if (refreshed) {
           return postApi(path, body, true);
         }
       }
-      if (response.status < 200 || response.status >= 300) {
+      if (!response.ok) {
         throw new Error(`POST ${path}: HTTP ${response.status}`);
       }
-      return JSON.parse(response.body);
-    }
+      return await response.json();
+    };
 
-    const response = await fetch(`${cortexBase}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Cortex-Request": "true",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (isAuthStatus(response.status) && !_retried) {
-      const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
-      if (refreshed) {
-        return postApi(path, body, true);
+    if (invoke) {
+      try {
+        const timeoutMs = resolveIpcTimeoutMs(path);
+        const transportTimeoutMs = resolveIpcTransportTimeoutMs(path);
+        const response = await withTimeout(invoke("post_cortex", {
+          path,
+          authToken: token,
+          body: JSON.stringify(body),
+          timeoutMs: transportTimeoutMs,
+        }), timeoutMs, `POST ${path}: IPC request`);
+        if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
+          throw new Error(`POST ${path}: invalid IPC response`);
+        }
+        if (isAuthStatus(response.status) && !_retried) {
+          const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
+          if (refreshed) {
+            return postApi(path, body, true);
+          }
+        }
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`POST ${path}: HTTP ${response.status}`);
+        }
+        return JSON.parse(response.body);
+      } catch (ipcError) {
+        if (!shouldFallbackToHttp(ipcError)) {
+          throw ipcError;
+        }
+        try {
+          return await requestViaHttp();
+        } catch (httpError) {
+          const ipcMessage = ipcError?.message || String(ipcError);
+          const httpMessage = httpError?.message || String(httpError);
+          throw new Error(`${ipcMessage}; HTTP fallback failed: ${httpMessage}`);
+        }
       }
     }
-    if (!response.ok) {
-      throw new Error(`POST ${path}: HTTP ${response.status}`);
-    }
-    return await response.json();
+
+    return requestViaHttp();
   };
 }
 

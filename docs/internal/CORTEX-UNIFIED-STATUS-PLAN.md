@@ -1,6 +1,6 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-18 22:20  
+**Last updated:** 2026-04-18 23:47  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
 
@@ -12,6 +12,11 @@
 - The internal `v050-implementation-plan.md` checklist is stale in multiple sections (some items are marked unchecked there but are already completed in code and tracked in `v050-tracker.md`).
 - Phase-2A research direction is correct, but only partially implemented.
 - Core retrieval still defaults to `all-MiniLM-L6-v2`; sqlite-vec production routing and modern-embedding migration completion are not done yet.
+- Benchmark tracks are now explicitly split into two paths:
+  - tuned adapter path (`cortex-http`) for production-optimized recall
+  - raw no-helper path (`cortex-http-base`) for truthful core baseline measurement
+- Latest strict no-helper LongMemEval baseline (`benchmarking/runs/amb-run-20260418-230402`) is currently `4/20` (`accuracy=0.2`) with gate failure (`avg_recall_tokens=267.3` vs `246.0` limit).
+- Latest tuned adapter strict run remains `20/20` (`benchmarking/runs/amb-run-20260418-224211`), confirming the gap is specifically in raw-path retrieval quality and token efficiency.
 
 ---
 
@@ -150,6 +155,22 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - repository search hygiene now includes a dedicated `.ignore` to prevent repeated scans over Rust target trees and heavy benchmark artifact folders during engineering/debug sessions
   - added `scripts/prune-build-bloat.ps1` plus root npm wrappers (`ops:prune-build-bloat`, `ops:prune-build-bloat:apply`) for measured, operator-controlled cleanup
   - measured dry-run reclaim from current workspace: ~`22.044 GB` (largest buckets: `daemon-rs/target-tests`, `target-rtk-isolated`, `target-codex-test`, `target-rtk-audit`, `src-tauri/target-tests`)
+- Benchmark precision and qualifier-completeness hardening are now landed:
+  - `benchmarking/adapters/cortex_http_client.py` now augments study-abroad location seed context with one best-fit country qualifier when sibling memories contain a strong candidate and the primary span lacks country detail
+  - this closes the recurring LongMemEval miss where the answer omitted country despite available context
+  - regression coverage added in `benchmarking/adapters/tests/test_cortex_http_client.py` (`test_recall_documents_location_queries_append_abroad_country_qualifier_to_primary_context`)
+  - strict fair-run validation (no benchmark shortcut flags): `benchmarking/runs/amb-run-20260418-224211` scored `20/20` (`accuracy=1.0`, `avg_recall_tokens=191.1`, `max_recall_tokens=295`, `over_budget_count=0`)
+- Git/env performance audit workflow is now explicit and executable:
+  - added `scripts/git-perf-health.ps1` with measured status timings, object-store diagnostics, known bloat sizing, and optional local git tuning apply path
+  - added root npm wrappers `ops:git-perf-audit` and `ops:git-perf-apply`
+  - `.gitignore` now explicitly ignores permission-noise temp roots seen in local status scans (`.tmp/pytest/`, `tmp/ptbase-*/`, `tmp/pytest-local/`)
+  - local audit confirms no intrinsic git-object slowdown (status ~25ms, object store ~152.51 MiB); dominant risk remains build-artifact bloat in target/test directories
+- Control Center IPC fallback + startup false-negative hardening is now landed:
+  - `createApi` and `createPostApi` now fail over to direct HTTP when Tauri IPC request envelopes fail or time out, preventing full dashboard blackout from IPC-only stalls
+  - IPC timeout routing now normalizes URL-style route inputs before timeout classification, so core endpoints retain core timeout budgets instead of collapsing to default `8s`
+  - startup refresh now treats healthy `/health` as a reachability fallback when `daemon_status` reports false-negative unreachable, so app startup no longer stays pinned in “still starting” loops
+  - stale duplicate `cortex.exe mcp --agent codex` processes were identified as startup contention noise and reduced to a single app-managed daemon in local remediation
+  - frontend regression coverage now includes explicit IPC-timeout fallback tests for both GET and POST client paths
 
 ---
 

@@ -48,9 +48,11 @@ class BrainErrorBoundary extends Component {
 }
 
 const DEFAULT_CORTEX_BASE = "http://127.0.0.1:7437";
-const FALLBACK_REFRESH_MS = 5000;
+const FALLBACK_REFRESH_MS = 15000;
 const ANALYTICS_REFRESH_MS = 60000;
 const SSE_REFRESH_THROTTLE_MS = 300;
+const CORE_REFRESH_MIN_INTERVAL_MS = 1200;
+const SECONDARY_REFRESH_MIN_INTERVAL_MS = 12000;
 const SSE_RECONNECT_BASE_MS = 1000;
 const SSE_RECONNECT_MAX_MS = 5000;
 const DAEMON_START_WAIT_TIMEOUT_MS = 90000;
@@ -1450,9 +1452,17 @@ function isDaemonOfflineErrorMessage(message) {
     value.includes("cannot reach daemon") ||
     value.includes("actively refused") ||
     value.includes("os error 10061") ||
-    value.includes("connection refused") ||
-    value.includes("ipc request: timed out")
+    value.includes("connection refused")
   );
+}
+
+function isDaemonTimeoutErrorMessage(message) {
+  const value = String(message || "").toLowerCase();
+  return value.includes("ipc request: timed out");
+}
+
+function isDaemonSuppressibleErrorMessage(message) {
+  return isDaemonOfflineErrorMessage(message) || isDaemonTimeoutErrorMessage(message);
 }
 
 function isReachableHealthPayload(health) {
@@ -1535,6 +1545,7 @@ export function App() {
   const [busyActionKey, setBusyActionKey] = useState("");
   const [activitySince, setActivitySince] = useState("1h");
   const [feedbackMessage, setFeedbackMessage] = useState("Checking daemon...");
+  const [daemonTimeoutStaleSummary, setDaemonTimeoutStaleSummary] = useState("");
   const [conflictPairs, setConflictPairs] = useState([]);
   const [resolveDrafts, setResolveDrafts] = useState({});
   const [conflictLoading, setConflictLoading] = useState(false);
@@ -1572,6 +1583,8 @@ export function App() {
   const daemonTransitionRef = useRef(false);
   const recoveryRetryTimerRef = useRef(null);
   const startupCoreReadyRef = useRef(false);
+  const lastCoreRefreshAtRef = useRef(0);
+  const lastSecondaryRefreshAtRef = useRef(0);
   const startupSecondaryRefreshInFlightRef = useRef(false);
   const skipInitialFeedRefreshRef = useRef(true);
   const skipInitialMessagesRefreshRef = useRef(true);
@@ -1887,7 +1900,7 @@ export function App() {
         tokenRef.current = "";
         persistBrowserAuthToken("");
         const message = err?.message || String(err);
-        if (!suppressFeedback && (!daemonTransitionRef.current || !isDaemonOfflineErrorMessage(message))) {
+        if (!suppressFeedback && (!daemonTransitionRef.current || !isDaemonSuppressibleErrorMessage(message))) {
           setFeedbackMessage(`Auth token read failed: ${message}`);
         }
       }
@@ -2082,38 +2095,58 @@ export function App() {
     }
   }, [api, clearTransientFeedback]);
 
-  const refreshSecondaryData = useCallback(async () => {
-    const secondaryErrors = await settledCollectErrors([
-      refreshFeed,
-      refreshMessages,
-      refreshActivity,
-      refreshConflicts,
-      refreshPermissions,
-    ]);
-    // Savings is the heaviest analytics endpoint on large event logs.
-    // Keep it out of startup-critical fanout and refresh lazily only
-    // after the analytics panel has actually been visited.
-    if (panel === "analytics") {
-      void refreshSavings().catch(() => {});
+  const refreshSecondaryData = useCallback(async (options = {}) => {
+    const force = options?.force === true;
+    const wantsWorkStreams = panel === "work" || panel === "overview";
+    const wantsMemoryAdmin = panel === "memory";
+    const jobs = [];
+    if (wantsWorkStreams) {
+      jobs.push(refreshFeed, refreshMessages, refreshActivity);
     }
-    return secondaryErrors;
+    if (wantsWorkStreams || wantsMemoryAdmin) {
+      jobs.push(refreshConflicts);
+    }
+    if (wantsMemoryAdmin) {
+      jobs.push(() => refreshPermissions({ force }));
+    }
+    if (!jobs.length) {
+      return [];
+    }
+    return settledCollectErrors(jobs);
   }, [
     panel,
     refreshFeed,
     refreshMessages,
     refreshActivity,
-    refreshSavings,
     refreshConflicts,
     refreshPermissions,
   ]);
 
   const refreshProtectedData = useCallback(async (options = {}) => {
     const includeSecondary = options?.includeSecondary !== false;
-    const coreErrors = await settledCollectErrors([refreshCoreData]);
+    const forceCore = options?.forceCore === true;
+    const forceSecondary = options?.forceSecondary === true;
+    const now = Date.now();
+    const shouldRefreshCore = forceCore || now - lastCoreRefreshAtRef.current >= CORE_REFRESH_MIN_INTERVAL_MS;
+    let coreErrors = [];
+    if (shouldRefreshCore) {
+      coreErrors = await settledCollectErrors([refreshCoreData]);
+      if (!coreErrors.length) {
+        lastCoreRefreshAtRef.current = Date.now();
+      }
+    }
     if (coreErrors.length || !includeSecondary) {
       return { coreErrors, secondaryErrors: [] };
     }
-    const secondaryErrors = await refreshSecondaryData();
+    const shouldRefreshSecondary =
+      forceSecondary || now - lastSecondaryRefreshAtRef.current >= SECONDARY_REFRESH_MIN_INTERVAL_MS;
+    if (!shouldRefreshSecondary) {
+      return { coreErrors: [], secondaryErrors: [] };
+    }
+    const secondaryErrors = await refreshSecondaryData({ force: forceSecondary });
+    if (!secondaryErrors.length) {
+      lastSecondaryRefreshAtRef.current = Date.now();
+    }
     return { coreErrors: [], secondaryErrors };
   }, [
     refreshCoreData,
@@ -2130,9 +2163,19 @@ export function App() {
         if (!daemonStateRef.current?.reachable) {
           return;
         }
-        const secondaryErrors = await refreshSecondaryData();
+        const secondaryErrors = await refreshSecondaryData({ force: true });
+        if (!secondaryErrors.length) {
+          setDaemonTimeoutStaleSummary("");
+          lastSecondaryRefreshAtRef.current = Date.now();
+        }
         if (!secondaryErrors.length || !daemonStateRef.current?.reachable) {
           return;
+        }
+        const timeoutErrors = secondaryErrors.filter((error) => isDaemonTimeoutErrorMessage(error));
+        if (timeoutErrors.length) {
+          setDaemonTimeoutStaleSummary(summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected.");
+        } else {
+          setDaemonTimeoutStaleSummary("");
         }
         setSecondaryAvailabilityFeedback(secondaryErrors);
       })().finally(() => {
@@ -2144,7 +2187,7 @@ export function App() {
   const refreshProtectedDataForStartup = useCallback(async () => {
     // First successful pass only waits on core data; secondary calls hydrate in background.
     const includeSecondary = startupCoreReadyRef.current;
-    let result = await refreshProtectedData({ includeSecondary });
+    let result = await refreshProtectedData({ includeSecondary, forceCore: true });
     if (!includeSecondary && !result.coreErrors.length) {
       startupCoreReadyRef.current = true;
       refreshSecondaryDataInBackground();
@@ -2155,6 +2198,8 @@ export function App() {
 
   const clearStartupCoreReady = useCallback(() => {
     startupCoreReadyRef.current = false;
+    lastCoreRefreshAtRef.current = 0;
+    lastSecondaryRefreshAtRef.current = 0;
   }, []);
 
   const handleResolveConflict = useCallback(async (keepId, action, supersededId, pair = null) => {
@@ -2322,12 +2367,29 @@ export function App() {
 
     const nextDaemonState = await refreshDaemonState();
     const healthReady = await refreshHealth();
+    const reachableViaHealthFallback =
+      Boolean(invokeRef.current)
+      && Boolean(healthReady)
+      && !Boolean(nextDaemonState?.reachable);
+    const daemonReachable = Boolean(nextDaemonState?.reachable) || reachableViaHealthFallback;
 
     if (daemonTransitionRef.current) {
       return;
     }
 
-    if (invokeRef.current && nextDaemonState?.managed && !nextDaemonState?.reachable) {
+    if (reachableViaHealthFallback) {
+      setDaemonState((current) => ({
+        ...current,
+        running: true,
+        reachable: true,
+        managed: false,
+        authTokenReady: Boolean(tokenRef.current),
+        message: `Connected to daemon on ${formatDaemonEndpoint(cortexBase)} (IPC fallback active).`,
+      }));
+    }
+
+    if (invokeRef.current && nextDaemonState?.managed && !daemonReachable) {
+      setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       clearDisconnectedData();
       setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
@@ -2335,7 +2397,8 @@ export function App() {
       return;
     }
 
-    if (!nextDaemonState?.reachable) {
+    if (!daemonReachable) {
+      setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       clearRecoveryRetry();
       if (invokeRef.current) {
@@ -2348,6 +2411,7 @@ export function App() {
     }
 
     if (invokeRef.current && !healthReady) {
+      setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       clearDisconnectedData();
       setFeedbackMessage("Daemon is reachable but still warming up. Retrying shortly...");
@@ -2357,6 +2421,7 @@ export function App() {
 
     const authToken = await readAuthToken({ suppressFeedback: true });
     if (invokeRef.current && !authToken) {
+      setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       clearDisconnectedData();
       setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
@@ -2375,14 +2440,27 @@ export function App() {
     if (coreErrors.length) {
       clearStartupCoreReady();
       const unique = [...new Set(coreErrors)];
-      if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
+      if (daemonReachable && unique.every((error) => isDaemonTimeoutErrorMessage(error))) {
+        clearRecoveryRetry();
+        const summary = summarizeDashboardErrors(unique) || "IPC request timeouts detected.";
+        setDaemonTimeoutStaleSummary(summary);
+        setFeedbackMessage(
+          summary
+            ? `Connected (core stale). IPC requests timed out: ${summary}`
+            : "Connected (core stale). IPC requests timed out; retrying."
+        );
+        scheduleRecoveryRetry(1000);
+      } else if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
+        setDaemonTimeoutStaleSummary("");
         clearDisconnectedData();
         clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
         scheduleRecoveryRetry(1000);
       } else if (invokeRef.current && unique.every((error) => isAuthFailure(error))) {
+        setDaemonTimeoutStaleSummary("");
         setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
         scheduleRecoveryRetry(1000);
       } else {
+        setDaemonTimeoutStaleSummary("");
         clearRecoveryRetry();
         setFeedbackMessage(summarizeDashboardErrors(unique));
         if (!invokeRef.current && unique.every((error) => isAuthFailure(error))) {
@@ -2393,8 +2471,15 @@ export function App() {
       clearRecoveryRetry();
       const uniqueSecondary = [...new Set(secondaryErrors)];
       if (uniqueSecondary.length) {
+        const timeoutErrors = uniqueSecondary.filter((error) => isDaemonTimeoutErrorMessage(error));
+        if (timeoutErrors.length) {
+          setDaemonTimeoutStaleSummary(summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected.");
+        } else {
+          setDaemonTimeoutStaleSummary("");
+        }
         setSecondaryAvailabilityFeedback(uniqueSecondary);
       } else {
+        setDaemonTimeoutStaleSummary("");
         clearTransientFeedback();
       }
     }
@@ -2576,7 +2661,7 @@ export function App() {
     }
     refreshFeed().catch((error) => {
       const message = error?.message || String(error);
-      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      if (!message || isDaemonSuppressibleErrorMessage(message)) return;
       setFeedbackMessage(summarizeDashboardErrors([message]) || message);
     });
   }, [refreshFeed]);
@@ -2588,7 +2673,7 @@ export function App() {
     }
     refreshMessages().catch((error) => {
       const message = error?.message || String(error);
-      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      if (!message || isDaemonSuppressibleErrorMessage(message)) return;
       setFeedbackMessage(summarizeDashboardErrors([message]) || message);
     });
   }, [refreshMessages]);
@@ -2600,27 +2685,33 @@ export function App() {
     }
     refreshActivity().catch((error) => {
       const message = error?.message || String(error);
-      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      if (!message || isDaemonSuppressibleErrorMessage(message)) return;
       setFeedbackMessage(summarizeDashboardErrors([message]) || message);
     });
   }, [refreshActivity]);
 
   useEffect(() => {
-    if (panel !== "analytics" || !analyticsReady) return;
+    if (
+      panel !== "analytics"
+      || !analyticsReady
+      || !daemonState.reachable
+      || !daemonState.authTokenReady
+      || !startupCoreReadyRef.current
+    ) return;
     refreshSavings().catch((error) => {
       const message = error?.message || String(error);
-      if (!message || isDaemonOfflineErrorMessage(message)) return;
+      if (!message || isDaemonSuppressibleErrorMessage(message)) return;
       setFeedbackMessage(summarizeDashboardErrors([message]) || message);
     });
     const timer = setInterval(() => {
       refreshSavings().catch((error) => {
         const message = error?.message || String(error);
-        if (!message || isDaemonOfflineErrorMessage(message)) return;
+        if (!message || isDaemonSuppressibleErrorMessage(message)) return;
         setFeedbackMessage(summarizeDashboardErrors([message]) || message);
       });
     }, ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [analyticsReady, panel, refreshSavings]);
+  }, [analyticsReady, daemonState.authTokenReady, daemonState.reachable, panel, refreshSavings]);
 
   useEffect(() => {
     let stream = null;
@@ -2912,6 +3003,13 @@ export function App() {
         title: "Database integrity checks are failing. Restart Cortex to trigger repair.",
       };
     }
+    if (daemonTimeoutStaleSummary) {
+      return {
+        className: "warning",
+        label: "▲ STALE",
+        title: `Daemon reachable, but recent IPC requests timed out. ${daemonTimeoutStaleSummary}`,
+      };
+    }
     if (healthMeta.degraded) {
       return {
         className: "warning",
@@ -2924,7 +3022,7 @@ export function App() {
       label: "● ONLINE",
       title: daemonState.message || "Cortex daemon reachable.",
     };
-  }, [cortexBase, daemonState.message, daemonState.reachable, healthMeta.dbCorrupted, healthMeta.degraded]);
+  }, [cortexBase, daemonState.message, daemonState.reachable, daemonTimeoutStaleSummary, healthMeta.dbCorrupted, healthMeta.degraded]);
 
   const daemonRecoveryHint = useMemo(() => {
     if (!daemonState.reachable) {
@@ -2933,6 +3031,9 @@ export function App() {
     if (healthMeta.dbCorrupted) {
       return "Database integrity checks are failing. Restart Cortex to trigger repair and inspect the daemon if it stays degraded.";
     }
+    if (daemonTimeoutStaleSummary) {
+      return "Daemon is reachable, but recent IPC requests timed out. Core and panel data may be temporarily stale.";
+    }
     if (runtimeVersionMismatch) {
       return `Connected to daemon v${healthMeta.runtimeVersion}. Restart from Control Center to switch to v${CONTROL_CENTER_VERSION}.`;
     }
@@ -2940,11 +3041,11 @@ export function App() {
       return "Semantic search is using keyword fallback right now. Restart Cortex if this state does not clear.";
     }
     return "";
-  }, [daemonState.reachable, healthMeta.dbCorrupted, healthMeta.degraded, healthMeta.runtimeVersion, runtimeVersionMismatch]);
+  }, [daemonState.reachable, daemonTimeoutStaleSummary, healthMeta.dbCorrupted, healthMeta.degraded, healthMeta.runtimeVersion, runtimeVersionMismatch]);
 
   const reportSurfaceError = useCallback((error) => {
     const message = error?.message || String(error);
-    if (!message || isDaemonOfflineErrorMessage(message)) return;
+    if (!message || isDaemonSuppressibleErrorMessage(message)) return;
     setFeedbackMessage(summarizeDashboardErrors([message]) || message);
   }, []);
 

@@ -56,6 +56,7 @@ describe("createApi - api()", () => {
   });
 
   it("throws on invalid IPC response (null)", async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
     const invoke = vi.fn(() => Promise.resolve(null));
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     await expect(api("/health")).rejects.toThrow("/health: invalid IPC response");
@@ -64,6 +65,7 @@ describe("createApi - api()", () => {
   it("times out hung IPC GET requests", async () => {
     vi.useFakeTimers();
     try {
+      globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
       const invoke = vi.fn(() => new Promise(() => {}));
       const api = createApi(makeDeps({ invoke, token: "tok" }));
       const assertion = expect(api("/health")).rejects.toThrow(
@@ -76,7 +78,30 @@ describe("createApi - api()", () => {
     }
   });
 
+  it("falls back to HTTP GET when IPC request times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(() => new Promise(() => {}));
+      globalThis.fetch = mockFetch(200, { status: "ok" }, true);
+      const api = createApi(makeDeps({ invoke, token: "tok" }));
+      const pending = api("/probe");
+      await vi.advanceTimersByTimeAsync(8000);
+      await expect(pending).resolves.toEqual({ status: "ok" });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:7437/probe",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "X-Cortex-Request": "true",
+          }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws on invalid IPC response (missing body string)", async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
     const invoke = vi.fn(() => Promise.resolve({ status: 200, body: 42 }));
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     await expect(api("/health")).rejects.toThrow("/health: invalid IPC response");
@@ -117,6 +142,19 @@ describe("createApi - api()", () => {
       path: "/mcp-rpc",
       authToken: "tok",
       timeoutMs: 29500,
+    });
+  });
+
+  it("routes absolute session URLs to core IPC timeout budgets", async () => {
+    const invoke = vi.fn(() =>
+      Promise.resolve({ status: 200, body: '{"sessions":[]}' })
+    );
+    const api = createApi(makeDeps({ invoke, token: "tok" }));
+    await api("http://127.0.0.1:7437/sessions", true);
+    expect(invoke).toHaveBeenCalledWith("fetch_cortex", {
+      path: "http://127.0.0.1:7437/sessions",
+      authToken: "tok",
+      timeoutMs: 14500,
     });
   });
 
@@ -221,6 +259,7 @@ describe("createPostApi - postApi()", () => {
   });
 
   it("throws on invalid IPC response", async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
     const invoke = vi.fn(() => Promise.resolve(undefined));
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
     await expect(postApi("/resolve")).rejects.toThrow(
@@ -231,6 +270,7 @@ describe("createPostApi - postApi()", () => {
   it("times out hung IPC POST requests", async () => {
     vi.useFakeTimers();
     try {
+      globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
       const invoke = vi.fn(() => new Promise(() => {}));
       const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
       const assertion = expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow(
@@ -238,6 +278,30 @@ describe("createPostApi - postApi()", () => {
       );
       await vi.advanceTimersByTimeAsync(8000);
       await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to HTTP POST when IPC request times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(() => new Promise(() => {}));
+      globalThis.fetch = mockFetch(200, { ok: true }, true);
+      const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
+      const pending = postApi("/resolve", { keepId: "a" });
+      await vi.advanceTimersByTimeAsync(8000);
+      await expect(pending).resolves.toEqual({ ok: true });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:7437/resolve",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            Authorization: "Bearer tok",
+            "X-Cortex-Request": "true",
+          }),
+        }),
+      );
     } finally {
       vi.useRealTimers();
     }
