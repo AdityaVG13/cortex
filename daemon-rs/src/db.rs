@@ -883,6 +883,26 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_feedback_result ON recall_feedback(result_source);
         CREATE INDEX IF NOT EXISTS idx_feedback_created ON recall_feedback(created_at);
 
+        CREATE TABLE IF NOT EXISTS event_savings_rollups (
+          day TEXT NOT NULL,
+          hour INTEGER NOT NULL,
+          operation TEXT NOT NULL
+            CHECK (operation IN ('recall', 'store', 'tool')),
+          saved INTEGER NOT NULL DEFAULT 0,
+          served INTEGER NOT NULL DEFAULT 0,
+          baseline INTEGER NOT NULL DEFAULT 0,
+          events INTEGER NOT NULL DEFAULT 0,
+          hits INTEGER NOT NULL DEFAULT 0,
+          misses INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (day, hour, operation)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_event_savings_rollups_day
+          ON event_savings_rollups(day);
+        CREATE INDEX IF NOT EXISTS idx_event_savings_rollups_operation_day
+          ON event_savings_rollups(operation, day);
+
         CREATE TABLE IF NOT EXISTS agent_feedback (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           owner_id INTEGER NOT NULL DEFAULT 0,

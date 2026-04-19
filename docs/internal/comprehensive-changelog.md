@@ -8,6 +8,38 @@ Commit range size: 319 commits
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
 
+- 2026-04-19 03:15 - Live DB compression tranche: payload compaction + savings rollups + orphan crystal-member pruning:
+  - `daemon-rs/src/handlers/mod.rs`:
+    - added write-path event payload compaction for high-churn telemetry:
+      - `recall_query` now stores compact analytics-safe fields only
+      - `merge` now stores bounded preview + `incoming_chars` instead of full raw text
+      - large telemetry payloads now pass through a hard JSON-size budget with analytics-field preservation fallback
+    - added regressions:
+      - large merge payload compaction
+      - recall analytics payload retention under compacted size budget
+  - `daemon-rs/src/compaction.rs`:
+    - added old savings-event rollup pass (`recall_query` / `store_savings` / `tool_call_savings`) into persistent `event_savings_rollups` (day/hour/operation aggregates), then deletes raw rolled rows
+    - added orphan `cluster_members` pruning for missing memory/decision/cluster targets
+    - extended compaction result/reporting with orphan-cluster-member pruning count
+    - added regressions:
+      - savings-event rollup compaction correctness
+      - orphan cluster-member pruning correctness
+  - `daemon-rs/src/db.rs`:
+    - added `event_savings_rollups` table + supporting indexes for compact long-window savings analytics
+  - `daemon-rs/src/handlers/health.rs`:
+    - `/savings` now combines rollup aggregates with recent raw events for:
+      - by-operation totals
+      - daily cumulative savings
+      - recall hit/miss trend
+      - activity heatmap
+    - preserves operator-facing 30-day analytics while reducing scan pressure on high-volume raw event history
+  - Validation:
+    - `rtk cargo fmt`
+    - `rtk cargo test compaction:: -- --nocapture` (`14` passing)
+    - `rtk cargo test log_event_ -- --nocapture` (`2` passing)
+    - `rtk cargo test health:: -- --nocapture` (`10` passing)
+    - `rtk cargo test --quiet` attempted; exceeded lean-ctx shell timeout (`105s`) before suite completion
+
 - 2026-04-19 01:20 - Live DB anti-ballooning compaction + write-path event-cap hardening:
   - `daemon-rs/src/compaction.rs`:
     - expanded per-type caps to include high-volume telemetry families (`agent_boot`, `store_savings`, `tool_call_savings`) in both soft and hard pressure modes

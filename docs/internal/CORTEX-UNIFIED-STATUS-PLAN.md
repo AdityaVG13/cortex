@@ -1,6 +1,6 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-19 01:20  
+**Last updated:** 2026-04-19 03:15  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
 
@@ -71,6 +71,11 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - unified `recall_query` events now emit compact `shadow_semantic` status/reason/overlap metadata on uncached and headlines requests
   - cache-hit recall events explicitly mark `shadow_semantic` as `skipped` with `reason=cache_hit`
   - event payloads intentionally omit baseline/shadow source arrays so telemetry stays low-cost and storage-efficient
+- Live DB anti-ballooning has a second compression tranche focused on persistent analytics + dead-row cleanup:
+  - write-path event logging now compacts large telemetry payloads (including `merge` and `recall_query`) before persistence, with a hard JSON-size ceiling and analytics-field preservation
+  - compaction now rolls old `recall_query`/`store_savings`/`tool_call_savings` rows into `event_savings_rollups` (day+hour+operation aggregates) before deleting raw rows
+  - `/savings` now reads `event_savings_rollups` plus recent raw events, preserving 30-day analytics while reducing scan pressure on large event histories
+  - compaction now prunes orphan `cluster_members` rows (dangling memory/decision/cluster references), preventing long-lived crystal-index bloat
 - `/stats` now rolls up shadow-semantic parity signals from unified recall telemetry:
   - status counts (`ok` / `unavailable` / `error` / `skipped`) are aggregated from `recall_query` events
   - overlap/jaccard averages for `ok` shadow probes are now surfaced for gating decisions

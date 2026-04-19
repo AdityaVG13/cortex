@@ -32,6 +32,9 @@ const ARCHIVED_TEXT_RETENTION_DAYS: i64 = 90;
 /// Feedback signals older than this are aggregated into summaries.
 const FEEDBACK_AGGREGATION_DAYS: i64 = 60;
 
+/// Roll analytics-heavy savings events older than this into compact hourly rows.
+const SAVINGS_EVENT_ROLLUP_RETENTION_DAYS: i64 = 7;
+
 /// Elevated-pressure storage governor soft limit (no hard failures, compaction only).
 pub const STORAGE_SOFT_LIMIT_BYTES: i64 = 256 * 1024 * 1024; // 256MB
 /// Critical-pressure storage governor hard limit (triggers aggressive safe compaction).
@@ -45,6 +48,8 @@ const AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS: i64 = 14;
 const AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS: i64 = 30;
 /// Under critical pressure, aggregate feedback sooner.
 const AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS: i64 = 14;
+/// Under critical pressure, roll savings events even sooner.
+const AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS: i64 = 2;
 
 /// Non-boot event volume triggers compaction even when DB file size is moderate.
 const EVENT_NONBOOT_SOFT_LIMIT_ROWS: i64 = 80_000;
@@ -89,6 +94,7 @@ pub struct CompactionResult {
     pub archived_text_stripped: usize,
     pub expired_pruned: usize,
     pub crystal_embeddings_pruned: usize,
+    pub cluster_members_pruned: usize,
     pub feedback_aggregated: usize,
     pub bytes_before: i64,
     pub bytes_after: i64,
@@ -167,11 +173,14 @@ fn run_compaction_governor_with_options(
         result.events_pruned +=
             rollup_old_boot_savings_with_retention(conn, AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS);
         result.events_pruned +=
+            rollup_old_savings_events(conn, AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
+        result.events_pruned +=
             prune_old_events_with_retention(conn, AGGRESSIVE_EVENT_RETENTION_DAYS);
         result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_HARD_CAPS);
         result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_HARD_KEEP_ROWS);
         result.archived_text_stripped +=
             strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
+        result.cluster_members_pruned += prune_orphan_cluster_members(conn);
         result.feedback_aggregated +=
             aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
         let _ = if allow_vacuum {
@@ -211,6 +220,7 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
 
     // 1. Event log rotation
     result.events_pruned = rollup_old_boot_savings(conn);
+    result.events_pruned += rollup_old_savings_events(conn, SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
     result.events_pruned += prune_old_events(conn);
     result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_SOFT_CAPS);
     result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_SOFT_KEEP_ROWS);
@@ -223,6 +233,7 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
 
     // 4. Crystal member embedding pruning
     result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
+    result.cluster_members_pruned = prune_orphan_cluster_members(conn);
 
     // 5. Feedback aggregation
     result.feedback_aggregated = aggregate_old_feedback(conn);
@@ -246,11 +257,12 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     if total_deleted > 0 {
         let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
         eprintln!(
-            "[compaction] Pruned: {} events, {} archived texts, {} expired rows, {} crystal embeddings, {} feedback rows. Saved {}KB",
+            "[compaction] Pruned: {} events, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows. Saved {}KB",
             result.events_pruned,
             result.archived_text_stripped,
             result.expired_pruned,
             result.crystal_embeddings_pruned,
+            result.cluster_members_pruned,
             result.feedback_aggregated,
             saved_kb
         );
@@ -354,6 +366,96 @@ fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64
     } else {
         deleted_old + deleted_rollups
     }
+}
+
+fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
+    let retention_window = format!("-{retention_days} days");
+    let rollup_rows: Vec<(String, i64, String, i64, i64, i64, i64, i64, i64)> = conn
+        .prepare(
+            "SELECT \
+                 SUBSTR(created_at, 1, 10) AS day, \
+                 COALESCE(CAST(strftime('%H', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER), 0) AS hour, \
+                 CASE \
+                     WHEN type = 'recall_query' THEN 'recall' \
+                     WHEN type = 'store_savings' THEN 'store' \
+                     WHEN type = 'tool_call_savings' THEN 'tool' \
+                 END AS operation, \
+                 COALESCE(SUM(CASE \
+                     WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                     WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                     WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                     ELSE 0 END), 0) AS saved, \
+                 COALESCE(SUM(CASE \
+                     WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.spent') AS INTEGER), COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)) \
+                     WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0) \
+                     WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0) \
+                     ELSE 0 END), 0) AS served, \
+                 COALESCE(SUM(CASE \
+                     WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.budget') AS INTEGER), COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)) \
+                     WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0) \
+                     WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0) \
+                     ELSE 0 END), 0) AS baseline, \
+                 COUNT(*) AS events, \
+                 SUM(CASE \
+                     WHEN type = 'recall_query' AND COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 1 \
+                     ELSE 0 END) AS hits, \
+                 SUM(CASE \
+                     WHEN type = 'recall_query' AND COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 0 \
+                     WHEN type = 'recall_query' THEN 1 \
+                     ELSE 0 END) AS misses \
+             FROM events \
+             WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
+               AND created_at IS NOT NULL \
+               AND created_at < datetime('now', ?1) \
+             GROUP BY day, hour, operation",
+        )
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map(params![retention_window.clone()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })?;
+            Ok(rows.flatten().collect())
+        })
+        .unwrap_or_default();
+
+    if rollup_rows.is_empty() {
+        return 0;
+    }
+
+    for (day, hour, operation, saved, served, baseline, events, hits, misses) in rollup_rows {
+        let _ = conn.execute(
+            "INSERT INTO event_savings_rollups \
+                 (day, hour, operation, saved, served, baseline, events, hits, misses, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now')) \
+             ON CONFLICT(day, hour, operation) DO UPDATE SET \
+                 saved = event_savings_rollups.saved + excluded.saved, \
+                 served = event_savings_rollups.served + excluded.served, \
+                 baseline = event_savings_rollups.baseline + excluded.baseline, \
+                 events = event_savings_rollups.events + excluded.events, \
+                 hits = event_savings_rollups.hits + excluded.hits, \
+                 misses = event_savings_rollups.misses + excluded.misses, \
+                 updated_at = datetime('now')",
+            params![day, hour, operation, saved, served, baseline, events, hits, misses],
+        );
+    }
+
+    conn.execute(
+        "DELETE FROM events \
+         WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
+           AND created_at IS NOT NULL \
+           AND created_at < datetime('now', ?1)",
+        params![retention_window],
+    )
+    .unwrap_or(0)
 }
 
 fn prune_old_events(conn: &Connection) -> usize {
@@ -507,6 +609,41 @@ fn prune_crystal_member_embeddings(conn: &Connection) -> usize {
     count
 }
 
+fn prune_orphan_cluster_members(conn: &Connection) -> usize {
+    let mut count = 0usize;
+    count += conn
+        .execute(
+            "DELETE FROM cluster_members \
+             WHERE target_type = 'memory' \
+               AND NOT EXISTS (SELECT 1 FROM memories WHERE memories.id = cluster_members.target_id)",
+            [],
+        )
+        .unwrap_or(0);
+    count += conn
+        .execute(
+            "DELETE FROM cluster_members \
+             WHERE target_type = 'decision' \
+               AND NOT EXISTS (SELECT 1 FROM decisions WHERE decisions.id = cluster_members.target_id)",
+            [],
+        )
+        .unwrap_or(0);
+    count += conn
+        .execute(
+            "DELETE FROM cluster_members \
+             WHERE target_type NOT IN ('memory', 'decision')",
+            [],
+        )
+        .unwrap_or(0);
+    count += conn
+        .execute(
+            "DELETE FROM cluster_members \
+             WHERE NOT EXISTS (SELECT 1 FROM memory_clusters WHERE memory_clusters.id = cluster_members.cluster_id)",
+            [],
+        )
+        .unwrap_or(0);
+    count
+}
+
 // ─── Feedback aggregation ───────────────────────────────────────────────────
 
 /// Compact old individual feedback signals into per-source aggregates.
@@ -604,6 +741,7 @@ pub fn storage_breakdown(conn: &Connection) -> Vec<(String, i64)> {
         "co_occurrence",
         "memory_clusters",
         "cluster_members",
+        "event_savings_rollups",
         "context_cache",
         "feed",
     ];
@@ -972,5 +1110,152 @@ mod tests {
         assert_eq!(event.0, "expired_entries_pruned");
         assert!(event.1.contains("\"memories_deleted\":1"));
         assert!(event.1.contains("\"decisions_deleted\":1"));
+    }
+
+    #[test]
+    fn test_rollup_old_savings_events_compacts_rows() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('recall_query', ?1, 'test', datetime('now', '-10 days'))",
+            params![serde_json::json!({
+                "saved": 80,
+                "spent": 20,
+                "budget": 100,
+                "hits": 1
+            })
+            .to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('store_savings', ?1, 'test', datetime('now', '-10 days'))",
+            params![serde_json::json!({
+                "saved": 50,
+                "served": 25,
+                "baseline": 75
+            })
+            .to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('recall_query', ?1, 'test', datetime('now', '-1 days'))",
+            params![serde_json::json!({
+                "saved": 9,
+                "spent": 1,
+                "budget": 10,
+                "hits": 1
+            })
+            .to_string()],
+        )
+        .unwrap();
+
+        let rolled = rollup_old_savings_events(&conn, 7);
+        assert_eq!(rolled, 2);
+
+        let remaining_old: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events \
+                 WHERE created_at < datetime('now', '-7 days') \
+                   AND type IN ('recall_query', 'store_savings', 'tool_call_savings')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_old, 0);
+
+        let remaining_recent: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events \
+                 WHERE created_at >= datetime('now', '-7 days') \
+                   AND type = 'recall_query'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_recent, 1);
+
+        let (saved, served, baseline, events, hits, misses): (i64, i64, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                     COALESCE(SUM(saved), 0), \
+                     COALESCE(SUM(served), 0), \
+                     COALESCE(SUM(baseline), 0), \
+                     COALESCE(SUM(events), 0), \
+                     COALESCE(SUM(hits), 0), \
+                     COALESCE(SUM(misses), 0) \
+                 FROM event_savings_rollups",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(saved, 130);
+        assert_eq!(served, 45);
+        assert_eq!(baseline, 175);
+        assert_eq!(events, 2);
+        assert_eq!(hits, 1);
+        assert_eq!(misses, 0);
+    }
+
+    #[test]
+    fn test_prune_orphan_cluster_members_removes_missing_targets() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO memory_clusters (label, consolidated_text, member_count) VALUES ('c1', 'x', 0)",
+            [],
+        )
+        .unwrap();
+        let cluster_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO memories (text, source, status) VALUES ('m1', 'memory::1', 'active')",
+            [],
+        )
+        .unwrap();
+        let memory_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status) VALUES ('d1', 'ctx', 'active')",
+            [],
+        )
+        .unwrap();
+        let decision_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity) VALUES (?1, 'memory', ?2, 1.0)",
+            params![cluster_id, memory_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity) VALUES (?1, 'decision', ?2, 1.0)",
+            params![cluster_id, decision_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity) VALUES (?1, 'decision', 999999, 1.0)",
+            params![cluster_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity) VALUES (?1, 'memory', 999999, 1.0)",
+            params![cluster_id],
+        )
+        .unwrap();
+
+        let pruned = prune_orphan_cluster_members(&conn);
+        assert_eq!(pruned, 2);
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cluster_members", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2);
     }
 }

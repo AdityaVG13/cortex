@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::Utc;
-use rusqlite::params;
+use rusqlite::{params, OpenFlags};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -625,42 +625,54 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let agent_boots: Vec<Value> = boots_rows.filter_map(|r| r.ok()).collect();
 
     // Token savings
-    let mut total_saved = 0_i64;
-    let mut total_served = 0_i64;
-    let mut boot_count = 0_i64;
-    let mut today_saved = 0_i64;
-    let mut today_served = 0_i64;
-    let mut today_boots = 0_i64;
+    let (
+        raw_total_saved,
+        raw_total_served,
+        raw_boot_count,
+        today_saved,
+        today_served,
+        today_boots,
+    ): (i64, i64, i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COUNT(*), \
+                 COALESCE(SUM(CASE WHEN created_at LIKE ?1 THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) ELSE 0 END), 0), \
+                 COALESCE(SUM(CASE WHEN created_at LIKE ?1 THEN COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0) ELSE 0 END), 0), \
+                 COALESCE(SUM(CASE WHEN created_at LIKE ?1 THEN 1 ELSE 0 END), 0) \
+             FROM events \
+             WHERE type = 'boot_savings'",
+            params![today_like.clone()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
 
-    let mut savings_stmt = conn
-        .prepare("SELECT data, created_at FROM events WHERE type = 'boot_savings'")
+    let (rollup_saved, rollup_served, rollup_boots): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.boots') AS INTEGER), 0)), 0) \
+             FROM events \
+             WHERE type = 'boot_savings_rollup'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .map_err(|e| e.to_string())?;
-    let savings_rows = savings_stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, Option<String>>(0)?,
-                row.get::<_, Option<String>>(1)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    for row in savings_rows.flatten() {
-        if let (Some(data), created_at) = row {
-            if let Ok(parsed) = serde_json::from_str::<Value>(&data) {
-                total_saved += parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
-                total_served += parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0);
-                boot_count += 1;
-                if created_at
-                    .as_deref()
-                    .map(|v| v.starts_with(&today))
-                    .unwrap_or(false)
-                {
-                    today_saved += parsed.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
-                    today_served += parsed.get("served").and_then(|v| v.as_i64()).unwrap_or(0);
-                    today_boots += 1;
-                }
-            }
-        }
-    }
+
+    let total_saved = raw_total_saved + rollup_saved;
+    let total_served = raw_total_served + rollup_served;
+    let boot_count = raw_boot_count + rollup_boots;
 
     // Build oneliner
     let agent_str = if agent_boots.is_empty() {
@@ -1270,8 +1282,43 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     if let Some(snapshot) = savings_payload_cache_if_fresh(cached_snapshot, now_unix_secs) {
         return json_response(StatusCode::OK, snapshot.payload);
     }
+    let stale_snapshot = match savings_payload_cache().lock() {
+        Ok(guard) => guard.clone(),
+        Err(_) => None,
+    };
+    let stale_or_error = |message: String| -> Response {
+        if let Some(snapshot) = stale_snapshot.clone() {
+            return json_response(StatusCode::OK, snapshot.payload);
+        }
+        json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": message }),
+        )
+    };
 
-    let conn = state.db_read.lock().await;
+    // Use an independent read-only connection for analytics so heavy /savings
+    // aggregation cannot block core dashboard endpoints waiting on the shared
+    // db_read mutex.
+    let conn = match rusqlite::Connection::open_with_flags(
+        &state.db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(conn) => conn,
+        Err(err) => {
+            return stale_or_error(format!("open savings reader failed: {err}"));
+        }
+    };
+    if let Err(err) = conn.execute_batch(
+        r#"
+        PRAGMA query_only = ON;
+        PRAGMA foreign_keys = ON;
+        PRAGMA mmap_size = 268435456;
+        PRAGMA cache_size = -8000;
+        PRAGMA temp_store = MEMORY;
+        "#,
+    ) {
+        return stale_or_error(format!("configure savings reader failed: {err}"));
+    }
     let savings_window_modifier = format!("-{SAVINGS_HISTORY_DAYS} days");
 
     let mut stmt = match conn.prepare(
@@ -1283,21 +1330,19 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     ) {
         Ok(s) => s,
         Err(e) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({ "error": e.to_string() }),
-            );
+            return stale_or_error(format!("prepare boot savings query failed: {e}"));
         }
     };
 
-    let rows: Vec<(String, String)> = stmt
-        .query_map(params![savings_window_modifier.clone()], |row| {
+    let rows: Vec<(String, String)> =
+        match stmt.query_map(params![savings_window_modifier.clone()], |row| {
             let data_str: String = row.get(0)?;
             let created: String = row.get(1)?;
             Ok((data_str, created))
-        })
-        .map(|iter| iter.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
+        }) {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(e) => return stale_or_error(format!("query boot savings failed: {e}")),
+        };
     drop(stmt);
 
     let mut by_operation: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
@@ -1305,83 +1350,133 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         by_operation.insert(op.to_string(), (0, 0, 0, 0));
     }
 
-    let boot_agg = conn
-        .query_row(
-            "SELECT \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
-                 COUNT(*) \
-             FROM events
-             WHERE type = 'boot_savings'
-               AND created_at >= datetime('now', ?1)",
-            params![savings_window_modifier.clone()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap_or((0, 0, 0, 0));
-    by_operation.insert("boot".to_string(), boot_agg);
+    let mut rollup_op_stmt = match conn.prepare(
+        "SELECT operation, \
+             COALESCE(SUM(saved), 0) AS saved, \
+             COALESCE(SUM(served), 0) AS served, \
+             COALESCE(SUM(baseline), 0) AS baseline, \
+             COALESCE(SUM(events), 0) AS events \
+         FROM event_savings_rollups \
+         WHERE day >= date('now', ?1) \
+         GROUP BY operation",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare rollup operation query failed: {e}")),
+    };
+    let rollup_op_rows =
+        match rollup_op_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+            let operation: String = row.get(0)?;
+            let saved: i64 = row.get(1)?;
+            let served: i64 = row.get(2)?;
+            let baseline: i64 = row.get(3)?;
+            let events: i64 = row.get(4)?;
+            Ok((operation, saved, served, baseline, events))
+        }) {
+            Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+            Err(e) => {
+                return stale_or_error(format!("query rollup operation aggregates failed: {e}"));
+            }
+        };
+    drop(rollup_op_stmt);
+    for (operation, saved, served, baseline, events) in rollup_op_rows {
+        let entry = by_operation.entry(operation).or_insert((0, 0, 0, 0));
+        entry.0 += saved;
+        entry.1 += served;
+        entry.2 += baseline;
+        entry.3 += events;
+    }
 
-    let recall_agg = conn
-        .query_row(
-            "SELECT \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.spent') AS INTEGER), COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0))), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.budget') AS INTEGER), COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0))), 0), \
-                 COUNT(*) \
-             FROM events
-             WHERE type = 'recall_query'
-               AND created_at >= datetime('now', ?1)",
-            params![savings_window_modifier.clone()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap_or((0, 0, 0, 0));
-    by_operation.insert("recall".to_string(), recall_agg);
-
-    let mut store_agg = conn
-        .query_row(
-            "SELECT \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
-                 COUNT(*) \
-             FROM events
-             WHERE type = 'store_savings'
-               AND created_at >= datetime('now', ?1)",
-            params![savings_window_modifier.clone()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap_or((0, 0, 0, 0));
-    let store_decision_events: i64 = conn
-        .query_row(
-            "SELECT COUNT(*)
-             FROM events
-             WHERE type IN ('decision_stored', 'decision_supersede', 'decision_conflict', 'decision_rejected_duplicate')
-               AND created_at >= datetime('now', ?1)",
-            params![savings_window_modifier.clone()],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    store_agg.3 += store_decision_events;
-    by_operation.insert("store".to_string(), store_agg);
-
-    let tool_agg = conn
-        .query_row(
-            "SELECT \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
-                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
-                 COUNT(*) \
-             FROM events
-             WHERE type = 'tool_call_savings'
-               AND created_at >= datetime('now', ?1)",
-            params![savings_window_modifier.clone()],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .unwrap_or((0, 0, 0, 0));
-    by_operation.insert("tool".to_string(), tool_agg);
+    let mut op_stmt = match conn.prepare(
+        "SELECT \
+             CASE \
+                 WHEN type = 'recall_query' THEN 'recall' \
+                 WHEN type = 'store_savings' THEN 'store' \
+                 WHEN type = 'tool_call_savings' THEN 'tool' \
+              END AS operation, \
+             COALESCE(SUM(CASE \
+                 WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 ELSE 0 END), 0) AS saved, \
+             COALESCE(SUM(CASE \
+                 WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.spent') AS INTEGER), COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)) \
+                 WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0) \
+                 WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0) \
+                 ELSE 0 END), 0) AS served, \
+             COALESCE(SUM(CASE \
+                 WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.budget') AS INTEGER), COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)) \
+                  WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0) \
+                  WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0) \
+                  ELSE 0 END), 0) AS baseline, \
+             COUNT(*) AS events \
+          FROM events \
+          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
+            AND created_at >= datetime('now', ?1) \
+          GROUP BY operation",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare operation aggregate query failed: {e}")),
+    };
+    let op_rows = match op_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+        let operation: String = row.get(0)?;
+        let saved: i64 = row.get(1)?;
+        let served: i64 = row.get(2)?;
+        let baseline: i64 = row.get(3)?;
+        let events: i64 = row.get(4)?;
+        Ok((operation, saved, served, baseline, events))
+    }) {
+        Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(e) => return stale_or_error(format!("query operation aggregates failed: {e}")),
+    };
+    drop(op_stmt);
+    for (operation, saved, served, baseline, events) in op_rows {
+        let entry = by_operation.entry(operation).or_insert((0, 0, 0, 0));
+        entry.0 += saved;
+        entry.1 += served;
+        entry.2 += baseline;
+        entry.3 += events;
+    }
 
     let mut daily_savings_all: BTreeMap<String, i64> = BTreeMap::new();
-    if let Ok(mut stmt) = conn.prepare(
+    let mut recall_daily: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut rollup_daily_stmt = match conn.prepare(
+        "SELECT day, \
+             COALESCE(SUM(saved), 0) AS saved_delta, \
+             COALESCE(SUM(hits), 0) AS hits, \
+             COALESCE(SUM(misses), 0) AS misses \
+         FROM event_savings_rollups \
+         WHERE day >= date('now', ?1) \
+         GROUP BY day \
+         ORDER BY day ASC",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare rollup daily savings query failed: {e}")),
+    };
+    let rollup_daily_rows =
+        match rollup_daily_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+            let day: String = row.get(0)?;
+            let saved_delta: i64 = row.get(1)?;
+            let hits: i64 = row.get(2)?;
+            let misses: i64 = row.get(3)?;
+            Ok((day, saved_delta, hits, misses))
+        }) {
+            Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+            Err(e) => return stale_or_error(format!("query rollup daily savings failed: {e}")),
+        };
+    drop(rollup_daily_stmt);
+    for (day, saved_delta, hits, misses) in rollup_daily_rows {
+        if day.is_empty() {
+            continue;
+        }
+        *daily_savings_all.entry(day.clone()).or_insert(0) += saved_delta;
+        if hits + misses > 0 {
+            let entry = recall_daily.entry(day).or_insert((0, 0));
+            entry.0 += hits;
+            entry.1 += misses;
+        }
+    }
+
+    let mut daily_stmt = match conn.prepare(
         "SELECT \
              SUBSTR(created_at, 1, 10) AS day, \
              COALESCE(SUM(CASE \
@@ -1389,87 +1484,108 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  WHEN type = 'recall_query' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
                  WHEN type = 'store_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
                  WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
-                 ELSE 0 END), 0) AS saved_delta \
-          FROM events \
-          WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings') \
-            AND created_at >= datetime('now', ?1) \
-            AND created_at IS NOT NULL \
-          GROUP BY day \
-          ORDER BY day ASC",
+                 ELSE 0 END), 0) AS saved_delta, \
+             SUM(CASE \
+                 WHEN type = 'recall_query' AND COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 1 \
+                 ELSE 0 END) AS hits, \
+             SUM(CASE \
+                 WHEN type = 'recall_query' AND COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 0 \
+                 WHEN type = 'recall_query' THEN 1 \
+                 ELSE 0 END) AS misses \
+           FROM events \
+           WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings')
+             AND created_at >= datetime('now', ?1)
+             AND created_at IS NOT NULL \
+           GROUP BY day \
+           ORDER BY day ASC",
     ) {
-        let rows = stmt
-            .query_map(params![savings_window_modifier.clone()], |row| {
-                let day: Option<String> = row.get(0)?;
-                let saved_delta: i64 = row.get(1)?;
-                Ok((day.unwrap_or_default(), saved_delta))
-            })
-            .map(|iter| iter.filter_map(|row| row.ok()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        for (day, saved_delta) in rows {
-            if !day.is_empty() {
-                daily_savings_all.insert(day, saved_delta);
-            }
-        }
-    }
-
-    let mut recall_daily: BTreeMap<String, (i64, i64)> = BTreeMap::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT \
-             SUBSTR(created_at, 1, 10) AS day, \
-             SUM(CASE WHEN COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 1 ELSE 0 END) AS hits, \
-             SUM(CASE WHEN COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 0 ELSE 1 END) AS misses \
-          FROM events \
-          WHERE type = 'recall_query'
-            AND created_at >= datetime('now', ?1)
-            AND created_at IS NOT NULL \
-          GROUP BY day \
-          ORDER BY day ASC",
-    ) {
-        let rows = stmt
-            .query_map(params![savings_window_modifier.clone()], |row| {
-                let day: Option<String> = row.get(0)?;
-                let hits: i64 = row.get(1)?;
-                let misses: i64 = row.get(2)?;
-                Ok((day.unwrap_or_default(), hits, misses))
-            })
-            .map(|iter| iter.filter_map(|row| row.ok()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        for (day, hits, misses) in rows {
-            if !day.is_empty() {
-                recall_daily.insert(day, (hits, misses));
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare daily savings query failed: {e}")),
+    };
+    let daily_rows = match daily_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+        let day: Option<String> = row.get(0)?;
+        let saved_delta: i64 = row.get(1)?;
+        let hits: i64 = row.get(2)?;
+        let misses: i64 = row.get(3)?;
+        Ok((day.unwrap_or_default(), saved_delta, hits, misses))
+    }) {
+        Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(e) => return stale_or_error(format!("query daily savings failed: {e}")),
+    };
+    drop(daily_stmt);
+    for (day, saved_delta, hits, misses) in daily_rows {
+        if !day.is_empty() {
+            *daily_savings_all.entry(day.clone()).or_insert(0) += saved_delta;
+            if hits + misses > 0 {
+                let entry = recall_daily.entry(day).or_insert((0, 0));
+                entry.0 += hits;
+                entry.1 += misses;
             }
         }
     }
 
     let mut activity_heatmap_map: BTreeMap<(String, i64), i64> = BTreeMap::new();
-    if let Ok(mut stmt) = conn.prepare(
+    let mut rollup_heatmap_stmt = match conn.prepare(
+        "SELECT \
+             CAST(strftime('%w', day) AS INTEGER) AS weekday, \
+             hour, \
+             COALESCE(SUM(events), 0) AS cnt \
+         FROM event_savings_rollups \
+         WHERE day >= date('now', ?1) \
+         GROUP BY weekday, hour",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare rollup heatmap query failed: {e}")),
+    };
+    let rollup_heatmap_rows =
+        match rollup_heatmap_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+            let weekday: Option<i64> = row.get(0)?;
+            let hour: Option<i64> = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            Ok((weekday, hour, count))
+        }) {
+            Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+            Err(e) => return stale_or_error(format!("query rollup heatmap failed: {e}")),
+        };
+    drop(rollup_heatmap_stmt);
+    for (weekday, hour, count) in rollup_heatmap_rows {
+        if let (Some(day), Some(hour)) = (weekday, hour) {
+            let day_name = weekday_name_from_sqlite(day).to_string();
+            *activity_heatmap_map.entry((day_name, hour)).or_insert(0) += count;
+        }
+    }
+
+    let mut heatmap_stmt = match conn.prepare(
         "SELECT \
              CAST(strftime('%w', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS weekday, \
              CAST(strftime('%H', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS hour, \
              COUNT(*) AS cnt \
-          FROM events \
-          WHERE created_at >= datetime('now', ?1)
-            AND created_at IS NOT NULL \
-          GROUP BY weekday, hour",
+           FROM events \
+           WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings')
+              AND created_at >= datetime('now', ?1)
+              AND created_at IS NOT NULL \
+            GROUP BY weekday, hour",
     ) {
-        let rows = stmt
-            .query_map(params![savings_window_modifier.clone()], |row| {
-                let weekday: Option<i64> = row.get(0)?;
-                let hour: Option<i64> = row.get(1)?;
-                let count: i64 = row.get(2)?;
-                Ok((weekday, hour, count))
-            })
-            .map(|iter| iter.filter_map(|row| row.ok()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        for (weekday, hour, count) in rows {
-            if let (Some(day), Some(hour)) = (weekday, hour) {
-                let day_name = weekday_name_from_sqlite(day).to_string();
-                *activity_heatmap_map.entry((day_name, hour)).or_insert(0) += count;
-            }
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare activity heatmap query failed: {e}")),
+    };
+    let heatmap_rows =
+        match heatmap_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+            let weekday: Option<i64> = row.get(0)?;
+            let hour: Option<i64> = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            Ok((weekday, hour, count))
+        }) {
+            Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+            Err(e) => return stale_or_error(format!("query activity heatmap failed: {e}")),
+        };
+    drop(heatmap_stmt);
+    for (weekday, hour, count) in heatmap_rows {
+        if let (Some(day), Some(hour)) = (weekday, hour) {
+            let day_name = weekday_name_from_sqlite(day).to_string();
+            *activity_heatmap_map.entry((day_name, hour)).or_insert(0) += count;
         }
     }
-
-    drop(conn);
 
     let points: Vec<Value> = rows
         .into_iter()
@@ -1520,6 +1636,10 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         0
     };
     let total_boots = points.len() as i64;
+    by_operation.insert(
+        "boot".to_string(),
+        (total_saved, total_served, total_baseline, total_boots),
+    );
     let avg_saved_per_boot = if total_boots > 0 {
         total_saved / total_boots
     } else {

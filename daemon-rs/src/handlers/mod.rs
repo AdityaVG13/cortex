@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::net::IpAddr;
 
 use crate::state::RuntimeState;
@@ -32,6 +32,9 @@ pub struct SourceIdentity {
 
 const MAX_SOURCE_LABEL_LEN: usize = 160;
 const CTX_API_KEY_LEN: usize = 50;
+const MAX_EVENT_JSON_BYTES: usize = 1_200;
+const MAX_EVENT_VALUE_CHARS: usize = 240;
+const MERGE_EVENT_PREVIEW_CHARS: usize = 240;
 const HIGH_VOLUME_EVENT_PRUNE_INTERVAL: i64 = 128;
 const HIGH_VOLUME_EVENT_CAPS: &[(&str, i64)] = &[
     ("agent_boot", 6_000),
@@ -483,6 +486,198 @@ pub async fn register_agent_presence_from_headers(
     }
 }
 
+fn compact_event_payload(kind: &str, data: Value) -> Value {
+    let projected = match kind {
+        "recall_query" => compact_recall_query_payload(data),
+        "merge" => compact_merge_event_payload(data),
+        "store_savings" | "tool_call_savings" | "boot_savings" => {
+            compact_savings_event_payload(data)
+        }
+        _ => truncate_event_value(data, 0),
+    };
+    enforce_event_payload_budget(kind, projected)
+}
+
+fn compact_recall_query_payload(data: Value) -> Value {
+    let Some(obj) = data.as_object() else {
+        return truncate_event_value(data, 0);
+    };
+
+    let semantic_route = compact_semantic_route(obj.get("semantic_route"));
+    let shadow_semantic = compact_shadow_semantic(obj.get("shadow_semantic"));
+
+    json!({
+        "agent": obj.get("agent").cloned().unwrap_or(Value::Null),
+        "query": obj
+            .get("query")
+            .and_then(Value::as_str)
+            .map(|q| truncate_chars(q, 120))
+            .unwrap_or_default(),
+        "budget": extract_i64(obj.get("budget")),
+        "spent": extract_i64(obj.get("spent")),
+        "saved": extract_i64(obj.get("saved")),
+        "hits": extract_i64(obj.get("hits")),
+        "mode": obj.get("mode").cloned().unwrap_or(Value::Null),
+        "cached": obj.get("cached").cloned().unwrap_or(Value::Null),
+        "tier": obj.get("tier").cloned().unwrap_or(Value::Null),
+        "latency_ms": extract_i64(obj.get("latency_ms")),
+        "method_breakdown": truncate_event_value(
+            obj.get("method_breakdown").cloned().unwrap_or(Value::Null),
+            0
+        ),
+        "semantic_route": semantic_route,
+        "shadow_semantic": shadow_semantic,
+    })
+}
+
+fn compact_semantic_route(value: Option<&Value>) -> Value {
+    let Some(route) = value.and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    json!({
+        "mode": route.get("mode").cloned().unwrap_or(Value::Null),
+        "reason": route.get("reason").cloned().unwrap_or(Value::Null),
+        "sampled": route.get("sampled").cloned().unwrap_or(Value::Null),
+        "trialPercent": route.get("trialPercent").cloned().unwrap_or(Value::Null),
+        "candidateCount": route.get("candidateCount").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn compact_shadow_semantic(value: Option<&Value>) -> Value {
+    let Some(shadow) = value.and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    json!({
+        "status": shadow.get("status").cloned().unwrap_or(Value::Null),
+        "reason": shadow.get("reason").cloned().unwrap_or(Value::Null),
+        "baselineCount": shadow.get("baselineCount").cloned().unwrap_or(Value::Null),
+        "shadowCount": shadow.get("shadowCount").cloned().unwrap_or(Value::Null),
+        "overlapCount": shadow.get("overlapCount").cloned().unwrap_or(Value::Null),
+        "baselineTopSimilarity": shadow
+            .get("baselineTopSimilarity")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "shadowTopSimilarity": shadow
+            .get("shadowTopSimilarity")
+            .cloned()
+            .unwrap_or(Value::Null),
+        // Keep payloads small and avoid storing source arrays in hot telemetry.
+        "baselineTopSources": Value::Null,
+        "shadowTopSources": Value::Null,
+    })
+}
+
+fn compact_merge_event_payload(data: Value) -> Value {
+    let Some(obj) = data.as_object() else {
+        return truncate_event_value(data, 0);
+    };
+    let incoming = obj
+        .get("incoming_text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let incoming_chars = incoming.chars().count() as i64;
+
+    json!({
+        "source_id": obj.get("source_id").cloned().unwrap_or(Value::Null),
+        "target_id": obj.get("target_id").cloned().unwrap_or(Value::Null),
+        "target_type": obj.get("target_type").cloned().unwrap_or(Value::Null),
+        "similarity": obj.get("similarity").cloned().unwrap_or(Value::Null),
+        "jaccard": obj.get("jaccard").cloned().unwrap_or(Value::Null),
+        "source_agent": obj.get("source_agent").cloned().unwrap_or(Value::Null),
+        "incoming_chars": incoming_chars,
+        "incoming_preview": truncate_chars(incoming, MERGE_EVENT_PREVIEW_CHARS),
+    })
+}
+
+fn compact_savings_event_payload(data: Value) -> Value {
+    let Some(obj) = data.as_object() else {
+        return truncate_event_value(data, 0);
+    };
+    json!({
+        "agent": obj.get("agent").cloned().unwrap_or(Value::Null),
+        "query": obj
+            .get("query")
+            .and_then(Value::as_str)
+            .map(|q| truncate_chars(q, 120))
+            .unwrap_or_default(),
+        "saved": extract_i64(obj.get("saved")),
+        "served": extract_i64(obj.get("served")),
+        "baseline": extract_i64(obj.get("baseline")),
+        "spent": extract_i64(obj.get("spent")),
+        "budget": extract_i64(obj.get("budget")),
+        "hits": extract_i64(obj.get("hits")),
+        "boots": extract_i64(obj.get("boots")),
+        "percent": extract_i64(obj.get("percent")),
+        "admitted": extract_i64(obj.get("admitted")),
+        "rejected": extract_i64(obj.get("rejected")),
+        "mode": obj.get("mode").cloned().unwrap_or(Value::Null),
+        "cached": obj.get("cached").cloned().unwrap_or(Value::Null),
+        "tier": obj.get("tier").cloned().unwrap_or(Value::Null),
+        "latency_ms": extract_i64(obj.get("latency_ms")),
+    })
+}
+
+fn extract_i64(value: Option<&Value>) -> i64 {
+    value
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_u64().and_then(|x| i64::try_from(x).ok()))
+                .or_else(|| v.as_f64().map(|x| x.round() as i64))
+        })
+        .unwrap_or(0)
+}
+
+fn truncate_event_value(value: Value, depth: usize) -> Value {
+    if depth >= 4 {
+        return Value::Null;
+    }
+    match value {
+        Value::String(s) => Value::String(truncate_chars(&s, MAX_EVENT_VALUE_CHARS)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .take(16)
+                .map(|item| truncate_event_value(item, depth + 1))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let compacted = map
+                .into_iter()
+                .take(24)
+                .map(|(key, val)| (key, truncate_event_value(val, depth + 1)))
+                .collect();
+            Value::Object(compacted)
+        }
+        other => other,
+    }
+}
+
+fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
+    let encoded = payload.to_string();
+    if encoded.len() <= MAX_EVENT_JSON_BYTES {
+        return payload;
+    }
+
+    let mut fallback = json!({
+        "truncated": true,
+        "type": kind,
+        "bytes": encoded.len()
+    });
+    if let Some(obj) = payload.as_object() {
+        for key in [
+            "saved", "served", "baseline", "spent", "budget", "hits", "events", "boots",
+        ] {
+            if let Some(value) = obj.get(key) {
+                fallback[key] = value.clone();
+            }
+        }
+        if let Some(query) = obj.get("query").and_then(Value::as_str) {
+            fallback["query"] = Value::String(truncate_chars(query, 120));
+        }
+    }
+    fallback
+}
+
 /// Insert an event row into the `events` table.
 pub fn log_event(
     conn: &rusqlite::Connection,
@@ -490,9 +685,10 @@ pub fn log_event(
     data: Value,
     source_agent: &str,
 ) -> rusqlite::Result<()> {
+    let compacted = compact_event_payload(kind, data);
     conn.execute(
         "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
-        rusqlite::params![kind, data.to_string(), source_agent],
+        rusqlite::params![kind, compacted.to_string(), source_agent],
     )?;
     maybe_prune_high_volume_event(conn, kind)?;
     Ok(())
@@ -605,6 +801,122 @@ mod tests {
             )
             .expect("count rows");
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn log_event_compacts_large_merge_payload() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL,
+                source_agent TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .expect("create events table");
+
+        let incoming = "x".repeat(10_000);
+        log_event(
+            &conn,
+            "merge",
+            json!({
+                "target_id": 42,
+                "target_type": "decision",
+                "incoming_text": incoming,
+                "source_agent": "test-agent"
+            }),
+            "test",
+        )
+        .expect("log merge event");
+
+        let payload: String = conn
+            .query_row(
+                "SELECT data FROM events WHERE type = 'merge' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read payload");
+        let parsed: Value = serde_json::from_str(&payload).expect("valid json");
+        assert!(parsed.get("incoming_text").is_none());
+        assert_eq!(parsed["incoming_chars"].as_i64(), Some(10_000));
+        assert!(parsed["incoming_preview"]
+            .as_str()
+            .map(|text| text.len() <= MERGE_EVENT_PREVIEW_CHARS)
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn log_event_keeps_recall_analytics_fields_small() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL,
+                source_agent TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .expect("create events table");
+
+        log_event(
+            &conn,
+            "recall_query",
+            json!({
+                "agent": "codex",
+                "query": "daemon ownership lock protects startup arbitration",
+                "budget": 240,
+                "spent": 52,
+                "saved": 188,
+                "hits": 3,
+                "mode": "balanced",
+                "cached": false,
+                "tier": "hybrid_fusion",
+                "latency_ms": 12,
+                "semantic_route": {
+                    "mode": "baseline",
+                    "reason": "not_sampled",
+                    "sampled": false,
+                    "trialPercent": 1,
+                    "ranked_sources": ["a", "b", "c", "d", "e"]
+                },
+                "shadow_semantic": {
+                    "status": "unavailable",
+                    "reason": "query_embedding_unavailable",
+                    "baselineTopSources": ["very", "large", "list"],
+                    "shadowTopSources": ["another", "big", "list"]
+                },
+                "method_breakdown": {
+                    "keyword": 2,
+                    "semantic": 1,
+                    "unused_verbose_blob": "x".repeat(2000)
+                }
+            }),
+            "codex",
+        )
+        .expect("log recall event");
+
+        let (payload, bytes): (String, i64) = conn
+            .query_row(
+                "SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read payload");
+        let parsed: Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(parsed["saved"].as_i64(), Some(188));
+        assert_eq!(parsed["budget"].as_i64(), Some(240));
+        assert_eq!(parsed["hits"].as_i64(), Some(3));
+        assert_eq!(parsed["semantic_route"]["mode"].as_str(), Some("baseline"));
+        assert_eq!(
+            parsed["shadow_semantic"]["status"].as_str(),
+            Some("unavailable")
+        );
+        assert!(parsed["shadow_semantic"]["baselineTopSources"].is_null());
+        assert!(parsed["shadow_semantic"]["shadowTopSources"].is_null());
+        assert!(bytes as usize <= MAX_EVENT_JSON_BYTES);
     }
 
     #[test]
