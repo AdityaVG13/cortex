@@ -11,6 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use super::ensure_auth_with_caller_rated;
@@ -39,6 +40,8 @@ const MEMORIES_BM25_SOURCE_WEIGHT: f64 = 2.4;
 const MEMORIES_BM25_TAGS_WEIGHT: f64 = 2.8;
 const DECISIONS_BM25_DECISION_WEIGHT: f64 = 6.0;
 const DECISIONS_BM25_CONTEXT_WEIGHT: f64 = 1.3;
+const BM25_WEIGHT_MIN: f64 = 0.1;
+const BM25_WEIGHT_MAX: f64 = 12.0;
 const SQLITE_VEC_TRIAL_MIN_OVERLAP_RATIO: f64 = 0.60;
 const SQLITE_VEC_TRIAL_MIN_JACCARD: f64 = 0.45;
 const SQLITE_VEC_TRIAL_MAX_MEAN_ABS_RANK_DELTA: f64 = 1.25;
@@ -50,6 +53,53 @@ const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex::";
 const BENCHMARK_SOURCE_SCOPE_PREFIX: &str = "amb::";
 
 // ─── Internal types ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+struct Bm25Weights {
+    memories_text: f64,
+    memories_source: f64,
+    memories_tags: f64,
+    decisions_text: f64,
+    decisions_context: f64,
+}
+
+static BM25_WEIGHTS: OnceLock<Bm25Weights> = OnceLock::new();
+
+fn parse_bm25_weight(raw: Option<String>, default: f64) -> f64 {
+    raw.and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(default)
+        .clamp(BM25_WEIGHT_MIN, BM25_WEIGHT_MAX)
+}
+
+fn bm25_weights_from_resolver(mut resolve_env: impl FnMut(&str) -> Option<String>) -> Bm25Weights {
+    Bm25Weights {
+        memories_text: parse_bm25_weight(
+            resolve_env("CORTEX_BM25_MEM_TEXT_WEIGHT"),
+            MEMORIES_BM25_TEXT_WEIGHT,
+        ),
+        memories_source: parse_bm25_weight(
+            resolve_env("CORTEX_BM25_MEM_SOURCE_WEIGHT"),
+            MEMORIES_BM25_SOURCE_WEIGHT,
+        ),
+        memories_tags: parse_bm25_weight(
+            resolve_env("CORTEX_BM25_MEM_TAGS_WEIGHT"),
+            MEMORIES_BM25_TAGS_WEIGHT,
+        ),
+        decisions_text: parse_bm25_weight(
+            resolve_env("CORTEX_BM25_DECISION_WEIGHT"),
+            DECISIONS_BM25_DECISION_WEIGHT,
+        ),
+        decisions_context: parse_bm25_weight(
+            resolve_env("CORTEX_BM25_CONTEXT_WEIGHT"),
+            DECISIONS_BM25_CONTEXT_WEIGHT,
+        ),
+    }
+}
+
+fn bm25_weights() -> &'static Bm25Weights {
+    BM25_WEIGHTS.get_or_init(|| bm25_weights_from_resolver(|name| std::env::var(name).ok()))
+}
 
 #[derive(Clone, Debug)]
 struct RecallItem {
@@ -3491,6 +3541,7 @@ fn search_memories(
     }
 
     let fts_query = build_fts_query(&term_groups);
+    let bm25 = bm25_weights();
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         // Field-boosted BM25: memories_fts columns are (text, source, tags).
@@ -3514,9 +3565,9 @@ fn search_memories(
                 params![
                     &fts_query,
                     limit as i64,
-                    MEMORIES_BM25_TEXT_WEIGHT,
-                    MEMORIES_BM25_SOURCE_WEIGHT,
-                    MEMORIES_BM25_TAGS_WEIGHT
+                    bm25.memories_text,
+                    bm25.memories_source,
+                    bm25.memories_tags
                 ],
                 |row| {
                     Ok((
@@ -3795,6 +3846,7 @@ fn search_decisions(
     }
 
     let fts_query = build_fts_query(&term_groups);
+    let bm25 = bm25_weights();
 
     let fts_result: Result<Vec<SearchCandidate>, String> = (|| {
         // Field-boosted BM25: decisions_fts columns are (decision, context).
@@ -3816,8 +3868,8 @@ fn search_decisions(
                 params![
                     &fts_query,
                     limit as i64,
-                    DECISIONS_BM25_DECISION_WEIGHT,
-                    DECISIONS_BM25_CONTEXT_WEIGHT
+                    bm25.decisions_text,
+                    bm25.decisions_context
                 ],
                 |row| {
                     Ok((
@@ -7412,6 +7464,36 @@ mod tests {
     fn test_round4() {
         assert_eq!(round4(0.12345), 0.1235);
         assert_eq!(round4(1.0), 1.0);
+    }
+
+    #[test]
+    fn bm25_weights_from_resolver_uses_defaults_when_env_missing() {
+        let weights = bm25_weights_from_resolver(|_| None);
+        assert!((weights.memories_text - MEMORIES_BM25_TEXT_WEIGHT).abs() < f64::EPSILON);
+        assert!((weights.memories_source - MEMORIES_BM25_SOURCE_WEIGHT).abs() < f64::EPSILON);
+        assert!((weights.memories_tags - MEMORIES_BM25_TAGS_WEIGHT).abs() < f64::EPSILON);
+        assert!((weights.decisions_text - DECISIONS_BM25_DECISION_WEIGHT).abs() < f64::EPSILON);
+        assert!((weights.decisions_context - DECISIONS_BM25_CONTEXT_WEIGHT).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn bm25_weights_from_resolver_applies_overrides_and_clamps() {
+        let env = HashMap::from([
+            ("CORTEX_BM25_MEM_TEXT_WEIGHT".to_string(), "4.9".to_string()),
+            (
+                "CORTEX_BM25_MEM_SOURCE_WEIGHT".to_string(),
+                "-3".to_string(),
+            ),
+            ("CORTEX_BM25_MEM_TAGS_WEIGHT".to_string(), "999".to_string()),
+            ("CORTEX_BM25_DECISION_WEIGHT".to_string(), "abc".to_string()),
+            ("CORTEX_BM25_CONTEXT_WEIGHT".to_string(), "0.01".to_string()),
+        ]);
+        let weights = bm25_weights_from_resolver(|name| env.get(name).cloned());
+        assert!((weights.memories_text - 4.9).abs() < 0.0001);
+        assert!((weights.memories_source - MEMORIES_BM25_SOURCE_WEIGHT).abs() < 0.0001);
+        assert!((weights.memories_tags - BM25_WEIGHT_MAX).abs() < 0.0001);
+        assert!((weights.decisions_text - DECISIONS_BM25_DECISION_WEIGHT).abs() < 0.0001);
+        assert!((weights.decisions_context - BM25_WEIGHT_MIN).abs() < 0.0001);
     }
 
     #[test]
