@@ -19,6 +19,7 @@ from run_amb_cortex import (  # noqa: E402
     _collect_matrix_case_result,
     _execute_matrix_case,
     _load_matrix_cases,
+    run_cadence,
     run_matrix,
 )
 
@@ -67,6 +68,13 @@ def _base_args() -> argparse.Namespace:
         matrix_file=None,
         summary_file=None,
     )
+
+
+def _base_cadence_args() -> argparse.Namespace:
+    args = _base_args()
+    args.matrix_files = []
+    args.max_matrices = None
+    return args
 
 
 def test_load_matrix_cases_accepts_cases_object(tmp_path: Path) -> None:
@@ -678,6 +686,82 @@ def test_run_matrix_rejects_matrix_runtime_cap_above_ceiling(tmp_path: Path) -> 
 
     with pytest.raises(ValueError, match="max-runtime-seconds"):
         run_matrix(args, run_dir)
+
+
+def test_run_cadence_dry_run_honors_max_matrices(tmp_path: Path) -> None:
+    matrix_a = tmp_path / "matrix-a.json"
+    matrix_b = tmp_path / "matrix-b.json"
+    run_dir = tmp_path / "cadence-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_payload = {
+        "cases": [
+            {"id": "case-a", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+        ]
+    }
+    matrix_a.write_text(json.dumps(matrix_payload), encoding="utf-8")
+    matrix_b.write_text(json.dumps(matrix_payload), encoding="utf-8")
+
+    args = _base_cadence_args()
+    args.matrix_files = [str(matrix_a), str(matrix_b)]
+    args.max_matrices = 1
+    args.dry_run = True
+
+    run_cadence(args, run_dir)
+
+    cadence_summary = json.loads((run_dir / "cadence-summary.json").read_text(encoding="utf-8"))
+    assert cadence_summary["matrix_count_requested"] == 2
+    assert cadence_summary["matrix_count_executed"] == 1
+    assert cadence_summary["matrix_count_failed"] == 0
+    assert cadence_summary["results"][0]["status"] == "passed"
+    assert Path(cadence_summary["results"][0]["summary_file"]).exists()
+
+
+def test_run_cadence_continue_on_error_runs_remaining_matrices(tmp_path: Path) -> None:
+    bad_matrix = tmp_path / "matrix-bad.json"
+    good_matrix = tmp_path / "matrix-good.json"
+    run_dir = tmp_path / "cadence-run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    bad_matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "id": "bad-oracle-case",
+                        "dataset": "locomo",
+                        "split": "locomo10",
+                        "query_limit": 5,
+                        "oracle": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    good_matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"id": "good-case", "dataset": "locomo", "split": "locomo10", "query_limit": 5}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = _base_cadence_args()
+    args.matrix_files = [str(bad_matrix), str(good_matrix)]
+    args.continue_on_error = True
+    args.dry_run = True
+
+    with pytest.raises(RuntimeError, match="cadence run failed"):
+        run_cadence(args, run_dir)
+
+    cadence_summary = json.loads((run_dir / "cadence-summary.json").read_text(encoding="utf-8"))
+    assert cadence_summary["matrix_count_requested"] == 2
+    assert cadence_summary["matrix_count_executed"] == 2
+    assert cadence_summary["matrix_count_failed"] == 1
+    assert cadence_summary["results"][0]["status"] == "failed"
+    assert cadence_summary["results"][1]["status"] == "passed"
 
 
 def test_practical_nonlongmem_matrix_is_fair_and_timeout_friendly() -> None:

@@ -28,6 +28,11 @@ ADAPTERS_DIR = REPO_ROOT / "benchmarking" / "adapters"
 RUNS_ROOT = REPO_ROOT / "benchmarking" / "runs"
 BASELINE_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "token-gate-baselines.json"
 MATRIX_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "amb-eval-matrix.stage1.json"
+CADENCE_MATRIX_FILES_DEFAULT: tuple[Path, ...] = (
+    REPO_ROOT / "benchmarking" / "configs" / "amb-eval-matrix.stage1.q5.json",
+    REPO_ROOT / "benchmarking" / "configs" / "amb-eval-matrix.nonlongmem.practical.json",
+    REPO_ROOT / "benchmarking" / "configs" / "amb-eval-matrix.nonlongmem.expansion.fast.json",
+)
 DEFAULT_MEMORY_BACKEND = "cortex-http"
 SUPPORTED_MEMORY_BACKENDS = (
     "cortex-http",
@@ -2564,6 +2569,128 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
         )
 
 
+def _build_cadence_matrix_args(
+    args: argparse.Namespace,
+    matrix_file: Path,
+    summary_file: Path,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        matrix_file=str(matrix_file),
+        summary_file=str(summary_file),
+        start_index=max(1, int(getattr(args, "start_index", 1))),
+        max_cases=getattr(args, "max_cases", None),
+        max_runtime_seconds=int(getattr(args, "max_runtime_seconds", 1200)),
+        max_case_runtime_seconds=int(getattr(args, "max_case_runtime_seconds", 900)),
+        run_name_prefix=str(getattr(args, "run_name_prefix", "matrix")),
+        mode=str(getattr(args, "mode", "rag")),
+        category=getattr(args, "category", None),
+        memory_backend=str(getattr(args, "memory_backend", DEFAULT_MEMORY_BACKEND)),
+        query_limit=getattr(args, "query_limit", None),
+        query_id=getattr(args, "query_id", None),
+        doc_limit=getattr(args, "doc_limit", None),
+        oracle=bool(getattr(args, "oracle", False)),
+        description=getattr(args, "description", None),
+        continue_on_error=bool(getattr(args, "continue_on_error", False)),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        token_gate_mode=str(getattr(args, "token_gate_mode", "dynamic")),
+        provider_profile=str(getattr(args, "provider_profile", "auto")),
+        baseline_file=str(getattr(args, "baseline_file", BASELINE_FILE_DEFAULT)),
+        disable_baseline_gates=bool(getattr(args, "disable_baseline_gates", False)),
+        no_auto_tighten_baseline=bool(getattr(args, "no_auto_tighten_baseline", False)),
+        min_queries_for_baseline_update=int(
+            getattr(args, "min_queries_for_baseline_update", 20)
+        ),
+        baseline_token_headroom_pct=float(
+            getattr(args, "baseline_token_headroom_pct", 0.08)
+        ),
+        baseline_accuracy_headroom=float(
+            getattr(args, "baseline_accuracy_headroom", 0.02)
+        ),
+        recall_budget=int(getattr(args, "recall_budget", 300)),
+        quality_token_target=str(getattr(args, "quality_token_target", "custom")),
+        retrieval_profile=str(getattr(args, "retrieval_profile", "max-quality")),
+        min_accuracy=float(getattr(args, "min_accuracy", 0.90)),
+        max_recall_tokens=int(getattr(args, "max_recall_tokens", 300)),
+        max_avg_recall_tokens=float(getattr(args, "max_avg_recall_tokens", 300.0)),
+        allow_missing_recall_metrics=bool(
+            getattr(args, "allow_missing_recall_metrics", False)
+        ),
+        no_enforce_gate=bool(getattr(args, "no_enforce_gate", False)),
+    )
+
+
+def run_cadence(args: argparse.Namespace, run_dir: Path) -> None:
+    raw_matrix_files = [
+        str(item).strip()
+        for item in list(getattr(args, "matrix_files", []))
+        if str(item).strip()
+    ]
+    if not raw_matrix_files:
+        raw_matrix_files = [str(path) for path in CADENCE_MATRIX_FILES_DEFAULT]
+    matrix_paths = [_resolve_matrix_path(path) for path in raw_matrix_files]
+    max_matrices = getattr(args, "max_matrices", None)
+    if max_matrices is not None:
+        matrix_paths = matrix_paths[: max(1, int(max_matrices))]
+
+    if not matrix_paths:
+        raise ValueError("cadence run requires at least one matrix file")
+
+    continue_on_error = bool(getattr(args, "continue_on_error", False))
+    cadence_results: list[dict[str, object]] = []
+    failed_matrices = 0
+
+    for index, matrix_path in enumerate(matrix_paths, start=1):
+        matrix_slug = _slug_fragment(matrix_path.stem)
+        matrix_run_dir = run_dir / f"{index:02d}-{matrix_slug}"
+        matrix_run_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = matrix_run_dir / "matrix-summary.json"
+        matrix_args = _build_cadence_matrix_args(args, matrix_path, summary_path)
+
+        started_at = time.monotonic()
+        status = "passed"
+        error: str | None = None
+        try:
+            run_matrix(matrix_args, matrix_run_dir)
+        except Exception as exc:
+            status = "failed"
+            error = str(exc)
+            failed_matrices += 1
+
+        cadence_results.append(
+            {
+                "index": index,
+                "matrix_file": str(matrix_path),
+                "matrix_run_dir": str(matrix_run_dir),
+                "summary_file": str(summary_path),
+                "status": status,
+                "error": error,
+                "duration_seconds": round(time.monotonic() - started_at, 2),
+            }
+        )
+
+        if status == "failed" and not continue_on_error:
+            break
+
+    cadence_summary = {
+        "command": "cadence",
+        "created_at": datetime.now().isoformat(),
+        "run_dir": str(run_dir),
+        "matrix_count_requested": len(raw_matrix_files),
+        "matrix_count_executed": len(cadence_results),
+        "matrix_count_failed": failed_matrices,
+        "continue_on_error": continue_on_error,
+        "results": cadence_results,
+    }
+    summary_path = run_dir / "cadence-summary.json"
+    summary_path.write_text(json.dumps(cadence_summary, indent=2), encoding="utf-8")
+    print(json.dumps(cadence_summary, indent=2))
+
+    if failed_matrices > 0:
+        raise RuntimeError(
+            f"cadence run failed for {failed_matrices} matrix invocation(s); see {summary_path}"
+        )
+
+
 def _add_quality_gate_arguments(target: argparse.ArgumentParser) -> None:
     target.add_argument(
         "--token-gate-mode",
@@ -2775,6 +2902,80 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_quality_gate_arguments(matrix)
     matrix.set_defaults(func=run_matrix)
+
+    cadence = subparsers.add_parser(
+        "cadence",
+        help="Run the broader benchmark matrix cadence sequence for post-gate verification.",
+    )
+    cadence.add_argument(
+        "--matrix-files",
+        nargs="+",
+        default=[str(path) for path in CADENCE_MATRIX_FILES_DEFAULT],
+        help=(
+            "Ordered matrix specs for cadence execution. "
+            "Defaults to stage1-q5 + practical non-longmem + fast non-longmem expansion."
+        ),
+    )
+    cadence.add_argument(
+        "--max-matrices",
+        type=int,
+        default=None,
+        help="Optional cap on how many matrix files from --matrix-files to execute.",
+    )
+    cadence.add_argument(
+        "--start-index",
+        type=int,
+        default=1,
+        help="1-based case index applied to each matrix run.",
+    )
+    cadence.add_argument(
+        "--max-cases",
+        type=int,
+        default=None,
+        help="Optional max cases per matrix run.",
+    )
+    cadence.add_argument(
+        "--max-runtime-seconds",
+        type=int,
+        default=int(os.environ.get("CORTEX_BENCHMARK_MATRIX_MAX_RUNTIME_SECONDS", "1200")),
+        help="Hard runtime cap per matrix invocation.",
+    )
+    cadence.add_argument(
+        "--max-case-runtime-seconds",
+        type=int,
+        default=int(os.environ.get("CORTEX_BENCHMARK_MATRIX_MAX_CASE_RUNTIME_SECONDS", "900")),
+        help="Hard runtime cap per matrix case.",
+    )
+    cadence.add_argument(
+        "--run-name-prefix",
+        default="matrix",
+        help="Prefix used for per-case run names when a matrix case omits run_name.",
+    )
+    cadence.add_argument("--mode", default="rag", help="Default AMB response mode for matrix cases.")
+    cadence.add_argument("--category", default=None, help="Default AMB category for matrix cases.")
+    cadence.add_argument(
+        "--memory-backend",
+        choices=SUPPORTED_MEMORY_BACKENDS,
+        default=os.environ.get("CORTEX_BENCHMARK_MEMORY_BACKEND", DEFAULT_MEMORY_BACKEND),
+        help="Default memory backend for matrix cases.",
+    )
+    cadence.add_argument("--query-limit", type=int, default=None, help="Default query limit for matrix cases.")
+    cadence.add_argument("--query-id", default=None, help="Default query id for matrix cases.")
+    cadence.add_argument("--doc-limit", type=int, default=None, help="Default doc limit for matrix cases.")
+    cadence.add_argument("--oracle", action="store_true", help="Default oracle mode for matrix cases.")
+    cadence.add_argument("--description", default=None, help="Default run description for matrix cases.")
+    cadence.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue remaining cadence matrix files after a matrix-level failure.",
+    )
+    cadence.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and expand matrix cases for each cadence matrix without executing AMB runs.",
+    )
+    _add_quality_gate_arguments(cadence)
+    cadence.set_defaults(func=run_cadence)
 
     return parser
 
