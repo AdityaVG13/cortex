@@ -83,6 +83,17 @@ firebase-admin*.json
 .gcp/
 .config/gcloud/
 
+# Local secure-repo root stubs (canonical policies live under security/)
+SECURITY.md
+AUTH.md
+API.md
+ACCESSIBILITY.md
+DATABASE.md
+DEPLOYMENT.md
+INCIDENT_RESPONSE.md
+ENV_VARIABLES.md
+.env.example
+
 # Personal config (users create their own)
 CLAUDE.md
 AGENTS.md
@@ -138,3 +149,4 @@ benchmarking/results/*
 .shipsecure-pro.zip
 .shipsecure-temp/
 security/
+!info/security.md
