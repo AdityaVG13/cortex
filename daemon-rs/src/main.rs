@@ -31,6 +31,7 @@ mod workspace;
 
 use chrono::{self, Utc};
 use fs2::FileExt;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -597,6 +598,10 @@ async fn main() {
         "cleanup" => {
             let dry_run = args.iter().any(|a| a == "--dry-run");
             run_cleanup_cli(&paths, dry_run);
+        }
+        "embeddings" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            run_embeddings_cli(&paths, &remaining).await;
         }
 
         // ── Backup/restore CLI ────────────────────────────────────
@@ -1209,6 +1214,12 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
     eprintln!();
+    eprintln!("Embeddings:");
+    eprintln!("  embeddings status [--json]  Show active-model embedding backlog counts");
+    eprintln!(
+        "  embeddings drain [--batch-size <n>] [--max-batches <n>] [--lock-wait-ms <n>] [--until-exhausted] [--json]"
+    );
+    eprintln!();
     eprintln!("User Management (team mode):");
     eprintln!("  user add <name>    Add user [--role member|admin] [--display-name \"...\"]");
     eprintln!("  user rotate-key <name>  Rotate a user's API key");
@@ -1415,6 +1426,197 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
 
     println!("[doctor] RED");
     std::process::exit(1);
+}
+
+async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
+    match subcmd {
+        "status" => {
+            let json_output = args.iter().any(|arg| arg == "--json");
+            run_embeddings_status_cli(paths, json_output).await;
+        }
+        "drain" => {
+            run_embeddings_drain_cli(paths, &args[1..]).await;
+        }
+        _ => {
+            eprintln!(
+                "Usage: cortex embeddings <status|drain> [--json] [--batch-size <n>] [--max-batches <n>] [--lock-wait-ms <n>] [--until-exhausted] [--max-iterations <n>]"
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_output: bool) {
+    let (state, _shutdown_rx) =
+        state::initialize(paths, false).expect("Failed to initialize state for embeddings status");
+    let Some(engine) = state.embedding_engine.as_ref() else {
+        eprintln!(
+            "[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry."
+        );
+        std::process::exit(1);
+    };
+
+    let model_key = engine.model_key().to_string();
+    let (backlog_memories, backlog_decisions) = {
+        let conn = state.db.lock().await;
+        count_unembedded_targets_for_model(&conn, &model_key)
+    };
+    let backlog_total = backlog_memories + backlog_decisions;
+
+    if json_output {
+        println!(
+            "{}",
+            json!({
+                "model": model_key,
+                "backlog": {
+                    "memories": backlog_memories,
+                    "decisions": backlog_decisions,
+                    "total": backlog_total
+                }
+            })
+        );
+    } else {
+        println!("Embeddings status");
+        println!("model: {model_key}");
+        println!(
+            "backlog: memories={}, decisions={}, total={}",
+            backlog_memories, backlog_decisions, backlog_total
+        );
+    }
+}
+
+async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let batch_size = match parse_flag_usize(args, "--batch-size") {
+        Ok(Some(value)) => value.clamp(1, 10_000),
+        Ok(None) => parse_env_usize(
+            "CORTEX_EMBED_BACKFILL_BATCH_SIZE",
+            DEFAULT_EMBED_BACKFILL_BATCH_SIZE,
+        )
+        .clamp(1, 10_000),
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let max_batches_per_pass = match parse_flag_usize(args, "--max-batches") {
+        Ok(Some(value)) => value.clamp(1, 10_000),
+        Ok(None) => parse_env_usize(
+            "CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS",
+            DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS,
+        )
+        .clamp(1, 10_000),
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let lock_wait_ms = match parse_flag_usize(args, "--lock-wait-ms") {
+        Ok(Some(value)) => value.clamp(100, 60_000),
+        Ok(None) => (background_db_lock_max_wait().as_millis() as usize).clamp(100, 60_000),
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let max_iterations = match parse_flag_usize(args, "--max-iterations") {
+        Ok(Some(value)) => value.clamp(1, 1024),
+        Ok(None) => 32,
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
+    };
+    let until_exhausted = args.iter().any(|arg| arg == "--until-exhausted");
+    let json_output = args.iter().any(|arg| arg == "--json");
+    let lock_wait = Duration::from_millis(lock_wait_ms as u64);
+
+    let (state, _shutdown_rx) =
+        state::initialize(paths, false).expect("Failed to initialize state for embeddings drain");
+    let Some(engine) = state.embedding_engine.as_ref() else {
+        eprintln!(
+            "[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry."
+        );
+        std::process::exit(1);
+    };
+    let model_key = engine.model_key().to_string();
+
+    let mut iterations_ran = 0usize;
+    let mut queued_total = 0usize;
+    let mut computed_total = 0usize;
+    let mut passes_ran = 0usize;
+    let mut exhausted = false;
+
+    while iterations_ran < max_iterations {
+        iterations_ran += 1;
+        let pass = build_embeddings_async(
+            engine,
+            &state.db,
+            batch_size,
+            max_batches_per_pass,
+            lock_wait,
+        )
+        .await;
+        queued_total += pass.queued_total;
+        computed_total += pass.computed_total;
+        passes_ran += pass.passes_ran;
+        exhausted = pass.exhausted;
+
+        if pass.exhausted || pass.queued_total == 0 || !until_exhausted {
+            break;
+        }
+    }
+
+    let (remaining_memories, remaining_decisions) = {
+        let conn = state.db.lock().await;
+        count_unembedded_targets_for_model(&conn, &model_key)
+    };
+    let remaining_total = remaining_memories + remaining_decisions;
+    exhausted = exhausted || remaining_total == 0;
+
+    if json_output {
+        println!(
+            "{}",
+            json!({
+                "model": model_key,
+                "batch_size": batch_size,
+                "max_batches_per_pass": max_batches_per_pass,
+                "lock_wait_ms": lock_wait_ms,
+                "until_exhausted": until_exhausted,
+                "max_iterations": max_iterations,
+                "iterations_ran": iterations_ran,
+                "queued_total": queued_total,
+                "computed_total": computed_total,
+                "passes_ran": passes_ran,
+                "remaining": {
+                    "memories": remaining_memories,
+                    "decisions": remaining_decisions,
+                    "total": remaining_total
+                },
+                "exhausted": exhausted
+            })
+        );
+    } else {
+        println!("Embeddings drain");
+        println!("model: {model_key}");
+        println!(
+            "drain: queued={}, built={}, passes={}, iterations={}",
+            queued_total, computed_total, passes_ran, iterations_ran
+        );
+        println!(
+            "remaining: memories={}, decisions={}, total={}",
+            remaining_memories, remaining_decisions, remaining_total
+        );
+        println!("exhausted: {exhausted}");
+    }
+
+    if until_exhausted && !exhausted {
+        eprintln!(
+            "[embeddings] backlog still pending after {} iteration(s); rerun with higher --max-iterations or --max-batches",
+            iterations_ran
+        );
+        std::process::exit(2);
+    }
 }
 
 fn run_export_cli(args: &[String]) {
@@ -3374,6 +3576,45 @@ fn collect_unembedded_targets_for_model(
     (mem, dec)
 }
 
+fn count_unembedded_targets_for_model(
+    conn: &rusqlite::Connection,
+    model_key: &str,
+) -> (usize, usize) {
+    let memory_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memories m \
+             WHERE m.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'memory' \
+                     AND e.target_id = m.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+            rusqlite::params![model_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(0) as usize;
+
+    let decision_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM decisions d \
+             WHERE d.status = 'active' \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM embeddings e \
+                   WHERE e.target_type = 'decision' \
+                     AND e.target_id = d.id \
+                     AND LOWER(COALESCE(e.model, '')) = ?1\
+               )",
+            rusqlite::params![model_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(0) as usize;
+
+    (memory_count, decision_count)
+}
+
 async fn build_embeddings_async(
     engine: &embeddings::EmbeddingEngine,
     db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
@@ -3787,6 +4028,89 @@ mod tests {
         assert_eq!(
             decisions[0].0, 1,
             "decision selection should be deterministic"
+        );
+    }
+
+    #[test]
+    fn count_unembedded_targets_for_model_reports_model_specific_backlog() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            rusqlite::params!["memory-backlog", "tests::count"],
+        )
+        .expect("insert active backlog memory");
+        let memory_backlog_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            rusqlite::params!["memory-current", "tests::count"],
+        )
+        .expect("insert active current memory");
+        let memory_current_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, ?2, 'note', 'archived', 1.0, datetime('now'), datetime('now'))",
+            rusqlite::params!["memory-archived", "tests::count"],
+        )
+        .expect("insert archived memory");
+
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
+             VALUES (?1, ?2, 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            rusqlite::params!["decision-backlog", "tests::count"],
+        )
+        .expect("insert active backlog decision");
+        let decision_backlog_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
+             VALUES (?1, ?2, 'tester', 'active', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            rusqlite::params!["decision-current", "tests::count"],
+        )
+        .expect("insert active current decision");
+        let decision_current_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
+             VALUES (?1, ?2, 'tester', 'archived', 1.0, 0, 70, datetime('now'), datetime('now'))",
+            rusqlite::params!["decision-archived", "tests::count"],
+        )
+        .expect("insert archived decision");
+
+        let sample_blob = crate::embeddings::vector_to_blob(&[0.1, 0.2, 0.3]);
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('memory', ?1, ?2, 'other-model')",
+            rusqlite::params![memory_backlog_id, sample_blob.clone()],
+        )
+        .expect("insert legacy memory embedding");
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('memory', ?1, ?2, 'all-minilm-l6-v2')",
+            rusqlite::params![memory_current_id, sample_blob.clone()],
+        )
+        .expect("insert current memory embedding");
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', ?1, ?2, 'other-model')",
+            rusqlite::params![decision_backlog_id, sample_blob.clone()],
+        )
+        .expect("insert legacy decision embedding");
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', ?1, ?2, 'all-MiniLM-L6-v2')",
+            rusqlite::params![decision_current_id, sample_blob],
+        )
+        .expect("insert current decision embedding");
+
+        let (memory_count, decision_count) =
+            count_unembedded_targets_for_model(&conn, "all-minilm-l6-v2");
+        assert_eq!(
+            memory_count, 1,
+            "exactly one active memory should be pending"
+        );
+        assert_eq!(
+            decision_count, 1,
+            "exactly one active decision should be pending"
         );
     }
 
