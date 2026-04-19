@@ -46,6 +46,11 @@ docs.zip
 # Rust build outputs
 daemon-rs/target/
 daemon-rs/target-*/
+desktop/cortex-control-center/src-tauri/target/
+desktop/cortex-control-center/src-tauri/target-*/
+target-tests/
+pytest-cache-files-*/
+Usersadityacortex.tmppytest/
 
 # Desktop app build outputs
 desktop/cortex-control-center/dist/

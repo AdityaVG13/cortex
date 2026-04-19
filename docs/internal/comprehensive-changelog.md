@@ -8,6 +8,31 @@ Commit range size: 319 commits
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
 
+- 2026-04-18 22:20 - Runtime binary-source hardening + build-bloat guardrails:
+  - `desktop/cortex-control-center/src-tauri/src/main.rs`:
+    - strengthened daemon binary path denylist so non-runtime isolated target trees are rejected by default
+    - `target-*` directories are now disallowed unless explicitly runtime-safe (`target-control-center-dev`, `target-control-center-release`)
+    - startup path guard now blocks `target*/build` and `target*/incremental` artifacts in addition to existing test/deps protections
+    - added regression coverage for blocked paths (`target-rtk-isolated`, `target-codex-test`, `target/debug/build`) while preserving allowed runtime paths
+  - `.gitignore`:
+    - added explicit ignore coverage for recurring transient workspace noise (`target-tests`, `src-tauri/target-tests`, `pytest-cache-files-*`, `Usersadityacortex.tmppytest`)
+  - `.ignore` (new):
+    - added repo-wide search-ignore guardrails for heavy generated artifacts (Rust targets, benchmark tools/runs, graph outputs, cache folders) to reduce repeated large-tree scans in tooling
+  - `scripts/prune-build-bloat.ps1` (new):
+    - added measured dry-run/apply cleanup utility for stale target/test/benchmark artifacts with age-aware runtime target handling
+    - added root npm wrappers in `package.json`:
+      - `ops:prune-build-bloat`
+      - `ops:prune-build-bloat:apply`
+  - `desktop/cortex-control-center/package.json`:
+    - aligned daemon build helper scripts to isolated control-center target dirs (`target-control-center-dev` / `target-control-center-release`) instead of the shared default target dir
+  - Local measurement snapshot from dry-run:
+    - reclaimable: `22.044 GB`
+    - largest candidates: `daemon-rs/target-tests` (`5.068 GB`), `target-rtk-isolated` (`4.923 GB`), `target-codex-test` (`4.916 GB`), `target-rtk-audit` (`3.584 GB`), `src-tauri/target-tests` (`2.142 GB`)
+- Validation:
+  - `rtk cargo fmt --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml`
+  - `rtk cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml disallowed_daemon_binary_path_blocks_wrappers_temp_and_test_artifacts -- --nocapture` (`1` passed)
+  - `npm run -s ops:prune-build-bloat` (dry-run successful with candidate report)
+
 - 2026-04-18 18:20 - Startup timeout-storm hardening + daemon startup scheduling safety pass:
   - `desktop/cortex-control-center/src/App.jsx`:
     - startup protected refresh now prioritizes core routes (`/sessions`, `/locks`, `/tasks`) and defers secondary routes (`/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`) to background on first successful core hydration

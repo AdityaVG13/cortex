@@ -32,6 +32,8 @@ pub struct SourceIdentity {
 
 const MAX_SOURCE_LABEL_LEN: usize = 160;
 const CTX_API_KEY_LEN: usize = 50;
+const DECISION_STORED_EVENT_CAP_ROWS: i64 = 25_000;
+const DECISION_STORED_EVENT_PRUNE_INTERVAL: i64 = 128;
 
 /// Build an Axum JSON response with CORS / cache headers applied.
 pub fn json_response(status: StatusCode, body: Value) -> Response {
@@ -482,6 +484,40 @@ pub fn log_event(
         "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
         rusqlite::params![kind, data.to_string(), source_agent],
     )?;
+    maybe_prune_high_volume_event(conn, kind)?;
+    Ok(())
+}
+
+fn maybe_prune_high_volume_event(conn: &rusqlite::Connection, kind: &str) -> rusqlite::Result<()> {
+    if kind != "decision_stored" {
+        return Ok(());
+    }
+    let inserted_id = conn.last_insert_rowid();
+    if inserted_id <= 0 || inserted_id % DECISION_STORED_EVENT_PRUNE_INTERVAL != 0 {
+        return Ok(());
+    }
+    prune_event_type_keep_latest(conn, kind, DECISION_STORED_EVENT_CAP_ROWS)
+}
+
+fn prune_event_type_keep_latest(
+    conn: &rusqlite::Connection,
+    event_type: &str,
+    keep_rows: i64,
+) -> rusqlite::Result<()> {
+    if keep_rows < 1 {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM events
+         WHERE id IN (
+           SELECT id
+           FROM events
+           WHERE type = ?1
+           ORDER BY id DESC
+           LIMIT -1 OFFSET ?2
+         )",
+        rusqlite::params![event_type, keep_rows],
+    )?;
     Ok(())
 }
 
@@ -522,6 +558,40 @@ mod tests {
         let agent = "codex";
         let model = "m".repeat(MAX_SOURCE_LABEL_LEN);
         assert!(normalize_agent_label(agent, Some(&model)).is_none());
+    }
+
+    #[test]
+    fn prune_event_type_keep_latest_trims_old_rows() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                data TEXT NOT NULL,
+                source_agent TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .expect("create events table");
+
+        for idx in 0..6 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
+                rusqlite::params![format!("{{\"idx\":{idx}}}")],
+            )
+            .expect("insert event");
+        }
+
+        prune_event_type_keep_latest(&conn, "decision_stored", 3).expect("prune rows");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count rows");
+        assert_eq!(count, 3);
     }
 
     #[test]

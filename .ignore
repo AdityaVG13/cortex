@@ -1,0 +1,29 @@
+# Rust build outputs and test targets
+daemon-rs/target/
+daemon-rs/target-*/
+desktop/cortex-control-center/src-tauri/target/
+desktop/cortex-control-center/src-tauri/target-*/
+target-tests/
+
+# Large benchmark datasets / local envs
+benchmarking/tools/
+benchmarking/runs/
+benchmarking/results/
+benchmarking/**/__pycache__/
+benchmarking/**/.venv/
+
+# Node/Rust/Python caches
+node_modules/
+**/__pycache__/
+.pytest_cache/
+
+# Local generated graph artifacts
+.graphify/
+graphify-out/
+.repowise/
+
+# Transient local folders that can emit access denied
+pytest-cache-files-*/
+Usersadityacortex.tmppytest/
+tmp/ptbase-01/
+tmp/pytest-local/

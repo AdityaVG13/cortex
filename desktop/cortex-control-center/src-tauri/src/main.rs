@@ -486,6 +486,10 @@ fn path_is_under_root(path: &Path, root: &Path) -> bool {
         || normalized_path.starts_with(&normalized_root)
 }
 
+fn is_allowed_isolated_target_dir(segment: &str) -> bool {
+    segment == DEV_DAEMON_TARGET_DIR || segment == RELEASE_DAEMON_TARGET_DIR
+}
+
 fn is_non_runtime_test_artifact_path(path: &Path) -> bool {
     let mut in_target_tree = false;
 
@@ -499,12 +503,20 @@ fn is_non_runtime_test_artifact_path(path: &Path) -> bool {
             return true;
         }
 
-        if segment == "target" || segment.starts_with("target-") {
+        if segment == "target" {
             in_target_tree = true;
             continue;
         }
 
-        if in_target_tree && segment == "deps" {
+        if segment.starts_with("target-") {
+            if !is_allowed_isolated_target_dir(&segment) {
+                return true;
+            }
+            in_target_tree = true;
+            continue;
+        }
+
+        if in_target_tree && matches!(segment.as_str(), "deps" | "build" | "incremental") {
             return true;
         }
     }
@@ -564,9 +576,12 @@ fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> 
     if prefer_debug {
         vec![
             isolated_debug_path,
-            debug_path,
             isolated_release_path,
             release_path,
+            // Keep shared target/debug as a last-resort fallback only. The
+            // Control Center should primarily run from its isolated target dir
+            // to avoid locking developer/test binaries in daemon-rs/target.
+            debug_path,
         ]
     } else {
         vec![
@@ -2328,11 +2343,11 @@ mod tests {
         assert!(candidates[0]
             .to_string_lossy()
             .contains("target-control-center-dev\\debug"));
-        assert!(candidates[1].to_string_lossy().contains("target\\debug"));
-        assert!(candidates[2]
+        assert!(candidates[1]
             .to_string_lossy()
             .contains("target-control-center-release\\release"));
-        assert!(candidates[3].to_string_lossy().contains("target\\release"));
+        assert!(candidates[2].to_string_lossy().contains("target\\release"));
+        assert!(candidates[3].to_string_lossy().contains("target\\debug"));
     }
 
     #[test]
@@ -2383,6 +2398,19 @@ mod tests {
         let isolated_runtime =
             PathBuf::from("C:/repo/daemon-rs/target-control-center-dev/debug/cortex.exe");
         assert!(!is_disallowed_daemon_binary_path(&isolated_runtime));
+
+        let isolated_release_runtime =
+            PathBuf::from("C:/repo/daemon-rs/target-control-center-release/release/cortex.exe");
+        assert!(!is_disallowed_daemon_binary_path(&isolated_release_runtime));
+
+        let rtk_isolated = PathBuf::from("C:/repo/daemon-rs/target-rtk-isolated/debug/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&rtk_isolated));
+
+        let codex_test = PathBuf::from("C:/repo/daemon-rs/target-codex-test/debug/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&codex_test));
+
+        let target_build_script = PathBuf::from("C:/repo/daemon-rs/target/debug/build/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&target_build_script));
 
         let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
         assert!(!is_disallowed_daemon_binary_path(&safe));

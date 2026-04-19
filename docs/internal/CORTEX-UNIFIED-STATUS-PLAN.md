@@ -1,6 +1,6 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-18 18:30  
+**Last updated:** 2026-04-18 22:20  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
 
@@ -144,6 +144,12 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - live benchmark namespace bloat cleanup path is validated with backup-first procedure for oversized local DBs
   - boot savings baseline accounting now excludes custom-source filesystem-size heuristics and tracks only DB-backed boot context families actually assembled in prompt flow
   - local protected-route probe after cleanup is stable (`/sessions`, `/locks`, `/tasks`, `/feed`, `/messages`, `/activity`, `/conflicts`, `/permissions`, `/savings` all healthy in local measurement window)
+- Additional startup/source-path safety and workspace-bloat prevention are now landed:
+  - desktop daemon binary guard now rejects non-runtime isolated target trees beyond the intended runtime set (for example `target-rtk-*`, `target-codex-test`, `target-tests`, and `target*/build|deps|incremental`) while still allowing `target`, `target-control-center-dev`, and `target-control-center-release` runtime binaries
+  - root ignore hygiene now excludes recurring transient test/cache directories (`target-tests`, `src-tauri/target-tests`, `pytest-cache-files-*`, and local pytest temp folders) from tracked/untracked noise
+  - repository search hygiene now includes a dedicated `.ignore` to prevent repeated scans over Rust target trees and heavy benchmark artifact folders during engineering/debug sessions
+  - added `scripts/prune-build-bloat.ps1` plus root npm wrappers (`ops:prune-build-bloat`, `ops:prune-build-bloat:apply`) for measured, operator-controlled cleanup
+  - measured dry-run reclaim from current workspace: ~`22.044 GB` (largest buckets: `daemon-rs/target-tests`, `target-rtk-isolated`, `target-codex-test`, `target-rtk-audit`, `src-tauri/target-tests`)
 
 ---
 
