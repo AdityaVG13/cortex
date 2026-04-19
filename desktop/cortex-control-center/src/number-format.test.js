@@ -15,6 +15,12 @@ describe("number formatting", () => {
     expect(formatted.toLowerCase()).not.toContain("e+");
   });
 
+  it("never uses scientific notation for extreme values", () => {
+    const formatted = formatCompactNumber(4.6628816004992054e76);
+    expect(formatted.toLowerCase()).not.toContain("e+");
+    expect(formatted).toMatch(/^[0-9]+(\.[0-9]{1,2})?[A-Za-z+0-9]+$/);
+  });
+
   it("formats signed compact values with explicit sign", () => {
     expect(formatSignedCompactNumber(0)).toBe("0");
     expect(formatSignedCompactNumber(1_234_567)).toBe("+1.2M");

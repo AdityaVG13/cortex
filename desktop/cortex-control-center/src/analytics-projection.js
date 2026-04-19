@@ -41,12 +41,28 @@ function projectionBasisFromSeries(dailySeries, cumulativeSeries) {
     .filter((value) => Number.isFinite(value) && value > 0);
 }
 
+function sanitizeProjectionBasis(basis) {
+  if (!Array.isArray(basis) || basis.length < 2) return [];
+  const finite = basis.filter((value) => Number.isFinite(value) && value > 0);
+  if (finite.length < 2) return [];
+
+  const sorted = [...finite].sort((left, right) => left - right);
+  const median = percentileFromSorted(sorted, 0.5);
+  const upperLimit = Math.max(median * 40, 1);
+  const lowerLimit = Math.max(median * 0.02, 1);
+  return finite.map((value) => clampNumber(value, lowerLimit, upperLimit));
+}
+
 export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizonDays = 30, simulationCount = 180) {
-  const basis = projectionBasisFromSeries(dailySeries, cumulativeSeries);
+  const safeHorizonDays = Math.max(1, Math.min(90, Math.floor(Number(horizonDays) || 30)));
+  const safeSimulationCount = Math.max(20, Math.min(1000, Math.floor(Number(simulationCount) || 180)));
+  const basis = sanitizeProjectionBasis(projectionBasisFromSeries(dailySeries, cumulativeSeries));
   if (basis.length < 2) return null;
 
   const recent = basis.slice(-14);
   const recentAverage = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+  const recentMedian = percentileFromSorted([...recent].sort((left, right) => left - right), 0.5);
+  const recentPeak = Math.max(...recent, 1);
   const logReturns = [];
   for (let index = 1; index < recent.length; index += 1) {
     const previous = Math.max(recent[index - 1], 1);
@@ -73,33 +89,36 @@ export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizon
   );
   const rng = createSeededRng(Math.round(startTotal + lastDaily + recent.length * 13));
   const meanReversionStrength = shortHistory ? 0.03 : 0.04;
+  const dailyCeiling = Math.max(recentPeak * 4, recentAverage * 6, recentMedian * 10, 1);
+  const maxProjectedGain = dailyCeiling * safeHorizonDays * 2;
 
-  const runs = Array.from({ length: simulationCount }, (_, simIndex) => {
+  const runs = Array.from({ length: safeSimulationCount }, (_, simIndex) => {
     let dailyValue = lastDaily;
     let cumulativeValue = startTotal;
     const series = [];
-    for (let day = 0; day < horizonDays; day += 1) {
+    for (let day = 0; day < safeHorizonDays; day += 1) {
       const shock = gaussianRandom(rng) * volatility;
       const meanReversion = ((recentAverage - dailyValue) / Math.max(dailyValue, 1)) * meanReversionStrength;
       const step = clampNumber(drift + meanReversion + shock, -0.6, 0.6);
       const growth = Math.exp(step);
-      dailyValue = Math.max(0, dailyValue * growth);
+      dailyValue = clampNumber(dailyValue * growth, 0, dailyCeiling);
       cumulativeValue += dailyValue;
+      const gain = clampNumber(cumulativeValue - startTotal, 0, maxProjectedGain);
       series.push({
         day: day + 1,
         daily: dailyValue,
-        cumulative: cumulativeValue,
-        gain: cumulativeValue - startTotal,
+        cumulative: startTotal + gain,
+        gain,
       });
     }
     return {
       key: `sim-${simIndex}`,
       series,
-      final: cumulativeValue - startTotal,
+      final: series.at(-1)?.gain || 0,
     };
   });
 
-  const bandSeries = Array.from({ length: horizonDays }, (_, dayIndex) => {
+  const bandSeries = Array.from({ length: safeHorizonDays }, (_, dayIndex) => {
     const values = runs
       .map((run) => run.series[dayIndex]?.gain || 0)
       .sort((left, right) => left - right);
@@ -114,7 +133,7 @@ export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizon
   });
 
   const samples = runs
-    .filter((_, index) => index % Math.ceil(simulationCount / 14) === 0)
+    .filter((_, index) => index % Math.ceil(safeSimulationCount / 14) === 0)
     .slice(0, 14)
     .map((run) => run.series.map((point) => point.gain));
 
@@ -131,5 +150,5 @@ export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizon
   summary.p50Total = startTotal + summary.p50Gain;
   summary.p90Total = startTotal + summary.p90Gain;
 
-  return { bandSeries, samples, summary, horizonDays, simulationCount };
+  return { bandSeries, samples, summary, horizonDays: safeHorizonDays, simulationCount: safeSimulationCount };
 }

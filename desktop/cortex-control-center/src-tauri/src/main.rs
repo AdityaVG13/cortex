@@ -44,8 +44,6 @@ const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const PATH_BINARY_FALLBACK_ENV: &str = "CORTEX_ALLOW_PATH_BINARY_FALLBACK";
 #[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
-#[cfg(windows)]
-const DETACHED_PROCESS_FLAG: u32 = 0x0000_0008;
 
 #[cfg(windows)]
 fn apply_hidden_process_flags(command: &mut Command) {
@@ -61,7 +59,7 @@ fn apply_hidden_process_flags(_command: &mut Command) {}
 fn apply_hidden_daemon_process_flags(command: &mut Command) {
     use std::os::windows::process::CommandExt;
 
-    command.creation_flags(CREATE_NO_WINDOW_FLAG | DETACHED_PROCESS_FLAG);
+    command.creation_flags(CREATE_NO_WINDOW_FLAG);
 }
 
 #[cfg(not(windows))]
@@ -531,7 +529,10 @@ fn describe_daemon_state(
     } else if reachable {
         "Cortex daemon reachable (external process), waiting for auth token.".to_string()
     } else if starting {
-        format!("Cortex daemon is responding on :{} and still starting.", port)
+        format!(
+            "Cortex daemon is responding on :{} and still starting.",
+            port
+        )
     } else {
         "Cortex daemon is offline.".to_string()
     }
@@ -667,17 +668,9 @@ fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> 
         .join(cortex_binary_name());
 
     if prefer_debug {
-        vec![
-            isolated_debug_path,
-            isolated_release_path,
-            release_path,
-        ]
+        vec![isolated_debug_path, isolated_release_path, release_path]
     } else {
-        vec![
-            isolated_release_path,
-            release_path,
-            isolated_debug_path,
-        ]
+        vec![isolated_release_path, release_path, isolated_debug_path]
     }
 }
 
@@ -1192,9 +1185,12 @@ async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandRes
     } else {
         false
     };
-    let mut message = describe_daemon_state(managed, reachable, starting, auth_token_ready, pid, port);
+    let mut message =
+        describe_daemon_state(managed, reachable, starting, auth_token_ready, pid, port);
     if probe.identity_mismatch {
-        message.push_str(" Runtime identity metadata mismatch detected; using loose local daemon probe.");
+        message.push_str(
+            " Runtime identity metadata mismatch detected; using loose local daemon probe.",
+        );
     }
 
     Ok(DaemonCommandResult {
@@ -2453,7 +2449,9 @@ fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
                 );
             }
             Err(err) => {
-                eprintln!("[cortex-control-center] app-managed local start failed at startup: {err}");
+                eprintln!(
+                    "[cortex-control-center] app-managed local start failed at startup: {err}"
+                );
                 log_startup_path("setup", "blocked", "app-managed spawn failed");
             }
         },
@@ -2560,10 +2558,10 @@ fn main() {
 mod tests {
     use super::{
         cortex_mcp_registration, cortex_readiness_state, describe_daemon_state, editor_args,
-        editor_config_path, editor_targets, extract_error_detail, interpret_shutdown_response,
-        health_state_with_identity_fallback, is_cortex_health_response,
-        is_disallowed_daemon_binary_path, json_env_match, local_app_managed_start_timeout_message,
-        path_binary_fallback_enabled_from_value,
+        editor_config_path, editor_targets, extract_error_detail,
+        health_state_with_identity_fallback, interpret_shutdown_response,
+        is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
+        local_app_managed_start_timeout_message, path_binary_fallback_enabled_from_value,
         readiness_state_with_identity_fallback, should_use_partial_response_on_read_timeout,
         toml_env_match, workspace_binary_candidates, DaemonState, FetchCortexResponse,
         ResolvedCortexPaths,
