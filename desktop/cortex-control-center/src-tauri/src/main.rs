@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 use fs2::FileExt;
 use rusqlite::Connection;
@@ -1570,11 +1570,20 @@ fn send_cortex_request(
 }
 
 fn should_use_partial_response_on_read_timeout(err: &std::io::Error, response_len: usize) -> bool {
-    response_len > 0
-        && matches!(
-            err.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        )
+    if response_len == 0 {
+        return false;
+    }
+
+    if matches!(
+        err.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) {
+        return true;
+    }
+
+    // Windows socket timeouts are sometimes reported as WSAETIMEDOUT (10060)
+    // with a non-timeout ErrorKind; treat them as timeout-equivalent.
+    err.raw_os_error() == Some(10060)
 }
 
 fn send_cortex_request_with_port(
@@ -2489,7 +2498,10 @@ fn main() {
         .manage(DaemonState::new(exe_path))
         .manage(LifecycleState::default())
         .setup(|app| {
-            setup_tray(app)?;
+            // Avoid stale/duplicate tray icons during frequent dev restarts.
+            if hide_to_tray_on_close() {
+                setup_tray(app)?;
+            }
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -2724,6 +2736,14 @@ mod tests {
 
         assert!(should_use_partial_response_on_read_timeout(&timeout, 8));
         assert!(should_use_partial_response_on_read_timeout(&would_block, 8));
+        #[cfg(windows)]
+        {
+            let winsock_timeout = std::io::Error::from_raw_os_error(10060);
+            assert!(should_use_partial_response_on_read_timeout(
+                &winsock_timeout,
+                8
+            ));
+        }
         assert!(!should_use_partial_response_on_read_timeout(&timeout, 0));
         assert!(!should_use_partial_response_on_read_timeout(&reset, 8));
     }

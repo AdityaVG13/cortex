@@ -100,6 +100,23 @@ describe("createApi - api()", () => {
     }
   });
 
+  it("falls back to HTTP GET when IPC returns a raw read transport error", async () => {
+    const invoke = vi.fn(() => Promise.reject(new Error("Read failed: os error 10060")));
+    globalThis.fetch = mockFetch(200, { status: "ok-from-http" }, true);
+    const api = createApi(makeDeps({ invoke, token: "tok" }));
+
+    await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7437/sessions",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer tok",
+          "X-Cortex-Request": "true",
+        }),
+      })
+    );
+  });
+
   it("throws on invalid IPC response (missing body string)", async () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
     const invoke = vi.fn(() => Promise.resolve({ status: 200, body: 42 }));
@@ -305,6 +322,24 @@ describe("createPostApi - postApi()", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("falls back to HTTP POST when IPC returns a raw read transport error", async () => {
+    const invoke = vi.fn(() => Promise.reject(new Error("Read failed: os error 10060")));
+    globalThis.fetch = mockFetch(200, { ok: true }, true);
+    const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
+
+    await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({ ok: true });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7437/resolve",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer tok",
+          "X-Cortex-Request": "true",
+        }),
+      })
+    );
   });
 
   it("throws on IPC HTTP non-2xx", async () => {

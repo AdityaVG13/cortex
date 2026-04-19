@@ -87,7 +87,12 @@ function shouldFallbackToHttp(error) {
   return (
     message.includes("ipc request") ||
     message.includes("task failed") ||
-    message.includes("invalid ipc response")
+    message.includes("invalid ipc response") ||
+    message.includes("read failed") ||
+    message.includes("write failed") ||
+    message.includes("cannot connect to daemon") ||
+    message.includes("cannot set read timeout") ||
+    message.includes("cannot set write timeout")
   );
 }
 
