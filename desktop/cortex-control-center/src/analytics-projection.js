@@ -87,14 +87,19 @@ export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizon
     || cumulativeSeries?.at?.(-1)?.saved
     || basis.reduce((sum, value) => sum + value, 0)
   );
-  const rng = createSeededRng(Math.round(startTotal + lastDaily + recent.length * 13));
+  // Keep deterministic seeding while avoiding precision collapse from massive totals.
+  const boundedSeedBase = Number.isFinite(startTotal)
+    ? Math.abs(startTotal % 1_000_000_000)
+    : 0;
+  const rng = createSeededRng(Math.round(boundedSeedBase + lastDaily + recent.length * 13));
   const meanReversionStrength = shortHistory ? 0.03 : 0.04;
   const dailyCeiling = Math.max(recentPeak * 4, recentAverage * 6, recentMedian * 10, 1);
   const maxProjectedGain = dailyCeiling * safeHorizonDays * 2;
 
   const runs = Array.from({ length: safeSimulationCount }, (_, simIndex) => {
     let dailyValue = lastDaily;
-    let cumulativeValue = startTotal;
+    // Model gains directly so huge historical totals cannot swallow day-level deltas.
+    let gainValue = 0;
     const series = [];
     for (let day = 0; day < safeHorizonDays; day += 1) {
       const shock = gaussianRandom(rng) * volatility;
@@ -102,13 +107,12 @@ export function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizon
       const step = clampNumber(drift + meanReversion + shock, -0.6, 0.6);
       const growth = Math.exp(step);
       dailyValue = clampNumber(dailyValue * growth, 0, dailyCeiling);
-      cumulativeValue += dailyValue;
-      const gain = clampNumber(cumulativeValue - startTotal, 0, maxProjectedGain);
+      gainValue = clampNumber(gainValue + dailyValue, 0, maxProjectedGain);
       series.push({
         day: day + 1,
         daily: dailyValue,
-        cumulative: startTotal + gain,
-        gain,
+        cumulative: startTotal + gainValue,
+        gain: gainValue,
       });
     }
     return {
