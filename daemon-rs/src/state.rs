@@ -59,12 +59,12 @@ impl SqliteVecRouteMode {
                 "primary" | "vec0" | "production" | "on" => Self::Primary,
                 unknown => {
                     eprintln!(
-                        "[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using trial"
+                        "[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using primary"
                     );
-                    Self::Trial
+                    Self::Primary
                 }
             },
-            Err(_) => Self::Trial,
+            Err(_) => Self::Primary,
         }
     }
 
@@ -1038,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_vec_canary_config_defaults_to_disabled() {
+    fn sqlite_vec_canary_config_defaults_to_primary_route() {
         let _guard = env_guard();
         let prev_percent = std::env::var("CORTEX_SQLITE_VEC_TRIAL_PERCENT").ok();
         let prev_force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF").ok();
@@ -1050,10 +1050,10 @@ mod tests {
         let config = SqliteVecCanaryConfig::from_env();
         assert_eq!(config.trial_percent, 0);
         assert!(!config.force_off);
-        assert!(matches!(config.route_mode, SqliteVecRouteMode::Trial));
+        assert!(matches!(config.route_mode, SqliteVecRouteMode::Primary));
         assert!(matches!(
             config.effective_route_mode(),
-            SqliteVecRouteMode::Trial
+            SqliteVecRouteMode::Primary
         ));
 
         if let Some(value) = prev_percent {

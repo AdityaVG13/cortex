@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! In-process ONNX embedding engine.
 //!
-//! Uses a selectable embedding profile (default: all-MiniLM-L6-v2, 23MB, 384-dim)
+//! Uses a selectable embedding profile (default: all-MiniLM-L12-v2, 118MB, 384-dim)
 //! downloaded on first run.
 //! Embeddings work the moment Cortex starts.
 
@@ -65,19 +65,20 @@ fn normalize_model_key(raw: &str) -> String {
 fn resolve_profile() -> &'static EmbeddingModelProfile {
     match std::env::var(MODEL_ENV_KEY) {
         Ok(raw) => match normalize_model_key(&raw).as_str() {
-            "all-minilm-l6-v2" | "all-minilm-l6v2" | "minilm" => &ALL_MINILM_L6_V2,
-            "all-minilm-l12-v2" | "all-minilm-l12v2" | "minilm-l12" | "minilm-modern" => {
-                &ALL_MINILM_L12_V2
+            "all-minilm-l6-v2" | "all-minilm-l6v2" | "minilm-l6" | "minilm-legacy" => {
+                &ALL_MINILM_L6_V2
             }
+            "all-minilm-l12-v2" | "all-minilm-l12v2" | "minilm-l12" | "minilm-modern"
+            | "minilm" => &ALL_MINILM_L12_V2,
             unknown => {
                 eprintln!(
                     "[embeddings] Unknown {MODEL_ENV_KEY}='{unknown}', falling back to {}",
-                    ALL_MINILM_L6_V2.key
+                    ALL_MINILM_L12_V2.key
                 );
-                &ALL_MINILM_L6_V2
+                &ALL_MINILM_L12_V2
             }
         },
-        Err(_) => &ALL_MINILM_L6_V2,
+        Err(_) => &ALL_MINILM_L12_V2,
     }
 }
 
@@ -463,24 +464,24 @@ mod tests {
     }
 
     #[test]
-    fn selected_model_defaults_to_minilm() {
+    fn selected_model_defaults_to_minilm_modern() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(None);
         let selected = selected_model_selection();
-        assert_eq!(selected.key, "all-minilm-l6-v2");
-        assert_eq!(selected.display_name, "all-MiniLM-L6-v2");
+        assert_eq!(selected.key, "all-minilm-l12-v2");
+        assert_eq!(selected.display_name, "all-MiniLM-L12-v2");
         assert_eq!(selected.dimension, 384);
-        assert_eq!(selected.model_file, "all-MiniLM-L6-v2.onnx");
-        assert_eq!(selected.tokenizer_file, "tokenizer.json");
+        assert_eq!(selected.model_file, "all-MiniLM-L12-v2.onnx");
+        assert_eq!(selected.tokenizer_file, "all-MiniLM-L12-v2-tokenizer.json");
     }
 
     #[test]
-    fn selected_model_accepts_minilm_aliases() {
+    fn selected_model_accepts_legacy_l6_aliases() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(None);
-        std::env::set_var(MODEL_ENV_KEY, "MiniLM");
+        std::env::set_var(MODEL_ENV_KEY, "minilm-l6");
         assert_eq!(selected_model_key(), "all-minilm-l6-v2");
-        std::env::set_var(MODEL_ENV_KEY, "all_miniLM_l6_v2");
+        std::env::set_var(MODEL_ENV_KEY, "minilm-legacy");
         assert_eq!(selected_model_key(), "all-minilm-l6-v2");
     }
 
@@ -488,7 +489,7 @@ mod tests {
     fn unknown_model_falls_back_to_default() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(Some("unknown-model-key"));
-        assert_eq!(selected_model_key(), "all-minilm-l6-v2");
+        assert_eq!(selected_model_key(), "all-minilm-l12-v2");
     }
 
     #[test]
@@ -496,6 +497,8 @@ mod tests {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(None);
         std::env::set_var(MODEL_ENV_KEY, "all-minilm-l12-v2");
+        assert_eq!(selected_model_key(), "all-minilm-l12-v2");
+        std::env::set_var(MODEL_ENV_KEY, "MiniLM");
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
         std::env::set_var(MODEL_ENV_KEY, "minilm-modern");
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
