@@ -1,12 +1,31 @@
 # Comprehensive Changelog (Living)
 
-Last updated: 2026-04-18
+Last updated: 2026-04-19
 Baseline: v0.4.1 (2026-04-06)
 Current head: 40e8e80 (2026-04-18)
 Commit range size: 319 commits
 ## Purpose
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
+
+- 2026-04-19 01:20 - Live DB anti-ballooning compaction + write-path event-cap hardening:
+  - `daemon-rs/src/compaction.rs`:
+    - expanded per-type caps to include high-volume telemetry families (`agent_boot`, `store_savings`, `tool_call_savings`) in both soft and hard pressure modes
+    - corrected historical event pruning semantics:
+      - stale `agent_boot` rows are now pruneable by retention/cap rules
+      - `boot_savings_rollup` is now explicitly preserved from generic old-event deletion
+    - global non-savings overflow and pressure-count paths now exclude only `boot_savings` and `boot_savings_rollup`, preventing non-savings telemetry from bypassing pressure controls
+    - added/updated regressions for:
+      - stale-event pruning behavior with old `agent_boot`
+      - nonboot overflow semantics with preserved savings rows
+      - explicit retention of `boot_savings_rollup` rows under old-event pruning
+  - `daemon-rs/src/handlers/mod.rs`:
+    - replaced single-type `decision_stored` write-time prune guard with a shared high-volume event-cap table
+    - write-time pruning now applies to multiple noisy event families on the same interval boundary, reducing event-table balloon risk between background compaction passes
+  - Validation:
+    - `rtk cargo test compaction:: -- --nocapture` (`12` passing)
+    - `rtk cargo test prune_event_type_keep_latest_trims_old_rows -- --nocapture` (`1` passing)
+    - `rtk cargo test --quiet` attempted but exceeded lean-ctx shell timeout (`105s`) before completion; targeted suites above are green
 
 - 2026-04-18 23:47 - Control Center startup unblock + IPC fallback resiliency:
   - `desktop/cortex-control-center/src/api-client.js`:

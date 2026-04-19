@@ -18,6 +18,11 @@ use rusqlite::{params, Connection};
 /// Non-boot events older than this are deleted.
 const EVENT_RETENTION_DAYS: i64 = 14;
 
+/// Raw boot savings rows older than this are compacted into a single rollup row.
+/// The dashboard only needs recent raw points, while all-time totals are preserved
+/// via `boot_savings_rollup`.
+const BOOT_SAVINGS_RETENTION_DAYS: i64 = 45;
+
 /// Only VACUUM when SQLite reports enough reclaimable pages to justify the IO.
 const VACUUM_FREELIST_THRESHOLD_PAGES: i64 = 100;
 
@@ -34,6 +39,8 @@ pub const STORAGE_HARD_LIMIT_BYTES: i64 = 512 * 1024 * 1024; // 512MB
 
 /// Under critical pressure, compact events more aggressively.
 const AGGRESSIVE_EVENT_RETENTION_DAYS: i64 = 3;
+/// Under critical pressure, compact boot savings history more aggressively.
+const AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS: i64 = 14;
 /// Under critical pressure, compact archived text sooner.
 const AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS: i64 = 30;
 /// Under critical pressure, aggregate feedback sooner.
@@ -50,6 +57,10 @@ const EVENT_NONBOOT_HARD_KEEP_ROWS: i64 = 40_000;
 
 /// Per-event-type row caps to prevent high-frequency streams from dominating storage.
 const EVENT_TYPE_SOFT_CAPS: &[(&str, i64)] = &[
+    ("agent_boot", 6_000),
+    ("boot_savings", 8_000),
+    ("store_savings", 12_000),
+    ("tool_call_savings", 12_000),
     ("decision_stored", 25_000),
     ("recall_query", 20_000),
     ("merge", 8_000),
@@ -59,6 +70,10 @@ const EVENT_TYPE_SOFT_CAPS: &[(&str, i64)] = &[
 
 /// More aggressive caps used under critical pressure.
 const EVENT_TYPE_HARD_CAPS: &[(&str, i64)] = &[
+    ("agent_boot", 2_000),
+    ("boot_savings", 3_000),
+    ("store_savings", 5_000),
+    ("tool_call_savings", 5_000),
     ("decision_stored", 12_000),
     ("recall_query", 10_000),
     ("merge", 3_000),
@@ -150,6 +165,8 @@ fn run_compaction_governor_with_options(
         || nonboot_event_rows_before >= EVENT_NONBOOT_HARD_LIMIT_ROWS
     {
         result.events_pruned +=
+            rollup_old_boot_savings_with_retention(conn, AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS);
+        result.events_pruned +=
             prune_old_events_with_retention(conn, AGGRESSIVE_EVENT_RETENTION_DAYS);
         result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_HARD_CAPS);
         result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_HARD_KEEP_ROWS);
@@ -193,7 +210,8 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     };
 
     // 1. Event log rotation
-    result.events_pruned = prune_old_events(conn);
+    result.events_pruned = rollup_old_boot_savings(conn);
+    result.events_pruned += prune_old_events(conn);
     result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_SOFT_CAPS);
     result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_SOFT_KEEP_ROWS);
 
@@ -243,6 +261,101 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
 
 // ─── Event log rotation ─────────────────────────────────────────────────────
 
+fn rollup_old_boot_savings(conn: &Connection) -> usize {
+    rollup_old_boot_savings_with_retention(conn, BOOT_SAVINGS_RETENTION_DAYS)
+}
+
+fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64) -> usize {
+    let retention_window = format!("-{retention_days} days");
+
+    let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
+                 COUNT(*) \
+             FROM events \
+             WHERE type = 'boot_savings' \
+               AND created_at < datetime('now', ?1)",
+            params![retention_window.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0));
+
+    let (rollup_saved, rollup_served, rollup_baseline, rollup_boots, rollup_rows): (
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
+    ) = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.boots') AS INTEGER), 0)), 0), \
+                 COUNT(*) \
+             FROM events \
+             WHERE type = 'boot_savings_rollup'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap_or((0, 0, 0, 0, 0));
+
+    if old_boots <= 0 && rollup_rows <= 1 {
+        return 0;
+    }
+
+    let merged_saved = old_saved + rollup_saved;
+    let merged_served = old_served + rollup_served;
+    let merged_baseline = old_baseline + rollup_baseline;
+    let merged_boots = old_boots + rollup_boots;
+
+    let deleted_old = conn
+        .execute(
+            "DELETE FROM events \
+             WHERE type = 'boot_savings' \
+               AND created_at < datetime('now', ?1)",
+            params![retention_window],
+        )
+        .unwrap_or(0);
+
+    let deleted_rollups = conn
+        .execute("DELETE FROM events WHERE type = 'boot_savings_rollup'", [])
+        .unwrap_or(0);
+
+    if merged_boots > 0 {
+        let payload = serde_json::json!({
+            "saved": merged_saved,
+            "served": merged_served,
+            "baseline": merged_baseline,
+            "boots": merged_boots,
+            "retention_days": retention_days,
+            "rolled_up_at": chrono::Utc::now().to_rfc3339(),
+        })
+        .to_string();
+        let _ = conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings_rollup', ?1, 'compaction', datetime('now'))",
+            params![payload],
+        );
+        let consolidated_rollups = deleted_rollups.saturating_sub(1);
+        deleted_old + consolidated_rollups
+    } else {
+        deleted_old + deleted_rollups
+    }
+}
+
 fn prune_old_events(conn: &Connection) -> usize {
     prune_old_events_with_retention(conn, EVENT_RETENTION_DAYS)
 }
@@ -250,7 +363,7 @@ fn prune_old_events(conn: &Connection) -> usize {
 fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
     conn.execute(
         "DELETE FROM events \
-         WHERE type NOT IN ('agent_boot', 'boot_savings') \
+         WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
          AND created_at < datetime('now', ?1)",
         params![format!("-{retention_days} days")],
     )
@@ -289,7 +402,7 @@ fn prune_nonboot_event_overflow(conn: &Connection, keep_rows: i64) -> usize {
          WHERE id IN (
            SELECT id
            FROM events
-           WHERE type NOT IN ('agent_boot', 'boot_savings')
+           WHERE type NOT IN ('boot_savings', 'boot_savings_rollup')
            ORDER BY id DESC
            LIMIT -1 OFFSET ?1
          )",
@@ -473,7 +586,7 @@ fn freelist_count(conn: &Connection) -> i64 {
 
 fn non_boot_event_count(conn: &Connection) -> i64 {
     conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE type NOT IN ('agent_boot', 'boot_savings')",
+        "SELECT COUNT(*) FROM events WHERE type NOT IN ('boot_savings', 'boot_savings_rollup')",
         [],
         |row| row.get(0),
     )
@@ -554,12 +667,93 @@ mod tests {
         .unwrap();
 
         let pruned = prune_old_events(&conn);
-        assert_eq!(pruned, 1, "Should prune only the old event");
+        assert_eq!(
+            pruned, 2,
+            "Should prune old non-savings events, including stale agent_boot rows"
+        );
 
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(remaining, 3);
+        assert_eq!(remaining, 2);
+    }
+
+    #[test]
+    fn test_rollup_old_boot_savings_compacts_history_and_keeps_recent_rows() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'test', datetime('now', '-60 days'))",
+            params![r#"{"saved":100,"served":50,"baseline":150}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'test', datetime('now'))",
+            params![r#"{"saved":20,"served":10,"baseline":30}"#],
+        )
+        .unwrap();
+
+        let pruned = rollup_old_boot_savings_with_retention(&conn, 30);
+        assert_eq!(pruned, 1);
+
+        let raw_boot_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'boot_savings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            raw_boot_rows, 1,
+            "recent raw boot_savings row should remain"
+        );
+
+        let rollup: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT \
+                    COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0), \
+                    COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0), \
+                    COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0), \
+                    COALESCE(CAST(json_extract(data, '$.boots') AS INTEGER), 0) \
+                 FROM events WHERE type = 'boot_savings_rollup' LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(rollup, (100, 50, 150, 1));
+    }
+
+    #[test]
+    fn test_prune_old_events_keeps_boot_rollups() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings_rollup', ?1, 'compaction', datetime('now', '-90 days'))",
+            params![r#"{"saved":1000,"served":500,"baseline":1500,"boots":10}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('decision_stored', '{}', 'test', datetime('now', '-90 days'))",
+            [],
+        )
+        .unwrap();
+
+        let pruned = prune_old_events_with_retention(&conn, 30);
+        assert_eq!(
+            pruned, 1,
+            "only non-rollup historical events should be pruned"
+        );
+
+        let rollup_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'boot_savings_rollup'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rollup_rows, 1, "boot_savings_rollup must be retained");
     }
 
     #[test]
@@ -714,24 +908,24 @@ mod tests {
         .unwrap();
 
         let pruned = prune_nonboot_event_overflow(&conn, 2);
-        assert_eq!(pruned, 6);
+        assert_eq!(pruned, 7);
 
-        let decision_rows: i64 = conn
+        let nonboot_rows: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                "SELECT COUNT(*) FROM events WHERE type != 'boot_savings'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         let boot_rows: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE type IN ('agent_boot', 'boot_savings')",
+                "SELECT COUNT(*) FROM events WHERE type = 'boot_savings'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(decision_rows, 2);
-        assert_eq!(boot_rows, 2);
+        assert_eq!(nonboot_rows, 2);
+        assert_eq!(boot_rows, 1);
     }
 
     #[test]

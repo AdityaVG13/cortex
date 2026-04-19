@@ -1,6 +1,6 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-18 23:47  
+**Last updated:** 2026-04-19 01:20  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
 
@@ -171,6 +171,12 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - startup refresh now treats healthy `/health` as a reachability fallback when `daemon_status` reports false-negative unreachable, so app startup no longer stays pinned in “still starting” loops
   - stale duplicate `cortex.exe mcp --agent codex` processes were identified as startup contention noise and reduced to a single app-managed daemon in local remediation
   - frontend regression coverage now includes explicit IPC-timeout fallback tests for both GET and POST client paths
+- Live DB anti-ballooning storage hardening is now landed for high-volume telemetry workloads:
+  - write-path event pruning now applies cap-based trimming across high-volume event families (`agent_boot`, `boot_savings`, `store_savings`, `tool_call_savings`, `decision_*`, `recall_query`, `merge`) instead of only `decision_stored`
+  - compaction now treats stale `agent_boot` rows as pruneable while preserving long-horizon savings integrity via `boot_savings_rollup`
+  - `boot_savings_rollup` rows are now explicitly protected from generic old-event deletion, preventing silent all-time savings drift on low-activity installs
+  - event-pressure accounting/global-overflow pruning now excludes only savings history rows (`boot_savings`, `boot_savings_rollup`) so noisy non-savings telemetry cannot grow unbounded
+  - daemon regressions now cover rollup-retention correctness and updated nonboot-overflow behavior
 
 ---
 

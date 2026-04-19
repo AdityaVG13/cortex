@@ -32,8 +32,18 @@ pub struct SourceIdentity {
 
 const MAX_SOURCE_LABEL_LEN: usize = 160;
 const CTX_API_KEY_LEN: usize = 50;
-const DECISION_STORED_EVENT_CAP_ROWS: i64 = 25_000;
-const DECISION_STORED_EVENT_PRUNE_INTERVAL: i64 = 128;
+const HIGH_VOLUME_EVENT_PRUNE_INTERVAL: i64 = 128;
+const HIGH_VOLUME_EVENT_CAPS: &[(&str, i64)] = &[
+    ("agent_boot", 6_000),
+    ("boot_savings", 8_000),
+    ("store_savings", 12_000),
+    ("tool_call_savings", 12_000),
+    ("decision_stored", 25_000),
+    ("recall_query", 20_000),
+    ("merge", 8_000),
+    ("decision_conflict", 8_000),
+    ("decision_rejected_duplicate", 8_000),
+];
 
 /// Build an Axum JSON response with CORS / cache headers applied.
 pub fn json_response(status: StatusCode, body: Value) -> Response {
@@ -489,14 +499,17 @@ pub fn log_event(
 }
 
 fn maybe_prune_high_volume_event(conn: &rusqlite::Connection, kind: &str) -> rusqlite::Result<()> {
-    if kind != "decision_stored" {
+    let Some(keep_rows) = HIGH_VOLUME_EVENT_CAPS
+        .iter()
+        .find_map(|(event_type, keep)| (*event_type == kind).then_some(*keep))
+    else {
         return Ok(());
-    }
+    };
     let inserted_id = conn.last_insert_rowid();
-    if inserted_id <= 0 || inserted_id % DECISION_STORED_EVENT_PRUNE_INTERVAL != 0 {
+    if inserted_id <= 0 || inserted_id % HIGH_VOLUME_EVENT_PRUNE_INTERVAL != 0 {
         return Ok(());
     }
-    prune_event_type_keep_latest(conn, kind, DECISION_STORED_EVENT_CAP_ROWS)
+    prune_event_type_keep_latest(conn, kind, keep_rows)
 }
 
 fn prune_event_type_keep_latest(
