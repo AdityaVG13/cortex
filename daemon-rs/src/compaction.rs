@@ -34,6 +34,8 @@ const FEEDBACK_AGGREGATION_DAYS: i64 = 60;
 
 /// Roll analytics-heavy savings events older than this into compact hourly rows.
 const SAVINGS_EVENT_ROLLUP_RETENTION_DAYS: i64 = 7;
+/// Keep rolled-up savings analytics bounded; /savings only reads the recent window.
+const EVENT_SAVINGS_ROLLUP_RETENTION_DAYS: i64 = 120;
 
 /// Elevated-pressure storage governor soft limit (no hard failures, compaction only).
 pub const STORAGE_SOFT_LIMIT_BYTES: i64 = 256 * 1024 * 1024; // 256MB
@@ -50,40 +52,69 @@ const AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS: i64 = 30;
 const AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS: i64 = 14;
 /// Under critical pressure, roll savings events even sooner.
 const AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS: i64 = 2;
+/// Under critical pressure, keep a shorter event rollup history to reclaim space faster.
+const AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS: i64 = 45;
+/// Keep benchmark artifacts only briefly in production databases.
+const BENCHMARK_RETENTION_DAYS: i64 = 2;
+/// Tighten benchmark retention further under critical pressure.
+const AGGRESSIVE_BENCHMARK_RETENTION_DAYS: i64 = 1;
+
+/// Canonical source-agent prefix emitted by benchmark harnesses.
+///
+/// Keep this broad enough to match both modern namespaced agents
+/// (`amb-cortex::<run>`) and legacy plain labels (`amb-cortex`).
+pub const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex";
 
 /// Non-boot event volume triggers compaction even when DB file size is moderate.
-const EVENT_NONBOOT_SOFT_LIMIT_ROWS: i64 = 80_000;
+const EVENT_NONBOOT_SOFT_LIMIT_ROWS: i64 = 72_000;
 /// Critical non-boot event pressure threshold.
-const EVENT_NONBOOT_HARD_LIMIT_ROWS: i64 = 140_000;
+const EVENT_NONBOOT_HARD_LIMIT_ROWS: i64 = 120_000;
 /// Keep newest non-boot rows at or under this level during normal governor runs.
-const EVENT_NONBOOT_SOFT_KEEP_ROWS: i64 = 64_000;
+const EVENT_NONBOOT_SOFT_KEEP_ROWS: i64 = 52_000;
 /// Keep newest non-boot rows at or under this level during critical pressure runs.
-const EVENT_NONBOOT_HARD_KEEP_ROWS: i64 = 40_000;
+const EVENT_NONBOOT_HARD_KEEP_ROWS: i64 = 28_000;
+/// Startup governor mode should avoid single huge DELETE statements that hold
+/// the write lock for too long while the daemon is still coming online.
+const STARTUP_EVENT_PRUNE_BATCH_ROWS: i64 = 8_000;
 
 /// Per-event-type row caps to prevent high-frequency streams from dominating storage.
 const EVENT_TYPE_SOFT_CAPS: &[(&str, i64)] = &[
-    ("agent_boot", 6_000),
-    ("boot_savings", 8_000),
-    ("store_savings", 12_000),
-    ("tool_call_savings", 12_000),
-    ("decision_stored", 25_000),
-    ("recall_query", 20_000),
-    ("merge", 8_000),
-    ("decision_conflict", 8_000),
-    ("decision_rejected_duplicate", 8_000),
+    ("agent_boot", 4_000),
+    ("boot_savings", 6_000),
+    ("store_savings", 10_000),
+    ("tool_call_savings", 10_000),
+    ("decision_stored", 18_000),
+    ("decision_supersede", 10_000),
+    ("decision_refine_pending", 10_000),
+    ("decision_agreement_merge", 8_000),
+    ("decision_truncated", 8_000),
+    ("recall_query", 14_000),
+    ("merge", 6_000),
+    ("decision_conflict", 6_000),
+    ("decision_rejected_duplicate", 6_000),
+    ("decision_resolve", 6_000),
+    ("forget", 3_000),
+    ("diary_write", 3_000),
 ];
 
 /// More aggressive caps used under critical pressure.
 const EVENT_TYPE_HARD_CAPS: &[(&str, i64)] = &[
-    ("agent_boot", 2_000),
-    ("boot_savings", 3_000),
-    ("store_savings", 5_000),
-    ("tool_call_savings", 5_000),
-    ("decision_stored", 12_000),
-    ("recall_query", 10_000),
-    ("merge", 3_000),
-    ("decision_conflict", 3_000),
-    ("decision_rejected_duplicate", 3_000),
+    ("agent_boot", 1_500),
+    ("boot_savings", 2_500),
+    ("store_savings", 4_000),
+    ("tool_call_savings", 4_000),
+    ("decision_stored", 8_000),
+    ("decision_supersede", 4_000),
+    ("decision_refine_pending", 4_000),
+    ("decision_agreement_merge", 3_000),
+    ("decision_truncated", 3_000),
+    ("recall_query", 6_000),
+    ("merge", 2_000),
+    ("decision_conflict", 2_000),
+    ("decision_rejected_duplicate", 2_000),
+    ("decision_resolve", 2_000),
+    ("forget", 1_000),
+    ("diary_write", 1_000),
 ];
 
 // ─── Result ─────────────────────────────────────────────────────────────────
@@ -91,6 +122,7 @@ const EVENT_TYPE_HARD_CAPS: &[(&str, i64)] = &[
 #[derive(Debug, Default)]
 pub struct CompactionResult {
     pub events_pruned: usize,
+    pub benchmark_pruned: usize,
     pub archived_text_stripped: usize,
     pub expired_pruned: usize,
     pub crystal_embeddings_pruned: usize,
@@ -98,6 +130,31 @@ pub struct CompactionResult {
     pub feedback_aggregated: usize,
     pub bytes_before: i64,
     pub bytes_after: i64,
+}
+
+#[derive(Debug, Default)]
+pub struct BenchmarkPurgeResult {
+    pub decisions_deleted: usize,
+    pub embeddings_deleted: usize,
+    pub cluster_members_deleted: usize,
+    pub decision_conflicts_deleted: usize,
+    pub recall_feedback_deleted: usize,
+    pub co_occurrence_deleted: usize,
+    pub events_deleted: usize,
+    pub bytes_before: i64,
+    pub bytes_after: i64,
+}
+
+impl BenchmarkPurgeResult {
+    pub fn total_deleted(&self) -> usize {
+        self.decisions_deleted
+            + self.embeddings_deleted
+            + self.cluster_members_deleted
+            + self.decision_conflicts_deleted
+            + self.recall_feedback_deleted
+            + self.co_occurrence_deleted
+            + self.events_deleted
+    }
 }
 
 fn bytes_to_mb(bytes: i64) -> i64 {
@@ -150,6 +207,7 @@ fn run_compaction_governor_with_options(
     conn: &Connection,
     allow_vacuum: bool,
 ) -> Option<CompactionResult> {
+    let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
     let before = db_size_bytes(conn);
     let freelist_pages = freelist_count(conn);
     let nonboot_event_rows_before = non_boot_event_count(conn);
@@ -175,9 +233,21 @@ fn run_compaction_governor_with_options(
         result.events_pruned +=
             rollup_old_savings_events(conn, AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
         result.events_pruned +=
-            prune_old_events_with_retention(conn, AGGRESSIVE_EVENT_RETENTION_DAYS);
-        result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_HARD_CAPS);
-        result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_HARD_KEEP_ROWS);
+            prune_old_event_savings_rollups(conn, AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
+        result.events_pruned += prune_old_events_with_retention_limit(
+            conn,
+            AGGRESSIVE_EVENT_RETENTION_DAYS,
+            startup_prune_limit,
+        );
+        result.events_pruned +=
+            prune_event_type_caps_with_limit(conn, EVENT_TYPE_HARD_CAPS, startup_prune_limit);
+        result.events_pruned += prune_nonboot_event_overflow_with_limit(
+            conn,
+            EVENT_NONBOOT_HARD_KEEP_ROWS,
+            startup_prune_limit,
+        );
+        result.benchmark_pruned +=
+            prune_old_benchmark_artifacts(conn, AGGRESSIVE_BENCHMARK_RETENTION_DAYS, allow_vacuum);
         result.archived_text_stripped +=
             strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
         result.cluster_members_pruned += prune_orphan_cluster_members(conn);
@@ -186,7 +256,7 @@ fn run_compaction_governor_with_options(
         let _ = if allow_vacuum {
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
         } else {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
         };
         result.bytes_after = db_size_bytes(conn);
     }
@@ -213,6 +283,7 @@ pub fn run_compaction(conn: &Connection) -> CompactionResult {
 }
 
 fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> CompactionResult {
+    let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
     let mut result = CompactionResult {
         bytes_before: db_size_bytes(conn),
         ..CompactionResult::default()
@@ -221,9 +292,19 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     // 1. Event log rotation
     result.events_pruned = rollup_old_boot_savings(conn);
     result.events_pruned += rollup_old_savings_events(conn, SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
-    result.events_pruned += prune_old_events(conn);
-    result.events_pruned += prune_event_type_caps(conn, EVENT_TYPE_SOFT_CAPS);
-    result.events_pruned += prune_nonboot_event_overflow(conn, EVENT_NONBOOT_SOFT_KEEP_ROWS);
+    result.events_pruned +=
+        prune_old_event_savings_rollups(conn, EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
+    result.events_pruned +=
+        prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, startup_prune_limit);
+    result.events_pruned +=
+        prune_event_type_caps_with_limit(conn, EVENT_TYPE_SOFT_CAPS, startup_prune_limit);
+    result.events_pruned += prune_nonboot_event_overflow_with_limit(
+        conn,
+        EVENT_NONBOOT_SOFT_KEEP_ROWS,
+        startup_prune_limit,
+    );
+    result.benchmark_pruned =
+        prune_old_benchmark_artifacts(conn, BENCHMARK_RETENTION_DAYS, allow_vacuum);
 
     // 2. Archived entry text cleanup
     result.archived_text_stripped = strip_archived_text(conn);
@@ -239,11 +320,12 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     result.feedback_aggregated = aggregate_old_feedback(conn);
 
     // 6. Reclaim space
-    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    checkpoint_after_compaction(conn, allow_vacuum);
     // VACUUM is expensive. Use SQLite's freelist_count instead of raw delete
     // volume so we only pay the cost when pages are actually reclaimable.
     let freelist_pages = freelist_count(conn);
     let total_deleted = result.events_pruned
+        + result.benchmark_pruned
         + result.archived_text_stripped
         + result.expired_pruned
         + result.crystal_embeddings_pruned
@@ -257,8 +339,9 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     if total_deleted > 0 {
         let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
         eprintln!(
-            "[compaction] Pruned: {} events, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows. Saved {}KB",
+            "[compaction] Pruned: {} events, {} benchmark rows, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows. Saved {}KB",
             result.events_pruned,
+            result.benchmark_pruned,
             result.archived_text_stripped,
             result.expired_pruned,
             result.crystal_embeddings_pruned,
@@ -271,6 +354,12 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     result
 }
 
+/// Purge all benchmark artifacts immediately.
+/// Use this after benchmark runs so production DB stats reflect real-user traffic.
+pub fn purge_benchmark_artifacts(conn: &Connection) -> BenchmarkPurgeResult {
+    purge_benchmark_artifacts_with_retention(conn, None, true)
+}
+
 // ─── Event log rotation ─────────────────────────────────────────────────────
 
 fn rollup_old_boot_savings(conn: &Connection) -> usize {
@@ -279,6 +368,7 @@ fn rollup_old_boot_savings(conn: &Connection) -> usize {
 
 fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64) -> usize {
     let retention_window = format!("-{retention_days} days");
+    let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
 
     let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = conn
         .query_row(
@@ -289,8 +379,11 @@ fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64
                  COUNT(*) \
              FROM events \
              WHERE type = 'boot_savings' \
-               AND created_at < datetime('now', ?1)",
-            params![retention_window.clone()],
+               AND created_at < datetime('now', ?1) \
+               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+            params![retention_window.clone(), benchmark_source_pattern.clone()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
@@ -337,8 +430,11 @@ fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64
         .execute(
             "DELETE FROM events \
              WHERE type = 'boot_savings' \
-               AND created_at < datetime('now', ?1)",
-            params![retention_window],
+               AND created_at < datetime('now', ?1) \
+               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+            params![retention_window, benchmark_source_pattern],
         )
         .unwrap_or(0);
 
@@ -370,7 +466,9 @@ fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64
 
 fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
     let retention_window = format!("-{retention_days} days");
-    let rollup_rows: Vec<(String, i64, String, i64, i64, i64, i64, i64, i64)> = conn
+    let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
+    type SavingsRollupRow = (String, i64, String, i64, i64, i64, i64, i64, i64);
+    let rollup_rows: Vec<SavingsRollupRow> = conn
         .prepare(
             "SELECT \
                  SUBSTR(created_at, 1, 10) AS day, \
@@ -407,10 +505,15 @@ fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
              WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
                AND created_at IS NOT NULL \
                AND created_at < datetime('now', ?1) \
-             GROUP BY day, hour, operation",
+               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2) \
+              GROUP BY day, hour, operation",
         )
         .and_then(|mut stmt| {
-            let rows = stmt.query_map(params![retention_window.clone()], |row| {
+            let rows = stmt.query_map(
+                params![retention_window.clone(), benchmark_source_pattern.clone()],
+                |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -422,7 +525,8 @@ fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
                 ))
-            })?;
+            },
+            )?;
             Ok(rows.flatten().collect())
         })
         .unwrap_or_default();
@@ -452,34 +556,100 @@ fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
         "DELETE FROM events \
          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
            AND created_at IS NOT NULL \
-           AND created_at < datetime('now', ?1)",
-        params![retention_window],
+           AND created_at < datetime('now', ?1) \
+           AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+        params![retention_window, benchmark_source_pattern],
     )
     .unwrap_or(0)
 }
 
-fn prune_old_events(conn: &Connection) -> usize {
-    prune_old_events_with_retention(conn, EVENT_RETENTION_DAYS)
-}
-
-fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
+fn prune_old_event_savings_rollups(conn: &Connection, retention_days: i64) -> usize {
     conn.execute(
-        "DELETE FROM events \
-         WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
-         AND created_at < datetime('now', ?1)",
+        "DELETE FROM event_savings_rollups \
+         WHERE day < date('now', ?1)",
         params![format!("-{retention_days} days")],
     )
     .unwrap_or(0)
 }
 
+#[cfg(test)]
+fn prune_old_events(conn: &Connection) -> usize {
+    prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, None)
+}
+
+#[cfg(test)]
+fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
+    prune_old_events_with_retention_limit(conn, retention_days, None)
+}
+
+fn prune_old_events_with_retention_limit(
+    conn: &Connection,
+    retention_days: i64,
+    max_delete_rows: Option<i64>,
+) -> usize {
+    let retention_window = format!("-{retention_days} days");
+    if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
+        return conn
+            .execute(
+                "DELETE FROM events \
+                 WHERE id IN ( \
+                   SELECT id \
+                   FROM events \
+                   WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
+                     AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1)) \
+                   ORDER BY id ASC \
+                   LIMIT ?2 \
+                 )",
+                params![retention_window, max_rows],
+            )
+            .unwrap_or(0);
+    }
+    conn.execute(
+        "DELETE FROM events \
+         WHERE type NOT IN ('boot_savings', 'boot_savings_rollup') \
+           AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1))",
+        params![retention_window],
+    )
+    .unwrap_or(0)
+}
+
+#[cfg(test)]
 fn prune_event_type_caps(conn: &Connection, caps: &[(&str, i64)]) -> usize {
+    prune_event_type_caps_with_limit(conn, caps, None)
+}
+
+fn prune_event_type_caps_with_limit(
+    conn: &Connection,
+    caps: &[(&str, i64)],
+    max_delete_rows: Option<i64>,
+) -> usize {
     let mut total = 0usize;
     for (event_type, keep_rows) in caps.iter().copied() {
         if keep_rows <= 0 {
             continue;
         }
-        total += conn
-            .execute(
+        let deleted = if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
+            conn.execute(
+                "DELETE FROM events
+                 WHERE id IN (
+                   SELECT id
+                   FROM (
+                     SELECT id
+                     FROM events
+                     WHERE type = ?1
+                     ORDER BY id DESC
+                     LIMIT -1 OFFSET ?2
+                   )
+                   ORDER BY id ASC
+                   LIMIT ?3
+                 )",
+                params![event_type, keep_rows, max_rows],
+            )
+            .unwrap_or(0)
+        } else {
+            conn.execute(
                 "DELETE FROM events
                  WHERE id IN (
                    SELECT id
@@ -490,27 +660,92 @@ fn prune_event_type_caps(conn: &Connection, caps: &[(&str, i64)]) -> usize {
                  )",
                 params![event_type, keep_rows],
             )
-            .unwrap_or(0);
+            .unwrap_or(0)
+        };
+        total += deleted;
     }
     total
 }
 
+#[cfg(test)]
 fn prune_nonboot_event_overflow(conn: &Connection, keep_rows: i64) -> usize {
+    prune_nonboot_event_overflow_with_limit(conn, keep_rows, None)
+}
+
+fn prune_nonboot_event_overflow_with_limit(
+    conn: &Connection,
+    keep_rows: i64,
+    max_delete_rows: Option<i64>,
+) -> usize {
     if keep_rows <= 0 {
         return 0;
     }
+    // Keep recall/store/tool savings events out of global overflow pruning so
+    // /savings can rely on their short-horizon raw rows until rollup runs.
+    let protected_analytics_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM events
+             WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let keep_non_analytics_rows = keep_rows.saturating_sub(protected_analytics_rows);
+    let prune_types_predicate = "type NOT IN (
+        'agent_boot',
+        'boot_savings',
+        'boot_savings_rollup',
+        'recall_query',
+        'store_savings',
+        'tool_call_savings'
+    )";
+
+    if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
+        return conn
+            .execute(
+                &format!(
+                    "DELETE FROM events
+                     WHERE id IN (
+                       SELECT id
+                       FROM (
+                         SELECT id
+                         FROM events
+                         WHERE {prune_types_predicate}
+                         ORDER BY id DESC
+                         LIMIT -1 OFFSET ?1
+                       )
+                       ORDER BY id ASC
+                       LIMIT ?2
+                     )"
+                ),
+                params![keep_non_analytics_rows, max_rows],
+            )
+            .unwrap_or(0);
+    }
     conn.execute(
-        "DELETE FROM events
-         WHERE id IN (
-           SELECT id
-           FROM events
-           WHERE type NOT IN ('boot_savings', 'boot_savings_rollup')
-           ORDER BY id DESC
-           LIMIT -1 OFFSET ?1
-         )",
-        params![keep_rows],
+        &format!(
+            "DELETE FROM events
+             WHERE id IN (
+               SELECT id
+               FROM events
+                WHERE {prune_types_predicate}
+               ORDER BY id DESC
+               LIMIT -1 OFFSET ?1
+             )"
+        ),
+        params![keep_non_analytics_rows],
     )
     .unwrap_or(0)
+}
+
+fn checkpoint_after_compaction(conn: &Connection, allow_vacuum: bool) {
+    let _ = if allow_vacuum {
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+    } else {
+        // Startup governor mode: avoid TRUNCATE stalls while still nudging WAL forward.
+        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+    };
 }
 
 // ─── Archived entry text cleanup ────────────────────────────────────────────
@@ -538,7 +773,7 @@ fn strip_archived_text_with_retention(conn: &Connection, retention_days: i64) ->
     count += conn
         .execute(
             "UPDATE decisions SET decision = '[compacted]', context = NULL \
-             WHERE status = 'archived' \
+             WHERE status IN ('archived', 'superseded') \
              AND decision != '[compacted]' \
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
             params![retention_days],
@@ -704,6 +939,178 @@ fn aggregate_old_feedback_with_window(conn: &Connection, aggregation_days: i64) 
     aggregated
 }
 
+fn prune_old_benchmark_artifacts(
+    conn: &Connection,
+    retention_days: i64,
+    allow_vacuum: bool,
+) -> usize {
+    purge_benchmark_artifacts_with_retention(conn, Some(retention_days), allow_vacuum)
+        .total_deleted()
+}
+
+fn purge_benchmark_artifacts_with_retention(
+    conn: &Connection,
+    retention_days: Option<i64>,
+    allow_vacuum: bool,
+) -> BenchmarkPurgeResult {
+    let mut result = BenchmarkPurgeResult {
+        bytes_before: db_size_bytes(conn),
+        ..BenchmarkPurgeResult::default()
+    };
+    let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
+    let retention_window = retention_days.map(|days| format!("-{days} days"));
+
+    let _ = conn.execute_batch(
+        "DROP TABLE IF EXISTS temp._benchmark_decision_ids;
+         CREATE TEMP TABLE IF NOT EXISTS _benchmark_decision_ids (
+           id INTEGER PRIMARY KEY
+         );
+         DELETE FROM _benchmark_decision_ids;",
+    );
+
+    match retention_window.as_deref() {
+        Some(window) => {
+            let _ = conn.execute(
+                "INSERT INTO _benchmark_decision_ids (id) \
+                 SELECT id \
+                 FROM decisions \
+                 WHERE (LOWER(COALESCE(type, '')) = 'benchmark' \
+                        OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)) \
+                   AND created_at < datetime('now', ?2)",
+                params![benchmark_source_pattern.clone(), window],
+            );
+        }
+        None => {
+            let _ = conn.execute(
+                "INSERT INTO _benchmark_decision_ids (id) \
+                 SELECT id \
+                 FROM decisions \
+                 WHERE LOWER(COALESCE(type, '')) = 'benchmark' \
+                    OR LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1)",
+                params![benchmark_source_pattern.clone()],
+            );
+        }
+    }
+
+    result.decision_conflicts_deleted = conn
+        .execute(
+            "DELETE FROM decision_conflicts \
+             WHERE source_decision_id IN (SELECT id FROM _benchmark_decision_ids) \
+                OR target_decision_id IN (SELECT id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+
+    result.embeddings_deleted = conn
+        .execute(
+            "DELETE FROM embeddings \
+             WHERE target_type = 'decision' \
+               AND target_id IN (SELECT id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+
+    result.cluster_members_deleted = conn
+        .execute(
+            "DELETE FROM cluster_members \
+             WHERE target_type = 'decision' \
+               AND target_id IN (SELECT id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+    result.cluster_members_deleted += prune_orphan_cluster_members(conn);
+
+    result.recall_feedback_deleted = conn
+        .execute(
+            "DELETE FROM recall_feedback \
+             WHERE result_source IN (SELECT 'decision::' || id FROM _benchmark_decision_ids) \
+                OR result_id IN (SELECT id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+
+    result.co_occurrence_deleted = conn
+        .execute(
+            "DELETE FROM co_occurrence \
+             WHERE source_a IN (SELECT 'decision::' || id FROM _benchmark_decision_ids) \
+                OR source_b IN (SELECT 'decision::' || id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+
+    result.decisions_deleted = conn
+        .execute(
+            "DELETE FROM decisions WHERE id IN (SELECT id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+
+    result.events_deleted += conn
+        .execute(
+            "DELETE FROM events \
+             WHERE type = 'decision_stored' \
+               AND CAST(COALESCE(json_extract(data, '$.id'), 0) AS INTEGER) IN (SELECT id FROM _benchmark_decision_ids)",
+            [],
+        )
+        .unwrap_or(0);
+
+    match retention_window.as_deref() {
+        Some(window) => {
+            result.recall_feedback_deleted += conn
+                .execute(
+                    "DELETE FROM recall_feedback \
+                     WHERE (LOWER(COALESCE(agent, '')) LIKE LOWER(?1) \
+                            OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)) \
+                       AND created_at < datetime('now', ?2)",
+                    params![benchmark_source_pattern.clone(), window],
+                )
+                .unwrap_or(0);
+            result.events_deleted += conn
+                .execute(
+                    "DELETE FROM events \
+                     WHERE (LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) \
+                            OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
+                            OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
+                            OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark') \
+                       AND created_at < datetime('now', ?2)",
+                    params![benchmark_source_pattern.clone(), window],
+                )
+                .unwrap_or(0);
+        }
+        None => {
+            result.recall_feedback_deleted += conn
+                .execute(
+                    "DELETE FROM recall_feedback \
+                     WHERE LOWER(COALESCE(agent, '')) LIKE LOWER(?1) \
+                        OR LOWER(COALESCE(result_source, '')) LIKE LOWER(?1)",
+                    params![benchmark_source_pattern.clone()],
+                )
+                .unwrap_or(0);
+            result.events_deleted += conn
+                .execute(
+                    "DELETE FROM events \
+                     WHERE LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) \
+                        OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
+                        OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
+                        OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark'",
+                    params![benchmark_source_pattern.clone()],
+                )
+                .unwrap_or(0);
+        }
+    }
+
+    let _ = conn.execute_batch("DROP TABLE IF EXISTS temp._benchmark_decision_ids;");
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    if allow_vacuum {
+        let freelist_pages = freelist_count(conn);
+        if freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES {
+            let _ = conn.execute_batch("VACUUM;");
+        }
+    }
+    result.bytes_after = db_size_bytes(conn);
+    result
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 fn db_size_bytes(conn: &Connection) -> i64 {
@@ -863,6 +1270,62 @@ mod tests {
     }
 
     #[test]
+    fn test_rollup_old_boot_savings_excludes_benchmark_agent_payloads() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'rust-daemon', datetime('now', '-60 days'))",
+            params![serde_json::json!({
+                "agent": "amb-cortex::run-a",
+                "saved": 999,
+                "served": 1,
+                "baseline": 1000
+            })
+            .to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'rust-daemon', datetime('now', '-60 days'))",
+            params![serde_json::json!({
+                "agent": "codex",
+                "saved": 50,
+                "served": 10,
+                "baseline": 60
+            })
+            .to_string()],
+        )
+        .unwrap();
+
+        let pruned = rollup_old_boot_savings_with_retention(&conn, 30);
+        assert_eq!(
+            pruned, 1,
+            "only non-benchmark boot_savings rows should roll up"
+        );
+
+        let rollup_saved: i64 = conn
+            .query_row(
+                "SELECT COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0) \
+                 FROM events WHERE type = 'boot_savings_rollup' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rollup_saved, 50);
+
+        let benchmark_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events \
+                 WHERE type = 'boot_savings' \
+                   AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE 'amb-cortex%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(benchmark_rows, 1);
+    }
+
+    #[test]
     fn test_prune_old_events_keeps_boot_rollups() {
         let conn = setup();
         conn.execute(
@@ -913,6 +1376,30 @@ mod tests {
             })
             .unwrap();
         assert_eq!(text, "[compacted]");
+    }
+
+    #[test]
+    fn test_strip_archived_text_compacts_superseded_decisions() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, updated_at) \
+             VALUES ('superseded text', 'old context', 'superseded', datetime('now', '-120 days'))",
+            [],
+        )
+        .unwrap();
+
+        let stripped = strip_archived_text(&conn);
+        assert_eq!(stripped, 1);
+
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT decision, context FROM decisions WHERE status = 'superseded' LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "[compacted]");
+        assert!(row.1.is_none());
     }
 
     #[test]
@@ -1025,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nonboot_global_cap_preserves_boot_rows() {
+    fn test_nonboot_event_overflow_prunes_only_nonboot_rows() {
         let conn = setup();
         for i in 0..8 {
             conn.execute(
@@ -1034,23 +1521,37 @@ mod tests {
             )
             .unwrap();
         }
-        conn.execute(
-            "INSERT INTO events (type, data, source_agent) VALUES ('agent_boot', '{}', 'test')",
-            [],
-        )
-        .unwrap();
+        for _ in 0..3 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('agent_boot', '{}', 'test')",
+                [],
+            )
+            .unwrap();
+        }
         conn.execute(
             "INSERT INTO events (type, data, source_agent) VALUES ('boot_savings', '{}', 'test')",
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('boot_savings_rollup', '{}', 'test')",
+            [],
+        )
+        .unwrap();
 
         let pruned = prune_nonboot_event_overflow(&conn, 2);
-        assert_eq!(pruned, 7);
+        assert_eq!(pruned, 6);
 
-        let nonboot_rows: i64 = conn
+        let decision_rows: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM events WHERE type != 'boot_savings'",
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let agent_boot_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'agent_boot'",
                 [],
                 |r| r.get(0),
             )
@@ -1062,8 +1563,150 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(nonboot_rows, 2);
+        let boot_rollup_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'boot_savings_rollup'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decision_rows, 2);
+        assert_eq!(agent_boot_rows, 3);
         assert_eq!(boot_rows, 1);
+        assert_eq!(boot_rollup_rows, 1);
+    }
+
+    #[test]
+    fn test_nonboot_event_overflow_preserves_savings_analytics_rows() {
+        let conn = setup();
+        for i in 0..5 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
+                params![format!("{{\"i\":{i}}}")],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('recall_query', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('store_savings', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('tool_call_savings', '{}', 'test')",
+            [],
+        )
+        .unwrap();
+
+        // keep_rows=3 equals the number of protected analytics rows, so all
+        // non-analytics non-boot rows should be pruned.
+        let pruned = prune_nonboot_event_overflow(&conn, 3);
+        assert_eq!(pruned, 5);
+
+        let decision_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let protected_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decision_rows, 0);
+        assert_eq!(protected_rows, 3);
+    }
+
+    #[test]
+    fn test_nonboot_event_overflow_limit_batches_deletes() {
+        let conn = setup();
+        for i in 0..8 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
+                params![format!("{{\"i\":{i}}}")],
+            )
+            .unwrap();
+        }
+
+        let pruned = prune_nonboot_event_overflow_with_limit(&conn, 2, Some(3));
+        assert_eq!(pruned, 3, "startup mode should batch overflow pruning");
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 5);
+    }
+
+    #[test]
+    fn test_prune_old_events_treats_missing_created_at_as_old() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) VALUES ('decision_stored', '{}', 'test', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) VALUES ('boot_savings', '{}', 'test', NULL)",
+            [],
+        )
+        .unwrap();
+
+        let pruned = prune_old_events_with_retention(&conn, 14);
+        assert_eq!(pruned, 1);
+
+        let decision_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let boot_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'boot_savings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decision_rows, 0);
+        assert_eq!(boot_rows, 1);
+    }
+
+    #[test]
+    fn test_prune_old_events_limit_batches_deletes() {
+        let conn = setup();
+        for i in 0..6 {
+            conn.execute(
+                "INSERT INTO events (type, data, source_agent, created_at) \
+                 VALUES ('decision_stored', ?1, 'test', datetime('now', '-40 days', ?2))",
+                params![format!("{{\"i\":{i}}}"), format!("+{} minutes", i)],
+            )
+            .unwrap();
+        }
+
+        let pruned = prune_old_events_with_retention_limit(&conn, 14, Some(2));
+        assert_eq!(pruned, 2);
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 4);
     }
 
     #[test]
@@ -1205,6 +1848,259 @@ mod tests {
         assert_eq!(events, 2);
         assert_eq!(hits, 1);
         assert_eq!(misses, 0);
+    }
+
+    #[test]
+    fn test_rollup_old_savings_events_ignores_benchmark_agent_payloads() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('store_savings', ?1, 'rust-daemon', datetime('now', '-10 days'))",
+            params![serde_json::json!({
+                "agent": "amb-cortex::run-a",
+                "saved": 500,
+                "served": 100,
+                "baseline": 600
+            })
+            .to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('store_savings', ?1, 'rust-daemon', datetime('now', '-10 days'))",
+            params![serde_json::json!({
+                "agent": "codex",
+                "saved": 50,
+                "served": 25,
+                "baseline": 75
+            })
+            .to_string()],
+        )
+        .unwrap();
+
+        let rolled = rollup_old_savings_events(&conn, 7);
+        assert_eq!(
+            rolled, 1,
+            "benchmark rows should not be rolled into production rollups"
+        );
+
+        let rollup_saved: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(saved), 0) FROM event_savings_rollups WHERE operation = 'store'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rollup_saved, 50);
+
+        let benchmark_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events \
+                 WHERE type = 'store_savings' \
+                   AND created_at < datetime('now', '-7 days') \
+                   AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE 'amb-cortex%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(benchmark_rows, 1);
+    }
+
+    #[test]
+    fn test_prune_old_event_savings_rollups_respects_retention() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO event_savings_rollups (day, hour, operation, saved, served, baseline, events, hits, misses, updated_at) \
+             VALUES (date('now', '-200 days'), 1, 'recall', 10, 5, 15, 1, 1, 0, datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO event_savings_rollups (day, hour, operation, saved, served, baseline, events, hits, misses, updated_at) \
+             VALUES (date('now', '-1 days'), 2, 'store', 20, 10, 30, 2, 0, 0, datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let deleted = prune_old_event_savings_rollups(&conn, 120);
+        assert_eq!(deleted, 1);
+
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM event_savings_rollups", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn test_purge_benchmark_artifacts_removes_benchmark_rows_and_dependencies() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO memory_clusters (label, consolidated_text, member_count) VALUES ('bench', 'x', 0)",
+            [],
+        )
+        .unwrap();
+        let cluster_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO decisions (id, decision, context, type, source_agent, status) VALUES (1, 'bench', 'ctx', 'benchmark', 'amb-cortex::run-a', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (id, decision, context, type, source_agent, status) VALUES (2, 'prod', 'ctx', 'decision', 'codex', 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decision_conflicts (source_decision_id, target_decision_id, classification) VALUES (1, 2, 'REFINES')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', 1, X'0102', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) VALUES ('decision', 2, X'0304', 'test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity) VALUES (?1, 'decision', 1, 1.0)",
+            params![cluster_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cluster_members (cluster_id, target_type, target_id, similarity) VALUES (?1, 'decision', 2, 1.0)",
+            params![cluster_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recall_feedback (query_text, result_source, result_type, result_id, signal, agent) VALUES ('q', 'decision::1', 'decision', 1, 1.0, 'amb-cortex::run-a')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recall_feedback (query_text, result_source, result_type, result_id, signal, agent) VALUES ('q', 'decision::2', 'decision', 2, 1.0, 'codex')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO co_occurrence (source_a, source_b, count) VALUES ('decision::1', 'memory::x', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO co_occurrence (source_a, source_b, count) VALUES ('decision::2', 'memory::x', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', '{\"id\":1,\"source_agent\":\"amb-cortex::run-a\"}', 'rust-daemon')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('merge', '{\"source_agent\":\"amb-cortex::run-a\"}', 'rust-daemon')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent) VALUES ('merge', '{\"source_agent\":\"codex\"}', 'rust-daemon')",
+            [],
+        )
+        .unwrap();
+
+        let result = purge_benchmark_artifacts(&conn);
+        assert_eq!(result.decisions_deleted, 1);
+        assert_eq!(result.embeddings_deleted, 1);
+        assert!(result.events_deleted >= 2);
+
+        let decisions_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(decisions_remaining, 1);
+        let feedback_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(feedback_remaining, 1);
+        let cooccurrence_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM co_occurrence", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(cooccurrence_remaining, 1);
+    }
+
+    #[test]
+    fn test_prune_old_benchmark_artifacts_respects_retention_window() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, type, source_agent, status, created_at, updated_at) VALUES ('old-bench', 'ctx', 'benchmark', 'amb-cortex::run-old', 'active', datetime('now', '-10 days'), datetime('now', '-10 days'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, type, source_agent, status, created_at, updated_at) VALUES ('new-bench', 'ctx', 'benchmark', 'amb-cortex::run-new', 'active', datetime('now', '-1 days'), datetime('now', '-1 days'))",
+            [],
+        )
+        .unwrap();
+
+        let deleted = prune_old_benchmark_artifacts(&conn, 7, true);
+        assert_eq!(deleted, 1);
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions WHERE LOWER(type) = 'benchmark'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn test_prune_old_benchmark_artifacts_removes_data_agent_marked_events() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'rust-daemon', datetime('now', '-5 days'))",
+            params![serde_json::json!({
+                "agent": "amb-cortex::run-a",
+                "saved": 10,
+                "served": 5,
+                "baseline": 15
+            })
+            .to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('recall_query', ?1, 'rust-daemon', datetime('now', '-5 days'))",
+            params![serde_json::json!({
+                "agent": "amb-cortex::run-a",
+                "saved": 5,
+                "spent": 2,
+                "budget": 7,
+                "hits": 1
+            })
+            .to_string()],
+        )
+        .unwrap();
+
+        let deleted = prune_old_benchmark_artifacts(&conn, 2, true);
+        assert!(deleted >= 2);
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events \
+                 WHERE LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE 'amb-cortex%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]

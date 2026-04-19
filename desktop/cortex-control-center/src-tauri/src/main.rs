@@ -36,11 +36,12 @@ const DAEMON_MAX_REQUEST_TIMEOUT_MS: u64 = 120_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
 const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
-const LOCAL_DAEMON_START_WAIT_MS: u64 = 12_000;
+const LOCAL_DAEMON_START_WAIT_MS: u64 = 8_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
+const PATH_BINARY_FALLBACK_ENV: &str = "CORTEX_ALLOW_PATH_BINARY_FALLBACK";
 #[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
 #[cfg(windows)]
@@ -294,6 +295,7 @@ struct ResolvedCortexPaths {
     db: Option<PathBuf>,
     pid: Option<PathBuf>,
     port: Option<u16>,
+    #[allow(dead_code)]
     bind: Option<String>,
 }
 
@@ -317,7 +319,46 @@ fn daemon_port() -> u16 {
     resolve_daemon_port()
 }
 
-fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
+#[derive(Clone, Copy, Debug, Default)]
+struct CortexReachabilityProbe {
+    reachable: bool,
+    starting: bool,
+    identity_mismatch: bool,
+}
+
+fn readiness_state_with_identity_fallback(
+    status: u16,
+    body: &str,
+    expected_port: Option<u16>,
+    expected_paths: Option<&ResolvedCortexPaths>,
+) -> (Option<bool>, bool) {
+    if let Some(ready) = cortex_readiness_state(status, body, expected_port, expected_paths) {
+        return (Some(ready), false);
+    }
+    if expected_paths.is_some() {
+        if let Some(ready) = cortex_readiness_state(status, body, expected_port, None) {
+            return (Some(ready), true);
+        }
+    }
+    (None, false)
+}
+
+fn health_state_with_identity_fallback(
+    status: u16,
+    body: &str,
+    expected_port: Option<u16>,
+    expected_paths: Option<&ResolvedCortexPaths>,
+) -> (bool, bool) {
+    if is_cortex_health_response(status, body, expected_port, expected_paths) {
+        return (true, false);
+    }
+    if expected_paths.is_some() && is_cortex_health_response(status, body, expected_port, None) {
+        return (true, true);
+    }
+    (false, false)
+}
+
+fn probe_cortex_reachability_with_port(port: u16, timeout_ms: u64) -> CortexReachabilityProbe {
     let expected_paths = resolved_cortex_paths();
     let readiness_response = send_cortex_request_with_port(
         port,
@@ -333,10 +374,18 @@ fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
     );
 
     if let Ok(resp) = readiness_response {
-        if let Some(ready) =
-            cortex_readiness_state(resp.status, &resp.body, Some(port), Some(&expected_paths))
-        {
-            return ready;
+        let (readiness_state, identity_mismatch) = readiness_state_with_identity_fallback(
+            resp.status,
+            &resp.body,
+            Some(port),
+            Some(&expected_paths),
+        );
+        if let Some(ready) = readiness_state {
+            return CortexReachabilityProbe {
+                reachable: ready,
+                starting: !ready,
+                identity_mismatch,
+            };
         }
     }
 
@@ -353,10 +402,27 @@ fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
         },
     );
 
-    matches!(
-        health_response,
-        Ok(resp) if is_cortex_health_response(resp.status, &resp.body, Some(port), Some(&expected_paths))
-    )
+    if let Ok(resp) = health_response {
+        let (healthy, identity_mismatch) = health_state_with_identity_fallback(
+            resp.status,
+            &resp.body,
+            Some(port),
+            Some(&expected_paths),
+        );
+        if healthy {
+            return CortexReachabilityProbe {
+                reachable: true,
+                starting: false,
+                identity_mismatch,
+            };
+        }
+    }
+
+    CortexReachabilityProbe::default()
+}
+
+fn is_cortex_reachable_with_port(port: u16, timeout_ms: u64) -> bool {
+    probe_cortex_reachability_with_port(port, timeout_ms).reachable
 }
 
 async fn wait_for_reachability(port: u16, target: bool, timeout: Duration) -> bool {
@@ -436,6 +502,7 @@ async fn read_auth_token_with_retry() -> Result<String, String> {
 fn describe_daemon_state(
     managed: bool,
     reachable: bool,
+    starting: bool,
     auth_token_ready: bool,
     pid: Option<u32>,
     port: u16,
@@ -447,6 +514,12 @@ fn describe_daemon_state(
             "Cortex daemon running (pid {}) and reachable, waiting for auth token.",
             pid.unwrap_or_default()
         )
+    } else if managed && starting {
+        format!(
+            "Cortex daemon running (pid {}) and still starting on :{}.",
+            pid.unwrap_or_default(),
+            port
+        )
     } else if managed {
         format!(
             "Cortex daemon running (pid {}) but not reachable on :{} yet.",
@@ -457,6 +530,8 @@ fn describe_daemon_state(
         "Cortex daemon reachable (external process).".to_string()
     } else if reachable {
         "Cortex daemon reachable (external process), waiting for auth token.".to_string()
+    } else if starting {
+        format!("Cortex daemon is responding on :{} and still starting.", port)
     } else {
         "Cortex daemon is offline.".to_string()
     }
@@ -524,6 +599,25 @@ fn is_non_runtime_test_artifact_path(path: &Path) -> bool {
     false
 }
 
+fn is_shared_workspace_debug_runtime_path(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if file_name != cortex_binary_name().to_ascii_lowercase() {
+        return false;
+    }
+
+    let segments: Vec<String> = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    segments
+        .windows(3)
+        .any(|window| window == ["daemon-rs", "target", "debug"])
+}
+
 fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
     let normalized = normalized_path_for_guard(path);
     let file_name = path
@@ -539,6 +633,9 @@ fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
         return true;
     }
     if is_non_runtime_test_artifact_path(path) {
+        return true;
+    }
+    if is_shared_workspace_debug_runtime_path(path) {
         return true;
     }
 
@@ -564,10 +661,6 @@ fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> 
         .join(RELEASE_DAEMON_TARGET_DIR)
         .join("release")
         .join(cortex_binary_name());
-    let debug_path = daemon_root
-        .join("target")
-        .join("debug")
-        .join(cortex_binary_name());
     let isolated_debug_path = daemon_root
         .join(DEV_DAEMON_TARGET_DIR)
         .join("debug")
@@ -578,17 +671,12 @@ fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> 
             isolated_debug_path,
             isolated_release_path,
             release_path,
-            // Keep shared target/debug as a last-resort fallback only. The
-            // Control Center should primarily run from its isolated target dir
-            // to avoid locking developer/test binaries in daemon-rs/target.
-            debug_path,
         ]
     } else {
         vec![
             isolated_release_path,
             release_path,
             isolated_debug_path,
-            debug_path,
         ]
     }
 }
@@ -618,6 +706,19 @@ fn resolve_binary_on_path(binary_name: &str) -> Option<PathBuf> {
             }
         })
         .next()
+}
+
+fn path_binary_fallback_enabled_from_value(value: Option<&str>) -> bool {
+    value
+        .map(|raw| {
+            let normalized = raw.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+fn path_binary_fallback_enabled() -> bool {
+    path_binary_fallback_enabled_from_value(std::env::var(PATH_BINARY_FALLBACK_ENV).ok().as_deref())
 }
 
 fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
@@ -719,11 +820,13 @@ fn resolved_cortex_paths() -> ResolvedCortexPaths {
         }
     }
 
-    if let Some(binary) = resolve_binary_on_path("cortex") {
-        match resolve_paths_with_binary(&binary) {
-            Ok(Some(paths)) => return paths,
-            Ok(None) => {}
-            Err(err) => eprintln!("[cortex-control-center] {err}"),
+    if path_binary_fallback_enabled() {
+        if let Some(binary) = resolve_binary_on_path("cortex") {
+            match resolve_paths_with_binary(&binary) {
+                Ok(Some(paths)) => return paths,
+                Ok(None) => {}
+                Err(err) => eprintln!("[cortex-control-center] {err}"),
+            }
         }
     }
 
@@ -847,7 +950,11 @@ fn find_cortex_binary() -> Option<PathBuf> {
         return Some(sidecar);
     }
 
-    resolve_binary_on_path(cortex_binary_name())
+    if path_binary_fallback_enabled() {
+        return resolve_binary_on_path(cortex_binary_name());
+    }
+
+    None
 }
 
 fn command_output_summary(output: &std::process::Output) -> String {
@@ -898,24 +1005,50 @@ fn try_service_ensure(port: u16) -> Result<bool, String> {
     ))
 }
 
-fn try_local_app_managed_ensure(state: &DaemonState, port: u16) -> Result<bool, String> {
-    let pid = state.ensure_local_daemon()?;
+fn try_local_app_managed_ensure(
+    state: &DaemonState,
+    port: u16,
+) -> Result<CortexReachabilityProbe, String> {
+    state.ensure_local_daemon()?;
     if wait_for_reachability_blocking(
         port,
         true,
         Duration::from_millis(LOCAL_DAEMON_START_WAIT_MS),
     ) {
-        return Ok(true);
+        return Ok(probe_cortex_reachability_with_port(
+            port,
+            DAEMON_REACHABILITY_TIMEOUT_MS,
+        ));
     }
 
-    if let Some(pid) = pid {
-        Err(format!(
-            "App-managed daemon spawned (pid {pid}) but never became reachable on :{port}."
-        ))
+    let (managed, pid) = state.status()?;
+    if managed {
+        return Ok(CortexReachabilityProbe {
+            reachable: false,
+            starting: true,
+            identity_mismatch: false,
+        });
+    }
+
+    Err(local_app_managed_start_timeout_message(state, pid, port))
+}
+
+fn local_app_managed_start_timeout_message(
+    state: &DaemonState,
+    pid: Option<u32>,
+    port: u16,
+) -> String {
+    let base = if let Some(pid) = pid {
+        format!("App-managed daemon spawned (pid {pid}) but never became reachable on :{port}.")
     } else {
-        Err(format!(
-            "App-managed daemon spawn did not produce a live daemon on :{port}."
-        ))
+        format!("App-managed daemon spawn did not produce a live daemon on :{port}.")
+    };
+
+    match state.stop() {
+        Ok(()) => format!("{base} Control Center cleared the stale app-managed startup state."),
+        Err(err) => format!(
+            "{base} Control Center could not clear the stale app-managed startup state: {err}"
+        ),
     }
 }
 
@@ -1045,11 +1178,13 @@ fn hide_to_tray(app: tauri::AppHandle) -> Result<(), String> {
 async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let (managed, pid) = state.status()?;
     let port = daemon_port();
-    let reachable = tauri::async_runtime::spawn_blocking(move || {
-        is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS)
+    let probe = tauri::async_runtime::spawn_blocking(move || {
+        probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS)
     })
     .await
     .map_err(|err| format!("daemon_status reachability task failed: {err}"))?;
+    let reachable = probe.reachable;
+    let starting = probe.starting;
     let auth_token_ready = if reachable {
         tauri::async_runtime::spawn_blocking(auth_token_ready)
             .await
@@ -1057,10 +1192,13 @@ async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandRes
     } else {
         false
     };
-    let message = describe_daemon_state(managed, reachable, auth_token_ready, pid, port);
+    let mut message = describe_daemon_state(managed, reachable, starting, auth_token_ready, pid, port);
+    if probe.identity_mismatch {
+        message.push_str(" Runtime identity metadata mismatch detected; using loose local daemon probe.");
+    }
 
     Ok(DaemonCommandResult {
-        running: managed || reachable,
+        running: managed || reachable || starting,
         reachable,
         managed,
         auth_token_ready,
@@ -1073,20 +1211,58 @@ async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandRes
 async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let port = daemon_port();
     let (managed, pid) = state.status()?;
-    if is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
+    let probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
+    if probe.reachable {
         log_startup_path(
             "start_daemon",
             "existing-daemon",
-            "daemon already reachable before start command",
+            if probe.identity_mismatch {
+                "daemon already reachable before start command (identity mismatch fallback)"
+            } else {
+                "daemon already reachable before start command"
+            },
         );
         let auth_token_ready = auth_token_ready();
+        let mut message = describe_daemon_state(managed, true, false, auth_token_ready, pid, port);
+        if probe.identity_mismatch {
+            message.push_str(
+                " Runtime identity metadata mismatch detected; using loose local daemon probe.",
+            );
+        }
         return Ok(DaemonCommandResult {
             running: true,
             reachable: true,
             managed,
             auth_token_ready,
             pid,
-            message: describe_daemon_state(managed, true, auth_token_ready, pid, port),
+            message,
+        });
+    }
+
+    if probe.starting {
+        log_startup_path(
+            "start_daemon",
+            "existing-daemon",
+            if probe.identity_mismatch {
+                "daemon already starting before start command (identity mismatch fallback)"
+            } else {
+                "daemon already starting before start command"
+            },
+        );
+        let auth_token_ready = auth_token_ready();
+        let mut message = describe_daemon_state(managed, false, true, auth_token_ready, pid, port);
+        if probe.identity_mismatch {
+            message.push_str(
+                " Runtime identity metadata mismatch detected; using loose local daemon probe.",
+            );
+        }
+        return Ok(DaemonCommandResult {
+            running: true,
+            reachable: false,
+            managed,
+            auth_token_ready,
+            pid,
+            message,
         });
     }
 
@@ -1108,27 +1284,43 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
             })
         }
         Ok(false) => match try_local_app_managed_ensure(&state, port) {
-            Ok(true) => {
+            Ok(local_probe) => {
                 log_startup_path(
                     "start_daemon",
                     "app-managed-spawn",
-                    "daemon started via Control Center local mode",
+                    if local_probe.reachable {
+                        "daemon started via Control Center local mode"
+                    } else {
+                        "daemon spawned via Control Center local mode and is still starting"
+                    },
                 );
                 let (managed, pid) = state.status()?;
-                let auth_token_ready = auth_token_ready();
+                let auth_token_ready = if local_probe.reachable {
+                    auth_token_ready()
+                } else {
+                    false
+                };
+                let mut message = describe_daemon_state(
+                    managed,
+                    local_probe.reachable,
+                    local_probe.starting,
+                    auth_token_ready,
+                    pid,
+                    port,
+                );
+                if local_probe.identity_mismatch {
+                    message.push_str(
+                        " Runtime identity metadata mismatch detected; using loose local daemon probe.",
+                    );
+                }
                 Ok(DaemonCommandResult {
-                    running: true,
-                    reachable: true,
+                    running: managed || local_probe.reachable || local_probe.starting,
+                    reachable: local_probe.reachable,
                     managed,
                     auth_token_ready,
                     pid,
-                    message: "Daemon started via Control Center (app-managed local mode)."
-                        .to_string(),
+                    message,
                 })
-            }
-            Ok(false) => {
-                log_startup_path("start_daemon", "blocked", "service ensure unavailable");
-                Err("Control Center could not start Cortex automatically.".to_string())
             }
             Err(local_err) => {
                 log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
@@ -1138,29 +1330,43 @@ async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandResu
             }
         },
         Err(err) => match try_local_app_managed_ensure(&state, port) {
-            Ok(true) => {
+            Ok(local_probe) => {
                 log_startup_path(
                     "start_daemon",
                     "app-managed-spawn",
-                    "daemon started via Control Center after service ensure failure",
+                    if local_probe.reachable {
+                        "daemon started via Control Center after service ensure failure"
+                    } else {
+                        "daemon spawned via Control Center after service ensure failure and is still starting"
+                    },
                 );
                 let (managed, pid) = state.status()?;
-                let auth_token_ready = auth_token_ready();
+                let auth_token_ready = if local_probe.reachable {
+                    auth_token_ready()
+                } else {
+                    false
+                };
+                let mut message = describe_daemon_state(
+                    managed,
+                    local_probe.reachable,
+                    local_probe.starting,
+                    auth_token_ready,
+                    pid,
+                    port,
+                );
+                if local_probe.identity_mismatch {
+                    message.push_str(
+                        " Runtime identity metadata mismatch detected; using loose local daemon probe.",
+                    );
+                }
                 Ok(DaemonCommandResult {
-                    running: true,
-                    reachable: true,
+                    running: managed || local_probe.reachable || local_probe.starting,
+                    reachable: local_probe.reachable,
                     managed,
                     auth_token_ready,
                     pid,
-                    message: "Daemon started via Control Center (app-managed local mode)."
-                        .to_string(),
+                    message,
                 })
-            }
-            Ok(false) => {
-                log_startup_path("start_daemon", "blocked", "service ensure failed");
-                Err(format!(
-                    "Service ensure failed and Control Center could not start Cortex automatically: {err}"
-                ))
             }
             Err(local_err) => {
                 log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
@@ -2189,65 +2395,78 @@ fn detect_editors() -> Result<Vec<EditorDetection>, String> {
 
 fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
     let port = daemon_port();
-    if !is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS) {
-        let daemon_state = app_handle.state::<DaemonState>();
-        match try_service_ensure(port) {
-            Ok(true) => {
-                log_startup_path(
-                    "setup",
-                    "service-ensure",
-                    "daemon started or validated via service ensure",
-                );
-            }
-            Ok(false) => match try_local_app_managed_ensure(&daemon_state, port) {
-                Ok(true) => {
-                    log_startup_path(
-                        "setup",
-                        "app-managed-spawn",
-                        "daemon started via Control Center local mode",
-                    );
-                }
-                Ok(false) => {
-                    eprintln!(
-                        "[cortex-control-center] neither service ensure nor app-managed local start is available; daemon remains offline"
-                    );
-                    log_startup_path("setup", "blocked", "service ensure unavailable");
-                }
-                Err(err) => {
-                    eprintln!(
-                        "[cortex-control-center] app-managed local start failed at startup: {err}"
-                    );
-                    log_startup_path("setup", "blocked", "app-managed spawn failed");
-                }
-            },
-            Err(err) => match try_local_app_managed_ensure(&daemon_state, port) {
-                Ok(true) => {
-                    log_startup_path(
-                        "setup",
-                        "app-managed-spawn",
-                        "daemon started via Control Center after service ensure failure",
-                    );
-                }
-                Ok(false) => {
-                    eprintln!(
-                        "[cortex-control-center] service ensure failed at startup and app-managed local start was unavailable: {err}"
-                    );
-                    log_startup_path("setup", "blocked", "service ensure failed");
-                }
-                Err(local_err) => {
-                    eprintln!(
-                        "[cortex-control-center] service ensure failed at startup and app-managed local start also failed: {err}; {local_err}"
-                    );
-                    log_startup_path("setup", "blocked", "app-managed spawn failed");
-                }
-            },
-        }
-    } else {
+    let probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
+    if probe.reachable {
         log_startup_path(
             "setup",
             "existing-daemon",
-            "daemon already reachable at application startup",
+            if probe.identity_mismatch {
+                "daemon already reachable at application startup (identity mismatch fallback)"
+            } else {
+                "daemon already reachable at application startup"
+            },
         );
+        return;
+    }
+
+    if probe.starting {
+        log_startup_path(
+            "setup",
+            "existing-daemon",
+            if probe.identity_mismatch {
+                "daemon already starting at application startup (identity mismatch fallback)"
+            } else {
+                "daemon already starting at application startup"
+            },
+        );
+        return;
+    }
+
+    let daemon_state = app_handle.state::<DaemonState>();
+    match try_service_ensure(port) {
+        Ok(true) => {
+            log_startup_path(
+                "setup",
+                "service-ensure",
+                "daemon started or validated via service ensure",
+            );
+        }
+        Ok(false) => match try_local_app_managed_ensure(&daemon_state, port) {
+            Ok(local_probe) => {
+                log_startup_path(
+                    "setup",
+                    "app-managed-spawn",
+                    if local_probe.reachable {
+                        "daemon started via Control Center local mode"
+                    } else {
+                        "daemon spawned via Control Center local mode and is still starting"
+                    },
+                );
+            }
+            Err(err) => {
+                eprintln!("[cortex-control-center] app-managed local start failed at startup: {err}");
+                log_startup_path("setup", "blocked", "app-managed spawn failed");
+            }
+        },
+        Err(err) => match try_local_app_managed_ensure(&daemon_state, port) {
+            Ok(local_probe) => {
+                log_startup_path(
+                    "setup",
+                    "app-managed-spawn",
+                    if local_probe.reachable {
+                        "daemon started via Control Center after service ensure failure"
+                    } else {
+                        "daemon spawned via Control Center after service ensure failure and is still starting"
+                    },
+                );
+            }
+            Err(local_err) => {
+                eprintln!(
+                    "[cortex-control-center] service ensure failed at startup and app-managed local start also failed: {err}; {local_err}"
+                );
+                log_startup_path("setup", "blocked", "app-managed spawn failed");
+            }
+        },
     }
 }
 
@@ -2328,18 +2547,42 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        cortex_mcp_registration, cortex_readiness_state, editor_args, editor_config_path,
-        editor_targets, extract_error_detail, interpret_shutdown_response,
-        is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
-        should_use_partial_response_on_read_timeout, toml_env_match, workspace_binary_candidates,
-        FetchCortexResponse, ResolvedCortexPaths,
+        cortex_mcp_registration, cortex_readiness_state, describe_daemon_state, editor_args,
+        editor_config_path, editor_targets, extract_error_detail, interpret_shutdown_response,
+        health_state_with_identity_fallback, is_cortex_health_response,
+        is_disallowed_daemon_binary_path, json_env_match, local_app_managed_start_timeout_message,
+        path_binary_fallback_enabled_from_value,
+        readiness_state_with_identity_fallback, should_use_partial_response_on_read_timeout,
+        toml_env_match, workspace_binary_candidates, DaemonState, FetchCortexResponse,
+        ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::{Child, Command};
+    use std::sync::Mutex;
+
+    fn spawn_test_sleep_process() -> Child {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", "ping -n 30 127.0.0.1 > NUL"])
+                .spawn()
+                .expect("spawn windows sleep surrogate")
+        }
+
+        #[cfg(not(windows))]
+        {
+            Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .expect("spawn unix sleep")
+        }
+    }
 
     #[test]
     fn workspace_binary_candidates_prefers_debug_for_dev_builds() {
         let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), true);
+        assert_eq!(candidates.len(), 3);
         assert!(candidates[0]
             .to_string_lossy()
             .contains("target-control-center-dev\\debug"));
@@ -2347,12 +2590,15 @@ mod tests {
             .to_string_lossy()
             .contains("target-control-center-release\\release"));
         assert!(candidates[2].to_string_lossy().contains("target\\release"));
-        assert!(candidates[3].to_string_lossy().contains("target\\debug"));
+        assert!(candidates
+            .iter()
+            .all(|path| !path.to_string_lossy().contains("target\\debug")));
     }
 
     #[test]
     fn workspace_binary_candidates_prefers_release_for_packaged_builds() {
         let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), false);
+        assert_eq!(candidates.len(), 3);
         assert!(candidates[0]
             .to_string_lossy()
             .contains("target-control-center-release\\release"));
@@ -2360,7 +2606,21 @@ mod tests {
         assert!(candidates[2]
             .to_string_lossy()
             .contains("target-control-center-dev\\debug"));
-        assert!(candidates[3].to_string_lossy().contains("target\\debug"));
+        assert!(candidates
+            .iter()
+            .all(|path| !path.to_string_lossy().contains("target\\debug")));
+    }
+
+    #[test]
+    fn path_binary_fallback_requires_explicit_truthy_env_value() {
+        assert!(!path_binary_fallback_enabled_from_value(None));
+        assert!(!path_binary_fallback_enabled_from_value(Some("")));
+        assert!(!path_binary_fallback_enabled_from_value(Some("0")));
+        assert!(!path_binary_fallback_enabled_from_value(Some("false")));
+        assert!(path_binary_fallback_enabled_from_value(Some("1")));
+        assert!(path_binary_fallback_enabled_from_value(Some("true")));
+        assert!(path_binary_fallback_enabled_from_value(Some("Yes")));
+        assert!(path_binary_fallback_enabled_from_value(Some("on")));
     }
 
     #[test]
@@ -2392,8 +2652,8 @@ mod tests {
             PathBuf::from("C:/repo/daemon-rs/target-control-center-dev/debug/deps/cortex.exe");
         assert!(is_disallowed_daemon_binary_path(&isolated_target_deps));
 
-        let workspace_runtime = PathBuf::from("C:/repo/daemon-rs/target/debug/cortex.exe");
-        assert!(!is_disallowed_daemon_binary_path(&workspace_runtime));
+        let shared_workspace_runtime = PathBuf::from("C:/repo/daemon-rs/target/debug/cortex.exe");
+        assert!(is_disallowed_daemon_binary_path(&shared_workspace_runtime));
 
         let isolated_runtime =
             PathBuf::from("C:/repo/daemon-rs/target-control-center-dev/debug/cortex.exe");
@@ -2414,6 +2674,35 @@ mod tests {
 
         let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
         assert!(!is_disallowed_daemon_binary_path(&safe));
+    }
+
+    #[test]
+    fn local_start_timeout_cleanup_clears_managed_child_state() {
+        let child = spawn_test_sleep_process();
+        let pid = child.id();
+        let state = DaemonState {
+            exe_path: None,
+            child: Mutex::new(Some(child)),
+        };
+
+        let (managed_before, _) = state.status().expect("initial status");
+        assert!(managed_before);
+
+        let message = local_app_managed_start_timeout_message(&state, Some(pid), 7437);
+        assert!(message.contains("cleared the stale app-managed startup state"));
+
+        let (managed_after, pid_after) = state.status().expect("post-cleanup status");
+        assert!(!managed_after);
+        assert_eq!(pid_after, None);
+    }
+
+    #[test]
+    fn daemon_state_description_includes_starting_state() {
+        let managed_message = describe_daemon_state(true, false, true, false, Some(42), 7437);
+        assert!(managed_message.contains("still starting"));
+
+        let external_message = describe_daemon_state(false, false, true, false, None, 7437);
+        assert!(external_message.contains("still starting"));
     }
 
     #[test]
@@ -2555,6 +2844,46 @@ mod tests {
             Some(7437),
             Some(&expected)
         ));
+    }
+
+    #[test]
+    fn readiness_identity_fallback_classifies_starting_payload_on_path_mismatch() {
+        let expected = ResolvedCortexPaths {
+            home: Some(PathBuf::from("C:/Users/aditya/.cortex")),
+            token: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.token")),
+            db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
+            pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
+            port: Some(7437),
+            bind: Some("127.0.0.1".to_string()),
+        };
+        let (state, mismatch) = readiness_state_with_identity_fallback(
+            503,
+            r#"{"status":"starting","ready":false,"runtime":{"port":7437,"token_path":"C:/other/cortex.token","db_path":"C:/other/cortex.db","pid_path":"C:/other/cortex.pid"},"stats":{"home":"C:/other","memories":1}}"#,
+            Some(7437),
+            Some(&expected),
+        );
+        assert_eq!(state, Some(false));
+        assert!(mismatch);
+    }
+
+    #[test]
+    fn health_identity_fallback_detects_reachable_payload_on_path_mismatch() {
+        let expected = ResolvedCortexPaths {
+            home: Some(PathBuf::from("C:/Users/aditya/.cortex")),
+            token: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.token")),
+            db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
+            pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
+            port: Some(7437),
+            bind: Some("127.0.0.1".to_string()),
+        };
+        let (healthy, mismatch) = health_state_with_identity_fallback(
+            200,
+            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/other/cortex.token","db_path":"C:/other/cortex.db","pid_path":"C:/other/cortex.pid"},"stats":{"home":"C:/other","memories":1}}"#,
+            Some(7437),
+            Some(&expected),
+        );
+        assert!(healthy);
+        assert!(mismatch);
     }
 
     #[test]

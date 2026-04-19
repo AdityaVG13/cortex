@@ -8,6 +8,33 @@ Commit range size: 319 commits
 This file tracks all meaningful changes since v0.4.1 for release preparation and auditability.
 Keep this file additive. Do not delete history; append updates as Cortex evolves.
 
+- 2026-04-19 08:20 - Strict benchmark closure + startup lifecycle fallback hardening + live DB cleanup verification:
+  - `benchmarking/run_amb_cortex.py`:
+    - tightened LongMemEval short-answer shim behavior so singular item questions stay primary-item only (prevents over-complete item+accessory answers on raw path).
+  - Benchmark outcomes (strict fair runs, no gate bypass):
+    - tuned path (`cortex-http`): `benchmarking/runs/amb-run-20260419-073924` -> `20/20`, gate passed (`avg_recall_tokens=199.35`, `max_recall_tokens=294`, `score_per_1k_recall_tokens=5.0163`)
+    - raw no-helper path (`cortex-http-base`): `benchmarking/runs/amb-run-20260419-074548` -> `20/20`, gate passed (`avg_recall_tokens=201.95`, `max_recall_tokens=297`, `score_per_1k_recall_tokens=4.9517`)
+  - `desktop/cortex-control-center/src/App.jsx`:
+    - lifecycle verification now falls back to polling if startup event stream init fails, avoiding false startup-failure reports in local dev lifecycle runs.
+  - `desktop/cortex-control-center/src/daemon-startup.js` + `desktop/cortex-control-center/src/daemon-startup.test.js`:
+    - centralized bounded startup retry windows/delay policy with dedicated unit coverage.
+  - `desktop/cortex-control-center/src-tauri/src/main.rs`:
+    - PATH binary fallback is now explicit opt-in via `CORTEX_ALLOW_PATH_BINARY_FALLBACK`.
+  - `daemon-rs/src/compaction.rs`, `daemon-rs/src/db.rs`, `daemon-rs/src/handlers/health.rs`:
+    - clippy-hardening cleanups (complex-type aliasing, dead-code pruning, explicit filter paths) while preserving behavior.
+  - Live DB remediation (backup-first) was revalidated against benchmark namespace bloat:
+    - backups: `~/.cortex/backups/cortex-pre-benchmark-cleanup-20260419-075715.db`, `~/.cortex/backups/cortex-pre-benchmark-cleanup-2-20260419-075738.db`
+    - post-cleanup live counts: events `597`, decisions `489`, embeddings `9,749`, cluster_members `5,142`
+    - local DB size: `720.93 MB` (backup snapshot) -> `386.37 MB` (active DB)
+  - Validation:
+    - `rtk python -m pytest benchmarking/adapters/tests/test_run_amb_cortex_shims.py -q` (`48` passing)
+    - `rtk python -m pytest benchmarking/adapters/tests/test_cortex_http_base_provider.py benchmarking/adapters/tests/test_cortex_http_client.py benchmarking/adapters/tests/test_run_amb_cortex_matrix.py benchmarking/adapters/tests/test_run_amb_cortex_shims.py -q` (`149` passing)
+    - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` (`399` passing)
+    - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
+    - `rtk npm --prefix desktop/cortex-control-center test -- src/daemon-startup.test.js src/api-client.test.js` (`48` passing)
+    - `rtk npm --prefix desktop/cortex-control-center run web:build` (pass)
+    - `rtk cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml` (`21` passing)
+
 - 2026-04-19 03:15 - Live DB compression tranche: payload compaction + savings rollups + orphan crystal-member pruning:
   - `daemon-rs/src/handlers/mod.rs`:
     - added write-path event payload compaction for high-churn telemetry:

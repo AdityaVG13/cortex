@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from hashlib import sha1
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -175,7 +176,10 @@ _LOW_SIGNAL_ASSISTANT_PATTERN = re.compile(
     r"\b(?:here are|tips?|recommendations?|you can|you should|remember to|step\s+\d+|let me know|if you'd like|happy to help|overall)\b",
     re.IGNORECASE,
 )
-_OVERLAP_TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}")
+_ASCII_TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}")
+_UNICODE_TOKEN_PATTERN = re.compile(r"[^\W_]{2,}", re.IGNORECASE)
+_CJK_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+_QUERY_MCQ_OPTION_PATTERN = re.compile(r"(?:^|\n)\s*(?:[A-H]|[1-9])[).:\-]\s+\S", re.IGNORECASE)
 _LOCATION_TOKEN_PATTERN = re.compile(r"[a-z0-9'&.-]{2,}", re.IGNORECASE)
 _ANSWER_SOURCE_ID_PATTERN = re.compile(
     r"(?:^|[:_])answer_[0-9a-f]{6,}(?:$|[:_])",
@@ -273,9 +277,17 @@ class CortexHTTPClient:
             self.retry_base_seconds,
             float(os.environ.get("CORTEX_BENCHMARK_HTTP_RETRY_MAX_SECONDS", "3.0")),
         )
+        self.dedupe_identical_store_payloads = os.environ.get(
+            "CORTEX_BENCHMARK_DEDUP_IDENTICAL_STORE_PAYLOADS",
+            "1",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self.max_context_chars = max(
             0,
             int(os.environ.get("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "700")),
+        )
+        self.mcq_context_max_chars = max(
+            self.max_context_chars,
+            int(os.environ.get("CORTEX_BENCHMARK_MCQ_CONTEXT_MAX_CHARS", "980")),
         )
         self.retrieval_policy = self._normalize_retrieval_policy(
             os.environ.get("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "standard")
@@ -341,6 +353,9 @@ class CortexHTTPClient:
         )
         self.client = httpx.Client(timeout=self.timeout)
         self.docs_by_context: dict[str, CortexStoredDocument] = {}
+        self._serialized_by_context: dict[str, str] = {}
+        self._content_digest_by_context: dict[str, str] = {}
+        self._stored_content_digests: set[str] = set()
 
     def close(self) -> None:
         self.client.close()
@@ -351,22 +366,37 @@ class CortexHTTPClient:
     def reset_namespace(self, namespace: str) -> None:
         self.namespace = slugify(namespace)
         self.docs_by_context.clear()
+        self._serialized_by_context.clear()
+        self._content_digest_by_context.clear()
+        self._stored_content_digests.clear()
 
     def store_documents(self, documents: list[CortexStoredDocument]) -> None:
         for document in documents:
             normalized = self._normalize_document(document)
             context_key = self.context_key(normalized.id, normalized.user_id)
+            serialized = self.serialize_document(normalized)
+            digest = sha1(serialized.encode("utf-8")).hexdigest()
+            if self._serialized_by_context.get(context_key) == serialized:
+                continue
             self.docs_by_context[context_key] = normalized
+            self._serialized_by_context[context_key] = serialized
+            self._content_digest_by_context[context_key] = digest
+            if (
+                self.dedupe_identical_store_payloads
+                and digest in self._stored_content_digests
+            ):
+                continue
             self.request(
                 "POST",
                 "/store",
                 json={
-                    "decision": self.serialize_document(normalized),
+                    "decision": serialized,
                     "context": context_key,
                     "type": self.entry_type,
                     "confidence": 1.0,
                 },
             )
+            self._stored_content_digests.add(digest)
 
     def recall_documents(
         self,
@@ -500,6 +530,10 @@ class CortexHTTPClient:
                 query=query,
                 documents=documents,
                 k=k,
+            )
+            documents = self._augment_abroad_location_qualifier(
+                query=query,
+                documents=documents,
             )
         return documents[:k], payload
 
@@ -757,7 +791,8 @@ class CortexHTTPClient:
         *,
         query_profile: dict[str, bool | str],
     ) -> str | None:
-        tokens = list(self._query_terms(query))
+        term_query = self._normalize_text(query_profile.get("term_query")).strip() or query
+        tokens = list(self._query_terms(term_query))
         tokens.sort()
         token_parts = tokens[:10]
         hint_parts: list[str] = []
@@ -878,7 +913,8 @@ class CortexHTTPClient:
         existing_ids = {self._normalize_text(document.id).lower() for document in documents}
         additions: list[CortexStoredDocument] = []
         added_count = 0
-        query_terms = self._query_terms(query)
+        term_query = self._normalize_text(query_profile.get("term_query")).strip() or query
+        query_terms = self._query_terms(term_query)
         for seed in documents:
             if added_count >= self.detail_max_added_siblings:
                 break
@@ -1048,7 +1084,8 @@ class CortexHTTPClient:
 
         top_window = min(k, len(documents))
         query_profile = self._build_query_profile(query)
-        query_terms = self._query_terms(query)
+        term_query = self._normalize_text(query_profile.get("term_query")).strip() or query
+        query_terms = self._query_terms(term_query)
         is_abroad_query = bool(_QUERY_ABROAD_INTENT_PATTERN.search(str(query_profile["normalized_query"])))
         primary_family = self._detail_family_key(documents[0].id)
         if not primary_family and not is_abroad_query:
@@ -1164,6 +1201,88 @@ class CortexHTTPClient:
                 seen_ids.add(key)
         return prefix + tail
 
+    def _augment_abroad_location_qualifier(
+        self,
+        *,
+        query: str,
+        documents: list[CortexStoredDocument],
+    ) -> list[CortexStoredDocument]:
+        if len(documents) <= 1:
+            return documents
+        query_profile = self._build_query_profile(query)
+        if not bool(query_profile["wants_location"]):
+            return documents
+        normalized_query = str(query_profile["normalized_query"])
+        if not _QUERY_ABROAD_INTENT_PATTERN.search(normalized_query):
+            return documents
+        primary = documents[0]
+        primary_text = self._normalize_text(primary.content).strip()
+        if not primary_text:
+            return documents
+        if not re.search(
+            r"\b(study abroad|abroad|exchange|international|university|college|campus|program)\b",
+            primary_text,
+            flags=re.IGNORECASE,
+        ):
+            return documents
+        primary_terms = self._location_term_set(primary_text)
+        term_query = self._normalize_text(query_profile.get("term_query")).strip() or query
+        query_terms = self._query_terms(term_query)
+        primary_family = self._detail_family_key(primary.id)
+        primary_fact_index = self._fact_index(primary.id)
+
+        best_term: str | None = None
+        best_rank: tuple[int, int, int, int, int, int] | None = None
+        for idx, document in enumerate(documents[1:], start=1):
+            doc_text = self._normalize_text(document.content).strip()
+            if not doc_text:
+                continue
+            location_terms = self._location_term_set(doc_text) - primary_terms
+            if not location_terms:
+                continue
+            same_family = int(bool(primary_family) and self._detail_family_key(document.id) == primary_family)
+            candidate_fact_index = self._fact_index(document.id)
+            is_adjacent = int(
+                primary_fact_index is not None
+                and candidate_fact_index is not None
+                and abs(candidate_fact_index - primary_fact_index) <= 1
+            )
+            non_question = 0 if self._looks_like_question_text(doc_text) else 1
+            overlap = self._term_overlap_count(query_terms, doc_text.lower())
+            relevance = self._document_query_relevance_score(query, document)
+            for term in sorted(location_terms):
+                if not self._is_country_like_location_term(term):
+                    continue
+                rank = (
+                    same_family,
+                    is_adjacent,
+                    non_question,
+                    1 if overlap > 0 else 0,
+                    relevance,
+                    -idx,
+                )
+                if best_rank is None or rank > best_rank:
+                    best_rank = rank
+                    best_term = term
+        if not best_term:
+            return documents
+
+        qualifier_text = f"in {best_term.title()}"
+        if qualifier_text.lower() in primary_text.lower():
+            return documents
+        if "[location-qualifier]" in primary_text.lower():
+            return documents
+
+        augmented_text = f"{primary_text.rstrip()} [location-qualifier] {qualifier_text}."
+        augmented_primary = CortexStoredDocument(
+            id=primary.id,
+            content=augmented_text,
+            user_id=primary.user_id,
+            timestamp=primary.timestamp,
+            context=primary.context,
+        )
+        return [augmented_primary, *documents[1:]]
+
     def _merge_recall_payloads(self, recall_calls: list[dict[str, object]]) -> RecallResponse:
         if not recall_calls:
             return cast(RecallResponse, {"results": [], "budget": self.budget, "spent": 0, "saved": 0})
@@ -1275,8 +1394,9 @@ class CortexHTTPClient:
         query: str,
         document: CortexStoredDocument,
     ) -> int:
-        query_terms = self._query_terms(query)
         profile = self._build_query_profile(query)
+        term_query = self._normalize_text(profile.get("term_query")).strip() or query
+        query_terms = self._query_terms(term_query)
         normalized_context = self._normalize_text(document.context)
         text = f"{document.content}\n{normalized_context}".strip()
         lowered = text.lower()
@@ -1315,6 +1435,12 @@ class CortexHTTPClient:
             query_profile=profile,
             text=text,
         )
+        location_answer_bonus = self._location_answer_specificity_bonus(
+            query_profile=profile,
+            text=text,
+            overlap=overlap,
+            detail_bonus=detail_bonus,
+        )
         relation_alignment_adjustment = self._relation_alignment_adjustment(
             query_profile=profile,
             text=text,
@@ -1332,6 +1458,7 @@ class CortexHTTPClient:
             + item_answer_bonus
             + answer_source_detail_relief
             + location_item_affinity_bonus
+            + location_answer_bonus
             + relation_alignment_adjustment
             + occupation_temporal_adjustment
         )
@@ -1345,15 +1472,59 @@ class CortexHTTPClient:
         )
 
     def _query_terms(self, query: str) -> set[str]:
-        tokens = set(re.findall(r"[a-z0-9]{3,}", query.lower()))
-        return {token for token in tokens if token not in _QUERY_STOPWORDS}
+        lowered = self._normalize_text(query).lower()
+        tokens = {
+            token
+            for token in _ASCII_TOKEN_PATTERN.findall(lowered)
+            if token not in _QUERY_STOPWORDS
+        }
+        for token in _UNICODE_TOKEN_PATTERN.findall(lowered):
+            normalized = token.strip().lower()
+            if not normalized or normalized in _QUERY_STOPWORDS:
+                continue
+            if any(ord(char) > 127 for char in normalized):
+                tokens.add(normalized)
+        if _CJK_CHAR_PATTERN.search(lowered):
+            tokens.update(self._cjk_bigrams(lowered))
+        return tokens
 
     def _term_overlap_count(self, query_terms: set[str], text: str) -> int:
-        text_tokens = set(_OVERLAP_TOKEN_PATTERN.findall(text.lower()))
+        text_tokens = self._query_terms(text)
         return sum(1 for term in query_terms if term in text_tokens)
+
+    def _cjk_bigrams(self, text: str) -> set[str]:
+        chars = [char for char in text if _CJK_CHAR_PATTERN.match(char)]
+        if len(chars) < 2:
+            return set()
+        return {f"{chars[idx]}{chars[idx + 1]}" for idx in range(len(chars) - 1)}
+
+    def _extract_mcq_stem(self, query: str) -> str:
+        normalized = self._normalize_text(query).strip()
+        if not normalized:
+            return ""
+        stem_split = re.split(
+            r"\n\s*(?:[A-H]|[1-9])[).:\-]\s+",
+            normalized,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )
+        if len(stem_split) >= 2 and stem_split[0].strip():
+            return stem_split[0].strip()
+        inline_split = re.split(
+            r"\s+(?:[A-H]|[1-9])[).:\-]\s+",
+            normalized,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )
+        if len(inline_split) >= 2 and len(inline_split[0].split()) >= 3:
+            return inline_split[0].strip()
+        return normalized
 
     def _build_query_profile(self, query: str) -> dict[str, bool | str]:
         normalized_query = query.lower().strip()
+        is_mcq_query = bool(_QUERY_MCQ_OPTION_PATTERN.search(query))
+        term_query = self._extract_mcq_stem(query) if is_mcq_query else query
+        normalized_term_query = term_query.lower().strip() or normalized_query
         wants_numbers = bool(_QUERY_NUMERIC_INTENT_PATTERN.search(normalized_query))
         wants_location = bool(_QUERY_LOCATION_INTENT_PATTERN.search(normalized_query))
         wants_date = bool(_QUERY_DATE_INTENT_PATTERN.search(normalized_query))
@@ -1367,6 +1538,8 @@ class CortexHTTPClient:
         wants_previous_role = bool(_QUERY_PREVIOUS_ROLE_INTENT_PATTERN.search(normalized_query))
         return {
             "normalized_query": normalized_query,
+            "term_query": normalized_term_query,
+            "is_mcq_query": is_mcq_query,
             "wants_numbers": wants_numbers,
             "wants_location": wants_location,
             "wants_date": wants_date,
@@ -1510,6 +1683,52 @@ class CortexHTTPClient:
             bonus += 2
         return bonus
 
+    def _location_answer_specificity_bonus(
+        self,
+        *,
+        query_profile: dict[str, bool | str],
+        text: str,
+        overlap: int,
+        detail_bonus: int,
+    ) -> int:
+        if not bool(query_profile["wants_location"]):
+            return 0
+        lowered = text.lower()
+        if "[user-answer]" not in lowered:
+            return 0
+        if overlap <= 0 and detail_bonus <= 0:
+            return 0
+        bonus = 2
+        answer_match = re.search(
+            r"\[user-answer\]\s*([^\[\n]{1,220})",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not answer_match:
+            return bonus
+        answer_value = answer_match.group(1).strip(" \t\r\n.,!?;:\"'")
+        if not answer_value:
+            return bonus
+        location_terms = self._location_term_set(answer_value)
+        if location_terms:
+            bonus += 6 + min(4, len(location_terms))
+            if self._is_non_generic_location_text(answer_value):
+                bonus += 2
+        elif self._text_has_generic_location_detail(answer_value):
+            bonus += 2
+        is_abroad_query = bool(
+            _QUERY_ABROAD_INTENT_PATTERN.search(str(query_profile["normalized_query"]))
+        )
+        if is_abroad_query and (
+            re.search(
+                r"\b(study abroad|abroad|exchange|university|college|campus)\b",
+                answer_value.lower(),
+            )
+            or len(location_terms) >= 2
+        ):
+            bonus += 4
+        return bonus
+
     def _answer_source_detail_relief(
         self,
         *,
@@ -1538,8 +1757,11 @@ class CortexHTTPClient:
         relief = min(self.answer_source_penalty, 16)
         if bool(query_profile["wants_item"]) and "[user-answer]" in lowered_text:
             relief += 8
-        if bool(query_profile["wants_location"]) and self._location_detail_count(text) >= 2:
-            relief += 4
+        if bool(query_profile["wants_location"]):
+            if "[user-answer]" in lowered_text and self._location_detail_count(text) >= 1:
+                relief += 8
+            elif self._location_detail_count(text) >= 2:
+                relief += 4
         if bool(query_profile["wants_date"]) and self._text_has_exact_date_detail(text):
             relief += 3
         if bool(query_profile["wants_speed"]) and self._text_has_speed_detail(text):
@@ -1665,6 +1887,16 @@ class CortexHTTPClient:
             return True
         return False
 
+    def _is_country_like_location_term(self, term: str) -> bool:
+        tokens = [token.lower() for token in _LOCATION_TOKEN_PATTERN.findall(self._normalize_text(term))]
+        if not tokens or len(tokens) > 3:
+            return False
+        if any(token in _LOCATION_NON_PLACE_TOKENS for token in tokens):
+            return False
+        if any(token in _LOCATION_PLACE_HINT_TOKENS for token in tokens):
+            return False
+        return True
+
     def _location_term_set(self, text: str) -> set[str]:
         if not text:
             return set()
@@ -1782,6 +2014,12 @@ class CortexHTTPClient:
             overlap=overlap,
             detail_bonus=detail_bonus,
         )
+        location_answer_bonus = self._location_answer_specificity_bonus(
+            query_profile=query_profile,
+            text=candidate,
+            overlap=overlap,
+            detail_bonus=detail_bonus,
+        )
         occupation_temporal_adjustment = self._occupation_temporal_adjustment(
             query_profile=query_profile,
             text=candidate,
@@ -1793,6 +2031,7 @@ class CortexHTTPClient:
             + detail_bonus
             + personal_bonus
             + item_answer_bonus
+            + location_answer_bonus
             + occupation_temporal_adjustment
             - self._assistant_noise_penalty(candidate)
             - location_penalty
@@ -1809,7 +2048,8 @@ class CortexHTTPClient:
         normalized_excerpt = self._normalize_text(excerpt)
         query_profile = self._build_query_profile(query)
         query_lower = str(query_profile["normalized_query"])
-        query_terms = self._query_terms(query)
+        term_query = self._normalize_text(query_profile.get("term_query")).strip() or query
+        query_terms = self._query_terms(term_query)
 
         if normalized_excerpt:
             if (
@@ -1910,11 +2150,24 @@ class CortexHTTPClient:
         *,
         query_profile: dict[str, bool | str] | None = None,
     ) -> str:
+        max_chars = self._effective_context_max_chars(query_profile)
         if self.retrieval_policy != "high-detail":
-            return self._clip_text(text)
+            return self._clip_text(text, max_chars=max_chars)
         if not query_profile or not bool(query_profile.get("is_detail_query")):
-            return self._clip_text(text)
-        return self._clip_text_preserve_detail(text, query_profile=query_profile)
+            return self._clip_text(text, max_chars=max_chars)
+        return self._clip_text_preserve_detail(
+            text,
+            query_profile=query_profile,
+            max_chars=max_chars,
+        )
+
+    def _effective_context_max_chars(
+        self,
+        query_profile: dict[str, bool | str] | None = None,
+    ) -> int:
+        if query_profile and bool(query_profile.get("is_mcq_query")):
+            return self.mcq_context_max_chars
+        return self.max_context_chars
 
     def _detail_anchor_spans(self, query_profile: dict[str, bool | str], text: str) -> list[tuple[int, int]]:
         spans: list[tuple[int, int]] = []
@@ -1949,19 +2202,20 @@ class CortexHTTPClient:
         text: str,
         *,
         query_profile: dict[str, bool | str],
+        max_chars: int,
     ) -> str:
-        if self.max_context_chars <= 0 or len(text) <= self.max_context_chars:
+        if max_chars <= 0 or len(text) <= max_chars:
             return text
-        if self.max_context_chars <= 8:
-            return text[: self.max_context_chars]
+        if max_chars <= 8:
+            return text[:max_chars]
 
         spans = self._detail_anchor_spans(query_profile, text)
         if not spans:
-            return self._clip_text(text)
+            return self._clip_text(text, max_chars=max_chars)
 
-        target_width = self.max_context_chars - 5
+        target_width = max_chars - 5
         if target_width <= 0:
-            return text[: self.max_context_chars]
+            return text[:max_chars]
         candidate_bounds: list[tuple[int, int]] = []
         seen_bounds: set[tuple[int, int]] = set()
 
@@ -1988,7 +2242,7 @@ class CortexHTTPClient:
                 add_bound(cluster_center)
 
         if not candidate_bounds:
-            return self._clip_text(text)
+            return self._clip_text(text, max_chars=max_chars)
 
         def score_bound(left: int, right: int) -> int:
             window = text[left:right]
@@ -2020,12 +2274,13 @@ class CortexHTTPClient:
             return f"... {chunk.lstrip()}"
         return f"... {chunk.strip()} ..."
 
-    def _clip_text(self, text: str) -> str:
-        if self.max_context_chars <= 0 or len(text) <= self.max_context_chars:
+    def _clip_text(self, text: str, *, max_chars: int | None = None) -> str:
+        context_limit = self.max_context_chars if max_chars is None else int(max_chars)
+        if context_limit <= 0 or len(text) <= context_limit:
             return text
-        if self.max_context_chars <= 8:
-            return text[: self.max_context_chars]
-        visible = self.max_context_chars - 5
+        if context_limit <= 8:
+            return text[:context_limit]
+        visible = context_limit - 5
         head = max(3, visible // 2)
         tail = max(2, visible - head)
         return f"{text[:head].rstrip()} ... {text[-tail:].lstrip()}"

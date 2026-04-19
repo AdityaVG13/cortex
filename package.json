@@ -16,6 +16,8 @@
     "desktop:expect:work": "npm --prefix desktop/cortex-control-center run expect:smoke:work",
     "desktop:expect:ci": "npm --prefix desktop/cortex-control-center run expect:smoke:ci",
     "desktop:verify:lifecycle:dev": "npm --prefix desktop/cortex-control-center run verify:lifecycle:dev",
+    "ops:git-perf-audit": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/git-perf-health.ps1",
+    "ops:git-perf-apply": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/git-perf-health.ps1 -Apply",
     "ops:prune-build-bloat": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prune-build-bloat.ps1",
     "ops:prune-build-bloat:apply": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prune-build-bloat.ps1 -Apply"
   },

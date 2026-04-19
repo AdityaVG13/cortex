@@ -44,6 +44,8 @@ const SQLITE_VEC_TRIAL_TOP1_MATCH_REQUIRED: bool = true;
 const ENTITY_SIGNAL_OVERLAP_WEIGHT: f64 = 0.10;
 const ENTITY_SIGNAL_MATCH_WEIGHT: f64 = 0.01;
 const ENTITY_SIGNAL_MAX_BOOST: f64 = 0.12;
+const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex::";
+const BENCHMARK_SOURCE_SCOPE_PREFIX: &str = "amb::";
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -924,7 +926,30 @@ pub async fn handle_peek(
 
 // ─── Unified recall pipeline ─────────────────────────────────────────────────
 
-async fn emit_recall_query_event(state: &RuntimeState, agent: &str, payload: Value) {
+fn is_benchmark_recall_scope(agent: &str, source_prefix: Option<&str>) -> bool {
+    if agent
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with(BENCHMARK_SOURCE_AGENT_PREFIX)
+    {
+        return true;
+    }
+    source_prefix
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .starts_with(BENCHMARK_SOURCE_SCOPE_PREFIX)
+}
+
+async fn emit_recall_query_event(
+    state: &RuntimeState,
+    agent: &str,
+    source_prefix: Option<&str>,
+    payload: Value,
+) {
+    if is_benchmark_recall_scope(agent, source_prefix) {
+        return;
+    }
     let conn = state.db.lock().await;
     if super::log_event(&conn, "recall_query", payload, agent).is_ok() {
         checkpoint_wal_best_effort(&conn);
@@ -1253,6 +1278,7 @@ pub async fn execute_unified_recall(
             emit_recall_query_event(
                 state,
                 agent,
+                source_prefix,
                 json!({
                     "agent": agent,
                     "query": truncate_chars(query_text, 120),
@@ -1376,6 +1402,7 @@ pub async fn execute_unified_recall(
         emit_recall_query_event(
             state,
             agent,
+            source_prefix,
             json!({
                 "agent": agent,
                 "query": truncate_chars(query_text, 120),
@@ -1422,6 +1449,7 @@ pub async fn execute_unified_recall(
     emit_recall_query_event(
         state,
         agent,
+        source_prefix,
         json!({
             "agent": agent,
             "query": truncate_chars(query_text, 120),
@@ -1787,6 +1815,7 @@ pub async fn execute_semantic_recall(
     emit_recall_query_event(
         state,
         agent,
+        source_prefix,
         json!({
             "agent": agent,
             "query": truncate_chars(query_text, 120),

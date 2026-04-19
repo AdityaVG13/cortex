@@ -51,6 +51,9 @@ desktop/cortex-control-center/src-tauri/target-*/
 target-tests/
 pytest-cache-files-*/
 Usersadityacortex.tmppytest/
+.tmp/pytest/
+tmp/ptbase-*/
+tmp/pytest-local/
 
 # Desktop app build outputs
 desktop/cortex-control-center/dist/
@@ -89,6 +92,8 @@ Cortex?Ingester?Instructions.txt
 # Editor/tool artifacts
 .aider*
 .tmp-*
+.tmp/
+tmp/
 __pycache__/
 .npmrc
 
@@ -105,6 +110,8 @@ benchmarking/tools/*
 !benchmarking/tools/.gitkeep
 benchmarking/runs/*
 !benchmarking/runs/.gitkeep
+benchmarking/results/*
+!benchmarking/results/README.md
 
 # Shipsecure Pro (source zip + all extracted files)
 .shipsecure-pro.zip

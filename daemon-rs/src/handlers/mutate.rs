@@ -6,6 +6,7 @@ use axum::Json;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 use super::{ensure_admin, ensure_auth_rated, json_response, log_event, now_iso};
 use crate::db::{archive_entries_scoped, checkpoint_wal_best_effort};
@@ -343,30 +344,53 @@ fn decision_node_missing(id: i64) -> Value {
     })
 }
 
-fn fetch_decision_node(conn: &Connection, id: i64) -> Option<Value> {
-    conn.query_row(
+fn fetch_decision_nodes_by_ids(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<HashMap<i64, Value>, String> {
+    let mut unique_ids = ids.to_vec();
+    unique_ids.sort_unstable();
+    unique_ids.dedup();
+    if unique_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = vec!["?"; unique_ids.len()].join(", ");
+    let sql = format!(
         "SELECT id, decision, context, source_agent, source_client, source_model, reasoning_depth,
                 confidence, trust_score, status, created_at, updated_at
-         FROM decisions WHERE id = ?1",
-        params![id],
-        |row| {
-            Ok(build_decision_node(DecisionNodeRecord {
-                id: row.get::<_, i64>(0)?,
-                decision: row.get::<_, String>(1)?,
-                context: row.get::<_, Option<String>>(2)?,
-                source_agent: row.get::<_, Option<String>>(3)?,
-                source_client: row.get::<_, Option<String>>(4)?,
-                source_model: row.get::<_, Option<String>>(5)?,
-                reasoning_depth: row.get::<_, Option<String>>(6)?,
-                confidence: row.get::<_, Option<f64>>(7)?,
-                trust_score: row.get::<_, Option<f64>>(8)?,
-                status: row.get::<_, Option<String>>(9)?,
-                created_at: row.get::<_, Option<String>>(10)?,
-                updated_at: row.get::<_, Option<String>>(11)?,
-            }))
-        },
-    )
-    .ok()
+         FROM decisions
+         WHERE id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(unique_ids.iter()), |row| {
+            let id: i64 = row.get(0)?;
+            Ok((
+                id,
+                build_decision_node(DecisionNodeRecord {
+                    id,
+                    decision: row.get::<_, String>(1)?,
+                    context: row.get::<_, Option<String>>(2)?,
+                    source_agent: row.get::<_, Option<String>>(3)?,
+                    source_client: row.get::<_, Option<String>>(4)?,
+                    source_model: row.get::<_, Option<String>>(5)?,
+                    reasoning_depth: row.get::<_, Option<String>>(6)?,
+                    confidence: row.get::<_, Option<f64>>(7)?,
+                    trust_score: row.get::<_, Option<f64>>(8)?,
+                    status: row.get::<_, Option<String>>(9)?,
+                    created_at: row.get::<_, Option<String>>(10)?,
+                    updated_at: row.get::<_, Option<String>>(11)?,
+                }),
+            ))
+        })
+        .map_err(|err| err.to_string())?;
+
+    let mut out = HashMap::with_capacity(unique_ids.len());
+    for row in rows.flatten() {
+        out.insert(row.0, row.1);
+    }
+    Ok(out)
 }
 
 fn decision_text(node: &Value) -> Option<&str> {
@@ -547,6 +571,22 @@ fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, St
 }
 
 fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, String> {
+    #[derive(Debug)]
+    struct ResolvedConflictSeed {
+        conflict_id: String,
+        left_id: i64,
+        right_id: i64,
+        winner_id: i64,
+        superseded_id: Option<i64>,
+        action: String,
+        classification: String,
+        similarity: Option<f64>,
+        resolved_by: Option<String>,
+        resolved_at: String,
+        notes: Value,
+        resolution_classification: Value,
+    }
+
     let mut stmt = conn
         .prepare(
             "SELECT data, source_agent, created_at
@@ -566,7 +606,8 @@ fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>
         })
         .map_err(|err| err.to_string())?;
 
-    let mut conflicts = Vec::new();
+    let mut seeds = Vec::new();
+    let mut decision_ids = Vec::new();
     for row in rows.flatten() {
         let (data_raw, source_agent, created_at) = row;
         let data: Value = serde_json::from_str(&data_raw).unwrap_or_else(|_| json!({}));
@@ -592,10 +633,6 @@ fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>
                 winner_id.max(superseded_id.unwrap_or(winner_id)),
             )
         });
-        let left =
-            fetch_decision_node(conn, left_id).unwrap_or_else(|| decision_node_missing(left_id));
-        let right =
-            fetch_decision_node(conn, right_id).unwrap_or_else(|| decision_node_missing(right_id));
         let action = data
             .get("action")
             .and_then(|value| value.as_str())
@@ -606,16 +643,6 @@ fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>
             .and_then(|value| value.as_str())
             .and_then(normalize_conflict_classification)
             .unwrap_or_else(|| default_classification_for_action(&action).to_string());
-
-        let similarity = data
-            .get("similarity")
-            .and_then(|value| value.as_f64())
-            .or_else(|| {
-                let left_text = decision_text(&left)?;
-                let right_text = decision_text(&right)?;
-                Some(crate::conflict::jaccard_similarity(left_text, right_text))
-            });
-
         let resolved_by = data
             .get("resolvedBy")
             .and_then(|value| value.as_str())
@@ -627,10 +654,44 @@ fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>
             .map(str::to_string)
             .unwrap_or(created_at);
 
+        decision_ids.push(left_id);
+        decision_ids.push(right_id);
+        seeds.push(ResolvedConflictSeed {
+            conflict_id,
+            left_id,
+            right_id,
+            winner_id,
+            superseded_id,
+            action,
+            classification,
+            similarity: data.get("similarity").and_then(|value| value.as_f64()),
+            resolved_by,
+            resolved_at,
+            notes: data.get("notes").cloned().unwrap_or(Value::Null),
+            resolution_classification: data.get("classification").cloned().unwrap_or(Value::Null),
+        });
+    }
+
+    let decision_nodes = fetch_decision_nodes_by_ids(conn, &decision_ids)?;
+    let mut conflicts = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        let left = decision_nodes
+            .get(&seed.left_id)
+            .cloned()
+            .unwrap_or_else(|| decision_node_missing(seed.left_id));
+        let right = decision_nodes
+            .get(&seed.right_id)
+            .cloned()
+            .unwrap_or_else(|| decision_node_missing(seed.right_id));
+        let similarity = seed.similarity.or_else(|| {
+            let left_text = decision_text(&left)?;
+            let right_text = decision_text(&right)?;
+            Some(crate::conflict::jaccard_similarity(left_text, right_text))
+        });
         conflicts.push(json!({
-            "id": conflict_id,
+            "id": seed.conflict_id,
             "status": "resolved",
-            "classification": classification,
+            "classification": seed.classification,
             "similarity": similarity,
             "left": left,
             "right": right,
@@ -640,13 +701,13 @@ fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>
                 "recommendedWinnerId": preferred_winner_id(&left, &right),
             },
             "resolution": {
-                "action": action,
-                "winnerId": winner_id,
-                "supersededId": superseded_id,
-                "resolvedAt": resolved_at,
-                "resolvedBy": resolved_by,
-                "notes": data.get("notes").cloned().unwrap_or(Value::Null),
-                "classification": data.get("classification").cloned().unwrap_or(Value::Null),
+                "action": seed.action,
+                "winnerId": seed.winner_id,
+                "supersededId": seed.superseded_id,
+                "resolvedAt": seed.resolved_at,
+                "resolvedBy": seed.resolved_by,
+                "notes": seed.notes,
+                "classification": seed.resolution_classification,
             }
         }));
     }

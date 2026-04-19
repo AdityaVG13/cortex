@@ -88,6 +88,7 @@ const READ_POOL_SIZE_ENV: &str = "CORTEX_DB_READ_POOL_SIZE";
 const READ_POOL_DEFAULT_MIN: usize = 4;
 const READ_POOL_DEFAULT_MAX: usize = 16;
 const READ_POOL_HARD_MAX: usize = 32;
+const READ_POOL_HARD_MIN: usize = 2;
 
 pub type ReadConnLockFuture<'a> =
     Pin<Box<dyn Future<Output = tokio::sync::MutexGuard<'a, Connection>> + Send + 'a>>;
@@ -141,7 +142,9 @@ fn derive_read_pool_size(configured: Option<usize>, cpu_hint: Option<usize>) -> 
     let default = cpu_hint
         .unwrap_or(READ_POOL_DEFAULT_MIN)
         .clamp(READ_POOL_DEFAULT_MIN, READ_POOL_DEFAULT_MAX);
-    configured.unwrap_or(default).clamp(1, READ_POOL_HARD_MAX)
+    configured
+        .unwrap_or(default)
+        .clamp(READ_POOL_HARD_MIN, READ_POOL_HARD_MAX)
 }
 
 fn read_pool_size_from_env() -> usize {
@@ -734,8 +737,12 @@ mod tests {
             Ok(rows) => rows,
             Err(_) => return false,
         };
-        let has_column = rows.flatten().any(|name| name == column);
-        has_column
+        for name in rows.flatten() {
+            if name == column {
+                return true;
+            }
+        }
+        false
     }
 
     fn seed_v041_fixture(db_path: &Path) {
@@ -1022,7 +1029,8 @@ mod tests {
 
     #[test]
     fn derive_read_pool_size_clamps_configured_values() {
-        assert_eq!(derive_read_pool_size(Some(0), Some(8)), 1);
+        assert_eq!(derive_read_pool_size(Some(0), Some(8)), READ_POOL_HARD_MIN);
+        assert_eq!(derive_read_pool_size(Some(1), Some(8)), READ_POOL_HARD_MIN);
         assert_eq!(derive_read_pool_size(Some(7), Some(8)), 7);
         assert_eq!(
             derive_read_pool_size(Some(READ_POOL_HARD_MAX + 100), Some(8)),

@@ -14,6 +14,7 @@ if str(BENCHMARKING_DIR) not in sys.path:
     sys.path.insert(0, str(BENCHMARKING_DIR))
 
 from run_amb_cortex import (  # noqa: E402
+    CASE_ERROR_FILENAME,
     _build_matrix_run_args,
     _collect_matrix_case_result,
     _execute_matrix_case,
@@ -198,6 +199,33 @@ def test_collect_matrix_case_result_reads_summary_and_gate(tmp_path: Path) -> No
     assert result["error"] == "quality gate failed"
 
 
+def test_collect_matrix_case_result_includes_worker_error_and_missing_artifacts(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / CASE_ERROR_FILENAME).write_text(
+        json.dumps(
+            {
+                "type": "RuntimeError",
+                "error": "intentional worker failure",
+                "traceback": "line-1\nline-2\nline-3",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _collect_matrix_case_result(
+        case={"id": "case-a", "dataset": "locomo", "split": "locomo10"},
+        run_dir=run_dir,
+        exit_code=1,
+        error="case exited with code 1",
+    )
+
+    assert result["missing_artifacts"] == ["summary.json", "gate-report.json"]
+    assert result["worker_error_type"] == "RuntimeError"
+    assert result["worker_error"] == "intentional worker failure"
+    assert "line-2" in str(result["worker_traceback_tail"])
+
+
 def test_run_matrix_dry_run_honors_start_index_and_max_cases(tmp_path: Path) -> None:
     matrix_path = tmp_path / "matrix.json"
     summary_path = tmp_path / "summary.json"
@@ -250,7 +278,10 @@ def test_execute_matrix_case_returns_error_for_run_benchmark_exception(
         timeout_seconds=0,
     )
     assert exit_code == 1
-    assert error == "intentional-case-failure"
+    assert error and "intentional-case-failure" in error
+    worker_error_payload = json.loads((run_dir / CASE_ERROR_FILENAME).read_text(encoding="utf-8"))
+    assert worker_error_payload["type"] == "RuntimeError"
+    assert worker_error_payload["error"] == "intentional-case-failure"
 
 
 def _assert_strict_non_longmem_matrix(cases: list[dict[str, object]], *, query_limit: int) -> None:
@@ -580,6 +611,42 @@ def test_run_matrix_rejects_execution_profile_missing_metrics_flag_even_in_dry_r
 
     with pytest.raises(ValueError, match="allow_missing_recall_metrics"):
         run_matrix(args, run_dir)
+
+
+def test_run_matrix_rejects_membench_case_without_dataset_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matrix_path = tmp_path / "matrix-membench.json"
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "id": "membench-case",
+                        "dataset": "membench",
+                        "split": "FirstAgentLowLevel",
+                        "query_limit": 5,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing_data_dir = tmp_path / "missing-membench-data"
+    monkeypatch.setenv("MEMBENCH_DATA_PATH", str(missing_data_dir))
+    args = _base_args()
+    args.matrix_file = str(matrix_path)
+    args.dry_run = True
+
+    with pytest.raises(ValueError, match="missing required files"):
+        run_matrix(args, run_dir)
+
+    preflight = json.loads((run_dir / "fair-run-preflight.json").read_text(encoding="utf-8"))
+    assert preflight["passed"] is False
+    assert any("membench" in str(item).lower() for item in preflight["violations"])
 
 
 def test_run_matrix_rejects_matrix_runtime_cap_above_ceiling(tmp_path: Path) -> None:

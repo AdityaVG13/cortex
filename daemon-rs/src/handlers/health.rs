@@ -520,6 +520,7 @@ pub async fn handle_digest(State(state): State<RuntimeState>, headers: HeaderMap
 pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let today_like = format!("{today}%");
+    let benchmark_source_pattern = format!("{}%", crate::compaction::BENCHMARK_SOURCE_AGENT_PREFIX);
 
     let total_memories: i64 = conn
         .query_row(
@@ -642,8 +643,11 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
                  COALESCE(SUM(CASE WHEN created_at LIKE ?1 THEN COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0) ELSE 0 END), 0), \
                  COALESCE(SUM(CASE WHEN created_at LIKE ?1 THEN 1 ELSE 0 END), 0) \
              FROM events \
-             WHERE type = 'boot_savings'",
-            params![today_like.clone()],
+             WHERE type = 'boot_savings' \
+               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+            params![today_like.clone(), benchmark_source_pattern.clone()],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -1320,30 +1324,203 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         return stale_or_error(format!("configure savings reader failed: {err}"));
     }
     let savings_window_modifier = format!("-{SAVINGS_HISTORY_DAYS} days");
+    let benchmark_source_pattern = format!("{}%", crate::compaction::BENCHMARK_SOURCE_AGENT_PREFIX);
 
-    let mut stmt = match conn.prepare(
-        "SELECT data, created_at
-         FROM events
-         WHERE type = 'boot_savings'
-           AND created_at >= datetime('now', ?1)
-         ORDER BY created_at ASC",
+    let (total_saved, total_served, total_baseline, total_boots): (i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
+                 COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0), \
+                 COUNT(*) \
+             FROM events \
+             WHERE type = 'boot_savings' \
+               AND created_at >= datetime('now', ?1) \
+               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+            params![
+                savings_window_modifier.clone(),
+                benchmark_source_pattern.clone()
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap_or((0, 0, 0, 0));
+
+    let mut boot_daily_stmt = match conn.prepare(
+        "SELECT \
+             SUBSTR(created_at, 1, 10) AS day, \
+             COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0) AS saved, \
+             COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0) AS served, \
+             COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0) AS baseline, \
+             COUNT(*) AS boots \
+         FROM events \
+         WHERE type = 'boot_savings' \
+           AND created_at >= datetime('now', ?1) \
+           AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2) \
+           AND created_at IS NOT NULL \
+         GROUP BY day \
+         ORDER BY day ASC",
     ) {
-        Ok(s) => s,
-        Err(e) => {
-            return stale_or_error(format!("prepare boot savings query failed: {e}"));
-        }
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare boot daily query failed: {e}")),
     };
+    let boot_daily_rows = match boot_daily_stmt.query_map(
+        params![
+            savings_window_modifier.clone(),
+            benchmark_source_pattern.clone()
+        ],
+        |row| {
+            let day: Option<String> = row.get(0)?;
+            Ok((
+                day.unwrap_or_default(),
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    ) {
+        Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(e) => return stale_or_error(format!("query boot daily failed: {e}")),
+    };
+    drop(boot_daily_stmt);
+    let daily_arr: Vec<Value> = boot_daily_rows
+        .iter()
+        .filter_map(|(day, saved, served, baseline, boots)| {
+            if day.is_empty() {
+                None
+            } else {
+                Some(json!({
+                    "date": day,
+                    "saved": saved,
+                    "served": served,
+                    "baseline": baseline,
+                    "boots": boots
+                }))
+            }
+        })
+        .collect();
 
-    let rows: Vec<(String, String)> =
-        match stmt.query_map(params![savings_window_modifier.clone()], |row| {
+    let mut boot_by_agent_stmt = match conn.prepare(
+        "SELECT \
+             COALESCE(NULLIF(TRIM(COALESCE(json_extract(data, '$.agent'), 'unknown')), ''), 'unknown') AS agent, \
+             COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0) AS saved, \
+             COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0) AS served, \
+             COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0)), 0) AS baseline, \
+             COUNT(*) AS boots \
+         FROM events \
+         WHERE type = 'boot_savings' \
+           AND created_at >= datetime('now', ?1) \
+           AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2) \
+         GROUP BY agent",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare boot by-agent query failed: {e}")),
+    };
+    let boot_by_agent_rows = match boot_by_agent_stmt.query_map(
+        params![
+            savings_window_modifier.clone(),
+            benchmark_source_pattern.clone()
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+    ) {
+        Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(e) => return stale_or_error(format!("query boot by-agent failed: {e}")),
+    };
+    drop(boot_by_agent_stmt);
+    let mut by_agent: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
+    for (agent, saved, served, baseline, boots) in boot_by_agent_rows {
+        by_agent.insert(agent, (saved, served, baseline, boots));
+    }
+    let by_agent_arr: Vec<Value> = by_agent
+        .into_iter()
+        .map(|(agent, (saved, served, baseline, boots))| {
+            let percent = if baseline > 0 {
+                (saved * 100) / baseline
+            } else {
+                0
+            };
+            json!({
+                "agent": agent,
+                "saved": saved,
+                "served": served,
+                "baseline": baseline,
+                "boots": boots,
+                "percent": percent
+            })
+        })
+        .collect();
+
+    let mut recent_boot_stmt = match conn.prepare(
+        "SELECT data, created_at \
+         FROM events \
+         WHERE type = 'boot_savings' \
+           AND created_at >= datetime('now', ?1) \
+           AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+           AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2) \
+         ORDER BY created_at DESC \
+         LIMIT 20",
+    ) {
+        Ok(stmt) => stmt,
+        Err(e) => return stale_or_error(format!("prepare recent boot query failed: {e}")),
+    };
+    let recent_rows = match recent_boot_stmt.query_map(
+        params![
+            savings_window_modifier.clone(),
+            benchmark_source_pattern.clone()
+        ],
+        |row| {
             let data_str: String = row.get(0)?;
             let created: String = row.get(1)?;
             Ok((data_str, created))
-        }) {
-            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
-            Err(e) => return stale_or_error(format!("query boot savings failed: {e}")),
-        };
-    drop(stmt);
+        },
+    ) {
+        Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(e) => return stale_or_error(format!("query recent boot rows failed: {e}")),
+    };
+    drop(recent_boot_stmt);
+    let recent: Vec<Value> = recent_rows
+        .into_iter()
+        .map(|(data_str, created)| {
+            let d: Value = serde_json::from_str(&data_str).unwrap_or(json!({}));
+            let served = d.get("served").and_then(|v| v.as_i64()).unwrap_or(0);
+            let baseline = d.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0);
+            let saved = d.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
+            let percent = d.get("percent").and_then(|v| v.as_i64()).unwrap_or(0);
+            let admitted = d.get("admitted").and_then(|v| v.as_i64()).unwrap_or(0);
+            let rejected = d.get("rejected").and_then(|v| v.as_i64()).unwrap_or(0);
+            let compression_ratio = if served > 0 {
+                ((baseline as f64 / served as f64) * 100.0).round() / 100.0
+            } else {
+                0.0
+            };
+            json!({
+                "timestamp": created,
+                "agent": d.get("agent").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                "served": served,
+                "baseline": baseline,
+                "saved": saved,
+                "percent": percent,
+                "admitted": admitted,
+                "rejected": rejected,
+                "compressionRatio": compression_ratio
+            })
+        })
+        .collect();
 
     let mut by_operation: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
     for op in ["recall", "store", "boot", "tool"] {
@@ -1409,22 +1586,31 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                   WHEN type = 'tool_call_savings' THEN COALESCE(CAST(json_extract(data, '$.baseline') AS INTEGER), 0) \
                   ELSE 0 END), 0) AS baseline, \
              COUNT(*) AS events \
-          FROM events \
-          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
-            AND created_at >= datetime('now', ?1) \
-          GROUP BY operation",
+           FROM events \
+           WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
+             AND created_at >= datetime('now', ?1) \
+             AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
+             AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
+             AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2) \
+           GROUP BY operation",
     ) {
         Ok(stmt) => stmt,
         Err(e) => return stale_or_error(format!("prepare operation aggregate query failed: {e}")),
     };
-    let op_rows = match op_stmt.query_map(params![savings_window_modifier.clone()], |row| {
-        let operation: String = row.get(0)?;
-        let saved: i64 = row.get(1)?;
-        let served: i64 = row.get(2)?;
-        let baseline: i64 = row.get(3)?;
-        let events: i64 = row.get(4)?;
-        Ok((operation, saved, served, baseline, events))
-    }) {
+    let op_rows = match op_stmt.query_map(
+        params![
+            savings_window_modifier.clone(),
+            benchmark_source_pattern.clone()
+        ],
+        |row| {
+            let operation: String = row.get(0)?;
+            let saved: i64 = row.get(1)?;
+            let served: i64 = row.get(2)?;
+            let baseline: i64 = row.get(3)?;
+            let events: i64 = row.get(4)?;
+            Ok((operation, saved, served, baseline, events))
+        },
+    ) {
         Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
         Err(e) => return stale_or_error(format!("query operation aggregates failed: {e}")),
     };
@@ -1492,23 +1678,32 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
                  WHEN type = 'recall_query' AND COALESCE(CAST(json_extract(data, '$.hits') AS INTEGER), 0) > 0 THEN 0 \
                  WHEN type = 'recall_query' THEN 1 \
                  ELSE 0 END) AS misses \
-           FROM events \
-           WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings')
-             AND created_at >= datetime('now', ?1)
-             AND created_at IS NOT NULL \
-           GROUP BY day \
-           ORDER BY day ASC",
+            FROM events \
+            WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings')
+              AND created_at >= datetime('now', ?1)
+              AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2)
+              AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2)
+              AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)
+              AND created_at IS NOT NULL \
+            GROUP BY day \
+            ORDER BY day ASC",
     ) {
         Ok(stmt) => stmt,
         Err(e) => return stale_or_error(format!("prepare daily savings query failed: {e}")),
     };
-    let daily_rows = match daily_stmt.query_map(params![savings_window_modifier.clone()], |row| {
-        let day: Option<String> = row.get(0)?;
-        let saved_delta: i64 = row.get(1)?;
-        let hits: i64 = row.get(2)?;
-        let misses: i64 = row.get(3)?;
-        Ok((day.unwrap_or_default(), saved_delta, hits, misses))
-    }) {
+    let daily_rows = match daily_stmt.query_map(
+        params![
+            savings_window_modifier.clone(),
+            benchmark_source_pattern.clone()
+        ],
+        |row| {
+            let day: Option<String> = row.get(0)?;
+            let saved_delta: i64 = row.get(1)?;
+            let hits: i64 = row.get(2)?;
+            let misses: i64 = row.get(3)?;
+            Ok((day.unwrap_or_default(), saved_delta, hits, misses))
+        },
+    ) {
         Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
         Err(e) => return stale_or_error(format!("query daily savings failed: {e}")),
     };
@@ -1560,25 +1755,33 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
              CAST(strftime('%w', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS weekday, \
              CAST(strftime('%H', REPLACE(SUBSTR(created_at, 1, 19), 'T', ' ')) AS INTEGER) AS hour, \
              COUNT(*) AS cnt \
-           FROM events \
-           WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings')
-              AND created_at >= datetime('now', ?1)
-              AND created_at IS NOT NULL \
-            GROUP BY weekday, hour",
+            FROM events \
+            WHERE type IN ('boot_savings', 'recall_query', 'store_savings', 'tool_call_savings')
+               AND created_at >= datetime('now', ?1)
+               AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2)
+               AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2)
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)
+               AND created_at IS NOT NULL \
+             GROUP BY weekday, hour",
     ) {
         Ok(stmt) => stmt,
         Err(e) => return stale_or_error(format!("prepare activity heatmap query failed: {e}")),
     };
-    let heatmap_rows =
-        match heatmap_stmt.query_map(params![savings_window_modifier.clone()], |row| {
+    let heatmap_rows = match heatmap_stmt.query_map(
+        params![
+            savings_window_modifier.clone(),
+            benchmark_source_pattern.clone()
+        ],
+        |row| {
             let weekday: Option<i64> = row.get(0)?;
             let hour: Option<i64> = row.get(1)?;
             let count: i64 = row.get(2)?;
             Ok((weekday, hour, count))
-        }) {
-            Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
-            Err(e) => return stale_or_error(format!("query activity heatmap failed: {e}")),
-        };
+        },
+    ) {
+        Ok(iter) => iter.filter_map(|row| row.ok()).collect::<Vec<_>>(),
+        Err(e) => return stale_or_error(format!("query activity heatmap failed: {e}")),
+    };
     drop(heatmap_stmt);
     for (weekday, hour, count) in heatmap_rows {
         if let (Some(day), Some(hour)) = (weekday, hour) {
@@ -1587,47 +1790,6 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
         }
     }
 
-    let points: Vec<Value> = rows
-        .into_iter()
-        .map(|(data_str, created)| {
-            let d: Value = serde_json::from_str(&data_str).unwrap_or(json!({}));
-            let served = d.get("served").and_then(|v| v.as_i64()).unwrap_or(0);
-            let baseline = d.get("baseline").and_then(|v| v.as_i64()).unwrap_or(0);
-            let saved = d.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
-            let percent = d.get("percent").and_then(|v| v.as_i64()).unwrap_or(0);
-            let admitted = d.get("admitted").and_then(|v| v.as_i64()).unwrap_or(0);
-            let rejected = d.get("rejected").and_then(|v| v.as_i64()).unwrap_or(0);
-            let compression_ratio = if served > 0 {
-                ((baseline as f64 / served as f64) * 100.0).round() / 100.0
-            } else {
-                0.0
-            };
-            json!({
-                "timestamp": created,
-                "agent": d.get("agent").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                "served": served,
-                "baseline": baseline,
-                "saved": saved,
-                "percent": percent,
-                "admitted": admitted,
-                "rejected": rejected,
-                "compressionRatio": compression_ratio
-            })
-        })
-        .collect();
-
-    let total_saved: i64 = points
-        .iter()
-        .map(|p| p["saved"].as_i64().unwrap_or(0))
-        .sum();
-    let total_served: i64 = points
-        .iter()
-        .map(|p| p["served"].as_i64().unwrap_or(0))
-        .sum();
-    let total_baseline: i64 = points
-        .iter()
-        .map(|p| p["baseline"].as_i64().unwrap_or(0))
-        .sum();
     // Weighted average by baseline (not simple average).
     // Prevents tiny boots with 0% from dragging down 99% large boots.
     let avg_percent = if total_baseline > 0 {
@@ -1635,7 +1797,6 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     } else {
         0
     };
-    let total_boots = points.len() as i64;
     by_operation.insert(
         "boot".to_string(),
         (total_saved, total_served, total_baseline, total_boots),
@@ -1655,57 +1816,6 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
     } else {
         0
     };
-
-    // Daily aggregation
-    let mut daily: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
-    for p in &points {
-        let ts = p["timestamp"].as_str().unwrap_or("");
-        let day = &ts[..ts.len().min(10)];
-        if day.is_empty() {
-            continue;
-        }
-        let e = daily.entry(day.to_string()).or_insert((0, 0, 0, 0));
-        e.0 += p["saved"].as_i64().unwrap_or(0);
-        e.1 += p["served"].as_i64().unwrap_or(0);
-        e.2 += p["baseline"].as_i64().unwrap_or(0);
-        e.3 += 1;
-    }
-    let daily_arr: Vec<Value> = daily
-        .into_iter()
-        .map(|(date, (saved, served, baseline, boots))| {
-            json!({"date": date, "saved": saved, "served": served, "baseline": baseline, "boots": boots})
-        })
-        .collect();
-
-    let mut by_agent: BTreeMap<String, (i64, i64, i64, i64)> = BTreeMap::new();
-    for p in &points {
-        let agent = p["agent"].as_str().unwrap_or("unknown").to_string();
-        let e = by_agent.entry(agent).or_insert((0, 0, 0, 0));
-        e.0 += p["saved"].as_i64().unwrap_or(0);
-        e.1 += p["served"].as_i64().unwrap_or(0);
-        e.2 += p["baseline"].as_i64().unwrap_or(0);
-        e.3 += 1;
-    }
-    let by_agent_arr: Vec<Value> = by_agent
-        .into_iter()
-        .map(|(agent, (saved, served, baseline, boots))| {
-            let percent = if baseline > 0 {
-                (saved * 100) / baseline
-            } else {
-                0
-            };
-            json!({
-                "agent": agent,
-                "saved": saved,
-                "served": served,
-                "baseline": baseline,
-                "boots": boots,
-                "percent": percent
-            })
-        })
-        .collect();
-
-    let recent: Vec<Value> = points.iter().rev().take(20).cloned().collect();
 
     let by_operation_arr: Vec<Value> = ["recall", "store", "boot", "tool"]
         .iter()
@@ -1777,7 +1887,7 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
             "totalServed": total_served,
             "totalBaseline": total_baseline,
             "avgPercent": avg_percent,
-            "totalBoots": points.len(),
+            "totalBoots": total_boots,
             "avgSavedPerBoot": avg_saved_per_boot,
             "avgServedPerBoot": avg_served_per_boot,
             "avgBaselinePerBoot": avg_baseline_per_boot,
@@ -2064,6 +2174,51 @@ mod tests {
         assert_eq!(storage_bytes, 15);
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn build_digest_excludes_benchmark_boot_savings_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::configure(&conn).unwrap();
+        crate::db::initialize_schema(&conn).unwrap();
+        crate::db::run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'rust-daemon', datetime('now'))",
+            params![json!({
+                "agent": "amb-cortex::run-a",
+                "saved": 500,
+                "served": 100,
+                "baseline": 600
+            })
+            .to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, source_agent, created_at) \
+             VALUES ('boot_savings', ?1, 'rust-daemon', datetime('now'))",
+            params![json!({
+                "agent": "codex",
+                "saved": 50,
+                "served": 20,
+                "baseline": 70
+            })
+            .to_string()],
+        )
+        .unwrap();
+
+        let digest = build_digest(&conn).expect("digest payload should build");
+        assert_eq!(
+            digest["tokenSavings"]["allTime"]["saved"].as_i64(),
+            Some(50)
+        );
+        assert_eq!(
+            digest["tokenSavings"]["allTime"]["served"].as_i64(),
+            Some(20)
+        );
+        assert_eq!(digest["tokenSavings"]["allTime"]["boots"].as_i64(), Some(1));
+        assert_eq!(digest["tokenSavings"]["today"]["saved"].as_i64(), Some(50));
     }
 
     #[test]

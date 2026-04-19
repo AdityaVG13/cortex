@@ -21,6 +21,8 @@ const ACTIVE_SESSION_WINDOW_SECONDS: i64 = 75;
 const MAX_ACTIVITIES: i64 = 1000;
 const MAX_MESSAGES_PER_AGENT: i64 = 100;
 const MAX_TASKS: i64 = 500;
+const DEFAULT_TASK_QUERY_LIMIT: usize = 200;
+const MAX_TASK_QUERY_LIMIT: usize = 500;
 const SESSION_FRESHNESS_IDLE_SECONDS: i64 = 24 * 60 * 60;
 
 // ─── Request / query types ──────────────────────────────────────────────────
@@ -92,6 +94,8 @@ pub struct TaskCreateRequest {
 pub struct TaskQuery {
     pub status: Option<String>,
     pub project: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -206,28 +210,32 @@ fn clean_expired_locks(conn: &rusqlite::Connection, owner_id: Option<i64>) -> ru
 }
 
 fn clean_old_activities(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM activities", [], |r| r.get(0))?;
-    if count > MAX_ACTIVITIES {
-        conn.execute(
-            "DELETE FROM activities WHERE id IN (SELECT id FROM activities ORDER BY timestamp ASC LIMIT ?1)",
-            params![count - MAX_ACTIVITIES],
-        )?;
-    }
+    conn.execute(
+        "DELETE FROM activities
+         WHERE id IN (
+           SELECT id
+           FROM activities
+           ORDER BY timestamp DESC
+           LIMIT -1 OFFSET ?1
+         )",
+        params![MAX_ACTIVITIES],
+    )?;
     Ok(())
 }
 
 fn clean_old_messages(conn: &rusqlite::Connection, recipient: &str) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM messages WHERE recipient = ?1",
-        params![recipient],
-        |r| r.get(0),
+    conn.execute(
+        "DELETE FROM messages
+         WHERE recipient = ?1
+           AND id IN (
+             SELECT id
+             FROM messages
+             WHERE recipient = ?1
+             ORDER BY timestamp DESC
+             LIMIT -1 OFFSET ?2
+           )",
+        params![recipient, MAX_MESSAGES_PER_AGENT],
     )?;
-    if count > MAX_MESSAGES_PER_AGENT {
-        conn.execute(
-            "DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC LIMIT ?2)",
-            params![recipient, count - MAX_MESSAGES_PER_AGENT],
-        )?;
-    }
     Ok(())
 }
 
@@ -305,13 +313,18 @@ fn run_session_freshen(conn: &rusqlite::Connection, state: &RuntimeState, owner_
 }
 
 fn clean_old_tasks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))?;
-    if count > MAX_TASKS {
-        conn.execute(
-            "DELETE FROM tasks WHERE task_id IN (SELECT task_id FROM tasks WHERE status = 'completed' ORDER BY completed_at ASC LIMIT ?1)",
-            params![count - MAX_TASKS],
-        )?;
-    }
+    conn.execute(
+        "DELETE FROM tasks
+         WHERE status = 'completed'
+           AND task_id IN (
+             SELECT task_id
+             FROM tasks
+             WHERE status = 'completed'
+             ORDER BY COALESCE(completed_at, created_at) DESC
+             LIMIT -1 OFFSET ?1
+           )",
+        params![MAX_TASKS],
+    )?;
     Ok(())
 }
 
@@ -459,6 +472,8 @@ fn fetch_tasks(
     status_filter: &str,
     project: Option<&str>,
     owner_id: Option<i64>,
+    limit: usize,
+    offset: usize,
 ) -> Result<Vec<Value>, String> {
     // Build parameterized query -- never interpolate user input into SQL.
     let base = "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary FROM tasks";
@@ -479,14 +494,23 @@ fn fetch_tasks(
     }
 
     let sql = if conditions.is_empty() {
-        format!("{} ORDER BY created_at ASC", base)
+        format!(
+            "{} ORDER BY created_at ASC LIMIT ?{} OFFSET ?{}",
+            base,
+            params.len() + 1,
+            params.len() + 2
+        )
     } else {
         format!(
-            "{} WHERE {} ORDER BY created_at ASC",
+            "{} WHERE {} ORDER BY created_at ASC LIMIT ?{} OFFSET ?{}",
             base,
-            conditions.join(" AND ")
+            conditions.join(" AND "),
+            params.len() + 1,
+            params.len() + 2
         )
     };
+    params.push(Box::new(limit as i64));
+    params.push(Box::new(offset as i64));
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -1386,9 +1410,19 @@ pub async fn handle_get_tasks(
     }
     let status_filter = query.status.unwrap_or_else(|| "pending".to_string());
     let project_filter = query.project;
+    let requested_limit = query.limit.unwrap_or(DEFAULT_TASK_QUERY_LIMIT);
+    let limit = requested_limit.clamp(1, MAX_TASK_QUERY_LIMIT);
+    let offset = query.offset.unwrap_or(0);
     let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db_read.lock().await;
-    match fetch_tasks(&conn, &status_filter, project_filter.as_deref(), owner_id) {
+    match fetch_tasks(
+        &conn,
+        &status_filter,
+        project_filter.as_deref(),
+        owner_id,
+        limit,
+        offset,
+    ) {
         Ok(tasks) => json_response(StatusCode::OK, json!({ "tasks": tasks })),
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,

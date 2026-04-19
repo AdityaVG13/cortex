@@ -4,7 +4,6 @@ import {
   createApi,
   createPostApi,
   isAuthFailure,
-  settledWithRethrow,
   settledCollectErrors,
   summarizeDashboardErrors,
 } from "./api-client.js";
@@ -27,6 +26,13 @@ import {
   sameAgent,
 } from "./live-surface.js";
 import { AppIcon } from "./ui-icons.jsx";
+import {
+  computeStartupRetryStep,
+  daemonStatusPill,
+  daemonSystemStatus,
+  daemonUtilityPill,
+  isDaemonStartingState,
+} from "./daemon-startup.js";
 
 const LazyBrainVisualizer = lazy(() =>
   import("./BrainVisualizer.jsx").then((module) => ({ default: module.BrainVisualizer })),
@@ -55,8 +61,9 @@ const CORE_REFRESH_MIN_INTERVAL_MS = 1200;
 const SECONDARY_REFRESH_MIN_INTERVAL_MS = 12000;
 const SSE_RECONNECT_BASE_MS = 1000;
 const SSE_RECONNECT_MAX_MS = 5000;
-const DAEMON_START_WAIT_TIMEOUT_MS = 90000;
-const DAEMON_START_POLL_INTERVAL_MS = 750;
+const DAEMON_START_WAIT_TIMEOUT_MS = 25000;
+const DAEMON_START_POLL_INTERVAL_MS = 600;
+const DAEMON_START_STILL_STARTING_GRACE_MS = 9000;
 const DAEMON_STOP_HANG_TIMEOUT_MS = 5000;
 const DAEMON_STOP_WAIT_TIMEOUT_MS = 15000;
 const SAVINGS_USD_PER_MILLION = 15;
@@ -262,11 +269,6 @@ function formatDaemonEndpoint(cortexBase) {
   } catch {
     return "127.0.0.1:7437";
   }
-}
-
-function statusPill(daemonState) {
-  if (daemonState.reachable) return { className: "pill online", label: "Online" };
-  return { className: "pill offline", label: "Offline" };
 }
 
 function feedKindLabel(kind) {
@@ -1467,7 +1469,10 @@ function isDaemonSuppressibleErrorMessage(message) {
 
 function isReachableHealthPayload(health) {
   const status = String(health?.status || "").toLowerCase();
-  return (status === "ok" || status === "degraded") && Boolean(health?.runtime) && Boolean(health?.stats);
+  if (status !== "ok" && status !== "degraded") {
+    return false;
+  }
+  return Boolean(health?.runtime) || Boolean(health?.stats);
 }
 
 function parseMcpToolResult(result) {
@@ -1582,6 +1587,7 @@ export function App() {
   const refreshAllQueuedRef = useRef(false);
   const daemonTransitionRef = useRef(false);
   const recoveryRetryTimerRef = useRef(null);
+  const startupRetryStateRef = useRef({ startedAtMs: 0, attempts: 0 });
   const startupCoreReadyRef = useRef(false);
   const lastCoreRefreshAtRef = useRef(0);
   const lastSecondaryRefreshAtRef = useRef(0);
@@ -1799,6 +1805,29 @@ export function App() {
     }, delay);
   }, []);
 
+  const resetStartupRetryState = useCallback(() => {
+    startupRetryStateRef.current = { startedAtMs: 0, attempts: 0 };
+  }, []);
+
+  const scheduleStartupRecoveryRetry = useCallback((message) => {
+    const step = computeStartupRetryStep(startupRetryStateRef.current);
+    startupRetryStateRef.current = {
+      startedAtMs: step.startedAtMs,
+      attempts: step.attempts,
+    };
+    if (step.exhausted) {
+      clearRecoveryRetry();
+      const elapsedSeconds = Math.max(1, Math.ceil(step.elapsedMs / 1000));
+      setFeedbackMessage(
+        `Daemon startup timed out after ${elapsedSeconds}s. Check Cortex logs, then restart from Control Center.`
+      );
+      return false;
+    }
+    setFeedbackMessage(message);
+    scheduleRecoveryRetry(step.nextDelayMs);
+    return true;
+  }, [clearRecoveryRetry, scheduleRecoveryRetry]);
+
   const clearDisconnectedData = useCallback(() => {
     setSessions([]);
     setLocks([]);
@@ -1957,7 +1986,7 @@ export function App() {
     } catch {
       // daemon unreachable -- show dashes
     }
-    if (!health?.stats) {
+    if (!health) {
       setHealthMeta(EMPTY_HEALTH_META);
       setStats({
         memories: "--",
@@ -1967,23 +1996,36 @@ export function App() {
       return false;
     }
 
-    const next = health.stats;
+    const status = String(health?.status || "unknown").toLowerCase();
+    const runtimeVersion = String(health?.runtime?.version || "");
     setHealthMeta({
-      status: String(health?.status || "unknown").toLowerCase(),
+      status,
       degraded: Boolean(health?.degraded),
       dbCorrupted: Boolean(health?.db_corrupted),
-      runtimeVersion: String(health?.runtime?.version || ""),
+      runtimeVersion,
     });
+
+    if (!health?.stats) {
+      setStats({
+        memories: "--",
+        decisions: "--",
+        events: "--",
+      });
+      return isReachableHealthPayload(health);
+    }
+
+    const next = health.stats;
     setStats({
       memories: next.memories ?? 0,
       decisions: next.decisions ?? 0,
       events: next.events ?? 0,
     });
-    return true;
+    return isReachableHealthPayload(health);
   }, [api]);
 
-  const refreshCoreData = useCallback(async () => {
-    await settledWithRethrow([
+  const refreshCoreData = useCallback(async (options = {}) => {
+    const throwOnError = options?.throwOnError !== false;
+    const jobs = [
       {
         fn: () => api("/sessions", true),
         apply: (v) => setSessions(Array.isArray(v?.sessions) ? v.sessions : []),
@@ -1996,8 +2038,33 @@ export function App() {
         fn: () => api("/tasks?status=all", true),
         apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks.map(normalizeTask) : []),
       },
-    ]);
-    clearTransientFeedback();
+    ];
+
+    const results = await Promise.allSettled(jobs.map((job) => job.fn()));
+    const errors = [];
+    let successCount = 0;
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        jobs[index].apply(result.value);
+        successCount += 1;
+        return;
+      }
+      errors.push(result.reason?.message || String(result.reason));
+    });
+
+    if (successCount > 0) {
+      clearTransientFeedback();
+    }
+
+    const summary = {
+      errors: [...new Set(errors)],
+      successCount,
+      totalCount: jobs.length,
+    };
+    if (throwOnError && summary.errors.length) {
+      throw new Error(summary.errors.join("; "));
+    }
+    return summary;
   }, [api, clearTransientFeedback]);
 
   const refreshFeed = useCallback(async () => {
@@ -2129,25 +2196,30 @@ export function App() {
     const now = Date.now();
     const shouldRefreshCore = forceCore || now - lastCoreRefreshAtRef.current >= CORE_REFRESH_MIN_INTERVAL_MS;
     let coreErrors = [];
+    let coreSuccessCount = 0;
+    let coreTotalCount = 0;
     if (shouldRefreshCore) {
-      coreErrors = await settledCollectErrors([refreshCoreData]);
+      const coreRefresh = await refreshCoreData({ throwOnError: false });
+      coreErrors = coreRefresh.errors;
+      coreSuccessCount = coreRefresh.successCount;
+      coreTotalCount = coreRefresh.totalCount;
       if (!coreErrors.length) {
         lastCoreRefreshAtRef.current = Date.now();
       }
     }
     if (coreErrors.length || !includeSecondary) {
-      return { coreErrors, secondaryErrors: [] };
+      return { coreErrors, secondaryErrors: [], coreSuccessCount, coreTotalCount };
     }
     const shouldRefreshSecondary =
       forceSecondary || now - lastSecondaryRefreshAtRef.current >= SECONDARY_REFRESH_MIN_INTERVAL_MS;
     if (!shouldRefreshSecondary) {
-      return { coreErrors: [], secondaryErrors: [] };
+      return { coreErrors: [], secondaryErrors: [], coreSuccessCount, coreTotalCount };
     }
     const secondaryErrors = await refreshSecondaryData({ force: forceSecondary });
     if (!secondaryErrors.length) {
       lastSecondaryRefreshAtRef.current = Date.now();
     }
-    return { coreErrors: [], secondaryErrors };
+    return { coreErrors: [], secondaryErrors, coreSuccessCount, coreTotalCount };
   }, [
     refreshCoreData,
     refreshSecondaryData,
@@ -2391,13 +2463,21 @@ export function App() {
     if (invokeRef.current && nextDaemonState?.managed && !daemonReachable) {
       setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
-      clearDisconnectedData();
-      setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
-      scheduleRecoveryRetry(1000);
+      if (!scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.")) {
+        setDaemonState({
+          running: false,
+          reachable: false,
+          managed: false,
+          authTokenReady: false,
+          pid: null,
+          message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+        });
+      }
       return;
     }
 
     if (!daemonReachable) {
+      resetStartupRetryState();
       setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       clearRecoveryRetry();
@@ -2413,9 +2493,7 @@ export function App() {
     if (invokeRef.current && !healthReady) {
       setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
-      clearDisconnectedData();
-      setFeedbackMessage("Daemon is reachable but still warming up. Retrying shortly...");
-      scheduleRecoveryRetry(1000);
+      scheduleStartupRecoveryRetry("Daemon is reachable but still warming up. Retrying shortly...");
       return;
     }
 
@@ -2423,24 +2501,57 @@ export function App() {
     if (invokeRef.current && !authToken) {
       setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
-      clearDisconnectedData();
-      setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
-      scheduleRecoveryRetry(1000);
+      scheduleStartupRecoveryRetry("Waiting for daemon auth token to finish rotating...");
       return;
     }
 
-    let { coreErrors, secondaryErrors } = await refreshProtectedDataForStartup();
+    resetStartupRetryState();
+    let {
+      coreErrors,
+      secondaryErrors,
+      coreSuccessCount,
+      coreTotalCount,
+    } = await refreshProtectedDataForStartup();
     if (invokeRef.current && coreErrors.length && coreErrors.every((error) => isAuthFailure(error))) {
       const refreshedToken = await readAuthToken({ suppressFeedback: true });
       if (refreshedToken) {
-        ({ coreErrors, secondaryErrors } = await refreshProtectedDataForStartup());
+        ({
+          coreErrors,
+          secondaryErrors,
+          coreSuccessCount,
+          coreTotalCount,
+        } = await refreshProtectedDataForStartup());
       }
     }
 
     if (coreErrors.length) {
-      clearStartupCoreReady();
       const unique = [...new Set(coreErrors)];
-      if (daemonReachable && unique.every((error) => isDaemonTimeoutErrorMessage(error))) {
+      const timeoutErrors = unique.filter((error) => isDaemonTimeoutErrorMessage(error));
+      const warmupErrorsOnly = unique.every(
+        (error) => isDaemonTimeoutErrorMessage(error) || isAuthFailure(error)
+      );
+      const partialCoreReady =
+        daemonReachable
+        && coreSuccessCount > 0
+        && warmupErrorsOnly;
+      if (partialCoreReady) {
+        startupCoreReadyRef.current = true;
+        refreshSecondaryDataInBackground();
+        const timeoutSummary = timeoutErrors.length
+          ? summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected."
+          : "";
+        if (timeoutSummary) {
+          setDaemonTimeoutStaleSummary(timeoutSummary);
+        } else {
+          setDaemonTimeoutStaleSummary("");
+        }
+        const partialSummary = summarizeDashboardErrors(unique) || "Protected endpoints are still warming up.";
+        setFeedbackMessage(
+          `Connected (core ${coreSuccessCount}/${coreTotalCount || 3} ready). ${partialSummary}`
+        );
+        scheduleRecoveryRetry(1000);
+      } else if (daemonReachable && unique.every((error) => isDaemonTimeoutErrorMessage(error))) {
+        clearStartupCoreReady();
         clearRecoveryRetry();
         const summary = summarizeDashboardErrors(unique) || "IPC request timeouts detected.";
         setDaemonTimeoutStaleSummary(summary);
@@ -2451,15 +2562,18 @@ export function App() {
         );
         scheduleRecoveryRetry(1000);
       } else if (unique.every((error) => isDaemonOfflineErrorMessage(error))) {
+        clearStartupCoreReady();
         setDaemonTimeoutStaleSummary("");
         clearDisconnectedData();
         clearTransientFeedback(nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`);
         scheduleRecoveryRetry(1000);
       } else if (invokeRef.current && unique.every((error) => isAuthFailure(error))) {
+        clearStartupCoreReady();
         setDaemonTimeoutStaleSummary("");
         setFeedbackMessage("Waiting for daemon auth token to finish rotating...");
         scheduleRecoveryRetry(1000);
       } else {
+        clearStartupCoreReady();
         setDaemonTimeoutStaleSummary("");
         clearRecoveryRetry();
         setFeedbackMessage(summarizeDashboardErrors(unique));
@@ -2493,7 +2607,10 @@ export function App() {
     refreshProtectedDataForStartup,
     clearDisconnectedData,
     cortexBase,
+    resetStartupRetryState,
     scheduleRecoveryRetry,
+    scheduleStartupRecoveryRetry,
+    refreshSecondaryDataInBackground,
     setSecondaryAvailabilityFeedback,
   ]);
 
@@ -2848,7 +2965,15 @@ export function App() {
   const claimedTasks = useMemo(() => tasks.filter((task) => task.status === "claimed"), [tasks]);
   const completedTasks = useMemo(() => tasks.filter((task) => task.status === "completed"), [tasks]);
   const recentOverviewTasks = useMemo(() => [...claimedTasks, ...pendingTasks].slice(0, 5), [claimedTasks, pendingTasks]);
-  const pill = statusPill(daemonState);
+  const pill = daemonStatusPill(daemonState);
+  const utilityPill = useMemo(
+    () => daemonUtilityPill(daemonState),
+    [daemonState.reachable, daemonState.running]
+  );
+  const daemonSysStatus = useMemo(
+    () => daemonSystemStatus(daemonState),
+    [daemonState.reachable, daemonState.running]
+  );
 
   const operationRows = useMemo(
     () => (Array.isArray(savings?.byOperation) ? savings.byOperation : []),
@@ -2988,7 +3113,19 @@ export function App() {
     [healthMeta.runtimeVersion]
   );
 
+  const daemonStarting = useMemo(
+    () => isDaemonStartingState(daemonState),
+    [daemonState.reachable, daemonState.running]
+  );
+
   const daemonStatusBadge = useMemo(() => {
+    if (daemonStarting) {
+      return {
+        className: "warning",
+        label: "◌ STARTING",
+        title: daemonState.message || "Cortex daemon process is running but not reachable yet.",
+      };
+    }
     if (!daemonState.reachable) {
       return {
         className: "offline",
@@ -3022,9 +3159,12 @@ export function App() {
       label: "● ONLINE",
       title: daemonState.message || "Cortex daemon reachable.",
     };
-  }, [cortexBase, daemonState.message, daemonState.reachable, daemonTimeoutStaleSummary, healthMeta.dbCorrupted, healthMeta.degraded]);
+  }, [cortexBase, daemonStarting, daemonState.message, daemonState.reachable, daemonTimeoutStaleSummary, healthMeta.dbCorrupted, healthMeta.degraded]);
 
   const daemonRecoveryHint = useMemo(() => {
+    if (daemonStarting) {
+      return "Daemon process is up but still initializing. Control Center will keep retrying with bounded backoff.";
+    }
     if (!daemonState.reachable) {
       return "";
     }
@@ -3041,7 +3181,7 @@ export function App() {
       return "Semantic search is using keyword fallback right now. Restart Cortex if this state does not clear.";
     }
     return "";
-  }, [daemonState.reachable, daemonTimeoutStaleSummary, healthMeta.dbCorrupted, healthMeta.degraded, healthMeta.runtimeVersion, runtimeVersionMismatch]);
+  }, [daemonStarting, daemonState.reachable, daemonTimeoutStaleSummary, healthMeta.dbCorrupted, healthMeta.degraded, healthMeta.runtimeVersion, runtimeVersionMismatch]);
 
   const reportSurfaceError = useCallback((error) => {
     const message = error?.message || String(error);
@@ -3202,7 +3342,8 @@ export function App() {
     }
   }, [feedEntries, postApi, refreshFeed, reportSurfaceError, selectedOperatorName]);
 
-  const waitForDaemonReachable = useCallback(async () => {
+  const waitForDaemonReachable = useCallback(async (options = {}) => {
+    const shortCircuitIfStarting = options?.shortCircuitIfStarting === true;
     const started = Date.now();
     while (Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS) {
       try {
@@ -3210,6 +3351,14 @@ export function App() {
           const state = { ...EMPTY_DAEMON, ...(await call("daemon_status")) };
           setDaemonState(state);
           if (state?.reachable) return true;
+          if (
+            shortCircuitIfStarting
+            && state?.running
+            && !state?.reachable
+            && Date.now() - started >= DAEMON_START_STILL_STARTING_GRACE_MS
+          ) {
+            return false;
+          }
         } else {
           const health = await api("/health");
           if (isReachableHealthPayload(health)) return true;
@@ -3245,6 +3394,7 @@ export function App() {
 
   const runRestartDaemonSequence = useCallback(async () => {
     daemonTransitionRef.current = true;
+    resetStartupRetryState();
 
     const statusBefore = await call("daemon_status").catch(() => null);
     const shouldStop = Boolean(statusBefore?.running || statusBefore?.reachable);
@@ -3302,9 +3452,13 @@ export function App() {
         setFeedbackMessage(startResult.message);
       }
 
-      const reachable = await waitForDaemonReachable();
+      const reachable = await waitForDaemonReachable({ shortCircuitIfStarting: true });
       if (!reachable) {
-        throw new Error("Daemon did not become reachable after restart.");
+        if (startResult?.running && !startResult?.reachable) {
+          scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.");
+        } else {
+          throw new Error("Daemon did not become reachable after restart.");
+        }
       }
     } else {
       startResult = await call("daemon_status").catch(() => ({
@@ -3321,7 +3475,7 @@ export function App() {
     await readAuthToken({ suppressFeedback: true });
     await runRefreshAll();
     return { ...startResult, restartSkippedExternal };
-  }, [call, clearDisconnectedData, cortexBase, readAuthToken, runRefreshAll, waitForDaemonOffline, waitForDaemonReachable]);
+  }, [call, clearDisconnectedData, cortexBase, readAuthToken, resetStartupRetryState, runRefreshAll, scheduleStartupRecoveryRetry, waitForDaemonOffline, waitForDaemonReachable]);
 
   async function handleMemorySearch(e) {
     e?.preventDefault();
@@ -3352,13 +3506,14 @@ export function App() {
 
   async function handleStartDaemon() {
     if (!invokeRef.current) return;
+    resetStartupRetryState();
     daemonTransitionRef.current = true;
     try {
       const result = await call("start_daemon");
       setFeedbackMessage(result.message || "Daemon start requested.");
-      const reachable = await waitForDaemonReachable();
+      const reachable = await waitForDaemonReachable({ shortCircuitIfStarting: true });
       if (!reachable) {
-        setFeedbackMessage("Daemon is still starting. Reconnect will continue automatically.");
+        scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.");
       }
       daemonTransitionRef.current = false;
       await readAuthToken({ suppressFeedback: true });
@@ -3372,6 +3527,7 @@ export function App() {
 
   async function handleStopDaemon() {
     if (!invokeRef.current) return;
+    resetStartupRetryState();
     daemonTransitionRef.current = true;
     try {
       const result = await call("stop_daemon");
@@ -3481,7 +3637,29 @@ export function App() {
 
         setFeedbackMessage("Running dev restart/reconnect verification...");
         await runRefreshAll();
-        await waitForCondition("the initial event stream connection", () => streamConnectedAtRef.current > 0, 10000);
+        let streamAvailable = streamConnectedAtRef.current > 0;
+        if (!streamAvailable) {
+          try {
+            await waitForCondition(
+              "the initial event stream connection",
+              () => streamConnectedAtRef.current > 0,
+              25000
+            );
+            streamAvailable = true;
+          } catch {
+            streamAvailable = false;
+            recordStep("stream", {
+              mode: "polling-fallback",
+              warning: "Event stream did not connect during startup window; continuing with polling checks.",
+            });
+          }
+        }
+        if (streamAvailable) {
+          recordStep("stream", {
+            mode: "event-stream",
+            connectedAt: new Date(streamConnectedAtRef.current).toISOString(),
+          });
+        }
 
         if (!daemonStateRef.current?.reachable) {
           const startResult = await call("start_daemon");
@@ -3510,10 +3688,12 @@ export function App() {
           model: "desktop-dev-verify",
           budget: 120,
         });
-        await waitForCondition(
-          "the boot session event",
-          () => streamSessionEventCountRef.current > sessionEventCountBeforeBoot
-        );
+        if (streamAvailable) {
+          await waitForCondition(
+            "the boot session event",
+            () => streamSessionEventCountRef.current > sessionEventCountBeforeBoot
+          );
+        }
         const bootSession = await waitForCondition(
           "the boot session in the Agents surface",
           () => findSessionByAgent(verificationAgent)
@@ -3535,28 +3715,38 @@ export function App() {
             reason: restartResult?.message || "Daemon remained online (externally managed).",
           });
         } else {
-          await waitForCondition(
-            "the event stream disconnect during restart",
-            () => streamDisconnectedAtRef.current > disconnectedBeforeRestart
-          );
-          await waitForCondition(
-            "the event stream reconnect after restart",
-            () => streamConnectedAtRef.current > connectedBeforeRestart
-          );
-          recordStep("restart", {
-            disconnectedAt: new Date(streamDisconnectedAtRef.current).toISOString(),
-            reconnectedAt: new Date(streamConnectedAtRef.current).toISOString(),
-          });
+          if (streamAvailable) {
+            await waitForCondition(
+              "the event stream disconnect during restart",
+              () => streamDisconnectedAtRef.current > disconnectedBeforeRestart
+            );
+            await waitForCondition(
+              "the event stream reconnect after restart",
+              () => streamConnectedAtRef.current > connectedBeforeRestart
+            );
+            recordStep("restart", {
+              disconnectedAt: new Date(streamDisconnectedAtRef.current).toISOString(),
+              reconnectedAt: new Date(streamConnectedAtRef.current).toISOString(),
+            });
+          } else {
+            recordStep("restart", {
+              mode: "polling-fallback",
+              skippedStreamChecks: true,
+              message: "Restart completed without stream lifecycle checks; polling verification continued.",
+            });
+          }
         }
 
         const reconnectResult = await callMcpTool("cortex_reconnect", {
           agent: verificationAgent,
           model: "desktop-dev-verify",
         });
-        await waitForCondition(
-          "the reconnect session event",
-          () => streamSessionEventCountRef.current > sessionEventCountBeforeReconnect
-        );
+        if (streamAvailable) {
+          await waitForCondition(
+            "the reconnect session event",
+            () => streamSessionEventCountRef.current > sessionEventCountBeforeReconnect
+          );
+        }
         const reconnectSession = await waitForCondition(
           "the reconnected session in the Agents surface",
           () => findSessionByAgent(verificationAgent)
@@ -3660,7 +3850,7 @@ export function App() {
   }, [changePanel, panel]);
 
   const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport;
-  const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.reachable);
+  const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
   const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
 
   return (
@@ -3691,8 +3881,8 @@ export function App() {
         <div className="sidebar-utility">
           <div className="sidebar-utility-header">
             <span className="sidebar-utility-kicker">Mission status</span>
-            <span className={`sidebar-utility-pill ${daemonState.reachable ? "online" : "offline"}`}>
-              {daemonState.reachable ? "Live" : "Wait"}
+            <span className={`sidebar-utility-pill ${utilityPill.className}`}>
+              {utilityPill.label}
             </span>
           </div>
           <div className="sidebar-utility-grid">
@@ -3983,14 +4173,14 @@ export function App() {
             <div className="system-strip">
               <div className="sys-item">
                 <span className="sys-label">DAEMON</span>
-                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
-                  {daemonState.reachable ? "RUNNING" : "OFFLINE"}
+                <span className={`sys-value ${daemonSysStatus.toneClass}`}>
+                  {daemonSysStatus.daemonLabel}
                 </span>
               </div>
               <div className="sys-item">
                 <span className="sys-label">EMBEDDINGS</span>
-                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
-                  {daemonState.reachable ? "ONNX ACTIVE" : "OFFLINE"}
+                <span className={`sys-value ${daemonSysStatus.toneClass}`}>
+                  {daemonSysStatus.embeddingsLabel}
                 </span>
               </div>
               <div className="sys-item">
@@ -4213,14 +4403,14 @@ export function App() {
             <div className="system-strip">
               <div className="sys-item">
                 <span className="sys-label">DAEMON</span>
-                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
-                  {daemonState.reachable ? "RUNNING" : "OFFLINE"}
+                <span className={`sys-value ${daemonSysStatus.toneClass}`}>
+                  {daemonSysStatus.daemonLabel}
                 </span>
               </div>
               <div className="sys-item">
                 <span className="sys-label">EMBEDDINGS</span>
-                <span className={`sys-value ${daemonState.reachable ? "sys-ok" : "sys-err"}`}>
-                  {daemonState.reachable ? "ONNX ACTIVE" : "OFFLINE"}
+                <span className={`sys-value ${daemonSysStatus.toneClass}`}>
+                  {daemonSysStatus.embeddingsLabel}
                 </span>
               </div>
               <div className="sys-item">

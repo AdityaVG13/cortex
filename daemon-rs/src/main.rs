@@ -4229,17 +4229,19 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_parent_orphan_watch_task_detects_real_parent_exit() {
-        let _env_guard = env_guard();
-        let current_exe = std::env::current_exe().expect("resolve current test binary path");
-        let mut parent_probe_child = Command::new(current_exe)
-            .arg("--exact")
-            .arg("tests::spawned_owner_parent_probe_child_process")
-            .arg("--nocapture")
-            .env(SPAWN_PARENT_TEST_CHILD_ENV, "1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn parent probe child");
+        let mut parent_probe_child = {
+            let _env_guard = env_guard();
+            let current_exe = std::env::current_exe().expect("resolve current test binary path");
+            Command::new(current_exe)
+                .arg("--exact")
+                .arg("tests::spawned_owner_parent_probe_child_process")
+                .arg("--nocapture")
+                .env(SPAWN_PARENT_TEST_CHILD_ENV, "1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn parent probe child")
+        };
         let parent_pid = parent_probe_child.id();
         let deadline = Instant::now() + Duration::from_secs(5);
         let parent_start_time = loop {

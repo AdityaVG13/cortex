@@ -164,6 +164,29 @@ It is intentionally broader than final README copy. Use this file to decide what
 - Commit:
   - pending (local optimization batch)
 
+### 0.10) Strict Fair-Run Benchmark Closure + Startup Lifecycle Stabilization (new)
+- Add a benchmark-results note for completed strict fair-run closure:
+  - strict tuned backend run (`cortex-http`): `benchmarking/runs/amb-run-20260419-073924` -> `20/20`, gate passed, avg recall tokens `199.35`, max `294`
+  - strict raw no-helper backend run (`cortex-http-base`): `benchmarking/runs/amb-run-20260419-074548` -> `20/20`, gate passed, avg recall tokens `201.95`, max `297`
+  - raw-path quality is now restored from earlier `4/20` baseline without disabling gates or changing benchmark tests.
+- Add a startup resiliency note for desktop lifecycle behavior:
+  - new startup policy module (`desktop/cortex-control-center/src/daemon-startup.js`) centralizes bounded retry windows and delays.
+  - lifecycle verification now has polling fallback when startup event streams are unavailable, reducing false negatives during dev verification.
+  - desktop path-binary fallback is now explicit opt-in (`CORTEX_ALLOW_PATH_BINARY_FALLBACK`) instead of implicit runtime behavior.
+- Add a local DB hygiene/size note for benchmark telemetry cleanup:
+  - benchmark namespace cleanup rerun with backup-first safety (`cortex-pre-benchmark-cleanup-20260419-075715.db`, `cortex-pre-benchmark-cleanup-2-20260419-075738.db`).
+  - post-cleanup local counts: events `597`, decisions `489`, embeddings `9,749`, cluster_members `5,142`.
+  - local DB footprint: `720.93 MB` backup snapshot -> `386.37 MB` active DB after cleanup + vacuum.
+- Validation references:
+  - `rtk python -m pytest benchmarking/adapters/tests/test_run_amb_cortex_shims.py -q` (`48` passing)
+  - `rtk python -m pytest benchmarking/adapters/tests/test_cortex_http_base_provider.py benchmarking/adapters/tests/test_cortex_http_client.py benchmarking/adapters/tests/test_run_amb_cortex_matrix.py benchmarking/adapters/tests/test_run_amb_cortex_shims.py -q` (`149` passing)
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` (`399` passing)
+  - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
+  - `rtk npm --prefix desktop/cortex-control-center test -- src/daemon-startup.test.js src/api-client.test.js` (`48` passing)
+  - `rtk cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml` (`21` passing)
+- Commit:
+  - pending (local optimization batch)
+
 ### 0) Core Operating Defaults (Policy Clarity)
 - Keep a dedicated README section that states three defaults clearly:
   - solo mode => authenticated user is admin by default

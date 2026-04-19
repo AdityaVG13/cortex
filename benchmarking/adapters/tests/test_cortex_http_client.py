@@ -114,6 +114,48 @@ def test_store_documents_serializes_metadata_and_context_key(configured_env: Pat
     assert "daemon lock prevents duplicate startup" in body["decision"]
 
 
+def test_store_documents_skips_unchanged_payloads(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    fake = _FakeHTTPXClient([_FakeResponse({})])
+    client.client = fake
+    document = CortexStoredDocument(
+        id="doc-1",
+        content="stable payload",
+        user_id="user-7",
+        timestamp="2026-04-16T08:30:00Z",
+        context="startup-failure",
+    )
+
+    client.store_documents([document])
+    client.store_documents([document])
+
+    assert len(fake.calls) == 1
+
+
+def test_store_documents_dedupes_identical_payloads_across_contexts(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    fake = _FakeHTTPXClient([_FakeResponse({})])
+    client.client = fake
+    first = CortexStoredDocument(
+        id="doc-1",
+        content="identical payload",
+        user_id="user-1",
+        timestamp="2026-04-16T08:30:00Z",
+        context="context-a",
+    )
+    second = CortexStoredDocument(
+        id="doc-2",
+        content="identical payload",
+        user_id="user-1",
+        timestamp="2026-04-16T08:30:00Z",
+        context="context-a",
+    )
+
+    client.store_documents([first, second])
+
+    assert len(fake.calls) == 1
+
+
 def test_recall_documents_filters_user_dedupes_and_respects_k(configured_env: Path) -> None:
     client = CortexHTTPClient()
     client.docs_by_context["amb::test-suite-namespace::user::user-1::doc::d1"] = CortexStoredDocument(
@@ -639,6 +681,54 @@ def test_recall_documents_location_queries_promote_abroad_country_qualifier_when
     assert docs[0].id == "dstudyw::fact::1"
     assert docs[1].id == "dtripw::fact::2"
     assert "australia" in docs[1].content.lower()
+
+
+def test_recall_documents_location_queries_append_abroad_country_qualifier_to_primary_context(
+    configured_env: Path,
+) -> None:
+    client = CortexHTTPClient()
+    seed_source = "amb::test-suite-namespace::user::user-1::doc::dstudyq::fact::1"
+    qualifier_source = "amb::test-suite-namespace::user::user-1::doc::dtripq::fact::2"
+    kyoto_source = "amb::test-suite-namespace::user::user-1::doc::dtripq::fact::3"
+    client.docs_by_context[seed_source] = CortexStoredDocument(
+        id="dstudyq::fact::1",
+        content="[user] I attended the University of Melbourne during my study abroad program.",
+        user_id="user-1",
+    )
+    client.docs_by_context[qualifier_source] = CortexStoredDocument(
+        id="dtripq::fact::2",
+        content="[user] I've been to the Great Ocean Road before, and it's definitely a must-see in Australia.",
+        user_id="user-1",
+    )
+    client.docs_by_context[kyoto_source] = CortexStoredDocument(
+        id="dtripq::fact::3",
+        content="[user] What are some good places to try kaiseki, the multi-course meal I fell in love with in Kyoto?",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": seed_source,
+                "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+            },
+            {
+                "source": kyoto_source,
+                "excerpt": "[user] What are some good places to try kaiseki in Kyoto?",
+            },
+            {
+                "source": qualifier_source,
+                "excerpt": "[user] ...must-see in Australia.",
+            },
+        ]
+    }
+    client.client = _FakeHTTPXClient([_FakeResponse(payload)])
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=2, user_id="user-1")
+
+    assert len(docs) == 2
+    assert docs[0].id == "dstudyq::fact::1"
+    assert "[location-qualifier] in Australia." in docs[0].content
+    assert "Kyoto" not in docs[0].content
 
 
 def test_recall_documents_location_item_queries_skip_weak_seed_expansion_and_keep_store_inference(
@@ -1383,6 +1473,49 @@ def test_recall_documents_high_detail_policy_keeps_variant_for_detail_queries(
     assert len(record["recall_variant_queries"]) == 1
 
 
+def test_recall_documents_high_detail_location_prefers_user_answer_with_country_qualifier(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_RETRIEVAL_POLICY", "high-detail")
+    client = CortexHTTPClient()
+    answer_source = "amb::test-suite-namespace::user::user-1::doc::memory_answer_ab12cd34::fact::1"
+    fact_source = "amb::test-suite-namespace::user::user-1::doc::memory_fact::fact::1"
+    client.docs_by_context[fact_source] = CortexStoredDocument(
+        id="memory_fact::fact::1",
+        content="[user] I attended the University of Melbourne during my study abroad program.",
+        user_id="user-1",
+    )
+    client.docs_by_context[answer_source] = CortexStoredDocument(
+        id="memory_answer_ab12cd34::fact::1",
+        content=(
+            "[assistant-question] Where did I attend for my study abroad program? "
+            "[user-answer] University of Melbourne in Australia."
+        ),
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": fact_source,
+                "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+            },
+            {
+                "source": answer_source,
+                "excerpt": "[user] I attended the University of Melbourne during my study abroad program.",
+            },
+        ]
+    }
+    fake = _FakeHTTPXClient([_FakeResponse(payload)])
+    client.client = fake
+
+    docs, _ = client.recall_documents("Where did I attend for my study abroad program?", k=1, user_id="user-1")
+
+    assert len(docs) == 1
+    assert docs[0].id == "memory_answer_ab12cd34::fact::1"
+    assert "australia" in docs[0].content.lower()
+
+
 def test_recall_documents_high_detail_policy_skips_variant_when_primary_has_specific_location_detail(
     configured_env: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1465,6 +1598,25 @@ def test_build_query_profile_avoids_birthday_date_bias_for_item_queries(configur
     assert profile["wants_date"] is False
 
 
+def test_query_terms_include_cjk_overlap_tokens(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    query_terms = client._query_terms("我最喜欢的城市是什么？")
+
+    assert "城市" in query_terms
+    overlap = client._term_overlap_count(query_terms, "我最喜欢的城市是东京。")
+    assert overlap >= 1
+
+
+def test_build_query_profile_detects_mcq_and_extracts_stem(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    profile = client._build_query_profile(
+        "Where did I move last year?\nA. Boston\nB. Seattle\nC. Denver\nD. Austin"
+    )
+
+    assert profile["is_mcq_query"] is True
+    assert str(profile["term_query"]).startswith("where did i move last year")
+
+
 def test_build_query_context_extracts_user_answer_detail_candidates(configured_env: Path) -> None:
     client = CortexHTTPClient()
     context = client._build_query_context_text(
@@ -1506,13 +1658,35 @@ def test_build_query_context_prefers_full_content_for_location_qualifier(configu
     assert "Australia" in context
 
 
+def test_build_query_context_prefers_location_user_answer_country_qualifier(configured_env: Path) -> None:
+    client = CortexHTTPClient()
+    context = client._build_query_context_text(
+        query="Where did I attend for my study abroad program?",
+        full_content=(
+            "[user] I attended the University of Melbourne during my study abroad program. "
+            "[assistant-question] Where did I attend for my study abroad program? "
+            "[user-answer] University of Melbourne in Australia."
+        ),
+        excerpt="[user] I attended the University of Melbourne during my study abroad program.",
+    )
+
+    assert "[user-answer]" in context
+    assert "Australia" in context
+
+
 def test_reset_namespace_clears_context_map(configured_env: Path) -> None:
     client = CortexHTTPClient()
     client.docs_by_context["x"] = CortexStoredDocument(id="x", content="stale")
+    client._serialized_by_context["x"] = "serialized"
+    client._content_digest_by_context["x"] = "digest"
+    client._stored_content_digests.add("digest")
     client.reset_namespace("release candidate")
 
     assert client.namespace == "release-candidate"
     assert client.docs_by_context == {}
+    assert client._serialized_by_context == {}
+    assert client._content_digest_by_context == {}
+    assert client._stored_content_digests == set()
 
 
 def test_request_retries_transient_429(configured_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1577,6 +1751,41 @@ def test_recall_documents_clips_long_content(configured_env: Path, monkeypatch: 
 
     assert len(docs) == 1
     assert docs[0].content == "this ... lipped"
+
+
+def test_recall_documents_mcq_queries_use_larger_context_window(
+    configured_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CORTEX_BENCHMARK_CONTEXT_MAX_CHARS", "16")
+    monkeypatch.setenv("CORTEX_BENCHMARK_MCQ_CONTEXT_MAX_CHARS", "48")
+    client = CortexHTTPClient()
+    source = "amb::test-suite-namespace::user::user-1::doc::mcq-detail"
+    client.docs_by_context[source] = CortexStoredDocument(
+        id="mcq-detail",
+        content="I moved to Seattle in 2024 and changed apartments near downtown.",
+        user_id="user-1",
+    )
+    payload = {
+        "results": [
+            {
+                "source": source,
+                "excerpt": "I moved to Seattle in 2024 and changed apartments near downtown.",
+            }
+        ]
+    }
+    client.client = _FakeHTTPXClient([_FakeResponse(payload)])
+
+    docs, _ = client.recall_documents(
+        "Where did I move in 2024?\nA. Boston\nB. Seattle\nC. Austin\nD. Denver",
+        k=1,
+        user_id="user-1",
+    )
+
+    assert len(docs) == 1
+    assert len(docs[0].content) <= 48
+    assert len(docs[0].content) > 16
+    assert "Seattle" in docs[0].content
 
 
 def test_retrieval_policy_defaults_to_standard(configured_env: Path) -> None:

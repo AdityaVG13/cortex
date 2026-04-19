@@ -87,6 +87,7 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         .route("/crystals", get(handle_crystals))
         .route("/crystallize", post(handle_crystallize))
         .route("/compact", post(handle_compact))
+        .route("/compact/benchmark", post(handle_compact_benchmark))
         .route("/storage", get(handle_storage))
         .route("/forget", post(handlers::mutate::handle_forget))
         .route("/resolve", post(handlers::mutate::handle_resolve))
@@ -284,10 +285,37 @@ async fn handle_compact(
         axum::http::StatusCode::OK,
         serde_json::json!({
             "eventsPruned": result.events_pruned,
+            "benchmarkPruned": result.benchmark_pruned,
             "archivedTextStripped": result.archived_text_stripped,
             "expiredPruned": result.expired_pruned,
             "crystalEmbeddingsPruned": result.crystal_embeddings_pruned,
             "feedbackAggregated": result.feedback_aggregated,
+            "bytesBefore": result.bytes_before,
+            "bytesAfter": result.bytes_after,
+            "savedKB": (result.bytes_before - result.bytes_after) / 1024,
+        }),
+    )
+}
+
+async fn handle_compact_benchmark(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    if let Err(resp) = ensure_auth(&headers, &state) {
+        return resp;
+    }
+    let conn = state.db.lock().await;
+    let result = crate::compaction::purge_benchmark_artifacts(&conn);
+    handlers::json_response(
+        axum::http::StatusCode::OK,
+        serde_json::json!({
+            "decisionsDeleted": result.decisions_deleted,
+            "embeddingsDeleted": result.embeddings_deleted,
+            "clusterMembersDeleted": result.cluster_members_deleted,
+            "decisionConflictsDeleted": result.decision_conflicts_deleted,
+            "recallFeedbackDeleted": result.recall_feedback_deleted,
+            "coOccurrenceDeleted": result.co_occurrence_deleted,
+            "eventsDeleted": result.events_deleted,
             "bytesBefore": result.bytes_before,
             "bytesAfter": result.bytes_after,
             "savedKB": (result.bytes_before - result.bytes_after) / 1024,
@@ -805,6 +833,7 @@ mod tests {
             (Method::GET, "/crystals", None),
             (Method::POST, "/crystallize", Some("{}")),
             (Method::POST, "/compact", Some("{}")),
+            (Method::POST, "/compact/benchmark", Some("{}")),
             (Method::GET, "/storage", None),
             (Method::POST, "/forget", Some("{}")),
             (Method::POST, "/resolve", Some("{}")),

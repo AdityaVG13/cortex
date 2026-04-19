@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime
@@ -27,6 +28,11 @@ ADAPTERS_DIR = REPO_ROOT / "benchmarking" / "adapters"
 RUNS_ROOT = REPO_ROOT / "benchmarking" / "runs"
 BASELINE_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "token-gate-baselines.json"
 MATRIX_FILE_DEFAULT = REPO_ROOT / "benchmarking" / "configs" / "amb-eval-matrix.stage1.json"
+DEFAULT_MEMORY_BACKEND = "cortex-http"
+SUPPORTED_MEMORY_BACKENDS = (
+    "cortex-http",
+    "cortex-http-base",
+)
 TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     # Tighter ratios for providers that tend to carry heavier prompt wrappers/history overhead.
     "claude": {"max_avg_ratio": 0.72, "max_peak_ratio": 0.90},
@@ -180,6 +186,14 @@ MATRIX_CASE_TIMEOUT_MAX_SECONDS = 900
 FAIR_RUN_PREFLIGHT_FILENAME = "fair-run-preflight.json"
 CLEANUP_DB_RETRY_ATTEMPTS = 4
 CLEANUP_DB_RETRY_BASE_DELAY_SECONDS = 0.25
+CASE_ERROR_FILENAME = "case-error.json"
+MEMBENCH_REQUIRED_FILES = (
+    "FirstAgentDataLowLevel.json",
+    "FirstAgentDataHighLevel.json",
+    "ThirdAgentDataLowLevel.json",
+    "ThirdAgentDataHighLevel.json",
+)
+MEMBENCH_DEFAULT_DATA_PATH = Path("./MemData")
 
 
 def _resolve_quality_token_target(
@@ -314,7 +328,9 @@ def _apply_dataset_compat_shims(dataset: object) -> object:
                 "6) For study-abroad/institution location questions, if context contains a single country mention,\n"
                 "   append it as 'Institution in Country'.\n"
                 "7) For item questions, prefer the concrete item phrase over generic summaries.\n"
-                "8) If the question asks for a single item and context lists multiple items, return only the primary item phrase.\n"
+                "8) If the question asks for a single item and context lists multiple items, return only one concrete item.\n"
+                "   Keep the first primary purchase phrase and drop accessory add-ons joined with 'and/plus/with'.\n"
+                "   Example: 'a yellow dress and a pair of earrings' -> 'a yellow dress'.\n"
                 "9) Do not add lead-in text like 'Based on the context' or 'According to the memories'.\n"
                 "10) Return only the answer text, no explanation or extra narrative."
             )
@@ -856,6 +872,7 @@ def _load_matrix_spec(path: Path) -> tuple[list[dict[str, object]], dict[str, ob
             "description",
             "retrieval_profile",
             "quality_token_target",
+            "memory_backend",
         ):
             value = raw_case.get(key)
             if value is not None:
@@ -961,6 +978,44 @@ def _has_query_id(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _resolve_membench_data_path() -> Path:
+    raw = os.environ.get("MEMBENCH_DATA_PATH")
+    if raw and raw.strip():
+        return Path(raw.strip()).expanduser()
+    return MEMBENCH_DEFAULT_DATA_PATH
+
+
+def _membench_missing_files(data_path: Path) -> list[str]:
+    return [name for name in MEMBENCH_REQUIRED_FILES if not (data_path / name).exists()]
+
+
+def _dataset_prereq_violations(
+    *,
+    dataset: str,
+    split: str | None = None,
+    case_id: object | None = None,
+) -> list[str]:
+    if dataset.strip().lower() != "membench":
+        return []
+    data_path = _resolve_membench_data_path()
+    missing_files = _membench_missing_files(data_path)
+    if not missing_files:
+        return []
+    scope = "membench dataset"
+    if split:
+        scope = f"membench split '{split}'"
+    if case_id is not None:
+        scope = f"{scope} (case '{case_id}')"
+    missing_str = ", ".join(missing_files)
+    resolved_path = data_path.resolve()
+    return [
+        (
+            f"{scope} is missing required files at {resolved_path}: {missing_str}. "
+            "Download MemBench and set MEMBENCH_DATA_PATH to the dataset directory."
+        )
+    ]
+
+
 def _single_run_fairness_violations(args: argparse.Namespace) -> list[str]:
     violations: list[str] = []
     if bool(getattr(args, "oracle", False)):
@@ -989,6 +1044,11 @@ def _build_single_run_preflight(args: argparse.Namespace) -> tuple[dict[str, obj
 
     fairness_violations = _single_run_fairness_violations(args)
     violations.extend(fairness_violations)
+    dataset_violations = _dataset_prereq_violations(
+        dataset=str(getattr(args, "dataset", "")),
+        split=cast(str | None, getattr(args, "split", None)),
+    )
+    violations.extend(dataset_violations)
 
     payload: dict[str, object] = {
         "command": "run",
@@ -1030,6 +1090,13 @@ def _build_single_run_preflight(args: argparse.Namespace) -> tuple[dict[str, obj
                 "name": "recall_metrics_required",
                 "passed": not bool(getattr(args, "allow_missing_recall_metrics", False)),
                 "value": bool(getattr(args, "allow_missing_recall_metrics", False)),
+            },
+            {
+                "name": "dataset_prerequisites_available",
+                "passed": len(dataset_violations) == 0,
+                "dataset": str(getattr(args, "dataset", "")),
+                "split": getattr(args, "split", None),
+                "violations": dataset_violations,
             },
         ],
         "violations": violations,
@@ -1109,13 +1176,23 @@ def _build_matrix_preflight(
         cases,
         requested_shortcuts=requested,
     )
+    dataset_violations: list[str] = []
+    for case in selected_cases:
+        dataset_violations.extend(
+            _dataset_prereq_violations(
+                dataset=str(case.get("dataset", "")),
+                split=cast(str | None, case.get("split")),
+                case_id=case.get("id"),
+            )
+        )
+    violations = [*fairness_violations, *dataset_violations]
     oracle_case_count = sum(1 for case in cases if bool(case.get("oracle", False)))
     query_id_case_count = sum(1 for case in cases if _has_query_id(case.get("query_id")))
     doc_limit_case_count = sum(1 for case in cases if "doc_limit" in case)
     payload: dict[str, object] = {
         "command": "matrix",
         "timestamp": datetime.now().isoformat(),
-        "passed": len(fairness_violations) == 0,
+        "passed": len(violations) == 0,
         "case_count_total": len(cases),
         "case_count_selected": len(selected_cases),
         "start_index": start_index,
@@ -1189,13 +1266,19 @@ def _build_matrix_preflight(
                 "passed": doc_limit_case_count == 0,
                 "violating_cases": doc_limit_case_count,
             },
+            {
+                "name": "dataset_prerequisites_available",
+                "passed": len(dataset_violations) == 0,
+                "violating_cases": len(dataset_violations),
+                "violations": dataset_violations,
+            },
         ],
         "requested_shortcuts": {
             "oracle": requested_oracle,
             "no_enforce_gate": requested_no_enforce_gate,
             "allow_missing_recall_metrics": requested_allow_missing_metrics,
         },
-        "violations": fairness_violations,
+        "violations": violations,
     }
     return payload
 
@@ -1210,6 +1293,7 @@ def _build_matrix_run_args(args: argparse.Namespace, case: dict[str, object]) ->
     run_name = case.get("run_name")
     if run_name is None and args.run_name_prefix:
         run_name = f"{args.run_name_prefix}-{case['id']}"
+    default_backend = _resolve_memory_backend(args)
     return argparse.Namespace(
         dataset=str(case["dataset"]),
         split=str(case["split"]),
@@ -1223,6 +1307,7 @@ def _build_matrix_run_args(args: argparse.Namespace, case: dict[str, object]) ->
         description=case.get("description", args.description),
         retrieval_profile=case.get("retrieval_profile", args.retrieval_profile),
         quality_token_target=case.get("quality_token_target", args.quality_token_target),
+        memory_backend=str(case.get("memory_backend", default_backend)),
         token_gate_mode=args.token_gate_mode,
         provider_profile=args.provider_profile,
         baseline_file=args.baseline_file,
@@ -1264,13 +1349,17 @@ def _save_baseline_store(path: Path, payload: dict) -> None:
 
 def _scenario_key(args: argparse.Namespace) -> str:
     category = args.category if args.category else "*"
-    return f"{args.dataset}::{args.split}::{args.mode}::{category}"
+    backend = _resolve_memory_backend(args)
+    return f"{args.dataset}::{args.split}::{args.mode}::{category}::{backend}"
 
 
 def _get_baseline_entry(store: dict, provider_profile: str, scenario_key: str) -> dict | None:
     profiles = store.get("profiles", {})
     profile_entries = profiles.get(provider_profile, {})
     entry = profile_entries.get(scenario_key)
+    if entry is None and scenario_key.count("::") >= 4:
+        legacy_key = "::".join(scenario_key.split("::")[:-1])
+        entry = profile_entries.get(legacy_key)
     if isinstance(entry, dict):
         return entry
     return None
@@ -1380,8 +1469,12 @@ def _collect_matrix_case_result(
     exit_code: int,
     error: str | None,
 ) -> dict[str, object]:
-    summary = _read_json_if_exists(run_dir / "summary.json") or {}
-    gate = _read_json_if_exists(run_dir / "gate-report.json") or {}
+    summary_path = run_dir / "summary.json"
+    gate_path = run_dir / "gate-report.json"
+    worker_error_path = run_dir / CASE_ERROR_FILENAME
+    summary = _read_json_if_exists(summary_path) or {}
+    gate = _read_json_if_exists(gate_path) or {}
+    worker_error = _read_json_if_exists(worker_error_path) or {}
     recall_stats = gate.get("recall_stats")
     if not isinstance(recall_stats, dict):
         recall_stats = {}
@@ -1417,20 +1510,57 @@ def _collect_matrix_case_result(
         "retrieval_profile_effective": tradeoff.get("effective_retrieval_profile"),
         "quality_gate_passed": quality_gate.get("passed"),
     }
+    missing_artifacts: list[str] = []
+    if not summary_path.exists():
+        missing_artifacts.append(summary_path.name)
+    if not gate_path.exists():
+        missing_artifacts.append(gate_path.name)
+    if missing_artifacts:
+        result["missing_artifacts"] = missing_artifacts
     delta_vs_token_gate = profile_delta.get("delta_vs_token_gate")
     if isinstance(delta_vs_token_gate, dict):
         result["profile_delta_vs_token_gate"] = delta_vs_token_gate
     failures = quality_gate.get("failures")
     if failures is not None:
         result["quality_gate_failures"] = failures
+    worker_error_message = worker_error.get("error")
+    if isinstance(worker_error_message, str) and worker_error_message.strip():
+        result["worker_error"] = worker_error_message.strip()
+    worker_error_type = worker_error.get("type")
+    if isinstance(worker_error_type, str) and worker_error_type.strip():
+        result["worker_error_type"] = worker_error_type.strip()
+    worker_traceback = worker_error.get("traceback")
+    if isinstance(worker_traceback, str) and worker_traceback.strip():
+        trace_lines = [line for line in worker_traceback.strip().splitlines() if line.strip()]
+        if trace_lines:
+            result["worker_traceback_tail"] = "\n".join(trace_lines[-8:])
     if error:
         result["error"] = error
     return result
 
 
-def _run_benchmark_case_worker(run_args: argparse.Namespace, run_dir: str) -> None:
+def _run_benchmark_case_worker(
+    run_args: argparse.Namespace,
+    run_dir: str,
+    error_path: str,
+) -> None:
     _prepare_worker_runtime_env()
-    run_benchmark(run_args, Path(run_dir))
+    try:
+        run_benchmark(run_args, Path(run_dir))
+    except Exception as exc:
+        payload = {
+            "type": exc.__class__.__name__,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        try:
+            Path(error_path).write_text(
+                json.dumps(payload, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        raise
 
 
 def _execute_benchmark_with_timeout(
@@ -1441,17 +1571,32 @@ def _execute_benchmark_with_timeout(
     timeout_label: str,
 ) -> tuple[int, str | None]:
     _prepare_worker_runtime_env()
+    error_payload_path = run_dir / CASE_ERROR_FILENAME
+    if error_payload_path.exists():
+        try:
+            error_payload_path.unlink()
+        except OSError:
+            pass
     timeout_cap = max(0, int(timeout_seconds))
     if timeout_cap == 0:
         try:
             run_benchmark(run_args, run_dir)
             return 0, None
         except Exception as exc:
+            payload = {
+                "type": exc.__class__.__name__,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+            try:
+                error_payload_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            except OSError:
+                pass
             return 1, str(exc)
 
     process = multiprocessing.Process(
         target=_run_benchmark_case_worker,
-        args=(run_args, str(run_dir)),
+        args=(run_args, str(run_dir), str(error_payload_path)),
         daemon=False,
     )
     process.start()
@@ -1465,7 +1610,29 @@ def _execute_benchmark_with_timeout(
         return 124, f"{timeout_label} runtime budget exceeded ({timeout_cap}s cap)"
     exit_code = int(process.exitcode or 0)
     if exit_code == 0:
+        if error_payload_path.exists():
+            try:
+                error_payload_path.unlink()
+            except OSError:
+                pass
         return 0, None
+    worker_error_payload = _read_json_if_exists(error_payload_path)
+    if isinstance(worker_error_payload, dict):
+        worker_error_type = worker_error_payload.get("type")
+        worker_error_message = worker_error_payload.get("error")
+        if isinstance(worker_error_type, str) and isinstance(worker_error_message, str):
+            return (
+                exit_code,
+                (
+                    f"{timeout_label} failed with {worker_error_type}: {worker_error_message} "
+                    f"(see {error_payload_path.name})"
+                ),
+            )
+        if isinstance(worker_error_message, str):
+            return (
+                exit_code,
+                f"{timeout_label} failed: {worker_error_message} (see {error_payload_path.name})",
+            )
     return exit_code, f"{timeout_label} exited with code {exit_code}"
 
 
@@ -1657,8 +1824,8 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
             return False
 
     def __enter__(self) -> "IsolatedCortexDaemon":
-        attach_existing = _env_flag_enabled("CORTEX_BENCHMARK_ATTACH_EXISTING_DAEMON", default=True)
-        require_app_daemon = _env_flag_enabled("CORTEX_BENCHMARK_REQUIRE_APP_DAEMON", default=True)
+        attach_existing = _env_flag_enabled("CORTEX_BENCHMARK_ATTACH_EXISTING_DAEMON", default=False)
+        require_app_daemon = _env_flag_enabled("CORTEX_BENCHMARK_REQUIRE_APP_DAEMON", default=False)
         if require_app_daemon:
             attach_existing = True
         if attach_existing and self._try_attach_existing_daemon():
@@ -1754,9 +1921,11 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
 def _register_provider() -> None:
     _configure_imports()
     from cortex_amb_provider import CortexHTTPMemoryProvider
+    from cortex_http_base_provider import CortexHTTPBaseMemoryProvider
     from memory_bench.memory import REGISTRY
 
     REGISTRY["cortex-http"] = CortexHTTPMemoryProvider
+    REGISTRY["cortex-http-base"] = CortexHTTPBaseMemoryProvider
 
 
 def _assert_amb_environment() -> None:
@@ -1769,6 +1938,16 @@ def _assert_amb_environment() -> None:
             "`benchmarking/tools/agent-memory-benchmark`, run `uv sync` or "
             "`uv pip install -e .` before using the AMB-backed `run` command."
         ) from exc
+
+
+def _resolve_memory_backend(args: argparse.Namespace) -> str:
+    backend = str(getattr(args, "memory_backend", DEFAULT_MEMORY_BACKEND)).strip().lower()
+    if backend not in SUPPORTED_MEMORY_BACKENDS:
+        known = ", ".join(SUPPORTED_MEMORY_BACKENDS)
+        raise ValueError(
+            f"unsupported memory backend '{backend}'. Expected one of: {known}"
+        )
+    return backend
 
 
 def run_smoke(run_dir: Path) -> None:
@@ -1853,7 +2032,9 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
     from memory_bench.runner import EvalRunner
     from memory_bench.memory import get_memory_provider
 
-    namespace = args.run_name or f"{args.dataset}-{args.split}-{run_dir.name}"
+    memory_backend = _resolve_memory_backend(args)
+    default_run_name = memory_backend
+    namespace = args.run_name or f"{memory_backend}-{args.dataset}-{args.split}-{run_dir.name}"
     source_agent = f"amb-cortex::{namespace}"
     cleanup_enabled = _env_flag_enabled("CORTEX_BENCHMARK_CLEANUP_ON_EXIT", default=True)
     recall_metrics_path = run_dir / "retrieval-metrics.jsonl"
@@ -1912,6 +2093,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                     "dataset": args.dataset,
                     "split": args.split,
                     "mode": args.mode,
+                    "memory_backend": memory_backend,
                     "category": args.category,
                     "query_limit": args.query_limit,
                     "query_id": args.query_id,
@@ -1953,7 +2135,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
 
             dataset = _apply_dataset_compat_shims(get_dataset(args.dataset))
             mode = get_mode(args.mode, llm=get_answer_llm())
-            memory = get_memory_provider("cortex-http")
+            memory = get_memory_provider(memory_backend)
             runner = EvalRunner(output_dir=run_dir / "outputs")
 
             summary = runner.run(
@@ -1972,7 +2154,7 @@ def run_benchmark(args: argparse.Namespace, run_dir: Path) -> None:
                 skip_answer=False,
                 only_failed=False,
                 show_raw=False,
-                run_name=args.run_name or "cortex-http",
+                run_name=args.run_name or default_run_name,
                 description=args.description,
             )
 
@@ -2157,6 +2339,7 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
         max_timeout=MATRIX_CASE_TIMEOUT_MAX_SECONDS,
         field_name="max-case-runtime-seconds",
     )
+    default_memory_backend = _resolve_memory_backend(args)
     preflight = _build_matrix_preflight(
         args=args,
         cases=all_cases,
@@ -2206,6 +2389,7 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
                 "recall_budget": args.recall_budget,
                 "quality_token_target": args.quality_token_target,
                 "retrieval_profile": args.retrieval_profile,
+                "memory_backend": default_memory_backend,
                 "token_gate_mode": args.token_gate_mode,
                 "provider_profile": args.provider_profile,
                 "baseline_file": args.baseline_file,
@@ -2219,6 +2403,7 @@ def run_matrix(args: argparse.Namespace, run_dir: Path) -> None:
                 "dataset": case["dataset"],
                 "split": case["split"],
                 "mode": case.get("mode", args.mode),
+                "memory_backend": str(case.get("memory_backend", default_memory_backend)),
                 "query_limit": case.get("query_limit", args.query_limit),
             }
             for case in cases
@@ -2436,7 +2621,21 @@ def build_parser() -> argparse.ArgumentParser:
             "Must be between 900 and 1200 (15-20 minutes)."
         ),
     )
-    run.add_argument("--run-name", default=None, help="Optional AMB run name. Defaults to cortex-http.")
+    run.add_argument(
+        "--memory-backend",
+        choices=SUPPORTED_MEMORY_BACKENDS,
+        default=os.environ.get("CORTEX_BENCHMARK_MEMORY_BACKEND", DEFAULT_MEMORY_BACKEND),
+        help=(
+            "Benchmark memory backend. "
+            "'cortex-http' uses the tuned adapter client; "
+            "'cortex-http-base' uses direct HTTP store/recall without helper client logic."
+        ),
+    )
+    run.add_argument(
+        "--run-name",
+        default=None,
+        help="Optional AMB run name. Defaults to the selected memory backend.",
+    )
     run.add_argument("--description", default=None, help="Optional run description written into the AMB output.")
     _add_quality_gate_arguments(run)
     run.set_defaults(func=run_benchmark)
@@ -2486,6 +2685,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     matrix.add_argument("--mode", default="rag", help="Default AMB response mode for cases missing mode.")
     matrix.add_argument("--category", default=None, help="Default AMB category for cases missing category.")
+    matrix.add_argument(
+        "--memory-backend",
+        choices=SUPPORTED_MEMORY_BACKENDS,
+        default=os.environ.get("CORTEX_BENCHMARK_MEMORY_BACKEND", DEFAULT_MEMORY_BACKEND),
+        help="Default memory backend for matrix cases missing memory_backend.",
+    )
     matrix.add_argument("--query-limit", type=int, default=None, help="Default query limit for cases missing query_limit.")
     matrix.add_argument("--query-id", default=None, help="Default query id for cases missing query_id.")
     matrix.add_argument("--doc-limit", type=int, default=None, help="Default doc limit for cases missing doc_limit.")

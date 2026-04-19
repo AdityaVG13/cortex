@@ -33,6 +33,7 @@ from run_amb_cortex import (  # noqa: E402
     _execute_single_run,
     _env_flag_enabled,
     _resolve_quality_token_target,
+    _resolve_memory_backend,
     _resolve_single_run_timeout_seconds,
     _seed_model_assets,
     build_parser,
@@ -1027,6 +1028,48 @@ def test_run_parser_accepts_quality_token_target() -> None:
         ]
     )
     assert args.quality_token_target == "balanced-detail"
+
+
+def test_run_parser_accepts_memory_backend_override() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "run",
+            "--dataset",
+            "longmemeval",
+            "--split",
+            "s",
+            "--memory-backend",
+            "cortex-http-base",
+        ]
+    )
+    assert args.memory_backend == "cortex-http-base"
+
+
+def test_run_parser_defaults_memory_backend_to_cortex_http() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["run", "--dataset", "longmemeval", "--split", "s"])
+    assert args.memory_backend == "cortex-http"
+
+
+def test_resolve_memory_backend_rejects_unknown_value() -> None:
+    args = argparse.Namespace(memory_backend="not-a-real-backend")
+    with pytest.raises(ValueError, match="unsupported memory backend"):
+        _resolve_memory_backend(args)
+
+
+def test_matrix_parser_accepts_memory_backend_override() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "matrix",
+            "--matrix-file",
+            "benchmarking/configs/amb-eval-matrix.stage1.json",
+            "--memory-backend",
+            "cortex-http-base",
+        ]
+    )
+    assert args.memory_backend == "cortex-http-base"
 
 
 def test_run_parser_accepts_efficiency_3pct_retrieval_profile() -> None:

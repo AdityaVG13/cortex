@@ -207,9 +207,26 @@ body {
   background: var(--red);
 }
 
+.pill.starting {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  border: 1px solid rgba(255, 171, 0, 0.22);
+}
+
+.pill.starting::before {
+  background: var(--yellow);
+  box-shadow: 0 0 8px rgba(255, 171, 0, 0.35);
+  animation: pulse-starting-dot 1.6s ease-in-out infinite;
+}
+
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--green-glow); }
   50% { opacity: 0.6; box-shadow: 0 0 16px var(--green-glow); }
+}
+
+@keyframes pulse-starting-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* ─── Navigation ────────────────────────────────────────────────────────── */
@@ -1232,6 +1249,10 @@ body {
 
 .sys-err {
   color: var(--red);
+}
+
+.sys-warn {
+  color: var(--yellow);
 }
 
 /* ─── Message Bubbles ───────────────────────────────────────────────────── */
@@ -2751,6 +2772,12 @@ body {
   color: var(--red);
   border-color: rgba(255, 23, 68, 0.22);
   background: rgba(255, 23, 68, 0.08);
+}
+
+.sidebar-utility-pill.starting {
+  color: var(--yellow);
+  border-color: rgba(255, 171, 0, 0.22);
+  background: rgba(255, 171, 0, 0.08);
 }
 
 .sidebar-utility-grid {

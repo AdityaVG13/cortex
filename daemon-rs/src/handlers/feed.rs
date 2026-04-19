@@ -110,6 +110,22 @@ fn parse_json_array(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
 }
 
+fn feed_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FeedEntry> {
+    Ok(FeedEntry {
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        kind: row.get(2)?,
+        summary: row.get(3)?,
+        content: row.get(4)?,
+        files: parse_json_array(&row.get::<_, String>(5)?),
+        task_id: row.get(6)?,
+        trace_id: row.get(7)?,
+        priority: row.get(8)?,
+        timestamp: row.get(9)?,
+        tokens: row.get(10)?,
+    })
+}
+
 fn redact_secrets(text: &str) -> String {
     let bearer = Regex::new(r"Bearer\s+[a-f0-9]{32,}")
         .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
@@ -162,32 +178,30 @@ fn clean_old_feed(conn: &rusqlite::Connection, owner_id: Option<i64>) -> rusqlit
             "DELETE FROM feed WHERE owner_id = ?1 AND timestamp < ?2",
             params![owner_id, cutoff],
         )?;
+        conn.execute(
+            "DELETE FROM feed
+             WHERE owner_id = ?1
+               AND id IN (
+                 SELECT id
+                 FROM feed
+                 WHERE owner_id = ?1
+                 ORDER BY timestamp DESC
+                 LIMIT -1 OFFSET ?2
+               )",
+            params![owner_id, MAX_FEED],
+        )?;
     } else {
         conn.execute("DELETE FROM feed WHERE timestamp < ?1", params![cutoff])?;
-    }
-    let count: i64 = if let Some(owner_id) = owner_id {
-        conn.query_row(
-            "SELECT COUNT(*) FROM feed WHERE owner_id = ?1",
-            params![owner_id],
-            |r| r.get(0),
-        )?
-    } else {
-        conn.query_row("SELECT COUNT(*) FROM feed", [], |r| r.get(0))?
-    };
-    if count > MAX_FEED {
-        if let Some(owner_id) = owner_id {
-            conn.execute(
-                "DELETE FROM feed WHERE owner_id = ?1 AND id IN (
-                    SELECT id FROM feed WHERE owner_id = ?1 ORDER BY timestamp ASC LIMIT ?2
-                 )",
-                params![owner_id, count - MAX_FEED],
-            )?;
-        } else {
-            conn.execute(
-                "DELETE FROM feed WHERE id IN (SELECT id FROM feed ORDER BY timestamp ASC LIMIT ?1)",
-                params![count - MAX_FEED],
-            )?;
-        }
+        conn.execute(
+            "DELETE FROM feed
+             WHERE id IN (
+               SELECT id
+               FROM feed
+               ORDER BY timestamp DESC
+               LIMIT -1 OFFSET ?1
+             )",
+            params![MAX_FEED],
+        )?;
     }
     Ok(())
 }
@@ -218,22 +232,101 @@ fn fetch_feed_since(
         params_vec.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(param_refs), |row| {
-            Ok(FeedEntry {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                kind: row.get(2)?,
-                summary: row.get(3)?,
-                content: row.get(4)?,
-                files: parse_json_array(&row.get::<_, String>(5)?),
-                task_id: row.get(6)?,
-                trace_id: row.get(7)?,
-                priority: row.get(8)?,
-                timestamp: row.get(9)?,
-                tokens: row.get(10)?,
-            })
-        })
+        .query_map(rusqlite::params_from_iter(param_refs), feed_entry_from_row)
         .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        out.push(row);
+    }
+    Ok(out)
+}
+
+fn fetch_recent_non_self_feed(
+    conn: &rusqlite::Connection,
+    for_agent: &str,
+    owner_id: Option<i64>,
+) -> Result<Vec<FeedEntry>, String> {
+    let mut stmt = if owner_id.is_some() {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             FROM (
+               SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+               FROM feed
+               WHERE owner_id = ?1 AND agent != ?2
+               ORDER BY timestamp DESC
+               LIMIT ?3
+             )
+             ORDER BY timestamp ASC",
+        )
+    } else {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             FROM (
+               SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+               FROM feed
+               WHERE agent != ?1
+               ORDER BY timestamp DESC
+               LIMIT ?2
+             )
+             ORDER BY timestamp ASC",
+        )
+    }
+    .map_err(|e| e.to_string())?;
+
+    let rows = if let Some(owner_id) = owner_id {
+        stmt.query_map(params![owner_id, for_agent, MAX_FEED], feed_entry_from_row)
+    } else {
+        stmt.query_map(params![for_agent, MAX_FEED], feed_entry_from_row)
+    }
+    .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows.flatten() {
+        out.push(row);
+    }
+    Ok(out)
+}
+
+fn fetch_unread_since_anchor(
+    conn: &rusqlite::Connection,
+    for_agent: &str,
+    owner_id: Option<i64>,
+    anchor_timestamp: &str,
+    anchor_id: &str,
+) -> Result<Vec<FeedEntry>, String> {
+    let mut stmt = if owner_id.is_some() {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             FROM feed
+             WHERE owner_id = ?1
+               AND agent != ?2
+               AND (timestamp > ?3 OR (timestamp = ?3 AND id > ?4))
+             ORDER BY timestamp ASC",
+        )
+    } else {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             FROM feed
+             WHERE agent != ?1
+               AND (timestamp > ?2 OR (timestamp = ?2 AND id > ?3))
+             ORDER BY timestamp ASC",
+        )
+    }
+    .map_err(|e| e.to_string())?;
+
+    let rows = if let Some(owner_id) = owner_id {
+        stmt.query_map(
+            params![owner_id, for_agent, anchor_timestamp, anchor_id],
+            feed_entry_from_row,
+        )
+    } else {
+        stmt.query_map(
+            params![for_agent, anchor_timestamp, anchor_id],
+            feed_entry_from_row,
+        )
+    }
+    .map_err(|e| e.to_string())?;
+
     let mut out = Vec::new();
     for row in rows.flatten() {
         out.push(row);
@@ -264,68 +357,35 @@ fn get_unread_feed(
         .map_err(|e| e.to_string())?
     };
 
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
-        owner_id
-    {
-        (
-            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
-             FROM feed WHERE owner_id = ?1 ORDER BY timestamp ASC",
-            vec![Box::new(owner_id)],
-        )
-    } else {
-        (
-            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
-             FROM feed ORDER BY timestamp ASC",
-            vec![],
-        )
-    };
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(param_refs), |row| {
-            Ok(FeedEntry {
-                id: row.get(0)?,
-                agent: row.get(1)?,
-                kind: row.get(2)?,
-                summary: row.get(3)?,
-                content: row.get(4)?,
-                files: parse_json_array(&row.get::<_, String>(5)?),
-                task_id: row.get(6)?,
-                trace_id: row.get(7)?,
-                priority: row.get(8)?,
-                timestamp: row.get(9)?,
-                tokens: row.get(10)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    let mut all = Vec::new();
-    for row in rows.flatten() {
-        all.push(row);
-    }
-
     let Some(ack_id) = ack else {
-        return Ok(all
-            .into_iter()
-            .filter(|entry| entry.agent != for_agent)
-            .collect::<Vec<_>>());
+        return fetch_recent_non_self_feed(conn, for_agent, owner_id);
+    };
+
+    let ack_timestamp: Option<String> = if let Some(owner_id) = owner_id {
+        conn.query_row(
+            "SELECT timestamp FROM feed WHERE owner_id = ?1 AND id = ?2",
+            params![owner_id, ack_id.clone()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    } else {
+        conn.query_row(
+            "SELECT timestamp FROM feed WHERE id = ?1",
+            params![ack_id.clone()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
     };
 
     // Acks can outlive feed rows because the feed is TTL-pruned. If the saved
-    // anchor row no longer exists, fall back to "all non-self entries" instead
-    // of returning an empty unread feed forever.
-    let Some(ack_index) = all.iter().position(|entry| entry.id == ack_id) else {
-        return Ok(all
-            .into_iter()
-            .filter(|entry| entry.agent != for_agent)
-            .collect::<Vec<_>>());
+    // anchor row no longer exists, fall back to the most recent non-self window.
+    let Some(anchor_timestamp) = ack_timestamp else {
+        return fetch_recent_non_self_feed(conn, for_agent, owner_id);
     };
 
-    Ok(all
-        .into_iter()
-        .skip(ack_index + 1)
-        .filter(|entry| entry.agent != for_agent)
-        .collect::<Vec<_>>())
+    fetch_unread_since_anchor(conn, for_agent, owner_id, &anchor_timestamp, &ack_id)
 }
 
 fn insert_feed_entry(conn: &rusqlite::Connection, entry: &FeedEntry) -> Result<(), String> {

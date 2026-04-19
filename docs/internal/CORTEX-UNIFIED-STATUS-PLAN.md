@@ -1,6 +1,6 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-19 03:15  
+**Last updated:** 2026-04-19 08:20  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
 
@@ -15,8 +15,9 @@
 - Benchmark tracks are now explicitly split into two paths:
   - tuned adapter path (`cortex-http`) for production-optimized recall
   - raw no-helper path (`cortex-http-base`) for truthful core baseline measurement
-- Latest strict no-helper LongMemEval baseline (`benchmarking/runs/amb-run-20260418-230402`) is currently `4/20` (`accuracy=0.2`) with gate failure (`avg_recall_tokens=267.3` vs `246.0` limit).
-- Latest tuned adapter strict run remains `20/20` (`benchmarking/runs/amb-run-20260418-224211`), confirming the gap is specifically in raw-path retrieval quality and token efficiency.
+- Latest strict no-helper LongMemEval run is now `20/20` on `cortex-http-base` (`benchmarking/runs/amb-run-20260419-074548`) with gate pass (`avg_recall_tokens=201.95`, `max_recall_tokens=297`).
+- Latest tuned adapter strict run is also `20/20` on `cortex-http` (`benchmarking/runs/amb-run-20260419-073924`) with gate pass (`avg_recall_tokens=199.35`, `max_recall_tokens=294`).
+- Raw no-helper quality floor is no longer blocked by the earlier `4/20` baseline; remaining Phase-2A work is now about sustained quality/token efficiency under broader matrix workloads and production variance.
 
 ---
 
@@ -76,6 +77,10 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - compaction now rolls old `recall_query`/`store_savings`/`tool_call_savings` rows into `event_savings_rollups` (day+hour+operation aggregates) before deleting raw rows
   - `/savings` now reads `event_savings_rollups` plus recent raw events, preserving 30-day analytics while reducing scan pressure on large event histories
   - compaction now prunes orphan `cluster_members` rows (dangling memory/decision/cluster references), preventing long-lived crystal-index bloat
+- Live benchmark telemetry cleanup + vacuum pass has been re-run on the local operator DB with backup-first safety:
+  - backups: `~/.cortex/backups/cortex-pre-benchmark-cleanup-20260419-075715.db` and `~/.cortex/backups/cortex-pre-benchmark-cleanup-2-20260419-075738.db`
+  - post-cleanup local snapshot: events `597`, decisions `489`, embeddings `9,749`, cluster_members `5,142`
+  - local DB footprint reduced from `720.93 MB` backup snapshot to `386.37 MB` active DB after cleanup + vacuum
 - `/stats` now rolls up shadow-semantic parity signals from unified recall telemetry:
   - status counts (`ok` / `unavailable` / `error` / `skipped`) are aggregated from `recall_query` events
   - overlap/jaccard averages for `ok` shadow probes are now surfaced for gating decisions
@@ -176,6 +181,10 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - startup refresh now treats healthy `/health` as a reachability fallback when `daemon_status` reports false-negative unreachable, so app startup no longer stays pinned in “still starting” loops
   - stale duplicate `cortex.exe mcp --agent codex` processes were identified as startup contention noise and reduced to a single app-managed daemon in local remediation
   - frontend regression coverage now includes explicit IPC-timeout fallback tests for both GET and POST client paths
+- Desktop startup lifecycle now has explicit retry-state abstraction and verification fallback:
+  - new `desktop/cortex-control-center/src/daemon-startup.js` centralizes bounded startup attempts/time windows and retry delay policy
+  - lifecycle verification now falls back to polling when SSE bootstrap events are missing, preventing false startup failure in noisy local dev environments
+  - desktop tauri binary fallback to PATH is now opt-in via `CORTEX_ALLOW_PATH_BINARY_FALLBACK` instead of implicit behavior
 - Live DB anti-ballooning storage hardening is now landed for high-volume telemetry workloads:
   - write-path event pruning now applies cap-based trimming across high-volume event families (`agent_boot`, `boot_savings`, `store_savings`, `tool_call_savings`, `decision_*`, `recall_query`, `merge`) instead of only `decision_stored`
   - compaction now treats stale `agent_boot` rows as pruneable while preserving long-horizon savings integrity via `boot_savings_rollup`

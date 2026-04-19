@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
+
+const BEST_EFFORT_CHECKPOINT_MIN_INTERVAL_MS: i64 = 5_000;
+const BEST_EFFORT_TRUNCATE_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+static LAST_BEST_EFFORT_CHECKPOINT_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_BEST_EFFORT_TRUNCATE_MS: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqliteVecStatus {
@@ -827,6 +834,9 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_events_type_created ON events(type, created_at);
         CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
         CREATE INDEX IF NOT EXISTS idx_events_type_id ON events(type, id);
+        CREATE INDEX IF NOT EXISTS idx_events_source_agent_created ON events(source_agent, created_at);
+        CREATE INDEX IF NOT EXISTS idx_decisions_type_source_created
+          ON decisions(type, source_agent, created_at);
         CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient);
         CREATE INDEX IF NOT EXISTS idx_messages_recipient_timestamp ON messages(recipient, timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_heartbeat ON sessions(last_heartbeat);
@@ -1450,15 +1460,60 @@ pub fn migrate_aging_columns(conn: &Connection) {
     }
 }
 
-/// Run a WAL checkpoint and truncate the WAL file.
-pub fn checkpoint_wal(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-    Ok(())
+fn unix_now_ms() -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    i64::try_from(now).unwrap_or(i64::MAX)
+}
+
+fn should_attempt_best_effort_checkpoint(now_ms: i64, last_checkpoint_ms: i64) -> bool {
+    now_ms.saturating_sub(last_checkpoint_ms) >= BEST_EFFORT_CHECKPOINT_MIN_INTERVAL_MS
+}
+
+fn should_attempt_truncate_checkpoint(now_ms: i64, last_truncate_ms: i64) -> bool {
+    if last_truncate_ms <= 0 {
+        return false;
+    }
+    now_ms.saturating_sub(last_truncate_ms) >= BEST_EFFORT_TRUNCATE_INTERVAL_MS
 }
 
 /// Attempt a WAL checkpoint; silently ignore any error.
 pub fn checkpoint_wal_best_effort(conn: &Connection) {
-    let _ = checkpoint_wal(conn);
+    let now_ms = unix_now_ms();
+    let last_checkpoint_ms = LAST_BEST_EFFORT_CHECKPOINT_MS.load(Ordering::Relaxed);
+    if !should_attempt_best_effort_checkpoint(now_ms, last_checkpoint_ms) {
+        return;
+    }
+    if LAST_BEST_EFFORT_CHECKPOINT_MS
+        .compare_exchange(
+            last_checkpoint_ms,
+            now_ms,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        )
+        .is_err()
+    {
+        return;
+    }
+
+    let mut last_truncate_ms = LAST_BEST_EFFORT_TRUNCATE_MS.load(Ordering::Relaxed);
+    if last_truncate_ms <= 0 {
+        LAST_BEST_EFFORT_TRUNCATE_MS.store(now_ms, Ordering::Relaxed);
+        last_truncate_ms = now_ms;
+    }
+
+    if should_attempt_truncate_checkpoint(now_ms, last_truncate_ms)
+        && conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .is_ok()
+    {
+        LAST_BEST_EFFORT_TRUNCATE_MS.store(now_ms, Ordering::Relaxed);
+        return;
+    }
+
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1908,6 +1963,25 @@ mod tests {
         // Should not panic even on an in-memory connection (WAL not applicable)
         let conn = Connection::open_in_memory().unwrap();
         checkpoint_wal_best_effort(&conn);
+    }
+
+    #[test]
+    fn test_best_effort_checkpoint_interval_guard() {
+        assert!(!should_attempt_best_effort_checkpoint(10_000, 8_000));
+        assert!(should_attempt_best_effort_checkpoint(15_000, 10_000));
+    }
+
+    #[test]
+    fn test_best_effort_truncate_interval_guard() {
+        // First run should not force TRUNCATE.
+        assert!(!should_attempt_truncate_checkpoint(100_000, 0));
+        // Before interval: no TRUNCATE.
+        assert!(!should_attempt_truncate_checkpoint(200_000, 150_001));
+        // After interval: TRUNCATE allowed.
+        assert!(should_attempt_truncate_checkpoint(
+            500_000,
+            500_000 - BEST_EFFORT_TRUNCATE_INTERVAL_MS - 1
+        ));
     }
 
     #[test]

@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use super::{
     ensure_auth_with_caller_rated, json_response, log_event, now_iso, resolve_source_identity,
+    truncate_chars,
 };
 use crate::api_types::StoreRequest;
 use crate::conflict::{
@@ -22,9 +23,18 @@ const JACCARD_MERGE_THRESHOLD: f64 = 0.70;
 const MERGE_SCORE_BONUS: f64 = 5.0;
 const TOO_VAGUE_THRESHOLD: i32 = 20;
 const BENCHMARK_ENTRY_TYPE: &str = "benchmark";
+const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex::";
+const MAX_DECISION_CHARS: usize = 4096;
 
 fn is_benchmark_entry_type(entry_type: &str) -> bool {
     entry_type.eq_ignore_ascii_case(BENCHMARK_ENTRY_TYPE)
+}
+
+fn is_benchmark_source_agent(source_agent: &str) -> bool {
+    source_agent
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with(BENCHMARK_SOURCE_AGENT_PREFIX)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,6 +234,12 @@ pub async fn handle_store(
     let source_identity =
         resolve_source_identity(&headers, body.source_agent.as_deref().unwrap_or("http"));
     let source_agent = source_identity.agent.clone();
+    let benchmark_store = body
+        .entry_type
+        .as_deref()
+        .map(is_benchmark_entry_type)
+        .unwrap_or(false)
+        || is_benchmark_source_agent(&source_agent);
     let provenance = DecisionProvenance::from_fields(
         &source_agent,
         body.source_model
@@ -289,7 +305,9 @@ pub async fn handle_store(
                 }
             }
 
-            crate::focus::focus_append(&conn, &source_agent, &decision_text);
+            if !benchmark_store {
+                crate::focus::focus_append(&conn, &source_agent, &decision_text);
+            }
             json_response(StatusCode::OK, json!({ "stored": true, "entry": entry }))
         }
         Err(StoreError::Validation {
@@ -431,13 +449,37 @@ fn store_decision_internal(
     query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
-    let decision = decision.trim();
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
+    let suppress_benchmark_events =
+        is_benchmark_entry_type(&entry_type) || is_benchmark_source_agent(&source_agent);
+    let mut decision_text = decision.trim().to_string();
+    let decision_chars = decision_text.chars().count();
+    let decision_truncated =
+        !is_benchmark_entry_type(&entry_type) && decision_chars > MAX_DECISION_CHARS;
+    if decision_truncated {
+        decision_text = truncate_chars(&decision_text, MAX_DECISION_CHARS);
+    }
+    let decision = decision_text.as_str();
     let quality = assess_quality(decision);
     let confidence = confidence.unwrap_or(0.8);
     let trust_score = provenance.trust_score(confidence);
     let ts = now_iso();
     let expires_at = compute_expires_at(conn, ttl_seconds).map_err(StoreError::Internal)?;
+
+    if decision_truncated {
+        let _ = log_event(
+            conn,
+            "decision_truncated",
+            json!({
+                "source_agent": source_agent,
+                "entry_type": entry_type.as_str(),
+                "original_chars": decision_chars,
+                "stored_chars": MAX_DECISION_CHARS,
+                "preview": truncate_chars(decision, 180),
+            }),
+            "rust-daemon",
+        );
+    }
 
     // Benchmark ingestion must preserve corpus fidelity (no dedup/conflict collapse).
     if is_benchmark_entry_type(&entry_type) {
@@ -455,6 +497,7 @@ fn store_decision_internal(
             &ts,
             owner_id,
             1.0,
+            !suppress_benchmark_events,
         );
     }
 
@@ -508,6 +551,7 @@ fn store_decision_internal(
             &ts,
             owner_id,
             (1.0 - best_similarity).clamp(0.0, 1.0),
+            !suppress_benchmark_events,
         );
     }
 
@@ -666,6 +710,7 @@ fn store_decision_legacy(
         ts,
         owner_id,
         surprise,
+        !(is_benchmark_entry_type(entry_type) || is_benchmark_source_agent(source_agent)),
     )?;
     decorate_entry_with_relation(&mut entry, &relation, None);
     Ok((entry, new_id))
@@ -1547,6 +1592,7 @@ fn insert_decision(
     ts: &str,
     owner_id: Option<i64>,
     surprise: f64,
+    emit_decision_stored_event: bool,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let surprise = (surprise * 10_000.0).round() / 10_000.0;
     if let Some(oid) = owner_id {
@@ -1596,17 +1642,19 @@ fn insert_decision(
     .map_err(|e| StoreError::Internal(e.to_string()))?;
 
     let id = conn.last_insert_rowid();
-    let _ = log_event(
-        conn,
-        "decision_stored",
-        json!({
-            "id": id,
-            "source_agent": source_agent,
-            "surprise": surprise,
-            "quality": quality,
-        }),
-        "rust-daemon",
-    );
+    if emit_decision_stored_event {
+        let _ = log_event(
+            conn,
+            "decision_stored",
+            json!({
+                "id": id,
+                "source_agent": source_agent,
+                "surprise": surprise,
+                "quality": quality,
+            }),
+            "rust-daemon",
+        );
+    }
     checkpoint_wal_best_effort(conn);
 
     Ok((
@@ -1885,6 +1933,71 @@ mod tests {
         .unwrap();
 
         assert!(new_id.is_some());
+    }
+
+    #[test]
+    fn non_benchmark_decisions_are_length_capped() {
+        let mut conn = test_conn();
+        let long_text = "x".repeat(MAX_DECISION_CHARS + 1800);
+        let (_entry, new_id) = store_decision_with_input_embedding(
+            &mut conn,
+            &long_text,
+            Some("long decision body".to_string()),
+            Some("decision".to_string()),
+            "tester".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let id = new_id.expect("decision id");
+        let stored_chars: i64 = conn
+            .query_row(
+                "SELECT LENGTH(decision) FROM decisions WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_chars as usize, MAX_DECISION_CHARS);
+
+        let truncation_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'decision_truncated'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(truncation_events, 1);
+    }
+
+    #[test]
+    fn benchmark_decisions_keep_full_length() {
+        let mut conn = test_conn();
+        let long_text = "x".repeat(MAX_DECISION_CHARS + 1800);
+        let (_entry, new_id) = store_decision_with_input_embedding(
+            &mut conn,
+            &long_text,
+            Some("benchmark payload".to_string()),
+            Some("benchmark".to_string()),
+            "tester".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let id = new_id.expect("decision id");
+        let stored_chars: i64 = conn
+            .query_row(
+                "SELECT LENGTH(decision) FROM decisions WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_chars as usize, long_text.len());
     }
 
     #[test]
