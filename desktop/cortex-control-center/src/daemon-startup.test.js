@@ -7,6 +7,7 @@ import {
   daemonUtilityPill,
   isDaemonStartingState,
   isTransientDaemonFeedback,
+  shouldContinueStartupRecovery,
 } from "./daemon-startup.js";
 
 describe("daemon startup state helpers", () => {
@@ -122,6 +123,42 @@ describe("computeStartupRetryStep", () => {
 
     expect(step.elapsedMs).toBe(46000);
     expect(step.exhausted).toBe(true);
+  });
+});
+
+describe("shouldContinueStartupRecovery", () => {
+  it("continues startup retries while the managed daemon is still unreachable", () => {
+    expect(shouldContinueStartupRecovery({
+      invokeAvailable: true,
+      daemonReachable: false,
+      currentDaemonState: { managed: true, running: true, reachable: false },
+      previousDaemonState: { managed: true, running: true, reachable: false },
+    })).toBe(true);
+  });
+
+  it("continues startup retries when current status drops managed but prior state was starting", () => {
+    expect(shouldContinueStartupRecovery({
+      invokeAvailable: true,
+      daemonReachable: false,
+      currentDaemonState: { managed: false, running: false, reachable: false },
+      previousDaemonState: { managed: true, running: true, reachable: false },
+    })).toBe(true);
+  });
+
+  it("stops startup retries when daemon is reachable or runtime is not tauri-invoke", () => {
+    expect(shouldContinueStartupRecovery({
+      invokeAvailable: true,
+      daemonReachable: true,
+      currentDaemonState: { managed: true, running: true, reachable: true },
+      previousDaemonState: { managed: true, running: true, reachable: false },
+    })).toBe(false);
+
+    expect(shouldContinueStartupRecovery({
+      invokeAvailable: false,
+      daemonReachable: false,
+      currentDaemonState: { managed: true, running: true, reachable: false },
+      previousDaemonState: { managed: true, running: true, reachable: false },
+    })).toBe(false);
   });
 });
 

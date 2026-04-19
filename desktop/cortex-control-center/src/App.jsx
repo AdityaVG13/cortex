@@ -32,6 +32,7 @@ import {
   daemonSystemStatus,
   daemonUtilityPill,
   isDaemonStartingState,
+  shouldContinueStartupRecovery,
   isTransientDaemonFeedback,
 } from "./daemon-startup.js";
 import { buildMonteCarloProjection } from "./analytics-projection.js";
@@ -2368,7 +2369,15 @@ export function App() {
       }));
     }
 
-    if (invokeRef.current && nextDaemonState?.managed && !daemonReachable) {
+    const keepStartupRecovery =
+      shouldContinueStartupRecovery({
+        invokeAvailable: Boolean(invokeRef.current),
+        daemonReachable,
+        currentDaemonState: nextDaemonState,
+        previousDaemonState: daemonStateRef.current,
+      });
+
+    if (keepStartupRecovery) {
       setDaemonTimeoutStaleSummary("");
       clearStartupCoreReady();
       if (!scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.")) {

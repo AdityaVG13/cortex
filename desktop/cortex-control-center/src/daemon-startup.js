@@ -15,6 +15,21 @@ export function isDaemonStartingState(daemonState) {
   return Boolean(daemonState?.running) && !Boolean(daemonState?.reachable);
 }
 
+export function shouldContinueStartupRecovery({
+  invokeAvailable = false,
+  daemonReachable = false,
+  currentDaemonState = null,
+  previousDaemonState = null,
+} = {}) {
+  if (!invokeAvailable || daemonReachable) {
+    return false;
+  }
+  if (Boolean(currentDaemonState?.managed)) {
+    return true;
+  }
+  return isDaemonStartingState(currentDaemonState) || isDaemonStartingState(previousDaemonState);
+}
+
 export function isTransientDaemonFeedback(message) {
   const text = String(message || "");
   return (
