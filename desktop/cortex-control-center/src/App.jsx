@@ -1336,7 +1336,12 @@ function isDaemonOfflineErrorMessage(message) {
 
 function isDaemonTimeoutErrorMessage(message) {
   const value = String(message || "").toLowerCase();
-  return value.includes("ipc request: timed out");
+  return (
+    value.includes("ipc request: timed out")
+    || value.includes("os error 10060")
+    || value.includes("connection attempt failed because the connected party did not properly respond")
+    || value.includes("established connection failed because connected host has failed to respond")
+  );
 }
 
 function isDaemonSuppressibleErrorMessage(message) {
@@ -1349,6 +1354,13 @@ function isReachableHealthPayload(health) {
     return false;
   }
   return Boolean(health?.runtime) || Boolean(health?.stats);
+}
+
+function isReadyReadinessPayload(readiness) {
+  if (!readiness || typeof readiness !== "object") return false;
+  if (readiness.ready === true) return true;
+  const status = String(readiness.status || "").toLowerCase();
+  return status === "ready" || status === "ok";
 }
 
 function parseMcpToolResult(result) {
@@ -1855,6 +1867,15 @@ export function App() {
     }
   }, [api, call]);
 
+  const probeReadiness = useCallback(async () => {
+    try {
+      const readiness = await api("/readiness");
+      return isReadyReadinessPayload(readiness);
+    } catch {
+      return false;
+    }
+  }, [api]);
+
   const refreshHealth = useCallback(async () => {
     let health;
     try {
@@ -1863,13 +1884,14 @@ export function App() {
       // daemon unreachable -- show dashes
     }
     if (!health) {
+      const readinessReady = await probeReadiness();
       setHealthMeta(EMPTY_HEALTH_META);
       setStats({
         memories: "--",
         decisions: "--",
         events: "--",
       });
-      return false;
+      return readinessReady;
     }
 
     const status = String(health?.status || "unknown").toLowerCase();
@@ -1897,7 +1919,7 @@ export function App() {
       events: next.events ?? 0,
     });
     return isReachableHealthPayload(health);
-  }, [api]);
+  }, [api, probeReadiness]);
 
   const refreshCoreData = useCallback(async (options = {}) => {
     const throwOnError = options?.throwOnError !== false;
@@ -2314,25 +2336,42 @@ export function App() {
     }
 
     const nextDaemonState = await refreshDaemonState();
-    const healthReady = await refreshHealth();
+    let healthReady = await refreshHealth();
+    let readinessReady = false;
+    if (
+      invokeRef.current
+      && nextDaemonState?.managed
+      && !nextDaemonState?.reachable
+      && !healthReady
+    ) {
+      readinessReady = await probeReadiness();
+      if (readinessReady) {
+        healthReady = true;
+      }
+    }
     const reachableViaHealthFallback =
       Boolean(invokeRef.current)
       && Boolean(healthReady)
       && !Boolean(nextDaemonState?.reachable);
-    const daemonReachable = Boolean(nextDaemonState?.reachable) || reachableViaHealthFallback;
+    const reachableViaReadinessFallback =
+      Boolean(invokeRef.current)
+      && Boolean(readinessReady)
+      && !Boolean(nextDaemonState?.reachable);
+    const daemonReachable =
+      Boolean(nextDaemonState?.reachable) || reachableViaHealthFallback || reachableViaReadinessFallback;
 
     if (daemonTransitionRef.current) {
       return;
     }
 
-    if (reachableViaHealthFallback) {
+    if (reachableViaHealthFallback || reachableViaReadinessFallback) {
       setDaemonState((current) => ({
         ...current,
         running: true,
         reachable: true,
-        managed: false,
+        managed: Boolean(nextDaemonState?.managed),
         authTokenReady: Boolean(tokenRef.current),
-        message: `Connected to daemon on ${formatDaemonEndpoint(cortexBase)} (IPC fallback active).`,
+        message: `Connected to daemon on ${formatDaemonEndpoint(cortexBase)} (${reachableViaReadinessFallback ? "readiness fallback active" : "IPC fallback active"}).`,
       }));
     }
 
@@ -2480,6 +2519,7 @@ export function App() {
     readAuthToken,
     refreshDaemonState,
     refreshHealth,
+    probeReadiness,
     refreshProtectedDataForStartup,
     clearDisconnectedData,
     cortexBase,

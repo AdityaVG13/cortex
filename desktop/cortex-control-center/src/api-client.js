@@ -90,6 +90,9 @@ function shouldFallbackToHttp(error) {
     message.includes("invalid ipc response") ||
     message.includes("read failed") ||
     message.includes("write failed") ||
+    message.includes("os error 10060") ||
+    message.includes("connection attempt failed because the connected party did not properly respond") ||
+    message.includes("established connection failed because connected host has failed to respond") ||
     message.includes("cannot connect to daemon") ||
     message.includes("cannot set read timeout") ||
     message.includes("cannot set write timeout")
