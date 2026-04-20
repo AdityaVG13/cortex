@@ -6431,17 +6431,8 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+    use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex};
-
-    static ENV_TEST_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-
-    fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_TEST_LOCK
-            .get_or_init(|| StdMutex::new(()))
-            .lock()
-            .expect("env test lock should not be poisoned")
-    }
 
     // ── is_visible tests ───────────────────────────────────────────
 
@@ -9515,7 +9506,6 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unified_recall_fail_closes_when_latency_budget_is_zero() {
-        let _guard = env_test_guard();
         let original = std::env::var("CORTEX_RECALL_FAST_MAX_LATENCY_MS").ok();
         std::env::set_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS", "0");
 
