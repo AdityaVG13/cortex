@@ -1747,6 +1747,8 @@ body {
   min-height: 162px;
   gap: 10px;
   padding: 20px 20px 18px;
+  align-items: center;
+  text-align: center;
   background:
     linear-gradient(180deg, rgba(18, 27, 41, 0.96), rgba(11, 17, 28, 0.96)),
     var(--surface);
@@ -1768,7 +1770,7 @@ body {
 }
 
 .metric-assumption {
-  align-self: flex-start;
+  align-self: center;
   padding: 3px 8px;
   border-radius: 999px;
   border: 1px solid rgba(0, 230, 118, 0.28);
@@ -1782,10 +1784,21 @@ body {
 
 .metric-footnote {
   margin-top: auto;
+  min-height: 36px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   color: var(--text-2);
   font-family: var(--font-body);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.analytics-metrics-grid .metric-label {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .analytics-metrics-grid .metric-icon {

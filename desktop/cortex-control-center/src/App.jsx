@@ -5413,7 +5413,7 @@ export function App() {
                   <div className="metric metric-featured" data-accent="cyan">
                     <span className="metric-kicker">Compounding return</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} /></span>
-                    <span className="metric-label">Boot Tokens Saved</span>
+                    <span className="metric-label">Boot Tokens Saved (30d total)</span>
                     <span className="metric-footnote">
                       {bootSavingsMomentum === null
                         ? "Collecting enough history for a momentum read."
@@ -5424,7 +5424,7 @@ export function App() {
                   <div className="metric" data-accent="green">
                     <span className="metric-kicker">Efficiency</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.avgPercent || 0} />%</span>
-                    <span className="metric-label">Avg Compression</span>
+                    <span className="metric-label">30d Avg Compression</span>
                     <span className="metric-footnote">
                       Avg saved per boot {formatCompactNumber(Number(savings.summary?.avgSavedPerBoot || 0))} tokens
                     </span>
@@ -5601,7 +5601,7 @@ export function App() {
                         <div className="analytics-card-header-tight">
                           <div>
                             <span className="analytics-card-kicker">System load</span>
-                            <h2>Boots Per Day</h2>
+                            <h2>Daily Boot Compilations</h2>
                           </div>
                           <span className="badge">{formatCompactNumber(throughputBoots30d)} last 30d</span>
                         </div>
@@ -5625,7 +5625,7 @@ export function App() {
                         <div className="analytics-card-header-tight">
                           <div>
                             <span className="analytics-card-kicker">Long-term impact</span>
-                            <h2>Cumulative Savings</h2>
+                            <h2>Cumulative Savings (30d)</h2>
                           </div>
                           <span className="badge">{formatCompactNumber(Number(savings.summary?.totalSaved || 0))}t</span>
                         </div>
@@ -5688,8 +5688,8 @@ export function App() {
                       <div className="card analytics-list-card">
                         <div className="analytics-card-header-tight">
                           <div>
-                            <span className="analytics-card-kicker">Who is creating lift</span>
-                            <h2>Boot Savings by Agent</h2>
+                            <span className="analytics-card-kicker">Who is creating lift (30d)</span>
+                            <h2>Boot Savings by Agent (30d)</h2>
                           </div>
                           <span className="badge">{savings.byAgent?.length || 0}</span>
                         </div>
@@ -5751,7 +5751,7 @@ export function App() {
                       <div className="analytics-card-header-tight">
                         <div>
                           <span className="analytics-card-kicker">Attribution</span>
-                          <h2>Savings by Operation</h2>
+                          <h2>Savings by Operation (30d)</h2>
                         </div>
                         <span className="badge">{operationRows.length} categories</span>
                       </div>
