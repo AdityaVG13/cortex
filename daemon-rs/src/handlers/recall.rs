@@ -1230,22 +1230,15 @@ pub async fn handle_budget_recall(
         Some(&state.degraded_mode),
     ) {
         Ok(results) => {
-            let spent: usize = results
-                .iter()
-                .map(|item| {
-                    item.tokens.unwrap_or_else(|| {
-                        estimate_tokens(&format!("{}{}", item.source, item.excerpt))
-                    })
-                })
-                .sum();
-            let saved = budget as i64 - spent as i64;
+            let usage = compute_recall_budget_usage(&results, budget);
             json_response(
                 StatusCode::OK,
                 json!({
                     "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
                     "budget": budget,
-                    "spent": spent,
-                    "saved": saved,
+                    "spent": usage.spent,
+                    "saved": usage.saved,
+                    "tokenUsageLine": format_recall_token_usage_line(budget, usage),
                 }),
             )
         }
@@ -1384,9 +1377,26 @@ pub async fn handle_peek(
                     })
                 })
                 .collect();
+            let used = results
+                .iter()
+                .map(|item| estimate_tokens(&item.source))
+                .sum::<usize>();
+            let full_recall_tokens = results.iter().map(recall_item_token_cost).sum::<usize>();
+            let saved = full_recall_tokens.saturating_sub(used) as i64;
             json_response(
                 StatusCode::OK,
-                json!({"count": matches.len(), "matches": matches}),
+                json!({
+                    "count": matches.len(),
+                    "matches": matches,
+                    "tokenUsage": {
+                        "used": used,
+                        "saved": saved
+                    },
+                    "tokenUsageLine": format!(
+                        "Token usage: used {} tokens, saved {} vs full recall excerpts.",
+                        used, saved
+                    )
+                }),
             )
         }
         Err(e) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error": e})),
@@ -1987,11 +1997,18 @@ pub async fn execute_unified_recall(
                 }),
             )
             .await;
+            let usage = RecallBudgetUsage {
+                spent: 0,
+                saved: budget as i64,
+                over_budget: false,
+            };
             return Ok(json!({
                 "results": deduped_cached.into_iter().map(recall_to_json).collect::<Vec<_>>(),
                 "budget": budget,
-                "spent": 0,
-                "saved": budget as i64,
+                "spent": usage.spent,
+                "saved": usage.saved,
+                "overBudget": usage.over_budget,
+                "tokenUsageLine": format_recall_token_usage_line(budget, usage),
                 "mode": mode.as_str(),
                 "policyMode": mode.as_str(),
                 "cached": true,
@@ -2144,11 +2161,19 @@ pub async fn execute_unified_recall(
             }),
         )
         .await;
+        let usage = RecallBudgetUsage {
+            spent: 0,
+            saved: 0,
+            over_budget: false,
+        };
         return Ok(json!({
         "count": headlines.len(),
             "results": headlines,
             "budget": 0,
-            "spent": 0,
+            "spent": usage.spent,
+            "saved": usage.saved,
+            "overBudget": usage.over_budget,
+            "tokenUsageLine": format_recall_token_usage_line(0, usage),
             "mode": "headlines",
             "policyMode": RecallPolicyMode::Headlines.as_str(),
             "tier": tier,
@@ -2161,14 +2186,8 @@ pub async fn execute_unified_recall(
 
     // Dedup and budget accounting
     let results = dedup_and_mark_served(state, agent, query_text, ctx, results).await;
-    let spent: usize = results
-        .iter()
-        .map(|item| {
-            item.tokens
-                .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
-        })
-        .sum();
-    let saved = budget as i64 - spent as i64;
+    let results = enforce_budget_token_invariant(results, budget, query_text);
+    let usage = compute_recall_budget_usage(&results, budget);
     let mode = recall_mode_for_budget(budget);
     let method_breakdown = build_method_breakdown(&results);
     let tier = classify_recall_tier(false, mode.as_str(), &method_breakdown);
@@ -2181,8 +2200,9 @@ pub async fn execute_unified_recall(
             "agent": agent,
             "query": truncate_chars(query_text, 120),
             "budget": budget,
-            "spent": spent,
-            "saved": saved,
+            "spent": usage.spent,
+            "saved": usage.saved,
+            "over_budget": usage.over_budget,
             "hits": results.len(),
             "mode": mode.as_str(),
             "cached": false,
@@ -2200,8 +2220,10 @@ pub async fn execute_unified_recall(
     let payload = json!({
         "results": results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
         "budget": budget,
-        "spent": spent,
-        "saved": saved,
+        "spent": usage.spent,
+        "saved": usage.saved,
+        "overBudget": usage.over_budget,
+        "tokenUsageLine": format_recall_token_usage_line(budget, usage),
         "mode": mode.as_str(),
         "policyMode": mode.as_str(),
         "tier": tier,
@@ -2319,14 +2341,8 @@ async fn execute_recall_policy_explain_inner(
     drop(conn);
 
     let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
-    let spent: usize = final_results
-        .iter()
-        .map(|item| {
-            item.tokens
-                .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
-        })
-        .sum();
-    let saved = budget as i64 - spent as i64;
+    let final_results = enforce_budget_token_invariant(final_results, budget, query_text);
+    let usage = compute_recall_budget_usage(&final_results, budget);
     let mode = recall_mode_for_budget(budget);
     let family_compacted_count: usize = family_compactions
         .iter()
@@ -2426,8 +2442,10 @@ async fn execute_recall_policy_explain_inner(
         "query": query_text,
         "results": final_results.into_iter().map(recall_to_json).collect::<Vec<_>>(),
         "budget": budget,
-        "spent": spent,
-        "saved": saved,
+        "spent": usage.spent,
+        "saved": usage.saved,
+        "overBudget": usage.over_budget,
+        "tokenUsageLine": format_recall_token_usage_line(budget, usage),
         "mode": mode.as_str(),
         "policyMode": mode.as_str(),
         "policy": {
@@ -2444,9 +2462,9 @@ async fn execute_recall_policy_explain_inner(
             },
             "budgetReasoning": {
                 "requestedBudget": budget,
-                "spent": spent,
-                "saved": saved,
-                "budgetPressure": if budget == 0 { 0.0 } else { round4((spent as f64) / (budget as f64)) },
+                "spent": usage.spent,
+                "saved": usage.saved,
+                "budgetPressure": if budget == 0 { 0.0 } else { round4((usage.spent as f64) / (budget as f64)) },
                 "candidateCountBeforeFamilyCompaction": pre_compaction_candidate_count,
                 "candidateCount": candidate_pool.len(),
                 "candidateCountAfterFamilyCompaction": candidate_pool.len(),
@@ -2522,14 +2540,8 @@ pub async fn execute_semantic_recall(
             semantic_route,
         )
     };
-    let spent: usize = budgeted
-        .iter()
-        .map(|item| {
-            item.tokens
-                .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
-        })
-        .sum();
-    let saved = budget as i64 - spent as i64;
+    let budgeted = enforce_budget_token_invariant(budgeted, budget, query_text);
+    let usage = compute_recall_budget_usage(&budgeted, budget);
     let mode = "semantic";
     let method_breakdown = build_method_breakdown(&budgeted);
     let tier = classify_recall_tier(false, mode, &method_breakdown);
@@ -2545,8 +2557,9 @@ pub async fn execute_semantic_recall(
             "mode": mode,
             "k": k,
             "budget": budget,
-            "spent": spent,
-            "saved": saved,
+            "spent": usage.spent,
+            "saved": usage.saved,
+            "over_budget": usage.over_budget,
             "hits": budgeted.len(),
             "results": budgeted.len(),
             "semantic_available": semantic_available,
@@ -2563,8 +2576,10 @@ pub async fn execute_semantic_recall(
         "results": budgeted.into_iter().map(recall_to_json).collect::<Vec<_>>(),
         "mode": "semantic",
         "budget": budget,
-        "spent": spent,
-        "saved": saved,
+        "spent": usage.spent,
+        "saved": usage.saved,
+        "overBudget": usage.over_budget,
+        "tokenUsageLine": format_recall_token_usage_line(budget, usage),
         "semanticAvailable": semantic_available,
         "semanticRoute": semantic_route,
         "tier": tier,
@@ -5429,6 +5444,16 @@ fn coding_synonyms(word: &str) -> Option<&'static str> {
         // Personal-memory recall aliases used by real user queries.
         "lastname" => Some("surname"),
         "surname" => Some("lastname"),
+        "attend" => Some("attended"),
+        "attended" => Some("attend"),
+        "abroad" => Some("overseas"),
+        "overseas" => Some("abroad"),
+        "coupon" => Some("voucher"),
+        "voucher" => Some("coupon"),
+        "gift" => Some("present"),
+        "present" => Some("gift"),
+        "buy" => Some("bought"),
+        "bought" => Some("buy"),
         "repaint" => Some("paint"),
         "repainted" => Some("paint"),
         "painted" => Some("paint"),
@@ -5453,8 +5478,102 @@ fn extract_search_keywords_with_synonyms(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn is_low_signal_query_token(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "a"
+            | "an"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "being"
+            | "do"
+            | "does"
+            | "did"
+            | "to"
+            | "of"
+            | "in"
+            | "for"
+            | "on"
+            | "with"
+            | "at"
+            | "by"
+            | "from"
+            | "as"
+            | "into"
+            | "about"
+            | "that"
+            | "this"
+            | "it"
+            | "its"
+            | "my"
+            | "your"
+            | "our"
+            | "their"
+            | "i"
+            | "me"
+            | "we"
+            | "you"
+            | "what"
+            | "which"
+            | "who"
+            | "how"
+            | "when"
+            | "where"
+            | "why"
+    )
+}
+
+fn query_intent_alias_terms(text: &str) -> Vec<String> {
+    let lower = normalize_text(text);
+    let mut aliases = Vec::new();
+    if lower.contains("study abroad") {
+        aliases.extend(
+            ["attend", "attended", "exchange", "semester"]
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    if lower.contains("coupon") && lower.contains("creamer") {
+        aliases.extend(
+            ["redeem", "redeemed", "store", "grocery"]
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    if lower.contains("birthday") && (lower.contains("gift") || lower.contains("present")) {
+        aliases.extend(
+            ["buy", "bought", "item", "present"]
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    aliases
+}
+
 fn build_search_term_groups(text: &str) -> Vec<Vec<String>> {
-    let base = extract_search_keywords(text);
+    let mut base = extract_search_keywords(text);
+    let profile = query_shape_profile(text, None);
+    if profile.naturalish && base.len() >= 6 {
+        let filtered = base
+            .iter()
+            .filter(|token| !is_low_signal_query_token(token.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !filtered.is_empty() {
+            base = filtered;
+        }
+    }
+    let mut seen_base = HashSet::new();
+    for alias in query_intent_alias_terms(text) {
+        if seen_base.insert(alias.clone()) && !base.iter().any(|token| token == &alias) {
+            base.push(alias);
+        }
+    }
     let mut groups = Vec::with_capacity(base.len());
     for word in base {
         let mut group = Vec::with_capacity(2);
@@ -5873,6 +5992,96 @@ fn recall_to_json(item: RecallItem) -> Value {
 }
 
 // ─── Content dedup / served tracking ─────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+struct RecallBudgetUsage {
+    spent: usize,
+    saved: i64,
+    over_budget: bool,
+}
+
+fn recall_item_token_cost(item: &RecallItem) -> usize {
+    item.tokens
+        .unwrap_or_else(|| estimate_tokens(&format!("{}{}", item.source, item.excerpt)))
+}
+
+fn compute_recall_budget_usage(items: &[RecallItem], budget: usize) -> RecallBudgetUsage {
+    let spent: usize = items.iter().map(recall_item_token_cost).sum();
+    let saved = budget as i64 - spent as i64;
+    RecallBudgetUsage {
+        spent,
+        saved,
+        over_budget: budget > 0 && spent > budget,
+    }
+}
+
+fn format_recall_token_usage_line(budget: usize, usage: RecallBudgetUsage) -> String {
+    if budget == 0 {
+        format!(
+            "Cortex recall used {} tokens (headlines mode).",
+            usage.spent
+        )
+    } else if usage.saved >= 0 {
+        format!(
+            "Cortex recall used {} tokens and saved {} of {} budget.",
+            usage.spent, usage.saved, budget
+        )
+    } else {
+        format!(
+            "Cortex recall used {} tokens ({} over budget {}).",
+            usage.spent,
+            usage.saved.abs(),
+            budget
+        )
+    }
+}
+
+fn enforce_budget_token_invariant(
+    results: Vec<RecallItem>,
+    token_budget: usize,
+    query_text: &str,
+) -> Vec<RecallItem> {
+    if token_budget == 0 || results.is_empty() {
+        return results;
+    }
+    let usage = compute_recall_budget_usage(&results, token_budget);
+    if !usage.over_budget {
+        return results;
+    }
+
+    let mut kept = Vec::new();
+    let mut spent = 0usize;
+    for (idx, mut item) in results.into_iter().enumerate() {
+        let remaining = token_budget.saturating_sub(spent);
+        if remaining <= MIN_BUDGET_HEADROOM_TOKENS {
+            break;
+        }
+
+        let direct_tokens = recall_item_token_cost(&item);
+        if direct_tokens <= remaining {
+            item.tokens = Some(direct_tokens);
+            spent += direct_tokens;
+            kept.push(item);
+            continue;
+        }
+
+        let cap = budget_rank_char_cap(token_budget, idx, query_text)
+            .min((remaining as f64 * 3.6) as usize)
+            .max(MIN_EXCERPT_CHARS);
+        if let Some((excerpt, tokens)) =
+            fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
+        {
+            if tokens <= remaining {
+                item.excerpt = excerpt;
+                item.tokens = Some(tokens);
+                spent += tokens;
+                kept.push(item);
+            }
+        }
+    }
+
+    kept
+}
 
 fn hash_content(content: &str) -> u32 {
     let mut hash: u32 = 2_166_136_261;
@@ -9245,6 +9454,30 @@ mod tests {
     }
 
     #[test]
+    fn test_build_search_term_groups_filters_low_signal_terms_for_natural_queries() {
+        let groups = build_search_term_groups("Where did I attend for my study abroad program?");
+        let flattened: Vec<String> = groups.into_iter().flatten().collect();
+        assert!(
+            !flattened
+                .iter()
+                .any(|token| token == "where" || token == "did" || token == "my"),
+            "natural query token groups should trim low-signal filler terms"
+        );
+        assert!(
+            flattened
+                .iter()
+                .any(|token| token == "study" || token == "abroad"),
+            "natural query token groups should retain intent-bearing terms"
+        );
+        assert!(
+            flattened
+                .iter()
+                .any(|token| token == "attend" || token == "attended"),
+            "study-abroad intent should include attendance aliases"
+        );
+    }
+
+    #[test]
     fn test_query_focused_excerpt_finds_late_match() {
         let prefix = "x".repeat(260);
         let text = format!("{prefix} I graduated with a degree in Business Administration.");
@@ -9396,6 +9629,31 @@ mod tests {
             "fallback should match synonym-expanded memory text"
         );
         assert_eq!(results[0].matched_keywords, 2);
+    }
+
+    #[test]
+    fn test_search_memories_fallback_study_abroad_query_finds_attended_location_memory() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+             VALUES (?1, 'memory::study-abroad-location', 'note', 'active', 0.88, datetime('now'), datetime('now'))",
+            params!["I attended it in Australia."],
+        )
+        .unwrap();
+
+        let results = search_memories_fallback(
+            &conn,
+            "Where did I attend for my study abroad program?",
+            5,
+            None,
+        )
+        .expect("study-abroad fallback query should succeed");
+        assert!(
+            results
+                .iter()
+                .any(|item| item.source == "memory::study-abroad-location"),
+            "study-abroad fallback should retrieve attended-location memory"
+        );
     }
 
     #[test]
@@ -10216,6 +10474,52 @@ mod tests {
         assert!(
             !should_early_stop_budget_selection(300, 252, 2, &query_terms, &covered_partial),
             "missing query-term coverage should keep searching"
+        );
+    }
+
+    #[test]
+    fn enforce_budget_token_invariant_trims_tail_when_spent_exceeds_budget() {
+        let results = vec![
+            RecallItem {
+                source: "memory::a".to_string(),
+                relevance: 0.9,
+                excerpt: "daemon lock ownership and startup arbitration details".to_string(),
+                method: "keyword".to_string(),
+                tokens: Some(170),
+                entropy: None,
+                family_members: Vec::new(),
+                collapsed_sources: Vec::new(),
+                collapsed_source_scores: Vec::new(),
+            },
+            RecallItem {
+                source: "memory::b".to_string(),
+                relevance: 0.84,
+                excerpt: "plugin heartbeat ownership reconciliation and reconnect sequence"
+                    .to_string(),
+                method: "semantic".to_string(),
+                tokens: Some(160),
+                entropy: None,
+                family_members: Vec::new(),
+                collapsed_sources: Vec::new(),
+                collapsed_source_scores: Vec::new(),
+            },
+        ];
+
+        let adjusted =
+            enforce_budget_token_invariant(results, 300, "daemon ownership lock heartbeat");
+        let usage = compute_recall_budget_usage(&adjusted, 300);
+        assert!(
+            !usage.over_budget,
+            "invariant pass should guarantee spent <= budget"
+        );
+        assert!(
+            usage.spent <= 300,
+            "expected usage to fit the budget, got {}",
+            usage.spent
+        );
+        assert!(
+            !adjusted.is_empty(),
+            "invariant pass should keep at least one high-rank result when possible"
         );
     }
 

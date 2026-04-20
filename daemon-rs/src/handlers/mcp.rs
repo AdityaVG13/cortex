@@ -34,8 +34,101 @@ pub fn mcp_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+fn payload_token_usage(data: &Value) -> (usize, Option<i64>, Option<usize>) {
+    match data {
+        Value::Object(map) => {
+            let used = map
+                .get("spent")
+                .and_then(|value| value.as_u64())
+                .or_else(|| map.get("tokenEstimate").and_then(|value| value.as_u64()))
+                .or_else(|| map.get("totalTokens").and_then(|value| value.as_u64()))
+                .or_else(|| map.get("tokensUsed").and_then(|value| value.as_u64()))
+                .or_else(|| {
+                    map.get("savings")
+                        .and_then(|value| value.get("served"))
+                        .and_then(|value| value.as_u64())
+                })
+                .unwrap_or_else(|| estimate_tokens(&data.to_string()) as u64)
+                as usize;
+            let saved = map
+                .get("saved")
+                .and_then(|value| value.as_i64())
+                .or_else(|| {
+                    map.get("savings")
+                        .and_then(|value| value.get("saved"))
+                        .and_then(|value| value.as_i64())
+                });
+            let budget = map
+                .get("budget")
+                .and_then(|value| value.as_u64())
+                .or_else(|| {
+                    map.get("policy")
+                        .and_then(|value| value.get("budget"))
+                        .and_then(|value| value.as_u64())
+                })
+                .map(|value| value as usize);
+            (used, saved, budget)
+        }
+        _ => (estimate_tokens(&data.to_string()), None, None),
+    }
+}
+
+fn token_usage_line(used: usize, saved: Option<i64>, budget: Option<usize>) -> String {
+    match (saved, budget) {
+        (Some(saved), Some(budget)) if saved >= 0 => {
+            format!("Token usage: used {used} tokens, saved {saved} of {budget}.")
+        }
+        (Some(saved), Some(budget)) => {
+            format!(
+                "Token usage: used {used} tokens ({} over budget {budget}).",
+                saved.abs()
+            )
+        }
+        (Some(saved), None) if saved >= 0 => {
+            format!("Token usage: used {used} tokens, saved {saved}.")
+        }
+        (Some(saved), None) => {
+            format!(
+                "Token usage: used {used} tokens ({} over budget).",
+                saved.abs()
+            )
+        }
+        (None, Some(budget)) => format!("Token usage: used {used} tokens (budget {budget})."),
+        (None, None) => format!("Token usage: used {used} tokens."),
+    }
+}
+
+fn decorate_tool_payload_with_token_usage(data: Value) -> Value {
+    let (used, saved, budget) = payload_token_usage(&data);
+    let line = token_usage_line(used, saved, budget);
+    match data {
+        Value::Object(mut map) => {
+            map.entry("tokenUsage".to_string()).or_insert_with(|| {
+                json!({
+                    "used": used,
+                    "saved": saved,
+                    "budget": budget
+                })
+            });
+            map.entry("tokenUsageLine".to_string())
+                .or_insert_with(|| Value::String(line));
+            Value::Object(map)
+        }
+        other => json!({
+            "value": other,
+            "tokenUsage": {
+                "used": used,
+                "saved": saved,
+                "budget": budget
+            },
+            "tokenUsageLine": line
+        }),
+    }
+}
+
 fn wrap_mcp_tool_result(_state: &RuntimeState, data: Value) -> Value {
-    let text = match &data {
+    let decorated = decorate_tool_payload_with_token_usage(data);
+    let text = match &decorated {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
@@ -49,7 +142,8 @@ fn wrap_mcp_tool_result(_state: &RuntimeState, data: Value) -> Value {
 
 fn wrap_mcp_tool_result_verbose(state: &RuntimeState, data: Value) -> Value {
     let calls = state.next_mcp_call();
-    let decorated = match data {
+    let base = decorate_tool_payload_with_token_usage(data);
+    let decorated = match base {
         Value::Object(mut map) => {
             map.insert("_liveness".to_string(), Value::Bool(true));
             map.insert("_ts".to_string(), Value::String(now_iso()));
@@ -639,14 +733,14 @@ fn fetch_last_call(
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_last_call, has_client_permission, mcp_dispatch, normalize_permission_client_id,
-        required_permission_for_tool, ClientPermission,
+        fetch_last_call, handle_mcp_message_with_caller, has_client_permission, mcp_dispatch,
+        normalize_permission_client_id, required_permission_for_tool, ClientPermission,
     };
     use crate::db;
     use crate::handlers::recall::RecallContext;
     use crate::handlers::SourceIdentity;
     use crate::state::{DaemonEvent, RuntimeState};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -1043,6 +1137,89 @@ mod tests {
             )
             .unwrap();
         assert_eq!(description, "MCP boot session · gpt-5.4");
+    }
+
+    #[tokio::test]
+    async fn tools_call_includes_token_usage_line_for_cortex_tools() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+        let calls = vec![
+            ("cortex_boot", json!({"budget": 0})),
+            (
+                "cortex_recall",
+                json!({"query": "daemon lock lease", "budget": 180}),
+            ),
+            (
+                "cortex_peek",
+                json!({"query": "daemon lock lease", "limit": 5}),
+            ),
+            (
+                "cortex_semantic_recall",
+                json!({"query": "daemon lock lease", "budget": 180, "k": 5}),
+            ),
+            ("cortex_health", json!({})),
+            ("cortex_digest", json!({})),
+            (
+                "cortex_store",
+                json!({"decision": "daemon lock ttl is 30s", "context": "runtime"}),
+            ),
+            ("cortex_reconnect", json!({})),
+            ("cortex_focus_start", json!({"label": "token-usage-test"})),
+            ("cortex_focus_end", json!({"label": "token-usage-test"})),
+            ("cortex_focus_status", json!({})),
+            ("cortex_permissions_list", json!({})),
+            ("cortex_lastCall", json!({"kind": "decision"})),
+            ("cortex_unfold", json!({"sources": ["memory::missing"]})),
+        ];
+
+        for (tool_name, arguments) in calls {
+            let msg = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                }
+            });
+            let response = handle_mcp_message_with_caller(&state, &msg, None, Some(&source))
+                .await
+                .expect("tools/call should return a response");
+            let text_payload = response["result"]["content"][0]["text"]
+                .as_str()
+                .expect("tools/call should return text content");
+            let parsed: Value =
+                serde_json::from_str(text_payload).expect("text payload should be JSON");
+            assert!(
+                parsed
+                    .get("tokenUsageLine")
+                    .and_then(|value| value.as_str())
+                    .map(|line| !line.trim().is_empty())
+                    .unwrap_or(false),
+                "{tool_name} tools/call payload should include tokenUsageLine, got: {parsed}"
+            );
+            assert!(
+                parsed
+                    .get("tokenUsage")
+                    .and_then(|value| value.get("used"))
+                    .and_then(|value| value.as_u64())
+                    .is_some(),
+                "{tool_name} tools/call payload should include tokenUsage.used, got: {parsed}"
+            );
+            if tool_name == "cortex_boot" {
+                assert_eq!(
+                    parsed
+                        .get("tokenUsage")
+                        .and_then(|value| value.get("budget"))
+                        .and_then(|value| value.as_u64()),
+                    Some(0),
+                    "cortex_boot should propagate tokenUsage.budget from arguments"
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -1847,7 +2024,7 @@ async fn mcp_dispatch(
                 .map(str::to_string)
                 .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
             let model = source_model_for_tool(source, args);
-            let _budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
+            let budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             let profile_str = profile.unwrap_or_else(|| "full".to_string());
             let (agent, _expires_at) =
                 upsert_mcp_session(state, caller_id, &raw_agent, model, "MCP boot session").await?;
@@ -1859,7 +2036,7 @@ async fn mcp_dispatch(
             let conn = state.db.lock().await;
 
             // Use the full capsule compiler (same as HTTP /boot).
-            let result = crate::compiler::compile(&conn, &state.home, &agent, _budget);
+            let result = crate::compiler::compile(&conn, &state.home, &agent, budget);
 
             // Auto-ack feed on boot: advance last_seen_id to latest feed entry.
             if let Ok(latest_id) = conn.query_row(
@@ -1894,13 +2071,29 @@ async fn mcp_dispatch(
                 "agent_boot",
                 json!({"agent": agent.clone(), "profile": profile_str.clone()}),
             );
+            let saved = result
+                .savings
+                .get("saved")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
 
             Ok(json!({
                 "bootPrompt": result.boot_prompt,
                 "tokenEstimate": result.token_estimate,
                 "profile": if profile_str == "full" { "capsules" } else { &profile_str },
                 "capsules": result.capsules,
-                "savings": result.savings
+                "savings": result.savings,
+                "tokenUsage": {
+                    "used": result.token_estimate,
+                    "saved": saved,
+                    "budget": budget
+                },
+                "tokenUsageLine": format!(
+                    "Token usage: used {} tokens, saved {} of {} during boot compile.",
+                    result.token_estimate,
+                    saved,
+                    budget
+                )
             }))
         }
 

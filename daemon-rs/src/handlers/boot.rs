@@ -107,7 +107,18 @@ pub async fn handle_boot(
             "tokenEstimate": result.token_estimate,
             "profile": if profile == "full" { "capsules" } else { &profile },
             "capsules": result.capsules,
-            "savings": result.savings
+            "savings": result.savings,
+            "tokenUsage": {
+                "used": result.token_estimate,
+                "saved": result.savings.get("saved").and_then(|value| value.as_i64()).unwrap_or(0),
+                "budget": max_tokens
+            },
+            "tokenUsageLine": format!(
+                "Token usage: used {} tokens, saved {} of {} during boot compile.",
+                result.token_estimate,
+                result.savings.get("saved").and_then(|value| value.as_i64()).unwrap_or(0),
+                max_tokens
+            )
         }),
     )
 }
