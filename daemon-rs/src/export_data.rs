@@ -4,16 +4,47 @@ use serde_json::{json, Value};
 
 pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
 
+fn normalize_memory_entry_type(raw: Option<&str>) -> String {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "fact".to_string());
+    match normalized.as_str() {
+        "memory" | "note" | "finding" | "observation" | "fact" => "fact".to_string(),
+        "episode" | "event" => "episode".to_string(),
+        "procedure" | "playbook" | "runbook" | "howto" | "how-to" => "procedure".to_string(),
+        "evidence" | "citation" | "reference" => "evidence".to_string(),
+        "decision" | "policy" | "rule" => "decision".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn normalize_decision_entry_type(raw: Option<&str>) -> String {
+    let normalized = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| "decision".to_string());
+    match normalized.as_str() {
+        "decision" | "policy" | "rule" => "decision".to_string(),
+        "procedure" | "playbook" | "runbook" => "procedure".to_string(),
+        "evidence" | "citation" | "reference" => "evidence".to_string(),
+        "fact" | "memory" | "note" => "fact".to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub fn export_json_value(conn: &Connection) -> Value {
     let memories = query_table_json(
         conn,
         "SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, status, score, \
-         retrievals, pinned, created_at, updated_at FROM memories WHERE status = 'active'",
+         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM memories WHERE status = 'active'",
     );
     let decisions = query_table_json(
         conn,
         "SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, status, score, \
-         retrievals, pinned, created_at, updated_at FROM decisions WHERE status = 'active'",
+         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active'",
     );
 
     json!({
@@ -31,7 +62,7 @@ pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Va
     let memories = query_table_json_since(
         conn,
         "SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, status, score, \
-         retrievals, pinned, created_at, updated_at FROM memories WHERE status = 'active' \
+         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM memories WHERE status = 'active' \
          AND (?1 IS NULL OR COALESCE(updated_at, created_at) > ?1) \
          AND COALESCE(updated_at, created_at) <= ?2",
         since,
@@ -40,7 +71,7 @@ pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Va
     let decisions = query_table_json_since(
         conn,
         "SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, status, score, \
-         retrievals, pinned, created_at, updated_at FROM decisions WHERE status = 'active' \
+         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active' \
          AND (?1 IS NULL OR COALESCE(updated_at, created_at) > ?1) \
          AND COALESCE(updated_at, created_at) <= ?2",
         since,
@@ -68,7 +99,7 @@ pub fn export_sql_text(conn: &Connection) -> String {
     ];
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score FROM memories WHERE status = 'active'",
+        "SELECT text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, observed_at, valid_from, valid_until FROM memories WHERE status = 'active'",
     ) {
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -83,6 +114,9 @@ pub fn export_sql_text(conn: &Connection) -> String {
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<f64>>(9)?,
                 row.get::<_, Option<f64>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
             ))
         });
         if let Ok(rows) = rows {
@@ -99,9 +133,12 @@ pub fn export_sql_text(conn: &Connection) -> String {
                     reasoning_depth,
                     trust_score,
                     score,
+                    observed_at,
+                    valid_from,
+                    valid_until,
                 ) = row;
                 lines.push(format!(
-                    "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 'active');",
+                    "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, observed_at, valid_from, valid_until, status) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 'active');",
                     sql_quote(&text),
                     sql_quote_opt(&source),
                     sql_quote_opt(&typ),
@@ -113,13 +150,16 @@ pub fn export_sql_text(conn: &Connection) -> String {
                     sql_quote_opt(&reasoning_depth),
                     trust_score.unwrap_or(confidence.unwrap_or(0.8)),
                     score.unwrap_or(1.0),
+                    sql_quote_opt(&observed_at),
+                    sql_quote_opt(&valid_from),
+                    sql_quote_opt(&valid_until),
                 ));
             }
         }
     }
 
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score FROM decisions WHERE status = 'active'",
+        "SELECT decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, observed_at, valid_from, valid_until FROM decisions WHERE status = 'active'",
     ) {
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -133,6 +173,9 @@ pub fn export_sql_text(conn: &Connection) -> String {
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<f64>>(8)?,
                 row.get::<_, Option<f64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
             ))
         });
         if let Ok(rows) = rows {
@@ -148,9 +191,12 @@ pub fn export_sql_text(conn: &Connection) -> String {
                     reasoning_depth,
                     trust_score,
                     score,
+                    observed_at,
+                    valid_from,
+                    valid_until,
                 ) = row;
                 lines.push(format!(
-                    "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 'active');",
+                    "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, observed_at, valid_from, valid_until, status) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 'active');",
                     sql_quote(&decision),
                     sql_quote_opt(&context),
                     sql_quote_opt(&typ),
@@ -161,6 +207,9 @@ pub fn export_sql_text(conn: &Connection) -> String {
                     sql_quote_opt(&reasoning_depth),
                     trust_score.unwrap_or(confidence.unwrap_or(0.8)),
                     score.unwrap_or(1.0),
+                    sql_quote_opt(&observed_at),
+                    sql_quote_opt(&valid_from),
+                    sql_quote_opt(&valid_until),
                 ));
             }
         }
@@ -186,14 +235,15 @@ pub fn import_payload(
 
     if let Some(memories) = &payload.memories {
         for m in memories {
+            let entry_type = normalize_memory_entry_type(m.entry_type.as_deref());
             let inserted = if memories_has_owner && memories_has_visibility {
                 conn.execute(
-                    "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status, owner_id, visibility)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13)",
+                    "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status, observed_at, valid_from, valid_until, owner_id, visibility)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, ?14, ?15, ?16)",
                     params![
                         m.text,
                         m.source,
-                        m.entry_type.as_deref().unwrap_or("memory"),
+                        entry_type,
                         m.tags,
                         m.source_agent.as_deref().unwrap_or(fallback),
                         m.source_client
@@ -204,18 +254,21 @@ pub fn import_payload(
                         m.reasoning_depth.as_deref().unwrap_or("single-shot"),
                         m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),
                         m.score.unwrap_or(1.0),
+                        m.observed_at.as_deref(),
+                        m.valid_from.as_deref(),
+                        m.valid_until.as_deref(),
                         options.owner_id,
                         visibility,
                     ],
                 )
             } else {
                 conn.execute(
-                    "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active')",
+                    "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status, observed_at, valid_from, valid_until)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, ?14)",
                     params![
                         m.text,
                         m.source,
-                        m.entry_type.as_deref().unwrap_or("memory"),
+                        entry_type,
                         m.tags,
                         m.source_agent.as_deref().unwrap_or(fallback),
                         m.source_client
@@ -226,6 +279,9 @@ pub fn import_payload(
                         m.reasoning_depth.as_deref().unwrap_or("single-shot"),
                         m.trust_score.unwrap_or(m.confidence.unwrap_or(0.8)),
                         m.score.unwrap_or(1.0),
+                        m.observed_at.as_deref(),
+                        m.valid_from.as_deref(),
+                        m.valid_until.as_deref(),
                     ],
                 )
             };
@@ -238,14 +294,15 @@ pub fn import_payload(
 
     if let Some(decisions) = &payload.decisions {
         for d in decisions {
+            let entry_type = normalize_decision_entry_type(d.entry_type.as_deref());
             let inserted = if decisions_has_owner && decisions_has_visibility {
                 conn.execute(
-                    "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status, owner_id, visibility)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'active', ?11, ?12)",
+                    "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status, observed_at, valid_from, valid_until, owner_id, visibility)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'active', ?11, ?12, ?13, ?14, ?15)",
                     params![
                         d.decision,
                         d.context,
-                        d.entry_type.as_deref().unwrap_or("decision"),
+                        entry_type,
                         d.source_agent.as_deref().unwrap_or(fallback),
                         d.source_client
                             .as_deref()
@@ -255,18 +312,21 @@ pub fn import_payload(
                         d.reasoning_depth.as_deref().unwrap_or("single-shot"),
                         d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),
                         d.score.unwrap_or(1.0),
+                        d.observed_at.as_deref(),
+                        d.valid_from.as_deref(),
+                        d.valid_until.as_deref(),
                         options.owner_id,
                         visibility,
                     ],
                 )
             } else {
                 conn.execute(
-                    "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'active')",
+                    "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, status, observed_at, valid_from, valid_until)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'active', ?11, ?12, ?13)",
                     params![
                         d.decision,
                         d.context,
-                        d.entry_type.as_deref().unwrap_or("decision"),
+                        entry_type,
                         d.source_agent.as_deref().unwrap_or(fallback),
                         d.source_client
                             .as_deref()
@@ -276,6 +336,9 @@ pub fn import_payload(
                         d.reasoning_depth.as_deref().unwrap_or("single-shot"),
                         d.trust_score.unwrap_or(d.confidence.unwrap_or(0.8)),
                         d.score.unwrap_or(1.0),
+                        d.observed_at.as_deref(),
+                        d.valid_from.as_deref(),
+                        d.valid_until.as_deref(),
                     ],
                 )
             };
@@ -512,5 +575,75 @@ mod tests {
                 .is_some_and(|cursor| !cursor.trim().is_empty()),
             "changeset cursor should always be emitted"
         );
+    }
+
+    #[test]
+    fn import_payload_normalizes_types_and_preserves_temporal_fields() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        let payload = ImportPayload {
+            memories: Some(vec![crate::api_types::ImportMemory {
+                text: "deployment runbook".to_string(),
+                source: Some("ops".to_string()),
+                entry_type: Some("note".to_string()),
+                tags: Some("deploy".to_string()),
+                source_agent: Some("importer".to_string()),
+                source_client: Some("tests".to_string()),
+                source_model: Some("model-a".to_string()),
+                confidence: Some(0.91),
+                reasoning_depth: Some("analysis".to_string()),
+                trust_score: Some(0.88),
+                score: Some(1.2),
+                observed_at: Some("2026-04-18T10:00:00Z".to_string()),
+                valid_from: Some("2026-04-18T00:00:00Z".to_string()),
+                valid_until: Some("2026-05-18T00:00:00Z".to_string()),
+            }]),
+            decisions: Some(vec![crate::api_types::ImportDecision {
+                decision: "route traffic via canary".to_string(),
+                context: Some("release gate".to_string()),
+                entry_type: Some("rule".to_string()),
+                source_agent: Some("importer".to_string()),
+                source_client: Some("tests".to_string()),
+                source_model: Some("model-b".to_string()),
+                confidence: Some(0.86),
+                reasoning_depth: Some("analysis".to_string()),
+                trust_score: Some(0.83),
+                score: Some(1.1),
+                observed_at: Some("2026-04-18T11:00:00Z".to_string()),
+                valid_from: Some("2026-04-18T00:00:00Z".to_string()),
+                valid_until: Some("2026-05-01T00:00:00Z".to_string()),
+            }]),
+        };
+
+        let counts = import_payload(&conn, &payload, &ImportOptions::default());
+        assert_eq!(counts.memories, 1);
+        assert_eq!(counts.decisions, 1);
+
+        let memory_row: (String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT type, observed_at, valid_from, valid_until FROM memories LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("memory row");
+        assert_eq!(memory_row.0, "fact");
+        assert_eq!(memory_row.1.as_deref(), Some("2026-04-18T10:00:00Z"));
+        assert_eq!(memory_row.2.as_deref(), Some("2026-04-18T00:00:00Z"));
+        assert_eq!(memory_row.3.as_deref(), Some("2026-05-18T00:00:00Z"));
+
+        let decision_row: (String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT type, observed_at, valid_from, valid_until FROM decisions LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("decision row");
+        assert_eq!(decision_row.0, "decision");
+        assert_eq!(decision_row.1.as_deref(), Some("2026-04-18T11:00:00Z"));
+        assert_eq!(decision_row.2.as_deref(), Some("2026-04-18T00:00:00Z"));
+        assert_eq!(decision_row.3.as_deref(), Some("2026-05-01T00:00:00Z"));
     }
 }

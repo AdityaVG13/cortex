@@ -51,6 +51,9 @@ pub struct ImportMemory {
     pub reasoning_depth: Option<String>,
     pub trust_score: Option<f64>,
     pub score: Option<f64>,
+    pub observed_at: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +69,9 @@ pub struct ImportDecision {
     pub reasoning_depth: Option<String>,
     pub trust_score: Option<f64>,
     pub score: Option<f64>,
+    pub observed_at: Option<String>,
+    pub valid_from: Option<String>,
+    pub valid_until: Option<String>,
 }
 
 #[derive(Debug, Clone)]

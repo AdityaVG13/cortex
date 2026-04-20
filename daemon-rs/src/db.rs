@@ -130,7 +130,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 13] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 14] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -144,6 +144,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 13] = [
     ("011", "agent_feedback_telemetry"),
     ("012", "fts_tokenizer_porter_unicode61"),
     ("013", "embeddings_model_lookup_indexes"),
+    ("014", "temporal_semantics_fields"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -541,6 +542,39 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             )?;
             Ok(())
         }
+        "014" => {
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN observed_at TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN valid_from TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN valid_until TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN observed_at TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN valid_from TEXT",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN valid_until TEXT",
+            )?;
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -659,6 +693,9 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           merged_count INTEGER DEFAULT 0,
           quality INTEGER DEFAULT 50,
           expires_at TEXT,
+          observed_at TEXT,
+          valid_from TEXT,
+          valid_until TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -687,6 +724,9 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           merged_count INTEGER DEFAULT 0,
           quality INTEGER DEFAULT 50,
           expires_at TEXT,
+          observed_at TEXT,
+          valid_from TEXT,
+          valid_until TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -2416,6 +2456,9 @@ mod tests {
         assert!(table_has_column(&conn, "memories", "source_model"));
         assert!(table_has_column(&conn, "memories", "reasoning_depth"));
         assert!(table_has_column(&conn, "memories", "trust_score"));
+        assert!(table_has_column(&conn, "memories", "observed_at"));
+        assert!(table_has_column(&conn, "memories", "valid_from"));
+        assert!(table_has_column(&conn, "memories", "valid_until"));
         assert!(table_has_column(&conn, "decisions", "merged_count"));
         assert!(table_has_column(&conn, "decisions", "quality"));
         assert!(table_has_column(&conn, "decisions", "expires_at"));
@@ -2423,6 +2466,9 @@ mod tests {
         assert!(table_has_column(&conn, "decisions", "source_model"));
         assert!(table_has_column(&conn, "decisions", "reasoning_depth"));
         assert!(table_has_column(&conn, "decisions", "trust_score"));
+        assert!(table_has_column(&conn, "decisions", "observed_at"));
+        assert!(table_has_column(&conn, "decisions", "valid_from"));
+        assert!(table_has_column(&conn, "decisions", "valid_until"));
         assert!(table_exists(&conn, "decision_conflicts"));
         assert!(table_exists(&conn, "agent_feedback"));
         assert!(table_exists(&conn, "focus_sessions"));
