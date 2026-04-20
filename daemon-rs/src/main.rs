@@ -10,6 +10,7 @@ mod crystallize;
 mod daemon_lifecycle;
 mod db;
 mod embeddings;
+mod eval;
 mod export_data;
 mod focus;
 mod handlers;
@@ -600,6 +601,10 @@ async fn main() {
         "sync" => {
             let remaining: Vec<String> = args[2..].to_vec();
             run_sync_cli(&paths, &remaining);
+        }
+        "eval" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            run_eval_cli(&paths, &remaining);
         }
         "doctor" => {
             run_doctor_cli(&paths);
@@ -1243,6 +1248,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  sync export        Export changeset JSON (--out <file>, optional --since <iso>, --cursor-file <path>)");
     eprintln!("  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)");
     eprintln!("  sync watch         Watched-folder sync loop (--dir <path>, optional --interval-seconds <n>, --once)");
+    eprintln!("  eval [--window-days <n>] [--json]  Emit local eval snapshot for reliability and memory quality signals");
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
     eprintln!("  reindex [--json]   Fully rebuild FTS indexes from canonical memory/decision rows");
     eprintln!("  re-embed [...]     Alias for `embeddings drain --until-exhausted`");
@@ -2020,6 +2026,91 @@ fn run_sync_cli(paths: &auth::CortexPaths, args: &[String]) {
             std::process::exit(1);
         }
     }
+}
+
+fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let json_output = args.iter().any(|arg| arg == "--json");
+    let window_days = match parse_flag_usize(args, "--window-days") {
+        Ok(Some(value)) => value.min(180) as i64,
+        Ok(None) => 30,
+        Err(err) => {
+            eprintln!("Invalid --window-days value: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let conn = match open_cli_connection(&paths.db) {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    let snapshot = eval::build_eval_snapshot(&conn, window_days);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string())
+        );
+        return;
+    }
+
+    let totals = snapshot.get("totals").cloned().unwrap_or_else(|| json!({}));
+    let window = snapshot.get("window").cloned().unwrap_or_else(|| json!({}));
+    let signals = snapshot
+        .get("signals")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    println!("Eval snapshot ({window_days}d)");
+    println!(
+        "active: memories={}, decisions={}, open_conflicts={}",
+        totals
+            .get("activeMemories")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        totals
+            .get("activeDecisions")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        totals
+            .get("openConflicts")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+    );
+    println!(
+        "window: conflicts={}, resolutions={}, recalls={}",
+        window
+            .get("recentConflicts")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        window
+            .get("recentResolutions")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        window
+            .get("recentRecallQueries")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+    );
+    println!(
+        "signals: conflict_burden={:.4}, decay_burden={:.4}, resolution_velocity={:.4}, contradiction_rate={:.4}",
+        signals
+            .get("conflictBurden")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("decayBurden")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("resolutionVelocity")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("contradictionRate")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
+    );
 }
 
 fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
