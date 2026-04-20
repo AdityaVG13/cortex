@@ -22,6 +22,7 @@ use super::store::{
 };
 use super::{estimate_tokens, now_iso, SourceIdentity};
 use crate::state::RuntimeState;
+use crate::{aging, db, indexer};
 
 // ─── JSON-RPC helpers ─────────────────────────────────────────────────────────
 
@@ -146,7 +147,10 @@ fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
         | "cortex_conflicts_resolve"
         | "cortex_permissions_list"
         | "cortex_permissions_grant"
-        | "cortex_permissions_revoke" => Some(ClientPermission::Admin),
+        | "cortex_permissions_revoke"
+        | "cortex_consensus_promote"
+        | "cortex_memory_decay_run"
+        | "cortex_eval_run" => Some(ClientPermission::Admin),
         _ => None,
     }
 }
@@ -861,6 +865,18 @@ mod tests {
             required_permission_for_tool("cortex_conflicts_resolve"),
             Some(ClientPermission::Admin)
         );
+        assert_eq!(
+            required_permission_for_tool("cortex_consensus_promote"),
+            Some(ClientPermission::Admin)
+        );
+        assert_eq!(
+            required_permission_for_tool("cortex_memory_decay_run"),
+            Some(ClientPermission::Admin)
+        );
+        assert_eq!(
+            required_permission_for_tool("cortex_eval_run"),
+            Some(ClientPermission::Admin)
+        );
     }
 
     #[test]
@@ -1221,6 +1237,180 @@ mod tests {
             "model-less read refresh should reuse the existing session without a new session event: {drained:?}"
         );
     }
+
+    #[tokio::test]
+    async fn consensus_promote_requires_admin_permission_scope() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+                 VALUES (0, 'codex', 'read', '*', 'test')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let result = mcp_dispatch(
+            &state,
+            None,
+            "cortex_consensus_promote",
+            &json!({"limit": 5}),
+            Some(&source),
+        )
+        .await;
+
+        let err = result.expect_err("consensus promote should require admin permission");
+        assert!(
+            err.contains("Permission denied"),
+            "expected permission denied error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn consensus_promote_resolves_disputed_pair_when_margin_is_high_enough() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+                 VALUES (0, 'codex', 'admin', '*', 'test')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let (first, second) = seed_disputed_pair(&state).await;
+        let payload = mcp_dispatch(
+            &state,
+            None,
+            "cortex_consensus_promote",
+            &json!({"limit": 10, "minMargin": 0.1}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(payload["promotedCount"].as_u64(), Some(1));
+        assert_eq!(payload["failedCount"].as_u64(), Some(0));
+
+        let conn = state.db.lock().await;
+        let winner_status: String = conn
+            .query_row(
+                "SELECT status FROM decisions WHERE id = ?1",
+                rusqlite::params![second],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let superseded_status: String = conn
+            .query_row(
+                "SELECT status FROM decisions WHERE id = ?1",
+                rusqlite::params![first],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(winner_status, "active");
+        assert_eq!(superseded_status, "superseded");
+    }
+
+    #[tokio::test]
+    async fn memory_decay_run_executes_decay_pass_and_reports_counts() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+                 VALUES (0, 'codex', 'admin', '*', 'test')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO memories (text, type, source, status, score, retrievals, pinned, last_accessed, created_at, updated_at)
+                 VALUES (?1, 'note', 'test::decay', 'active', 1.0, 0, 0, datetime('now', '-10 days'), datetime('now'), datetime('now'))",
+                rusqlite::params!["decay me"],
+            )
+            .unwrap();
+        }
+
+        let payload = mcp_dispatch(
+            &state,
+            None,
+            "cortex_memory_decay_run",
+            &json!({"includeAging": false, "cleanupExpired": false}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+        assert!(payload["ok"].as_bool().unwrap_or(false));
+        assert!(payload["decayed"].is_number());
+        assert_eq!(payload["aging"]["ran"].as_bool(), Some(false));
+        assert_eq!(payload["expiredCleanup"]["ran"].as_bool(), Some(false));
+
+        let conn = state.db.lock().await;
+        let score: f64 = conn
+            .query_row(
+                "SELECT score FROM memories WHERE source = 'test::decay' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            score <= 1.0,
+            "decay pass should not increase score unexpectedly, got {score}"
+        );
+    }
+
+    #[tokio::test]
+    async fn eval_run_returns_windowed_metrics_snapshot() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by)
+                 VALUES (0, 'codex', 'admin', '*', 'test')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let _ = seed_disputed_pair(&state).await;
+        let payload = mcp_dispatch(
+            &state,
+            None,
+            "cortex_eval_run",
+            &json!({"horizonDays": 14}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        assert!(payload["ok"].as_bool().unwrap_or(false));
+        assert_eq!(payload["windowDays"].as_i64(), Some(14));
+        assert!(payload["totals"]["openConflicts"].as_i64().unwrap_or(0) >= 1);
+        assert!(payload["signals"]["conflictBurden"].is_number());
+        assert!(payload["signals"]["decayBurden"].is_number());
+        assert!(payload["signals"]["resolutionVelocity"].is_number());
+    }
 }
 
 async fn upsert_mcp_session(
@@ -1476,6 +1666,39 @@ pub fn mcp_tools() -> Vec<Value> {
                     "resolvedBy": { "type": "string", "description": "Optional resolver identity (defaults to source agent)" }
                 },
                 "required": ["action"]
+            }
+        }),
+        json!({
+            "name": "cortex_consensus_promote",
+            "description": "Auto-resolve open disputed decision pairs when trust margin is high enough. Uses trustScore/confidence winner selection.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "number", "description": "Max open conflicts to scan (default 50, max 500)" },
+                    "minMargin": { "type": "number", "description": "Minimum trust margin required to auto-promote (default 0.1, range 0-1)" },
+                    "dryRun": { "type": "boolean", "description": "When true, report candidates only and do not mutate decisions" }
+                }
+            }
+        }),
+        json!({
+            "name": "cortex_memory_decay_run",
+            "description": "Run one explicit maintenance pass: decay scores, optional aging compression/archive, and optional expired-row cleanup.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "includeAging": { "type": "boolean", "description": "Run aging pass after score decay (default true)" },
+                    "cleanupExpired": { "type": "boolean", "description": "Delete expired memory/decision rows (default true)" }
+                }
+            }
+        }),
+        json!({
+            "name": "cortex_eval_run",
+            "description": "Generate a local evaluation snapshot over conflict pressure and resolution throughput for the selected horizon.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "horizonDays": { "type": "number", "description": "Lookback window in days for event-based metrics (default 30, range 1-180)" }
+                }
             }
         }),
         json!({
@@ -2155,6 +2378,322 @@ async fn mcp_dispatch(
 
             let mut conn = state.db.lock().await;
             resolve_decision_with_metadata(&mut conn, winner_id, action, superseded_id, metadata)
+        }
+
+        "cortex_consensus_promote" => {
+            let limit = arg_usize(args, &["limit"]).unwrap_or(50).clamp(1, 500);
+            let min_margin = arg_f64(args, &["minMargin", "min_margin"])
+                .unwrap_or(0.1)
+                .clamp(0.0, 1.0);
+            let dry_run = args
+                .get("dryRun")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let resolved_by = source_agent_for_tool(source, "mcp");
+
+            let mut conn = state.db.lock().await;
+            let list_payload = list_conflicts_payload(
+                &conn,
+                &ConflictListOptions {
+                    status: ConflictStatusFilter::Open,
+                    classification: None,
+                    conflict_id: None,
+                    limit,
+                },
+            )?;
+            let conflicts = list_payload
+                .get("conflicts")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut promoted = Vec::new();
+            let mut skipped = Vec::new();
+            let mut failed = Vec::new();
+
+            for conflict in conflicts {
+                let Some(conflict_id) = conflict.get("id").and_then(|value| value.as_str()) else {
+                    skipped.push(json!({
+                        "reason": "missing_conflict_id",
+                        "conflict": conflict
+                    }));
+                    continue;
+                };
+
+                let left = conflict.get("left").cloned().unwrap_or(Value::Null);
+                let right = conflict.get("right").cloned().unwrap_or(Value::Null);
+                let left_id = left.get("id").and_then(|value| value.as_i64());
+                let right_id = right.get("id").and_then(|value| value.as_i64());
+
+                let (Some(left_id), Some(right_id)) = (left_id, right_id) else {
+                    skipped.push(json!({
+                        "conflictId": conflict_id,
+                        "reason": "missing_decision_ids"
+                    }));
+                    continue;
+                };
+
+                let left_score = left
+                    .get("trustScore")
+                    .and_then(|value| value.as_f64())
+                    .or_else(|| left.get("confidence").and_then(|value| value.as_f64()))
+                    .unwrap_or(0.0);
+                let right_score = right
+                    .get("trustScore")
+                    .and_then(|value| value.as_f64())
+                    .or_else(|| right.get("confidence").and_then(|value| value.as_f64()))
+                    .unwrap_or(0.0);
+
+                let recommended = conflict
+                    .get("trustContext")
+                    .and_then(|value| value.get("recommendedWinnerId"))
+                    .and_then(|value| value.as_i64());
+
+                let (winner_id, loser_id, winner_score, loser_score) = match recommended {
+                    Some(id) if id == left_id => (left_id, right_id, left_score, right_score),
+                    Some(id) if id == right_id => (right_id, left_id, right_score, left_score),
+                    _ if left_score >= right_score => (left_id, right_id, left_score, right_score),
+                    _ => (right_id, left_id, right_score, left_score),
+                };
+
+                let margin = (winner_score - loser_score).abs();
+                if margin < min_margin {
+                    skipped.push(json!({
+                        "conflictId": conflict_id,
+                        "reason": "margin_below_threshold",
+                        "winnerId": winner_id,
+                        "loserId": loser_id,
+                        "winnerScore": winner_score,
+                        "loserScore": loser_score,
+                        "margin": margin,
+                        "minMargin": min_margin
+                    }));
+                    continue;
+                }
+
+                if dry_run {
+                    promoted.push(json!({
+                        "conflictId": conflict_id,
+                        "winnerId": winner_id,
+                        "supersededId": loser_id,
+                        "winnerScore": winner_score,
+                        "loserScore": loser_score,
+                        "margin": margin,
+                        "applied": false
+                    }));
+                    continue;
+                }
+
+                let metadata = ResolutionMetadata {
+                    conflict_id: Some(conflict_id.to_string()),
+                    classification: conflict
+                        .get("classification")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    notes: Some(format!(
+                        "Auto-promoted by cortex_consensus_promote (margin {margin:.3})"
+                    )),
+                    resolved_by: Some(resolved_by.clone()),
+                    similarity: conflict.get("similarity").and_then(|value| value.as_f64()),
+                };
+
+                match resolve_decision_with_metadata(
+                    &mut conn,
+                    winner_id,
+                    "keep",
+                    Some(loser_id),
+                    metadata,
+                ) {
+                    Ok(payload) => promoted.push(payload),
+                    Err(err) => failed.push(json!({
+                        "conflictId": conflict_id,
+                        "winnerId": winner_id,
+                        "supersededId": loser_id,
+                        "error": err
+                    })),
+                }
+            }
+
+            let scanned = promoted.len() + skipped.len() + failed.len();
+            state.emit(
+                "consensus",
+                json!({
+                    "action": if dry_run { "promote_dry_run" } else { "promoted" },
+                    "scanned": scanned,
+                    "promoted": promoted.len(),
+                    "skipped": skipped.len(),
+                    "failed": failed.len()
+                }),
+            );
+
+            Ok(json!({
+                "dryRun": dry_run,
+                "limit": limit,
+                "minMargin": min_margin,
+                "scanned": scanned,
+                "promotedCount": promoted.len(),
+                "skippedCount": skipped.len(),
+                "failedCount": failed.len(),
+                "promoted": promoted,
+                "skipped": skipped,
+                "failed": failed
+            }))
+        }
+
+        "cortex_memory_decay_run" => {
+            let include_aging = args
+                .get("includeAging")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            let cleanup_expired = args
+                .get("cleanupExpired")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+
+            let conn = state.db.lock().await;
+            let decayed = indexer::decay_pass(&conn);
+            let (compressed, archived) = if include_aging {
+                aging::run_aging_pass(&conn)
+            } else {
+                (0, 0)
+            };
+            let expired_cleanup = if cleanup_expired {
+                Some(db::delete_expired_entries(&conn).map_err(|err| err.to_string())?)
+            } else {
+                None
+            };
+
+            let expired_memories = expired_cleanup
+                .map(|counts| counts.memories_deleted)
+                .unwrap_or(0);
+            let expired_decisions = expired_cleanup
+                .map(|counts| counts.decisions_deleted)
+                .unwrap_or(0);
+
+            state.emit(
+                "maintenance",
+                json!({
+                    "action": "memory_decay_run",
+                    "decayed": decayed,
+                    "compressed": compressed,
+                    "archived": archived,
+                    "expiredMemoriesDeleted": expired_memories,
+                    "expiredDecisionsDeleted": expired_decisions
+                }),
+            );
+
+            Ok(json!({
+                "ok": true,
+                "decayed": decayed,
+                "aging": {
+                    "ran": include_aging,
+                    "compressed": compressed,
+                    "archived": archived
+                },
+                "expiredCleanup": {
+                    "ran": cleanup_expired,
+                    "memoriesDeleted": expired_memories,
+                    "decisionsDeleted": expired_decisions
+                }
+            }))
+        }
+
+        "cortex_eval_run" => {
+            let horizon_days = arg_i64(args, &["horizonDays", "horizon_days"])
+                .unwrap_or(30)
+                .clamp(1, 180);
+            let since_modifier = format!("-{horizon_days} days");
+            let conn = state.db.lock().await;
+
+            let open_conflicts: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM decisions WHERE status = 'disputed' AND disputes_id IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let active_memories: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE status = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let active_decisions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let decayed_memories: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let decayed_decisions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let recent_conflicts: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at >= datetime('now', ?1)",
+                    rusqlite::params![since_modifier.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let recent_resolutions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE type = 'decision_resolve' AND created_at >= datetime('now', ?1)",
+                    rusqlite::params![since_modifier.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            let recent_recalls: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND created_at >= datetime('now', ?1)",
+                    rusqlite::params![since_modifier.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+
+            let conflict_burden = if active_decisions <= 0 {
+                0.0
+            } else {
+                open_conflicts as f64 / active_decisions as f64
+            };
+            let decay_burden = if (active_memories + active_decisions) <= 0 {
+                0.0
+            } else {
+                (decayed_memories + decayed_decisions) as f64
+                    / (active_memories + active_decisions) as f64
+            };
+
+            Ok(json!({
+                "ok": true,
+                "windowDays": horizon_days,
+                "snapshotAt": Utc::now().to_rfc3339(),
+                "totals": {
+                    "activeMemories": active_memories,
+                    "activeDecisions": active_decisions,
+                    "openConflicts": open_conflicts
+                },
+                "window": {
+                    "recentConflicts": recent_conflicts,
+                    "recentResolutions": recent_resolutions,
+                    "recentRecallQueries": recent_recalls
+                },
+                "signals": {
+                    "conflictBurden": conflict_burden,
+                    "decayBurden": decay_burden,
+                    "resolutionVelocity": recent_resolutions as f64 / horizon_days as f64
+                }
+            }))
         }
 
         "cortex_focus_start" => {
