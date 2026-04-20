@@ -1550,6 +1550,18 @@ pub fn rebuild_fts(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Fully reindex FTS5 tables from canonical memory/decision rows.
+///
+/// Unlike `rebuild_fts`, this removes stale rows first so deleted/orphaned
+/// entries do not remain searchable.
+pub fn reindex_fts(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "INSERT INTO memories_fts(memories_fts) VALUES('delete-all');
+         INSERT INTO decisions_fts(decisions_fts) VALUES('delete-all');",
+    )?;
+    rebuild_fts(conn)
+}
+
 /// Seed FTS indexes at most once per database.
 ///
 /// Uses a marker row in `schema_migrations` so startup does not rescan the
@@ -2069,6 +2081,106 @@ mod tests {
         assert!(
             !rebuilt_again,
             "second call should skip when marker already exists"
+        );
+    }
+
+    #[test]
+    fn test_reindex_fts_removes_orphan_rows_and_rebuilds_from_base_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        initialize_schema(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO memories (text, source, type) VALUES (?1, ?2, ?3)",
+            params!["primary memory row", "test::reindex", "memory"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, type) VALUES (?1, ?2, ?3)",
+            params!["primary decision row", "context", "decision"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO memories_fts(rowid, text, source, tags) VALUES (?1, ?2, ?3, ?4)",
+            params![999_i64, "orphan memory", "test::orphan", ""],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions_fts(rowid, decision, context) VALUES (?1, ?2, ?3)",
+            params![888_i64, "orphan decision", "orphan context"],
+        )
+        .unwrap();
+
+        let orphan_memory_rows_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let orphan_decision_rows_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions_fts WHERE decisions_fts MATCH 'orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            orphan_memory_rows_before, 1,
+            "precondition failed: expected injected orphan memory row"
+        );
+        assert_eq!(
+            orphan_decision_rows_before, 1,
+            "precondition failed: expected injected orphan decision row"
+        );
+
+        reindex_fts(&conn).unwrap();
+
+        let orphan_memory_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let orphan_decision_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions_fts WHERE decisions_fts MATCH 'orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            orphan_memory_rows, 0,
+            "orphan memory FTS row should be removed"
+        );
+        assert_eq!(
+            orphan_decision_rows, 0,
+            "orphan decision FTS row should be removed"
+        );
+
+        let rebuilt_memory_match: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'primary'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let rebuilt_decision_match: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM decisions_fts WHERE decisions_fts MATCH 'primary'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rebuilt_memory_match, 1,
+            "expected canonical memory row to be present after reindex"
+        );
+        assert_eq!(
+            rebuilt_decision_match, 1,
+            "expected canonical decision row to be present after reindex"
         );
     }
 
