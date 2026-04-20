@@ -689,6 +689,7 @@ mod tests {
             degraded_mode: Arc::new(AtomicBool::new(false)),
             db_corrupted: Arc::new(AtomicBool::new(false)),
             readiness: Arc::new(AtomicBool::new(true)),
+            last_activity_unix_secs: Arc::new(AtomicU64::new(0)),
             write_buffer_path: PathBuf::from("write_buffer.jsonl"),
             sqlite_vec_canary: crate::state::SqliteVecCanaryConfig {
                 trial_percent: 0,

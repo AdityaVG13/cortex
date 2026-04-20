@@ -4,8 +4,10 @@ use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Json;
 use axum::Router;
@@ -207,8 +209,21 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         // This lets `cortex mcp` run as a thin proxy -- no separate
         // ONNX engine, no separate caches, zero duplication.
         .route("/mcp-rpc", post(handle_mcp_rpc))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            activity_tracking_middleware,
+        ))
         .layer(cors)
         .with_state(state)
+}
+
+async fn activity_tracking_middleware(
+    State(state): State<RuntimeState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    state.mark_activity_now();
+    next.run(request).await
 }
 
 /// HTTP endpoint for MCP proxy -- accepts JSON-RPC, returns JSON-RPC.
@@ -465,6 +480,13 @@ pub async fn run(
     if let Some(endpoint) = ipc_endpoint {
         spawn_ipc_listener(router.clone(), endpoint);
     }
+    let mut activated_listener = match resolve_socket_activation_listener(port) {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("[cortex] FATAL: socket activation listener error: {err}");
+            std::process::exit(1);
+        }
+    };
 
     match crate::tls::try_load_tls() {
         Ok(Some(acceptor)) => {
@@ -473,13 +495,22 @@ pub async fn run(
                 bind_addr,
                 port,
                 acceptor,
+                activated_listener.take(),
                 readiness_signal,
                 shutdown,
             )
             .await;
         }
         Ok(None) => {
-            run_plain(router, bind_addr, port, readiness_signal, shutdown).await;
+            run_plain(
+                router,
+                bind_addr,
+                port,
+                activated_listener.take(),
+                readiness_signal,
+                shutdown,
+            )
+            .await;
         }
         Err(e) => {
             // Team mode: refuse to start with broken TLS (auth integrity requires it)
@@ -513,10 +544,77 @@ pub async fn run(
                         "[cortex] Starting without TLS on non-local bind due to CORTEX_ALLOW_INSECURE_REMOTE=1"
                     );
                 }
-                run_plain(router, bind_addr, port, readiness_signal, shutdown).await;
+                run_plain(
+                    router,
+                    bind_addr,
+                    port,
+                    activated_listener.take(),
+                    readiness_signal,
+                    shutdown,
+                )
+                .await;
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn resolve_socket_activation_listener(
+    expected_port: u16,
+) -> Result<Option<tokio::net::TcpListener>, String> {
+    use std::os::fd::FromRawFd;
+
+    let listen_fds = std::env::var("LISTEN_FDS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    if listen_fds == 0 {
+        return Ok(None);
+    }
+
+    let Some(listen_pid) = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+    else {
+        return Err("LISTEN_FDS is set but LISTEN_PID is missing or invalid".to_string());
+    };
+    if listen_pid != std::process::id() {
+        return Ok(None);
+    }
+    if listen_fds != 1 {
+        return Err(format!(
+            "Expected exactly one activated socket (LISTEN_FDS=1), got {listen_fds}"
+        ));
+    }
+
+    let std_listener = unsafe { std::net::TcpListener::from_raw_fd(3) };
+    std_listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("configure activated socket nonblocking: {e}"))?;
+    if let Ok(addr) = std_listener.local_addr() {
+        if expected_port > 0 && addr.port() != expected_port {
+            eprintln!(
+                "[cortex] Warning: activated socket port {} does not match configured port {}",
+                addr.port(),
+                expected_port
+            );
+        }
+        eprintln!("[cortex] Using socket-activated listener on {addr}");
+    } else {
+        eprintln!("[cortex] Using socket-activated listener (LISTEN_FDS=1)");
+    }
+    std::env::remove_var("LISTEN_FDS");
+    std::env::remove_var("LISTEN_PID");
+    tokio::net::TcpListener::from_std(std_listener)
+        .map(Some)
+        .map_err(|e| format!("adopt socket-activated listener: {e}"))
+}
+
+#[cfg(not(unix))]
+fn resolve_socket_activation_listener(
+    _expected_port: u16,
+) -> Result<Option<tokio::net::TcpListener>, String> {
+    Ok(None)
 }
 
 fn mark_runtime_ready(readiness_signal: Option<&Arc<AtomicBool>>) {
@@ -638,19 +736,27 @@ async fn run_plain(
     router: Router,
     bind_addr: &str,
     port: u16,
+    activated_listener: Option<tokio::net::TcpListener>,
     readiness_signal: Option<Arc<AtomicBool>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    let listener = match tokio::net::TcpListener::bind((bind_addr, port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[cortex] FATAL: Cannot bind to {bind_addr}:{port} -- {e}");
-            eprintln!("[cortex] Is another Cortex instance running? Try: cortex paths --json");
-            std::process::exit(1);
-        }
+    let listener = match activated_listener {
+        Some(listener) => listener,
+        None => match tokio::net::TcpListener::bind((bind_addr, port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[cortex] FATAL: Cannot bind to {bind_addr}:{port} -- {e}");
+                eprintln!("[cortex] Is another Cortex instance running? Try: cortex paths --json");
+                std::process::exit(1);
+            }
+        },
     };
     mark_runtime_ready(readiness_signal.as_ref());
-    eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
+    if let Ok(addr) = listener.local_addr() {
+        eprintln!("[cortex] Listening on http://{addr}");
+    } else {
+        eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
+    }
     if let Err(e) = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
         .await
@@ -664,21 +770,27 @@ async fn run_tls(
     bind_addr: &str,
     port: u16,
     acceptor: tokio_rustls::TlsAcceptor,
+    activated_listener: Option<tokio::net::TcpListener>,
     readiness_signal: Option<Arc<AtomicBool>>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
-    use tokio::net::TcpListener;
-
-    let listener = match TcpListener::bind((bind_addr, port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[cortex] FATAL: Cannot bind to {bind_addr}:{port} -- {e}");
-            eprintln!("[cortex] Is another Cortex instance running? Try: cortex paths --json");
-            std::process::exit(1);
-        }
+    let listener = match activated_listener {
+        Some(listener) => listener,
+        None => match tokio::net::TcpListener::bind((bind_addr, port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[cortex] FATAL: Cannot bind to {bind_addr}:{port} -- {e}");
+                eprintln!("[cortex] Is another Cortex instance running? Try: cortex paths --json");
+                std::process::exit(1);
+            }
+        },
     };
     mark_runtime_ready(readiness_signal.as_ref());
-    eprintln!("[cortex] Listening on https://{bind_addr}:{port} (TLS via rustls)");
+    if let Ok(addr) = listener.local_addr() {
+        eprintln!("[cortex] Listening on https://{addr} (TLS via rustls)");
+    } else {
+        eprintln!("[cortex] Listening on https://{bind_addr}:{port} (TLS via rustls)");
+    }
 
     let mut make_svc = router.into_make_service();
 

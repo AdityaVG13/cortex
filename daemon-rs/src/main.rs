@@ -62,6 +62,8 @@ const APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS: u64 = 120;
 const APP_MANAGED_AGING_STARTUP_OFFSET_SECS: u64 = 15;
 const APP_MANAGED_EMBED_STARTUP_OFFSET_SECS: u64 = 30;
 const APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS: u64 = 45;
+const DEFAULT_IDLE_SHUTDOWN_CHECK_INTERVAL_SECS: u64 = 5;
+const DEFAULT_IDLE_SHUTDOWN_MIN_UPTIME_SECS: u64 = 120;
 const STARTUP_INDEX_DELAY_ENV: &str = "CORTEX_STARTUP_INDEX_DELAY_SECS";
 const STARTUP_AGING_DELAY_ENV: &str = "CORTEX_STARTUP_AGING_DELAY_SECS";
 const STARTUP_EMBED_DELAY_ENV: &str = "CORTEX_STARTUP_EMBED_DELAY_SECS";
@@ -71,6 +73,8 @@ const BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV: &str = "CORTEX_BACKGROUND_DB_LOCK_MAX_
 const EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV: &str = "CORTEX_EMBED_BACKFILL_DRAIN_ON_STARTUP";
 const EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES_ENV: &str =
     "CORTEX_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES";
+const IDLE_SHUTDOWN_SECS_ENV: &str = "CORTEX_IDLE_SHUTDOWN_SECS";
+const IDLE_SHUTDOWN_MIN_UPTIME_SECS_ENV: &str = "CORTEX_IDLE_SHUTDOWN_MIN_UPTIME_SECS";
 const STARTUP_LOG_FILES: &[&str] = &[
     "daemon.log",
     "daemon.err.log",
@@ -4270,17 +4274,58 @@ pub(crate) async fn run_daemon(
         });
     }
 
+    let idle_shutdown_secs = std::env::var(IDLE_SHUTDOWN_SECS_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let idle_min_uptime_secs = parse_env_u64(
+        IDLE_SHUTDOWN_MIN_UPTIME_SECS_ENV,
+        DEFAULT_IDLE_SHUTDOWN_MIN_UPTIME_SECS,
+    )
+    .clamp(1, 86_400);
+    if idle_shutdown_secs > 0 {
+        eprintln!(
+            "[cortex] Idle shutdown enabled (timeout={}s, min_uptime={}s)",
+            idle_shutdown_secs, idle_min_uptime_secs
+        );
+    }
+
     let readiness_signal = state.readiness.clone();
     let db_for_shutdown = state.db.clone();
+    let state_for_idle_shutdown = state.clone();
     let router = server::build_router(state, paths.port);
 
     // Combine shutdown sources: HTTP /shutdown, extra (Ctrl+C or SCM stop)
-    let shutdown_future = async {
+    let shutdown_future = async move {
+        let idle_shutdown_future = async move {
+            if idle_shutdown_secs == 0 {
+                std::future::pending::<()>().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(idle_min_uptime_secs)).await;
+            let mut interval = tokio::time::interval(Duration::from_secs(
+                DEFAULT_IDLE_SHUTDOWN_CHECK_INTERVAL_SECS,
+            ));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let idle_for = state_for_idle_shutdown.idle_for_secs();
+                if idle_for >= idle_shutdown_secs {
+                    eprintln!(
+                        "[cortex] Idle shutdown threshold reached (idle={}s >= {}s)",
+                        idle_for, idle_shutdown_secs
+                    );
+                    break;
+                }
+            }
+        };
+
         tokio::select! {
             _ = shutdown_rx => {
                 eprintln!("[cortex] Shutdown requested via HTTP");
             }
             _ = extra_shutdown => {}
+            _ = idle_shutdown_future => {}
         }
     };
 

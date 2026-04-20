@@ -276,6 +276,8 @@ pub struct RuntimeState {
     /// Readiness gate for daemon startup sequencing.
     /// `/readiness` reports this directly while `/health` remains diagnostic.
     pub readiness: Arc<AtomicBool>,
+    /// Last observed request activity timestamp (Unix seconds).
+    pub last_activity_unix_secs: Arc<AtomicU64>,
     /// Path for buffering writes when daemon is unreachable in proxy mode.
     /// Used by mcp_proxy via cortex_dir() directly; kept here for discoverability.
     #[allow(dead_code)]
@@ -299,6 +301,25 @@ impl RuntimeState {
         use std::sync::atomic::Ordering;
         self.mcp_calls.fetch_add(1, Ordering::SeqCst) + 1
     }
+
+    /// Mark daemon activity to support idle-shutdown economics.
+    pub fn mark_activity_now(&self) {
+        self.last_activity_unix_secs
+            .store(current_unix_secs(), Ordering::SeqCst);
+    }
+
+    /// Seconds since the last observed request activity.
+    pub fn idle_for_secs(&self) -> u64 {
+        let last = self.last_activity_unix_secs.load(Ordering::SeqCst);
+        current_unix_secs().saturating_sub(last)
+    }
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ─── Initialisation ───────────────────────────────────────────────────────────
@@ -542,6 +563,7 @@ fn initialize_with_conn(
         degraded_mode: Arc::new(AtomicBool::new(false)),
         db_corrupted: Arc::new(AtomicBool::new(false)),
         readiness: Arc::new(AtomicBool::new(false)),
+        last_activity_unix_secs: Arc::new(AtomicU64::new(current_unix_secs())),
         write_buffer_path,
         sqlite_vec_canary,
     };
