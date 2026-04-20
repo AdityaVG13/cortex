@@ -3899,6 +3899,7 @@ fn search_memories(
     source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
     let term_groups = build_search_term_groups(query_text);
+    let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
 
     if term_groups.is_empty() {
         let mut stmt = conn
@@ -3926,7 +3927,7 @@ fn search_memories(
                     source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
                         format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
-                    excerpt: query_focused_excerpt(&display, query_text, 220),
+                    excerpt: query_focused_excerpt_with_terms(&display, &excerpt_focus_terms, 220),
                     alignment: (0, 0),
                     relevance: round4(0.5 * effective_score),
                     matched_keywords: 0,
@@ -4050,7 +4051,7 @@ fn search_memories(
 
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: query_focused_excerpt(&display, query_text, 280),
+                excerpt: query_focused_excerpt_with_terms(&display, &excerpt_focus_terms, 280),
                 alignment: (0, 0),
                 relevance: round4(ranking),
                 matched_keywords: matched,
@@ -4117,6 +4118,7 @@ fn search_memories_fallback(
         .map_err(|e| e.to_string())?;
 
     let term_groups = build_search_term_groups(query_text);
+    let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
     let alignment_profile = QueryAlignmentProfile::from_query(query_text);
     let mut ranked = Vec::new();
 
@@ -4135,7 +4137,7 @@ fn search_memories_fallback(
         let ts = parse_timestamp_ms(&ts_source);
 
         if term_groups.is_empty() {
-            let excerpt = query_focused_excerpt(&text, query_text, 220);
+            let excerpt = query_focused_excerpt_with_terms(&text, &excerpt_focus_terms, 220);
             ranked.push(SearchCandidate {
                 source: source_key,
                 alignment: alignment_profile.alignment_score(&excerpt),
@@ -4171,7 +4173,7 @@ fn search_memories_fallback(
             retrievals,
         );
 
-        let excerpt = query_focused_excerpt(&text, query_text, 260);
+        let excerpt = query_focused_excerpt_with_terms(&text, &excerpt_focus_terms, 260);
         ranked.push(SearchCandidate {
             source: source_key,
             alignment: alignment_profile.alignment_score(&excerpt),
@@ -4227,6 +4229,7 @@ fn search_decisions(
     source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
     let term_groups = build_search_term_groups(query_text);
+    let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
 
     if term_groups.is_empty() {
         let mut stmt = conn
@@ -4248,7 +4251,11 @@ fn search_decisions(
                     source: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| {
                         format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
-                    excerpt: query_focused_excerpt(&row.get::<_, String>(1)?, query_text, 220),
+                    excerpt: query_focused_excerpt_with_terms(
+                        &row.get::<_, String>(1)?,
+                        &excerpt_focus_terms,
+                        220,
+                    ),
                     alignment: (0, 0),
                     relevance: round4(0.5 * effective_score),
                     matched_keywords: 0,
@@ -4366,7 +4373,7 @@ fn search_decisions(
 
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: query_focused_excerpt(&display, query_text, 280),
+                excerpt: query_focused_excerpt_with_terms(&display, &excerpt_focus_terms, 280),
                 alignment: (0, 0),
                 relevance: round4(ranking),
                 matched_keywords: matched,
@@ -4432,6 +4439,7 @@ fn search_decisions_fallback(
         .map_err(|e| e.to_string())?;
 
     let term_groups = build_search_term_groups(query_text);
+    let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
     let alignment_profile = QueryAlignmentProfile::from_query(query_text);
     let mut ranked = Vec::new();
 
@@ -4450,7 +4458,7 @@ fn search_decisions_fallback(
         let ts = parse_timestamp_ms(&ts_source);
 
         if term_groups.is_empty() {
-            let excerpt = query_focused_excerpt(&decision, query_text, 220);
+            let excerpt = query_focused_excerpt_with_terms(&decision, &excerpt_focus_terms, 220);
             ranked.push(SearchCandidate {
                 source: source_key,
                 alignment: alignment_profile.alignment_score(&excerpt),
@@ -4484,7 +4492,7 @@ fn search_decisions_fallback(
             retrievals,
         );
 
-        let excerpt = query_focused_excerpt(&decision, query_text, 260);
+        let excerpt = query_focused_excerpt_with_terms(&decision, &excerpt_focus_terms, 260);
         ranked.push(SearchCandidate {
             source: source_key,
             alignment: alignment_profile.alignment_score(&excerpt),
@@ -5378,7 +5386,28 @@ fn build_fts_query(groups: &[Vec<String>]) -> String {
         .join(" AND ")
 }
 
-fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> String {
+fn query_focus_terms_for_excerpt(query_text: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut terms = query_focus_terms(query_text)
+        .into_iter()
+        .filter_map(|term| {
+            let normalized = term.trim().to_ascii_lowercase();
+            if normalized.is_empty() || !seen.insert(normalized.clone()) {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect::<Vec<_>>();
+    terms.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    terms
+}
+
+fn query_focused_excerpt_with_terms(
+    text: &str,
+    sorted_focus_terms: &[String],
+    max_chars: usize,
+) -> String {
     if max_chars == 0 || text.is_empty() {
         return String::new();
     }
@@ -5389,16 +5418,13 @@ fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> Stri
     }
 
     let lower_text = text.to_lowercase();
-    let mut terms = query_focus_terms(query_text);
-    if terms.is_empty() {
+    if sorted_focus_terms.is_empty() {
         return truncate_chars(text, max_chars);
     }
 
-    terms.sort_by_key(|t| std::cmp::Reverse(t.len()));
-
     let mut hit_byte_idx = None;
-    for term in terms {
-        if let Some(idx) = lower_text.find(&term) {
+    for term in sorted_focus_terms {
+        if let Some(idx) = lower_text.find(term.as_str()) {
             hit_byte_idx = Some(idx);
             break;
         }
@@ -5428,6 +5454,11 @@ fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> Stri
         excerpt.push_str("...");
     }
     excerpt
+}
+
+fn query_focused_excerpt(text: &str, query_text: &str, max_chars: usize) -> String {
+    let terms = query_focus_terms_for_excerpt(query_text);
+    query_focused_excerpt_with_terms(text, &terms, max_chars)
 }
 
 fn recency_days(value: Option<&str>) -> i64 {
