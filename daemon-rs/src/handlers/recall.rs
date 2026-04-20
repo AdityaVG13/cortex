@@ -1377,24 +1377,19 @@ pub async fn handle_peek(
                     })
                 })
                 .collect();
-            let used = results
-                .iter()
-                .map(|item| estimate_tokens(&item.source))
-                .sum::<usize>();
-            let full_recall_tokens = results.iter().map(recall_item_token_cost).sum::<usize>();
-            let saved = full_recall_tokens.saturating_sub(used) as i64;
+            let usage = compute_headlines_token_usage(&results);
             json_response(
                 StatusCode::OK,
                 json!({
                     "count": matches.len(),
                     "matches": matches,
                     "tokenUsage": {
-                        "used": used,
-                        "saved": saved
+                        "used": usage.spent,
+                        "saved": usage.saved
                     },
                     "tokenUsageLine": format!(
                         "Token usage: used {} tokens, saved {} vs full recall excerpts.",
-                        used, saved
+                        usage.spent, usage.saved
                     )
                 }),
             )
@@ -2138,6 +2133,7 @@ pub async fn execute_unified_recall(
                 })
             })
             .collect::<Vec<_>>();
+        let usage = compute_headlines_token_usage(&results);
         emit_recall_query_event(
             state,
             agent,
@@ -2146,8 +2142,8 @@ pub async fn execute_unified_recall(
             "agent": agent,
             "query": truncate_chars(query_text, 120),
             "budget": 0,
-            "spent": 0,
-            "saved": 0,
+            "spent": usage.spent,
+            "saved": usage.saved,
             "hits": headlines.len(),
             "mode": "headlines",
                 "cached": false,
@@ -2161,11 +2157,6 @@ pub async fn execute_unified_recall(
             }),
         )
         .await;
-        let usage = RecallBudgetUsage {
-            spent: 0,
-            saved: 0,
-            over_budget: false,
-        };
         return Ok(json!({
         "count": headlines.len(),
             "results": headlines,
@@ -6015,12 +6006,32 @@ fn compute_recall_budget_usage(items: &[RecallItem], budget: usize) -> RecallBud
     }
 }
 
+fn compute_headlines_token_usage(items: &[RecallItem]) -> RecallBudgetUsage {
+    let spent = items
+        .iter()
+        .map(|item| estimate_tokens(&item.source))
+        .sum::<usize>();
+    let full_recall_tokens = items.iter().map(recall_item_token_cost).sum::<usize>();
+    RecallBudgetUsage {
+        spent,
+        saved: full_recall_tokens as i64 - spent as i64,
+        over_budget: false,
+    }
+}
+
 fn format_recall_token_usage_line(budget: usize, usage: RecallBudgetUsage) -> String {
     if budget == 0 {
-        format!(
-            "Cortex recall used {} tokens (headlines mode).",
-            usage.spent
-        )
+        if usage.saved > 0 {
+            format!(
+                "Cortex recall used {} tokens in headlines mode and saved {} vs full excerpts.",
+                usage.spent, usage.saved
+            )
+        } else {
+            format!(
+                "Cortex recall used {} tokens (headlines mode).",
+                usage.spent
+            )
+        }
     } else if usage.saved >= 0 {
         format!(
             "Cortex recall used {} tokens and saved {} of {} budget.",
@@ -9155,6 +9166,55 @@ mod tests {
             shadow_semantic["shadowTopSources"].is_null(),
             "telemetry event payload should not contain shadow source arrays"
         );
+    }
+
+    #[tokio::test]
+    async fn execute_unified_recall_headlines_reports_token_usage_and_savings() {
+        let state = shared_test_state();
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO memories (text, source, type, status, score, created_at, updated_at)
+                 VALUES (?1, 'memory::headlines-token-usage', 'note', 'active', 0.92, datetime('now'), datetime('now'))",
+                params!["daemon ownership lock arbitration details and heartbeat cadence"],
+            )
+            .unwrap();
+        }
+
+        let response = execute_unified_recall(
+            &state,
+            "daemon ownership lock heartbeat",
+            0,
+            5,
+            "codex",
+            &solo_ctx(),
+            None,
+        )
+        .await
+        .expect("headlines unified recall should succeed");
+        let spent = response["spent"]
+            .as_u64()
+            .expect("headlines response should include spent");
+        let saved = response["saved"]
+            .as_i64()
+            .expect("headlines response should include saved");
+        assert!(
+            spent > 0,
+            "headlines usage should report non-zero source-token usage"
+        );
+        assert!(saved >= 0, "headlines savings should be non-negative");
+        assert!(
+            response["tokenUsageLine"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("headlines mode"),
+            "headlines response should include headlines-mode usage line"
+        );
+
+        let conn = state.db.lock().await;
+        let event = latest_recall_query_event(&conn);
+        assert_eq!(event["spent"].as_u64(), Some(spent));
+        assert_eq!(event["saved"].as_i64(), Some(saved));
     }
 
     // ── RRF fusion tests ───────────────────────────────────────────
