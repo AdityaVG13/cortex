@@ -62,6 +62,7 @@ const DEFAULT_RECALL_LATENCY_FAST_MS: u128 = 900;
 const DEFAULT_RECALL_LATENCY_BALANCED_MS: u128 = 1800;
 const DEFAULT_RECALL_LATENCY_DEEP_MS: u128 = 3500;
 const BUDGET_REDUNDANCY_SIMILARITY_THRESHOLD: f64 = 0.84;
+const BUDGET_PRESSURE_EARLY_STOP_THRESHOLD: f64 = 0.82;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -3400,6 +3401,15 @@ fn apply_semantic_budget(
             update_query_term_coverage(&signature_terms, &query_terms, &mut covered_terms);
             selected_signatures.push(signature_terms);
             budgeted.push(item);
+            if should_early_stop_budget_selection(
+                token_budget,
+                spent,
+                budgeted.len(),
+                &query_terms,
+                &covered_terms,
+            ) {
+                break;
+            }
         }
     }
     budgeted
@@ -3898,6 +3908,15 @@ fn run_budget_recall_trace_with_query_vector(
                 collapsed_sources: item.collapsed_sources,
                 collapsed_source_scores: item.collapsed_source_scores,
             });
+            if should_early_stop_budget_selection(
+                token_budget,
+                spent,
+                budgeted.len(),
+                &query_terms,
+                &covered_terms,
+            ) {
+                break;
+            }
         }
     }
 
@@ -5571,6 +5590,23 @@ fn update_query_term_coverage(
             covered_terms.insert(term.clone());
         }
     }
+}
+
+fn should_early_stop_budget_selection(
+    token_budget: usize,
+    spent_tokens: usize,
+    selected_count: usize,
+    query_terms: &HashSet<String>,
+    covered_terms: &HashSet<String>,
+) -> bool {
+    if token_budget == 0 || selected_count < 2 || query_terms.is_empty() {
+        return false;
+    }
+    if covered_terms.len() < query_terms.len() {
+        return false;
+    }
+    let pressure = spent_tokens as f64 / token_budget as f64;
+    pressure >= BUDGET_PRESSURE_EARLY_STOP_THRESHOLD
 }
 
 fn query_focused_excerpt_with_terms(
@@ -10141,6 +10177,30 @@ mod tests {
             ),
             5,
             "tight broad query should keep one extra item for coverage"
+        );
+    }
+
+    #[test]
+    fn should_early_stop_budget_selection_requires_coverage_and_pressure() {
+        let query_terms = HashSet::from(["daemon".to_string(), "heartbeat".to_string()]);
+        let covered_all = HashSet::from(["daemon".to_string(), "heartbeat".to_string()]);
+        let covered_partial = HashSet::from(["daemon".to_string()]);
+
+        assert!(
+            should_early_stop_budget_selection(300, 252, 2, &query_terms, &covered_all),
+            "high budget pressure + full coverage should stop tail expansion"
+        );
+        assert!(
+            !should_early_stop_budget_selection(300, 200, 2, &query_terms, &covered_all),
+            "insufficient budget pressure should keep scanning candidates"
+        );
+        assert!(
+            !should_early_stop_budget_selection(300, 252, 1, &query_terms, &covered_all),
+            "need at least two selected results before early stop"
+        );
+        assert!(
+            !should_early_stop_budget_selection(300, 252, 2, &query_terms, &covered_partial),
+            "missing query-term coverage should keep searching"
         );
     }
 
