@@ -371,6 +371,9 @@ def test_base_provider_query_terms_expand_profile_and_education_signals(monkeypa
     assert bool(non_profile["wants_previous_role"]) is False
     assert bool(non_profile["wants_belief"]) is True
     assert bool(non_profile["is_detail_query"]) is True
+    name_profile = provider._build_query_profile("What was my last name before I changed it?")
+    assert bool(name_profile["wants_name"]) is True
+    assert bool(name_profile["is_detail_query"]) is True
 
     provider.cleanup()
 
@@ -432,9 +435,9 @@ def test_base_provider_belief_detail_query_uses_variant_recall_query(monkeypatch
                 "tokens": 8,
             }
         ],
-        "budget": 420,
+        "budget": 300,
         "spent": 8,
-        "saved": 412,
+        "saved": 292,
     }
 
     provider = CortexHTTPBaseMemoryProvider()
@@ -457,7 +460,93 @@ def test_base_provider_belief_detail_query_uses_variant_recall_query(monkeypatch
     assert params["q"] != "What was my previous stance on spirituality?"
     assert "atheist" in str(params["q"])
     assert "spirituality" in str(params["q"])
-    assert params["budget"] == "420"
+    assert params["budget"] == "300"
+
+
+def test_base_provider_name_detail_query_uses_variant_recall_query(monkeypatch) -> None:
+    fake_client = _FakeHttpClient()
+    _set_base_env(monkeypatch)
+    monkeypatch.setenv("CORTEX_BENCHMARK_BASE_FANOUT_MULTIPLIER", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_BASE_FANOUT_MIN", "1")
+    monkeypatch.setattr("cortex_http_base_provider.httpx.Client", lambda timeout: fake_client)
+    fake_client.recall_payload = {
+        "results": [
+            {
+                "source": "amb::bench-ns::user::u1::doc::identity::fact::1",
+                "excerpt": "[user] Before I changed my name, my last name was Johnson.",
+                "relevance": 0.86,
+                "tokens": 9,
+            }
+        ],
+        "budget": 300,
+        "spent": 9,
+        "saved": 291,
+    }
+
+    provider = CortexHTTPBaseMemoryProvider()
+    provider.ingest(
+        [
+            Document(
+                id="identity::fact::1",
+                content="[user] Before I changed my name, my last name was Johnson.",
+                user_id="u1",
+            )
+        ]
+    )
+    provider.retrieve("What was my last name before I changed it?", k=1, user_id="u1")
+    provider.cleanup()
+
+    recall_calls = [call for call in fake_client.calls if call["url"].endswith("/recall")]
+    assert len(recall_calls) == 1
+    params = recall_calls[0]["kwargs"]["params"]
+    assert isinstance(params, dict)
+    assert params["q"] != "What was my last name before I changed it?"
+    normalized_q = str(params["q"]).lower()
+    assert "last name" in normalized_q
+    assert "surname" in normalized_q
+
+
+def test_base_provider_item_detail_query_uses_variant_recall_query(monkeypatch) -> None:
+    fake_client = _FakeHttpClient()
+    _set_base_env(monkeypatch)
+    monkeypatch.setenv("CORTEX_BENCHMARK_BASE_FANOUT_MULTIPLIER", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_BASE_FANOUT_MIN", "1")
+    monkeypatch.setattr("cortex_http_base_provider.httpx.Client", lambda timeout: fake_client)
+    fake_client.recall_payload = {
+        "results": [
+            {
+                "source": "amb::bench-ns::user::u1::doc::home::fact::1",
+                "excerpt": "[user] I repainted my bedroom walls a lighter shade of gray.",
+                "relevance": 0.81,
+                "tokens": 9,
+            }
+        ],
+        "budget": 300,
+        "spent": 9,
+        "saved": 291,
+    }
+
+    provider = CortexHTTPBaseMemoryProvider()
+    provider.ingest(
+        [
+            Document(
+                id="home::fact::1",
+                content="[user] I repainted my bedroom walls a lighter shade of gray.",
+                user_id="u1",
+            )
+        ]
+    )
+    provider.retrieve("What color did I repaint my bedroom walls?", k=1, user_id="u1")
+    provider.cleanup()
+
+    recall_calls = [call for call in fake_client.calls if call["url"].endswith("/recall")]
+    assert len(recall_calls) == 1
+    params = recall_calls[0]["kwargs"]["params"]
+    assert isinstance(params, dict)
+    assert params["q"] != "What color did I repaint my bedroom walls?"
+    normalized_q = str(params["q"]).lower()
+    assert "color" in normalized_q
+    assert "paint" in normalized_q
 
 
 def test_base_provider_abroad_query_adds_country_qualifier(monkeypatch) -> None:
@@ -480,10 +569,16 @@ def test_base_provider_abroad_query_adds_country_qualifier(monkeypatch) -> None:
                 "relevance": 0.7,
                 "tokens": 6,
             },
+            {
+                "source": "amb::bench-ns::user::u1::doc::trip::fact::3",
+                "excerpt": "We spent a lot of time on the coast.",
+                "relevance": 0.94,
+                "tokens": 6,
+            },
         ],
         "budget": 300,
-        "spent": 20,
-        "saved": 280,
+        "spent": 26,
+        "saved": 274,
     }
 
     provider = CortexHTTPBaseMemoryProvider()
@@ -497,6 +592,11 @@ def test_base_provider_abroad_query_adds_country_qualifier(monkeypatch) -> None:
             Document(
                 id="trip::fact::2",
                 content="[user] I attended it in Australia.",
+                user_id="u1",
+            ),
+            Document(
+                id="trip::fact::3",
+                content="[user] We spent a lot of time on the coast.",
                 user_id="u1",
             ),
         ]
@@ -641,3 +741,56 @@ def test_base_provider_previous_occupation_rerank_penalizes_market_activity(monk
 
     assert len(docs) == 2
     assert docs[0].id == "career::fact::1"
+
+
+def test_base_provider_item_query_prefers_concrete_user_answer(monkeypatch) -> None:
+    fake_client = _FakeHttpClient()
+    _set_base_env(monkeypatch)
+    monkeypatch.setenv("CORTEX_BENCHMARK_BASE_FANOUT_MULTIPLIER", "1")
+    monkeypatch.setenv("CORTEX_BENCHMARK_BASE_FANOUT_MIN", "2")
+    monkeypatch.setattr("cortex_http_base_provider.httpx.Client", lambda timeout: fake_client)
+    fake_client.recall_payload = {
+        "results": [
+            {
+                "source": "amb::bench-ns::user::u1::doc::gift::fact::1",
+                "excerpt": "[assistant-question] What did I buy for my sister's birthday gift? [user-answer] I bought gifts for my sister's birthday.",
+                "relevance": 0.94,
+                "tokens": 14,
+            },
+            {
+                "source": "amb::bench-ns::user::u1::doc::gift::fact::2",
+                "excerpt": "[assistant-question] What did I buy for my sister's birthday gift? [user-answer] A yellow dress.",
+                "relevance": 0.78,
+                "tokens": 9,
+            },
+        ],
+        "budget": 300,
+        "spent": 23,
+        "saved": 277,
+    }
+
+    provider = CortexHTTPBaseMemoryProvider()
+    provider.ingest(
+        [
+            Document(
+                id="gift::fact::1",
+                content="[assistant-question] What did I buy for my sister's birthday gift? [user-answer] I bought gifts for my sister's birthday.",
+                user_id="u1",
+            ),
+            Document(
+                id="gift::fact::2",
+                content="[assistant-question] What did I buy for my sister's birthday gift? [user-answer] A yellow dress.",
+                user_id="u1",
+            ),
+        ]
+    )
+    docs, _payload = provider.retrieve(
+        "What did I buy for my sister's birthday gift?",
+        k=2,
+        user_id="u1",
+    )
+    provider.cleanup()
+
+    assert len(docs) == 2
+    assert docs[0].id == "gift::fact::2"
+    assert "yellow dress" in docs[0].content.lower()

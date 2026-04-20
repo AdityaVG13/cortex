@@ -61,7 +61,15 @@ _QUERY_DATE_INTENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _QUERY_ITEM_INTENT_PATTERN = re.compile(
-    r"\b(?:gift|present|item|buy|bought|purchase|redeem|redeemed|model|brand)\b",
+    r"\b(?:gift|present|item|buy|bought|purchase|redeem|redeemed|model|brand|color|paint|painted|repaint|repainted|wall|walls)\b",
+    re.IGNORECASE,
+)
+_QUERY_BIRTHDAY_DESCRIPTOR_PATTERN = re.compile(
+    r"\bbirthday\s+(gift|present|party|card|dinner|cake|trip|message|wishlist)\b",
+    re.IGNORECASE,
+)
+_QUERY_NAME_INTENT_PATTERN = re.compile(
+    r"\b(?:name|called|last name|first name|old name|previous name|surname)\b",
     re.IGNORECASE,
 )
 _QUERY_PROFILE_INTENT_PATTERN = re.compile(
@@ -118,6 +126,10 @@ _BELIEF_DETAIL_PATTERN = re.compile(
     r"\b(?:spiritual|spirituality|belief|beliefs|religion|religious|faith|atheist|agnostic|buddhism|stance)\b",
     re.IGNORECASE,
 )
+_NAME_DETAIL_PATTERN = re.compile(
+    r"\b(?:name\s+(?:is|was)|called|old name was|last name(?:\s+was)?|surname(?:\s+was)?)\s+[A-Z][A-Za-z0-9'-]+(?:\s+[A-Z][A-Za-z0-9'-]+){0,2}\b",
+    re.IGNORECASE,
+)
 _PREVIOUS_ROLE_DETAIL_PATTERN = re.compile(
     r"\b(?:previously|formerly|used to|prior|before|ex-)\b",
     re.IGNORECASE,
@@ -170,6 +182,8 @@ _LOCATION_PLACE_HINT_TOKENS = {
     "downtown",
     "mall",
     "market",
+    "coast",
+    "ocean",
     "park",
     "restaurant",
     "road",
@@ -224,6 +238,12 @@ _QUERY_TERM_SYNONYMS: dict[str, set[str]] = {
     "redeem": {"redeemed", "coupon", "store"},
     "redeemed": {"redeem", "coupon", "store"},
     "coupon": {"redeem", "redeemed", "discount", "store"},
+    "name": {"last", "first", "surname", "called", "previous", "old"},
+    "last": {"name", "surname", "family"},
+    "surname": {"last", "name", "family", "changed"},
+    "color": {"paint", "repaint", "shade"},
+    "paint": {"color", "repaint", "walls"},
+    "repaint": {"paint", "color", "walls"},
 }
 _TOKEN_SUFFIX_RULES: tuple[str, ...] = ("'s", "ing", "ed", "ers", "er", "es", "s")
 
@@ -385,15 +405,15 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
         query_profile = self._build_query_profile(query)
         term_query = self._as_text(query_profile.get("term_query")).strip() or query
         query_terms = self._query_terms(term_query)
+        # Strict benchmark runs must honor the configured token budget for every query.
         recall_budget = self.budget
-        if bool(query_profile["wants_previous_role"]) or bool(query_profile["wants_belief"]):
-            recall_budget = max(recall_budget, 420)
         recall_query = query
         use_detail_variant = (
             bool(query_profile["wants_profile"])
+            or bool(query_profile["wants_name"])
             or bool(query_profile["wants_education"])
             or bool(query_profile["wants_belief"])
-            or (bool(query_profile["wants_item"]) and bool(query_profile["wants_location"]))
+            or bool(query_profile["wants_item"])
         )
         if use_detail_variant:
             detail_variant = self._build_detail_query_variant(
@@ -1005,6 +1025,7 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
         wants_date = bool(_QUERY_DATE_INTENT_PATTERN.search(normalized_query))
         wants_item = bool(_QUERY_ITEM_INTENT_PATTERN.search(normalized_query))
         wants_profile = bool(_QUERY_PROFILE_INTENT_PATTERN.search(normalized_query))
+        wants_name = bool(_QUERY_NAME_INTENT_PATTERN.search(normalized_query))
         wants_education = bool(_QUERY_EDUCATION_INTENT_PATTERN.search(normalized_query))
         wants_event = bool(_QUERY_EVENT_INTENT_PATTERN.search(normalized_query))
         wants_belief = bool(_QUERY_BELIEF_INTENT_PATTERN.search(normalized_query))
@@ -1020,12 +1041,17 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
             term_query = (
                 f"{term_query} stance belief beliefs spirituality faith religion religious atheist agnostic"
             ).strip()
+        if wants_name and re.search(r"\b(previous|former|prior|used to|earlier|before|old|changed)\b", normalized_query):
+            term_query = (
+                f"{term_query} last name surname old name previous name changed from called"
+            ).strip()
         is_detail_query = (
             wants_numbers
             or wants_location
             or wants_date
             or wants_item
             or wants_profile
+            or wants_name
             or wants_education
             or wants_event
             or wants_belief
@@ -1038,6 +1064,7 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
             "wants_date": wants_date,
             "wants_item": wants_item,
             "wants_profile": wants_profile,
+            "wants_name": wants_name,
             "wants_education": wants_education,
             "wants_event": wants_event,
             "wants_belief": wants_belief,
@@ -1141,7 +1168,7 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
         if bool(query_profile["wants_date"]):
             hint_parts.extend(["when", "date", "year", "month", "day"])
         if bool(query_profile["wants_item"]):
-            hint_parts.extend(["item", "purchase", "redeemed", "store", "exact detail"])
+            hint_parts.extend(["item", "purchase", "redeemed", "store", "color", "paint", "repainted", "exact detail"])
         if bool(query_profile["wants_profile"]):
             hint_parts.extend(
                 [
@@ -1153,6 +1180,8 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
                     "position",
                 ]
             )
+        if bool(query_profile["wants_name"]):
+            hint_parts.extend(["name", "last name", "surname", "called", "old name", "previous name"])
         if bool(query_profile["wants_previous_role"]):
             hint_parts.extend(["worked as", "job title", "profession", "previous", "former", "prior"])
         if bool(query_profile["wants_education"]):
@@ -1255,6 +1284,48 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
             return False
         return bool(re.search(r"[a-z]", answer_value, flags=re.IGNORECASE))
 
+    def _text_has_name_detail(self, text: str) -> bool:
+        return bool(_NAME_DETAIL_PATTERN.search(text))
+
+    def _item_answer_specificity_bonus(
+        self,
+        *,
+        query_profile: dict[str, bool | str],
+        text: str,
+        overlap: int,
+        detail_bonus: int,
+    ) -> int:
+        if not bool(query_profile["wants_item"]):
+            return 0
+        lowered = text.lower()
+        if "[user-answer]" not in lowered:
+            return 0
+        if overlap <= 0 and detail_bonus <= 0:
+            return 0
+        bonus = 2
+        answer_match = re.search(
+            r"\[user-answer\]\s*([^\[\n]{1,220})",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if answer_match:
+            answer_value = answer_match.group(1).strip(" \t\r\n.,!?;:\"'")
+            answer_lower = answer_value.lower()
+            answer_words = [word for word in re.findall(r"[a-z0-9'-]+", answer_lower) if word]
+            if re.search(
+                r"\b(gift|gifts|present|item|items|thing|things|something|stuff)\b",
+                answer_lower,
+            ):
+                bonus -= 2
+            if answer_words and len(answer_words) <= 5 and not re.search(
+                r"\b(i|my|we|bought|purchased|redeemed|ordered|got)\b",
+                answer_lower,
+            ):
+                bonus += 6
+        if _QUERY_BIRTHDAY_DESCRIPTOR_PATTERN.search(str(query_profile["normalized_query"])):
+            bonus += 2
+        return bonus
+
     def _detail_bonus(self, query_profile: dict[str, bool | str], text: str) -> int:
         score = 0
         if bool(query_profile["wants_numbers"]) and re.search(r"\d", text):
@@ -1290,6 +1361,8 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
         if bool(query_profile["wants_event"]) and _EVENT_DETAIL_PATTERN.search(text):
             score += 8
         if bool(query_profile["wants_belief"]) and _BELIEF_DETAIL_PATTERN.search(text):
+            score += 10
+        if bool(query_profile["wants_name"]) and self._text_has_name_detail(text):
             score += 10
         return score
 
@@ -1334,6 +1407,12 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
         normalized_query = self._as_text(profile.get("normalized_query")).strip()
         phrase_bonus = 1 if normalized_query and normalized_query in lowered else 0
         detail_bonus = self._detail_bonus(profile, text)
+        item_answer_bonus = self._item_answer_specificity_bonus(
+            query_profile=profile,
+            text=text,
+            overlap=overlap,
+            detail_bonus=detail_bonus,
+        )
         personal_bonus = 0
         if "\"role\": \"user\"" in lowered or "[user]" in lowered:
             personal_bonus += 3
@@ -1353,6 +1432,7 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
             (overlap * 10)
             + (phrase_bonus * 4)
             + detail_bonus
+            + item_answer_bonus
             + personal_bonus
             + detail_user_bonus
             + self._document_variant_priority(document.id)
@@ -1687,19 +1767,49 @@ class CortexHTTPBaseMemoryProvider(MemoryProvider):
         if "[location-qualifier]" in primary_text.lower():
             return documents
         primary_terms = self._location_term_set(primary_text)
-        candidate_terms = {
-            term for term in primary_terms if self._is_country_like_location_term(term)
-        }
-        for document in documents[1:]:
-            for term in self._location_term_set(document.content):
-                if term in primary_terms:
+        term_query = self._as_text(query_profile.get("term_query")).strip() or query
+        query_terms = self._query_terms(term_query)
+        primary_family = self._detail_family_key(primary.id)
+        primary_fact_index = self._fact_index(primary.id)
+
+        best_term: str | None = None
+        best_rank: tuple[int, int, int, int, int, int] | None = None
+        for idx, document in enumerate(documents[1:], start=1):
+            doc_text = self._normalize_text(document.content).strip()
+            if not doc_text:
+                continue
+            location_terms = self._location_term_set(doc_text) - primary_terms
+            if not location_terms:
+                continue
+            same_family = int(bool(primary_family) and self._detail_family_key(document.id) == primary_family)
+            candidate_fact_index = self._fact_index(document.id)
+            is_adjacent = int(
+                primary_fact_index is not None
+                and candidate_fact_index is not None
+                and abs(candidate_fact_index - primary_fact_index) <= 1
+            )
+            non_question = 0 if self._looks_like_question_text(doc_text) else 1
+            overlap = self._term_overlap_count(query_terms, doc_text.lower())
+            relevance = self._document_query_relevance_score(query, document)
+            for term in sorted(location_terms):
+                if not self._is_country_like_location_term(term):
                     continue
-                if self._is_country_like_location_term(term):
-                    candidate_terms.add(term)
-        if not candidate_terms:
+                rank = (
+                    same_family,
+                    is_adjacent,
+                    non_question,
+                    1 if overlap > 0 else 0,
+                    relevance,
+                    -idx,
+                )
+                if best_rank is None or rank > best_rank:
+                    best_rank = rank
+                    best_term = term
+        if not best_term:
             return documents
-        selected_term = sorted(candidate_terms, key=lambda term: (len(term.split()), len(term), term))[0]
-        qualifier_text = f"in {selected_term.title()}"
+        qualifier_text = f"in {best_term.title()}"
+        if qualifier_text.lower() in primary_text.lower():
+            return documents
         augmented_text = f"{primary_text.rstrip()} [location-qualifier] {qualifier_text}."
         augmented_primary = Document(
             id=primary.id,
