@@ -57,6 +57,9 @@ tmp/pytest-local/
 
 # Desktop app build outputs
 desktop/cortex-control-center/dist/
+desktop/cortex-control-center/runtime-artifacts/
+desktop/cortex-control-center/.codex-dev-baseline.pid
+desktop/cortex-control-center/.devrun-live.pid
 
 # TLS certs and private keys
 *.pem
