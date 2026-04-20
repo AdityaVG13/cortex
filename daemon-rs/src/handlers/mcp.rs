@@ -3075,13 +3075,7 @@ pub async fn handle_mcp_message_with_caller(
                 return Some(mcp_error(id, -32602, "Missing tool name"));
             }
 
-            let known = mcp_tools().iter().any(|tool| {
-                tool.get("name")
-                    .and_then(|v| v.as_str())
-                    .map(|name| name == tool_name)
-                    .unwrap_or(false)
-            });
-            if !known {
+            if required_permission_for_tool(tool_name).is_none() {
                 return Some(mcp_error(id, -32601, &format!("Unknown tool: {tool_name}")));
             }
 
