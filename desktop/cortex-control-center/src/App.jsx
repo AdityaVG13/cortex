@@ -142,6 +142,14 @@ const MISSION_METRIC_LEGEND = [
   { abbreviation: "T", meaning: "trillion tokens" },
 ];
 
+const ANALYTICS_METRIC_LEGEND = [
+  { label: "Compounding return", meaning: "30-day total boot tokens saved" },
+  { label: "Efficiency", meaning: "Average compression over the same 30-day window" },
+  { label: "Throughput", meaning: "Boot compilations counted over the last 7 days" },
+  { label: "Compiled context", meaning: "30-day total prompt tokens served at boot" },
+  { label: "Economic value", meaning: "Estimated currency value based on saved tokens" },
+];
+
 function clearLegacyBrowserAuthTokens() {
   if (typeof window === "undefined") return;
   try {
@@ -1648,7 +1656,7 @@ export function App() {
     [currencyFormatter, currencyRate]
   );
   const savingsEstimateLegend = useMemo(() => {
-    const base = `Assumes $${SAVINGS_USD_PER_MILLION} USD per 1M tokens saved`;
+    const base = `Assumption: $${SAVINGS_USD_PER_MILLION} USD per 1M tokens saved`;
     return currency === "USD" ? base : `${base}, converted to ${currency}`;
   }, [currency]);
 
@@ -5422,6 +5430,14 @@ export function App() {
               </div>
             ) : savings ? (
               <>
+                <div className="analytics-metric-legend" aria-label="Analytics metric legend">
+                  {ANALYTICS_METRIC_LEGEND.map((entry) => (
+                    <div key={entry.label} className="analytics-metric-legend-item">
+                      <span className="analytics-metric-legend-label">{entry.label}</span>
+                      <span className="analytics-metric-legend-value">{entry.meaning}</span>
+                    </div>
+                  ))}
+                </div>
                 <div className="analytics-metrics-grid">
                   <div className="metric metric-featured" data-accent="cyan">
                     <span className="metric-kicker">Compounding return</span>
