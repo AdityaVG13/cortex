@@ -61,6 +61,7 @@ const DEFAULT_RECALL_BUDGET_DEEP: usize = 560;
 const DEFAULT_RECALL_LATENCY_FAST_MS: u128 = 900;
 const DEFAULT_RECALL_LATENCY_BALANCED_MS: u128 = 1800;
 const DEFAULT_RECALL_LATENCY_DEEP_MS: u128 = 3500;
+const BUDGET_REDUNDANCY_SIMILARITY_THRESHOLD: f64 = 0.84;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -3295,6 +3296,11 @@ fn apply_semantic_budget(
         candidates = raw.iter().take(max_items.max(1)).cloned().collect();
     }
 
+    let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text)
+        .into_iter()
+        .collect();
+    let mut covered_terms: HashSet<String> = HashSet::new();
+    let mut selected_signatures: Vec<HashSet<String>> = Vec::new();
     let mut spent = 0usize;
     let mut budgeted = Vec::new();
     for (idx, mut item) in candidates.into_iter().enumerate() {
@@ -3309,9 +3315,20 @@ fn apply_semantic_budget(
         if let Some((excerpt, tokens)) =
             fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
         {
+            let signature_terms = excerpt_signature_terms(&item.source, &excerpt);
+            if should_skip_redundant_budget_candidate(
+                &signature_terms,
+                &selected_signatures,
+                &query_terms,
+                &covered_terms,
+            ) {
+                continue;
+            }
             item.excerpt = excerpt;
             item.tokens = Some(tokens);
             spent += tokens;
+            update_query_term_coverage(&signature_terms, &query_terms, &mut covered_terms);
+            selected_signatures.push(signature_terms);
             budgeted.push(item);
         }
     }
@@ -3769,6 +3786,11 @@ fn run_budget_recall_trace_with_query_vector(
         }
     }
 
+    let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text)
+        .into_iter()
+        .collect();
+    let mut covered_terms: HashSet<String> = HashSet::new();
+    let mut selected_signatures: Vec<HashSet<String>> = Vec::new();
     let mut spent = 0usize;
     let mut budgeted = Vec::new();
     for (idx, item) in candidates.into_iter().enumerate() {
@@ -3783,7 +3805,18 @@ fn run_budget_recall_trace_with_query_vector(
         if let Some((excerpt, tokens)) =
             fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
         {
+            let signature_terms = excerpt_signature_terms(&item.source, &excerpt);
+            if should_skip_redundant_budget_candidate(
+                &signature_terms,
+                &selected_signatures,
+                &query_terms,
+                &covered_terms,
+            ) {
+                continue;
+            }
             spent += tokens;
+            update_query_term_coverage(&signature_terms, &query_terms, &mut covered_terms);
+            selected_signatures.push(signature_terms);
             budgeted.push(RecallItem {
                 source: item.source,
                 relevance: item.relevance,
@@ -5403,6 +5436,73 @@ fn query_focus_terms_for_excerpt(query_text: &str) -> Vec<String> {
     terms
 }
 
+fn excerpt_signature_terms(source: &str, excerpt: &str) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    for token in extract_search_keywords(source)
+        .into_iter()
+        .chain(extract_search_keywords(excerpt))
+    {
+        if token.len() > 2 {
+            terms.insert(token);
+        }
+    }
+    terms
+}
+
+fn term_set_jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let intersection = a.intersection(b).count();
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    intersection as f64 / union as f64
+}
+
+fn query_term_coverage_gain(
+    signature_terms: &HashSet<String>,
+    query_terms: &HashSet<String>,
+    covered_terms: &HashSet<String>,
+) -> usize {
+    query_terms
+        .iter()
+        .filter(|term| signature_terms.contains(*term) && !covered_terms.contains(*term))
+        .count()
+}
+
+fn should_skip_redundant_budget_candidate(
+    signature_terms: &HashSet<String>,
+    selected_signatures: &[HashSet<String>],
+    query_terms: &HashSet<String>,
+    covered_terms: &HashSet<String>,
+) -> bool {
+    if selected_signatures.is_empty() || signature_terms.is_empty() {
+        return false;
+    }
+    if query_term_coverage_gain(signature_terms, query_terms, covered_terms) > 0 {
+        return false;
+    }
+    let max_similarity = selected_signatures
+        .iter()
+        .map(|existing| term_set_jaccard(existing, signature_terms))
+        .fold(0.0_f64, f64::max);
+    max_similarity >= BUDGET_REDUNDANCY_SIMILARITY_THRESHOLD
+}
+
+fn update_query_term_coverage(
+    signature_terms: &HashSet<String>,
+    query_terms: &HashSet<String>,
+    covered_terms: &mut HashSet<String>,
+) {
+    for term in query_terms {
+        if signature_terms.contains(term) {
+            covered_terms.insert(term.clone());
+        }
+    }
+}
+
 fn query_focused_excerpt_with_terms(
     text: &str,
     sorted_focus_terms: &[String],
@@ -5417,7 +5517,27 @@ fn query_focused_excerpt_with_terms(
         return text.to_string();
     }
 
-    let lower_text = text.to_lowercase();
+    let lower_text = text.to_ascii_lowercase();
+    if lower_text.contains("[assistant-question]") {
+        if let Some(answer_byte_idx) = lower_text.find("[user-answer]") {
+            let answer_char_idx = text[..answer_byte_idx].chars().count();
+            let answer_end_char = (answer_char_idx + max_chars).min(total_chars);
+            let mut answer_excerpt = text
+                .chars()
+                .skip(answer_char_idx)
+                .take(answer_end_char.saturating_sub(answer_char_idx))
+                .collect::<String>();
+            if !answer_excerpt.trim().is_empty() {
+                if answer_char_idx > 0 {
+                    answer_excerpt = format!("...{answer_excerpt}");
+                }
+                if answer_end_char < total_chars {
+                    answer_excerpt.push_str("...");
+                }
+                return answer_excerpt;
+            }
+        }
+    }
     if sorted_focus_terms.is_empty() {
         return truncate_chars(text, max_chars);
     }
@@ -9028,6 +9148,111 @@ mod tests {
         assert!(
             lower.contains("database") && lower.contains("timeout"),
             "excerpt should center on the synonym-expanded span, got {excerpt:?}"
+        );
+    }
+
+    #[test]
+    fn test_query_focused_excerpt_prefers_user_answer_block_for_qa_memory() {
+        let text = "[assistant-question] What did I buy for my sister's birthday gift? [user-answer] A yellow dress with silver buttons from Nordstrom downtown.";
+        let excerpt =
+            query_focused_excerpt(text, "What did I buy for my sister's birthday gift?", 96);
+        let lower = excerpt.to_ascii_lowercase();
+        assert!(
+            lower.contains("[user-answer]"),
+            "excerpt should prioritize user-answer span, got {excerpt:?}"
+        );
+        assert!(
+            lower.contains("yellow dress"),
+            "excerpt should preserve the concrete answer detail, got {excerpt:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_semantic_budget_skips_redundant_candidates_without_new_coverage() {
+        let build_item = |source: &str, relevance: f64, excerpt: &str| RecallItem {
+            source: source.to_string(),
+            relevance,
+            excerpt: excerpt.to_string(),
+            method: "hybrid".to_string(),
+            tokens: None,
+            entropy: None,
+            family_members: Vec::new(),
+            collapsed_sources: Vec::new(),
+            collapsed_source_scores: Vec::new(),
+        };
+
+        let raw = vec![
+            build_item(
+                "memory::daemon-policy-a",
+                0.93,
+                "daemon startup ownership lock lease arbitration prevents duplicate startup and keeps one active owner during plugin reconnect",
+            ),
+            build_item(
+                "memory::daemon-policy-b",
+                0.91,
+                "daemon startup ownership lock lease arbitration prevents duplicate startup and keeps one active owner during plugin reconnect loop",
+            ),
+            build_item(
+                "memory::heartbeat",
+                0.84,
+                "plugin heartbeat monitor reports attach state and reconnect health for claude daemon sessions",
+            ),
+        ];
+
+        let results =
+            apply_semantic_budget(raw, 320, "daemon startup ownership lock lease heartbeat");
+        let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
+        assert!(
+            sources.contains(&"memory::daemon-policy-a"),
+            "top policy candidate should remain selected: {sources:?}"
+        );
+        assert!(
+            !sources.contains(&"memory::daemon-policy-b"),
+            "near-duplicate candidate without new coverage should be dropped: {sources:?}"
+        );
+        assert!(
+            sources.contains(&"memory::heartbeat"),
+            "distinct candidate covering remaining query intent should be retained: {sources:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_semantic_budget_keeps_similar_candidate_with_new_query_term_coverage() {
+        let build_item = |source: &str, relevance: f64, excerpt: &str| RecallItem {
+            source: source.to_string(),
+            relevance,
+            excerpt: excerpt.to_string(),
+            method: "hybrid".to_string(),
+            tokens: None,
+            entropy: None,
+            family_members: Vec::new(),
+            collapsed_sources: Vec::new(),
+            collapsed_source_scores: Vec::new(),
+        };
+
+        let raw = vec![
+            build_item(
+                "memory::daemon-policy-a",
+                0.93,
+                "daemon startup ownership lock lease arbitration keeps one active owner during reconnect",
+            ),
+            build_item(
+                "memory::daemon-policy-b",
+                0.90,
+                "daemon startup ownership lock lease arbitration keeps one active owner during reconnect and heartbeat checks",
+            ),
+        ];
+
+        let results =
+            apply_semantic_budget(raw, 320, "daemon startup ownership lock lease heartbeat");
+        let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
+        assert!(
+            sources.contains(&"memory::daemon-policy-a"),
+            "primary candidate should remain selected"
+        );
+        assert!(
+            sources.contains(&"memory::daemon-policy-b"),
+            "candidate adding new query-term coverage should not be dropped as redundant"
         );
     }
 
