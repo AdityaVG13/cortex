@@ -32,7 +32,7 @@ mod workspace;
 
 use chrono::{self, Utc};
 use fs2::FileExt;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1248,7 +1248,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  sync export        Export changeset JSON (--out <file>, optional --since <iso>, --cursor-file <path>)");
     eprintln!("  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)");
     eprintln!("  sync watch         Watched-folder sync loop (--dir <path>, optional --interval-seconds <n>, --once)");
-    eprintln!("  eval [--window-days <n>] [--json]  Emit local eval snapshot for reliability and memory quality signals");
+    eprintln!("  eval [--window-days <n>] [--json] [--baseline-file <path>] [--max-regression <f>] [--fail-on-regression]");
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
     eprintln!("  reindex [--json]   Fully rebuild FTS indexes from canonical memory/decision rows");
     eprintln!("  re-embed [...]     Alias for `embeddings drain --until-exhausted`");
@@ -2030,6 +2030,26 @@ fn run_sync_cli(paths: &auth::CortexPaths, args: &[String]) {
 
 fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     let json_output = args.iter().any(|arg| arg == "--json");
+    let fail_on_regression = args.iter().any(|arg| arg == "--fail-on-regression");
+    let baseline_file = parse_flag_value(args, "--baseline-file");
+    let max_regression = match parse_flag_value(args, "--max-regression") {
+        Some(raw) => {
+            let parsed = raw
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("invalid value for --max-regression: '{raw}'"))
+                .unwrap_or_else(|err| {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                });
+            if !(0.0..=1.0).contains(&parsed) {
+                eprintln!("--max-regression must be between 0.0 and 1.0");
+                std::process::exit(1);
+            }
+            parsed
+        }
+        None => 0.10,
+    };
     let window_days = match parse_flag_usize(args, "--window-days") {
         Ok(Some(value)) => value.min(180) as i64,
         Ok(None) => 30,
@@ -2046,12 +2066,35 @@ fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
             std::process::exit(1);
         }
     };
-    let snapshot = eval::build_eval_snapshot(&conn, window_days);
+    let mut snapshot = eval::build_eval_snapshot(&conn, window_days);
+    let regression_gate = baseline_file.as_deref().map(|path| {
+        let baseline_raw = std::fs::read_to_string(path).unwrap_or_else(|err| {
+            eprintln!("Failed to read baseline snapshot file '{path}': {err}");
+            std::process::exit(1);
+        });
+        let baseline_json: Value = serde_json::from_str(&baseline_raw).unwrap_or_else(|err| {
+            eprintln!("Invalid baseline snapshot JSON in '{path}': {err}");
+            std::process::exit(1);
+        });
+        eval::build_eval_regression_gate(&snapshot, &baseline_json, max_regression)
+    });
+    if let (Some(gate), Value::Object(map)) = (regression_gate.clone(), &mut snapshot) {
+        map.insert("regressionGate".to_string(), gate);
+    }
     if json_output {
         println!(
             "{}",
             serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string())
         );
+        if fail_on_regression
+            && regression_gate
+                .as_ref()
+                .and_then(|gate| gate.get("ok"))
+                .and_then(Value::as_bool)
+                == Some(false)
+        {
+            std::process::exit(2);
+        }
         return;
     }
 
@@ -2111,6 +2154,50 @@ fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0)
     );
+    println!(
+        "task: success_rate={:.4}, first_pass={:.4}, median_time_ms={:.2}, retry_count={:.4}",
+        signals
+            .get("taskSuccessRate")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("firstPassSuccess")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("medianTimeToValidResultMs")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("retryCount")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
+    );
+    println!(
+        "memory_quality: stale_hit_rate={:.4}, low_trust_hit_rate={:.4}, consensus_precision={:.4}",
+        signals
+            .get("staleMemoryHitRate")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("lowTrustHitRate")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        signals
+            .get("consensusPromotionPrecision")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
+    );
+    if let Some(gate) = regression_gate {
+        let gate_ok = gate.get("ok").and_then(Value::as_bool).unwrap_or(true);
+        println!(
+            "regression_gate: ok={}, max_regression={:.3}",
+            gate_ok, max_regression
+        );
+        if fail_on_regression && !gate_ok {
+            std::process::exit(2);
+        }
+    }
 }
 
 fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
