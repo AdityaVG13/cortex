@@ -222,6 +222,18 @@ fn blend_importance(score: Option<f64>, trust_score: Option<f64>) -> f64 {
     round4((score * 0.65) + (trust * 0.35))
 }
 
+fn compare_relevance_desc_source_asc(
+    a_relevance: f64,
+    a_source: &str,
+    b_relevance: f64,
+    b_source: &str,
+) -> std::cmp::Ordering {
+    b_relevance
+        .partial_cmp(&a_relevance)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a_source.cmp(b_source))
+}
+
 fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
     if text.is_empty() || query_text.is_empty() {
         return (0, 0);
@@ -2497,9 +2509,7 @@ fn run_recall_with_query_vector_trace(
                 all.push(row);
             }
             all.sort_by(|a, b| {
-                b.relevance
-                    .partial_cmp(&a.relevance)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
             });
             if ctx.team_mode && all.len() < k && retry < 2 {
                 fts_limit *= 2;
@@ -2748,9 +2758,7 @@ fn run_recall_with_query_vector_trace(
     }
 
     ranked.sort_by(|a, b| {
-        b.relevance
-            .partial_cmp(&a.relevance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
     });
     ranked.truncate(k);
 
@@ -2861,9 +2869,7 @@ fn run_semantic_recall_with_query_vector(
     }
 
     ranked.sort_by(|a, b| {
-        b.relevance
-            .partial_cmp(&a.relevance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
     });
     ranked.truncate(k);
     bump_retrievals_batch(conn, &ranked);
@@ -3075,9 +3081,7 @@ fn compact_budget_family_candidates_with_trace(
     }
 
     dropped.sort_by(|a, b| {
-        b.relevance
-            .partial_cmp(&a.relevance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
     });
     let mut family_compactions = Vec::new();
     for (family_key, mut dropped_sources) in dropped_by_family {
@@ -3097,9 +3101,7 @@ fn compact_budget_family_candidates_with_trace(
     family_compactions.sort_by(|a, b| a.family_key.cmp(&b.family_key));
     let mut compacted_items: Vec<RecallItem> = compacted.into_values().collect();
     compacted_items.sort_by(|a, b| {
-        b.relevance
-            .partial_cmp(&a.relevance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
     });
     (compacted_items, dropped, family_compactions)
 }
@@ -3585,9 +3587,7 @@ fn run_budget_recall_trace_with_query_vector(
         }
         let mut merged_pool: Vec<RecallItem> = merged.into_values().collect();
         merged_pool.sort_by(|a, b| {
-            b.relevance
-                .partial_cmp(&a.relevance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
         });
         merged_pool
     };
@@ -3612,9 +3612,7 @@ fn run_budget_recall_trace_with_query_vector(
         if let Some(best_associative) = raw.iter().find(|item| item.method == "associative") {
             candidates.push(best_associative.clone());
             candidates.sort_by(|a, b| {
-                b.relevance
-                    .partial_cmp(&a.relevance)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
             });
             candidates.truncate(max_items.max(1));
         }
@@ -4040,6 +4038,11 @@ fn search_memories_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
+                .then_with(|| {
+                    query_alignment_score(&b.excerpt, query_text)
+                        .cmp(&query_alignment_score(&a.excerpt, query_text))
+                })
+                .then_with(|| a.source.cmp(&b.source))
         });
     } else {
         ranked.sort_by(|a, b| {
@@ -4053,6 +4056,11 @@ fn search_memories_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
+                .then_with(|| {
+                    query_alignment_score(&b.excerpt, query_text)
+                        .cmp(&query_alignment_score(&a.excerpt, query_text))
+                })
+                .then_with(|| a.source.cmp(&b.source))
         });
     }
 
@@ -4342,6 +4350,11 @@ fn search_decisions_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
+                .then_with(|| {
+                    query_alignment_score(&b.excerpt, query_text)
+                        .cmp(&query_alignment_score(&a.excerpt, query_text))
+                })
+                .then_with(|| a.source.cmp(&b.source))
         });
     } else {
         ranked.sort_by(|a, b| {
@@ -4355,6 +4368,11 @@ fn search_decisions_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
+                .then_with(|| {
+                    query_alignment_score(&b.excerpt, query_text)
+                        .cmp(&query_alignment_score(&a.excerpt, query_text))
+                })
+                .then_with(|| a.source.cmp(&b.source))
         });
     }
 
@@ -4624,9 +4642,7 @@ fn collect_semantic_candidates(
 
     let mut sorted: Vec<SemanticCandidate> = candidates.into_values().collect();
     sorted.sort_by(|a, b| {
-        b.relevance
-            .partial_cmp(&a.relevance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
     });
     sorted.truncate(MAX_SEMANTIC_RRF_CANDIDATES);
     sorted
@@ -6348,7 +6364,11 @@ fn rrf_fuse_weighted(lists: &[Vec<(i64, f64)>], weights: &[f64], k: f64) -> Vec<
         }
     }
     let mut result: Vec<(i64, f64)> = fused.into_iter().collect();
-    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    result.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     result
 }
 
@@ -8617,6 +8637,28 @@ mod tests {
             results[0].source, "memory::older-high-score",
             "empty-term fallback should rank by retained score signal before recency"
         );
+    }
+
+    #[test]
+    fn test_search_memories_fallback_breaks_ties_by_source() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES ('daemon lock ownership flow', 'memory::b-source', 'note', 'active', 0.7, 0.7, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES ('daemon lock ownership flow', 'memory::a-source', 'note', 'active', 0.7, 0.7, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+
+        let results = search_memories_fallback(&conn, "daemon lock", 5, None)
+            .expect("memory fallback should succeed");
+        assert_eq!(results[0].source, "memory::a-source");
+        assert_eq!(results[1].source, "memory::b-source");
     }
 
     #[test]
