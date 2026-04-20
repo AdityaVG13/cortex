@@ -51,6 +51,12 @@ const ENTITY_SIGNAL_MATCH_WEIGHT: f64 = 0.01;
 const ENTITY_SIGNAL_MAX_BOOST: f64 = 0.12;
 const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex::";
 const BENCHMARK_SOURCE_SCOPE_PREFIX: &str = "amb::";
+const DEFAULT_RECALL_BUDGET_FAST: usize = 180;
+const DEFAULT_RECALL_BUDGET_BALANCED: usize = 320;
+const DEFAULT_RECALL_BUDGET_DEEP: usize = 560;
+const DEFAULT_RECALL_LATENCY_FAST_MS: u128 = 900;
+const DEFAULT_RECALL_LATENCY_BALANCED_MS: u128 = 1800;
+const DEFAULT_RECALL_LATENCY_DEEP_MS: u128 = 3500;
 
 // ─── Internal types ──────────────────────────────────────────────────────────
 
@@ -649,6 +655,141 @@ fn query_crystal_for_unfold(conn: &Connection, crystal_id: i64) -> Option<Crysta
 
 // ─── Query types ─────────────────────────────────────────────────────────────
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecallPolicyMode {
+    Headlines,
+    Fast,
+    Balanced,
+    Deep,
+}
+
+impl RecallPolicyMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Headlines => "headlines",
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Deep => "deep",
+        }
+    }
+}
+
+fn parse_env_usize(name: &str, default: usize, min: usize, max: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .map(|value| value.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn recall_default_budget_for_mode(mode: RecallPolicyMode) -> usize {
+    match mode {
+        RecallPolicyMode::Headlines => 0,
+        RecallPolicyMode::Fast => parse_env_usize(
+            "CORTEX_RECALL_FAST_BUDGET",
+            DEFAULT_RECALL_BUDGET_FAST,
+            1,
+            2000,
+        ),
+        RecallPolicyMode::Balanced => parse_env_usize(
+            "CORTEX_RECALL_BALANCED_BUDGET",
+            DEFAULT_RECALL_BUDGET_BALANCED,
+            1,
+            4000,
+        ),
+        RecallPolicyMode::Deep => parse_env_usize(
+            "CORTEX_RECALL_DEEP_BUDGET",
+            DEFAULT_RECALL_BUDGET_DEEP,
+            1,
+            8000,
+        ),
+    }
+}
+
+fn recall_default_k_for_mode(mode: RecallPolicyMode) -> usize {
+    match mode {
+        RecallPolicyMode::Headlines => 10,
+        RecallPolicyMode::Fast => 16,
+        RecallPolicyMode::Balanced => 12,
+        RecallPolicyMode::Deep => 10,
+    }
+}
+
+fn recall_latency_budget_ms_for_mode(mode: RecallPolicyMode) -> u128 {
+    match mode {
+        RecallPolicyMode::Headlines => parse_env_usize(
+            "CORTEX_RECALL_HEADLINES_MAX_LATENCY_MS",
+            DEFAULT_RECALL_LATENCY_FAST_MS as usize,
+            0,
+            60_000,
+        ) as u128,
+        RecallPolicyMode::Fast => parse_env_usize(
+            "CORTEX_RECALL_FAST_MAX_LATENCY_MS",
+            DEFAULT_RECALL_LATENCY_FAST_MS as usize,
+            0,
+            60_000,
+        ) as u128,
+        RecallPolicyMode::Balanced => parse_env_usize(
+            "CORTEX_RECALL_BALANCED_MAX_LATENCY_MS",
+            DEFAULT_RECALL_LATENCY_BALANCED_MS as usize,
+            0,
+            60_000,
+        ) as u128,
+        RecallPolicyMode::Deep => parse_env_usize(
+            "CORTEX_RECALL_DEEP_MAX_LATENCY_MS",
+            DEFAULT_RECALL_LATENCY_DEEP_MS as usize,
+            0,
+            120_000,
+        ) as u128,
+    }
+}
+
+fn recall_mode_for_budget(budget: usize) -> RecallPolicyMode {
+    if budget == 0 {
+        RecallPolicyMode::Headlines
+    } else if budget <= 220 {
+        RecallPolicyMode::Fast
+    } else if budget <= 500 {
+        RecallPolicyMode::Balanced
+    } else {
+        RecallPolicyMode::Deep
+    }
+}
+
+pub fn parse_recall_policy_mode(raw: Option<&str>) -> Result<Option<RecallPolicyMode>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let normalized = raw.to_ascii_lowercase();
+    let mode = match normalized.as_str() {
+        "headlines" => RecallPolicyMode::Headlines,
+        "fast" => RecallPolicyMode::Fast,
+        "balanced" => RecallPolicyMode::Balanced,
+        "deep" => RecallPolicyMode::Deep,
+        _ => {
+            return Err(
+                "Invalid policy mode. Expected one of: headlines, fast, balanced, deep".to_string(),
+            )
+        }
+    };
+    Ok(Some(mode))
+}
+
+pub fn resolve_recall_budget_k(
+    requested_mode: Option<RecallPolicyMode>,
+    budget: Option<usize>,
+    k: Option<usize>,
+) -> (usize, usize, RecallPolicyMode) {
+    let resolved_budget = match (requested_mode, budget) {
+        (_, Some(explicit_budget)) => explicit_budget,
+        (Some(mode), None) => recall_default_budget_for_mode(mode),
+        (None, None) => recall_default_budget_for_mode(RecallPolicyMode::Balanced),
+    };
+    let resolved_mode = recall_mode_for_budget(resolved_budget);
+    let resolved_k = k.unwrap_or_else(|| recall_default_k_for_mode(resolved_mode));
+    (resolved_budget, resolved_k.max(1), resolved_mode)
+}
+
 #[derive(Deserialize, Default)]
 pub struct RecallQuery {
     pub q: Option<String>,
@@ -657,6 +798,8 @@ pub struct RecallQuery {
     pub agent: Option<String>,
     pub source_prefix: Option<String>,
     pub pool_k: Option<usize>,
+    #[serde(alias = "policyMode")]
+    pub policy_mode: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -666,6 +809,8 @@ pub struct RecallBody {
     pub budget: Option<usize>,
     pub agent: Option<String>,
     pub source_prefix: Option<String>,
+    #[serde(alias = "policyMode")]
+    pub policy_mode: Option<String>,
 }
 
 // ─── GET /recall ─────────────────────────────────────────────────────────────
@@ -684,8 +829,14 @@ pub async fn handle_recall(
         Err(resp) => return resp,
     };
     let q = query.q.unwrap_or_default();
-    let k = query.k.unwrap_or(10);
-    let budget = query.budget.unwrap_or(200);
+    let requested_policy_mode = match parse_recall_policy_mode(query.policy_mode.as_deref()) {
+        Ok(mode) => mode,
+        Err(err) => {
+            return json_response(StatusCode::BAD_REQUEST, json!({ "error": err }));
+        }
+    };
+    let (budget, k, resolved_policy_mode) =
+        resolve_recall_budget_k(requested_policy_mode, query.budget, query.k);
     let source_prefix = query
         .source_prefix
         .as_deref()
@@ -702,7 +853,21 @@ pub async fn handle_recall(
 
     let ctx = RecallContext::from_caller(caller_id, &state);
     match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(mut payload) => {
+            if let Value::Object(map) = &mut payload {
+                map.insert(
+                    "policyMode".to_string(),
+                    Value::String(resolved_policy_mode.as_str().to_string()),
+                );
+                if let Some(mode) = requested_policy_mode {
+                    map.insert(
+                        "requestedPolicyMode".to_string(),
+                        Value::String(mode.as_str().to_string()),
+                    );
+                }
+            }
+            json_response(StatusCode::OK, payload)
+        }
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Recall failed: {err}") }),
@@ -726,8 +891,14 @@ pub async fn handle_recall_post(
         Err(resp) => return resp,
     };
     let q = body.q.unwrap_or_default();
-    let k = body.k.unwrap_or(10);
-    let budget = body.budget.unwrap_or(200);
+    let requested_policy_mode = match parse_recall_policy_mode(body.policy_mode.as_deref()) {
+        Ok(mode) => mode,
+        Err(err) => {
+            return json_response(StatusCode::BAD_REQUEST, json!({ "error": err }));
+        }
+    };
+    let (budget, k, resolved_policy_mode) =
+        resolve_recall_budget_k(requested_policy_mode, body.budget, body.k);
     let source_prefix = body
         .source_prefix
         .as_deref()
@@ -744,7 +915,21 @@ pub async fn handle_recall_post(
 
     let ctx = RecallContext::from_caller(caller_id, &state);
     match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(mut payload) => {
+            if let Value::Object(map) = &mut payload {
+                map.insert(
+                    "policyMode".to_string(),
+                    Value::String(resolved_policy_mode.as_str().to_string()),
+                );
+                if let Some(mode) = requested_policy_mode {
+                    map.insert(
+                        "requestedPolicyMode".to_string(),
+                        Value::String(mode.as_str().to_string()),
+                    );
+                }
+            }
+            json_response(StatusCode::OK, payload)
+        }
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Recall failed: {err}") }),
@@ -886,14 +1071,14 @@ pub async fn handle_recall_explain(
         );
     }
 
-    let budget = query.budget.unwrap_or(200);
-    let k = query.k.unwrap_or(if budget <= 220 {
-        16
-    } else if budget <= 400 {
-        12
-    } else {
-        10
-    });
+    let requested_policy_mode = match parse_recall_policy_mode(query.policy_mode.as_deref()) {
+        Ok(mode) => mode,
+        Err(err) => {
+            return json_response(StatusCode::BAD_REQUEST, json!({ "error": err }));
+        }
+    };
+    let (budget, k, resolved_policy_mode) =
+        resolve_recall_budget_k(requested_policy_mode, query.budget, query.k);
     let pool_k = query.pool_k.unwrap_or((k.max(8) * 3).min(64));
     let source_prefix = query
         .source_prefix
@@ -915,7 +1100,21 @@ pub async fn handle_recall_explain(
     )
     .await
     {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(mut payload) => {
+            if let Value::Object(map) = &mut payload {
+                map.insert(
+                    "policyMode".to_string(),
+                    Value::String(resolved_policy_mode.as_str().to_string()),
+                );
+                if let Some(mode) = requested_policy_mode {
+                    map.insert(
+                        "requestedPolicyMode".to_string(),
+                        Value::String(mode.as_str().to_string()),
+                    );
+                }
+            }
+            json_response(StatusCode::OK, payload)
+        }
         Err(err) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("Recall explain failed: {err}") }),
@@ -1510,6 +1709,8 @@ pub async fn execute_unified_recall(
     source_prefix: Option<&str>,
 ) -> Result<Value, String> {
     let started_at = Instant::now();
+    let policy_mode = recall_mode_for_budget(budget);
+    let latency_budget_ms = recall_latency_budget_ms_for_mode(policy_mode);
     let recall_scope = recall_scope_key(agent, ctx);
     let scope_prefix = recall_owner_scope(ctx);
 
@@ -1520,7 +1721,7 @@ pub async fn execute_unified_recall(
             let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
             let mode = recall_mode_for_budget(budget);
             let method_breakdown = build_method_breakdown(&deduped_cached);
-            let tier = classify_recall_tier(true, mode, &method_breakdown);
+            let tier = classify_recall_tier(true, mode.as_str(), &method_breakdown);
             let latency_ms = started_at.elapsed().as_millis() as i64;
             let semantic_route = json!({
                 "mode": "baseline",
@@ -1547,7 +1748,7 @@ pub async fn execute_unified_recall(
                     "spent": 0,
                     "saved": budget as i64,
                     "hits": deduped_cached.len(),
-                    "mode": mode,
+                    "mode": mode.as_str(),
                     "cached": true,
                     "method_breakdown": method_breakdown,
                     "tier": tier,
@@ -1565,7 +1766,8 @@ pub async fn execute_unified_recall(
                 "budget": budget,
                 "spent": 0,
                 "saved": budget as i64,
-                "mode": mode,
+                "mode": mode.as_str(),
+                "policyMode": mode.as_str(),
                 "cached": true,
                 "tier": tier,
                 "latencyMs": latency_ms,
@@ -1577,11 +1779,11 @@ pub async fn execute_unified_recall(
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
     let dflag = Some(&state.degraded_mode);
-    let query_vector = engine.and_then(|runtime_engine| runtime_engine.embed(query_text));
+    let mut query_vector = engine.and_then(|runtime_engine| runtime_engine.embed(query_text));
     if engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
-    let (results, semantic_baseline, semantic_route) = if budget == 0 {
+    let (mut results, mut semantic_baseline, mut semantic_route) = if budget == 0 {
         let trace = run_recall_with_query_vector_trace(
             &mut conn,
             query_text,
@@ -1609,6 +1811,39 @@ pub async fn execute_unified_recall(
             trace.semantic_route,
         )
     };
+    let mut fail_closed = Value::Null;
+    if budget > 0 {
+        let elapsed_before_fallback = started_at.elapsed().as_millis();
+        if elapsed_before_fallback >= latency_budget_ms {
+            let fallback_trace = run_budget_recall_trace_with_query_vector(
+                &mut conn,
+                query_text,
+                budget,
+                k,
+                None,
+                ctx,
+                source_prefix,
+                Some(&state.sqlite_vec_canary),
+            )?;
+            results = fallback_trace.budgeted;
+            semantic_baseline = fallback_trace.semantic_baseline;
+            semantic_route = json!({
+                "mode": "baseline",
+                "reason": "latency_budget_fail_closed",
+                "fallback": "deterministic_keyword_rrf",
+                "elapsedMsBeforeFallback": elapsed_before_fallback,
+                "latencyBudgetMs": latency_budget_ms,
+                "routeMode": state.sqlite_vec_canary.effective_route_mode().as_str()
+            });
+            query_vector = None;
+            fail_closed = json!({
+                "triggered": true,
+                "elapsedMsBeforeFallback": elapsed_before_fallback,
+                "latencyBudgetMs": latency_budget_ms,
+                "fallback": "deterministic_keyword_rrf"
+            });
+        }
+    }
     let shadow_semantic = {
         let shadow_detail = build_shadow_semantic_explain(
             &conn,
@@ -1665,30 +1900,35 @@ pub async fn execute_unified_recall(
             agent,
             source_prefix,
             json!({
-                "agent": agent,
-                "query": truncate_chars(query_text, 120),
-                "budget": 0,
-                "spent": 0,
-                "saved": 0,
-                "hits": headlines.len(),
-                "mode": "headlines",
+            "agent": agent,
+            "query": truncate_chars(query_text, 120),
+            "budget": 0,
+            "spent": 0,
+            "saved": 0,
+            "hits": headlines.len(),
+            "mode": "headlines",
                 "cached": false,
                 "method_breakdown": method_breakdown,
                 "tier": tier,
                 "latency_ms": latency_ms,
+                "latency_budget_ms": latency_budget_ms,
                 "semantic_route": semantic_route.clone(),
-                "shadow_semantic": shadow_semantic
+                "shadow_semantic": shadow_semantic,
+                "fail_closed": fail_closed
             }),
         )
         .await;
         return Ok(json!({
-            "count": headlines.len(),
+        "count": headlines.len(),
             "results": headlines,
             "budget": 0,
             "spent": 0,
             "mode": "headlines",
+            "policyMode": RecallPolicyMode::Headlines.as_str(),
             "tier": tier,
             "latencyMs": latency_ms,
+            "latencyBudgetMs": latency_budget_ms,
+            "failClosed": fail_closed,
             "semanticRoute": semantic_route.clone()
         }));
     }
@@ -1703,9 +1943,9 @@ pub async fn execute_unified_recall(
         })
         .sum();
     let saved = budget as i64 - spent as i64;
-    let mode = if budget >= 500 { "full" } else { "balanced" };
+    let mode = recall_mode_for_budget(budget);
     let method_breakdown = build_method_breakdown(&results);
-    let tier = classify_recall_tier(false, mode, &method_breakdown);
+    let tier = classify_recall_tier(false, mode.as_str(), &method_breakdown);
     let latency_ms = started_at.elapsed().as_millis() as i64;
     emit_recall_query_event(
         state,
@@ -1718,13 +1958,15 @@ pub async fn execute_unified_recall(
             "spent": spent,
             "saved": saved,
             "hits": results.len(),
-            "mode": mode,
+            "mode": mode.as_str(),
             "cached": false,
             "method_breakdown": method_breakdown,
             "tier": tier,
             "latency_ms": latency_ms,
+            "latency_budget_ms": latency_budget_ms,
             "semantic_route": semantic_route.clone(),
-            "shadow_semantic": shadow_semantic
+            "shadow_semantic": shadow_semantic,
+            "fail_closed": fail_closed
         }),
     )
     .await;
@@ -1734,27 +1976,16 @@ pub async fn execute_unified_recall(
         "budget": budget,
         "spent": spent,
         "saved": saved,
-        "mode": mode,
+        "mode": mode.as_str(),
+        "policyMode": mode.as_str(),
         "tier": tier,
         "latencyMs": latency_ms,
+        "latencyBudgetMs": latency_budget_ms,
+        "failClosed": fail_closed,
         "semanticRoute": semantic_route
     });
 
     Ok(payload)
-}
-
-fn recall_mode_for_budget(budget: usize) -> &'static str {
-    if budget == 0 {
-        "headlines"
-    } else if budget <= 220 {
-        "low-token"
-    } else if budget <= 400 {
-        "balanced"
-    } else if budget <= 800 {
-        "rich"
-    } else {
-        "full"
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1971,10 +2202,11 @@ async fn execute_recall_policy_explain_inner(
         "budget": budget,
         "spent": spent,
         "saved": saved,
-        "mode": mode,
+        "mode": mode.as_str(),
+        "policyMode": mode.as_str(),
         "policy": {
             "name": "adaptive-recall-policy",
-            "mode": mode,
+            "mode": mode.as_str(),
             "budget": budget,
             "requestedK": requested_k,
             "poolK": pool_k,
@@ -6115,8 +6347,17 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex as StdMutex, OnceLock};
     use tokio::sync::{broadcast, Mutex};
+
+    static ENV_TEST_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+
+    fn env_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_TEST_LOCK
+            .get_or_init(|| StdMutex::new(()))
+            .lock()
+            .expect("env test lock should not be poisoned")
+    }
 
     // ── is_visible tests ───────────────────────────────────────────
 
@@ -9043,6 +9284,86 @@ mod tests {
                 .all(|item| item.source != "memory::family-child"),
             "tight budget should not spend a second slot on the same crystal family"
         );
+    }
+
+    #[test]
+    fn recall_policy_mode_parser_accepts_supported_values() {
+        assert_eq!(
+            parse_recall_policy_mode(Some("fast")).expect("fast should parse"),
+            Some(RecallPolicyMode::Fast)
+        );
+        assert_eq!(
+            parse_recall_policy_mode(Some("balanced")).expect("balanced should parse"),
+            Some(RecallPolicyMode::Balanced)
+        );
+        assert_eq!(
+            parse_recall_policy_mode(Some("deep")).expect("deep should parse"),
+            Some(RecallPolicyMode::Deep)
+        );
+        assert_eq!(
+            parse_recall_policy_mode(Some("headlines")).expect("headlines should parse"),
+            Some(RecallPolicyMode::Headlines)
+        );
+        assert!(parse_recall_policy_mode(Some("unknown-mode")).is_err());
+    }
+
+    #[test]
+    fn resolve_recall_budget_k_uses_policy_defaults_when_budget_missing() {
+        let (budget, k, mode) = resolve_recall_budget_k(Some(RecallPolicyMode::Fast), None, None);
+        assert_eq!(mode, RecallPolicyMode::Fast);
+        assert_eq!(
+            budget,
+            recall_default_budget_for_mode(RecallPolicyMode::Fast)
+        );
+        assert_eq!(k, recall_default_k_for_mode(RecallPolicyMode::Fast));
+
+        let (budget, k, mode) = resolve_recall_budget_k(None, Some(640), None);
+        assert_eq!(mode, RecallPolicyMode::Deep);
+        assert_eq!(budget, 640);
+        assert_eq!(k, recall_default_k_for_mode(RecallPolicyMode::Deep));
+    }
+
+    #[tokio::test]
+    async fn execute_unified_recall_fail_closes_when_latency_budget_is_zero() {
+        let _guard = env_test_guard();
+        let original = std::env::var("CORTEX_RECALL_FAST_MAX_LATENCY_MS").ok();
+        std::env::set_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS", "0");
+
+        let state = shared_test_state();
+        {
+            let conn = state.db.lock().await;
+            insert_memory_with_embedding(
+                &conn,
+                "daemon ownership lock heartbeat policy",
+                "memory::lock-policy",
+                &[1.0, 0.0, 0.0, 0.0, 0.0],
+            );
+        }
+
+        let payload = execute_unified_recall(
+            &state,
+            "daemon ownership lock",
+            180,
+            8,
+            "codex",
+            &solo_ctx(),
+            None,
+        )
+        .await
+        .expect("recall should succeed");
+
+        match original {
+            Some(value) => std::env::set_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS", value),
+            None => std::env::remove_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS"),
+        }
+
+        assert_eq!(payload["policyMode"].as_str(), Some("fast"));
+        assert_eq!(payload["failClosed"]["triggered"].as_bool(), Some(true));
+        assert_eq!(
+            payload["semanticRoute"]["reason"].as_str(),
+            Some("latency_budget_fail_closed")
+        );
+        assert_eq!(payload["latencyBudgetMs"].as_u64(), Some(0));
     }
 
     // ── query cache tests ──────────────────────────────────────────

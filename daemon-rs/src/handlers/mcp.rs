@@ -13,8 +13,8 @@ use super::mutate::{
     resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
 };
 use super::recall::{
-    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, unfold_source,
-    RecallContext,
+    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
+    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext,
 };
 use super::store::{
     persist_decision_embedding, store_decision_with_input_embedding_and_provenance,
@@ -1497,13 +1497,14 @@ pub fn mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "cortex_recall",
-            "description": "Search Cortex brain for memories and decisions. Adapts detail level to token budget: 0=headlines, 200=balanced, 500+=full.",
+            "description": "Search Cortex brain for memories and decisions. Supports policy modes (fast, balanced, deep) and fail-closed recall latency budgets.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query text" },
-                    "budget": { "type": "number", "description": "Token budget. 0=headlines only, 200=balanced, 500+=full detail" },
-                    "k": { "type": "number", "description": "Retrieval depth hint (default adapts to budget for low-token recall)" },
+                    "budget": { "type": "number", "description": "Token budget. If omitted, policyMode defaults are used (fast/balanced/deep)." },
+                    "policyMode": { "type": "string", "description": "Optional retrieval policy mode: fast, balanced, deep, or headlines." },
+                    "k": { "type": "number", "description": "Retrieval depth hint (default adapts to resolved policy mode/budget)." },
                     "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache" },
                     "taskClass": { "type": "string", "description": "Optional task class for adaptive retrieval hints (e.g. debug, refactor, docs)" },
                     "adaptive": { "type": "boolean", "description": "When true, tune k using recent agent/task outcomes from telemetry." }
@@ -1518,8 +1519,9 @@ pub fn mcp_tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query text" },
-                    "budget": { "type": "number", "description": "Token budget used for recall planning (default 200)" },
-                    "k": { "type": "number", "description": "Requested result count (default adapts to budget)" },
+                    "budget": { "type": "number", "description": "Token budget used for recall planning (defaults from policyMode)." },
+                    "policyMode": { "type": "string", "description": "Optional retrieval policy mode: fast, balanced, deep, or headlines." },
+                    "k": { "type": "number", "description": "Requested result count (default adapts to resolved policy mode/budget)." },
                     "pool_k": { "type": "number", "description": "Candidate pool depth for explain diagnostics (default adaptive, max 128)" },
                     "agent": { "type": "string", "description": "Optional agent id for dedup/predictive cache context" }
                 },
@@ -1946,16 +1948,13 @@ async fn mcp_dispatch(
         "cortex_recall" => {
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
-            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let mut k = arg_usize(args, &["k", "limit"]).unwrap_or({
-                if budget <= 220 {
-                    16
-                } else if budget <= 400 {
-                    12
-                } else {
-                    10
-                }
-            });
+            let requested_policy_mode =
+                parse_recall_policy_mode(arg_str(args, &["policyMode", "policy_mode"]))?;
+            let (budget, mut k, resolved_policy_mode) = resolve_recall_budget_k(
+                requested_policy_mode,
+                arg_usize(args, &["budget", "b"]),
+                arg_usize(args, &["k", "limit"]),
+            );
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let task_class = arg_str(args, &["taskClass", "task_class"]);
@@ -1994,6 +1993,18 @@ async fn mcp_dispatch(
             let ctx = RecallContext::from_caller(caller_id, state);
             let mut payload =
                 execute_unified_recall(state, query, budget, k, agent, &ctx, None).await?;
+            if let Value::Object(map) = &mut payload {
+                map.insert(
+                    "policyMode".to_string(),
+                    Value::String(resolved_policy_mode.as_str().to_string()),
+                );
+                if let Some(mode) = requested_policy_mode {
+                    map.insert(
+                        "requestedPolicyMode".to_string(),
+                        Value::String(mode.as_str().to_string()),
+                    );
+                }
+            }
             if let (Some(policy), Value::Object(map)) = (adaptive_policy, &mut payload) {
                 map.insert("adaptivePolicy".to_string(), policy);
             }
@@ -2003,16 +2014,13 @@ async fn mcp_dispatch(
         "cortex_recall_policy_explain" => {
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
-            let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or({
-                if budget <= 220 {
-                    16
-                } else if budget <= 400 {
-                    12
-                } else {
-                    10
-                }
-            });
+            let requested_policy_mode =
+                parse_recall_policy_mode(arg_str(args, &["policyMode", "policy_mode"]))?;
+            let (budget, k, resolved_policy_mode) = resolve_recall_budget_k(
+                requested_policy_mode,
+                arg_usize(args, &["budget", "b"]),
+                arg_usize(args, &["k", "limit"]),
+            );
             let pool_k = arg_usize(args, &["pool_k", "poolK", "candidate_pool"])
                 .unwrap_or((k.max(8) * 3).min(64));
             let agent = arg_str(args, &["agent", "source_agent"])
@@ -2029,7 +2037,22 @@ async fn mcp_dispatch(
             }
 
             let ctx = RecallContext::from_caller(caller_id, state);
-            execute_recall_policy_explain(state, query, budget, k, agent, &ctx, None, pool_k).await
+            let mut payload =
+                execute_recall_policy_explain(state, query, budget, k, agent, &ctx, None, pool_k)
+                    .await?;
+            if let Value::Object(map) = &mut payload {
+                map.insert(
+                    "policyMode".to_string(),
+                    Value::String(resolved_policy_mode.as_str().to_string()),
+                );
+                if let Some(mode) = requested_policy_mode {
+                    map.insert(
+                        "requestedPolicyMode".to_string(),
+                        Value::String(mode.as_str().to_string()),
+                    );
+                }
+            }
+            Ok(payload)
         }
 
         "cortex_semantic_recall" => {
