@@ -149,6 +149,7 @@ pub fn shannon_entropy(text: &str) -> f64 {
 struct SearchCandidate {
     source: String,
     excerpt: String,
+    alignment: (usize, usize),
     relevance: f64,
     matched_keywords: i64,
     score: f64,
@@ -247,28 +248,68 @@ fn compare_relevance_desc_source_asc(
     b.total_cmp(&a).then_with(|| a_source.cmp(b_source))
 }
 
-fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
-    if text.is_empty() || query_text.is_empty() {
-        return (0, 0);
+#[derive(Clone)]
+struct QueryAlignmentProfile {
+    lower_query: String,
+    terms: Vec<String>,
+    term_count: usize,
+}
+
+impl QueryAlignmentProfile {
+    fn from_query(query_text: &str) -> Self {
+        let lower_query = query_text.trim().to_ascii_lowercase();
+        let mut seen = HashSet::new();
+        let mut terms = Vec::new();
+        for term in query_focus_terms(query_text) {
+            let normalized = term.trim().to_ascii_lowercase();
+            if normalized.is_empty() {
+                continue;
+            }
+            if seen.insert(normalized.clone()) {
+                terms.push(normalized);
+            }
+        }
+        let term_count = terms.len().max(1);
+        Self {
+            lower_query,
+            terms,
+            term_count,
+        }
     }
-    let lower_text = text.to_ascii_lowercase();
-    let lower_query = query_text.to_ascii_lowercase();
-    let exact_phrase = usize::from(lower_text.contains(&lower_query));
-    let terms = query_focus_terms(query_text);
-    let keyword_hits = terms
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .filter(|term| lower_text.contains(term))
-        .count();
-    (exact_phrase, keyword_hits)
+
+    fn alignment_score(&self, text: &str) -> (usize, usize) {
+        if text.is_empty() || self.lower_query.is_empty() {
+            return (0, 0);
+        }
+        let lower_text = text.to_ascii_lowercase();
+        let exact_phrase = usize::from(lower_text.contains(&self.lower_query));
+        let keyword_hits = self
+            .terms
+            .iter()
+            .filter(|term| lower_text.contains(term.as_str()))
+            .count();
+        (exact_phrase, keyword_hits)
+    }
+}
+
+fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
+    QueryAlignmentProfile::from_query(query_text).alignment_score(text)
+}
+
+fn prefer_query_focused_excerpt_with_profile(
+    current: &str,
+    candidate: &str,
+    profile: &QueryAlignmentProfile,
+) -> bool {
+    let current_score = profile.alignment_score(current);
+    let candidate_score = profile.alignment_score(candidate);
+    candidate_score > current_score
+        || (candidate_score == current_score && candidate.len() < current.len())
 }
 
 fn prefer_query_focused_excerpt(current: &str, candidate: &str, query_text: &str) -> bool {
-    let current_score = query_alignment_score(current, query_text);
-    let candidate_score = query_alignment_score(candidate, query_text);
-    candidate_score > current_score
-        || (candidate_score == current_score && candidate.len() < current.len())
+    let profile = QueryAlignmentProfile::from_query(query_text);
+    prefer_query_focused_excerpt_with_profile(current, candidate, &profile)
 }
 
 fn query_prefers_recency(query_text: &str) -> bool {
@@ -304,8 +345,36 @@ fn query_alignment_boost(
     query_text: &str,
     query_focus_term_count: usize,
 ) -> f64 {
-    let haystack = format!("{source} {excerpt}");
-    let (exact_phrase, keyword_hits) = query_alignment_score(&haystack, query_text);
+    let profile = QueryAlignmentProfile::from_query(query_text);
+    query_alignment_boost_with_profile(
+        source,
+        excerpt,
+        &profile,
+        query_focus_term_count.max(profile.term_count),
+    )
+}
+
+fn query_alignment_boost_with_profile(
+    source: &str,
+    excerpt: &str,
+    profile: &QueryAlignmentProfile,
+    query_focus_term_count: usize,
+) -> f64 {
+    if profile.lower_query.is_empty() {
+        return 0.0;
+    }
+    let lower_source = source.to_ascii_lowercase();
+    let lower_excerpt = excerpt.to_ascii_lowercase();
+    let exact_phrase = usize::from(
+        lower_source.contains(&profile.lower_query) || lower_excerpt.contains(&profile.lower_query),
+    );
+    let keyword_hits = profile
+        .terms
+        .iter()
+        .filter(|term| {
+            lower_source.contains(term.as_str()) || lower_excerpt.contains(term.as_str())
+        })
+        .count();
     if exact_phrase == 0 && keyword_hits == 0 {
         return 0.0;
     }
@@ -2790,11 +2859,8 @@ fn run_recall_with_query_vector_trace(
     // around midpoint H=3.5). Applied after compound scoring so entropy acts as
     // a diversity signal on top of the RRF+compound base.
     let query_entities = query_entity_terms(query_text);
-    let query_focus_term_count = query_focus_terms(query_text)
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .len()
-        .max(1);
+    let alignment_profile = QueryAlignmentProfile::from_query(query_text);
+    let query_focus_term_count = alignment_profile.term_count;
     let mut ranked: Vec<RecallItem> = merged
         .into_values()
         .map(|mut item| {
@@ -2811,10 +2877,10 @@ fn run_recall_with_query_vector_trace(
                     item.relevance = round4(item.relevance * (1.0 + entity_boost));
                 }
             }
-            let alignment_boost = query_alignment_boost(
+            let alignment_boost = query_alignment_boost_with_profile(
                 &item.source,
                 &item.excerpt,
-                query_text,
+                &alignment_profile,
                 query_focus_term_count,
             );
             if alignment_boost > 0.0 {
@@ -2940,11 +3006,8 @@ fn run_semantic_recall_with_query_vector(
         .collect();
 
     let query_entities = query_entity_terms(query_text);
-    let query_focus_term_count = query_focus_terms(query_text)
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .len()
-        .max(1);
+    let alignment_profile = QueryAlignmentProfile::from_query(query_text);
+    let query_focus_term_count = alignment_profile.term_count;
     for item in &mut ranked {
         let h = shannon_entropy(&item.excerpt);
         item.entropy = Some(round4(h));
@@ -2959,10 +3022,10 @@ fn run_semantic_recall_with_query_vector(
                 item.relevance = round4(item.relevance * (1.0 + entity_boost));
             }
         }
-        let alignment_boost = query_alignment_boost(
+        let alignment_boost = query_alignment_boost_with_profile(
             &item.source,
             &item.excerpt,
-            query_text,
+            &alignment_profile,
             query_focus_term_count,
         );
         if alignment_boost > 0.0 {
@@ -3094,7 +3157,11 @@ fn fit_excerpt_to_remaining_budget(
     Some((String::new(), source_only_tokens))
 }
 
-fn prefer_family_candidate(candidate: &RecallItem, current: &RecallItem, query_text: &str) -> bool {
+fn prefer_family_candidate(
+    candidate: &RecallItem,
+    current: &RecallItem,
+    alignment_profile: &QueryAlignmentProfile,
+) -> bool {
     let relevance_delta = candidate.relevance - current.relevance;
     if relevance_delta > 0.03 {
         return true;
@@ -3102,8 +3169,8 @@ fn prefer_family_candidate(candidate: &RecallItem, current: &RecallItem, query_t
     if relevance_delta < -0.03 {
         return false;
     }
-    let candidate_alignment = query_alignment_score(&candidate.excerpt, query_text);
-    let current_alignment = query_alignment_score(&current.excerpt, query_text);
+    let candidate_alignment = alignment_profile.alignment_score(&candidate.excerpt);
+    let current_alignment = alignment_profile.alignment_score(&current.excerpt);
     if candidate_alignment != current_alignment {
         return candidate_alignment > current_alignment;
     }
@@ -3150,6 +3217,7 @@ fn compact_budget_family_candidates_with_trace(
     let mut compacted: HashMap<String, RecallItem> = HashMap::new();
     let mut dropped = Vec::new();
     let mut dropped_by_family: HashMap<String, Vec<String>> = HashMap::new();
+    let alignment_profile = QueryAlignmentProfile::from_query(query_text);
     for item in candidates {
         let family_key = if !item.family_members.is_empty() {
             item.source.clone()
@@ -3161,7 +3229,7 @@ fn compact_budget_family_candidates_with_trace(
         };
         match compacted.entry(family_key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
-                if prefer_family_candidate(&item, entry.get(), query_text) {
+                if prefer_family_candidate(&item, entry.get(), &alignment_profile) {
                     let replaced = entry.insert(item);
                     dropped_by_family
                         .entry(entry.key().clone())
@@ -3878,6 +3946,7 @@ fn search_memories(
                         format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
                     excerpt: query_focused_excerpt(&display, query_text, 220),
+                    alignment: (0, 0),
                     relevance: round4(0.5 * effective_score),
                     matched_keywords: 0,
                     score: effective_score,
@@ -4001,6 +4070,7 @@ fn search_memories(
             ranked.push(SearchCandidate {
                 source: source_key,
                 excerpt: query_focused_excerpt(&display, query_text, 280),
+                alignment: (0, 0),
                 relevance: round4(ranking),
                 matched_keywords: matched,
                 score: effective_score,
@@ -4066,6 +4136,7 @@ fn search_memories_fallback(
         .map_err(|e| e.to_string())?;
 
     let term_groups = build_search_term_groups(query_text);
+    let alignment_profile = QueryAlignmentProfile::from_query(query_text);
     let mut ranked = Vec::new();
 
     for row in rows.flatten() {
@@ -4083,9 +4154,11 @@ fn search_memories_fallback(
         let ts = parse_timestamp_ms(&ts_source);
 
         if term_groups.is_empty() {
+            let excerpt = query_focused_excerpt(&text, query_text, 220);
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: query_focused_excerpt(&text, query_text, 220),
+                alignment: alignment_profile.alignment_score(&excerpt),
+                excerpt,
                 relevance: round4(0.5 * effective_score),
                 matched_keywords: 0,
                 score: effective_score,
@@ -4117,9 +4190,11 @@ fn search_memories_fallback(
             retrievals,
         );
 
+        let excerpt = query_focused_excerpt(&text, query_text, 260);
         ranked.push(SearchCandidate {
             source: source_key,
-            excerpt: query_focused_excerpt(&text, query_text, 260),
+            alignment: alignment_profile.alignment_score(&excerpt),
+            excerpt,
             relevance: round4(ranking),
             matched_keywords: matched,
             score: effective_score,
@@ -4140,10 +4215,7 @@ fn search_memories_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
-                .then_with(|| {
-                    query_alignment_score(&b.excerpt, query_text)
-                        .cmp(&query_alignment_score(&a.excerpt, query_text))
-                })
+                .then(b.alignment.cmp(&a.alignment))
                 .then_with(|| a.source.cmp(&b.source))
         });
     } else {
@@ -4158,10 +4230,7 @@ fn search_memories_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
-                .then_with(|| {
-                    query_alignment_score(&b.excerpt, query_text)
-                        .cmp(&query_alignment_score(&a.excerpt, query_text))
-                })
+                .then(b.alignment.cmp(&a.alignment))
                 .then_with(|| a.source.cmp(&b.source))
         });
     }
@@ -4199,6 +4268,7 @@ fn search_decisions(
                         format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0))
                     }),
                     excerpt: query_focused_excerpt(&row.get::<_, String>(1)?, query_text, 220),
+                    alignment: (0, 0),
                     relevance: round4(0.5 * effective_score),
                     matched_keywords: 0,
                     score: effective_score,
@@ -4316,6 +4386,7 @@ fn search_decisions(
             ranked.push(SearchCandidate {
                 source: source_key,
                 excerpt: query_focused_excerpt(&display, query_text, 280),
+                alignment: (0, 0),
                 relevance: round4(ranking),
                 matched_keywords: matched,
                 score: effective_score,
@@ -4380,6 +4451,7 @@ fn search_decisions_fallback(
         .map_err(|e| e.to_string())?;
 
     let term_groups = build_search_term_groups(query_text);
+    let alignment_profile = QueryAlignmentProfile::from_query(query_text);
     let mut ranked = Vec::new();
 
     for row in rows.flatten() {
@@ -4397,9 +4469,11 @@ fn search_decisions_fallback(
         let ts = parse_timestamp_ms(&ts_source);
 
         if term_groups.is_empty() {
+            let excerpt = query_focused_excerpt(&decision, query_text, 220);
             ranked.push(SearchCandidate {
                 source: source_key,
-                excerpt: query_focused_excerpt(&decision, query_text, 220),
+                alignment: alignment_profile.alignment_score(&excerpt),
+                excerpt,
                 relevance: round4(0.5 * effective_score),
                 matched_keywords: 0,
                 score: effective_score,
@@ -4429,9 +4503,11 @@ fn search_decisions_fallback(
             retrievals,
         );
 
+        let excerpt = query_focused_excerpt(&decision, query_text, 260);
         ranked.push(SearchCandidate {
             source: source_key,
-            excerpt: query_focused_excerpt(&decision, query_text, 260),
+            alignment: alignment_profile.alignment_score(&excerpt),
+            excerpt,
             relevance: round4(ranking),
             matched_keywords: matched,
             score: effective_score,
@@ -4452,10 +4528,7 @@ fn search_decisions_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
-                .then_with(|| {
-                    query_alignment_score(&b.excerpt, query_text)
-                        .cmp(&query_alignment_score(&a.excerpt, query_text))
-                })
+                .then(b.alignment.cmp(&a.alignment))
                 .then_with(|| a.source.cmp(&b.source))
         });
     } else {
@@ -4470,10 +4543,7 @@ fn search_decisions_fallback(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
-                .then_with(|| {
-                    query_alignment_score(&b.excerpt, query_text)
-                        .cmp(&query_alignment_score(&a.excerpt, query_text))
-                })
+                .then(b.alignment.cmp(&a.alignment))
                 .then_with(|| a.source.cmp(&b.source))
         });
     }
