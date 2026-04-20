@@ -36,6 +36,7 @@ import {
   isTransientDaemonFeedback,
 } from "./daemon-startup.js";
 import { buildMonteCarloProjection } from "./analytics-projection.js";
+import { summarizeBootThroughput } from "./analytics-metrics.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.js";
 
 const LazyBrainVisualizer = lazy(() =>
@@ -146,7 +147,7 @@ const MISSION_METRIC_LEGEND = [
 const ANALYTICS_METRIC_LEGEND = [
   { label: "Compounding return", meaning: "30-day total boot tokens saved" },
   { label: "Efficiency", meaning: "Average compression over the same 30-day window" },
-  { label: "Throughput", meaning: "Boot compilations counted over the last 7 days" },
+  { label: "Throughput", meaning: "Boot compilations counted over the last 7 calendar days" },
   { label: "Compiled context", meaning: "30-day total prompt tokens served at boot" },
   { label: "Economic value", meaning: "Estimated currency value based on saved tokens" },
 ];
@@ -1423,6 +1424,7 @@ export function App() {
   const browserBootstrap = useMemo(() => readBrowserBootstrap(), []);
   const isTauriRuntime = typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
   const [panel, setPanel] = useState(() => browserBootstrap.panel || "overview");
+  const [brainPanelMounted, setBrainPanelMounted] = useState(() => (browserBootstrap.panel || "overview") === "brain");
   const [panelMotionDirection, setPanelMotionDirection] = useState("forward");
   const [daemonState, setDaemonState] = useState(EMPTY_DAEMON);
   const [healthMeta, setHealthMeta] = useState(EMPTY_HEALTH_META);
@@ -1495,7 +1497,6 @@ export function App() {
   const [restartError, setRestartError] = useState("");
   const [showMissionMetricLegend, setShowMissionMetricLegend] = useState(false);
   const [showMissionCompactUnits, setShowMissionCompactUnits] = useState(true);
-  const [hasVisitedBrain, setHasVisitedBrain] = useState(() => browserBootstrap.panel === "brain");
   const [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(() => browserBootstrap.panel === "analytics");
   const [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics");
   const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
@@ -1531,6 +1532,10 @@ export function App() {
   const changePanel = useCallback((nextPanel) => {
     if (!PANEL_SEQUENCE.some((entry) => entry.key === nextPanel) || nextPanel === panel) {
       return;
+    }
+
+    if (nextPanel === "brain") {
+      setBrainPanelMounted(true);
     }
 
     const currentIndex = panelIndex(panel);
@@ -2692,9 +2697,6 @@ export function App() {
   }, [panel]);
 
   useEffect(() => {
-    if (panel === "brain") {
-      setHasVisitedBrain(true);
-    }
     if (panel === "analytics") {
       setHasVisitedAnalytics(true);
     }
@@ -3033,21 +3035,18 @@ export function App() {
     return Math.round(((recentAverage - previousAverage) / previousAverage) * 100);
   }, [dailySeries]);
 
-  const throughputBoots7d = useMemo(
-    () => dailySeries.slice(-7).reduce((sum, point) => sum + Number(point.boots || 0), 0),
+  const throughputSummary = useMemo(
+    () => summarizeBootThroughput(dailySeries, 7),
     [dailySeries]
   );
+
+  const throughputBoots7d = throughputSummary.boots;
+  const throughputAvgPerDay7d = throughputSummary.avgPerDay;
 
   const throughputBoots30d = useMemo(
-    () => dailySeries.reduce((sum, point) => sum + Number(point.boots || 0), 0),
-    [dailySeries]
+    () => Number(savings?.summary?.totalBoots || 0),
+    [savings]
   );
-
-  const throughputAvgPerDay7d = useMemo(() => {
-    const days = Math.min(7, dailySeries.length);
-    if (!days) return 0;
-    return Math.round((throughputBoots7d / days) * 10) / 10;
-  }, [dailySeries.length, throughputBoots7d]);
 
   const recentRecallWindow = useMemo(
     () => recallTrendSeries.slice(-7),
@@ -3502,7 +3501,8 @@ export function App() {
     if (!memoryQuery.trim()) return;
     setMemorySearching(true);
     try {
-      const peekResult = await api(`/peek?q=${encodeURIComponent(memoryQuery.trim())}&k=15`);
+      // `/peek` is protected on real daemons; require auth in both IPC and HTTP fallback paths.
+      const peekResult = await api(`/peek?q=${encodeURIComponent(memoryQuery.trim())}&k=15`, true);
       setMemoryResults(peekResult?.matches || []);
     } catch {
       setMemoryResults([]);
@@ -3512,7 +3512,8 @@ export function App() {
 
   async function handleMemoryExpand(source) {
     try {
-      const recallResult = await api(`/recall?q=${encodeURIComponent(source)}&k=3`);
+      // `/recall` may be protected depending on daemon policy; keep expand-on-click auth-aware.
+      const recallResult = await api(`/recall?q=${encodeURIComponent(source)}&k=3`, true);
       const match = recallResult?.results?.find(r => r.source === source);
       if (match) {
         setMemoryResults(prev => prev.map(m =>
@@ -4070,7 +4071,17 @@ export function App() {
         {showConnectionDialog && (
           <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
             <div className="connection-dialog" onClick={e => e.stopPropagation()}>
-              <h2>Connection Settings</h2>
+              <div className="connection-dialog-header">
+                <h2>Connection Settings</h2>
+                <button
+                  type="button"
+                  className="connection-dialog-close"
+                  aria-label="Close connection settings"
+                  onClick={() => setShowConnectionDialog(false)}
+                >
+                  ×
+                </button>
+              </div>
               <p className="connection-subtitle">
                 {isTauriRuntime
                   ? "Desktop app mode uses the local app-managed Cortex daemon only."
@@ -5463,6 +5474,7 @@ export function App() {
                     </div>
                   ))}
                 </div>
+                <div className="analytics-assumption-note">{savingsEstimateLegend}</div>
                 <div className="analytics-metrics-grid">
                   <div className="metric metric-featured" data-accent="cyan">
                     <span className="metric-kicker">Compounding return</span>
@@ -5470,7 +5482,7 @@ export function App() {
                     <span className="metric-label">Boot Tokens Saved (30d total)</span>
                     <span className="metric-footnote">
                       {bootSavingsMomentum === null
-                        ? "Rolling 30-day total tokens saved across boot compilations."
+                        ? "Rolling 30-day total tokens saved across boot compilations. Momentum appears after at least 8 daily samples."
                         : `Rolling 30-day total tokens saved across boot compilations, momentum ${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs prior 4-day window.`}
                     </span>
                     <span className="metric-icon"><AppIcon name="savings" /></span>
@@ -5480,25 +5492,29 @@ export function App() {
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.avgPercent || 0} />%</span>
                     <span className="metric-label">30d Avg Compression</span>
                     <span className="metric-footnote">
-                      Avg saved per boot {formatCompactNumber(Number(savings.summary?.avgSavedPerBoot || 0))} tokens
+                      Average tokens saved per boot: {formatCompactNumber(Number(savings.summary?.avgSavedPerBoot || 0))} over the same 30-day window
                     </span>
                     <span className="metric-icon"><AppIcon name="efficiency" /></span>
                   </div>
                   <div className="metric" data-accent="blue">
-                    <span className="metric-kicker">Boot activity</span>
+                    <span className="metric-kicker">Throughput</span>
                     <span className="metric-value"><AnimatedNumber value={throughputBoots7d} /></span>
-                    <span className="metric-label">Boot Compilations (last 7d)</span>
+                    <span className="metric-label">Boot Compilations (last 7 calendar days)</span>
                     <span className="metric-footnote">
-                      Rolling 7-day boot compilation count (~{throughputAvgPerDay7d}/day)
+                      {throughputSummary.daysRepresented === 0
+                        ? "No boot compilations recorded in the last 7 calendar days."
+                        : throughputSummary.isPartialHistory
+                          ? `Since first recorded boot (${throughputSummary.daysRepresented} day${throughputSummary.daysRepresented === 1 ? "" : "s"}, ~${throughputAvgPerDay7d}/day).`
+                          : `Last 7 calendar days (~${throughputAvgPerDay7d}/day).`}
                     </span>
                     <span className="metric-icon"><AppIcon name="refresh" /></span>
                   </div>
                   <div className="metric" data-accent="purple">
                     <span className="metric-kicker">Compiled context</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} /></span>
-                    <span className="metric-label">Boot Prompt Tokens (30d total)</span>
+                    <span className="metric-label">Boot Prompt Tokens Served (30d total)</span>
                     <span className="metric-footnote">
-                      Avg {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} tokens per boot over the same window
+                      30-day cumulative prompt tokens served at boot; average {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} per boot
                     </span>
                     <span className="metric-icon"><AppIcon name="outbound" /></span>
                   </div>
@@ -5506,9 +5522,8 @@ export function App() {
                     <span className="metric-kicker">Economic value</span>
                     <span className="metric-value">{formatCurrency(((savings.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
                     <span className="metric-label">Est. {safeCurrency} Saved</span>
-                    <span className="metric-assumption">{savingsEstimateLegend}</span>
                     <span className="metric-footnote">
-                      Derived from {formatCompactNumber(Number(savings.summary?.totalSaved || 0))} total tokens saved across boot compilations
+                      Derived from {formatCompactNumber(Number(savings.summary?.totalSaved || 0))} total tokens saved across boot compilations in the last 30 days
                     </span>
                     <span className="metric-icon">$</span>
                   </div>
@@ -5855,7 +5870,7 @@ export function App() {
           </section>
         ) : null}
 
-        {panel === "brain" || hasVisitedBrain ? (
+        {brainPanelMounted ? (
           <section
             className={`panel brain-panel ${panel === "brain" ? "active" : "panel-hidden"}`}
             aria-hidden={panel === "brain" ? undefined : true}

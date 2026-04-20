@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import * as THREE from "three";
 import { AGENT_COLORS, getAgentColor, truncate } from "./constants.js";
@@ -27,7 +27,7 @@ class GraphErrorBoundary extends Component {
   }
 }
 
-export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
+function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -52,6 +52,18 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, [active]);
+
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    if (active) {
+      if (typeof graph.resumeAnimation === "function") graph.resumeAnimation();
+      if (typeof graph.enablePointerInteraction === "function") graph.enablePointerInteraction(true);
+      return;
+    }
+    if (typeof graph.pauseAnimation === "function") graph.pauseAnimation();
+    if (typeof graph.enablePointerInteraction === "function") graph.enablePointerInteraction(false);
+  }, [active, graphData.nodes.length, graphData.links.length]);
 
   // Auto-rotation
   useEffect(() => {
@@ -428,3 +440,6 @@ export function BrainVisualizer({ api = null, cortexBase = "http://127.0.0.1:743
     </div>
   );
 }
+
+BrainVisualizerComponent.displayName = "BrainVisualizer";
+export const BrainVisualizer = memo(BrainVisualizerComponent);
