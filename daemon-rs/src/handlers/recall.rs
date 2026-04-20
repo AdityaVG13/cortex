@@ -292,10 +292,6 @@ impl QueryAlignmentProfile {
     }
 }
 
-fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
-    QueryAlignmentProfile::from_query(query_text).alignment_score(text)
-}
-
 fn prefer_query_focused_excerpt_with_profile(
     current: &str,
     candidate: &str,
@@ -337,21 +333,6 @@ fn temporal_intent_multiplier(ts_ms: i64) -> f64 {
         ((Utc::now().timestamp_millis() - ts_ms).max(0) as f64) / (1000.0 * 60.0 * 60.0 * 24.0);
     let freshness = (1.0 / (1.0 + age_days / 14.0)).clamp(0.0, 1.0);
     1.0 + ((freshness - 0.5) * TEMPORAL_INTENT_MULTIPLIER_RANGE)
-}
-
-fn query_alignment_boost(
-    source: &str,
-    excerpt: &str,
-    query_text: &str,
-    query_focus_term_count: usize,
-) -> f64 {
-    let profile = QueryAlignmentProfile::from_query(query_text);
-    query_alignment_boost_with_profile(
-        source,
-        excerpt,
-        &profile,
-        query_focus_term_count.max(profile.term_count),
-    )
 }
 
 fn query_alignment_boost_with_profile(
@@ -8058,17 +8039,18 @@ mod tests {
     #[test]
     fn test_query_alignment_boost_rewards_exact_phrase_and_coverage() {
         let query = "daemon lock lease";
-        let term_count = query_focus_terms(query).len().max(1);
-        let exact = query_alignment_boost(
+        let profile = QueryAlignmentProfile::from_query(query);
+        let term_count = profile.term_count;
+        let exact = query_alignment_boost_with_profile(
             "memory::daemon-lock",
             "daemon lock lease protects startup arbitration",
-            query,
+            &profile,
             term_count,
         );
-        let weak = query_alignment_boost(
+        let weak = query_alignment_boost_with_profile(
             "memory::generic",
             "startup details with little overlap",
-            query,
+            &profile,
             term_count,
         );
         assert!(
