@@ -4226,8 +4226,21 @@ export function App() {
                     onClick={() => setShowMissionMetricLegend((current) => !current)}
                     title="Explain Mission Control metrics and unit labels"
                   >
-                    Metrics ?
+                    Metric Legend
                   </button>
+                </div>
+                <div className="overview-unit-strip" aria-label="Mission Control unit key">
+                  <span className="overview-unit-strip-title">Unit key</span>
+                  {MISSION_METRIC_LEGEND.map((entry) => (
+                    <span key={entry.abbreviation} className="overview-unit-chip">
+                      <code>{entry.abbreviation}</code>
+                      <span>{entry.meaning}</span>
+                    </span>
+                  ))}
+                  <span className="overview-unit-chip">
+                    <code>t/day</code>
+                    <span>tokens per day</span>
+                  </span>
                 </div>
                 {showMissionMetricLegend ? (
                   <div className="overview-metric-legend" role="dialog" aria-label="Mission Control metric legend">
@@ -4235,6 +4248,9 @@ export function App() {
                     <p>
                       <strong>30d median gain</strong> is the projected p50 token savings over the next 30 days.
                       <strong> Current run-rate</strong> is the projected daily token savings pace.
+                    </p>
+                    <p>
+                      Suffixes are case-sensitive: lowercase <code>t</code> means tokens, uppercase <code>T</code> means trillions.
                     </p>
                     <ul>
                       {MISSION_METRIC_LEGEND.map((entry) => (
