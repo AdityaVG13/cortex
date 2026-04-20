@@ -562,12 +562,16 @@ fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &RecallContex
        ON cm.target_type = 'memory'
       AND cm.target_id = m.id
       AND m.status = 'active'
-      AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))
+      AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
      LEFT JOIN decisions d
        ON cm.target_type = 'decision'
       AND cm.target_id = d.id
       AND d.status = 'active'
-      AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))
+      AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now'))
      WHERE cm.cluster_id = ?1
      ORDER BY cm.target_type, cm.target_id";
 
@@ -580,12 +584,16 @@ fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &RecallContex
        ON cm.target_type = 'memory'
       AND cm.target_id = m.id
       AND m.status = 'active'
-      AND (m.expires_at IS NULL OR m.expires_at > datetime('now'))
+      AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
      LEFT JOIN decisions d
        ON cm.target_type = 'decision'
       AND cm.target_id = d.id
       AND d.status = 'active'
-      AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))
+      AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now'))
      WHERE cm.cluster_id = ?1
      ORDER BY cm.target_type, cm.target_id";
 
@@ -1414,7 +1422,9 @@ fn sqlite_vec_source_fallback_candidate(
                 "SELECT text, score, trust_score, last_accessed, created_at
                  FROM memories
                  WHERE id = ?1 AND status = 'active'
-                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
                  LIMIT 1",
                 params![id],
                 |row| {
@@ -1440,7 +1450,9 @@ fn sqlite_vec_source_fallback_candidate(
             "SELECT text, score, trust_score, last_accessed, created_at
              FROM memories
              WHERE source = ?1 AND status = 'active'
-             AND (expires_at IS NULL OR expires_at > datetime('now'))
+             AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
              ORDER BY COALESCE(last_accessed, created_at) DESC
              LIMIT 1",
             params![source],
@@ -1469,7 +1481,9 @@ fn sqlite_vec_source_fallback_candidate(
                 "SELECT decision, score, trust_score, last_accessed, created_at
                  FROM decisions
                  WHERE id = ?1 AND status = 'active'
-                 AND (expires_at IS NULL OR expires_at > datetime('now'))
+                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
                  LIMIT 1",
                 params![id],
                 |row| {
@@ -1494,7 +1508,9 @@ fn sqlite_vec_source_fallback_candidate(
         "SELECT decision, score, trust_score, last_accessed, created_at
          FROM decisions
          WHERE context = ?1 AND status = 'active'
-         AND (expires_at IS NULL OR expires_at > datetime('now'))
+         AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
          ORDER BY COALESCE(last_accessed, created_at) DESC
          LIMIT 1",
         params![source],
@@ -3197,7 +3213,9 @@ fn fetch_associative_source_payload(
              FROM memories
              WHERE status = 'active'
                AND source = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now'))
+               AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
              ORDER BY COALESCE(last_accessed, created_at) DESC
              LIMIT 1",
             params![source],
@@ -3222,7 +3240,9 @@ fn fetch_associative_source_payload(
              FROM memories
              WHERE status = 'active'
                AND source = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now'))
+               AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
              ORDER BY COALESCE(last_accessed, created_at) DESC
              LIMIT 1",
             params![source],
@@ -3274,7 +3294,9 @@ fn fetch_associative_source_payload(
              FROM decisions
              WHERE status = 'active'
                AND context = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now'))
+               AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
              ORDER BY COALESCE(last_accessed, created_at) DESC
              LIMIT 1",
             params![source],
@@ -3299,7 +3321,9 @@ fn fetch_associative_source_payload(
              FROM decisions
              WHERE status = 'active'
                AND context = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now'))
+               AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))
              ORDER BY COALESCE(last_accessed, created_at) DESC
              LIMIT 1",
             params![source],
@@ -3733,6 +3757,8 @@ fn search_memories(
                 "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier \
                  FROM memories WHERE status = 'active' \
                  AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -3787,6 +3813,8 @@ fn search_memories(
                  JOIN memories m ON m.id = fts.rowid \
                  WHERE memories_fts MATCH ?1 AND m.status = 'active' \
                  AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
                  ORDER BY bm25(memories_fts, ?3, ?4, ?5) \
                  LIMIT ?2",
             )
@@ -3915,7 +3943,9 @@ fn search_memories_fallback(
         .prepare(
             "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at \
              FROM memories WHERE status = 'active' \
-             AND (expires_at IS NULL OR expires_at > datetime('now'))",
+             AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))",
         )
         .map_err(|e| e.to_string())?;
 
@@ -4044,6 +4074,8 @@ fn search_decisions(
                 "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at \
                  FROM decisions WHERE status = 'active' \
                  AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
@@ -4090,6 +4122,8 @@ fn search_decisions(
                  JOIN decisions d ON d.id = fts.rowid \
                  WHERE decisions_fts MATCH ?1 AND d.status = 'active' \
                  AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
                  ORDER BY bm25(decisions_fts, ?3, ?4) \
                  LIMIT ?2",
             )
@@ -4214,7 +4248,9 @@ fn search_decisions_fallback(
         .prepare(
             "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at \
              FROM decisions WHERE status = 'active' \
-             AND (expires_at IS NULL OR expires_at > datetime('now'))",
+             AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))",
         )
         .map_err(|e| e.to_string())?;
 
@@ -4355,6 +4391,8 @@ fn collect_semantic_candidates(
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR m.source LIKE ?3)";
@@ -4363,6 +4401,8 @@ fn collect_semantic_candidates(
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR m.source LIKE ?3)";
@@ -4466,6 +4506,8 @@ fn collect_semantic_candidates(
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR d.context LIKE ?3)";
@@ -4474,6 +4516,8 @@ fn collect_semantic_candidates(
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR d.context LIKE ?3)";
@@ -4603,6 +4647,8 @@ fn collect_shadow_semantic_rows(
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR m.source LIKE ?3)";
@@ -4610,6 +4656,8 @@ fn collect_shadow_semantic_rows(
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
+         AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
+         AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR m.source LIKE ?3)";
@@ -4649,6 +4697,8 @@ fn collect_shadow_semantic_rows(
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR d.context LIKE ?3)";
@@ -4656,6 +4706,8 @@ fn collect_shadow_semantic_rows(
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+         AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
+         AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND length(e.vector) = ?2 \
          AND (?3 IS NULL OR d.context LIKE ?3)";
@@ -5984,6 +6036,8 @@ fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfo
     let sql_with_visibility =
         "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
          ORDER BY score DESC LIMIT 1";
     match conn.query_row(sql_with_visibility, params![source], |row| {
         Ok((
@@ -5998,6 +6052,8 @@ fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfo
             .query_row(
                 "SELECT text, type FROM memories WHERE source = ?1 \
                  AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
                  ORDER BY score DESC LIMIT 1",
                 params![source],
                 |row| {
@@ -6017,7 +6073,9 @@ fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfo
 fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<DecisionUnfoldRow> {
     let sql_with_visibility =
         "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
-         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))";
+         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))";
     match conn.query_row(sql_with_visibility, params![id], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -6030,7 +6088,9 @@ fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<Decisio
         Err(err) if is_missing_team_visibility_columns(&err) => conn
             .query_row(
                 "SELECT decision, context FROM decisions WHERE id = ?1 \
-                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now'))",
+                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now'))",
                 params![id],
                 |row| {
                     Ok((
@@ -6053,6 +6113,8 @@ fn query_decision_by_context_for_unfold(
     let sql_with_visibility =
         "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
          ORDER BY score DESC LIMIT 1";
     match conn.query_row(sql_with_visibility, params![source], |row| {
         Ok((
@@ -6067,6 +6129,8 @@ fn query_decision_by_context_for_unfold(
             .query_row(
                 "SELECT decision, context FROM decisions WHERE context = ?1 \
                  AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
+             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
                  ORDER BY score DESC LIMIT 1",
                 params![source],
                 |row| {
@@ -6598,7 +6662,7 @@ mod tests {
     }
 
     #[test]
-    fn search_memories_excludes_expired_rows() {
+    fn search_memories_excludes_temporally_invalid_rows() {
         let conn = test_conn();
         conn.execute(
             "INSERT INTO memories (text, type, source, status, expires_at, created_at, updated_at)
@@ -6612,16 +6676,30 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, valid_from, created_at, updated_at)
+             VALUES ('future memory', 'note', 'future-memory', 'active', datetime('now', '+1 day'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, type, source, status, valid_until, created_at, updated_at)
+             VALUES ('stale memory', 'note', 'stale-memory', 'active', datetime('now', '-1 day'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
 
         let results = search_memories(&conn, "", 10, None).unwrap();
         let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
 
         assert!(sources.contains(&"active-memory"));
         assert!(!sources.contains(&"expired-memory"));
+        assert!(!sources.contains(&"future-memory"));
+        assert!(!sources.contains(&"stale-memory"));
     }
 
     #[test]
-    fn search_decisions_excludes_expired_rows() {
+    fn search_decisions_excludes_temporally_invalid_rows() {
         let conn = test_conn();
         conn.execute(
             "INSERT INTO decisions (decision, context, status, expires_at, created_at, updated_at)
@@ -6635,12 +6713,26 @@ mod tests {
             [],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, valid_from, created_at, updated_at)
+             VALUES ('future decision', 'future-decision', 'active', datetime('now', '+1 day'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, valid_until, created_at, updated_at)
+             VALUES ('stale decision', 'stale-decision', 'active', datetime('now', '-1 day'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
 
         let results = search_decisions(&conn, "", 10, None).unwrap();
         let sources: Vec<&str> = results.iter().map(|item| item.source.as_str()).collect();
 
         assert!(sources.contains(&"active-decision"));
         assert!(!sources.contains(&"expired-decision"));
+        assert!(!sources.contains(&"future-decision"));
+        assert!(!sources.contains(&"stale-decision"));
     }
 
     #[test]
@@ -6898,6 +6990,62 @@ mod tests {
                 .map(|candidate| candidate.source.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn semantic_candidate_collection_excludes_temporally_invalid_rows() {
+        let conn = test_conn();
+        insert_memory_with_embedding(
+            &conn,
+            "daemon lock arbitration healthy path",
+            "memory::semantic-valid",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "daemon lock arbitration future path",
+            "memory::semantic-future",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        insert_memory_with_embedding(
+            &conn,
+            "daemon lock arbitration stale path",
+            "memory::semantic-stale",
+            &[1.0, 0.0, 0.0, 0.0, 0.0],
+        );
+        conn.execute(
+            "UPDATE memories SET valid_from = datetime('now', '+1 day') WHERE source = 'memory::semantic-future'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memories SET valid_until = datetime('now', '-1 day') WHERE source = 'memory::semantic-stale'",
+            [],
+        )
+        .unwrap();
+
+        let query_vector = [0.98, 0.02, 0.0, 0.0, 0.0];
+        let candidates = collect_semantic_candidates(
+            &conn,
+            &query_vector,
+            "daemon lock arbitration",
+            &solo_ctx(),
+            None,
+        );
+        let sources: Vec<String> = candidates
+            .iter()
+            .map(|candidate| candidate.source.clone())
+            .collect();
+
+        assert!(sources
+            .iter()
+            .any(|source| source == "memory::semantic-valid"));
+        assert!(!sources
+            .iter()
+            .any(|source| source == "memory::semantic-future"));
+        assert!(!sources
+            .iter()
+            .any(|source| source == "memory::semantic-stale"));
     }
 
     #[test]
