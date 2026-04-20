@@ -71,6 +71,7 @@ const DAEMON_START_STILL_STARTING_GRACE_MS = 9000;
 const DAEMON_STOP_HANG_TIMEOUT_MS = 5000;
 const DAEMON_STOP_WAIT_TIMEOUT_MS = 15000;
 const SAVINGS_USD_PER_MILLION = 15;
+const SAVINGS_HISTORY_DAYS = 30;
 const SIDEBAR_COLLAPSE_BREAKPOINT_PX = 1100;
 
 const FEED_KIND_LABEL = {
@@ -244,6 +245,20 @@ function readBrowserBootstrap() {
   }
 
   return { cortexBase, authToken, panel };
+}
+
+function readLocalStorageValue(key, fallback = "") {
+  if (typeof window === "undefined") return fallback;
+  try {
+    return window.localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeCurrencyCode(raw) {
+  const candidate = String(raw || "").trim().toUpperCase();
+  return CURRENCY_OPTIONS.includes(candidate) ? candidate : "USD";
 }
 
 function persistBrowserAuthToken(token) {
@@ -1484,8 +1499,11 @@ export function App() {
   const [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(() => browserBootstrap.panel === "analytics");
   const [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics");
   const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
-  const [currency, setCurrency] = useState(() => localStorage.getItem("cortex_currency") || "USD");
-  const [analyticsMode, setAnalyticsMode] = useState(() => localStorage.getItem("cortex_analytics_mode") || "aggregate");
+  const [currency, setCurrency] = useState(() => normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD")));
+  const [analyticsMode, setAnalyticsMode] = useState(() => {
+    const stored = readLocalStorageValue("cortex_analytics_mode", "aggregate");
+    return stored === "operations" ? "operations" : "aggregate";
+  });
 
   const invokeRef = useRef(null);
   const tokenRef = useRef(browserBootstrap.authToken || "");
@@ -1633,7 +1651,8 @@ export function App() {
     [knownAgents, messageTarget],
   );
 
-  const currencyRate = USD_TO_CURRENCY_RATE[currency] ?? USD_TO_CURRENCY_RATE.USD;
+  const safeCurrency = normalizeCurrencyCode(currency);
+  const currencyRate = USD_TO_CURRENCY_RATE[safeCurrency] ?? USD_TO_CURRENCY_RATE.USD;
   const memoryLoad = useMemo(
     () =>
       (typeof stats.memories === "number" ? stats.memories : 0)
@@ -1641,15 +1660,21 @@ export function App() {
     [stats]
   );
 
-  const currencyFormatter = useMemo(
-    () =>
-      new Intl.NumberFormat(undefined, {
+  const currencyFormatter = useMemo(() => {
+    try {
+      return new Intl.NumberFormat(undefined, {
         style: "currency",
-        currency,
-        maximumFractionDigits: currency === "JPY" || currency === "KRW" ? 0 : 2,
-      }),
-    [currency]
-  );
+        currency: safeCurrency,
+        maximumFractionDigits: safeCurrency === "JPY" || safeCurrency === "KRW" ? 0 : 2,
+      });
+    } catch {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 2,
+      });
+    }
+  }, [safeCurrency]);
 
   const formatCurrency = useCallback(
     (usdAmount) => currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
@@ -1657,8 +1682,8 @@ export function App() {
   );
   const savingsEstimateLegend = useMemo(() => {
     const base = `Assumption: $${SAVINGS_USD_PER_MILLION} USD per 1M tokens saved`;
-    return currency === "USD" ? base : `${base}, converted to ${currency}`;
-  }, [currency]);
+    return safeCurrency === "USD" ? base : `${base}, converted to ${safeCurrency}`;
+  }, [safeCurrency]);
 
   const formatMissionTokenValue = useCallback((value, { signed = false, perDay = false } = {}) => {
     const numeric = Number(value || 0);
@@ -2629,8 +2654,8 @@ export function App() {
   }, [cortexBase, isTauriRuntime]);
 
   useEffect(() => {
-    localStorage.setItem("cortex_currency", currency);
-  }, [currency]);
+    localStorage.setItem("cortex_currency", safeCurrency);
+  }, [safeCurrency]);
 
   useEffect(() => {
     localStorage.setItem("cortex_analytics_mode", analyticsMode);
@@ -3961,7 +3986,7 @@ export function App() {
           <div className="topbar-left">
             <span className="topbar-path">CORTEX</span>
             <span className="topbar-sep">/</span>
-            <span className="topbar-current">{PANEL_SEQUENCE.find(p => p.key === panel)?.label.toUpperCase()}</span>
+            <span className="topbar-current">{(PANEL_SEQUENCE.find((p) => p.key === panel)?.label || "Overview").toUpperCase()}</span>
           </div>
           <div className="topbar-right">
             <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
@@ -5397,7 +5422,7 @@ export function App() {
                 <span className="panel-subtitle">Token savings and brain health</span>
                 <label className="analytics-inline-control">
                   <span>Currency</span>
-                  <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+                  <select value={safeCurrency} onChange={(event) => setCurrency(normalizeCurrencyCode(event.target.value))}>
                     {CURRENCY_OPTIONS.map((code) => (
                       <option key={code} value={code}>{code}</option>
                     ))}
@@ -5480,7 +5505,7 @@ export function App() {
                   <div className="metric" data-accent="green">
                     <span className="metric-kicker">Economic value</span>
                     <span className="metric-value">{formatCurrency(((savings.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
-                    <span className="metric-label">Est. {currency} Saved</span>
+                    <span className="metric-label">Est. {safeCurrency} Saved</span>
                     <span className="metric-assumption">{savingsEstimateLegend}</span>
                     <span className="metric-footnote">
                       Derived from {formatCompactNumber(Number(savings.summary?.totalSaved || 0))} total tokens saved across boot compilations
