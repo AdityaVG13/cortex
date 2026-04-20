@@ -924,6 +924,52 @@ pub fn resolve_recall_budget_k(
     (resolved_budget, resolved_k.max(1), resolved_mode)
 }
 
+fn adaptive_default_budget_for_query(
+    query_text: &str,
+    resolved_k: usize,
+    default_budget: usize,
+) -> usize {
+    if default_budget == 0 {
+        return 0;
+    }
+    let profile = query_shape_profile(query_text, None);
+    let token_count = query_text.split_whitespace().count();
+    let base: usize = if profile.exactish && !profile.naturalish {
+        180
+    } else if profile.naturalish && !profile.exactish {
+        if token_count >= 14 {
+            300
+        } else {
+            270
+        }
+    } else {
+        240
+    };
+    let scaled = if resolved_k <= 3 {
+        base.saturating_sub(40)
+    } else if resolved_k <= 6 {
+        base
+    } else if resolved_k <= 10 {
+        base.saturating_add(30)
+    } else {
+        base.saturating_add(60)
+    };
+    scaled.clamp(140, default_budget.max(140))
+}
+
+fn maybe_apply_adaptive_default_budget(
+    query_text: &str,
+    requested_mode: Option<RecallPolicyMode>,
+    requested_budget: Option<usize>,
+    resolved_budget: usize,
+    resolved_k: usize,
+) -> usize {
+    if requested_mode.is_some() || requested_budget.is_some() {
+        return resolved_budget;
+    }
+    adaptive_default_budget_for_query(query_text, resolved_k, resolved_budget)
+}
+
 #[derive(Deserialize, Default)]
 pub struct RecallQuery {
     pub q: Option<String>,
@@ -969,7 +1015,7 @@ pub async fn handle_recall(
             return json_response(StatusCode::BAD_REQUEST, json!({ "error": err }));
         }
     };
-    let (budget, k, resolved_policy_mode) =
+    let (mut budget, k, _resolved_policy_mode) =
         resolve_recall_budget_k(requested_policy_mode, query.budget, query.k);
     let source_prefix = query
         .source_prefix
@@ -984,6 +1030,14 @@ pub async fn handle_recall(
             json!({ "error": "Missing query parameter: q" }),
         );
     }
+    budget = maybe_apply_adaptive_default_budget(
+        q.trim(),
+        requested_policy_mode,
+        query.budget,
+        budget,
+        k,
+    );
+    let resolved_policy_mode = recall_mode_for_budget(budget);
 
     let ctx = RecallContext::from_caller(caller_id, &state);
     match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
@@ -1031,7 +1085,7 @@ pub async fn handle_recall_post(
             return json_response(StatusCode::BAD_REQUEST, json!({ "error": err }));
         }
     };
-    let (budget, k, resolved_policy_mode) =
+    let (mut budget, k, _resolved_policy_mode) =
         resolve_recall_budget_k(requested_policy_mode, body.budget, body.k);
     let source_prefix = body
         .source_prefix
@@ -1046,6 +1100,14 @@ pub async fn handle_recall_post(
             json!({ "error": "Missing recall payload field: q" }),
         );
     }
+    budget = maybe_apply_adaptive_default_budget(
+        q.trim(),
+        requested_policy_mode,
+        body.budget,
+        budget,
+        k,
+    );
+    let resolved_policy_mode = recall_mode_for_budget(budget);
 
     let ctx = RecallContext::from_caller(caller_id, &state);
     match execute_unified_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
@@ -1211,7 +1273,7 @@ pub async fn handle_recall_explain(
             return json_response(StatusCode::BAD_REQUEST, json!({ "error": err }));
         }
     };
-    let (budget, k, resolved_policy_mode) =
+    let (mut budget, k, _resolved_policy_mode) =
         resolve_recall_budget_k(requested_policy_mode, query.budget, query.k);
     let pool_k = query.pool_k.unwrap_or((k.max(8) * 3).min(64));
     let source_prefix = query
@@ -1221,6 +1283,14 @@ pub async fn handle_recall_explain(
         .filter(|s| !s.is_empty());
     let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
     let ctx = RecallContext::from_caller(caller_id, &state);
+    budget = maybe_apply_adaptive_default_budget(
+        q.trim(),
+        requested_policy_mode,
+        query.budget,
+        budget,
+        k,
+    );
+    let resolved_policy_mode = recall_mode_for_budget(budget);
 
     match execute_recall_policy_explain(
         &state,
@@ -10173,6 +10243,55 @@ mod tests {
         assert_eq!(mode, RecallPolicyMode::Deep);
         assert_eq!(budget, 640);
         assert_eq!(k, recall_default_k_for_mode(RecallPolicyMode::Deep));
+    }
+
+    #[test]
+    fn maybe_apply_adaptive_default_budget_reduces_short_exact_queries() {
+        let (resolved_budget, resolved_k, _mode) = resolve_recall_budget_k(None, None, None);
+        assert_eq!(resolved_budget, DEFAULT_RECALL_BUDGET_BALANCED);
+        let adaptive =
+            maybe_apply_adaptive_default_budget("auth.rs", None, None, resolved_budget, resolved_k);
+        assert!(
+            adaptive < resolved_budget,
+            "short exact default queries should use less than balanced default budget"
+        );
+        assert!(
+            adaptive >= 140,
+            "adaptive budget should preserve baseline floor for recall quality"
+        );
+    }
+
+    #[test]
+    fn maybe_apply_adaptive_default_budget_preserves_long_natural_query_headroom() {
+        let (resolved_budget, resolved_k, _mode) = resolve_recall_budget_k(None, None, Some(12));
+        let adaptive = maybe_apply_adaptive_default_budget(
+            "How does Cortex preserve session truth after a daemon restart and reconnect when plugin heartbeat ownership drifts?",
+            None,
+            None,
+            resolved_budget,
+            resolved_k,
+        );
+        assert!(
+            adaptive >= 280,
+            "broader natural queries should retain substantial budget headroom"
+        );
+        assert!(adaptive <= resolved_budget);
+    }
+
+    #[test]
+    fn maybe_apply_adaptive_default_budget_does_not_override_explicit_settings() {
+        let explicit_budget =
+            maybe_apply_adaptive_default_budget("auth.rs", None, Some(512), 512, 6);
+        assert_eq!(explicit_budget, 512);
+
+        let explicit_mode_budget = maybe_apply_adaptive_default_budget(
+            "auth.rs",
+            Some(RecallPolicyMode::Deep),
+            None,
+            DEFAULT_RECALL_BUDGET_DEEP,
+            recall_default_k_for_mode(RecallPolicyMode::Deep),
+        );
+        assert_eq!(explicit_mode_budget, DEFAULT_RECALL_BUDGET_DEEP);
     }
 
     #[tokio::test]
