@@ -5444,7 +5444,7 @@ export function App() {
                     <span className="metric-label">Est. {currency} Saved</span>
                     <span className="metric-assumption">{savingsEstimateLegend}</span>
                     <span className="metric-footnote">
-                      Latest recall hit rate {latestRecallHitRate || 0}% with local-first memory
+                      Derived from {formatCompactNumber(Number(savings.summary?.totalSaved || 0))} total tokens saved across boot compilations
                     </span>
                     <span className="metric-icon">$</span>
                   </div>
