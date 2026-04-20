@@ -120,6 +120,12 @@ jobs:
       - name: Spawn audit regression tests
         run: python -m pytest tools/tests/test_audit_spawn_paths.py -q
 
+      - name: Enforce feature-intake guardrails
+        run: python tools/validate_feature_intake.py
+
+      - name: Feature-intake validator regression tests
+        run: python -m pytest tools/tests/test_validate_feature_intake.py -q
+
   benchmarking-adapters:
     name: Benchmark adapter tests
     runs-on: ubuntu-latest
