@@ -1647,6 +1647,10 @@ export function App() {
     (usdAmount) => currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
     [currencyFormatter, currencyRate]
   );
+  const savingsEstimateLegend = useMemo(() => {
+    const base = `Assumes $${SAVINGS_USD_PER_MILLION} USD per 1M tokens saved`;
+    return currency === "USD" ? base : `${base}, converted to ${currency}`;
+  }, [currency]);
 
   const formatMissionTokenValue = useCallback((value, { signed = false, perDay = false } = {}) => {
     const numeric = Number(value || 0);
@@ -5438,6 +5442,7 @@ export function App() {
                     <span className="metric-kicker">Economic value</span>
                     <span className="metric-value">{formatCurrency(((savings.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
                     <span className="metric-label">Est. {currency} Saved</span>
+                    <span className="metric-assumption">{savingsEstimateLegend}</span>
                     <span className="metric-footnote">
                       Latest recall hit rate {latestRecallHitRate || 0}% with local-first memory
                     </span>
