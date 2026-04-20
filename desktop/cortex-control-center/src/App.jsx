@@ -2961,6 +2961,11 @@ export function App() {
     [savings]
   );
 
+  const cumulativeLatestTotal = useMemo(
+    () => Number(cumulativeSeries.at(-1)?.savedTotal || 0),
+    [cumulativeSeries]
+  );
+
   const recallTrendSeries = useMemo(
     () => (Array.isArray(savings?.recallTrend) ? savings.recallTrend : []),
     [savings]
@@ -3004,6 +3009,12 @@ export function App() {
     () => dailySeries.reduce((sum, point) => sum + Number(point.boots || 0), 0),
     [dailySeries]
   );
+
+  const throughputAvgPerDay7d = useMemo(() => {
+    const days = Math.min(7, dailySeries.length);
+    if (!days) return 0;
+    return Math.round((throughputBoots7d / days) * 10) / 10;
+  }, [dailySeries.length, throughputBoots7d]);
 
   const recentRecallWindow = useMemo(
     () => recallTrendSeries.slice(-7),
@@ -4141,7 +4152,7 @@ export function App() {
               </div>
               <div className="metric" data-accent="blue">
                 <span className="metric-value">{formatCompactNumber(Number(savings?.summary?.totalSaved || 0))}</span>
-                <span className="metric-label">Saved Tokens</span>
+                <span className="metric-label">Saved Tokens (30d)</span>
                 <span className="metric-icon"><AppIcon name="token" /></span>
               </div>
             </div>
@@ -4222,7 +4233,9 @@ export function App() {
               <div className="card overview-hero-card overview-span-2">
                 <div className="card-header">
                   <h2>Mission Control</h2>
-                  <span className="badge">{formatCurrency(((savings?.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
+                  <span className="badge" title={`Estimated value over the last ${SAVINGS_HISTORY_DAYS} days`}>
+                    {formatCurrency(((savings?.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)} (30d est)
+                  </span>
                 </div>
                 <div className="overview-hero-meta">
                   <button
@@ -4286,7 +4299,7 @@ export function App() {
                     <span>{monteCarloProjection ? `${monteCarloProjection.simulationCount} deterministic sims` : "Waiting for more history"}</span>
                   </div>
                   <div className="overview-summary-card">
-                    <span className="overview-summary-label">Current run-rate</span>
+                    <span className="overview-summary-label">Boot Savings Run-Rate</span>
                     <strong>{formatMissionTokenValue(Number(monteCarloProjection?.summary?.avgDaily || 0), { perDay: true })}</strong>
                     <span>{bootSavingsMomentum === null ? "Momentum pending" : `${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs prior window`}</span>
                   </div>
@@ -4296,7 +4309,7 @@ export function App() {
                     <span>{claimedTasks.length} claimed / {pendingTasks.length} pending</span>
                   </div>
                   <div className="overview-summary-card">
-                    <span className="overview-summary-label">Memory load</span>
+                    <span className="overview-summary-label">Knowledge Entries</span>
                     <strong>{memoryLoad}</strong>
                     <span>{stats.memories} memories / {stats.decisions} decisions</span>
                   </div>
@@ -4315,7 +4328,7 @@ export function App() {
                 </div>
                 <div className="overview-status-list">
                   <div className="overview-status-row">
-                    <span>Latest recall hit rate</span>
+                    <span>Headline recall hit rate</span>
                     <strong>{latestRecallHitRate || 0}%</strong>
                   </div>
                   <div className="overview-status-row">
@@ -5416,8 +5429,8 @@ export function App() {
                     <span className="metric-label">Boot Tokens Saved (30d total)</span>
                     <span className="metric-footnote">
                       {bootSavingsMomentum === null
-                        ? "Collecting enough history for a momentum read."
-                        : `${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs previous 4-day window`}
+                        ? "Rolling 30-day total tokens saved across boot compilations."
+                        : `Rolling 30-day total tokens saved across boot compilations, momentum ${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs prior 4-day window.`}
                     </span>
                     <span className="metric-icon"><AppIcon name="savings" /></span>
                   </div>
@@ -5431,11 +5444,11 @@ export function App() {
                     <span className="metric-icon"><AppIcon name="efficiency" /></span>
                   </div>
                   <div className="metric" data-accent="blue">
-                    <span className="metric-kicker">Throughput</span>
+                    <span className="metric-kicker">Boot activity</span>
                     <span className="metric-value"><AnimatedNumber value={throughputBoots7d} /></span>
-                    <span className="metric-label">7d Boot Compilations</span>
+                    <span className="metric-label">Boot Compilations (last 7d)</span>
                     <span className="metric-footnote">
-                      Rolling 7-day boot count from local `boot_savings` events (benchmark runs excluded)
+                      Rolling 7-day boot compilation count (~{throughputAvgPerDay7d}/day)
                     </span>
                     <span className="metric-icon"><AppIcon name="refresh" /></span>
                   </div>
@@ -5537,7 +5550,7 @@ export function App() {
                         </p>
                         <div className="analytics-stat-strip analytics-stat-strip-tight">
                           <div className="analytics-stat-chip">
-                            <span className="analytics-stat-chip-label">Latest</span>
+                            <span className="analytics-stat-chip-label">Headline</span>
                             <strong>{latestRecallHitRate || 0}%</strong>
                           </div>
                           <div className="analytics-stat-chip">
@@ -5577,7 +5590,7 @@ export function App() {
                         <div className="analytics-card-header-tight">
                           <div>
                             <span className="analytics-card-kicker">Short-term movement</span>
-                            <h2>Daily Token Savings</h2>
+                            <h2>Daily Boot Token Savings</h2>
                           </div>
                           <span className="badge">{dailySeries.length} days</span>
                         </div>
@@ -5627,7 +5640,7 @@ export function App() {
                             <span className="analytics-card-kicker">Long-term impact</span>
                             <h2>Cumulative Savings (30d)</h2>
                           </div>
-                          <span className="badge">{formatCompactNumber(Number(savings.summary?.totalSaved || 0))}t</span>
+                          <span className="badge">{formatCompactNumber(cumulativeLatestTotal)}t</span>
                         </div>
                         <Sparkline
                           data={cumulativeSeries.map((point) => Number(point.savedTotal || 0))}
