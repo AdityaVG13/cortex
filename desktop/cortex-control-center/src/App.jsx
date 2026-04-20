@@ -5442,9 +5442,9 @@ export function App() {
                   <div className="metric" data-accent="purple">
                     <span className="metric-kicker">Compiled context</span>
                     <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} /></span>
-                    <span className="metric-label">Boot Prompt Tokens</span>
+                    <span className="metric-label">Boot Prompt Tokens (30d total)</span>
                     <span className="metric-footnote">
-                      Baseline replay pressure {formatCompactNumber(Number(savings.summary?.totalBaseline || 0))} tokens
+                      Avg {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} tokens per boot over the same window
                     </span>
                     <span className="metric-icon"><AppIcon name="outbound" /></span>
                   </div>
