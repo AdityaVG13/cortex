@@ -49,6 +49,10 @@ const SQLITE_VEC_TRIAL_TOP1_MATCH_REQUIRED: bool = true;
 const ENTITY_SIGNAL_OVERLAP_WEIGHT: f64 = 0.10;
 const ENTITY_SIGNAL_MATCH_WEIGHT: f64 = 0.01;
 const ENTITY_SIGNAL_MAX_BOOST: f64 = 0.12;
+const ALIGNMENT_EXACT_BONUS_MAX: f64 = 0.08;
+const ALIGNMENT_COVERAGE_BONUS_MAX: f64 = 0.07;
+const ALIGNMENT_BOOST_MAX: f64 = 0.15;
+const TEMPORAL_INTENT_MULTIPLIER_RANGE: f64 = 0.16;
 const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex::";
 const BENCHMARK_SOURCE_SCOPE_PREFIX: &str = "amb::";
 const DEFAULT_RECALL_BUDGET_FAST: usize = 180;
@@ -228,10 +232,19 @@ fn compare_relevance_desc_source_asc(
     b_relevance: f64,
     b_source: &str,
 ) -> std::cmp::Ordering {
-    b_relevance
-        .partial_cmp(&a_relevance)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| a_source.cmp(b_source))
+    // NaN/infinite values are treated as the lowest possible relevance so
+    // fallback ordering stays deterministic and finite scores always win.
+    let a = if a_relevance.is_finite() {
+        a_relevance
+    } else {
+        f64::NEG_INFINITY
+    };
+    let b = if b_relevance.is_finite() {
+        b_relevance
+    } else {
+        f64::NEG_INFINITY
+    };
+    b.total_cmp(&a).then_with(|| a_source.cmp(b_source))
 }
 
 fn query_alignment_score(text: &str, query_text: &str) -> (usize, usize) {
@@ -256,6 +269,56 @@ fn prefer_query_focused_excerpt(current: &str, candidate: &str, query_text: &str
     let candidate_score = query_alignment_score(candidate, query_text);
     candidate_score > current_score
         || (candidate_score == current_score && candidate.len() < current.len())
+}
+
+fn query_prefers_recency(query_text: &str) -> bool {
+    let lower = query_text.to_ascii_lowercase();
+    [
+        "latest",
+        "most recent",
+        "recent",
+        "newest",
+        "current",
+        "today",
+        "now",
+        "up to date",
+        "up-to-date",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn temporal_intent_multiplier(ts_ms: i64) -> f64 {
+    if ts_ms <= 0 {
+        return 1.0 - (TEMPORAL_INTENT_MULTIPLIER_RANGE * 0.25);
+    }
+    let age_days =
+        ((Utc::now().timestamp_millis() - ts_ms).max(0) as f64) / (1000.0 * 60.0 * 60.0 * 24.0);
+    let freshness = (1.0 / (1.0 + age_days / 14.0)).clamp(0.0, 1.0);
+    1.0 + ((freshness - 0.5) * TEMPORAL_INTENT_MULTIPLIER_RANGE)
+}
+
+fn query_alignment_boost(
+    source: &str,
+    excerpt: &str,
+    query_text: &str,
+    query_focus_term_count: usize,
+) -> f64 {
+    let haystack = format!("{source} {excerpt}");
+    let (exact_phrase, keyword_hits) = query_alignment_score(&haystack, query_text);
+    if exact_phrase == 0 && keyword_hits == 0 {
+        return 0.0;
+    }
+    let term_count = query_focus_term_count.max(1) as f64;
+    let coverage = (keyword_hits as f64 / term_count).clamp(0.0, 1.0);
+    let exact_bonus = if exact_phrase > 0 {
+        ALIGNMENT_EXACT_BONUS_MAX
+    } else {
+        0.0
+    };
+    let coverage_bonus =
+        (coverage * ALIGNMENT_COVERAGE_BONUS_MAX).min(ALIGNMENT_COVERAGE_BONUS_MAX);
+    (exact_bonus + coverage_bonus).min(ALIGNMENT_BOOST_MAX)
 }
 
 fn is_entity_stopword(token: &str) -> bool {
@@ -2422,6 +2485,7 @@ fn run_recall_with_query_vector_trace(
     canary: Option<&SqliteVecCanaryConfig>,
 ) -> Result<RecallWithVectorTrace, String> {
     let extracted = extract_search_keywords(query_text);
+    let prefers_recency = query_prefers_recency(query_text);
     let keyword_query = if extracted.is_empty() {
         query_text.to_string()
     } else {
@@ -2668,11 +2732,14 @@ fn run_recall_with_query_vector_trace(
         };
 
         // importance is 0-1 in DB; normalize() expects 0-100 range
-        let relevance = round4(compound_score(
+        let mut relevance = round4(compound_score(
             *rrf_score,
             importance * 100.0,
             &created_at_str,
         ));
+        if prefers_recency {
+            relevance = round4(relevance * temporal_intent_multiplier(ts_ms));
+        }
 
         if let Some(crystal_source) = crystal_family_lookup.get(&source) {
             if let Some(crystal_item) = crystal_items.get_mut(crystal_source) {
@@ -2723,6 +2790,11 @@ fn run_recall_with_query_vector_trace(
     // around midpoint H=3.5). Applied after compound scoring so entropy acts as
     // a diversity signal on top of the RRF+compound base.
     let query_entities = query_entity_terms(query_text);
+    let query_focus_term_count = query_focus_terms(query_text)
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .len()
+        .max(1);
     let mut ranked: Vec<RecallItem> = merged
         .into_values()
         .map(|mut item| {
@@ -2738,6 +2810,15 @@ fn run_recall_with_query_vector_trace(
                 if entity_boost > 0.0 {
                     item.relevance = round4(item.relevance * (1.0 + entity_boost));
                 }
+            }
+            let alignment_boost = query_alignment_boost(
+                &item.source,
+                &item.excerpt,
+                query_text,
+                query_focus_term_count,
+            );
+            if alignment_boost > 0.0 {
+                item.relevance = round4(item.relevance * (1.0 + alignment_boost));
             }
             item
         })
@@ -2821,6 +2902,7 @@ fn run_semantic_recall_with_query_vector(
     source_prefix: Option<&str>,
     canary: Option<&SqliteVecCanaryConfig>,
 ) -> (Vec<RecallItem>, Value) {
+    let prefers_recency = query_prefers_recency(query_text);
     let baseline_semantic = query_vector
         .map(|query_vec| {
             collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
@@ -2838,20 +2920,31 @@ fn run_semantic_recall_with_query_vector(
     );
     let mut ranked: Vec<RecallItem> = semantic_candidates
         .into_iter()
-        .map(|candidate| RecallItem {
-            source: candidate.source,
-            relevance: round4(candidate.relevance),
-            excerpt: candidate.excerpt,
-            method: "semantic".to_string(),
-            tokens: None,
-            entropy: None,
-            family_members: Vec::new(),
-            collapsed_sources: Vec::new(),
-            collapsed_source_scores: Vec::new(),
+        .map(|candidate| {
+            let mut relevance = round4(candidate.relevance);
+            if prefers_recency {
+                relevance = round4(relevance * temporal_intent_multiplier(candidate.ts));
+            }
+            RecallItem {
+                source: candidate.source,
+                relevance,
+                excerpt: candidate.excerpt,
+                method: "semantic".to_string(),
+                tokens: None,
+                entropy: None,
+                family_members: Vec::new(),
+                collapsed_sources: Vec::new(),
+                collapsed_source_scores: Vec::new(),
+            }
         })
         .collect();
 
     let query_entities = query_entity_terms(query_text);
+    let query_focus_term_count = query_focus_terms(query_text)
+        .into_iter()
+        .collect::<HashSet<_>>()
+        .len()
+        .max(1);
     for item in &mut ranked {
         let h = shannon_entropy(&item.excerpt);
         item.entropy = Some(round4(h));
@@ -2865,6 +2958,15 @@ fn run_semantic_recall_with_query_vector(
             if entity_boost > 0.0 {
                 item.relevance = round4(item.relevance * (1.0 + entity_boost));
             }
+        }
+        let alignment_boost = query_alignment_boost(
+            &item.source,
+            &item.excerpt,
+            query_text,
+            query_focus_term_count,
+        );
+        if alignment_boost > 0.0 {
+            item.relevance = round4(item.relevance * (1.0 + alignment_boost));
         }
     }
 
@@ -5130,6 +5232,18 @@ fn coding_synonyms(word: &str) -> Option<&'static str> {
         "obj" => Some("object"),
         "num" => Some("number"),
         "char" => Some("character"),
+        // Personal-memory recall aliases used by real user queries.
+        "lastname" => Some("surname"),
+        "surname" => Some("lastname"),
+        "repaint" => Some("paint"),
+        "repainted" => Some("paint"),
+        "painted" => Some("paint"),
+        "walls" => Some("wall"),
+        "wall" => Some("walls"),
+        "colour" => Some("color"),
+        "color" => Some("colour"),
+        "gray" => Some("grey"),
+        "grey" => Some("gray"),
         _ => None,
     }
 }
@@ -5510,25 +5624,21 @@ async fn dedup_and_mark_served(
 
     let now = Utc::now().timestamp_millis();
     let scope_key = served_content_scope(agent, query, ctx);
-    {
+    let mut seen_hashes: HashSet<u32> = {
         let mut served = state.served_content.lock().await;
         let map = served
             .entry(scope_key.clone())
             .or_insert_with(HashMap::<u32, i64>::new);
         map.retain(|_, ts| now - *ts < SERVED_TTL_MS);
-    }
-
+        map.keys().copied().collect()
+    };
+    let mut staged_hashes: Vec<u32> = Vec::with_capacity(results.len() * 2);
     let mut filtered = Vec::new();
     for result in results {
         let excerpt_hash = hash_content(&result.excerpt);
         let source_hash = source_dedup_hash(&result.source);
-        let already_served = {
-            let served = state.served_content.lock().await;
-            served
-                .get(&scope_key)
-                .map(|map| map.contains_key(&excerpt_hash) || map.contains_key(&source_hash))
-                .unwrap_or(false)
-        };
+        let already_served =
+            seen_hashes.contains(&excerpt_hash) || seen_hashes.contains(&source_hash);
 
         if already_served {
             if result.method == "crystal" && !result.collapsed_sources.is_empty() {
@@ -5551,14 +5661,7 @@ async fn dedup_and_mark_served(
                 let mut best_candidate: Option<(usize, f64, RecallItem)> = None;
                 for (order, collapsed_source, collapsed_score) in fallback_candidates {
                     let collapsed_source_hash = source_dedup_hash(&collapsed_source);
-                    let collapsed_seen = {
-                        let served = state.served_content.lock().await;
-                        served
-                            .get(&scope_key)
-                            .map(|map| map.contains_key(&collapsed_source_hash))
-                            .unwrap_or(false)
-                    };
-                    if collapsed_seen {
+                    if seen_hashes.contains(&collapsed_source_hash) {
                         continue;
                     }
                     let candidate_relevance = round4(collapsed_score.max(0.0));
@@ -5575,17 +5678,9 @@ async fn dedup_and_mark_served(
                     };
                     let candidate_excerpt_hash = hash_content(&candidate.excerpt);
                     let candidate_source_hash = source_dedup_hash(&candidate.source);
-                    let candidate_seen = {
-                        let served = state.served_content.lock().await;
-                        served
-                            .get(&scope_key)
-                            .map(|map| {
-                                map.contains_key(&candidate_excerpt_hash)
-                                    || map.contains_key(&candidate_source_hash)
-                            })
-                            .unwrap_or(false)
-                    };
-                    if candidate_seen {
+                    if seen_hashes.contains(&candidate_excerpt_hash)
+                        || seen_hashes.contains(&candidate_source_hash)
+                    {
                         continue;
                     }
                     let replace = match &best_candidate {
@@ -5604,25 +5699,32 @@ async fn dedup_and_mark_served(
                 if let Some((_, _, candidate)) = best_candidate {
                     let candidate_excerpt_hash = hash_content(&candidate.excerpt);
                     let candidate_source_hash = source_dedup_hash(&candidate.source);
-                    let mut served = state.served_content.lock().await;
-                    let map = served
-                        .entry(scope_key.clone())
-                        .or_insert_with(HashMap::<u32, i64>::new);
-                    map.insert(candidate_excerpt_hash, now);
-                    map.insert(candidate_source_hash, now);
+                    seen_hashes.insert(candidate_excerpt_hash);
+                    seen_hashes.insert(candidate_source_hash);
+                    staged_hashes.push(candidate_excerpt_hash);
+                    staged_hashes.push(candidate_source_hash);
                     filtered.push(candidate);
                 }
             }
             continue;
         }
 
+        seen_hashes.insert(excerpt_hash);
+        seen_hashes.insert(source_hash);
+        staged_hashes.push(excerpt_hash);
+        staged_hashes.push(source_hash);
+        filtered.push(result);
+    }
+
+    if !staged_hashes.is_empty() {
         let mut served = state.served_content.lock().await;
         let map = served
-            .entry(scope_key.clone())
+            .entry(scope_key)
             .or_insert_with(HashMap::<u32, i64>::new);
-        map.insert(excerpt_hash, now);
-        map.insert(source_hash, now);
-        filtered.push(result);
+        map.retain(|_, ts| now - *ts < SERVED_TTL_MS);
+        for hash in staged_hashes {
+            map.insert(hash, now);
+        }
     }
 
     filtered
@@ -7862,6 +7964,242 @@ mod tests {
     }
 
     #[test]
+    fn test_query_prefers_recency_detects_latest_intent() {
+        assert!(query_prefers_recency(
+            "latest daemon startup ownership policy"
+        ));
+        assert!(query_prefers_recency(
+            "what is the current lock lease status?"
+        ));
+        assert!(!query_prefers_recency("daemon startup ownership policy"));
+    }
+
+    #[test]
+    fn test_temporal_intent_multiplier_prefers_recent_items() {
+        let now = Utc::now().timestamp_millis();
+        let recent = temporal_intent_multiplier(now - 24 * 60 * 60 * 1000);
+        let old = temporal_intent_multiplier(now - 180 * 24 * 60 * 60 * 1000);
+        assert!(
+            recent > old,
+            "recent multiplier should exceed old multiplier ({recent} vs {old})"
+        );
+    }
+
+    #[test]
+    fn test_query_alignment_boost_rewards_exact_phrase_and_coverage() {
+        let query = "daemon lock lease";
+        let term_count = query_focus_terms(query).len().max(1);
+        let exact = query_alignment_boost(
+            "memory::daemon-lock",
+            "daemon lock lease protects startup arbitration",
+            query,
+            term_count,
+        );
+        let weak = query_alignment_boost(
+            "memory::generic",
+            "startup details with little overlap",
+            query,
+            term_count,
+        );
+        assert!(
+            exact > weak,
+            "exact phrase/coverage alignment should score higher ({exact} vs {weak})"
+        );
+    }
+
+    #[test]
+    fn test_peek_smoke_returns_sorted_relevant_matches() {
+        let mut conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, retrievals, last_accessed, created_at, updated_at)
+             VALUES (?1, 'memory::daemon-lock-recent', 'note', 'active', 0.85, 0.9, 1, datetime('now', '-1 day'), datetime('now', '-1 day'), datetime('now', '-1 day'))",
+            params!["daemon ownership lock lease prevents duplicate startup"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, retrievals, last_accessed, created_at, updated_at)
+             VALUES (?1, 'memory::daemon-lock-older', 'note', 'active', 0.83, 0.82, 2, datetime('now', '-10 days'), datetime('now', '-10 days'), datetime('now', '-10 days'))",
+            params!["daemon lock lease policy and startup arbitration notes"],
+        )
+        .unwrap();
+
+        let results = run_recall(&mut conn, "daemon lock lease startup", 5, &solo_ctx(), None)
+            .expect("peek-style recall should succeed");
+        assert!(!results.is_empty(), "peek should return at least one match");
+        assert!(
+            results
+                .windows(2)
+                .all(|pair| compare_relevance_desc_source_asc(
+                    pair[0].relevance,
+                    &pair[0].source,
+                    pair[1].relevance,
+                    &pair[1].source,
+                ) != std::cmp::Ordering::Greater),
+            "peek results should remain sorted by relevance/source"
+        );
+        assert!(
+            results
+                .iter()
+                .all(|item| !item.excerpt.trim().is_empty() && !item.method.trim().is_empty()),
+            "peek results should provide non-empty excerpt + method"
+        );
+    }
+
+    #[test]
+    fn test_peek_latest_intent_prefers_fresher_source() {
+        let mut conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, retrievals, last_accessed, created_at, updated_at)
+             VALUES (?1, 'memory::policy-legacy', 'note', 'active', 0.96, 0.95, 6, datetime('now', '-160 days'), datetime('now', '-160 days'), datetime('now', '-160 days'))",
+            params!["daemon startup ownership policy and lock lease contract"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, retrievals, last_accessed, created_at, updated_at)
+             VALUES (?1, 'memory::policy-current', 'note', 'active', 0.78, 0.8, 1, datetime('now', '-1 day'), datetime('now', '-1 day'), datetime('now', '-1 day'))",
+            params!["current daemon startup ownership policy and lock lease contract"],
+        )
+        .unwrap();
+
+        let results = run_recall_with_query_vector(
+            &mut conn,
+            "latest daemon startup ownership policy",
+            4,
+            None,
+            &solo_ctx(),
+            None,
+        )
+        .expect("latest-intent recall should succeed");
+        assert!(
+            results.first().map(|item| item.source.as_str()) == Some("memory::policy-current"),
+            "latest-intent recall should prioritize fresher source: {results:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_smoke_returns_stable_order_and_non_empty_excerpts() {
+        let state = shared_test_state();
+        {
+            let conn = state.db.lock().await;
+            conn.execute(
+                "INSERT INTO memories (text, source, type, status, score, trust_score, retrievals, last_accessed, created_at, updated_at)
+                 VALUES (?1, 'memory::alpha', 'note', 'active', 0.8, 0.82, 2, datetime('now', '-2 days'), datetime('now', '-2 days'), datetime('now', '-2 days'))",
+                params!["daemon startup lock lease details for alpha policy"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO memories (text, source, type, status, score, trust_score, retrievals, last_accessed, created_at, updated_at)
+                 VALUES (?1, 'memory::beta', 'note', 'active', 0.8, 0.82, 2, datetime('now', '-2 days'), datetime('now', '-2 days'), datetime('now', '-2 days'))",
+                params!["daemon startup lock lease details for beta policy"],
+            )
+            .unwrap();
+        }
+
+        let payload_a = execute_unified_recall(
+            &state,
+            "daemon startup lock lease",
+            320,
+            6,
+            "codex-smoke-a",
+            &solo_ctx(),
+            None,
+        )
+        .await
+        .expect("first recall smoke call should succeed");
+        let payload_b = execute_unified_recall(
+            &state,
+            "daemon startup lock lease",
+            320,
+            6,
+            "codex-smoke-b",
+            &solo_ctx(),
+            None,
+        )
+        .await
+        .expect("second recall smoke call should succeed");
+
+        let sources = |payload: &Value| {
+            payload["results"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|row| row.get("source").and_then(|value| value.as_str()))
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let excerpts_non_empty = |payload: &Value| {
+            payload["results"]
+                .as_array()
+                .map(|rows| {
+                    rows.iter().all(|row| {
+                        row.get("excerpt")
+                            .and_then(|value| value.as_str())
+                            .map(|text| !text.trim().is_empty())
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        };
+        let sorted_by_relevance_then_source = |payload: &Value| {
+            payload["results"]
+                .as_array()
+                .map(|rows| {
+                    rows.windows(2).all(|pair| {
+                        let left = &pair[0];
+                        let right = &pair[1];
+                        let left_relevance = left
+                            .get("relevance")
+                            .and_then(|value| value.as_f64())
+                            .unwrap_or(0.0);
+                        let right_relevance = right
+                            .get("relevance")
+                            .and_then(|value| value.as_f64())
+                            .unwrap_or(0.0);
+                        let left_source = left
+                            .get("source")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        let right_source = right
+                            .get("source")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        compare_relevance_desc_source_asc(
+                            left_relevance,
+                            left_source,
+                            right_relevance,
+                            right_source,
+                        ) != std::cmp::Ordering::Greater
+                    })
+                })
+                .unwrap_or(false)
+        };
+
+        assert!(
+            !sources(&payload_a).is_empty(),
+            "recall smoke should return at least one result"
+        );
+        let mut a_sources = sources(&payload_a);
+        let mut b_sources = sources(&payload_b);
+        a_sources.sort();
+        b_sources.sort();
+        assert_eq!(
+            a_sources, b_sources,
+            "recall smoke should keep the same source set"
+        );
+        assert!(
+            sorted_by_relevance_then_source(&payload_a)
+                && sorted_by_relevance_then_source(&payload_b),
+            "recall smoke payloads should stay sorted by relevance/source"
+        );
+        assert!(
+            excerpts_non_empty(&payload_a) && excerpts_non_empty(&payload_b),
+            "recall smoke results should always include non-empty excerpts"
+        );
+    }
+
+    #[test]
     fn test_round4() {
         assert_eq!(round4(0.12345), 0.1235);
         assert_eq!(round4(1.0), 1.0);
@@ -8532,6 +8870,31 @@ mod tests {
         assert!(kw.contains(&"function".to_string()), "func -> function");
         assert!(kw.contains(&"error".to_string()));
         assert!(kw.contains(&"database".to_string()), "db -> database");
+    }
+
+    #[test]
+    fn test_synonym_expansion_personal_memory_aliases() {
+        let kw = extract_search_keywords_with_synonyms("lastname repainted walls color gray");
+        assert!(
+            kw.contains(&"surname".to_string()),
+            "lastname should expand to surname"
+        );
+        assert!(
+            kw.contains(&"paint".to_string()),
+            "repainted should expand to paint"
+        );
+        assert!(
+            kw.contains(&"wall".to_string()),
+            "walls should expand to wall"
+        );
+        assert!(
+            kw.contains(&"colour".to_string()),
+            "color should expand to colour"
+        );
+        assert!(
+            kw.contains(&"grey".to_string()),
+            "gray should expand to grey"
+        );
     }
 
     #[test]
