@@ -26,6 +26,40 @@ pub fn export_json_value(conn: &Connection) -> Value {
     })
 }
 
+pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Value {
+    let cursor = now_iso();
+    let memories = query_table_json_since(
+        conn,
+        "SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, status, score, \
+         retrievals, pinned, created_at, updated_at FROM memories WHERE status = 'active' \
+         AND (?1 IS NULL OR COALESCE(updated_at, created_at) > ?1) \
+         AND COALESCE(updated_at, created_at) <= ?2",
+        since,
+        &cursor,
+    );
+    let decisions = query_table_json_since(
+        conn,
+        "SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, status, score, \
+         retrievals, pinned, created_at, updated_at FROM decisions WHERE status = 'active' \
+         AND (?1 IS NULL OR COALESCE(updated_at, created_at) > ?1) \
+         AND COALESCE(updated_at, created_at) <= ?2",
+        since,
+        &cursor,
+    );
+
+    json!({
+        "version": 1,
+        "mode": "changeset",
+        "exported_at": cursor,
+        "since": since,
+        "cursor": cursor,
+        "memories": memories,
+        "decisions": decisions,
+        "memories_count": memories.len(),
+        "decisions_count": decisions.len(),
+    })
+}
+
 pub fn export_sql_text(conn: &Connection) -> String {
     let mut lines: Vec<String> = vec![
         "-- Cortex export".to_string(),
@@ -290,6 +324,46 @@ fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
     .collect()
 }
 
+fn query_table_json_since(
+    conn: &Connection,
+    sql: &str,
+    since: Option<&str>,
+    cursor: &str,
+) -> Vec<Value> {
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let column_count = stmt.column_count();
+    let column_names: Vec<String> = (0..column_count)
+        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+        .collect();
+
+    stmt.query_map(params![since, cursor], |row| {
+        let mut obj = serde_json::Map::new();
+        for (i, name) in column_names.iter().enumerate() {
+            let val: Value = match row.get_ref(i) {
+                Ok(rusqlite::types::ValueRef::Null) => Value::Null,
+                Ok(rusqlite::types::ValueRef::Integer(n)) => json!(n),
+                Ok(rusqlite::types::ValueRef::Real(f)) => json!(f),
+                Ok(rusqlite::types::ValueRef::Text(s)) => {
+                    json!(std::str::from_utf8(s).unwrap_or(""))
+                }
+                Ok(rusqlite::types::ValueRef::Blob(_)) => Value::Null,
+                Err(_) => Value::Null,
+            };
+            obj.insert(name.clone(), val);
+        }
+        Ok(Value::Object(obj))
+    })
+    .ok()
+    .into_iter()
+    .flatten()
+    .filter_map(|r| r.ok())
+    .collect()
+}
+
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -320,4 +394,123 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_changeset_filters_rows_by_since_cutoff() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO memories (text, source, status, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![
+                "old memory",
+                "sync::old-memory",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z"
+            ],
+        )
+        .expect("insert old memory");
+        conn.execute(
+            "INSERT INTO memories (text, source, status, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![
+                "new memory",
+                "sync::new-memory",
+                "2026-03-01T00:00:00Z",
+                "2026-03-01T00:00:00Z"
+            ],
+        )
+        .expect("insert new memory");
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![
+                "old decision",
+                "sync::old-decision",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z"
+            ],
+        )
+        .expect("insert old decision");
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![
+                "new decision",
+                "sync::new-decision",
+                "2026-03-01T00:00:00Z",
+                "2026-03-01T00:00:00Z"
+            ],
+        )
+        .expect("insert new decision");
+
+        let changeset = export_json_changeset_value(&conn, Some("2026-02-01T00:00:00Z"));
+        let memories = changeset
+            .get("memories")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let decisions = changeset
+            .get("decisions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        assert_eq!(memories.len(), 1, "only new memory should be exported");
+        assert_eq!(decisions.len(), 1, "only new decision should be exported");
+        assert_eq!(
+            memories[0].get("source").and_then(Value::as_str),
+            Some("sync::new-memory")
+        );
+        assert_eq!(
+            decisions[0].get("context").and_then(Value::as_str),
+            Some("sync::new-decision")
+        );
+    }
+
+    #[test]
+    fn export_changeset_respects_cursor_upper_bound() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        conn.execute(
+            "INSERT INTO memories (text, source, status, created_at, updated_at)
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![
+                "future memory",
+                "sync::future-memory",
+                "9999-01-01T00:00:00Z",
+                "9999-01-01T00:00:00Z"
+            ],
+        )
+        .expect("insert future memory");
+
+        let changeset = export_json_changeset_value(&conn, None);
+        let memories = changeset
+            .get("memories")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            memories.is_empty(),
+            "rows newer than cursor should be excluded"
+        );
+        assert!(
+            changeset
+                .get("cursor")
+                .and_then(Value::as_str)
+                .is_some_and(|cursor| !cursor.trim().is_empty()),
+            "changeset cursor should always be emitted"
+        );
+    }
 }

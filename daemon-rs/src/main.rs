@@ -32,6 +32,7 @@ mod workspace;
 use chrono::{self, Utc};
 use fs2::FileExt;
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -586,11 +587,15 @@ async fn main() {
         // ── Data export/import CLI ──────────────────────────────────
         "export" => {
             let remaining: Vec<String> = args[2..].to_vec();
-            run_export_cli(&remaining);
+            run_export_cli(&paths, &remaining);
         }
         "import" => {
             let remaining: Vec<String> = args[2..].to_vec();
-            run_import_cli(&remaining);
+            run_import_cli(&paths, &remaining);
+        }
+        "sync" => {
+            let remaining: Vec<String> = args[2..].to_vec();
+            run_sync_cli(&paths, &remaining);
         }
         "doctor" => {
             run_doctor_cli(&paths);
@@ -1231,6 +1236,9 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
+    eprintln!("  sync export        Export changeset JSON (--out <file>, optional --since <iso>, --cursor-file <path>)");
+    eprintln!("  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)");
+    eprintln!("  sync watch         Watched-folder sync loop (--dir <path>, optional --interval-seconds <n>, --once)");
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
     eprintln!("  reindex [--json]   Fully rebuild FTS indexes from canonical memory/decision rows");
     eprintln!("  re-embed [...]     Alias for `embeddings drain --until-exhausted`");
@@ -1993,7 +2001,24 @@ async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
 }
 
-fn run_export_cli(args: &[String]) {
+fn run_sync_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let Some(command) = args.first().map(|value| value.as_str()) else {
+        eprintln!("Usage: cortex sync <export|import|watch> [options]");
+        std::process::exit(1);
+    };
+
+    match command {
+        "export" => run_sync_export_cli(paths, &args[1..]),
+        "import" => run_sync_import_cli(paths, &args[1..]),
+        "watch" => run_sync_watch_cli(paths, &args[1..]),
+        _ => {
+            eprintln!("Usage: cortex sync <export|import|watch> [options]");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
     let mut format = "json".to_string();
     let mut out_path: Option<String> = None;
 
@@ -2022,23 +2047,13 @@ fn run_export_cli(args: &[String]) {
         std::process::exit(1);
     };
 
-    let db_path = auth::db_path();
-    let conn = match db::open(&db_path) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Failed to open database at {}: {e}", db_path.display());
+    let conn = match open_cli_connection(&paths.db) {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("{err}");
             std::process::exit(1);
         }
     };
-    if let Err(e) = db::configure(&conn) {
-        eprintln!("Failed to configure database: {e}");
-        std::process::exit(1);
-    }
-    if let Err(e) = db::initialize_schema(&conn) {
-        eprintln!("Failed to initialize schema: {e}");
-        std::process::exit(1);
-    }
-    crystallize::migrate_crystal_tables(&conn);
 
     let output = match export_format {
         export_data::ExportFormat::Json => {
@@ -2059,7 +2074,289 @@ fn run_export_cli(args: &[String]) {
     }
 }
 
-fn run_import_cli(args: &[String]) {
+fn run_sync_export_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let out_path = parse_flag_value(args, "--out");
+    let since_override = parse_flag_value(args, "--since");
+    if let Some(since) = since_override.as_deref() {
+        if chrono::DateTime::parse_from_rfc3339(since).is_err() {
+            eprintln!(
+                "Invalid --since value '{since}'. Use RFC3339 (for example 2026-04-19T00:00:00Z)."
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let cursor_file = parse_flag_value(args, "--cursor-file").map(PathBuf::from);
+    let since = resolve_sync_since(since_override.as_deref(), cursor_file.as_deref());
+    let conn = match open_cli_connection(&paths.db) {
+        Ok(conn) => conn,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
+    let value = export_data::export_json_changeset_value(&conn, since.as_deref());
+    let output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
+
+    if let Some(path) = out_path {
+        if let Err(e) = std::fs::write(&path, output) {
+            eprintln!("Failed to write sync export file {path}: {e}");
+            std::process::exit(1);
+        }
+        eprintln!("Sync export written to {path}");
+    } else {
+        println!("{output}");
+    }
+
+    if let Some(cursor_path) = cursor_file {
+        if let Some(cursor) = value.get("cursor").and_then(serde_json::Value::as_str) {
+            if let Err(err) = write_sync_cursor_file(&cursor_path, cursor) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_import_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let parsed = parse_import_cli_args(
+        args,
+        "Usage: cortex import --file <path> [--user <username>] [--visibility private|team|shared]",
+    );
+    let parsed = match parsed {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    let counts = match import_payload_from_file(paths, &parsed, "import-cli") {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "{{\"imported\":{{\"memories\":{},\"decisions\":{}}}}}",
+        counts.memories, counts.decisions
+    );
+}
+
+fn run_sync_import_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let parsed = parse_import_cli_args(
+        args,
+        "Usage: cortex sync import --file <path> [--user <username>] [--visibility private|team|shared]",
+    );
+    let parsed = match parsed {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    let counts = match import_payload_from_file(paths, &parsed, "sync-import-cli") {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "{{\"imported\":{{\"memories\":{},\"decisions\":{}}}}}",
+        counts.memories, counts.decisions
+    );
+}
+
+fn run_sync_watch_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let Some(dir_raw) = parse_flag_value(args, "--dir") else {
+        eprintln!(
+            "Usage: cortex sync watch --dir <path> [--interval-seconds <n>] [--once] [--user <username>] [--visibility private|team|shared] [--since <iso>] [--cursor-file <path>]"
+        );
+        std::process::exit(1);
+    };
+    let watch_dir = PathBuf::from(dir_raw);
+    if !watch_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&watch_dir) {
+            eprintln!(
+                "Failed to create sync watch directory {}: {e}",
+                watch_dir.display()
+            );
+            std::process::exit(1);
+        }
+    }
+    if !watch_dir.is_dir() {
+        eprintln!(
+            "Sync watch path must be a directory: {}",
+            watch_dir.display()
+        );
+        std::process::exit(1);
+    }
+
+    let interval_seconds = match parse_flag_usize(args, "--interval-seconds") {
+        Ok(Some(value)) => value as u64,
+        Ok(None) => 15,
+        Err(err) => {
+            eprintln!("Invalid --interval-seconds: {err}");
+            std::process::exit(1);
+        }
+    };
+    let once = args.iter().any(|arg| arg == "--once");
+    let username = parse_flag_value(args, "--user");
+    let visibility =
+        parse_flag_value(args, "--visibility").unwrap_or_else(|| "private".to_string());
+    if !matches!(visibility.as_str(), "private" | "team" | "shared") {
+        eprintln!("Invalid --visibility value '{visibility}'. Use private|team|shared.");
+        std::process::exit(1);
+    }
+
+    let mut bootstrap_since = parse_flag_value(args, "--since");
+    if let Some(since) = bootstrap_since.as_deref() {
+        if chrono::DateTime::parse_from_rfc3339(since).is_err() {
+            eprintln!(
+                "Invalid --since value '{since}'. Use RFC3339 (for example 2026-04-19T00:00:00Z)."
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let state_id = sync_watch_state_id(&watch_dir);
+    let state_root = paths.home.join("runtime").join("sync-watch");
+    let seen_file = state_root.join(format!("{state_id}.seen"));
+    let default_cursor = state_root.join(format!("{state_id}.cursor"));
+    let cursor_file = parse_flag_value(args, "--cursor-file")
+        .map(PathBuf::from)
+        .unwrap_or(default_cursor);
+
+    let local_site_id = match ensure_sync_site_id(paths) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
+    let mut seen = match load_sync_seen_set(&seen_file) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
+    loop {
+        let candidates = match collect_sync_watch_import_candidates(&watch_dir, &local_site_id) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+
+        let mut seen_dirty = false;
+        for candidate in candidates {
+            let Some(name) = candidate.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if seen.contains(name) {
+                continue;
+            }
+            let import_options = ImportCliArgs {
+                file_path: candidate.clone(),
+                username: username.clone(),
+                visibility: visibility.clone(),
+            };
+            match import_payload_from_file(paths, &import_options, "sync-watch-import") {
+                Ok(counts) => {
+                    eprintln!(
+                        "[sync watch] imported {} (memories={}, decisions={})",
+                        candidate.display(),
+                        counts.memories,
+                        counts.decisions
+                    );
+                    seen.insert(name.to_string());
+                    seen_dirty = true;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[sync watch] import skipped for {}: {}",
+                        candidate.display(),
+                        err
+                    );
+                }
+            }
+        }
+        if seen_dirty {
+            if let Err(err) = write_sync_seen_set(&seen_file, &seen) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+
+        let since = read_sync_cursor_file(&cursor_file).or_else(|| bootstrap_since.take());
+        let conn = match open_cli_connection(&paths.db) {
+            Ok(conn) => conn,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
+        let changeset = export_data::export_json_changeset_value(&conn, since.as_deref());
+        let memories_count = changeset
+            .get("memories_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let decisions_count = changeset
+            .get("decisions_count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let total = memories_count + decisions_count;
+        if total > 0 {
+            let filename = format!(
+                "changeset-{}-{}.json",
+                local_site_id,
+                chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ")
+            );
+            let out_path = watch_dir.join(filename);
+            let output =
+                serde_json::to_string_pretty(&changeset).unwrap_or_else(|_| "{}".to_string());
+            if let Err(err) = std::fs::write(&out_path, output) {
+                eprintln!(
+                    "Failed to write sync watch export {}: {err}",
+                    out_path.display()
+                );
+                std::process::exit(1);
+            }
+            eprintln!(
+                "[sync watch] exported {} (memories={}, decisions={})",
+                out_path.display(),
+                memories_count,
+                decisions_count
+            );
+        }
+        if let Some(cursor) = changeset.get("cursor").and_then(serde_json::Value::as_str) {
+            if let Err(err) = write_sync_cursor_file(&cursor_file, cursor) {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+
+        if once {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(interval_seconds.max(1)));
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ImportCliArgs {
+    file_path: PathBuf,
+    username: Option<String>,
+    visibility: String,
+}
+
+fn parse_import_cli_args(args: &[String], usage: &str) -> Result<ImportCliArgs, String> {
     let mut file_path: Option<String> = None;
     let mut username: Option<String> = None;
     let mut visibility = "private".to_string();
@@ -2091,56 +2388,49 @@ fn run_import_cli(args: &[String]) {
     }
 
     let Some(file_path) = file_path else {
-        eprintln!(
-            "Usage: cortex import --file <path> [--user <username>] [--visibility private|team|shared]"
-        );
-        std::process::exit(1);
+        return Err(usage.to_string());
     };
     if !matches!(visibility.as_str(), "private" | "team" | "shared") {
-        eprintln!("Invalid --visibility value '{visibility}'. Use private|team|shared.");
-        std::process::exit(1);
+        return Err(format!(
+            "Invalid --visibility value '{visibility}'. Use private|team|shared."
+        ));
     }
 
-    let raw = match std::fs::read_to_string(&file_path) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Cannot read import file {file_path}: {e}");
-            std::process::exit(1);
-        }
-    };
-    let payload: export_data::ImportPayload = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Import file is not valid JSON: {e}");
-            std::process::exit(1);
-        }
-    };
+    Ok(ImportCliArgs {
+        file_path: PathBuf::from(file_path),
+        username,
+        visibility,
+    })
+}
 
-    let db_path = auth::db_path();
-    let conn = match db::open(&db_path) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Failed to open database at {}: {e}", db_path.display());
-            std::process::exit(1);
-        }
-    };
-    if let Err(e) = db::configure(&conn) {
-        eprintln!("Failed to configure database: {e}");
-        std::process::exit(1);
-    }
-    if let Err(e) = db::initialize_schema(&conn) {
-        eprintln!("Failed to initialize schema: {e}");
-        std::process::exit(1);
-    }
+fn open_cli_connection(db_path: &Path) -> Result<rusqlite::Connection, String> {
+    let conn = db::open(db_path)
+        .map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
+    db::configure(&conn).map_err(|e| format!("Failed to configure database: {e}"))?;
+    db::initialize_schema(&conn).map_err(|e| format!("Failed to initialize schema: {e}"))?;
     crystallize::migrate_crystal_tables(&conn);
+    Ok(conn)
+}
 
+fn import_payload_from_file(
+    paths: &auth::CortexPaths,
+    parsed: &ImportCliArgs,
+    source_agent_fallback: &str,
+) -> Result<export_data::ImportCounts, String> {
+    let file_display = parsed.file_path.display().to_string();
+    let raw = std::fs::read_to_string(&parsed.file_path)
+        .map_err(|e| format!("Cannot read import file {file_display}: {e}"))?;
+    let payload: export_data::ImportPayload =
+        serde_json::from_str(&raw).map_err(|e| format!("Import file is not valid JSON: {e}"))?;
+
+    let conn = open_cli_connection(&paths.db)?;
     let team_mode = db::current_mode(&conn) == "team";
-    if username.is_some() && !team_mode {
-        eprintln!("--user import requires team mode. Run: cortex setup --team");
-        std::process::exit(1);
+    if parsed.username.is_some() && !team_mode {
+        return Err("--user import requires team mode. Run: cortex setup --team".to_string());
     }
+
     let owner_id = if team_mode {
-        if let Some(user) = username {
+        if let Some(user) = parsed.username.as_ref() {
             match conn.query_row(
                 "SELECT id FROM users WHERE username = ?1",
                 rusqlite::params![user.clone()],
@@ -2148,8 +2438,9 @@ fn run_import_cli(args: &[String]) {
             ) {
                 Ok(id) => Some(id),
                 Err(_) => {
-                    eprintln!("Unknown user '{user}'. Create the user before import.");
-                    std::process::exit(1);
+                    return Err(format!(
+                        "Unknown user '{user}'. Create the user before import."
+                    ));
                 }
             }
         } else {
@@ -2173,20 +2464,159 @@ fn run_import_cli(args: &[String]) {
         None
     };
     if team_mode && owner_id.is_none() {
-        eprintln!("Team mode import requires a target owner. Run `cortex setup --team` first.");
-        std::process::exit(1);
+        return Err(
+            "Team mode import requires a target owner. Run `cortex setup --team` first."
+                .to_string(),
+        );
     }
 
     let options = export_data::ImportOptions {
         owner_id,
-        visibility: if team_mode { Some(visibility) } else { None },
-        source_agent_fallback: "import-cli".to_string(),
+        visibility: if team_mode {
+            Some(parsed.visibility.clone())
+        } else {
+            None
+        },
+        source_agent_fallback: source_agent_fallback.to_string(),
     };
-    let counts = export_data::import_payload(&conn, &payload, &options);
-    println!(
-        "{{\"imported\":{{\"memories\":{},\"decisions\":{}}}}}",
-        counts.memories, counts.decisions
-    );
+    Ok(export_data::import_payload(&conn, &payload, &options))
+}
+
+fn resolve_sync_since(override_since: Option<&str>, cursor_file: Option<&Path>) -> Option<String> {
+    override_since
+        .map(str::to_string)
+        .or_else(|| cursor_file.and_then(read_sync_cursor_file))
+}
+
+fn read_sync_cursor_file(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok().and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn write_sync_cursor_file(path: &Path, cursor: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to prepare cursor directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::write(path, format!("{cursor}\n"))
+        .map_err(|e| format!("Failed to write cursor file {}: {e}", path.display()))
+}
+
+fn ensure_sync_site_id(paths: &auth::CortexPaths) -> Result<String, String> {
+    let site_id_path = paths.home.join("site_id");
+    if let Ok(existing) = std::fs::read_to_string(&site_id_path) {
+        let candidate = sanitize_sync_site_id(existing.trim());
+        if !candidate.is_empty() {
+            return Ok(candidate);
+        }
+    }
+
+    if let Some(parent) = site_id_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create sync site-id directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    let created = uuid::Uuid::new_v4().to_string();
+    std::fs::write(&site_id_path, format!("{created}\n")).map_err(|e| {
+        format!(
+            "Failed to persist sync site-id {}: {e}",
+            site_id_path.display()
+        )
+    })?;
+    Ok(created)
+}
+
+fn sanitize_sync_site_id(raw: &str) -> String {
+    raw.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        .collect()
+}
+
+fn sync_watch_state_id(watch_dir: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    watch_dir.to_string_lossy().to_string().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn is_sync_changeset_file_name(name: &str) -> bool {
+    name.starts_with("changeset-") && name.ends_with(".json")
+}
+
+fn collect_sync_watch_import_candidates(
+    watch_dir: &Path,
+    local_site_id: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    let local_prefix = format!("changeset-{local_site_id}-");
+    let entries = std::fs::read_dir(watch_dir).map_err(|e| {
+        format!(
+            "Failed to read sync watch directory {}: {e}",
+            watch_dir.display()
+        )
+    })?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !is_sync_changeset_file_name(name) {
+            continue;
+        }
+        if name.starts_with(&local_prefix) {
+            continue;
+        }
+        files.push(path);
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn load_sync_seen_set(path: &Path) -> Result<HashSet<String>, String> {
+    let mut seen = HashSet::new();
+    if !path.exists() {
+        return Ok(seen);
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read sync watch state {}: {e}", path.display()))?;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            seen.insert(trimmed.to_string());
+        }
+    }
+    Ok(seen)
+}
+
+fn write_sync_seen_set(path: &Path, seen: &HashSet<String>) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create sync watch state directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    let mut rows: Vec<&str> = seen.iter().map(String::as_str).collect();
+    rows.sort_unstable();
+    std::fs::write(path, rows.join("\n"))
+        .map_err(|e| format!("Failed to write sync watch state {}: {e}", path.display()))
 }
 
 fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -5145,6 +5575,67 @@ mod tests {
         assert!(parse_flag_usize(&zero_value, "--budget")
             .unwrap_err()
             .contains("must be >= 1"));
+    }
+
+    #[test]
+    fn sync_changeset_filename_filter_is_strict() {
+        assert!(is_sync_changeset_file_name(
+            "changeset-abc-20260419T101112000Z.json"
+        ));
+        assert!(is_sync_changeset_file_name("changeset-node-1.json"));
+        assert!(!is_sync_changeset_file_name("changeset-node-1.txt"));
+        assert!(!is_sync_changeset_file_name("metrics.json"));
+    }
+
+    #[test]
+    fn resolve_sync_since_prefers_override_then_cursor_file() {
+        let home_dir = temp_test_dir("sync_cursor_resolution");
+        fs::create_dir_all(&home_dir).expect("create temp home");
+        let cursor_file = home_dir.join("cursor.txt");
+
+        let override_since = "2026-04-19T00:00:00Z";
+        assert_eq!(
+            resolve_sync_since(Some(override_since), Some(&cursor_file)),
+            Some(override_since.to_string())
+        );
+        assert_eq!(resolve_sync_since(None, Some(&cursor_file)), None);
+
+        write_sync_cursor_file(&cursor_file, "2026-04-20T00:00:00Z").expect("write cursor");
+        assert_eq!(
+            resolve_sync_since(None, Some(&cursor_file)),
+            Some("2026-04-20T00:00:00Z".to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn sync_watch_candidate_collection_skips_local_site_files() {
+        let watch_dir = temp_test_dir("sync_watch_candidates");
+        fs::create_dir_all(&watch_dir).expect("create watch dir");
+        fs::write(
+            watch_dir.join("changeset-local-site-20260419T100000000Z.json"),
+            "{}",
+        )
+        .expect("write local file");
+        fs::write(
+            watch_dir.join("changeset-remote-site-20260419T100001000Z.json"),
+            "{}",
+        )
+        .expect("write remote file");
+        fs::write(watch_dir.join("notes.txt"), "ignore").expect("write noise file");
+
+        let files = collect_sync_watch_import_candidates(&watch_dir, "local-site")
+            .expect("collect sync watch files");
+        assert_eq!(files.len(), 1);
+        let name = files[0]
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(name, "changeset-remote-site-20260419T100001000Z.json");
+
+        let _ = std::fs::remove_dir_all(&watch_dir);
     }
 
     #[test]
