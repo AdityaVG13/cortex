@@ -2995,6 +2995,16 @@ export function App() {
     return Math.round(((recentAverage - previousAverage) / previousAverage) * 100);
   }, [dailySeries]);
 
+  const throughputBoots7d = useMemo(
+    () => dailySeries.slice(-7).reduce((sum, point) => sum + Number(point.boots || 0), 0),
+    [dailySeries]
+  );
+
+  const throughputBoots30d = useMemo(
+    () => dailySeries.reduce((sum, point) => sum + Number(point.boots || 0), 0),
+    [dailySeries]
+  );
+
   const recentRecallWindow = useMemo(
     () => recallTrendSeries.slice(-7),
     [recallTrendSeries]
@@ -5422,10 +5432,10 @@ export function App() {
                   </div>
                   <div className="metric" data-accent="blue">
                     <span className="metric-kicker">Throughput</span>
-                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalBoots || 0} /></span>
-                    <span className="metric-label">Boot Compilations</span>
+                    <span className="metric-value"><AnimatedNumber value={throughputBoots7d} /></span>
+                    <span className="metric-label">7d Boot Compilations</span>
                     <span className="metric-footnote">
-                      Avg boot prompt {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} tokens served
+                      Rolling 7-day boot count from local `boot_savings` events (benchmark runs excluded)
                     </span>
                     <span className="metric-icon"><AppIcon name="refresh" /></span>
                   </div>
@@ -5593,7 +5603,7 @@ export function App() {
                             <span className="analytics-card-kicker">System load</span>
                             <h2>Boots Per Day</h2>
                           </div>
-                          <span className="badge">{formatCompactNumber(Number(savings.summary?.totalBoots || 0))} total</span>
+                          <span className="badge">{formatCompactNumber(throughputBoots30d)} last 30d</span>
                         </div>
                         <Sparkline
                           data={(savings.daily || []).map(d => d.boots)}
