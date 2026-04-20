@@ -108,6 +108,14 @@ pub fn sqlite_vec_status(conn: &Connection) -> SqliteVecStatus {
     }
 }
 
+fn env_u64_clamped(name: &str, default: u64, min: u64, max: u64) -> u64 {
+    let parsed = std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(default);
+    parsed.clamp(min, max)
+}
+
 /// Apply WAL mode, NORMAL synchronous writes, and foreign-key enforcement.
 ///
 /// NOTE: PRAGMA synchronous=NORMAL is safe with WAL mode. From SQLite docs:
@@ -116,15 +124,27 @@ pub fn sqlite_vec_status(conn: &Connection) -> SqliteVecStatus {
 ///   (process crash protection). With WAL checkpoint every 10s, data loss is limited to <10s.
 ///   This is the recommended setting for WAL mode workloads.
 pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch(
+    // Defaults tuned for mixed desktop + daemon workloads; both are overridable
+    // to let operators adapt for RAM-constrained or high-throughput hosts.
+    let mmap_size = env_u64_clamped(
+        "CORTEX_DB_MMAP_SIZE_BYTES",
+        268_435_456,
+        64 * 1024 * 1024,
+        4 * 1024 * 1024 * 1024,
+    );
+    let cache_size_kib = env_u64_clamped("CORTEX_DB_CACHE_SIZE_KIB", 12_000, 2_000, 131_072);
+    let cache_size = -(cache_size_kib as i64);
+    let pragmas = format!(
         r#"
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
         PRAGMA foreign_keys = ON;
-        PRAGMA mmap_size = 268435456;
-        PRAGMA cache_size = -8000;
-        "#,
-    )?;
+        PRAGMA mmap_size = {mmap_size};
+        PRAGMA cache_size = {cache_size};
+        PRAGMA temp_store = MEMORY;
+        "#
+    );
+    conn.execute_batch(&pragmas)?;
     Ok(())
 }
 
