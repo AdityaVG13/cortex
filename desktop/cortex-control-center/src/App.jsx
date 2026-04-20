@@ -134,6 +134,13 @@ const CORTEX_OPERATOR_STORAGE_KEY = "cortex_operator";
 const CORTEX_PANEL_STORAGE_KEY = "cortex_panel";
 const DEV_RESTART_VERIFY_ENABLED = import.meta.env.VITE_CORTEX_DEV_VERIFY_RESTART === "1";
 const DEV_RESTART_VERIFY_TIMEOUT_MS = 30000;
+const MISSION_METRIC_LEGEND = [
+  { abbreviation: "t", meaning: "tokens" },
+  { abbreviation: "K", meaning: "thousand tokens" },
+  { abbreviation: "M", meaning: "million tokens" },
+  { abbreviation: "B", meaning: "billion tokens" },
+  { abbreviation: "T", meaning: "trillion tokens" },
+];
 
 function clearLegacyBrowserAuthTokens() {
   if (typeof window === "undefined") return;
@@ -1463,6 +1470,8 @@ export function App() {
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const [restartingDaemon, setRestartingDaemon] = useState(false);
   const [restartError, setRestartError] = useState("");
+  const [showMissionMetricLegend, setShowMissionMetricLegend] = useState(false);
+  const [showMissionCompactUnits, setShowMissionCompactUnits] = useState(true);
   const [hasVisitedBrain, setHasVisitedBrain] = useState(() => browserBootstrap.panel === "brain");
   const [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(() => browserBootstrap.panel === "analytics");
   const [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics");
@@ -1638,6 +1647,25 @@ export function App() {
     (usdAmount) => currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
     [currencyFormatter, currencyRate]
   );
+
+  const formatMissionTokenValue = useCallback((value, { signed = false, perDay = false } = {}) => {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric)) {
+      return perDay ? "0 tokens/day" : "0 tokens";
+    }
+
+    if (showMissionCompactUnits) {
+      const compact = signed ? formatSignedCompactNumber(numeric) : formatCompactNumber(numeric);
+      return `${compact}t${perDay ? "/day" : ""}`;
+    }
+
+    const absRounded = Math.round(Math.abs(numeric)).toLocaleString();
+    const signPrefix = signed
+      ? (numeric > 0 ? "+" : numeric < 0 ? "-" : "")
+      : (numeric < 0 ? "-" : "");
+    const valueWithSign = `${signPrefix}${absRounded}`;
+    return perDay ? `${valueWithSign} tokens/day` : `${valueWithSign} tokens`;
+  }, [showMissionCompactUnits]);
 
   const clearTransientFeedback = useCallback((fallback = "Connected to daemon.") => {
     setFeedbackMessage((current) => {
@@ -4182,18 +4210,54 @@ export function App() {
                   <h2>Mission Control</h2>
                   <span className="badge">{formatCurrency(((savings?.summary?.totalSaved || 0) * SAVINGS_USD_PER_MILLION) / 1000000)}</span>
                 </div>
+                <div className="overview-hero-meta">
+                  <button
+                    type="button"
+                    className={`btn-sm ${showMissionCompactUnits ? "" : "btn-primary"}`}
+                    onClick={() => setShowMissionCompactUnits((current) => !current)}
+                    title={showMissionCompactUnits ? "Switch to full token counts" : "Switch to compact token units"}
+                  >
+                    {showMissionCompactUnits ? "Show Full Numbers" : "Show Compact Units"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn-sm ${showMissionMetricLegend ? "btn-primary" : ""}`}
+                    aria-expanded={showMissionMetricLegend}
+                    onClick={() => setShowMissionMetricLegend((current) => !current)}
+                    title="Explain Mission Control metrics and unit labels"
+                  >
+                    Metrics ?
+                  </button>
+                </div>
+                {showMissionMetricLegend ? (
+                  <div className="overview-metric-legend" role="dialog" aria-label="Mission Control metric legend">
+                    <div className="overview-metric-legend-title">Metric Legend</div>
+                    <p>
+                      <strong>30d median gain</strong> is the projected p50 token savings over the next 30 days.
+                      <strong> Current run-rate</strong> is the projected daily token savings pace.
+                    </p>
+                    <ul>
+                      {MISSION_METRIC_LEGEND.map((entry) => (
+                        <li key={entry.abbreviation}>
+                          <code>{entry.abbreviation}</code> = {entry.meaning}
+                        </li>
+                      ))}
+                      <li><code>t/day</code> = tokens per day (for example, <code>11.8Mt/day</code> means 11.8 million tokens/day)</li>
+                    </ul>
+                  </div>
+                ) : null}
                 <p className="chart-summary">
                   Overview now behaves like a command deck instead of a spacer page: analytics, work, and memory quality are visible immediately.
                 </p>
                 <div className="overview-summary-grid">
                   <div className="overview-summary-card">
                     <span className="overview-summary-label">30d median gain</span>
-                    <strong>{formatSignedCompactNumber(Number(monteCarloProjection?.summary?.p50Gain || 0))}t</strong>
+                    <strong>{formatMissionTokenValue(Number(monteCarloProjection?.summary?.p50Gain || 0), { signed: true })}</strong>
                     <span>{monteCarloProjection ? `${monteCarloProjection.simulationCount} deterministic sims` : "Waiting for more history"}</span>
                   </div>
                   <div className="overview-summary-card">
                     <span className="overview-summary-label">Current run-rate</span>
-                    <strong>{formatCompactNumber(Number(monteCarloProjection?.summary?.avgDaily || 0))}t/day</strong>
+                    <strong>{formatMissionTokenValue(Number(monteCarloProjection?.summary?.avgDaily || 0), { perDay: true })}</strong>
                     <span>{bootSavingsMomentum === null ? "Momentum pending" : `${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs prior window`}</span>
                   </div>
                   <div className="overview-summary-card">
