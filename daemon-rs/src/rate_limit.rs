@@ -22,6 +22,13 @@ const REQUEST_LIMIT_LOOPBACK: usize = 10_000;
 const WINDOW: Duration = Duration::from_secs(60);
 const LIMIT_MAX: usize = 1_000_000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum RequestClass {
+    Default,
+    Recall,
+    Store,
+}
+
 fn read_limit_env(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -72,10 +79,14 @@ impl SlidingWindow {
 #[derive(Clone)]
 pub struct RateLimiter {
     auth_failures: Arc<Mutex<HashMap<IpAddr, SlidingWindow>>>,
-    requests: Arc<Mutex<HashMap<IpAddr, SlidingWindow>>>,
+    requests: Arc<Mutex<HashMap<(IpAddr, RequestClass), SlidingWindow>>>,
     auth_fail_limit: usize,
     request_limit_non_loopback: usize,
     request_limit_loopback: usize,
+    recall_request_limit_non_loopback: usize,
+    recall_request_limit_loopback: usize,
+    store_request_limit_non_loopback: usize,
+    store_request_limit_loopback: usize,
 }
 
 impl RateLimiter {
@@ -90,12 +101,32 @@ impl RateLimiter {
             "CORTEX_RATE_LIMIT_LOOPBACK_REQUESTS_PER_MIN",
             REQUEST_LIMIT_LOOPBACK,
         );
+        let recall_request_limit_non_loopback = read_limit_env(
+            "CORTEX_RATE_LIMIT_RECALL_REQUESTS_PER_MIN",
+            request_limit_non_loopback,
+        );
+        let recall_request_limit_loopback = read_limit_env(
+            "CORTEX_RATE_LIMIT_RECALL_LOOPBACK_REQUESTS_PER_MIN",
+            request_limit_loopback,
+        );
+        let store_request_limit_non_loopback = read_limit_env(
+            "CORTEX_RATE_LIMIT_STORE_REQUESTS_PER_MIN",
+            request_limit_non_loopback,
+        );
+        let store_request_limit_loopback = read_limit_env(
+            "CORTEX_RATE_LIMIT_STORE_LOOPBACK_REQUESTS_PER_MIN",
+            request_limit_loopback,
+        );
         if auth_fail_limit != AUTH_FAIL_LIMIT
             || request_limit_non_loopback != REQUEST_LIMIT_NON_LOOPBACK
             || request_limit_loopback != REQUEST_LIMIT_LOOPBACK
+            || recall_request_limit_non_loopback != request_limit_non_loopback
+            || recall_request_limit_loopback != request_limit_loopback
+            || store_request_limit_non_loopback != request_limit_non_loopback
+            || store_request_limit_loopback != request_limit_loopback
         {
             eprintln!(
-                "[cortex] Rate limiter configured: auth_fails/min={auth_fail_limit}, requests/min(non-loopback)={request_limit_non_loopback}, requests/min(loopback)={request_limit_loopback}"
+                "[cortex] Rate limiter configured: auth_fails/min={auth_fail_limit}, default_requests/min(non-loopback)={request_limit_non_loopback}, default_requests/min(loopback)={request_limit_loopback}, recall_requests/min(non-loopback)={recall_request_limit_non_loopback}, recall_requests/min(loopback)={recall_request_limit_loopback}, store_requests/min(non-loopback)={store_request_limit_non_loopback}, store_requests/min(loopback)={store_request_limit_loopback}"
             );
         }
         Self {
@@ -104,14 +135,37 @@ impl RateLimiter {
             auth_fail_limit,
             request_limit_non_loopback,
             request_limit_loopback,
+            recall_request_limit_non_loopback,
+            recall_request_limit_loopback,
+            store_request_limit_non_loopback,
+            store_request_limit_loopback,
         }
     }
 
-    fn request_limit_for_ip(&self, ip: IpAddr) -> usize {
-        if ip.is_loopback() {
-            self.request_limit_loopback
-        } else {
-            self.request_limit_non_loopback
+    fn request_limit_for_ip_class(&self, ip: IpAddr, class: RequestClass) -> usize {
+        let loopback = ip.is_loopback();
+        match class {
+            RequestClass::Default => {
+                if loopback {
+                    self.request_limit_loopback
+                } else {
+                    self.request_limit_non_loopback
+                }
+            }
+            RequestClass::Recall => {
+                if loopback {
+                    self.recall_request_limit_loopback
+                } else {
+                    self.recall_request_limit_non_loopback
+                }
+            }
+            RequestClass::Store => {
+                if loopback {
+                    self.store_request_limit_loopback
+                } else {
+                    self.store_request_limit_non_loopback
+                }
+            }
         }
     }
 
@@ -142,9 +196,20 @@ impl RateLimiter {
 
     /// Check and record a request. Returns `Ok(remaining)` or `Err(retry_after)`.
     pub async fn check_request(&self, ip: IpAddr) -> Result<usize, u64> {
+        self.check_request_for_class(ip, RequestClass::Default)
+            .await
+    }
+
+    /// Check and record a request for a route class.
+    /// Returns `Ok(remaining)` or `Err(retry_after)`.
+    pub async fn check_request_for_class(
+        &self,
+        ip: IpAddr,
+        class: RequestClass,
+    ) -> Result<usize, u64> {
         let mut map = self.requests.lock().await;
-        let window = map.entry(ip).or_insert_with(SlidingWindow::new);
-        let request_limit = self.request_limit_for_ip(ip);
+        let window = map.entry((ip, class)).or_insert_with(SlidingWindow::new);
+        let request_limit = self.request_limit_for_ip_class(ip, class);
         let now = Instant::now();
         let current = window.count(now);
         if current >= request_limit {
@@ -193,7 +258,7 @@ mod tests {
     async fn test_request_limit_blocks_at_limit() {
         let rl = RateLimiter::new();
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
-        let limit = rl.request_limit_for_ip(ip);
+        let limit = rl.request_limit_for_ip_class(ip, RequestClass::Default);
         for _ in 0..limit {
             let _ = rl.check_request(ip).await;
         }
@@ -205,7 +270,10 @@ mod tests {
         let rl = RateLimiter::new();
         let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let remote = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
-        assert!(rl.request_limit_for_ip(loopback) > rl.request_limit_for_ip(remote));
+        assert!(
+            rl.request_limit_for_ip_class(loopback, RequestClass::Default)
+                > rl.request_limit_for_ip_class(remote, RequestClass::Default)
+        );
     }
 
     #[tokio::test]
@@ -223,12 +291,37 @@ mod tests {
         let rl = RateLimiter::new();
         let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
-        let limit = rl.request_limit_for_ip(ip1);
+        let limit = rl.request_limit_for_ip_class(ip1, RequestClass::Default);
         for _ in 0..limit {
             let _ = rl.check_request(ip1).await;
         }
         assert!(rl.check_request(ip1).await.is_err());
         assert!(rl.check_request(ip2).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_route_class_buckets_are_independent() {
+        let rl = RateLimiter::new();
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42));
+        let store_limit = rl.request_limit_for_ip_class(ip, RequestClass::Store);
+        for _ in 0..store_limit {
+            let _ = rl
+                .check_request_for_class(ip, RequestClass::Store)
+                .await
+                .expect("store class should allow requests below class limit");
+        }
+        assert!(
+            rl.check_request_for_class(ip, RequestClass::Store)
+                .await
+                .is_err(),
+            "store class should rate limit once its own bucket is exhausted"
+        );
+        assert!(
+            rl.check_request_for_class(ip, RequestClass::Recall)
+                .await
+                .is_ok(),
+            "recall class should remain available after store bucket is saturated"
+        );
     }
 
     #[tokio::test]
@@ -239,6 +332,6 @@ mod tests {
         rl.cleanup().await;
         // Entry still there (not expired)
         let map = rl.requests.lock().await;
-        assert!(map.contains_key(&ip));
+        assert!(map.contains_key(&(ip, RequestClass::Default)));
     }
 }

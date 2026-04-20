@@ -14,13 +14,14 @@ use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use super::ensure_auth_with_caller_rated;
+use super::ensure_auth_with_caller_rated_for_class;
 use super::{
     estimate_tokens, json_response, now_iso, parse_timestamp_ms, resolve_source_identity,
     truncate_chars,
 };
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
+use crate::rate_limit::RequestClass;
 use crate::state::{
     PreCacheEntry, RecallHistoryEntry, RuntimeState, SqliteVecCanaryConfig, SqliteVecRouteMode,
 };
@@ -1001,10 +1002,12 @@ pub async fn handle_recall(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -1071,10 +1074,12 @@ pub async fn handle_recall_post(
     headers: HeaderMap,
     Json(body): Json<RecallBody>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -1139,10 +1144,12 @@ pub async fn handle_semantic_recall(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -1181,10 +1188,12 @@ pub async fn handle_budget_recall(
     headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -1252,10 +1261,12 @@ pub async fn handle_recall_explain(
     Query(query): Query<RecallQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -1334,10 +1345,12 @@ pub async fn handle_peek(
     headers: HeaderMap,
     Query(query): Query<RecallQuery>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -6301,10 +6314,12 @@ pub async fn handle_unfold(
     Query(query): Query<UnfoldQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Recall).await
+        {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     let caller_id = match require_team_caller(&state, caller_id) {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,

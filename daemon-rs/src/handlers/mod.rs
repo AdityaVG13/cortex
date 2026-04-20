@@ -22,6 +22,7 @@ use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
 use serde_json::{json, Value};
 use std::net::IpAddr;
 
+use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -295,13 +296,22 @@ pub fn client_ip(headers: &HeaderMap) -> IpAddr {
 /// exceeded, or missing SSRF header. Handles both request-volume and
 /// auth-failure buckets.
 pub async fn ensure_auth_rated(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Response> {
+    ensure_auth_rated_for_class(headers, state, RequestClass::Default).await
+}
+
+#[allow(dead_code)]
+pub async fn ensure_auth_rated_for_class(
+    headers: &HeaderMap,
+    state: &RuntimeState,
+    class: RequestClass,
+) -> Result<(), Response> {
     let ip = client_ip(headers);
 
     if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
         return Err(rate_limit_response(retry_after, 0));
     }
 
-    match state.rate_limiter.check_request(ip).await {
+    match state.rate_limiter.check_request_for_class(ip, class).await {
         Err(retry_after) => return Err(rate_limit_response(retry_after, 0)),
         Ok(_remaining) => {}
     }
@@ -320,13 +330,22 @@ pub async fn ensure_auth_with_caller_rated(
     headers: &HeaderMap,
     state: &RuntimeState,
 ) -> Result<Option<i64>, Response> {
+    ensure_auth_with_caller_rated_for_class(headers, state, RequestClass::Default).await
+}
+
+#[allow(dead_code)]
+pub async fn ensure_auth_with_caller_rated_for_class(
+    headers: &HeaderMap,
+    state: &RuntimeState,
+    class: RequestClass,
+) -> Result<Option<i64>, Response> {
     let ip = client_ip(headers);
 
     if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
         return Err(rate_limit_response(retry_after, 0));
     }
 
-    match state.rate_limiter.check_request(ip).await {
+    match state.rate_limiter.check_request_for_class(ip, class).await {
         Err(retry_after) => return Err(rate_limit_response(retry_after, 0)),
         Ok(_remaining) => {}
     }

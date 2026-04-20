@@ -7,14 +7,15 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 use super::{
-    ensure_auth_with_caller_rated, json_response, log_event, now_iso, resolve_source_identity,
-    truncate_chars,
+    ensure_auth_with_caller_rated_for_class, json_response, log_event, now_iso,
+    resolve_source_identity, truncate_chars,
 };
 use crate::api_types::StoreRequest;
 use crate::conflict::{
     detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
 };
 use crate::db::checkpoint_wal_best_effort;
+use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
 
 const HARD_MERGE_THRESHOLD: f32 = 0.92;
@@ -212,7 +213,13 @@ pub async fn handle_store(
     headers: HeaderMap,
     Json(body): Json<StoreRequest>,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
+    let caller_id = match ensure_auth_with_caller_rated_for_class(
+        &headers,
+        &state,
+        RequestClass::Store,
+    )
+    .await
+    {
         Ok(id) => id,
         Err(resp) => return resp,
     };
