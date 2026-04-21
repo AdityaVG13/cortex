@@ -25,6 +25,7 @@ const MAX_TASKS: i64 = 500;
 const DEFAULT_TASK_QUERY_LIMIT: usize = 200;
 const MAX_TASK_QUERY_LIMIT: usize = 500;
 const SESSION_FRESHNESS_IDLE_SECONDS: i64 = 24 * 60 * 60;
+// Regex compilation is intentionally one-time: redact_secrets runs on hot paths.
 static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static HASH_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static CREDENTIAL_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
@@ -173,6 +174,8 @@ fn is_valid_agent_label(agent: &str) -> bool {
     !trimmed.is_empty() && trimmed.len() <= 160 && !trimmed.chars().any(|ch| ch.is_control())
 }
 
+// Apply redactions in three passes so broad credential masking does not hide
+// structured bearer/hash patterns from earlier, more specific replacements.
 fn redact_secrets(text: &str) -> String {
     let bearer = BEARER_REDACTION_RE
         .get_or_init(|| Regex::new(r"Bearer\s+[a-f0-9]{32,}").ok())
