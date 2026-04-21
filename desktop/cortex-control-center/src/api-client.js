@@ -108,9 +108,18 @@ function shouldFallbackToHttp(error) {
   );
 }
 
+/**
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorMessage(error) {
+  if (error instanceof Error) return error.message;
+  return String(error ?? "");
+}
+
 function buildFallbackFailure(ipcError, httpError) {
-  const ipcMessage = ipcError?.message || String(ipcError);
-  const httpMessage = httpError?.message || String(httpError);
+  const ipcMessage = errorMessage(ipcError);
+  const httpMessage = errorMessage(httpError);
   return new Error(`${ipcMessage}; HTTP fallback failed: ${httpMessage}`);
 }
 
@@ -359,7 +368,7 @@ export async function settledWithRethrow(tasks) {
   });
   const failed = results.filter(r => r.status === "rejected");
   if (failed.length) {
-    const reasons = failed.map(f => f.reason?.message || String(f.reason));
+    const reasons = failed.map(f => errorMessage(f.reason));
     throw new Error(reasons.join("; "));
   }
 }
@@ -374,6 +383,6 @@ export async function settledCollectErrors(fns) {
   const results = await Promise.allSettled(fns.map(fn => fn()));
   const failures = results.filter(r => r.status === "rejected");
   if (!failures.length) return [];
-  const reasons = failures.map(f => f.reason?.message || String(f.reason));
+  const reasons = failures.map(f => errorMessage(f.reason));
   return [...new Set(reasons)];
 }
