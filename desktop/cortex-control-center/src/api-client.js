@@ -108,6 +108,12 @@ function shouldFallbackToHttp(error) {
   );
 }
 
+function buildFallbackFailure(ipcError, httpError) {
+  const ipcMessage = ipcError?.message || String(ipcError);
+  const httpMessage = httpError?.message || String(httpError);
+  return new Error(`${ipcMessage}; HTTP fallback failed: ${httpMessage}`);
+}
+
 async function refreshTokenIfChanged(onTokenRefresh, getToken, previousToken) {
   if (!onTokenRefresh) return false;
 
@@ -200,9 +206,7 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
         try {
           return await requestViaHttp();
         } catch (httpError) {
-          const ipcMessage = ipcError?.message || String(ipcError);
-          const httpMessage = httpError?.message || String(httpError);
-          throw new Error(`${ipcMessage}; HTTP fallback failed: ${httpMessage}`);
+          throw buildFallbackFailure(ipcError, httpError);
         }
       }
     }
@@ -290,9 +294,7 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
         try {
           return await requestViaHttp();
         } catch (httpError) {
-          const ipcMessage = ipcError?.message || String(ipcError);
-          const httpMessage = httpError?.message || String(httpError);
-          throw new Error(`${ipcMessage}; HTTP fallback failed: ${httpMessage}`);
+          throw buildFallbackFailure(ipcError, httpError);
         }
       }
     }
