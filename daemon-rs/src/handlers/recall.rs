@@ -4158,26 +4158,25 @@ fn search_memories(
                 row_owner_id,
                 row_visibility,
             ) = row;
-            let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
+            let source_key = source
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("memory::{id}"));
             if !source_matches_prefix(&source_key, source_prefix) {
                 continue;
             }
             let effective_score = blend_importance(score, trust_score);
-            let ts_source = last_accessed
-                .clone()
-                .or(created_at.clone())
-                .unwrap_or_default();
-            let ts = parse_timestamp_ms(&ts_source);
+            let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
             let display = crate::aging::get_display_text(
                 &text,
                 &compressed_text,
-                &age_tier.unwrap_or_else(|| "fresh".to_string()),
+                age_tier.as_deref().unwrap_or("fresh"),
             );
 
             let haystacks = [
                 text.to_lowercase(),
-                source.unwrap_or_default().to_lowercase(),
-                tags.unwrap_or_default().to_lowercase(),
+                source.as_deref().unwrap_or("").to_lowercase(),
+                tags.as_deref().unwrap_or("").to_lowercase(),
             ];
             let matched = count_matching_term_groups(&haystacks, &term_groups);
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
@@ -4266,16 +4265,15 @@ fn search_memories_fallback(
     for row in rows.flatten() {
         let (id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at) =
             row;
-        let source_key = source.clone().unwrap_or_else(|| format!("memory::{id}"));
+        let source_key = source
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("memory::{id}"));
         if !source_matches_prefix(&source_key, source_prefix) {
             continue;
         }
         let effective_score = blend_importance(score, trust_score);
-        let ts_source = last_accessed
-            .clone()
-            .or(created_at.clone())
-            .unwrap_or_default();
-        let ts = parse_timestamp_ms(&ts_source);
+        let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
 
         if term_groups.is_empty() {
             let excerpt = query_focused_excerpt_with_terms(&text, &excerpt_focus_terms, 220);
@@ -4295,8 +4293,8 @@ fn search_memories_fallback(
 
         let haystacks = [
             text.to_lowercase(),
-            source.unwrap_or_default().to_lowercase(),
-            tags.unwrap_or_default().to_lowercase(),
+            source.as_deref().unwrap_or("").to_lowercase(),
+            tags.as_deref().unwrap_or("").to_lowercase(),
         ];
 
         let matched = count_matching_term_groups(&haystacks, &term_groups);
@@ -4481,25 +4479,24 @@ fn search_decisions(
                 row_owner_id,
                 row_visibility,
             ) = row;
-            let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
+            let source_key = context
+                .as_deref()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("decision::{id}"));
             if !source_matches_prefix(&source_key, source_prefix) {
                 continue;
             }
             let effective_score = blend_importance(score, trust_score);
-            let ts_source = last_accessed
-                .clone()
-                .or(created_at.clone())
-                .unwrap_or_default();
-            let ts = parse_timestamp_ms(&ts_source);
+            let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
             let display = crate::aging::get_display_text(
                 &decision,
                 &compressed_text,
-                &age_tier.unwrap_or_else(|| "fresh".to_string()),
+                age_tier.as_deref().unwrap_or("fresh"),
             );
 
             let haystacks = [
                 decision.to_lowercase(),
-                context.unwrap_or_default().to_lowercase(),
+                context.as_deref().unwrap_or("").to_lowercase(),
             ];
             let matched = count_matching_term_groups(&haystacks, &term_groups);
             let recency_d = recency_days(last_accessed.as_deref().or(created_at.as_deref()));
@@ -4587,16 +4584,15 @@ fn search_decisions_fallback(
     for row in rows.flatten() {
         let (id, decision, context, score, trust_score, retrievals, last_accessed, created_at) =
             row;
-        let source_key = context.clone().unwrap_or_else(|| format!("decision::{id}"));
+        let source_key = context
+            .as_deref()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("decision::{id}"));
         if !source_matches_prefix(&source_key, source_prefix) {
             continue;
         }
         let effective_score = blend_importance(score, trust_score);
-        let ts_source = last_accessed
-            .clone()
-            .or(created_at.clone())
-            .unwrap_or_default();
-        let ts = parse_timestamp_ms(&ts_source);
+        let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
 
         if term_groups.is_empty() {
             let excerpt = query_focused_excerpt_with_terms(&decision, &excerpt_focus_terms, 220);
@@ -4616,7 +4612,7 @@ fn search_decisions_fallback(
 
         let haystacks = [
             decision.to_lowercase(),
-            context.unwrap_or_default().to_lowercase(),
+            context.as_deref().unwrap_or("").to_lowercase(),
         ];
         let matched = count_matching_term_groups(&haystacks, &term_groups);
         if matched == 0 {
