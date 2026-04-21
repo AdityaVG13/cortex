@@ -3104,6 +3104,13 @@ export function App() {
     [activityEntries]
   );
 
+  const topSavingsByAgent = useMemo(() => {
+    const rows = Array.isArray(savings?.byAgent) ? savings.byAgent : [];
+    return [...rows]
+      .sort((a, b) => Number(b.saved || 0) - Number(a.saved || 0))
+      .slice(0, 8);
+  }, [savings?.byAgent]);
+
   const sidebarUtilityStats = useMemo(
     () => [
       { label: "Queue", value: pendingTasks.length, tone: pendingTasks.length ? "warning" : "calm" },
@@ -5759,10 +5766,7 @@ export function App() {
                           <span className="badge">{savings.byAgent?.length || 0}</span>
                         </div>
                         <ul className="item-list analytics-list">
-                          {savings.byAgent?.length ? savings.byAgent
-                            .slice()
-                            .sort((a, b) => Number(b.saved || 0) - Number(a.saved || 0))
-                            .slice(0, 8)
+                          {topSavingsByAgent.length ? topSavingsByAgent
                             .map((row, i) => (
                               <li key={`${row.agent}-${i}`}>
                                 <div className="item-meta">
