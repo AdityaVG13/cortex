@@ -345,7 +345,7 @@ async fn handle_storage(
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let breakdown = crate::compaction::storage_breakdown(&conn);
     let total_bytes: i64 = conn
         .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
@@ -378,7 +378,7 @@ async fn handle_crystals(
     if let Err(resp) = ensure_auth(&headers, &state) {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let crystals = crate::crystallize::list_crystals(&conn);
     handlers::json_response(
         axum::http::StatusCode::OK,
