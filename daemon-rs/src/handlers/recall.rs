@@ -4213,6 +4213,7 @@ fn search_memories(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
+                .then_with(|| a.source.cmp(&b.source))
         });
 
         ranked.truncate(limit);
@@ -4533,6 +4534,7 @@ fn search_decisions(
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
                 .then(b.ts.cmp(&a.ts))
+                .then_with(|| a.source.cmp(&b.source))
         });
 
         ranked.truncate(limit);
