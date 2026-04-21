@@ -31,7 +31,7 @@ pub async fn handle_export(
         return resp;
     }
 
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
 
     match query.format.unwrap_or(ExportFormat::Json) {
         ExportFormat::Json => json_response(StatusCode::OK, export_json_value(&conn)),
