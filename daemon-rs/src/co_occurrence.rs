@@ -51,7 +51,6 @@ pub fn record(conn: &Connection, sources: &[String]) -> Result<(), String> {
 /// Return up to `limit` sources that frequently co-occur with
 /// `recalled_sources` but are not already in that set.
 /// Each result is a JSON object `{ "source": "...", "coScore": <i64> }`.
-#[allow(dead_code)]
 pub fn predict(
     conn: &Connection,
     recalled_sources: &[String],
