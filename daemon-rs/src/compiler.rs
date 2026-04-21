@@ -17,7 +17,7 @@ use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-use crate::handlers::estimate_tokens;
+use crate::handlers::{estimate_tokens, estimate_tokens_from_chars};
 
 fn detect_identity() -> String {
     let user = env::var("USERNAME")
@@ -657,7 +657,7 @@ fn estimate_raw_baseline(conn: &Connection, _home: &Path) -> usize {
         .unwrap_or(0);
     total_chars += dec_chars as usize;
 
-    estimate_tokens(&"x".repeat(total_chars))
+    estimate_tokens_from_chars(total_chars)
 }
 
 // ─── Record boot ────────────────────────────────────────────────────────────

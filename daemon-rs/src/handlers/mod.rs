@@ -883,8 +883,13 @@ fn prune_event_type_keep_latest(
 }
 
 /// Estimate token count from character length (≈3.8 chars/token).
+pub(crate) fn estimate_tokens_from_chars(char_count: usize) -> usize {
+    (char_count as f64 / 3.8).ceil() as usize
+}
+
+/// Estimate token count from text length.
 pub(crate) fn estimate_tokens(text: &str) -> usize {
-    (text.len() as f64 / 3.8).ceil() as usize
+    estimate_tokens_from_chars(text.len())
 }
 
 /// Parse an RFC3339 or legacy timestamp string into epoch milliseconds.
@@ -1274,6 +1279,18 @@ mod tests {
             HeaderValue::from_static("Bearer ctx_token"),
         );
         assert!(extract_auth_token(&alias_headers).is_none());
+    }
+
+    #[test]
+    fn estimate_tokens_from_chars_matches_estimate_tokens() {
+        for char_count in [0usize, 1, 3, 4, 38, 379, 10_000] {
+            let text = "x".repeat(char_count);
+            assert_eq!(
+                estimate_tokens_from_chars(char_count),
+                estimate_tokens(&text),
+                "char-count estimator should match text estimator for {char_count} chars"
+            );
+        }
     }
 
     #[test]
