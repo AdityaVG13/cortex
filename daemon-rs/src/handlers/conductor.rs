@@ -8,6 +8,7 @@ use regex::Regex;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 use super::{ensure_auth_rated, json_response, now_iso, parse_timestamp_ms, resolve_caller_id};
@@ -24,6 +25,9 @@ const MAX_TASKS: i64 = 500;
 const DEFAULT_TASK_QUERY_LIMIT: usize = 200;
 const MAX_TASK_QUERY_LIMIT: usize = 500;
 const SESSION_FRESHNESS_IDLE_SECONDS: i64 = 24 * 60 * 60;
+static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
+static HASH_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
+static CREDENTIAL_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
 // ─── Request / query types ──────────────────────────────────────────────────
 
@@ -170,13 +174,19 @@ fn is_valid_agent_label(agent: &str) -> bool {
 }
 
 fn redact_secrets(text: &str) -> String {
-    let bearer = Regex::new(r"Bearer\s+[a-f0-9]{32,}")
+    let bearer = BEARER_REDACTION_RE
+        .get_or_init(|| Regex::new(r"Bearer\s+[a-f0-9]{32,}").ok())
+        .as_ref()
         .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
-        .unwrap_or_else(|_| text.to_string());
-    let hashes = Regex::new(r"[a-f0-9]{40,}")
+        .unwrap_or_else(|| text.to_string());
+    let hashes = HASH_REDACTION_RE
+        .get_or_init(|| Regex::new(r"[a-f0-9]{40,}").ok())
+        .as_ref()
         .map(|re| re.replace_all(&bearer, "[HASH_REDACTED]").to_string())
         .unwrap_or(bearer);
-    Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+")
+    CREDENTIAL_REDACTION_RE
+        .get_or_init(|| Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+").ok())
+        .as_ref()
         .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
         .unwrap_or(hashes)
 }
