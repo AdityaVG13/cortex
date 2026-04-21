@@ -82,21 +82,6 @@ const FEED_KIND_LABEL = {
   system: "System",
 };
 
-const PANELS = [
-  { key: "overview", label: "Overview", icon: "overview" },
-  { key: "memory", label: "Memory", icon: "memory" },
-  { key: "analytics", label: "Analytics", icon: "analytics" },
-  { key: "agents", label: "Agents", icon: "agents" },
-  { key: "tasks", label: "Tasks", icon: "tasks" },
-  { key: "feed", label: "Feed", icon: "feed" },
-  { key: "messages", label: "Messages", icon: "messages" },
-  { key: "activity", label: "Activity", icon: "activity" },
-  { key: "locks", label: "Locks", icon: "locks" },
-  { key: "visualizer", label: "Brain", icon: "brain" },
-  { key: "conflicts", label: "Conflicts", icon: "conflicts" },
-  { key: "about", label: "About", icon: "about" },
-];
-
 const PANEL_SEQUENCE = [
   { key: "overview", label: "Overview", icon: "overview" },
   { key: "analytics", label: "Analytics", icon: "analytics" },
