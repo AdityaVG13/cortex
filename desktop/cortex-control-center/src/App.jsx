@@ -1317,6 +1317,8 @@ function normalizeSession(session, index) {
       : [];
   const startedAt = session?.startedAt ?? session?.started_at ?? null;
   const lastHeartbeat = session?.lastHeartbeat ?? session?.last_heartbeat ?? startedAt;
+  const parsedLastHeartbeat = Date.parse(String(lastHeartbeat || ""));
+  const lastHeartbeatMs = Number.isFinite(parsedLastHeartbeat) ? parsedLastHeartbeat : 0;
   const expiresAt = session?.expiresAt ?? session?.expires_at ?? null;
   const sessionId = session?.sessionId ?? session?.session_id ?? `${session?.agent || "agent"}-${index}`;
 
@@ -1326,6 +1328,7 @@ function normalizeSession(session, index) {
     sessionId,
     startedAt,
     lastHeartbeat,
+    lastHeartbeatMs,
     expiresAt,
   };
 }
@@ -1538,11 +1541,7 @@ export function App() {
     if (!Array.isArray(sessions)) return [];
     const sorted = sessions
       .map((session, index) => normalizeSession(session, index))
-      .sort((a, b) => {
-        const aTs = new Date(a.lastHeartbeat || 0).getTime();
-        const bTs = new Date(b.lastHeartbeat || 0).getTime();
-        return bTs - aTs;
-      });
+      .sort((a, b) => b.lastHeartbeatMs - a.lastHeartbeatMs);
 
     const deduped = new Map();
     for (const session of sorted) {
