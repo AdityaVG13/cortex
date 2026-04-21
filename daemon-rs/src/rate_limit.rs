@@ -10,7 +10,7 @@
 //! `X-RateLimit-Reset` headers when the limit is hit.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -39,39 +39,42 @@ fn read_limit_env(key: &str, default: usize) -> usize {
 
 #[derive(Clone)]
 struct SlidingWindow {
-    timestamps: Vec<Instant>,
+    timestamps: VecDeque<Instant>,
 }
 
 impl SlidingWindow {
     fn new() -> Self {
         Self {
-            timestamps: Vec::new(),
+            timestamps: VecDeque::new(),
         }
     }
 
     fn prune(&mut self, now: Instant) {
-        self.timestamps
-            .retain(|ts| now.duration_since(*ts) < WINDOW);
+        while let Some(oldest) = self.timestamps.front().copied() {
+            if now.duration_since(oldest) < WINDOW {
+                break;
+            }
+            self.timestamps.pop_front();
+        }
     }
 
-    fn count(&mut self, now: Instant) -> usize {
-        self.prune(now);
-        self.timestamps.len()
-    }
-
-    fn record(&mut self, now: Instant) {
-        self.prune(now);
-        self.timestamps.push(now);
-    }
-
-    fn seconds_until_slot(&mut self, now: Instant, limit: usize) -> u64 {
-        self.prune(now);
+    fn seconds_until_slot_pruned(&self, now: Instant, limit: usize) -> u64 {
         if self.timestamps.len() < limit {
             return 0;
         }
-        let oldest = self.timestamps[0];
+        let oldest = self.timestamps.front().copied().unwrap_or(now);
         let elapsed = now.duration_since(oldest);
         WINDOW.as_secs().saturating_sub(elapsed.as_secs()).max(1)
+    }
+
+    fn try_record(&mut self, now: Instant, limit: usize) -> Result<usize, u64> {
+        self.prune(now);
+        let current = self.timestamps.len();
+        if current >= limit {
+            return Err(self.seconds_until_slot_pruned(now, limit));
+        }
+        self.timestamps.push_back(now);
+        Ok(limit - current - 1)
     }
 }
 
@@ -174,12 +177,7 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
-        if window.count(now) >= self.auth_fail_limit {
-            let retry = window.seconds_until_slot(now, self.auth_fail_limit);
-            return Err(retry);
-        }
-        window.record(now);
-        Ok(())
+        window.try_record(now, self.auth_fail_limit).map(|_| ())
     }
 
     /// Check if an IP is currently blocked due to auth failures.
@@ -187,8 +185,9 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         if let Some(window) = map.get_mut(ip) {
             let now = Instant::now();
-            if window.count(now) >= self.auth_fail_limit {
-                return Some(window.seconds_until_slot(now, self.auth_fail_limit));
+            window.prune(now);
+            if window.timestamps.len() >= self.auth_fail_limit {
+                return Some(window.seconds_until_slot_pruned(now, self.auth_fail_limit));
             }
         }
         None
@@ -211,13 +210,7 @@ impl RateLimiter {
         let window = map.entry((ip, class)).or_insert_with(SlidingWindow::new);
         let request_limit = self.request_limit_for_ip_class(ip, class);
         let now = Instant::now();
-        let current = window.count(now);
-        if current >= request_limit {
-            let retry = window.seconds_until_slot(now, request_limit);
-            return Err(retry);
-        }
-        window.record(now);
-        Ok(request_limit - current - 1)
+        window.try_record(now, request_limit)
     }
 
     /// Periodic cleanup of stale entries (call from background task).
@@ -333,5 +326,36 @@ mod tests {
         // Entry still there (not expired)
         let map = rl.requests.lock().await;
         assert!(map.contains_key(&(ip, RequestClass::Default)));
+    }
+
+    #[test]
+    fn sliding_window_try_record_prunes_expired_front_entries() {
+        let mut window = SlidingWindow::new();
+        let now = Instant::now();
+        window.timestamps.push_back(now - Duration::from_secs(61));
+        window.timestamps.push_back(now - Duration::from_secs(59));
+
+        let remaining = window
+            .try_record(now, 2)
+            .expect("expired entries should be pruned before limit check");
+        assert_eq!(remaining, 0);
+        assert_eq!(window.timestamps.len(), 2);
+        assert!(
+            window
+                .timestamps
+                .iter()
+                .all(|ts| now.duration_since(*ts) < WINDOW)
+        );
+
+        let retry = window
+            .try_record(now, 2)
+            .expect_err("window should be full at limit");
+        assert_eq!(retry, 1);
+
+        let later = now + Duration::from_secs(2);
+        assert!(
+            window.try_record(later, 2).is_ok(),
+            "oldest non-expired entry should age out and free a slot"
+        );
     }
 }
