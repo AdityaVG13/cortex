@@ -91,9 +91,12 @@ const PANEL_SEQUENCE = [
   { key: "brain", label: "Brain", icon: "brain" },
   { key: "about", label: "About", icon: "about" },
 ];
+const PANEL_SEQUENCE_INDEX = new Map(PANEL_SEQUENCE.map((entry, idx) => [entry.key, idx]));
+const PANEL_SEQUENCE_LABEL = new Map(PANEL_SEQUENCE.map((entry) => [entry.key, entry.label]));
+const PANEL_SEQUENCE_KEYS = new Set(PANEL_SEQUENCE.map((entry) => entry.key));
 
 function panelIndex(panelKey) {
-  return PANEL_SEQUENCE.findIndex((entry) => entry.key === panelKey);
+  return PANEL_SEQUENCE_INDEX.get(panelKey) ?? -1;
 }
 
 const EMPTY_DAEMON = {
@@ -202,7 +205,7 @@ function readBrowserBootstrap() {
   }
 
   const requestedPanel = params.get("panel") || storedPanel || "";
-  const panel = PANEL_SEQUENCE.some((entry) => entry.key === requestedPanel) ? requestedPanel : "overview";
+  const panel = PANEL_SEQUENCE_KEYS.has(requestedPanel) ? requestedPanel : "overview";
   const cortexBase = params.get("cortexBase") || storedBase || DEFAULT_CORTEX_BASE;
   const authTokenFromParams = params.get("authToken") || "";
   const authToken = authTokenFromParams || readPersistedBrowserAuthToken();
@@ -1515,7 +1518,7 @@ export function App() {
   const permissionsEndpointAvailableRef = useRef(true);
 
   const changePanel = useCallback((nextPanel) => {
-    if (!PANEL_SEQUENCE.some((entry) => entry.key === nextPanel) || nextPanel === panel) {
+    if (!PANEL_SEQUENCE_KEYS.has(nextPanel) || nextPanel === panel) {
       return;
     }
 
@@ -3836,7 +3839,7 @@ export function App() {
   useEffect(() => {
     function handleKey(e) {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
-      const idx = PANEL_SEQUENCE.findIndex(p => p.key === panel);
+      const idx = panelIndex(panel);
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
         changePanel(PANEL_SEQUENCE[(idx + 1) % PANEL_SEQUENCE.length].key);
@@ -3858,6 +3861,7 @@ export function App() {
   const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport;
   const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
   const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
+  const activePanelLabel = PANEL_SEQUENCE_LABEL.get(panel) || "Overview";
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -3901,7 +3905,7 @@ export function App() {
           </div>
           <div className="sidebar-utility-note">
             <span className="sidebar-utility-note-label">Focus</span>
-            <strong>{PANEL_SEQUENCE.find((item) => item.key === panel)?.label || "Overview"}</strong>
+            <strong>{activePanelLabel}</strong>
             <p>{daemonState.message}</p>
             {daemonRecoveryHint ? <p className="sidebar-utility-alert">{daemonRecoveryHint}</p> : null}
           </div>
@@ -3972,7 +3976,7 @@ export function App() {
           <div className="topbar-left">
             <span className="topbar-path">CORTEX</span>
             <span className="topbar-sep">/</span>
-            <span className="topbar-current">{(PANEL_SEQUENCE.find((p) => p.key === panel)?.label || "Overview").toUpperCase()}</span>
+            <span className="topbar-current">{activePanelLabel.toUpperCase()}</span>
           </div>
           <div className="topbar-right">
             <span className="topbar-stat"><span className="topbar-label">MEM</span> {stats.memories}</span>
