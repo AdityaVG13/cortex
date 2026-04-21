@@ -4041,6 +4041,7 @@ fn search_memories(
 ) -> Result<Vec<SearchCandidate>, String> {
     let term_groups = build_search_term_groups(query_text);
     let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
+    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
 
     if term_groups.is_empty() {
         let mut stmt = conn
@@ -4050,12 +4051,13 @@ fn search_memories(
                  AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now')) \
+                 AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([limit as i64], |row| {
+            .query_map(params![limit as i64, source_like.as_deref()], |row| {
                 let text: String = row.get(1)?;
                 let compressed: Option<String> = row.get(9)?;
                 let age_tier: String = row
@@ -4107,6 +4109,7 @@ fn search_memories(
                  AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
          AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
          AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
+                 AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) \
                  ORDER BY bm25(memories_fts, ?3, ?4, ?5) \
                  LIMIT ?2",
             )
@@ -4119,7 +4122,8 @@ fn search_memories(
                     limit as i64,
                     bm25.memories_text,
                     bm25.memories_source,
-                    bm25.memories_tags
+                    bm25.memories_tags,
+                    source_like.as_deref()
                 ],
                 |row| {
                     Ok((
@@ -4370,6 +4374,7 @@ fn search_decisions(
 ) -> Result<Vec<SearchCandidate>, String> {
     let term_groups = build_search_term_groups(query_text);
     let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
+    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
 
     if term_groups.is_empty() {
         let mut stmt = conn
@@ -4379,12 +4384,13 @@ fn search_decisions(
                  AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now')) \
+                 AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) \
                  ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([limit as i64], |row| {
+            .query_map(params![limit as i64, source_like.as_deref()], |row| {
                 let effective_score =
                     blend_importance(row.get::<_, Option<f64>>(3)?, row.get::<_, Option<f64>>(4)?);
                 Ok(SearchCandidate {
@@ -4432,6 +4438,7 @@ fn search_decisions(
                  AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
          AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
          AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
+                 AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) \
                  ORDER BY bm25(decisions_fts, ?3, ?4) \
                  LIMIT ?2",
             )
@@ -4443,7 +4450,8 @@ fn search_decisions(
                     &fts_query,
                     limit as i64,
                     bm25.decisions_text,
-                    bm25.decisions_context
+                    bm25.decisions_context,
+                    source_like.as_deref()
                 ],
                 |row| {
                     Ok((
