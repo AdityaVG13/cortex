@@ -4236,18 +4236,20 @@ fn search_memories_fallback(
     limit: usize,
     source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
+    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let mut stmt = conn
         .prepare(
             "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at \
              FROM memories WHERE status = 'active' \
              AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))",
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
+             AND (?1 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?1)",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params![source_like.as_deref()], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -4561,18 +4563,20 @@ fn search_decisions_fallback(
     limit: usize,
     source_prefix: Option<&str>,
 ) -> Result<Vec<SearchCandidate>, String> {
+    let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let mut stmt = conn
         .prepare(
             "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at \
              FROM decisions WHERE status = 'active' \
              AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))",
+             AND (valid_until IS NULL OR valid_until > datetime('now')) \
+             AND (?1 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?1)",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params![source_like.as_deref()], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -9769,6 +9773,34 @@ mod tests {
     }
 
     #[test]
+    fn test_search_memories_fallback_honors_source_prefix_scope() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'scope::memory::hit', 'note', 'active', 0.9, 0.9, datetime('now'), datetime('now'))",
+            params!["daemon lock ownership flow"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'other::memory::noise', 'note', 'active', 0.9, 0.9, datetime('now'), datetime('now'))",
+            params!["daemon lock ownership flow"],
+        )
+        .unwrap();
+
+        let results = search_memories_fallback(&conn, "daemon lock", 5, Some("scope::"))
+            .expect("memory fallback source-prefix query should succeed");
+        assert!(
+            results.iter().all(|item| item.source.starts_with("scope::")),
+            "fallback memory search should keep only scoped sources"
+        );
+        assert!(
+            results.iter().any(|item| item.source == "scope::memory::hit"),
+            "scoped memory should remain in results"
+        );
+    }
+
+    #[test]
     fn test_search_memories_fts_scoring_counts_synonym_term_groups() {
         let conn = test_conn();
         conn.execute(
@@ -9831,6 +9863,34 @@ mod tests {
         assert_eq!(
             results[0].source, "decision::older-high-score",
             "empty-term fallback should rank by retained score signal before recency"
+        );
+    }
+
+    #[test]
+    fn test_search_decisions_fallback_honors_source_prefix_scope() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'scope::decision::hit', 'active', 0.9, 0.9, datetime('now'), datetime('now'))",
+            params!["daemon lock ownership rule"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO decisions (decision, context, status, score, trust_score, created_at, updated_at)
+             VALUES (?1, 'other::decision::noise', 'active', 0.9, 0.9, datetime('now'), datetime('now'))",
+            params!["daemon lock ownership rule"],
+        )
+        .unwrap();
+
+        let results = search_decisions_fallback(&conn, "daemon lock", 5, Some("scope::"))
+            .expect("decision fallback source-prefix query should succeed");
+        assert!(
+            results.iter().all(|item| item.source.starts_with("scope::")),
+            "fallback decision search should keep only scoped sources"
+        );
+        assert!(
+            results.iter().any(|item| item.source == "scope::decision::hit"),
+            "scoped decision should remain in results"
         );
     }
 
