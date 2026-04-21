@@ -82,6 +82,15 @@ function resolveIpcTransportTimeoutMs(path) {
   return Math.max(500, resolveIpcTimeoutMs(path) - IPC_TRANSPORT_MARGIN_MS);
 }
 
+/**
+ * @param {unknown} value
+ * @returns {value is {status: number, body: string}}
+ */
+function isIpcResponseEnvelope(value) {
+  if (!value || typeof value !== "object") return false;
+  return typeof value.status === "number" && typeof value.body === "string";
+}
+
 function shouldFallbackToHttp(error) {
   const message = String(error?.message || error || "").toLowerCase();
   return (
@@ -170,7 +179,7 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
           authToken: withAuth ? token : "",
           timeoutMs: transportTimeoutMs,
         }), timeoutMs, `${path}: IPC request`);
-        if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
+        if (!isIpcResponseEnvelope(response)) {
           throw new Error(`${path}: invalid IPC response`);
         }
         // On 401, re-read token and retry once (handles daemon token rotation on startup)
@@ -261,7 +270,7 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
           body: JSON.stringify(body),
           timeoutMs: transportTimeoutMs,
         }), timeoutMs, `POST ${path}: IPC request`);
-        if (!response || typeof response.status !== "number" || typeof response.body !== "string") {
+        if (!isIpcResponseEnvelope(response)) {
           throw new Error(`POST ${path}: invalid IPC response`);
         }
         if (isAuthStatus(response.status) && !_retried) {
