@@ -3862,6 +3862,14 @@ export function App() {
   const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
   const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
   const activePanelLabel = PANEL_SEQUENCE_LABEL.get(panel) || "Overview";
+  const hostLabel = useMemo(() => {
+    if (cortexBase === DEFAULT_CORTEX_BASE) return "LOCAL";
+    try {
+      return new URL(cortexBase).hostname;
+    } catch {
+      return "?";
+    }
+  }, [cortexBase]);
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -3985,7 +3993,7 @@ export function App() {
             <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
             <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
               <span className="topbar-label">HOST</span>
-              {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
+              {hostLabel}
             </span>
             <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
               {daemonStatusBadge.label}
