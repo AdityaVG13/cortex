@@ -3868,14 +3868,24 @@ export function App() {
   const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
   const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
   const activePanelLabel = PANEL_SEQUENCE_LABEL.get(panel) || "Overview";
-  const hostLabel = useMemo(() => {
-    if (cortexBase === DEFAULT_CORTEX_BASE) return "LOCAL";
+  const connectionEndpoint = useMemo(() => {
+    const fallback = {
+      host: "127.0.0.1",
+      port: "7437",
+      hostLabel: cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : "?",
+    };
     try {
-      return new URL(cortexBase).hostname;
+      const url = new URL(cortexBase);
+      return {
+        host: url.hostname || fallback.host,
+        port: url.port || fallback.port,
+        hostLabel: cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : url.hostname || "?",
+      };
     } catch {
-      return "?";
+      return fallback;
     }
   }, [cortexBase]);
+  const hostLabel = connectionEndpoint.hostLabel;
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -4114,7 +4124,7 @@ export function App() {
                   <span>Host</span>
                   <input
                     name="host"
-                    defaultValue={(() => { try { return new URL(cortexBase).hostname; } catch { return "127.0.0.1"; } })()}
+                    defaultValue={connectionEndpoint.host}
                     placeholder="127.0.0.1"
                     disabled={isTauriRuntime}
                   />
@@ -4123,7 +4133,7 @@ export function App() {
                   <span>Port</span>
                   <input
                     name="port"
-                    defaultValue={(() => { try { return new URL(cortexBase).port || "7437"; } catch { return "7437"; } })()}
+                    defaultValue={connectionEndpoint.port}
                     placeholder="7437"
                     disabled={isTauriRuntime}
                   />
@@ -4220,7 +4230,7 @@ export function App() {
               <div className="sys-item">
                 <span className="sys-label">HOST</span>
                 <span className="sys-value">
-                  {cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : (() => { try { return new URL(cortexBase).hostname; } catch { return "?"; } })()}
+                  {hostLabel}
                 </span>
               </div>
               <div className="sys-item">
