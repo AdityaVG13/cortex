@@ -16,6 +16,8 @@
 //! - Proxy sessions never spawn or stop daemon processes
 
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use sysinfo::{ProcessesToUpdate, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
@@ -32,10 +34,49 @@ const STARTUP_IDLE_TIMEOUT_SECS: u64 = 60;
 const ORPHAN_CHECK_SECS: u64 = 15;
 const MAX_AGENT_HEADER_LEN: usize = 160;
 const MAX_MODEL_HEADER_LEN: usize = 160;
+const AUTH_TOKEN_CACHE_TTL_MS: u64 = 1_000;
+
+#[derive(Default)]
+struct AuthTokenCacheEntry {
+    token_path: Option<PathBuf>,
+    token: Option<String>,
+    read_at: Option<std::time::Instant>,
+}
+
+static AUTH_TOKEN_CACHE: OnceLock<Mutex<AuthTokenCacheEntry>> = OnceLock::new();
+
+fn auth_token_cache() -> &'static Mutex<AuthTokenCacheEntry> {
+    AUTH_TOKEN_CACHE.get_or_init(|| Mutex::new(AuthTokenCacheEntry::default()))
+}
 
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
     let token_path = crate::auth::CortexPaths::resolve().token;
+    read_auth_token_with_cache(&token_path)
+}
+
+fn read_auth_token_with_cache(token_path: &Path) -> Option<String> {
+    let now = std::time::Instant::now();
+    if let Ok(cache) = auth_token_cache().lock() {
+        if cache.token_path.as_deref() == Some(token_path) {
+            if let Some(read_at) = cache.read_at {
+                if now.duration_since(read_at).as_millis() < AUTH_TOKEN_CACHE_TTL_MS as u128 {
+                    return cache.token.clone();
+                }
+            }
+        }
+    }
+
+    let token = read_auth_token_uncached(token_path);
+    if let Ok(mut cache) = auth_token_cache().lock() {
+        cache.token_path = Some(token_path.to_path_buf());
+        cache.token = token.clone();
+        cache.read_at = Some(now);
+    }
+    token
+}
+
+fn read_auth_token_uncached(token_path: &Path) -> Option<String> {
     match std::fs::read_to_string(&token_path) {
         Ok(token) => {
             let trimmed = token.trim();
@@ -57,6 +98,12 @@ pub(crate) fn read_auth_token() -> Option<String> {
             );
             None
         }
+    }
+}
+
+fn invalidate_auth_token_cache() {
+    if let Ok(mut cache) = auth_token_cache().lock() {
+        *cache = AuthTokenCacheEntry::default();
     }
 }
 
@@ -1274,6 +1321,7 @@ pub async fn run(
                         };
 
                         if attempt < REQUEST_ATTEMPTS {
+                            invalidate_auth_token_cache();
                             if !attempted_auth_recovery {
                                 attempted_auth_recovery = true;
                                 let recovered = recover_solo_auth(
@@ -1490,6 +1538,34 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&buffer_path).unwrap(), "");
 
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn read_auth_token_cache_can_be_invalidated() {
+        let home_dir = temp_test_dir("auth_token_cache");
+        fs::create_dir_all(&home_dir).unwrap();
+        let token_path = home_dir.join("cortex.token");
+
+        invalidate_auth_token_cache();
+        fs::write(&token_path, "ctx_old").unwrap();
+        assert_eq!(
+            read_auth_token_with_cache(&token_path),
+            Some("ctx_old".to_string())
+        );
+
+        fs::write(&token_path, "ctx_new").unwrap();
+        assert_eq!(
+            read_auth_token_with_cache(&token_path),
+            Some("ctx_old".to_string())
+        );
+
+        invalidate_auth_token_cache();
+        assert_eq!(
+            read_auth_token_with_cache(&token_path),
+            Some("ctx_new".to_string())
+        );
+        invalidate_auth_token_cache();
         let _ = fs::remove_dir_all(&home_dir);
     }
 
