@@ -8,7 +8,6 @@ target-tests/
 # Large benchmark datasets / local envs
 benchmarking/tools/
 benchmarking/runs/
-benchmarking/results/
 benchmarking/**/__pycache__/
 benchmarking/**/.venv/
 
@@ -26,4 +25,4 @@ graphify-out/
 
 # Transient local folders that can emit access denied
 pytest-cache-files-*/
-Usersadityacortex.tmppytest/
+Users*cortex.tmppytest/

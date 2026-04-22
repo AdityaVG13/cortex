@@ -50,7 +50,7 @@ desktop/cortex-control-center/src-tauri/target/
 desktop/cortex-control-center/src-tauri/target-*/
 target-tests/
 pytest-cache-files-*/
-Usersadityacortex.tmppytest/
+Users*cortex.tmppytest/
 .tmp/pytest/
 tmp/ptbase-*/
 tmp/pytest-local/
@@ -148,6 +148,10 @@ benchmarking/runs/*
 !benchmarking/runs/.gitkeep
 benchmarking/results/*
 !benchmarking/results/README.md
+!benchmarking/results/*.json
+!benchmarking/results/*.md
+!benchmarking/results/*.csv
+!benchmarking/results/*.tsv
 
 # Shipsecure Pro (source zip + all extracted files)
 .shipsecure-pro.zip
