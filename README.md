@@ -40,28 +40,17 @@ Restart your session. Cortex comes up on its own. Prefer a desktop app or manual
 ---
 
 <p align="center">
-  <img src="assets/cc-tour.gif" alt="Cortex Control Center — full walkthrough" width="100%">
-  <br><sub>Control Center: health, analytics, agents, memory browser, and brain state in one place.</sub>
+  <img src="assets/cc-overview.png" alt="Cortex Control Center — Overview dashboard" width="100%">
+  <br><sub>Control Center: live stats, memory health, agent activity, and savings at a glance.</sub>
 </p>
 
 Cortex runs a local daemon that stores decisions, context, and lessons across every AI session you run. Claude Code, Codex, Cursor, Gemini, and your own scripts share the same memory through HTTP or MCP. New sessions pick up where the last one left off instead of starting cold.
 
-<table align="center">
-  <tr>
-    <td width="33%" align="center">
-      <h3>🔒 Private by default</h3>
-      <sub>Localhost only. Your data never leaves your machine unless you set up team mode.</sub>
-    </td>
-    <td width="34%" align="center">
-      <h3>🔗 One memory, every tool</h3>
-      <sub>HTTP and MCP, same brain. No more per-tool silos or lost context.</sub>
-    </td>
-    <td width="33%" align="center">
-      <h3>📊 Prove it works</h3>
-      <sub>Token savings, recall quality, and Monte Carlo projections — measured, not promised.</sub>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  🔒 <b>Private by default</b> — localhost only, data never leaves your machine<br>
+  🔗 <b>One memory, every tool</b> — HTTP and MCP, same brain, no per-tool silos<br>
+  📊 <b>Prove it works</b> — token savings, recall quality, and Monte Carlo projections
+</p>
 
 ---
 
@@ -110,11 +99,38 @@ If the projection looks wrong, the underlying data is visible in the analytics p
 </td>
 <td width="58%">
 
-![Monte Carlo savings projection](assets/monte-carlo-readme.png)
+![Monte Carlo savings projection and recall quality](assets/cc-analytics-monte-carlo.png)
 
 </td>
 </tr>
 </table>
+
+---
+
+## Benchmarked, not hand-waved
+
+Cortex recall quality is measured against a ground-truth dataset on every release. Both the tuned pipeline and the raw no-helper baseline are tested independently.
+
+<table>
+<tr>
+<td width="50%" align="center">
+
+**Tuned pipeline** (`cortex-http`)
+
+`20/20` accuracy · avg `199` recall tokens
+
+</td>
+<td width="50%" align="center">
+
+**Raw baseline** (`cortex-http-base`)
+
+`20/20` accuracy · avg `202` recall tokens
+
+</td>
+</tr>
+</table>
+
+The benchmark runner is [fail-closed](benchmark/baseline-v041.md): gate-bypass shortcuts are rejected in preflight. v0.4.1 baseline started at 55% ground-truth precision. Current retrieval (RRF + crystal families + synonym expansion) reaches full accuracy on the same dataset.
 
 ---
 
