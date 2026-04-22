@@ -132,6 +132,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p plugins/cortex-plugin/assets
+          rm -f plugins/cortex-plugin/assets/cortex-v*.zip
+          rm -f plugins/cortex-plugin/assets/cortex-v*.tar.gz
+          rm -f plugins/cortex-plugin/assets/SHA256SUMS
           mkdir -p package/windows package/macos package/linux
 
           cp "dist/windows/cortex-windows-x86_64.exe" "package/windows/cortex.exe"
@@ -171,7 +174,11 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cortex-plugin-assets
-          path: plugins/cortex-plugin/assets/*
+          path: |
+            plugins/cortex-plugin/assets/cortex-v${{ env.VERSION }}-windows-x86_64.zip
+            plugins/cortex-plugin/assets/cortex-v${{ env.VERSION }}-macos-aarch64.tar.gz
+            plugins/cortex-plugin/assets/cortex-v${{ env.VERSION }}-linux-x86_64.tar.gz
+            plugins/cortex-plugin/assets/SHA256SUMS
           if-no-files-found: error
 
       - name: Upload packaged plugin directory
@@ -319,7 +326,16 @@ jobs:
         run: |
           cd dist
           rm -f SHA256SUMS
-          sha256sum cortex-v*.zip cortex-v*.tar.gz *.exe *.dmg *.AppImage *.deb *.app.tar.gz 2>/dev/null | sort > SHA256SUMS
+          sha256sum \
+            "cortex-v${VERSION}-windows-x86_64.zip" \
+            "cortex-v${VERSION}-macos-aarch64.tar.gz" \
+            "cortex-v${VERSION}-linux-x86_64.tar.gz" \
+            *.exe \
+            *.dmg \
+            *.AppImage \
+            *.deb \
+            *.app.tar.gz \
+            2>/dev/null | sort > SHA256SUMS
           cat SHA256SUMS
 
       - name: List release artifacts

@@ -154,6 +154,12 @@ benchmarking/results/*
 !benchmarking/results/*.csv
 !benchmarking/results/*.tsv
 
+# Generated plugin runtime archives (produced in release workflow)
+plugins/cortex-plugin/assets/cortex-v*.zip
+plugins/cortex-plugin/assets/cortex-v*.tar.gz
+plugins/cortex-plugin/assets/SHA256SUMS
+!plugins/cortex-plugin/assets/.gitkeep
+
 # Shipsecure Pro (source zip + all extracted files)
 .shipsecure-pro.zip
 .shipsecure-temp/
