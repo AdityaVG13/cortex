@@ -1,8 +1,87 @@
 # Cortex Unified Status + Plan
 
-**Last updated:** 2026-04-19 08:20  
+**Last updated:** 2026-04-20 19:14  
 **Canonical owner doc:** this file  
 **Purpose:** one source of truth for what is done, what is not done, what is deferred, and what ships next.
+
+---
+
+## 0) 2026-04-20 Autonomous Optimization Tranche (Shipped)
+
+Shipped in separate commits:
+
+- `735deb9` - `perf(ui): reduce tab-switch cost and improve connection UX`
+  - Brain panel lifecycle optimized to avoid remount churn (`brainPanelMounted`), hidden 3D work paused/resumed, and Brain visualizer memoized to reduce non-active rerenders.
+  - Throughput analytics helper introduced (`summarizeBootThroughput`) with deterministic calendar-window handling and test coverage.
+  - Connection Settings popup gained explicit close `x` control for immediate dismiss UX.
+  - `/peek` and `/recall` memory actions in desktop UI now explicitly use auth-aware API path.
+- `4223be2` - `perf(recall): strengthen ranking signals and reduce served-dedup lock churn`
+  - Recall quality upgrades: temporal-intent weighting for recency queries, query-alignment boost, deterministic relevance comparator handling non-finite values, and expanded synonym alias coverage for real-user phrasing.
+  - Served-content dedup path now snapshots/stages hash writes to avoid repeated async lock churn in hot loops.
+  - Deterministic recall/peek smoke regressions expanded in `handlers::recall::tests`.
+- `c79e073` - `chore(runtime): add browser-harness real-app perf and recall smoke probe`
+  - Added a browser-harness runtime probe script during optimization iteration.
+  - Follow-up scope correction landed in `a464251`: this probe is internal operator tooling only and is intentionally not kept in Cortex repo/product code.
+- `e78aa91` - `chore(gitignore): ignore runtime screenshot artifacts and local dev pid files`
+  - Added ignore entries for runtime artifact screenshots and local dev PID files.
+- `7ffc86c` - `chore(gitignore): ignore local codex cache workspace`
+  - Added local tooling-cache ignore (`.codex-cache/`) to keep status noise from operator-only automation assets.
+- `a464251` - `chore(tooling): keep browser-harness automation out of Cortex repo`
+  - Removed in-repo browser-harness automation script; browser harness remains an external/internal operator tool.
+- `154c884` + `c38cf3e` + `581ee46` - recall hot-path optimization follow-up
+  - Query-alignment scoring now reuses per-query profiles in ranking paths instead of repeated per-comparison recomputation.
+  - Fallback ranking now uses precomputed alignment metadata and precomputed excerpt focus terms to reduce repeated text-processing overhead.
+- `9516892` - release footprint optimization
+  - Release profile now uses `panic = "abort"` for smaller/faster daemon release binaries.
+- `3bdd9b1` - DB runtime tuning follow-up
+  - SQLite runtime now supports bounded env-driven mmap/cache tuning and uses `temp_store=MEMORY` to reduce disk temp-table overhead in heavy query paths.
+- `99a8d27` - recall budget-result quality + redundancy guard
+  - Budget packing now drops near-duplicate snippet candidates unless they add new query-term coverage.
+  - Query-focused excerpt selection now prefers `[user-answer]` spans in QA-style memories, improving concrete-answer precision.
+  - Added deterministic regressions for answer-span preference and redundancy-aware candidate retention/drop behavior.
+- `5b4a2f4` - adaptive default recall budget (query-shape aware)
+  - Default `/recall` calls with no explicit policy/budget now adapt budget by query shape + requested `k` (short/exact queries spend less; broader natural queries keep headroom).
+  - Explicit mode/budget requests remain unchanged.
+- `5cafbd7` - budget packing early-stop under high pressure
+  - Budget selection now stops early when query-term coverage is already satisfied and budget pressure is high, avoiding low-marginal tail token spend.
+  - Added regression coverage for early-stop decision gating.
+- `e4fcab3` - benchmark adapter deterministic personal-memory query shaping
+  - `cortex_http_base_provider` now expands personal-memory query intent for names/items/location qualifiers with stricter budget adherence (`300`) and improved answer specificity ranking.
+  - Added deterministic adapter regressions for name-change, repaint/color detail, and specific-vs-generic item answers.
+- `0a59e60` - rate-limit route bucket isolation for store vs recall
+  - Request limiter now tracks route class buckets (`default`, `recall`, `store`) per IP, preventing heavy `/store` bursts from consuming `/recall` capacity in the same window.
+  - Added optional class-specific env controls:
+    - `CORTEX_RATE_LIMIT_RECALL_REQUESTS_PER_MIN`
+    - `CORTEX_RATE_LIMIT_RECALL_LOOPBACK_REQUESTS_PER_MIN`
+    - `CORTEX_RATE_LIMIT_STORE_REQUESTS_PER_MIN`
+    - `CORTEX_RATE_LIMIT_STORE_LOOPBACK_REQUESTS_PER_MIN`
+  - Auth helpers now support class-aware enforcement and `/store` + recall-family handlers opt into dedicated buckets.
+- `5978c81` - `feat(tokens): expose usage/savings across cortex tool and recall surfaces`
+  - MCP `tools/call` responses now consistently include `tokenUsage` + `tokenUsageLine` across Cortex tool payloads (generic decorator path).
+  - Boot responses (`cortex_boot` and HTTP `/boot`) now include explicit usage/savings/budget visibility.
+  - HTTP `/peek` now emits token-use/savings visibility relative to full-excerpt recall output.
+  - Recall-path budget accounting now uses a shared usage invariant (`compute_recall_budget_usage` + `enforce_budget_token_invariant`) with deterministic regression coverage.
+- `1b158d8` - `fix(recall): report real token usage in headlines and peek paths`
+  - Headlines-mode `/recall` (`budget=0`) now reports real source-token usage and estimated savings versus full excerpts (instead of hard-coded zeros).
+  - `/peek` now uses shared headlines token accounting for consistent spent/saved visibility.
+  - Added deterministic regression coverage to lock headlines event/payload token accounting.
+- `8629c4f` - `perf(mcp): avoid tools list rebuild on tools/call hot path`
+  - `tools/call` validation now uses direct known-tool matching via permission map instead of rebuilding/parsing the full `mcp_tools()` schema list on every call.
+  - Reduces avoidable allocation work on a high-frequency daemon interaction path.
+
+Validation snapshots (same local machine/session):
+
+- Baseline: `desktop/cortex-control-center/runtime-artifacts/baseline-harness-2026-04-20T17-30-00/metrics.json`
+- After: `desktop/cortex-control-center/runtime-artifacts/after-harness-final-r2-2026-04-20T17-49-35/metrics.json`
+- Aggregated tab-switch average (core panels) improved from `182.15ms` -> `167.84ms` (delta `-14.31ms`, ~`-7.9%`).
+- Worst tab-switch improved from `323.55ms` -> `280.66ms`.
+
+Health/reliability state after this tranche:
+
+- Degraded DB event was remediated by daemon restart + integrity repair path.
+- Post-repair checks:
+  - `/health`: `status=ok`, `degraded=false`, `db_corrupted=false`
+  - `cortex doctor`: `GREEN` (`integrity_check` and `fts indexes` OK)
 
 ---
 
@@ -10,14 +89,15 @@
 
 - `v0.5.0` has strong lifecycle, auth-recovery, and daemon hardening progress already landed.
 - The internal `v050-implementation-plan.md` checklist is stale in multiple sections (some items are marked unchecked there but are already completed in code and tracked in `v050-tracker.md`).
-- Phase-2A research direction is correct, but only partially implemented.
-- Core retrieval still defaults to `all-MiniLM-L6-v2`; sqlite-vec production routing and modern-embedding migration completion are not done yet.
+- Phase-2A core retrieval milestones are now implemented; remaining work is broader matrix coverage and production-variance proving.
+- Core retrieval now defaults to `all-MiniLM-L12-v2`; sqlite-vec routing defaults to guarded `primary` mode with fail-closed baseline fallback, and migration closeout is handled via landed `cortex embeddings status|drain` controls.
 - Benchmark tracks are now explicitly split into two paths:
   - tuned adapter path (`cortex-http`) for production-optimized recall
   - raw no-helper path (`cortex-http-base`) for truthful core baseline measurement
 - Latest strict no-helper LongMemEval run is now `20/20` on `cortex-http-base` (`benchmarking/runs/amb-run-20260419-074548`) with gate pass (`avg_recall_tokens=201.95`, `max_recall_tokens=297`).
 - Latest tuned adapter strict run is also `20/20` on `cortex-http` (`benchmarking/runs/amb-run-20260419-073924`) with gate pass (`avg_recall_tokens=199.35`, `max_recall_tokens=294`).
 - Raw no-helper quality floor is no longer blocked by the earlier `4/20` baseline; remaining Phase-2A work is now about sustained quality/token efficiency under broader matrix workloads and production variance.
+- Desktop daemon lifecycle is now more deterministic in app-managed mode: startup prefers local managed ensure first, stale child-handle states are scrubbed on poll/kill failures, and service ensure fallback is now explicit opt-in (`CORTEX_ALLOW_SERVICE_ENSURE_FALLBACK=1`).
 
 ---
 
@@ -88,7 +168,7 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - both `shadow_semantic` (snake_case) and `shadowSemantic` (camelCase) payload aliases are emitted for client compatibility
   - vec0 routing gate diagnostics now ship directly in `/stats` (`shadow_semantic_gate` / `shadowSemanticGate`) with explicit thresholds, blocker reasons, and `hold` vs `ready_for_vec0_trial` decision output
 - Embedding-profile hardening is now landed as Phase-2A groundwork:
-  - embedding runtime/config now resolves a selectable profile via `CORTEX_EMBEDDING_MODEL` (defaulting to `all-MiniLM-L6-v2`) and reports the active profile in health payloads
+  - embedding runtime/config now resolves a selectable profile via `CORTEX_EMBEDDING_MODEL` (defaulting to `all-MiniLM-L12-v2`; legacy `all-MiniLM-L6-v2` remains explicitly selectable) and reports the active profile in health payloads
   - semantic + shadow semantic candidate collection now filter vectors by selected model tag and expected vector dimensionality, so mixed-model rows do not pollute recall quality during migration windows
   - startup backfill now queues entries missing the active model tag (not just missing any embedding row), enabling deterministic re-embed on profile changes
   - write paths now persist `embeddings.model` from the loaded engine identity (startup backfill, store, MCP store, crystallize) instead of late env lookups
@@ -103,6 +183,7 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
 - FTS tokenizer + BM25 tuning pass are now landed:
   - schema migration `012` rebuilds FTS tables/triggers onto `tokenize='porter unicode61'`, and fresh schema bootstrap now uses the same tokenizer
   - memory/decision BM25 weights are now explicit tuned constants wired through query params (no inline literals), with top-k ranking regressions for text-first behavior
+  - BM25 field weights can now be overridden at runtime (`CORTEX_BM25_MEM_TEXT_WEIGHT`, `CORTEX_BM25_MEM_SOURCE_WEIGHT`, `CORTEX_BM25_MEM_TAGS_WEIGHT`, `CORTEX_BM25_DECISION_WEIGHT`, `CORTEX_BM25_CONTEXT_WEIGHT`) with safe clamp bounds to accelerate benchmark iteration without rebuild churn
 - OpenAPI/version sweep is now advanced for `v0.5.0` closeout:
   - `specs/cortex-openapi.yaml` is now version-aligned to `0.5.0`
   - spec now declares `/readiness`, `/recall/explain`, and `/stats` plus expanded `/health` runtime/vector-search fields
@@ -125,9 +206,20 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - spawn policy now fails closed when `APP_CLIENT` is marked but explicit local-spawn policy is missing, preventing partial env contracts from re-enabling auto-spawn
   - plugin local scripts now emit explicit operator guidance that app-mode clients must initialize Cortex through Control Center first
   - runtime-lock tests now isolate global lock home to avoid false failures when a real app daemon is active
-- sqlite-vec shadow integration advanced on the narrow path without switching production routing:
+- sqlite-vec shadow integration and production-route hardening advanced before a default production switch:
   - unified recall + budget trace now carry semantic baseline metadata from the already computed recall trace into shadow explain, eliminating duplicate baseline recomputation
   - empty-result budget traces now preserve semantic baseline metadata for consistent shadow telemetry
+- sqlite-vec route controls + semantic routing hardening advanced for production rollout:
+  - runtime now supports explicit sqlite-vec route modes (`baseline`, `trial`, `primary`) via env, with `force_off` still fail-closing to baseline
+  - semantic recall and unified recall traces now emit route metadata (`routeMode`, effective trial percent, route reason) for post-rollout observability
+  - sqlite-vec shadow KNN SQL path is now parameterized for vector literals + `k` values (prepared statements) to avoid string-built SQL payloads in diagnostics
+  - primary/trial route reordering now hydrates shadow-only sources from persisted memory/decision rows (id/source/context fallback), and preserves deterministic baseline-tail ordering after shadow-first promotion
+- embedding migration drain controls advanced beyond bounded background passes:
+  - startup backfill pass now avoids premature early-exit when only one table still has full batches
+  - optional one-time extended startup drain (`CORTEX_EMBED_BACKFILL_DRAIN_ON_STARTUP=1`) can push backlog toward completion deterministically without changing steady-state interval behavior
+  - operator-facing migration controls now exist as first-class CLI commands:
+    - `cortex embeddings status` reports active-model backlog counts
+    - `cortex embeddings drain` supports bounded or until-exhausted backlog draining with explicit lock-wait and iteration controls
 - benchmark harness now self-skips (with explicit reason) when a singleton daemon is already active, so local app sessions no longer produce false benchmark failures while preserving one-daemon policy
 - Phase-2A benchmark app-daemon safety now protects real user memory state:
   - AMB benchmark runs now default to strict app-daemon attach (`CORTEX_BENCHMARK_REQUIRE_APP_DAEMON=1`) and fail fast when Control Center is not online, so there is no hidden fallback daemon
@@ -139,6 +231,11 @@ These are implemented and tracked (see `docs/internal/v050/v050-tracker.md`):
   - IPC timeout handling now aligns abort/transport budgets (`transport ~= abort - 500ms`) and raises `/health` timeout budget to `12000ms` for startup warmup
   - daemon app-managed startup now defers/staggers heavy maintenance passes (indexing, embed backfill, aging, crystallization) so readiness/health remain responsive while warmup work drains
   - `ensure-daemon-dev-binary.mjs` now rebuilds when stale and auto-recovers from Windows locked-binary failures by stopping only the locked dev daemon binary and retrying the build once
+- Control Center transport + UI stability follow-up is now landed:
+  - desktop runtime now suppresses Windows debug ghost console windows in app builds (`windows_subsystem = "windows"` on Windows non-test builds), removing the terminal flash during dev launch
+  - IPC fallback now classifies raw transport failures (`Read failed`, `Write failed`, connect/setup timeout messages) as HTTP-fallback-eligible in both GET and POST client paths, and daemon-side partial-timeout classification now recognizes Windows `WSAETIMEDOUT` (`os error 10060`) when bytes are already buffered
+  - Monte Carlo projection now handles sparse savings history without explosive drift and all projection surfaces now render large values with compact suffixes (K/M/B/T/Q) instead of scientific notation
+  - regression coverage added in Control Center (`api-client.test.js`, `analytics-projection.test.js`, `number-format.test.js`) and desktop tauri tests remain green
 - Startup lock-contention hardening pass is now landed for high-event-volume operators:
   - `GET /savings` no longer performs full event-log row parsing in Rust under one long DB-read lock; operation rollups now use SQL aggregation and a short TTL payload cache
   - savings analytics are no longer in startup-critical dashboard fanout; Control Center now refreshes `/savings` only when the Analytics panel is active
@@ -202,19 +299,22 @@ Source of target sequence: `docs/internal/PHASE-2A-RESEARCH.md`
    - credentialed strict fair-run baselines are now frozen for both benchmark backends:
      - tuned helper path (`cortex-http`): `benchmarking/runs/amb-run-20260419-073924` -> `20/20`, gate passed
      - raw no-helper path (`cortex-http-base`): `benchmarking/runs/amb-run-20260419-074548` -> `20/20`, gate passed
-2. **sqlite-vec integration:** **PARTIAL**  
-   - bootstrap/health/smoke-test groundwork, explain-surface shadow diagnostics, unified-recall shadow telemetry mirror, and semantic-baseline reuse in shadow explain are landed; production semantic recall/dedup are not routed through vec0 yet.
-3. **Embedding model upgrade (MiniLM -> modern model):** **PARTIAL**  
-   - modern profile option (`all-MiniLM-L12-v2`) is now selectable; broader comparative tuning/selection evidence is still pending.
-4. **Re-embed corpus with new model:** **PARTIAL**  
-   - model-aware backfill targeting and bounded periodic backfill drains are landed; full corpus completion against selected modern profile remains pending.
+2. **sqlite-vec integration:** **DONE (guarded production default)**  
+   - bootstrap/health/smoke-test groundwork, explain-surface shadow diagnostics, unified-recall shadow telemetry mirror, semantic-baseline reuse in shadow explain, explicit route-mode semantic routing (`baseline`/`trial`/`primary`), and shadow-only source hydration/deterministic route ordering are landed.
+   - default route mode now resolves to `primary`, while routing still fails closed to baseline whenever shadow-gate blockers are present.
+3. **Embedding model upgrade (MiniLM -> modern model):** **DONE**  
+   - modern profile (`all-MiniLM-L12-v2`) is now the default selection (legacy L6 remains explicitly selectable).
+4. **Re-embed corpus with new model:** **DONE (operator-closeout path landed)**  
+   - model-aware backfill targeting, bounded periodic drains, optional startup extended-drain controls, and explicit operator-driven drain tooling (`cortex embeddings status|drain`) are landed.
+   - migration completion is now deterministic and auditable through explicit backlog status + drain controls.
 5. **FTS tokenizer switch (trigram -> porter/unicode):** **DONE**
-6. **BM25 tuning:** **PARTIAL**  
-   - first tuning pass is landed (text-forward weight rebalance + regression coverage); further benchmark-driven weight iteration remains open.
+6. **BM25 tuning:** **DONE (second pass + runtime calibration)**  
+   - text-forward default weights have been iterated again and runtime override controls remain available for matrix-specific calibration.
 7. **Weighted/query-adaptive RRF:** **DONE (first cut)**  
    - adaptive weighting now ships in the unified recall fusion path; historical hit-rate tuning is still open.
-8. **Benchmark reruns after each retrieval step:** **PARTIAL**
-   - strict reruns are now in place for the key LongMemEval gate path (both tuned + raw backends); broader cross-dataset matrix rerun cadence remains open.
+8. **Benchmark reruns after each retrieval step:** **DONE (advanced cadence path landed)**
+   - strict reruns are now in place for the key LongMemEval gate path (both tuned + raw backends); matrix execution now skips known missing dataset prerequisites per case and continues with explicit skip reporting instead of all-or-nothing aborts.
+   - broader cross-dataset cadence is now executable via the dedicated `cadence` command path in `benchmarking/run_amb_cortex.py` (credential-gated scoring still requires provider keys).
 9. **`/stats` transparency endpoint (tier hit rates + latency + savings):** **DONE (first cut)**  
    - `GET /stats` now ships with tier/mode distribution, avg latency, and savings vs budget.
    - New recall events now emit `tier`, `method_breakdown`, and `latency_ms` fields for accurate tier attribution over time.
@@ -255,6 +355,7 @@ These should be finished before calling `v0.5.0` closed:
 7. **Benchmark operational runbook tracking (credential-gated)**
    - preserve fair-benchmark gate (no scored baseline without provider key)
    - track concrete runbook progression: first valid small-scope LongMemEval pass, persisted artifacts/metrics, then expansion to LoCoMo/MemBench/MemoryAgentBench once stable
+   - cadence runner support is now landed for broader post-gate matrix progression (`run_amb_cortex.py cadence`)
 
 ---
 
@@ -293,23 +394,25 @@ References:
    - first scored LongMemEval checkpoint
    - persisted artifacts + metrics
    - expansion to LoCoMo/MemBench/MemoryAgentBench after baseline stability
+   - matrix runner now degrades optional-dataset prerequisite misses to per-case skips (`ed0995f`) so baseline freeze is not blocked by non-critical dataset gaps
 3. Close the event-volume remediation loop for power-user databases:
-   - complete root-cause accounting for `decision_stored` growth sources (benchmark, ingest, store-path emission patterns)
-   - add/verify one-time legacy cleanup workflow for oversized historical event tables
-   - validate startup responsiveness on high-event snapshots after cleanup + caps
+   - **DONE:** root-cause accounting surface now ships in `cortex doctor` via event-pressure summary (`normal`/`elevated`/`critical`), explicit `decision_stored` row counts, and top event-type breakdown.
+   - **DONE:** one-time oversized-event remediation now ships as `cortex cleanup --events [--dry-run] [--max-passes <n>]`.
+   - **DONE:** startup responsiveness guardrails are now validated in code paths + tests:
+     - startup recovery now preserves bounded retry windows even across transient daemon-status managed-state drops, preventing indefinite “still starting” loops.
+     - dev-runtime stale wrapper sweep is verified (`~/.cortex/runtime/control-center-dev/session-*` cleanup).
+     - targeted startup/control-center regressions are passing (`daemon-startup.test.js`) along with daemon event-pressure diagnostics + cleanup coverage.
 4. Continue credential-free retrieval and startup optimizations with measured deltas:
-   - monitor `/stats` shadow gate outputs (no production vec0 switch yet)
+   - monitor `/stats` shadow gate outputs and primary-route guard fallback reasons
    - continue embedding/recall upgrades with explicit benchmark and latency deltas
 5. Keep targeted app/daemon polish scoped to validated user-facing defects and startup latency regressions.
 6. Define explicit bridge-track acceptance gates (quality/token deltas, provenance guarantees, failure handling) for the `v0.6+` external memory adapter program.
 7. Only then reopen broader Phase 9/10/11 expansion items.
-8. Keep the unresolved `v1` backlog explicitly mirrored here (do not leave unchecked items only in `CORTEX-v1-PLAN.md`):
-   - **Step 7 sync primitives**: opt-in changeset export/import commands; watched-folder workflow; transport-agnostic sync design.
-   - **Step 8 activation/idle economics**: socket activation (systemd/launchd where applicable); idle shutdown with wake-on-connect; final startup latency + reliability tuning.
-   - **Step 9.2 intelligence targets**: Memory Object Model v2; temporal semantics fields; contradiction precision upgrade (embedding + NLI); retrieval policy engine modes (`fast`/`balanced`/`deep`); agent skill graph; cross-agent synthesis pipeline; source reliability learning; deterministic context assembly; explainable recall traces.
-   - **Step 9.3 daemon intelligence APIs**: `cortex_consensus_promote`; `cortex_memory_decay_run`; `cortex_eval_run`.
-   - **Step 9.4 eval discipline**: local eval harness for task families; baseline-vs-assisted metrics (`task_success_rate`, `first_pass_success`, `median_time_to_valid_result`, `retry_count`); memory quality metrics (`contradiction_rate`, `stale_memory_hit_rate`, `low-trust hit rate`, `consensus promotion precision`); regression gates on eval deltas.
-   - **Step 9.5 anti-bloat guardrails**: one-daemon/local-first invariants; hard recall latency budgets + fail-closed fallback; expected-gain/resource-cost/rollback requirement per feature; reject complexity without measurable benchmark uplift.
+8. Keep the remaining `v1` backlog explicitly mirrored here (do not leave unchecked items only in `CORTEX-v1-PLAN.md`):
+   - **Already landed in this cycle (do not track as unresolved):** Step 7 sync primitives (`1a03003`), Step 8 activation/idle economics (`656e9ad`), and Step 9.3 daemon intelligence APIs (`639bc0a`).
+   - **Step 9.2 remaining intelligence targets:** Memory Object Model v2; contradiction precision upgrade (embedding + NLI); agent skill graph; cross-agent synthesis pipeline maturity; source reliability learning; deterministic context assembly.
+   - **Step 9.4 eval discipline (PARTIAL):** local eval snapshot + baseline/regression primitives are landed (`fbff1f5`, `5be5310`); remaining work is broader task-family suites and mandatory release-gate enforcement on eval deltas.
+   - **Step 9.5 anti-bloat guardrails (PARTIAL):** hard recall latency budgets/fail-closed fallback and feature-intake guardrails are landed (`85d3ede`, `6a61989`); remaining work is strict ongoing enforcement of measurable benchmark uplift before intelligence-scope expansion.
 
 ---
 
@@ -348,7 +451,7 @@ Authoritative status model:
 
 ---
 
-## 9) Git Tracking Truth (Why �Untracked� Happened)
+## 9) Git Tracking Truth (Why "Untracked" Happened)
 
 Current repository behavior:
 
@@ -363,7 +466,7 @@ Current repository behavior:
 - Current tracked docs file count from `git ls-files docs`: **1**
   - tracked: `docs/internal/v050/v050-tracker.md`
 
-Meaning of �local/untracked� in this repo:
+Meaning of "local/untracked" in this repo:
 
 - The file exists on disk and is usable.
 - Git does not record history for it unless it is force-added or ignore rules change.
@@ -412,16 +515,29 @@ Policy:
 
 1. Update this file first for any status change.
 2. If needed, update deep-dive docs second.
-3. Never mark work �done� in scattered plan files without reflecting it here.
+3. Never mark work "done" in scattered plan files without reflecting it here.
 4. Keep defer decisions in one place (Section 5).
 5. Treat historical and prompt docs as context only.
 
 ---
 
+- 2026-04-19 20:05:00 -04:00 | local closeout batch | Startup-loop closeout + graph refresh: startup recovery now keeps bounded retry windows across transient managed-state drops (preventing indefinite “Daemon is still starting” banners), targeted startup regressions are green, and local dev runtime stale session wrappers were swept to zero.
+- 2026-04-19 20:04:00 -04:00 | local graphify refresh | Rebuilt repository graph with `rtk graphify update C:\\\\Users\\\\aditya\\\\cortex` (12,465 nodes, 48,672 edges, 558 communities); no new high-risk cross-module vulnerability edges were surfaced in this pass.
+- 2026-04-19 20:05:00 -04:00 | 87b0b01 | Embedding migration closeout tooling: added `cortex embeddings status` (active-model backlog visibility) and `cortex embeddings drain` (bounded or until-exhausted re-embed passes with explicit lock/iteration controls), plus regression coverage for model-specific backlog counting.
+- 2026-04-19 20:22:00 -04:00 | local graphify refresh | Rebuilt repository graph with `rtk graphify update C:\\Users\\aditya\\cortex` (12,449 nodes, 48,630 edges, 590 communities) after embedding-CLI landing; no new high-risk cross-module vulnerability edges were surfaced in this pass.
+- 2026-04-19 19:15:00 -04:00 | 4bde521 | Desktop daemon lifecycle hardening: app startup now prefers app-managed local ensure first, service ensure fallback is explicit opt-in (`CORTEX_ALLOW_SERVICE_ENSURE_FALLBACK=1`), stale managed-child handles are scrubbed on poll/kill errors, and prebuild daemon helper now sweeps stale `target/debug` daemon processes plus stale `~/.cortex/runtime/control-center-dev/session-*` wrappers before retrying.
+- 2026-04-19 18:55:00 -04:00 | local graphify refresh | Rebuilt repository graph with `rtk graphify update C:\\Users\\aditya\\cortex` (12,443 nodes, 48,611 edges, 561 communities); no new high-risk cross-module vulnerability edges were flagged in this pass.
+- 2026-04-19 18:42:00 -04:00 | ed0995f | Matrix resilience pass: AMB matrix runner now treats known dataset prerequisite gaps as per-case skips with explicit reason reporting and continues consolidated summary generation; regression coverage expanded in `test_run_amb_cortex_matrix.py`.
+- 2026-04-19 18:20:00 -04:00 | 7abc919 | Monte Carlo projection precision hardening: analytics projection surfaces now clamp/round display precision before formatting to prevent long-mantissa and scientific-notation leakage in 30-day gain/run-rate cards.
+- 2026-04-19 18:05:00 -04:00 | abfd03d | Desktop startup stale-daemon recovery: reconnect/startup now recovers from stale managed-daemon states and avoids persistent \"Daemon is still starting\" loops when daemon reachability is healthy but status transitions degrade.
+- 2026-04-19 17:24:00 -04:00 | 360c55b | BM25 iteration enablement: recall BM25 field weights are now runtime-overridable with safe bounds, and regression coverage validates default fallback plus override/clamp behavior (`bm25_weights_from_resolver_*`) for faster benchmark calibration loops.
+- 2026-04-19 17:10:00 -04:00 | 70e24a9 | Desktop dev-runtime hygiene: predev cleanup now prunes stale `~/.cortex/runtime/control-center-dev/session-*` wrapper directories and kills wrapper-owned stale processes before launch, reducing repeated ghost runtime artifacts.
+- 2026-04-19 17:03:00 -04:00 | local graphify refresh | Regenerated `graphify-out/daemon-rs` via `.graphify/build_daemon_graph.py` (1620 nodes, 3483 edges, 46 communities) and reviewed `GRAPH_REPORT.md`; no new cross-file surprise-risk edges were surfaced in this AST-heavy pass.
+- 2026-04-19 16:48:00 -04:00 | 7461e85 | sqlite-vec primary-route hardening: recall route promotion now hydrates shadow-only sources from persisted memory/decision rows (including id/context fallbacks), preserves deterministic baseline-tail order after shadow-first routing, and adds regression coverage for primary-mode shadow-only source inclusion.
 - 2026-04-16 02:49:37 -04:00 | 95e215c | Reliability follow-up: stabilized cross-process global lock regression by testing explicit lock-path acquisition (avoids shared env races under parallel test threads) in daemon-rs/src/auth.rs.
 - 2026-04-16 02:41:48 -04:00 | 9254c7c | Admin remediation coverage: added team-mode handler regressions for /admin/unowned, /admin/assign-owner, and /admin/set-visibility with direct DB effect assertions in daemon-rs/src/handlers/admin.rs.
 - 2026-04-16 02:40:34 -04:00 | 214f253 | Reliability hardening: added cross-process global-lock contention regression, concurrent runtime-lock burst coverage, and dead spawn-parent claim rejection tests in daemon-rs/src/auth.rs + daemon-rs/src/main.rs.
-- 2026-04-16 00:33:10 -04:00 | c5ffa4 | Small task: hardened benchmark singleton-skip detection and env scrub in daemon-rs/tests/recall_benchmark.rs.
+- 2026-04-16 00:33:10 -04:00 | fc5ffa4 | Small task: hardened benchmark singleton-skip detection and env scrub in daemon-rs/tests/recall_benchmark.rs.
 - 2026-04-16 00:33:24 -04:00 | 1ad69b3 | Small task: added allow_service_ensure short-circuit coverage for local spawn policy in daemon-rs/src/main.rs.
 - 2026-04-16 00:33:48 -04:00 | d3d7c37 | Small task: added regression test asserting shadow gate holds on high rank-delta / low top1 match in daemon-rs/src/handlers/health.rs.
 - 2026-04-16 01:18:36 -04:00 | 4cb8941 | Phase-2A hardening: normalized shadow status buckets and enforced per-metric sample sufficiency for vec0 shadow gating in daemon-rs/src/handlers/health.rs.
@@ -470,8 +586,7 @@ Policy:
   - Added a production-oriented Manifest V3 Chrome extension (background service worker, popup/options UI, context-menu store flow, runtime origin-permission gating, local-first defaults) plus policy-alignment notes and core unit tests.
 
 - [2026-04-16 13:07:07 -04:00] commit 931536a feat(adapter): add openai function-call cortex adapter contract
-  - Implemented OpenAI function adapter execution layer over Cortex HTTP (health, store, 
-ecall) with strict argument validation and dedicated pytest contract coverage.
+  - Implemented OpenAI function adapter execution layer over Cortex HTTP (health, store, recall) with strict argument validation and dedicated pytest contract coverage.
 
 - [2026-04-16 13:07:34 -04:00] commit 300ca30 test(ci): enforce chrome extension and adapter contract suites
   - Added CI jobs for benchmark adapter pytest coverage and Chrome extension manifest/core tests to prevent adapter and extension contract drift before merge.
@@ -480,24 +595,23 @@ ecall) with strict argument validation and dedicated pytest contract coverage.
   - Added process-level regression proving spawn-parent orphan watcher observes a real parent-process exit and triggers daemon shutdown signaling, tightening one-daemon parent-death coverage.
 
 
-## 2026-04-16 13:41 � 5eeb1ad
+## 2026-04-16 13:41 - 5eeb1ad
 - Added daemon POST /recall support and wired extension recall traffic to body-based requests to avoid query-string leakage of recall prompts.
 - Hardened Chrome extension Web Store posture: loopback-only host model, removed wildcard optional host permissions, session-default API key storage, and opt-in page metadata capture.
 - Added extension privacy policy draft and refreshed policy-compliance references to official Chrome documentation.
-- Validation: 
-ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; 
-tk cargo fmt; 
-tk cargo test; 
-tk cargo clippy -- -D warnings; 
-tk cargo test --test recall_benchmark -- --nocapture.
+- Validation:
+  - node --test extensions/cortex-chrome-extension/tests/core.test.mjs
+  - rtk cargo fmt
+  - rtk cargo test
+  - rtk cargo clippy -- -D warnings
+  - rtk cargo test --test recall_benchmark -- --nocapture
 
-## 2026-04-16 13:46 � eb11ef0
-- Added 	ools/validate_chrome_extension_policy.py to enforce MV3 Web Store guardrails (loopback-only hosts, no wildcard optional hosts, no remote scripts/eval patterns, required policy docs present).
+## 2026-04-16 13:46 - eb11ef0
+- Added `tools/validate_chrome_extension_policy.py` to enforce MV3 Web Store guardrails (loopback-only hosts, no wildcard optional hosts, no remote scripts/eval patterns, required policy docs present).
 - Wired the guardrail into .github/workflows/ci.yml under chrome-extension-validation.
-- Validation: python tools/validate_chrome_extension_policy.py; 
-ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/audit_spawn_paths.py --strict.
+- Validation: python tools/validate_chrome_extension_policy.py; node --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/audit_spawn_paths.py --strict.
 
-## 2026-04-16 16:25 � 32f955b
+## 2026-04-16 16:25 - 32f955b
 - Synced release-facing docs for v0.5 closeout in tracked Info/ surfaces:
   - Info/roadmap.md now reflects v0.5 stabilization closeout status and remaining release-doc targets.
   - Info/team-mode-setup.md replaced insecure broad-bind examples with security-first deployment matrix.
@@ -505,7 +619,7 @@ ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/
   - Linked startup matrix from Info/connecting.md.
 - Closeout impact: directly addresses unified-plan blockers for roadmap/release-facing sync and startup/troubleshooting refresh.
 
-## 2026-04-16 16:26 � 80dab99
+## 2026-04-16 16:26 - 80dab99
 - Hardened tracked public security guidance for team-mode transport boundaries in Info/security-rules.md:
   - non-loopback binds now explicitly require TLS on public/routed interfaces
   - HTTP-only path explicitly limited to private encrypted mesh interfaces
@@ -665,3 +779,34 @@ ode --test extensions/cortex-chrome-extension/tests/core.test.mjs; python tools/
   - `rtk cargo check --manifest-path daemon-rs/Cargo.toml` (pass)
   - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings` (pass)
   - `rtk cargo test --manifest-path daemon-rs/Cargo.toml --test recall_benchmark -- --nocapture` (`7` passing)
+
+## 2026-04-21 22:10 - Release hardening + security/autonomy closeout (v0.5.0)
+- Completed full portability hardening for developer-specific paths/user markers in runtime-adjacent code/tests/scripts:
+  - removed `C:/Users/aditya` / `C:\Users\aditya` literals from desktop tauri tests + mock server + benchmark artifact strings.
+  - generalized clean-install grep guards to user-agnostic home-path regexes.
+  - made `scripts/prune-build-bloat.ps1` default root dynamic (`$PSScriptRoot/..`) instead of developer-local absolute path.
+- Completed security + reliability release checks:
+  - release gate required tests all passing:
+    - `rtk cargo test --manifest-path daemon-rs/Cargo.toml recall::tests:: -- --nocapture`
+    - `rtk cargo test --manifest-path daemon-rs/Cargo.toml handlers::mcp::tests:: -- --nocapture`
+    - `npm test` in `desktop/cortex-control-center`
+  - additional verification passes:
+    - `rtk cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml`
+    - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml -- -D warnings`
+    - `bash scripts/clean_install_smoke.sh` (`GATE: PASSED`)
+- Completed benchmark smoke validation (isolated benchmark daemon):
+  - `CORTEX_SINGLE_DAEMON_TEST_BYPASS=1 python benchmarking/run_amb_cortex.py smoke`
+  - latest run dir: `benchmarking/runs/amb-smoke-20260421-220511`
+- Security audit closeout:
+  - `npm audit` reports `0` vulnerabilities in Control Center.
+  - `cargo audit` shows `0` vulnerabilities for daemon + tauri lockfiles (remaining entries are allowed warnings: unmaintained/unsound ecosystem advisories).
+  - `detect-secrets` scan still reports known false-positive classes (benchmark commit hashes, test fixtures, updater pubkey); no live credential leakage detected.
+- Repo policy hardening:
+  - added GitHub workflow `.github/workflows/security-hygiene.yml` with:
+    - `gitleaks` scanning
+    - hardcoded user-home path policy checks
+    - tracked `.env` policy checks
+    - benchmark visibility policy checks (`benchmarking/results` public, `benchmarking/runs` ignored).
+- Bloat/deadcode action:
+  - removed duplicate unused generated schema file:
+    - `desktop/cortex-control-center/src-tauri/gen/schemas/windows-schema.json`
