@@ -1,0 +1,78 @@
+name: Security Hygiene
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  repo-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Block hardcoded developer home paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Focus on runtime/script sources and allow generic fixture placeholders.
+          if git grep -nE "C:/Users/[A-Za-z0-9_.-]+|C:\\\\Users\\\\[A-Za-z0-9_.-]+|/Users/[A-Za-z0-9_.-]+" -- \
+              daemon-rs/src \
+              plugins/cortex-plugin/scripts \
+              desktop/cortex-control-center/scripts \
+              desktop/cortex-control-center/src-tauri/src \
+              scripts \
+            | grep -vE "testuser|example"; then
+            echo "Found hardcoded developer home path."
+            exit 1
+          fi
+
+      - name: Enforce .env tracking policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked_env="$(git ls-files | grep -E '(^|/)\.env($|\.|/)' || true)"
+          if [ -n "${tracked_env}" ]; then
+            echo "Tracked .env-style files are not allowed:"
+            echo "${tracked_env}"
+            exit 1
+          fi
+
+      - name: Enforce benchmark artifact visibility policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          visible_check="benchmarking/results/ci-visibility-check.json"
+          private_check="benchmarking/runs/ci-private-check.json"
+
+          : > "${visible_check}"
+          if git check-ignore -q "${visible_check}"; then
+            echo "benchmarking/results artifacts must stay public but are ignored."
+            rm -f "${visible_check}"
+            exit 1
+          fi
+          rm -f "${visible_check}"
+
+          : > "${private_check}"
+          if ! git check-ignore -q "${private_check}"; then
+            echo "benchmarking/runs scratch artifacts must remain ignored."
+            rm -f "${private_check}"
+            exit 1
+          fi
+          rm -f "${private_check}"
