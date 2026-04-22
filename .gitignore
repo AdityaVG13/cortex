@@ -60,6 +60,7 @@ desktop/cortex-control-center/dist/
 desktop/cortex-control-center/runtime-artifacts/
 desktop/cortex-control-center/.codex-dev-baseline.pid
 desktop/cortex-control-center/.devrun-live.pid
+desktop/cortex-control-center/src-tauri/gen/schemas/windows-schema.json
 
 # TLS certs and private keys
 *.pem
