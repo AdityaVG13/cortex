@@ -99,7 +99,7 @@ If the projection looks wrong, the underlying data is visible in the analytics p
 </td>
 <td width="58%">
 
-![Monte Carlo savings projection and recall quality](assets/cc-analytics-monte-carlo.png)
+![Monte Carlo savings projection and recall quality](assets/cc-monte-carlo.png)
 
 </td>
 </tr>
@@ -127,10 +127,6 @@ Two queries currently return the relevant result at position 2 instead of positi
 
 349 commits since v0.4.1. Full details in [CHANGELOG.md](CHANGELOG.md).
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
 ### Retrieval
 
 - **Reciprocal rank fusion** — query-adaptive keyword/semantic weighting
@@ -147,9 +143,6 @@ Two queries currently return the relevant result at position 2 instead of positi
 - Persistent savings rollups for long-window analytics
 - DB footprint: 720 MB → 386 MB in a real install
 
-</td>
-<td width="50%" valign="top">
-
 ### Agent intelligence
 
 - **Feedback telemetry** — record outcomes, track reliability over time
@@ -164,10 +157,6 @@ Two queries currently return the relevant result at position 2 instead of positi
 - API key masking on non-interactive stdout
 - Remote targets need explicit token (no silent auto-load)
 - Team-mode destructive ops require admin + rated auth
-
-</td>
-</tr>
-</table>
 
 ---
 
@@ -203,7 +192,7 @@ Claude Code, Codex, Cursor, Gemini, and custom scripts can all be connected simu
 
 | Tool | Connection | Setup |
 |------|-----------|-------|
-| **Claude Code** | MCP (plugin) | `claude plugin install cortex@cortex-marketplace` |
+| **Claude Code** | MCP (plugin) or desktop app | Plugin: `claude plugin install cortex@cortex-marketplace` |
 | **Codex** | MCP | `codex mcp add cortex -- cortex.exe mcp --agent codex` |
 | **Cursor** | MCP | Point MCP server at `cortex mcp --agent cursor` |
 | **Gemini** | MCP | `cortex mcp --agent gemini` |
