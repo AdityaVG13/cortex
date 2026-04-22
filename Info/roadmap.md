@@ -1,142 +1,140 @@
-# Cortex Roadmap
+<p align="center"><a href="../README.md">← Back to README</a></p>
 
-This roadmap is public and contributor-focused: enough detail to start building, without exposing internal planning artifacts.
+# Roadmap
 
-Release-status source of truth lives in `docs/internal/CORTEX-UNIFIED-STATUS-PLAN.md`.
+> What shipped, what's next, and what's further out. Enough detail to start contributing, without internal planning artifacts.
 
 ---
 
-## Current Release Track -- v0.5.0 Stabilization Closeout
+## v0.5.0 — Stabilization Closeout &nbsp; `current`
 
-Focus: ship a reliable, one-daemon, local-first release that is benchmark-honest and adapter-consistent.
+> Ship a reliable, one-daemon, local-first release that is benchmark-honest and adapter-consistent.
 
-### Shipped in the current track
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Shipped**
 - One-daemon lifecycle hardening and spawn-path guardrails
 - Cross-surface adapter conformance + contract test coverage
-- OpenAPI/version sweep + clippy/test release gates
+- OpenAPI / version sweep + clippy / test release gates
 - Chrome extension local-first MV3 companion + CI policy guardrails
+- Retrieval: RRF, crystal family recall, synonym parity
+- Control Center: analytics, agents, Monte Carlo projections
+- Agent telemetry, conflict detection, client permissions
 
-### Remaining closeout items
+</td>
+<td width="50%" valign="top">
+
+**Remaining closeout**
 - Startup matrix + troubleshooting refresh across public docs
-- Team-mode security wording alignment for non-loopback deployment guidance
-- Final release-facing roadmap/docs sync before v0.5.0 close
+- Team-mode security wording alignment for non-loopback deployment
+- Final release-facing docs sync
+
+</td>
+</tr>
+</table>
 
 ---
 
-## v0.5.x -- Foundation Hardening (continued)
+## v0.5.x — Foundation Hardening &nbsp; `next`
 
-Goal: make Cortex robust for daily development workflows.
+> Make Cortex robust for daily development workflows.
 
-### Planned themes
-1. **Lifecycle control**
-   - TTL / hard expiration (`expires_at`) for short-lived facts
-   - Session rollback primitives for bad agent runs
-2. **Schema discipline**
-   - Versioned migrations with explicit upgrade checks
-   - Doctor-style validation command for schema/runtime consistency
-3. **Derived-state repair**
-   - Rebuild commands for indexes, embeddings, and crystallized state
-4. **Memory quality**
-   - Semantic dedup on store path
-   - Boot prompt audit trail (which sources were used, and why)
+| Theme | Details |
+|-------|---------|
+| **Lifecycle control** | TTL / hard expiration for short-lived facts. Session rollback for bad agent runs. |
+| **Schema discipline** | Versioned migrations with explicit upgrade checks. Doctor-style validation command. |
+| **Derived-state repair** | Rebuild commands for indexes, embeddings, and crystallized state. |
+| **Memory quality** | Semantic dedup on store path. Boot prompt audit trail. |
 
-### Contributor-ready tasks
+<details>
+<summary>Contributor-ready tasks</summary>
+
 - Add migration tests for new metadata columns
 - Improve CLI UX around repair/reindex status output
 - Add failure-mode tests for rollback and dedup edge cases
 
+</details>
+
 ---
 
-## v0.6.0 -- Governance & Economics
+## v0.6.0 — Governance & Economics &nbsp; `planned`
 
-Goal: make team deployments predictable, auditable, and budget-aware.
+> Make team deployments predictable, auditable, and budget-aware.
 
-### Planned themes
-1. **Budget governance**
-   - Per-endpoint limits (recall depth, boot budget, invocation rates)
-2. **Retention classes**
-   - Distinguish durable knowledge vs operational context vs ephemera
-3. **Human review surfaces**
-   - Queue/review flow for promoting shared knowledge
-4. **Context quality**
-   - Dynamic ranking so high-value memories are injected first
-5. **Adapter conformance**
-   - Shared contract tests across MCP + HTTP + SDKs
+| Theme | Details |
+|-------|---------|
+| **Budget governance** | Per-endpoint limits (recall depth, boot budget, invocation rates) |
+| **Retention classes** | Durable knowledge vs operational context vs ephemera |
+| **Human review** | Queue/review flow for promoting shared knowledge |
+| **Context quality** | Dynamic ranking — high-value memories injected first |
+| **Adapter conformance** | Shared contract tests across MCP + HTTP + SDKs |
 
-### Contributor-ready tasks
+<details>
+<summary>Contributor-ready tasks</summary>
+
 - Contract tests for tool parity across transports
 - Config schema improvements for retention/budget policies
 - Dashboard UX for review queues and budget visibility
 
+</details>
+
 ---
 
-## v0.7.0 -- Multi-Tenant Hardening
+## v0.7.0 — Multi-Tenant Hardening &nbsp; `planned`
 
-Goal: secure, fair, and operable team mode at larger scale.
+> Secure, fair, and operable team mode at larger scale.
 
-### Planned themes
-1. **Privacy and data control**
-   - Deep erasure across core rows + derived indices
-   - Crystal lineage for traceability and safe re-crystallization
-2. **Auth hardening**
-   - Stronger capability-scoped identity model for agent calls
-3. **Fairness and resiliency**
-   - Per-user quotas and admission control
-   - Backup/restore and disaster-recovery workflows
-4. **Isolation**
-   - Namespace/team-aware embedding boundaries
+| Theme | Details |
+|-------|---------|
+| **Privacy** | Deep erasure across core rows + derived indices. Crystal lineage. |
+| **Auth hardening** | Capability-scoped identity model for agent calls |
+| **Fairness** | Per-user quotas, admission control, backup/restore workflows |
+| **Isolation** | Namespace / team-aware embedding boundaries |
 
-### Contributor-ready tasks
+<details>
+<summary>Contributor-ready tasks</summary>
+
 - Visibility/isolation integration tests
 - Backup and restore dry-run tooling
 - Observability improvements for auth/quotas
 
----
-
-## v0.8.0 -- Advanced Agent Support
-
-Goal: improve multi-agent coordination and provenance.
-
-### Planned themes
-1. **Branch-aware memory relevance**
-2. **Reasoning provenance and traceability**
-3. **Deadlock-safe multi-agent task orchestration**
-4. **Control Center task dispatch and live progress**
-
-### Contributor-ready tasks
-- Task graph UI/UX improvements
-- Provenance metadata surfacing in recall responses
-- Lock contention and deadlock simulation tests
+</details>
 
 ---
 
-## v1.0.0 -- AI Information Ingester
+## v0.8.0 — Advanced Agent Support &nbsp; `planned`
 
-Goal: import and normalize knowledge from major AI platforms.
+> Improve multi-agent coordination and provenance.
 
-### Planned themes
-1. **Export parsers**
-   - ChatGPT, Claude, Gemini conversation ingestion
-2. **Normalization pipeline**
-   - Classify imported content into durable memory types
-3. **Quality controls**
-   - Dedup against existing memories
-   - Confidence scoring for imported entries
-4. **Operator tooling**
-   - Bulk ingest CLI with preview + dry-run
-
-### Contributor-ready tasks
-- Parser fixtures and golden tests
-- Classification quality benchmarks
-- CLI progress/error reporting improvements
+| Theme | Details |
+|-------|---------|
+| **Branch-aware relevance** | Memory relevance tied to active branch context |
+| **Reasoning provenance** | Traceability from recall result back to original source |
+| **Multi-agent orchestration** | Deadlock-safe task coordination |
+| **Control Center dispatch** | Task dispatch and live progress from the dashboard |
 
 ---
 
-## Public Backlog (cross-milestone)
+## v1.0.0 — AI Information Ingester &nbsp; `future`
 
-These are open contribution areas that may land in any release based on quality and urgency:
+> Import and normalize knowledge from major AI platforms.
 
-- Key rotation improvements and operational key hygiene workflows
+| Theme | Details |
+|-------|---------|
+| **Export parsers** | ChatGPT, Claude, Gemini conversation ingestion |
+| **Normalization** | Classify imported content into durable memory types |
+| **Quality controls** | Dedup against existing memories, confidence scoring |
+| **Operator tooling** | Bulk ingest CLI with preview + dry-run |
+
+---
+
+## Cross-milestone backlog
+
+These are open contribution areas that may land in any release:
+
+- Key rotation and operational key hygiene workflows
 - Optional at-rest encryption integration path
 - Expanded adapter compatibility (OpenAI-style function interfaces)
 - Additional diagnostics and memory quality metrics
@@ -144,10 +142,10 @@ These are open contribution areas that may land in any release based on quality 
 
 ---
 
-## How to Contribute
+## Contributing
 
 1. Pick a roadmap item and open/claim an issue.
 2. Propose a small implementation slice with clear acceptance criteria.
 3. Link tests or verification output in your PR.
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for setup, checks, and PR expectations.
+See **[CONTRIBUTING.md](../CONTRIBUTING.md)** for setup, checks, and PR expectations.

@@ -1,44 +1,56 @@
+<p align="center"><a href="../README.md">← Back to README</a></p>
+
 # Team Mode Setup
 
-Team mode gives multiple developers a shared Cortex brain with per-user ownership and visibility controls.
+> Give multiple developers a shared Cortex brain with per-user ownership and visibility controls.
 
-## Security First (Read Before Setup)
+---
 
-- Keep Cortex on `127.0.0.1` by default.
-- For remote teammates, use an encrypted private network (Tailscale/WireGuard) or a TLS reverse proxy/tunnel.
-- Never publish a raw `0.0.0.0:7437` listener directly to the internet.
+> **Read before setup:** Keep Cortex on `127.0.0.1` by default. For remote teammates, use an encrypted private network (Tailscale / WireGuard) or a TLS reverse proxy. Never expose a raw `0.0.0.0:7437` listener to the internet.
 
-## 1) Server Setup
+---
 
-Choose one deployment pattern.
+## Step 1 — Start the server
 
-### Option A — Localhost-only daemon (recommended base)
+Choose one deployment pattern:
+
+<details open>
+<summary><b>Option A — Localhost only</b> (recommended base)</summary>
 
 ```bash
 chmod +x cortex
 ./cortex serve
 ```
 
-This is the safest default and works for local app/plugin workflows.
+Safest default. Works for local app/plugin workflows.
 
-### Option B — Team access over private mesh (Tailscale/WireGuard)
+</details>
+
+<details>
+<summary><b>Option B — Private mesh</b> (Tailscale / WireGuard)</summary>
 
 ```bash
 TAILSCALE_IP=$(tailscale ip -4)
 CORTEX_BIND=$TAILSCALE_IP ./cortex serve
 ```
 
-Use the private mesh address as your team server URL (for example `http://100.x.y.z:7437`).
+Use the private mesh address as your team URL (e.g., `http://100.x.y.z:7437`).
 
-### Option C — Local daemon behind TLS reverse proxy
+</details>
+
+<details>
+<summary><b>Option C — TLS reverse proxy</b></summary>
 
 ```bash
 CORTEX_BIND=127.0.0.1 ./cortex serve
 ```
 
-Terminate TLS at your gateway (Caddy, Nginx, Cloudflare Tunnel) and publish only the TLS endpoint.
+Terminate TLS at your gateway (Caddy, Nginx, Cloudflare Tunnel). Publish only the TLS endpoint.
 
-### Option D — Docker (localhost publish)
+</details>
+
+<details>
+<summary><b>Option D — Docker</b></summary>
 
 ```bash
 docker run -d -p 127.0.0.1:7437:7437 \
@@ -47,18 +59,25 @@ docker run -d -p 127.0.0.1:7437:7437 \
   cortex-project/cortex:latest
 ```
 
-Container-only `0.0.0.0` is acceptable because the host port is published on `127.0.0.1`; do not use this pattern with a public host bind.
+Container `0.0.0.0` is fine because the host port is on `127.0.0.1`. Do not use this with a public host bind.
 
-### Option E — Build from source
+</details>
+
+<details>
+<summary><b>Option E — Build from source</b></summary>
 
 ```bash
-git clone https://github.com/cortex-project/cortex.git
+git clone https://github.com/AdityaVG13/cortex.git
 cd cortex/daemon-rs
 cargo build --release
 ./target/release/cortex serve
 ```
 
-## 2) Initialize Team Mode
+</details>
+
+---
+
+## Step 2 — Initialize team mode
 
 Run once on the server:
 
@@ -74,19 +93,28 @@ Create member credentials:
 
 Save the generated `ctx_...` API key for each member.
 
-## 3) Member Onboarding
+---
 
-1. Install plugin:
-   ```bash
-   claude plugin marketplace add cortex-project/cortex
-   claude plugin install cortex@cortex-marketplace
-   ```
-2. Restart Claude Code.
-3. Enter team server URL + personal API key when prompted.
+## Step 3 — Member onboarding
+
+**a)** Install plugin:
+
+```bash
+claude plugin marketplace add AdityaVG13/cortex
+claude plugin install cortex@cortex-marketplace
+```
+
+**b)** Restart Claude Code.
+
+**c)** Enter team server URL + personal API key when prompted.
+
+---
 
 ## Troubleshooting
 
-- **Connection refused:** verify daemon is running, host/port are reachable, and firewall/VPN rules allow access.
-- **Authentication failed:** confirm key includes the `ctx_` prefix and matches the assigned user.
-- **Cannot see teammate memories:** verify entries were stored with team visibility and both users target the same team-mode instance.
-- **Remote deployment safety:** if using non-loopback bind, ensure transport encryption is provided by your VPN/mesh or TLS gateway.
+| Problem | Fix |
+|---------|-----|
+| **Connection refused** | Verify daemon is running, host/port reachable, firewall/VPN rules allow access. |
+| **Authentication failed** | Confirm key includes `ctx_` prefix and matches the assigned user. |
+| **Can't see teammate memories** | Verify entries stored with team visibility, both users on same instance. |
+| **Remote deployment safety** | Non-loopback bind requires transport encryption (VPN/mesh or TLS gateway). |
