@@ -1,0 +1,12 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2024-0436 (`paste`): transitive via `tokenizers` (0.22.2).
+    # No upstream tokenizers release removes this dependency yet, and replacing it
+    # would require forking/patching transitive crates for this release.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2025-0134 (`rustls-pemfile`): direct TLS PEM parsing dependency.
+    # Latest published version is still unmaintained; migrating to alternative
+    # APIs (e.g. rustls-pki-types PEM helpers) requires source-level TLS changes.
+    "RUSTSEC-2025-0134",
+]
