@@ -12,7 +12,7 @@
     "build:daemon:dev": "cargo build --target-dir ../../daemon-rs/target-control-center-dev --manifest-path ../../daemon-rs/Cargo.toml",
     "predev": "node scripts/cleanup-dev-runtime.mjs",
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "node scripts/run-tauri-build.mjs",
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -34,6 +34,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-react": "^5.1.0",
+    "accessibility-checker-engine": "4.0.16",
     "expect-cli": "^0.0.25",
     "vite": "^7.1.0",
     "vitest": "^4.1.2"
