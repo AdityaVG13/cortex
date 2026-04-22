@@ -28,7 +28,7 @@ Thanks for contributing. Cortex is a local-first memory system for AI agents, wi
 ### Core daemon
 
 ```bash
-git clone https://github.com/AdityaVG13/cortex.git
+git clone https://github.com/cortex-project/cortex.git
 cd cortex
 cd daemon-rs
 cargo build --release

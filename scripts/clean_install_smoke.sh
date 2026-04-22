@@ -158,13 +158,13 @@ check_pattern_absent \
   "daemon-rs/src contains 'self-improvement-engine'"
 
 check_pattern_absent \
-  "aditya" \
+  "C:\\\\Users\\\\[A-Za-z0-9_.-]+|/Users/[A-Za-z0-9_.-]+" \
   "daemon-rs/src/" \
-  "No 'aditya' in daemon-rs/src" \
-  "daemon-rs/src contains 'aditya'"
+  "No hardcoded developer home paths in daemon-rs/src" \
+  "daemon-rs/src contains hardcoded developer home path(s)"
 
 check_pattern_absent \
-  "C:\\\\Users\\\\aditya|/Users/aditya" \
+  "C:\\\\Users\\\\[A-Za-z0-9_.-]+|/Users/[A-Za-z0-9_.-]+" \
   "plugins/cortex-plugin/scripts/" \
   "No hardcoded developer home paths in plugin startup scripts" \
   "Plugin startup scripts contain hardcoded developer home path(s)"

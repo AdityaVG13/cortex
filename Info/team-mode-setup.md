@@ -44,7 +44,7 @@ Terminate TLS at your gateway (Caddy, Nginx, Cloudflare Tunnel) and publish only
 docker run -d -p 127.0.0.1:7437:7437 \
   -v cortex_data:/root/.cortex \
   -e CORTEX_BIND=0.0.0.0 \
-  adityavg13/cortex:latest
+  cortex-project/cortex:latest
 ```
 
 Container-only `0.0.0.0` is acceptable because the host port is published on `127.0.0.1`; do not use this pattern with a public host bind.
@@ -52,7 +52,7 @@ Container-only `0.0.0.0` is acceptable because the host port is published on `12
 ### Option E — Build from source
 
 ```bash
-git clone https://github.com/AdityaVG13/cortex.git
+git clone https://github.com/cortex-project/cortex.git
 cd cortex/daemon-rs
 cargo build --release
 ./target/release/cortex serve
@@ -78,7 +78,7 @@ Save the generated `ctx_...` API key for each member.
 
 1. Install plugin:
    ```bash
-   claude plugin marketplace add AdityaVG13/cortex
+   claude plugin marketplace add cortex-project/cortex
    claude plugin install cortex@cortex-marketplace
    ```
 2. Restart Claude Code.

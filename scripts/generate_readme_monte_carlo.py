@@ -212,7 +212,7 @@ def draw_chart(points: list[DailyPoint], sim: dict[str, np.ndarray], output_path
     fig.text(
         0.055,
         0.902,
-        "Monte Carlo fan chart from Aditya's live Cortex usage. Real history on the left, projected uncertainty on the right.",
+        "Monte Carlo fan chart from a live Cortex usage history. Real history on the left, projected uncertainty on the right.",
         fontsize=13,
         color=MUTED,
     )
@@ -234,7 +234,7 @@ def draw_chart(points: list[DailyPoint], sim: dict[str, np.ndarray], output_path
     fig.text(
         0.145,
         0.855,
-        "Based on Aditya's own Cortex data",
+        "Based on one maintainer-run Cortex dataset",
         fontsize=11,
         fontweight="bold",
         color=TEXT,
@@ -271,7 +271,7 @@ def draw_chart(points: list[DailyPoint], sim: dict[str, np.ndarray], output_path
     fig.text(
         0.055,
         0.055,
-        "Projection uses 2,000 bootstrap simulations sampled from observed daily savings in Aditya's Cortex install.",
+        "Projection uses 2,000 bootstrap simulations sampled from observed daily savings in one Cortex install.",
         fontsize=11,
         color=MUTED,
     )

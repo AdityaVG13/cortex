@@ -136,7 +136,7 @@
           "tokens": 23
         },
         {
-          "source": "Brainstormed with Aditya 2026-03-31. Priority: Speed > Quality > Context resilie",
+          "source": "Brainstormed with maintainer 2026-03-31. Priority: Speed > Quality > Context resilie",
           "excerpt_preview": "Crew Protocol implemented: 5-role parallel agent team (Scout...",
           "keyword_score": 0.0,
           "ground_truth_match": false,
@@ -498,7 +498,7 @@
           "tokens": 27
         },
         {
-          "source": "Aditya mentioned before bed. Relevant to our ecosystem -- we already have a heav",
+          "source": "Maintainer mentioned before bed. Relevant to our ecosystem -- we already have a heav",
           "excerpt_preview": "claw-code: Python rewrite of Claude Code CLI hit 100K GitHub...",
           "keyword_score": 0.25,
           "ground_truth_match": true,
@@ -956,8 +956,8 @@
       "mrr": 1.0,
       "scored_results": [
         {
-          "source": "memory::user_aditya_profile.md",
-          "excerpt_preview": "[user_aditya_profile] (user) Aditya's writing style profile ...",
+          "source": "memory::user_profile.md",
+          "excerpt_preview": "[user_profile] (user) Maintainer writing style profile ...",
           "keyword_score": 0.75,
           "ground_truth_match": true,
           "cortex_relevance": 1.0195,
@@ -988,7 +988,7 @@
       "scored_results": [
         {
           "source": "memory::project_self_improvement_loop.md",
-          "excerpt_preview": "[project_self_improvement_loop] (project) Self-improvement engine at AdityaVG13/self-improvement-eng",
+          "excerpt_preview": "[project_self_improvement_loop] (project) Self-improvement engine at cortex-project/self-improvement-eng",
           "keyword_score": 0.75,
           "ground_truth_match": true,
           "cortex_relevance": 1.1899,

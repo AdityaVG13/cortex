@@ -140,9 +140,9 @@ function buildFixture() {
       backup_count: 3,
       log_bytes: 412_672,
       runtime: {
-        exe_path: "C:/Users/aditya/cortex/.cortex/runtime/mock/cortexd.exe",
-        pid_path: "C:/Users/aditya/cortex/.cortex/cortex.pid",
-        token_path: "C:/Users/aditya/cortex/.cortex/cortex.token",
+        exe_path: "C:/Users/testuser/cortex/.cortex/runtime/mock/cortexd.exe",
+        pid_path: "C:/Users/testuser/cortex/.cortex/cortex.pid",
+        token_path: "C:/Users/testuser/cortex/.cortex/cortex.token",
         port: 7437,
         version: "0.5.0",
       },

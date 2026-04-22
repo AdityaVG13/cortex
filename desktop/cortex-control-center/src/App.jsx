@@ -5959,7 +5959,7 @@ export function App() {
                   }}>CC</div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-          <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version {CONTROL_CENTER_VERSION}</p>
+          <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Built by the Cortex maintainer team -- Version {CONTROL_CENTER_VERSION}</p>
                   </div>
                 </div>
 
@@ -6025,7 +6025,7 @@ export function App() {
                   <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>Contributors</h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                     {[
-                      { handle: "AdityaVG13", role: "Creator & maintainer" },
+                      { handle: "Cortex-Team", role: "Creator & maintainer" },
                       { handle: "Claude Code", role: "Core architecture & retrieval pipeline" },
                       { handle: "Factory Droid", role: "Desktop app, reconnection & telemetry" },
                       { handle: "Codex", role: "Desktop rewrite, auth hardening, analytics and brain UX" },
@@ -6069,7 +6069,7 @@ export function App() {
                   }}><AppIcon name="overview" size={28} /></div>
                   <div>
                     <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Created by @AdityaVG13 -- Version {CONTROL_CENTER_VERSION}</p>
+                    <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Built by the Cortex maintainer team -- Version {CONTROL_CENTER_VERSION}</p>
                   </div>
                 </div>
 
@@ -6135,7 +6135,7 @@ export function App() {
                   <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>Contributors</h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                     {[
-                      { handle: "AdityaVG13", role: "Creator & maintainer" },
+                      { handle: "Cortex-Team", role: "Creator & maintainer" },
                       { handle: "Claude Code", role: "Core architecture & retrieval pipeline" },
                       { handle: "Factory Droid", role: "Desktop app, reconnection & telemetry" },
                     ].map(({ handle, role }) => (
@@ -6154,7 +6154,7 @@ export function App() {
 
                 <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
                   <a
-                    href="https://github.com/AdityaVG13/cortex"
+                    href="https://github.com/cortex-project/cortex"
                     target="_blank"
                     rel="noreferrer"
                     className="btn-sm"
@@ -6163,7 +6163,7 @@ export function App() {
                     GitHub
                   </a>
                   <a
-                    href="https://github.com/AdityaVG13/cortex/releases/tag/v0.3.0"
+                    href="https://github.com/cortex-project/cortex/releases/latest"
                     target="_blank"
                     rel="noreferrer"
                     className="btn-sm"

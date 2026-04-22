@@ -2581,7 +2581,7 @@ mod tests {
 
     #[test]
     fn workspace_binary_candidates_prefers_debug_for_dev_builds() {
-        let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), true);
+        let candidates = workspace_binary_candidates(Path::new("C:/Users/testuser"), true);
         assert_eq!(candidates.len(), 3);
         assert!(candidates[0]
             .to_string_lossy()
@@ -2597,7 +2597,7 @@ mod tests {
 
     #[test]
     fn workspace_binary_candidates_prefers_release_for_packaged_builds() {
-        let candidates = workspace_binary_candidates(Path::new("C:/Users/aditya"), false);
+        let candidates = workspace_binary_candidates(Path::new("C:/Users/testuser"), false);
         assert_eq!(candidates.len(), 3);
         assert!(candidates[0]
             .to_string_lossy()
@@ -2672,7 +2672,7 @@ mod tests {
         let target_build_script = PathBuf::from("C:/repo/daemon-rs/target/debug/build/cortex.exe");
         assert!(is_disallowed_daemon_binary_path(&target_build_script));
 
-        let safe = PathBuf::from("C:/Users/aditya/.cortex/bin/cortex.exe");
+        let safe = PathBuf::from("C:/Users/testuser/.cortex/bin/cortex.exe");
         assert!(!is_disallowed_daemon_binary_path(&safe));
     }
 
@@ -2816,7 +2816,7 @@ mod tests {
         assert_eq!(
             cortex_readiness_state(
                 200,
-                r#"{"status":"ready","ready":true,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                r#"{"status":"ready","ready":true,"runtime":{"port":7437},"stats":{"home":"C:/Users/testuser/.cortex"}}"#,
                 Some(7437),
                 None
             ),
@@ -2825,7 +2825,7 @@ mod tests {
         assert_eq!(
             cortex_readiness_state(
                 503,
-                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/testuser/.cortex"}}"#,
                 Some(7437),
                 None
             ),
@@ -2838,7 +2838,7 @@ mod tests {
         assert_eq!(
             cortex_readiness_state(
                 200,
-                r#"{"status":"ready","runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                r#"{"status":"ready","runtime":{"port":7437},"stats":{"home":"C:/Users/testuser/.cortex"}}"#,
                 Some(7437),
                 None
             ),
@@ -2847,7 +2847,7 @@ mod tests {
         assert_eq!(
             cortex_readiness_state(
                 500,
-                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/aditya/.cortex"}}"#,
+                r#"{"status":"starting","ready":false,"runtime":{"port":7437},"stats":{"home":"C:/Users/testuser/.cortex"}}"#,
                 Some(7437),
                 None
             ),
@@ -2858,22 +2858,22 @@ mod tests {
     #[test]
     fn cortex_health_probe_rejects_identity_mismatch() {
         let expected = ResolvedCortexPaths {
-            home: Some(PathBuf::from("C:/Users/aditya/.cortex")),
-            token: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.token")),
-            db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
-            pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
+            home: Some(PathBuf::from("C:/Users/testuser/.cortex")),
+            token: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.token")),
+            db: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.db")),
+            pid: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.pid")),
             port: Some(7437),
             bind: Some("127.0.0.1".to_string()),
         };
         assert!(!is_cortex_health_response(
             200,
-            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/other/cortex.token","db_path":"C:/Users/aditya/.cortex/cortex.db","pid_path":"C:/Users/aditya/.cortex/cortex.pid"},"stats":{"home":"C:/Users/aditya/.cortex","memories":1}}"#,
+            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/other/cortex.token","db_path":"C:/Users/testuser/.cortex/cortex.db","pid_path":"C:/Users/testuser/.cortex/cortex.pid"},"stats":{"home":"C:/Users/testuser/.cortex","memories":1}}"#,
             Some(7437),
             Some(&expected)
         ));
         assert!(is_cortex_health_response(
             200,
-            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/Users/aditya/.cortex/cortex.token","db_path":"C:/Users/aditya/.cortex/cortex.db","pid_path":"C:/Users/aditya/.cortex/cortex.pid"},"stats":{"home":"C:/Users/aditya/.cortex","memories":1}}"#,
+            r#"{"status":"ok","runtime":{"port":7437,"token_path":"C:/Users/testuser/.cortex/cortex.token","db_path":"C:/Users/testuser/.cortex/cortex.db","pid_path":"C:/Users/testuser/.cortex/cortex.pid"},"stats":{"home":"C:/Users/testuser/.cortex","memories":1}}"#,
             Some(7437),
             Some(&expected)
         ));
@@ -2882,10 +2882,10 @@ mod tests {
     #[test]
     fn readiness_identity_fallback_classifies_starting_payload_on_path_mismatch() {
         let expected = ResolvedCortexPaths {
-            home: Some(PathBuf::from("C:/Users/aditya/.cortex")),
-            token: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.token")),
-            db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
-            pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
+            home: Some(PathBuf::from("C:/Users/testuser/.cortex")),
+            token: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.token")),
+            db: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.db")),
+            pid: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.pid")),
             port: Some(7437),
             bind: Some("127.0.0.1".to_string()),
         };
@@ -2902,10 +2902,10 @@ mod tests {
     #[test]
     fn health_identity_fallback_detects_reachable_payload_on_path_mismatch() {
         let expected = ResolvedCortexPaths {
-            home: Some(PathBuf::from("C:/Users/aditya/.cortex")),
-            token: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.token")),
-            db: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.db")),
-            pid: Some(PathBuf::from("C:/Users/aditya/.cortex/cortex.pid")),
+            home: Some(PathBuf::from("C:/Users/testuser/.cortex")),
+            token: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.token")),
+            db: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.db")),
+            pid: Some(PathBuf::from("C:/Users/testuser/.cortex/cortex.pid")),
             port: Some(7437),
             bind: Some("127.0.0.1".to_string()),
         };
@@ -2921,7 +2921,7 @@ mod tests {
 
     #[test]
     fn editor_registration_uses_explicit_agent_args() {
-        let home = Path::new("C:/Users/aditya");
+        let home = Path::new("C:/Users/testuser");
         let targets = editor_targets(home);
         let cursor = targets.iter().find(|target| target.id == "cursor").unwrap();
         let claude = targets
@@ -2935,11 +2935,11 @@ mod tests {
 
     #[test]
     fn editor_registration_includes_attach_only_env_contract() {
-        let home = Path::new("C:/Users/aditya");
+        let home = Path::new("C:/Users/testuser");
         let targets = editor_targets(home);
         let codex = targets.iter().find(|target| target.id == "codex").unwrap();
 
-        let registration = cortex_mcp_registration(codex, "C:/Users/aditya/.cortex/bin/cortex.exe");
+        let registration = cortex_mcp_registration(codex, "C:/Users/testuser/.cortex/bin/cortex.exe");
         let cortex_entry = registration
             .as_object()
             .expect("registration should be an object");
@@ -2977,7 +2977,7 @@ mod tests {
 
     #[test]
     fn registration_matchers_require_attach_only_env_contract() {
-        let home = Path::new("C:/Users/aditya");
+        let home = Path::new("C:/Users/testuser");
         let targets = editor_targets(home);
         let cursor = targets.iter().find(|target| target.id == "cursor").unwrap();
         let codex = targets.iter().find(|target| target.id == "codex").unwrap();

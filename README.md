@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/AdityaVG13/cortex/releases/latest">Get started</a> |
+  <a href="https://github.com/cortex-project/cortex/releases/latest">Get started</a> |
   <a href="Info/connecting.md">Connect your tools</a>
 </p>
 
@@ -36,7 +36,7 @@
 </table>
 
 <p align="center">
-  <sub><a href="https://ko-fi.com/adityavg13">Support Cortex</a> helps fund releases, benchmarks, and long-term maintenance.</sub>
+  <sub><a href="https://github.com/sponsors">Support Cortex</a> helps fund releases, benchmarks, and long-term maintenance.</sub>
 </p>
 
 ## Start in two commands
@@ -44,7 +44,7 @@
 If you want the quickest path from install to a working setup, start with the Claude Code plugin. Cortex handles the background setup for you.
 
 ```bash
-claude plugin marketplace add AdityaVG13/cortex
+claude plugin marketplace add cortex-project/cortex
 claude plugin install cortex@cortex-marketplace
 ```
 
@@ -66,9 +66,9 @@ If Cortex is helping, you should be able to see it. If it is not, you should kno
   <img src="assets/monte-carlo-readme.png" alt="Monte Carlo projection showing a 30-day Cortex savings horizon" width="100%">
 </p>
 
-<p align="center"><em>Monte Carlo savings horizon: an example 30-day projection based on Aditya's own live Cortex data.</em></p>
+<p align="center"><em>Monte Carlo savings horizon: an example 30-day projection based on one real live Cortex dataset.</em></p>
 
-Source notes: the screenshot above is one real active Cortex install. The Monte Carlo chart is based on Aditya's own Cortex history. Benchmark figures come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
+Source notes: the screenshot above is one real active Cortex install. The Monte Carlo chart is based on one maintainer-run Cortex history. Benchmark figures come from [`benchmark/baseline-v041.md`](benchmark/baseline-v041.md).
 
 ## Why teams keep it running
 
@@ -94,23 +94,23 @@ Cortex is meant to fit into the tools you already use, not make you learn a whol
 
 ### Desktop app
 
-Download the latest installer from the [release page](https://github.com/AdityaVG13/cortex/releases/latest).
+Download the latest installer from the [release page](https://github.com/cortex-project/cortex/releases/latest).
 
 <details>
 <summary>Desktop installers and daemon archives</summary>
 
 | Platform | Installer | Daemon only |
 |---|---|---|
-| Windows | [`.exe` (NSIS installer)](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.1-windows-x86_64.zip`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.1/cortex-v0.4.1-windows-x86_64.zip) |
-| macOS | [`.dmg`](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.1-macos-aarch64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.1/cortex-v0.4.1-macos-aarch64.tar.gz) |
-| Linux | [`.AppImage` / `.deb`](https://github.com/AdityaVG13/cortex/releases/latest) | [`cortex-v0.4.1-linux-x86_64.tar.gz`](https://github.com/AdityaVG13/cortex/releases/download/v0.4.1/cortex-v0.4.1-linux-x86_64.tar.gz) |
+| Windows | [`.exe` (NSIS installer)](https://github.com/cortex-project/cortex/releases/latest) | [`cortex-v0.4.1-windows-x86_64.zip`](https://github.com/cortex-project/cortex/releases/download/v0.4.1/cortex-v0.4.1-windows-x86_64.zip) |
+| macOS | [`.dmg`](https://github.com/cortex-project/cortex/releases/latest) | [`cortex-v0.4.1-macos-aarch64.tar.gz`](https://github.com/cortex-project/cortex/releases/download/v0.4.1/cortex-v0.4.1-macos-aarch64.tar.gz) |
+| Linux | [`.AppImage` / `.deb`](https://github.com/cortex-project/cortex/releases/latest) | [`cortex-v0.4.1-linux-x86_64.tar.gz`](https://github.com/cortex-project/cortex/releases/download/v0.4.1/cortex-v0.4.1-linux-x86_64.tar.gz) |
 
 </details>
 
 ### From source
 
 ```bash
-git clone https://github.com/AdityaVG13/cortex.git
+git clone https://github.com/cortex-project/cortex.git
 cd cortex/daemon-rs
 cargo build --release
 ```
@@ -186,7 +186,7 @@ The docs are organized around what you are trying to do, not around internal fol
 Roadmap details: [Info/roadmap.md](Info/roadmap.md)
 
 <p align="center">
-  <a href="https://ko-fi.com/adityavg13">Support Cortex</a> |
+  <a href="https://github.com/sponsors">Support Cortex</a> |
   <a href="Info/research.md">Research</a> |
   <a href="Info/connecting.md">Connecting</a> |
   <a href="security/SECURITY.md">Security</a> |

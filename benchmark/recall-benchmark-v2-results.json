@@ -147,7 +147,7 @@
       "scored_results": [
         {
           "source": "memory::reference_gemini_rtk_hook.md",
-          "excerpt_preview": "...c rtk hook gemini` (FAILED: .cmd wrapper can't exec in bash, wrong PATH)\n- Now: `C:/Users/aditya/",
+          "excerpt_preview": "...c rtk hook gemini` (FAILED: .cmd wrapper can't exec in bash, wrong PATH)\n- Now: `%USERPROFILE%/",
           "keyword_score": 0.5,
           "ground_truth_match": true,
           "cortex_relevance": 0.492,

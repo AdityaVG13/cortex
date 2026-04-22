@@ -1,5 +1,5 @@
 param(
-    [string]$Root = "C:\Users\aditya\cortex",
+    [string]$Root = "",
     [int]$DaysUnused = 7,
     [switch]$Apply,
     [switch]$IncludeBenchmarkArtifacts
@@ -7,6 +7,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
 
 function Get-DirSizeBytes {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -102,4 +106,3 @@ foreach ($entry in $sorted) {
         Write-Warning "[prune-build-bloat] failed to remove $($entry.Path): $($_.Exception.Message)"
     }
 }
-
