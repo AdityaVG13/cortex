@@ -2535,6 +2535,14 @@ export function App() {
         } = await refreshProtectedDataForStartup());
       }
     }
+    const browserCoreAuthFailuresOnly =
+      !invokeRef.current
+      && coreErrors.length > 0
+      && coreErrors.every((error) => isAuthFailure(error));
+    if (browserCoreAuthFailuresOnly) {
+      tokenRef.current = "";
+      persistBrowserAuthToken("");
+    }
 
     if (coreErrors.length) {
       const unique = [...new Set(coreErrors)];
