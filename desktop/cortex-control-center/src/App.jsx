@@ -1519,6 +1519,23 @@ export function App() {
   const streamSessionEventCountRef = useRef(0);
   const devVerificationStartedRef = useRef(false);
   const permissionsEndpointAvailableRef = useRef(true);
+  const browserHealthProbeRef = useRef(null);
+  const connectionDialogAutoPromptSuppressedRef = useRef(false);
+
+  const openConnectionDialog = useCallback(() => {
+    connectionDialogAutoPromptSuppressedRef.current = false;
+    setShowConnectionDialog(true);
+  }, []);
+
+  const dismissConnectionDialog = useCallback(() => {
+    connectionDialogAutoPromptSuppressedRef.current = true;
+    setShowConnectionDialog(false);
+  }, []);
+
+  const closeConnectionDialog = useCallback(() => {
+    connectionDialogAutoPromptSuppressedRef.current = false;
+    setShowConnectionDialog(false);
+  }, []);
 
   const changePanel = useCallback((nextPanel) => {
     if (!PANEL_SEQUENCE_KEYS.has(nextPanel) || nextPanel === panel) {
@@ -1880,6 +1897,7 @@ export function App() {
     if (invokeRef.current) {
       try {
         const state = { ...EMPTY_DAEMON, ...(await call("daemon_status")) };
+        browserHealthProbeRef.current = null;
         setDaemonState(state);
         return state;
       } catch {
@@ -1890,8 +1908,10 @@ export function App() {
     let health;
     try {
       health = await api("/health");
+      browserHealthProbeRef.current = health || null;
     } catch {
       // daemon unreachable is an expected state, not an error
+      browserHealthProbeRef.current = null;
     }
     if (isReachableHealthPayload(health)) {
       const nextState = {
@@ -1928,11 +1948,14 @@ export function App() {
   }, [api]);
 
   const refreshHealth = useCallback(async () => {
-    let health;
-    try {
-      health = await api("/health");
-    } catch {
-      // daemon unreachable -- show dashes
+    let health = browserHealthProbeRef.current;
+    browserHealthProbeRef.current = null;
+    if (!health) {
+      try {
+        health = await api("/health");
+      } catch {
+        // daemon unreachable -- show dashes
+      }
     }
     if (!health) {
       const readinessReady = await probeReadiness();
@@ -2566,11 +2589,16 @@ export function App() {
         setDaemonTimeoutStaleSummary("");
         clearRecoveryRetry();
         setFeedbackMessage(summarizeDashboardErrors(unique));
-        if (!invokeRef.current && unique.every((error) => isAuthFailure(error))) {
+        if (
+          !invokeRef.current
+          && unique.every((error) => isAuthFailure(error))
+          && !connectionDialogAutoPromptSuppressedRef.current
+        ) {
           setShowConnectionDialog(true);
         }
       }
     } else {
+      connectionDialogAutoPromptSuppressedRef.current = false;
       clearRecoveryRetry();
       const uniqueSecondary = [...new Set(secondaryErrors)];
       if (uniqueSecondary.length) {
@@ -4007,7 +4035,7 @@ export function App() {
             <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
             <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
             <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
-            <span className="topbar-stat topbar-connection" onClick={() => setShowConnectionDialog(true)} title="Click to change connection">
+            <span className="topbar-stat topbar-connection" onClick={openConnectionDialog} title="Click to change connection">
               <span className="topbar-label">HOST</span>
               {hostLabel}
             </span>
@@ -4082,7 +4110,7 @@ export function App() {
         )}
 
         {showConnectionDialog && (
-          <div className="connection-overlay" onClick={() => setShowConnectionDialog(false)}>
+          <div className="connection-overlay" onClick={dismissConnectionDialog}>
             <div className="connection-dialog" onClick={e => e.stopPropagation()}>
               <div className="connection-dialog-header">
                 <h2>Connection Settings</h2>
@@ -4090,7 +4118,7 @@ export function App() {
                   type="button"
                   className="connection-dialog-close"
                   aria-label="Close connection settings"
-                  onClick={() => setShowConnectionDialog(false)}
+                  onClick={dismissConnectionDialog}
                 >
                   ×
                 </button>
@@ -4106,7 +4134,7 @@ export function App() {
                   setCortexBase(DEFAULT_CORTEX_BASE);
                   tokenRef.current = "";
                   persistBrowserAuthToken("");
-                  setShowConnectionDialog(false);
+                  closeConnectionDialog();
                   queueMicrotask(() => refreshAllRef.current());
                   return;
                 }
@@ -4117,7 +4145,7 @@ export function App() {
                 setCortexBase(`http://${host}:${port}`);
                 tokenRef.current = token || "";
                 persistBrowserAuthToken(token || "");
-                setShowConnectionDialog(false);
+                closeConnectionDialog();
                 queueMicrotask(() => refreshAllRef.current());
               }}>
                 <label className="connection-field">
@@ -4152,7 +4180,7 @@ export function App() {
                     setCortexBase(DEFAULT_CORTEX_BASE);
                     tokenRef.current = "";
                     persistBrowserAuthToken("");
-                    setShowConnectionDialog(false);
+                    closeConnectionDialog();
                     readAuthToken({ suppressFeedback: true });
                     queueMicrotask(() => refreshAllRef.current());
                   }}>Reset to Local</button>
