@@ -28,17 +28,6 @@ Install once. Your tools stop starting from scratch.</p>
 
 ---
 
-## Get running in two commands
-
-```bash
-claude plugin marketplace add AdityaVG13/cortex
-claude plugin install cortex@cortex-marketplace
-```
-
-Restart your session. Cortex comes up on its own. Prefer a desktop app or manual install? Jump to [install options](#install).
-
----
-
 <p align="center">
   <img src="assets/cc-tour.gif" alt="Cortex Control Center — Overview, Analytics, Agents, Brain, About" width="100%">
   <br><sub>Control Center: overview, analytics, agents, brain state, and about — in one place.</sub>
