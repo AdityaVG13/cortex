@@ -1,0 +1,519 @@
+{
+  "dataset": "longmemeval",
+  "split": "s",
+  "category": null,
+  "memory_provider": "cortex-http",
+  "run_name": "cortex-http",
+  "mode": "rag",
+  "oracle": false,
+  "total_queries": 20,
+  "correct": 20,
+  "accuracy": 1.0,
+  "ingestion_time_ms": 72640.8,
+  "ingested_docs": 980,
+  "description": null,
+  "answer_llm": "gemini:gemini-2.5-pro",
+  "judge_llm": "gemini:gemini-2.5-flash",
+  "results": [
+    {
+      "query_id": "e47becba",
+      "query": "What degree did I graduate with?",
+      "answer": "You graduated with a degree in Business Administration.",
+      "reasoning": "I have reviewed the provided memories to find information about your degree. Memory 1 is about a business email, Memory 2 is about a family trip to a lake, and Memory 3 is about a purchase of knives. Memory 4 contains a direct statement from you: 'I graduated with a degree in Business Administration...'. This memory directly answers your question.",
+      "context": "## Memory 1\n...haregpt_rnG0ZuV_0 - you are the assistant in this conversation - happened on 2023-05-22 00:00:00 UTC. [fact-extract]\n[user] Regarding my previous email to support HexaChem with good price offers, What are your current needs?\n\n## Memory 2\n...5-30 00:00:00 UTC. [fact-extract]\n[user] I'm planning to visit a nearby lake with my family next weekend, and I'm hoping to spot some new species.\n\n## Memory 3\n...nives from the Amazon Prime Day sales, and I'm excited to start cooking with them.\n\n## Memory 4\n...0:00:00 UTC. [fact-extract]\n[user] I graduated with a degree in Business Administration, which has definitely he...",
+      "context_tokens": 178,
+      "retrieve_time_ms": 3093.6,
+      "gold_answers": [
+        "Business Administration"
+      ],
+      "correct": true,
+      "judge_reason": "The model's response directly states the correct degree, \"Business Administration\".",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "118b2229",
+      "query": "How long is my daily commute to work?",
+      "answer": "Based on your previous statement, your daily commute takes 45 minutes each way.",
+      "reasoning": "The user's question is about the length of their daily commute to work. I scanned the provided memories for keywords like 'commute' and time durations. Memory 1, dated 2023-05-22, contains a direct statement from the user: 'I've been listening to audiobooks during my daily commute, which takes 45 minutes each way.' Other memories mention working from home (Memories 4, 5, and 7), but Memory 1 provides the only specific duration for a commute. Therefore, I will use the information from Memory 1 to answer the question.",
+      "context": "## Memory 1\n...on - happened on 2023-05-22 00:00:00 UTC. [fact-extract]\n[user] I've been listening to audiobooks during my daily commute, which takes 45 minutes each way.\n\n## Memory 2\n[user] I've been enjoying audiobooks a lot lately, especially during my daily commute.\n\n## Memory 3\n[user] Can you tell me how often I should be fertilizing my plants, and if there are any specific types of fertilizers that work better for certain plants?\n\n## Memory 4\n[user] By the way, speaking of furniture, I recently had my office chair repaired for $50, and it's made a huge difference in my work-from-home comfort.\n\n## Memory 5\n[user] It only cost $50, and it's made a huge difference in my work-from-home experience.\n\n## Memory 6\n.... [fact-extract]\n[user] I also wanted to ask, do you have any tips on how to propagate my Spider Plant?\n\n## Memory 7\n[user] Speaking of productivity, I've been thinking about rearranging my home office to improve my workflow.\n\n## Memory 8\n[user] I've been thinking about getting a humidifier for my bedroom, where my Aloe Vera plant is.",
+      "context_tokens": 268,
+      "retrieve_time_ms": 2465.7,
+      "gold_answers": [
+        "45 minutes each way"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states the correct commute time of 45 minutes each way, matching the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "51a45a95",
+      "query": "Where did I redeem a $5 coupon on coffee creamer?",
+      "answer": "While the specific memory about redeeming the $5 coupon for coffee creamer doesn't explicitly state the location, based on your other memories of shopping frequently at Target and using their Cartwheel savings app, it is highly likely you redeemed it at Target.",
+      "reasoning": "The user states in Memory 1 that they redeemed a $5 coupon on coffee creamer. Memory 2 states that the user shops at Target frequently. Memory 7 mentions that the user uses the Cartwheel app from Target to save money. While the specific memory of redeeming the coupon does not name the store, the other memories strongly suggest that the shopping trip where the coupon was used took place at Target, as it's a store they frequent and use savings apps for.",
+      "context": "## Memory 1\n...ct-extract]\n[user] I actually redeemed a $5 coupon on coffee creamer last Sunday, which was a nice surprise since I didn't know I had it in my email inbox.\n\n## Memory 2\n[user] I shop at Target pretty frequently, maybe every other week.\n\n## Memory 3\n[user] I'm planning to watch a few more movies before I get to Avengers: Endgame.\n\n## Memory 4\n[user] By the way, I've been watching a lot of movies lately, and I think it started when I got my new 4K TV in late January.\n\n## Memory 5\n[user] I've got a long way to go before I get to Avengers: Endgame.\n\n## Memory 6\n[user] I think I'll start with Captain America: The First Avenger and work my way up in chronological order, just like I did last time.\n\n## Memory 7\n[user] I've been using the Cartwheel app from Target and it's been really helpful for saving money on household items.\n\n## Memory 8\n[user] Do you think I can get away with watching just the MCU movies, or should I also watch the Marvel TV shows like Agents of S.H.I.E.L.D.\n\n## Memory 9\n...apped in a bunker somewhere.",
+      "context_tokens": 269,
+      "retrieve_time_ms": 3677.9,
+      "gold_answers": [
+        "Target"
+      ],
+      "correct": true,
+      "judge_reason": "The model correctly identifies 'Target' as the likely location where the coupon was redeemed, matching the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "58bf7951",
+      "query": "What play did I attend at the local community theater?",
+      "answer": "You attended a production of 'The Glass Menagerie' at the local community theater.",
+      "reasoning": "The user asks for the name of the play they attended at the local community theater. Memory 1 confirms that the user went to a play at the local community theater. Memory 5 explicitly states that the play attended was 'a production of The Glass Menagerie'. Memory 6 mentions a different play, 'The Crucible', but this was in the context of an audition, not a performance the user attended.",
+      "context": "## Memory 1\n[user] By the way, I recently went to a play at the local community theater and was impressed by the lead actress's performance - she reminded me of my friend Emily, who's also an aspiring actress.\n\n## Memory 2\n[user] [user-answer] These all sound great!\n\n## Memory 3\n[user] [user-answer] Great suggestion!\n\n## Memory 4\n[user] I'm looking forward to playing Sushi Go!\n\n## Memory 5\n[user] The play I attended was actually a production of The Glass Menagerie, have you heard of it?\n\n## Memory 6\n[user] I've been thinking about taking some acting classes to improve my skills, especially after my recent audition for a role in \"The Crucible\" didn't go well.\n\n## Memory 7\n...could include meetings with local community leaders, scientific presentations, and cultural exchanges.\\...",
+      "context_tokens": 184,
+      "retrieve_time_ms": 2993.8,
+      "gold_answers": [
+        "The Glass Menagerie"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states the correct play, 'The Glass Menagerie', which matches the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "1e043500",
+      "query": "What is the name of the playlist I created on Spotify?",
+      "answer": "The name of the Spotify playlist you created is 'Summer Vibes'.",
+      "reasoning": "The first memory provided contains a direct statement from the user about a playlist they created on Spotify. The user says, '...I've been listening to this one playlist on Spotify that I created, called Summer Vibes...'. This directly answers the question. The other memories are on unrelated topics such as tote bags, outfits, and diet.",
+      "context": "## Memory 1\n[user] Also, by the way, I've been listening to this one playlist on Spotify that I created, called Summer Vibes, and it's got all these chill tracks that are perfect for relaxing or working out.\n\n## Memory 2\n... UTC. [fact-extract]\n[user] I'm thinking of getting a tote bag, but I'm not sure what color to go with.\n\n## Memory 3\n[user] I think I'll go with the beige or camel option.\n\n## Memory 4\n[user] I'm planning to wear this outfit to a baby shower next weekend.\n\n## Memory 5\n[user] In the meantime, I've been trying to change my diet to avoid fatty or greasy foods, which can exacerbate the symptoms.\n\n## Memory 6\n[user] I'm glad you provided some helpful information about gallstones.\n\n## Memory 7\n...ones and what kind of sympto...",
+      "context_tokens": 191,
+      "retrieve_time_ms": 3059.6,
+      "gold_answers": [
+        "Summer Vibes"
+      ],
+      "correct": true,
+      "judge_reason": "The model response explicitly states the correct playlist name, 'Summer Vibes'.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "c5e8278d",
+      "query": "What was my last name before I changed it?",
+      "answer": "Based on the information you provided, your old last name was Johnson.",
+      "reasoning": "The user is asking what their last name was before they changed it. The provided context includes a memory where the user explicitly states, 'my old name was Johnson'. This directly answers the question.",
+      "context": "## Memory 1\n... [fact-extract]\n[user] By the way, I just recently changed my last name, and I'm still getting used to it - it's funny, my old name was Johnson, but now it...",
+      "context_tokens": 48,
+      "retrieve_time_ms": 2694.0,
+      "gold_answers": [
+        "Johnson"
+      ],
+      "correct": true,
+      "judge_reason": "The model response accurately states that the old last name was Johnson, which matches the correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "6ade9755",
+      "query": "Where do I take yoga classes?",
+      "answer": "You take yoga classes at a place called Serenity Yoga.",
+      "reasoning": "The user mentions in the first memory, '...especially on days when I can't make it to Serenity Yoga.' This statement directly indicates that Serenity Yoga is the place where the user attends yoga classes.",
+      "context": "## Memory 1\n...tion - happened on 2023-05-30 00:00:00 UTC. [fact-extract]\n[user] It's been super helpful for me, especially on days when I can't make it to Serenity Yoga.\n\n## Memory 2\n[user] I'm trying to plan a self-care day and was thinking of doing a morning yoga practice at home, then meeting a friend for brunch.\n\n## Memory 3\n[user] By the way, do you know any good yoga apps that can help me with my home practice?\n\n## Memory 4\n[user] I sometimes find myself getting caught up in stress and anxiety, and I think yoga can help me cultivate a greater sense of calm and compassion in those moments.\n\n## Memory 5\n[user] I've definitely noticed that my yoga practice has influenced my relationships, especially with my best friend Sarah, who I convinced to start practicing with me.",
+      "context_tokens": 190,
+      "retrieve_time_ms": 2332.6,
+      "gold_answers": [
+        "Serenity Yoga"
+      ],
+      "correct": true,
+      "judge_reason": "The model response explicitly states \"Serenity Yoga,\" which is the correct answer to the question.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "6f9b354f",
+      "query": "What color did I repaint my bedroom walls?",
+      "answer": "You repainted your bedroom walls a lighter shade of gray.",
+      "reasoning": "I scanned the provided memories to find information about the user repainting their bedroom. Memories 1, 2, and 3 are irrelevant to this topic, discussing voter registration, organizing photos, and YouTube SEO respectively. Memory 4, from a conversation on 2023-05-27, contains a direct statement from the user: 'I've been doing some redecorating and recently repainted my bedroom walls a lighter shade of gray'. This statement directly answers the question.",
+      "context": "## Memory 1\n...is conversation - happened on 2023-05-27 00:00:00 UTC. [fact-extract]\n[user] What's the best way to update my voter registration with my new name?\n\n## Memory 2\n... on 2023-05-29 00:00:00 UTC. [fact-extract]\n[user] I think I'll start organizing my scanned photos this weekend.\n\n## Memory 3\n...ract]\n[user] I'm looking for some tips on how to improve my YouTube channel's SEO.\n\n## Memory 4\n...versation - happened on 2023-05-27 00:00:00 UTC. [fact-extract]\n[user] By the way, I've been doing some redecorating and recently repainted my bedroom walls a lighter shade of gray - it's made the room feel so much brighter!",
+      "context_tokens": 183,
+      "retrieve_time_ms": 3227.0,
+      "gold_answers": [
+        "a lighter shade of gray"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states the correct answer: a lighter shade of gray.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "58ef2f1c",
+      "query": "When did I volunteer at the local animal shelter's fundraising dinner?",
+      "answer": "You volunteered at the \"Love is in the Air\" fundraising dinner on Valentine's Day.",
+      "reasoning": "The user asks about the date of a specific volunteer event. I scanned the provided memories for keywords like \"volunteer,\" \"fundraising dinner,\" and any associated dates. Memory 1 mentions the user volunteered at the \"Love is in the Air\" fundraising dinner in February. Memory 2 provides a more specific date for the same event, stating it was on Valentine's Day. Since Valentine's Day is on February 14th, this is the most precise date available in the context.",
+      "context": "## Memory 1\n[user] I'm open to attending different types of events, but I did really enjoy the \"Love is in the Air\" fundraising dinner I volunteered at back in February - it was a great way to meet new people.\n\n## Memory 2\n[user] I've had a great experience with similar events in the past, like the \"Love is in the Air\" fundraising dinner I volunteered at back on Valentine's Day.\n\n## Memory 3\n...tract]\n[user] Since I've had experience serving breakfast to people in need during my volunteer work, I'm interested in helping out with food distribution.\n\n## Memory 4\n...e assistant in this conversation - happened on 2023-04-02 00:00:00 UTC. [fact-extract]\n[user] I'm looking for some volunteer opportunities in my community.\n\n## Memory 5\n[user] I'd like to ask, what kind of training or orientation would I receive as a food bank volunteer, and how would it prepare me to work with the clients you mentioned?\n\n## Memory 6\n[user] I'm interested in helping out with food distribution, especially since I've had experience serving breakfast to people in need during my volunteer work.\n\n## Memory 7\n[user] I'm interested in helping out at a local food bank.\n\n## Memory 8\n[user] I've had a really fulfilling experience serving breakfast to people in need during my volunteer work, and I'm eager to do more.\n\n## Memory 9\n[user] I'm most passionate about animal welfare and children's health, so anything related to those causes would be great.",
+      "context_tokens": 329,
+      "retrieve_time_ms": 3561.2,
+      "gold_answers": [
+        "February 14th"
+      ],
+      "correct": true,
+      "judge_reason": "The model response states 'Valentine's Day', which is equivalent to 'February 14th', thus providing the correct date.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-04-02T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "f8c5f88b",
+      "query": "Where did I buy my new tennis racket from?",
+      "answer": "You mentioned that you got your new tennis racket from a sports store downtown.",
+      "reasoning": "The user's question asks about the location where they purchased their new tennis racket. I scanned the provided memories for keywords like 'tennis racket', 'buy', and 'got'. Memory 1 contains a direct statement from the user: 'I'm really happy with my new tennis racket, which I got from a sports store downtown.' This memory explicitly states the location of the purchase. Other memories mention the racket but do not provide information about where it was bought.",
+      "context": "## Memory 1\n...appened on 2023-05-25 00:00:00 UTC. [fact-extract]\n[user] By the way, I'm really happy with my new tennis racket, which I got from a sports store downtown.\n\n## Memory 2\n[user] I'll consider getting a tennis ball machine, but for now, I think I'll focus on improving my game with my new racket and practicing with my friends.\n\n## Memory 3\n[user] I'm planning to buy new tennis balls this weekend.\n\n## Memory 4\n[user] But with my new habit of taking shorter showers, I think I'll be okay.\n\n## Memory 5\n[user] I'm concerned about the maintenance of these showerheads.\n\n## Memory 6\n[user] I'm concerned about the prices.\n\n## Memory 7\n[user] I like the options you provided.\n\n## Memory 8\n[user] I've had issues with mineral buildup in the past.",
+      "context_tokens": 199,
+      "retrieve_time_ms": 375.4,
+      "gold_answers": [
+        "the sports store downtown"
+      ],
+      "correct": true,
+      "judge_reason": "The model response accurately states that the tennis racket was bought from 'a sports store downtown', which is equivalent to the correct answer 'the sports store downtown'.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "5d3d2817",
+      "query": "What was my previous occupation?",
+      "answer": "Your previous occupation was a marketing specialist at a small startup.",
+      "reasoning": "The user asks about their previous occupation. Memory 1 explicitly states the user's previous role: 'I've used Trello in my previous role as a marketing specialist at a small startup'. Memory 2 confirms this by mentioning the user's 'new role as a senior marketing analyst', making the role in Memory 1 the previous one.",
+      "context": "## Memory 1\n[user] I've used Trello in my previous role as a marketing specialist at a small startup and I'm familiar with its features.\n\n## Memory 2\n[user] I'm actually thinking of automating some of the workflows in my new role as a senior marketing analyst.\n\n## Memory 3\n...]\n[user] What about my follo...\n\n## Memory 4\n[user] I'll send her a LinkedIn message first, and follow up with an email if I don't hear back within a few days.\n\n## Memory 5\n[user] Do you think I should also reach out to some of the other people I met at TechCon, like John from StartupABC, to see if they're interested in attending or participating in the meetup?\n\n## Memory 6\n... occurred on the earliest of whichever of the following dates can be established for the work\\u2014\\n(a) the date on which the contractor handed over possession of the work to the owner,\\n(b) the date on which the contractor last attended the site to carry out work (other than work to remedy any defect that does not affect practical completion),\\n(c) the date of issue of an occupation certificate under the Environmental Planning and Assessment Act 1979 that authorises commencement of the use or occupation of the work,\\n(d) (in the case of owner-builder work) the date that is 18 months after the issue of the owner-builder permit for the work.\\nIn our view, in accordance with s 3B(1) of the HB Act, the statutory warranty period commenced on comple ...\n\n## Memory 7\n...t]\n[user] I think I'll start by automating some of the repetitive tasks I've been doing in my new role.",
+      "context_tokens": 357,
+      "retrieve_time_ms": 2667.7,
+      "gold_answers": [
+        "Marketing specialist at a small startup"
+      ],
+      "correct": true,
+      "judge_reason": "The model response accurately states the previous occupation, which directly matches the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "7527f7e2",
+      "query": "How much did I spend on a designer handbag?",
+      "answer": "You spent $800 on a designer handbag.",
+      "reasoning": "The user explicitly states the cost of the designer handbag in Memory 1. The memory, dated 2023-05-23, says: 'I remember buying a designer handbag for a pretty penny - $800, to be exact.' No other memories contain information about this purchase.",
+      "context": "## Memory 1\n...this conversation - happened on 2023-05-23 00:00:00 UTC. [fact-extract]\n[user] I remember buying a designer handbag for a pretty penny - $800, to be exact.\n\n## Memory 2\n[user] Can you lay down a weekly roadmap of starting a community like this, considering I can spend 2-4 hours in a week\n\n## Memory 3\n[user] [user-answer] Great! [assistant-question] Certainly! Here is a weekly roadmap to help you get started on building your community: Week 1: 1. Define your community's purpose: Spend some time thinking...\n\n## Memory 4\n[user] I'm thinking of attending the Foster the People show on September 20th.\n\n## Memory 5\n[user] I want to create a community of like minded people where we can have a comforting space to talk about our struggles, wins, tips, tricks, new avenues etc.\n\n## Memory 6\n[user] I actually just got back from a music festival in Grant Park featuring Billie Eilish, Khalid, and The 1975 today, and I'm still buzzing from the experience.\n\n## Memory 7\n[user] I just got back from a music festival in Grant Park featuring Billie Eilish, Khalid, and The 1975 today, and I'm still on a music high.",
+      "context_tokens": 290,
+      "retrieve_time_ms": 3139.8,
+      "gold_answers": [
+        "$800"
+      ],
+      "correct": true,
+      "judge_reason": "The model response accurately states that $800 was spent on a designer handbag, directly matching the correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "c960da58",
+      "query": "How many playlists do I have on Spotify?",
+      "answer": "Based on the information you provided, you have 20 playlists on Spotify.",
+      "reasoning": "The user's question is about the number of Spotify playlists they have. I scanned the retrieved context for keywords like 'playlists' and 'Spotify'. Memory 1 contains a direct statement from the user: 'I have 20 playlists on Spotify already'. Memories 2 and 3 also mention playlists, with Memory 3 naming two of them ('Morning Boost' and 'Focus Flow'), but neither provides a total count. Therefore, the only specific number mentioned in the context is 20.",
+      "context": "## Memory 1\n... [fact-extract]\n[user] Also, by the way, I have 20 playlists on Spotify already, and I'm looking to organize them better - do you have any tips on how to c...\n\n## Memory 2\n[user] By the way, do you have any recommendations for music discovery platforms or websites that can help me find new artists and songs for my playlists?\n\n## Memory 3\n[user] I have a lot of playlists for different moods or activities, like \"Morning Boost\" for upbeat tracks and \"Focus Flow\" for instrumental music to help me concentrate.",
+      "context_tokens": 123,
+      "retrieve_time_ms": 2766.8,
+      "gold_answers": [
+        "20"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states the correct number, which matches the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "3b6f954b",
+      "query": "Where did I attend for my study abroad program?",
+      "answer": "You attended your study abroad program at the University of Melbourne in Australia.",
+      "reasoning": "The user's question asks where they attended their study abroad program. I scanned the provided memories for keywords like \"study abroad\" and \"university\". Memory 1 contains a direct statement from the user: \"I actually went there with some friends during my study abroad program at the University of Melbourne. [location-qualifier] in Australia.\" This memory explicitly names the institution and its location. Memory 2 mentions the Great Ocean Road in Australia, which corroborates the location but doesn't specify the program. The other memories are irrelevant to the question.",
+      "context": "## Memory 1\n...ed on 2023-05-23 00:00:00 UTC. [fact-extract]\n[user] I actually went there with some friends during my study abroad program at the University of Melbourne. [location-qualifier] in Australia.\n\n## Memory 2\n[user] I've been to the Great Ocean Road before, and it's definitely a must-see in Australia.\n\n## Memory 3\n[user] What are some good places to try kaiseki, the multi-course meal I fell in love with in Kyoto?\n\n## Memory 4\n[user] My post about vegan chocolate cake from last Saturday got a record 120 likes and 20 comments, and I'm hoping to replicate that success with my new vegan Christmas cookie recipe coming soon!\n\n## Memory 5\n...7 00:00:00 UTC. [fact-extract]\n[user] I'm trying to plan some new content for my social media channels.\n\n## Memory 6\n...ened on 2023-05-22 00:00:00 UTC. [fact-extract]\n[user] I've been browsing online marketplaces, but I'm having trouble finding something that fits my style.\n\n## Memory 7\n[user] I like the idea of seasonal treats.\n\n## Memory 8\n[user] I think I'll start by asking questions and creating polls to make my Instagram Stories more interactive.\n\n## Memory 9\n[user] I think I'll ask \"What's your favorite holiday cookie memory?\" to encourage my followers to share a personal story or memory related to holiday cookies.\n\n## Memory 10\n[user] What are the environmental impacts of meat consumption and how can I reduce my meat intake?",
+      "context_tokens": 348,
+      "retrieve_time_ms": 2753.6,
+      "gold_answers": [
+        "University of Melbourne in Australia"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states \"University of Melbourne in Australia\", which is the correct answer to the question.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "726462e0",
+      "query": "What was the discount I got on my first purchase from the new clothing brand?",
+      "answer": "You received a 10% discount on your first purchase from the new clothing brand.",
+      "reasoning": "I scanned the retrieved memories to find information about a discount on a first purchase from a clothing brand. Memory 1 contains a direct statement from the user: 'I remember getting a 10% discount on my first purchase from that new clothing brand last month'. The other memories are irrelevant as they discuss social media engagement, a new puppy, and grocery shopping. Therefore, the answer is based solely on the information provided in Memory 1.",
+      "context": "## Memory 1\n[user] By the way, speaking of first purchases, I remember getting a 10% discount on my first purchase from that new clothing brand last month, which was nice.\n\n## Memory 2\n[user] [user-answer] That's a great idea! [assistant-question] What a great idea! Incorporating your new puppy, Max, into your content can be a fantastic way to increase engagement and make your content more relatable an...\n\n## Memory 3\n[user] [user-answer] I like the ideas! [assistant-question] I'd be happy to help you increase your social media engagement. First, congratulations on your successful tweet about \"The Nightingale\"! That's a great start...\n\n## Memory 4\n[user] [user-answer] Thanks for the tips!\n\n## Memory 5\n[user] [user-answer] Thanks for the quote!\n\n## Memory 6\n...[user] But I was thinking, since I have a new puppy, Max, I could also incorporate him into my content.\n\n## Memory 7\n[user] A week prior to that, I went to Trader Joe's with my sister and we spent around $75.\n\n## Memory 8\n[user] The day before, I ordered some groceries online from Target, which were delivered on Monday morning.\n\n## Memory 9\n...ion - happened on 2023-05-29 00:00:00 UTC. [fact-extract]\n[user] I can definitely provide some details.\n\n## Memory 10\n[user] Oh, and I also stopped by the local farmer's market two weekends ago, but I don't have the exact amount I spent there.",
+      "context_tokens": 341,
+      "retrieve_time_ms": 3297.8,
+      "gold_answers": [
+        "10%"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states the correct discount percentage of 10%.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "94f70d80",
+      "query": "How long did it take me to assemble the IKEA bookshelf?",
+      "answer": "Based on your own statement, it took you 4 hours to assemble the IKEA bookshelf.",
+      "reasoning": "The user explicitly stated in a memory dated May 30, 2023, the amount of time it took them to assemble an IKEA bookshelf. The memory contains the sentence: 'I just assembled an IKEA bookshelf recently and it took me 4 hours, which wasn't too bad.' A second memory confirms the user assembled a bookshelf but does not mention the time taken.",
+      "context": "## Memory 1\n... 2023-05-30 00:00:00 UTC. [fact-extract]\n[user] Also, by the way, I just assembled an IKEA bookshelf recently and it took me 4 hours, which wasn't too bad.\n\n## Memory 2\n[user] I think I'll also stop by IKEA while I'm out to check out their coffee tables with storage, since I had a decent experience assembling that bookshelf.",
+      "context_tokens": 97,
+      "retrieve_time_ms": 2281.7,
+      "gold_answers": [
+        "4 hours"
+      ],
+      "correct": true,
+      "judge_reason": "The model response correctly states that it took 4 hours to assemble the IKEA bookshelf, which matches the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "66f24dbb",
+      "query": "What did I buy for my sister's birthday gift?",
+      "answer": "For your sister's birthday, you purchased a yellow dress and a pair of matching earrings.",
+      "reasoning": "I scanned the provided memories for keywords like 'sister', 'birthday', and 'gift'. Memory 1 mentions that a gift for the sister's birthday has been purchased. Memory 5 provides the specific details of the gift, stating, 'For my sister's birthday, I got her a yellow dress and a pair of earrings to match.' Other memories discuss gifts for other individuals, such as a brother (Memories 3, 6, 10), or personal purchases for the user (Memories 4, 7, 8, 9), which are not relevant to this question. Therefore, the answer is directly stated in Memory 5.",
+      "context": "## Memory 1\n...ersation - happened on 2023-05-24 00:00:00 UTC. [fact-extract]\n[user] Here's a start - I've bought gifts for my sister's birthday, my mom, my neighbor Mrs.\n\n## Memory 2\n[user] Now that I have a good idea for the gift, do you think I should include a personal message or a birthday card with the gift, or is the gift itself enough?\n\n## Memory 3\n[user] I think a $25 gift card would be a good amount, considering I spent around that much on the customized phone case for his birthday last month.\n\n## Memory 4\n...onversation - happened on 2023-05-29 00:00:00 UTC. [fact-extract]\n[user] I saw the Western Digital one on Best Buy for $100, do you think it's a good deal?\n\n## Memory 5\n[user] For my sister's birthday, I got her a yellow dress and a pair of earrings to match.\n\n## Memory 6\n[user] He's really into gaming, and I got him a customized phone case with his favorite game's logo on it for his birthday last month, which cost around $25.\n\n## Memory 7\n[user] By the way, I've been thinking of getting a portable external hard drive to back up my files, I've been using Google Drive but it's not enough storage for all my files.\n\n## Memory 8\n[user] I need to order a new strap for my Fitbit Charge 3, as the current one is showing signs of wear and tear.\n\n## Memory 9\n[user] I also need to order new heads for my Philips Sonicare electric toothbrush.\n\n## Memory 10\n...pened on 2023-05-26 00:00:00 UTC. [fact-extract]\n[user] I'm looking for some gift ideas for my brother.",
+      "context_tokens": 401,
+      "retrieve_time_ms": 2948.9,
+      "gold_answers": [
+        "a yellow dress"
+      ],
+      "correct": true,
+      "judge_reason": "The model response includes the correct answer, 'a yellow dress', even though it also mentions an additional item.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "ad7109d1",
+      "query": "What speed is my new internet plan?",
+      "answer": "According to the information you provided, your new internet plan has a speed of 500 Mbps, which you upgraded to about three weeks ago.",
+      "reasoning": "The user's question is about the speed of their new internet plan. I scanned the provided memories for keywords like 'internet', 'speed', and 'plan'. Memory 4 contains the most direct and relevant information, where the user states, 'I upgraded to 500 Mbps about three weeks ago'. Memory 1 also supports this, with the user mentioning that their 'internet speed has been really good lately'. Based on this, I can conclude the user's new internet plan speed is 500 Mbps.",
+      "context": "## Memory 1\n...05-24 00:00:00 UTC. [fact-extract]\n[user] I did notice that my internet speed has been really good lately, especially when I'm streaming movies on Netflix.\n\n## Memory 2\n...0 UTC. [fact-extract]\n[user] I'm thinking of trying out a new energy bar for my upcoming cycling event.\n\n## Memory 3\n[user] I'm thinking of adding some new fish to my Serenity tank, specifically a school of dwarf gouramis.\n\n## Memory 4\n[user] I upgraded to 500 Mbps about three weeks ago, and it's made a huge difference.\n\n## Memory 5\n[user] I'm thinking of getting a CO2 system to help my plants grow faster and healthier.\n\n## Memory 6\n[user] I'm planning to do a 30-mile bike ride this weekend, and I want to make sure I fuel up properly.\n\n## Memory 7\n[user] By the way, I've been doing pretty well in my recreational soccer league - we've managed to rack up 7 wins so far this season!\n\n## Memory 8\n[user] By the way, I did a major water change recently, replacing about 30% of the tank's water with fresh, dechlorinated water, so the tank's water quality is pretty good right now.",
+      "context_tokens": 278,
+      "retrieve_time_ms": 2961.4,
+      "gold_answers": [
+        "500 Mbps"
+      ],
+      "correct": true,
+      "judge_reason": "The model response correctly states the internet plan speed as 500 Mbps, matching the provided correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "af8d2e46",
+      "query": "How many shirts did I pack for my 5-day trip to Costa Rica?",
+      "answer": "For your last trip to Costa Rica, you packed 7 shirts.",
+      "reasoning": "The user is asking how many shirts they packed for their trip to Costa Rica. The first memory contains a direct statement from the user about a past trip: 'on my last trip to Costa Rica, I brought 7 shirts'. This provides a specific number for the item in question related to the specified location.",
+      "context": "## Memory 1\n...act]\n[user] Like, on my last trip to Costa Rica, I brought 7 shirts and 5 pairs of shorts, but I only ended up wearing 3 of the shirts and 2 of the shorts.\n\n## Memory 2\n[user] Do you have any tips on how to determine what to pack for a trip, and how many outfits I should aim to create with the clothes I bring?\n\n## Memory 3\n[user] Can you help me come up with a list of essentials to pack for a 3-day business trip?",
+      "context_tokens": 116,
+      "retrieve_time_ms": 3336.9,
+      "gold_answers": [
+        "7"
+      ],
+      "correct": true,
+      "judge_reason": "The model response explicitly states that 7 shirts were packed, which is the correct answer.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    },
+    {
+      "query_id": "dccbc061",
+      "query": "What was my previous stance on spirituality?",
+      "answer": "Previously, you identified as a staunch atheist.",
+      "reasoning": "The user explicitly states their previous stance on spirituality in Memory 1. They mention that their recent interest in Buddhism is a significant change from their past belief, stating, 'I used to be a staunch atheist'. This directly answers the question about their previous spiritual position.",
+      "context": "## Memory 1\n...TC. [fact-extract]\n[user] By the way, I've been reading a lot about Buddhism lately, which is a big shift from my previous stance on spirituality - I used to be a staunch atheist, but I've been exploring other possibilities.\n\n## Memory 2\n... assistant in this conversation - happened on 2023-05-30 00:00:00 UTC. [fact-extract]\n[user] Can't I just trust what my friends or family believe?\n\n## Memory 3\n...act-extract]\n[user] I want to style my new high-waisted floral skirt, but I'm not sure what top to pair with it.\n\n## Memory 4\n[user] By the way, I was thinking of getting a new gaming mouse, what are some good options out there?\n\n## Memory 5\n...UTC. [fact-extract]\n[user] What about introducing natural predators like ladybugs ...",
+      "context_tokens": 194,
+      "retrieve_time_ms": 3209.6,
+      "gold_answers": [
+        "A staunch atheist"
+      ],
+      "correct": true,
+      "judge_reason": "The model response directly states the correct answer, 'a staunch atheist'.",
+      "score": null,
+      "meta": {
+        "question_type": "single-session-user",
+        "query_timestamp": "2023-05-30T00:00:00+00:00"
+      },
+      "raw_response": null,
+      "category_axes": {
+        "Question Type": [
+          "single-session-user"
+        ]
+      }
+    }
+  ]
+}

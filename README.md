@@ -40,8 +40,8 @@ Restart your session. Cortex comes up on its own. Prefer a desktop app or manual
 ---
 
 <p align="center">
-  <img src="assets/cc-overview.png" alt="Cortex Control Center — Overview dashboard" width="100%">
-  <br><sub>Control Center: live stats, memory health, agent activity, and savings at a glance.</sub>
+  <img src="assets/cc-tour.gif" alt="Cortex Control Center — Overview, Analytics, Agents, Brain, About" width="100%">
+  <br><sub>Control Center: overview, analytics, agents, brain state, and about — in one place.</sub>
 </p>
 
 Cortex runs a local daemon that stores decisions, context, and lessons across every AI session you run. Claude Code, Codex, Cursor, Gemini, and your own scripts share the same memory through HTTP or MCP. New sessions pick up where the last one left off instead of starting cold.
@@ -119,7 +119,7 @@ Cortex recall quality is measured against a 20-query ground-truth dataset on eve
 
 Two queries currently return the relevant result at position 2 instead of position 1. Retrieval quality is under active development — RRF weighting, reranking, and query expansion improvements are planned for v0.5.x. The v0.4.1 baseline started at 55% ground-truth precision; current retrieval (RRF + crystal families + synonym expansion) is a significant step forward, with more to come.
 
-Raw results: [`benchmarking/results/`](benchmarking/results/)
+[Raw Benchmark JSON](benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json) · [Helper Benchmark JSON](benchmarking/results/helper-benchmark-cortex-http-20260419.json)
 
 ---
 
