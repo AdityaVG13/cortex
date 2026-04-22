@@ -7,19 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-04-21
+### Fixed
+- Control Center startup timeout cascades on large event histories by moving `/savings` out of startup-critical refresh fanout and loading it only when the Analytics panel is active.
+- Daemon savings analytics lock contention by replacing full event-log Rust parsing with SQL-side aggregation and short-lived payload caching in `GET /savings`.
+- App-managed startup timeout sensitivity by staggering heavy startup maintenance passes for Control Center ownership and accepting partial daemon probe responses when timeout/would-block happens after partial bytes are received.
+- Control Center refresh overlap storms by introducing a single-flight refresh queue, so background timers/SSE/recovery retries coalesce instead of blasting concurrent protected IPC calls.
+- Read-path lock contention on startup surfaces by routing key GET endpoints through `state.db_read` and removing write-side cleanup work from hot read paths.
 
 ### Performance
-- Routed read-only daemon endpoints through the read pool (`state.db_read`) to reduce read/write lock contention on hot paths (`/storage`, `/crystals`, and `/export`).
-- Pushed `source_prefix` filtering into SQL candidate scans and fallback scans for recall, reducing post-query filtering overhead.
-- Reworked rate-limit sliding windows to a `VecDeque`-backed `try_record` path to avoid full-vector retain scans under load.
-- Removed raw-baseline token-estimation string allocation by reusing the char-count token estimator.
-- Control Center now precomputes session heartbeat timestamps for sorting and memoizes top savings-by-agent ranking.
-- Centralized Cortex endpoint parsing for host/port UI defaults and host-label rendering in Control Center.
+- Improved high-volume analytics behavior on large `events` tables, reducing shared read-lock occupancy and lowering cross-endpoint timeout risk during cold start.
+- Added warmup-aware heavy-metrics caching in `/health` (cache/deferred source tagging) so startup fetches avoid repeated expensive metrics work.
+- Added benchmark ingestion compaction caps (`CORTEX_BENCHMARK_STORE_MAX_CHARS`, tighter fact/context matrix caps) to bound benchmark-side payload growth and token pressure.
+- Added targeted DB indexes for startup-critical queries (`sessions`, `locks`, `tasks`, `feed`, `messages`, `activity`, `events`) including owner-scoped variants to cut first-load scan pressure.
+- Added event-pressure compaction controls (per-event-type caps + global non-boot cap with hard/soft thresholds) to prevent unbounded event growth from degrading startup.
+- Scoped `/savings` analytics rollups to the recent window (`30d`) to bound heavy aggregates for large long-lived histories.
 
-### Reliability
-- Added regression coverage for fallback recall source-prefix scoping (memories and decisions).
-- Added regression coverage for sliding-window prune/record semantics and token-estimator parity.
+### Changed
+- Benchmark fair-run posture is now fail-closed for both single-run and matrix modes: gate-bypass shortcuts (`no_enforce_gate`, `allow_missing_recall_metrics`) are rejected in preflight, and matrix-requested shortcut flags are explicitly surfaced/rejected before execution.
 
 ## [0.4.1] - 2026-04-06
 
@@ -82,8 +86,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [0.3.0] - 2026-04-04
 
-[Unreleased]: https://github.com/cortex-project/cortex/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/cortex-project/cortex/compare/v0.4.1...v0.5.0
-[0.4.1]: https://github.com/cortex-project/cortex/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/cortex-project/cortex/compare/v0.3.0...v0.4.0
+[Unreleased]: https://github.com/AdityaVG13/cortex/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/AdityaVG13/cortex/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/AdityaVG13/cortex/compare/v0.3.0...v0.4.0
 
