@@ -20,6 +20,7 @@ def test_recall_sends_auth_and_ssrf_headers(httpx_mock):
     assert req.url.params["k"] == "7"
     assert req.url.params["agent"] == "codex"
     assert req.headers["X-Cortex-Request"] == "true"
+    assert req.headers["X-Source-Agent"] == "python-sdk"
     assert req.headers["Authorization"] == "Bearer ctx_test_token"
 
 
@@ -41,6 +42,7 @@ def test_store_serializes_optional_fields(httpx_mock):
     requests = httpx_mock.get_requests()
     assert len(requests) == 1
     req = requests[0]
+    assert req.headers["X-Source-Agent"] == "python-sdk"
     payload = json.loads(req.read().decode("utf-8"))
     assert payload["decision"] == "Prefer vector fallback"
     assert payload["context"] == "Canary trials"

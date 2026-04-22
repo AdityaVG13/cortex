@@ -88,8 +88,9 @@ export class CortexClient {
   private baseUrl: string;
   private token?: string;
   private timeout: number;
+  private sourceAgent: string;
 
-  constructor(options?: { baseUrl?: string; token?: string; timeout?: number }) {
+  constructor(options?: { baseUrl?: string; token?: string; timeout?: number; sourceAgent?: string }) {
     this.baseUrl = (options?.baseUrl ?? DEFAULT_BASE).replace(/\/$/, "");
     if (options?.token) {
       this.token = options.token;
@@ -101,10 +102,14 @@ export class CortexClient {
       );
     }
     this.timeout = options?.timeout ?? 10_000;
+    this.sourceAgent = (options?.sourceAgent ?? "typescript-sdk").trim() || "typescript-sdk";
   }
 
   private headers(): Record<string, string> {
-    const h: Record<string, string> = { "X-Cortex-Request": "true" };
+    const h: Record<string, string> = {
+      "X-Cortex-Request": "true",
+      "X-Source-Agent": this.sourceAgent,
+    };
     if (this.token) h["Authorization"] = `Bearer ${this.token}`;
     return h;
   }
@@ -221,7 +226,7 @@ export class CortexClient {
       decision,
       context: options?.context,
       type: options?.entryType,
-      source_agent: options?.sourceAgent ?? "typescript-sdk",
+      source_agent: options?.sourceAgent ?? this.sourceAgent,
       source_model: options?.sourceModel,
       confidence: options?.confidence,
       reasoning_depth: options?.reasoningDepth,
@@ -230,11 +235,11 @@ export class CortexClient {
     return this.post("/store", body);
   }
 
-  async diary(text: string, agent = "typescript-sdk"): Promise<DiaryResult> {
+  async diary(text: string, agent = this.sourceAgent): Promise<DiaryResult> {
     return this.post("/diary", { text, agent });
   }
 
-  async boot(agent = "typescript-sdk", budget = 600): Promise<BootResult> {
+  async boot(agent = this.sourceAgent, budget = 600): Promise<BootResult> {
     return this.get("/boot", { agent, budget });
   }
 

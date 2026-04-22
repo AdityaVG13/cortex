@@ -32,11 +32,7 @@ function stripAgentModel(agent) {
 }
 
 export function isTransportSession(session) {
-  const baseAgent = stripAgentModel(session?.agent);
-  if (baseAgent !== "mcp") return false;
-
-  const description = String(session?.description || "").trim().toLowerCase();
-  return !description || description.startsWith("mcp session");
+  return stripAgentModel(session?.agent) === "mcp";
 }
 
 export function buildKnownAgents(sessions = [], extras = []) {

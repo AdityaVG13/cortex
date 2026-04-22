@@ -340,12 +340,10 @@ mod tests {
             .expect("expired entries should be pruned before limit check");
         assert_eq!(remaining, 0);
         assert_eq!(window.timestamps.len(), 2);
-        assert!(
-            window
-                .timestamps
-                .iter()
-                .all(|ts| now.duration_since(*ts) < WINDOW)
-        );
+        assert!(window
+            .timestamps
+            .iter()
+            .all(|ts| now.duration_since(*ts) < WINDOW));
 
         let retry = window
             .try_record(now, 2)

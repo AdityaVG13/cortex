@@ -489,6 +489,87 @@ pub fn resolve_source_identity(headers: &HeaderMap, fallback_agent: &str) -> Sou
     SourceIdentity { agent, model }
 }
 
+fn session_presence_description(source: &SourceIdentity, description_prefix: &str) -> String {
+    source
+        .model
+        .as_deref()
+        .map(|model| format!("{description_prefix} · {model}"))
+        .unwrap_or_else(|| description_prefix.to_string())
+}
+
+fn upsert_agent_presence(
+    conn: &rusqlite::Connection,
+    source: &SourceIdentity,
+    owner_id: Option<i64>,
+    project: &str,
+    description_prefix: &str,
+) -> rusqlite::Result<()> {
+    let now = now_iso();
+    let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
+    let session_id = format!("session-{}", uuid::Uuid::new_v4());
+    let description = session_presence_description(source, description_prefix);
+
+    if let Some(owner_id) = owner_id {
+        conn.execute(
+            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, ?4, '[]', ?5, ?6, ?6, ?7)
+             ON CONFLICT(owner_id, agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![
+                source.agent.as_str(),
+                owner_id,
+                session_id,
+                project,
+                description,
+                now,
+                expires_at
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+             VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?5, ?6)
+             ON CONFLICT(agent) DO UPDATE SET
+               description = excluded.description,
+               project = excluded.project,
+               files_json = excluded.files_json,
+               last_heartbeat = excluded.last_heartbeat,
+               expires_at = excluded.expires_at",
+            rusqlite::params![
+                source.agent.as_str(),
+                session_id,
+                project,
+                description,
+                now,
+                expires_at
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+pub async fn register_agent_presence(
+    state: &RuntimeState,
+    source: &SourceIdentity,
+    caller_id: Option<i64>,
+    project: &str,
+    description_prefix: &str,
+) {
+    let owner_id = if state.team_mode {
+        caller_id.or(state.default_owner_id)
+    } else {
+        None
+    };
+
+    let conn = state.db.lock().await;
+    let _ = upsert_agent_presence(&conn, source, owner_id, project, description_prefix);
+}
+
 /// Track active agent presence in `sessions` when source headers are provided.
 pub async fn register_agent_presence_from_headers(
     state: &RuntimeState,
@@ -499,47 +580,7 @@ pub async fn register_agent_presence_from_headers(
         return;
     }
     let source = resolve_source_identity(headers, "mcp");
-
-    let owner_id = if state.team_mode {
-        caller_id.or(state.default_owner_id)
-    } else {
-        None
-    };
-    let now = now_iso();
-    let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
-    let session_id = format!("session-{}", uuid::Uuid::new_v4());
-    let description = source
-        .model
-        .as_deref()
-        .map(|model| format!("Connected via MCP · {model}"))
-        .unwrap_or_else(|| "Connected via MCP".to_string());
-
-    let conn = state.db.lock().await;
-    if let Some(owner_id) = owner_id {
-        let _ = conn.execute(
-            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
-             VALUES (?1, ?2, ?3, 'mcp', '[]', ?4, ?5, ?5, ?6)
-             ON CONFLICT(owner_id, agent) DO UPDATE SET
-               description = excluded.description,
-               project = excluded.project,
-               files_json = excluded.files_json,
-               last_heartbeat = excluded.last_heartbeat,
-               expires_at = excluded.expires_at",
-            rusqlite::params![source.agent, owner_id, session_id, description, now, expires_at],
-        );
-    } else {
-        let _ = conn.execute(
-            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
-             VALUES (?1, ?2, 'mcp', '[]', ?3, ?4, ?4, ?5)
-             ON CONFLICT(agent) DO UPDATE SET
-               description = excluded.description,
-               project = excluded.project,
-               files_json = excluded.files_json,
-               last_heartbeat = excluded.last_heartbeat,
-               expires_at = excluded.expires_at",
-            rusqlite::params![source.agent, session_id, description, now, expires_at],
-        );
-    }
+    register_agent_presence(state, &source, caller_id, "mcp", "Connected via MCP").await;
 }
 
 fn compact_event_payload(kind: &str, data: Value) -> Value {
@@ -932,6 +973,82 @@ pub fn truncate_chars(input: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    fn create_sessions_table(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent TEXT NOT NULL,
+                owner_id INTEGER,
+                session_id TEXT NOT NULL,
+                project TEXT,
+                files_json TEXT NOT NULL DEFAULT '[]',
+                description TEXT,
+                started_at TEXT NOT NULL,
+                last_heartbeat TEXT NOT NULL,
+                expires_at TEXT,
+                UNIQUE(agent),
+                UNIQUE(owner_id, agent)
+            );",
+        )
+        .expect("create sessions table");
+    }
+
+    #[test]
+    fn upsert_agent_presence_uses_project_and_model_aware_description() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        create_sessions_table(&conn);
+
+        let source = SourceIdentity {
+            agent: "sdk-agent".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        upsert_agent_presence(&conn, &source, None, "http", "HTTP boot session")
+            .expect("upsert session");
+
+        let (agent, project, description): (String, String, String) = conn
+            .query_row(
+                "SELECT agent, project, description FROM sessions WHERE agent = ?1",
+                rusqlite::params!["sdk-agent"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("fetch session row");
+
+        assert_eq!(agent, "sdk-agent");
+        assert_eq!(project, "http");
+        assert_eq!(description, "HTTP boot session · gpt-5.4");
+    }
+
+    #[test]
+    fn upsert_agent_presence_refreshes_existing_session_row() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        create_sessions_table(&conn);
+
+        let source = SourceIdentity {
+            agent: "sdk-agent".to_string(),
+            model: None,
+        };
+
+        upsert_agent_presence(&conn, &source, None, "mcp", "Connected via MCP")
+            .expect("initial upsert");
+        upsert_agent_presence(&conn, &source, None, "http", "HTTP boot session")
+            .expect("refresh upsert");
+
+        let (project, description, count): (String, String, i64) = conn
+            .query_row(
+                "SELECT project, description, (SELECT COUNT(*) FROM sessions WHERE agent = ?1)
+                 FROM sessions
+                 WHERE agent = ?1",
+                rusqlite::params!["sdk-agent"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("fetch refreshed session");
+
+        assert_eq!(project, "http");
+        assert_eq!(description, "HTTP boot session");
+        assert_eq!(count, 1);
+    }
 
     #[test]
     fn normalize_agent_label_rejects_overflow_after_model_append() {

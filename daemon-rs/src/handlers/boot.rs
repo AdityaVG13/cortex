@@ -37,8 +37,8 @@ pub async fn handle_boot(
         );
     }
     let source = super::resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("mcp"));
+    super::register_agent_presence(&state, &source, caller_id, "http", "HTTP boot session").await;
     let agent = source.agent;
-    super::register_agent_presence_from_headers(&state, &headers, caller_id).await;
 
     let profile = query.profile.unwrap_or_else(|| "full".to_string());
     let max_tokens = query.budget.unwrap_or(600);

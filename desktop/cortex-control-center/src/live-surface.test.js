@@ -83,6 +83,7 @@ describe("isTransportSession", () => {
   it("flags the generic MCP proxy session", () => {
     expect(isTransportSession({ agent: "mcp", description: "MCP session" })).toBe(true);
     expect(isTransportSession({ agent: "mcp (gpt-5.4)", description: "MCP session · gpt-5.4" })).toBe(true);
+    expect(isTransportSession({ agent: "mcp (gpt-5.4)", description: "MCP active session · gpt-5.4" })).toBe(true);
   });
 
   it("keeps named agent sessions visible", () => {

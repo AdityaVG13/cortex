@@ -41,6 +41,7 @@ test("recall sends auth + cortex headers and query params", async () => {
 
   const headers = init.headers;
   assert.equal(headers["X-Cortex-Request"], "true");
+  assert.equal(headers["X-Source-Agent"], "typescript-sdk");
   assert.equal(headers.Authorization, "Bearer ctx_test_token");
 });
 
@@ -73,6 +74,7 @@ test("store serializes optional fields to daemon schema", async () => {
   assert.equal(calls.length, 1);
   const [{ init }] = calls;
   assert.equal(init.method, "POST");
+  assert.equal(init.headers["X-Source-Agent"], "typescript-sdk");
   const parsedBody = JSON.parse(String(init.body));
   assert.equal(parsedBody.decision, "Prefer vector fallback");
   assert.equal(parsedBody.context, "Canary trials");

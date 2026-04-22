@@ -4170,7 +4170,12 @@ fn search_memories(
                 continue;
             }
             let effective_score = blend_importance(score, trust_score);
-            let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
+            let ts = parse_timestamp_ms(
+                last_accessed
+                    .as_deref()
+                    .or(created_at.as_deref())
+                    .unwrap_or(""),
+            );
             let display = crate::aging::get_display_text(
                 &text,
                 &compressed_text,
@@ -4280,7 +4285,12 @@ fn search_memories_fallback(
             continue;
         }
         let effective_score = blend_importance(score, trust_score);
-        let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
+        let ts = parse_timestamp_ms(
+            last_accessed
+                .as_deref()
+                .or(created_at.as_deref())
+                .unwrap_or(""),
+        );
 
         if term_groups.is_empty() {
             let excerpt = query_focused_excerpt_with_terms(&text, &excerpt_focus_terms, 220);
@@ -4498,7 +4508,12 @@ fn search_decisions(
                 continue;
             }
             let effective_score = blend_importance(score, trust_score);
-            let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
+            let ts = parse_timestamp_ms(
+                last_accessed
+                    .as_deref()
+                    .or(created_at.as_deref())
+                    .unwrap_or(""),
+            );
             let display = crate::aging::get_display_text(
                 &decision,
                 &compressed_text,
@@ -4606,7 +4621,12 @@ fn search_decisions_fallback(
             continue;
         }
         let effective_score = blend_importance(score, trust_score);
-        let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
+        let ts = parse_timestamp_ms(
+            last_accessed
+                .as_deref()
+                .or(created_at.as_deref())
+                .unwrap_or(""),
+        );
 
         if term_groups.is_empty() {
             let excerpt = query_focused_excerpt_with_terms(&decision, &excerpt_focus_terms, 220);
@@ -9791,11 +9811,15 @@ mod tests {
         let results = search_memories_fallback(&conn, "daemon lock", 5, Some("scope::"))
             .expect("memory fallback source-prefix query should succeed");
         assert!(
-            results.iter().all(|item| item.source.starts_with("scope::")),
+            results
+                .iter()
+                .all(|item| item.source.starts_with("scope::")),
             "fallback memory search should keep only scoped sources"
         );
         assert!(
-            results.iter().any(|item| item.source == "scope::memory::hit"),
+            results
+                .iter()
+                .any(|item| item.source == "scope::memory::hit"),
             "scoped memory should remain in results"
         );
     }
@@ -9885,11 +9909,15 @@ mod tests {
         let results = search_decisions_fallback(&conn, "daemon lock", 5, Some("scope::"))
             .expect("decision fallback source-prefix query should succeed");
         assert!(
-            results.iter().all(|item| item.source.starts_with("scope::")),
+            results
+                .iter()
+                .all(|item| item.source.starts_with("scope::")),
             "fallback decision search should keep only scoped sources"
         );
         assert!(
-            results.iter().any(|item| item.source == "scope::decision::hit"),
+            results
+                .iter()
+                .any(|item| item.source == "scope::decision::hit"),
             "scoped decision should remain in results"
         );
     }

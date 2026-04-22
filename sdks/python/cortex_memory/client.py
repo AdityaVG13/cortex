@@ -68,6 +68,7 @@ class CortexClient:
         base_url: str = _DEFAULT_BASE,
         token: Optional[str] = None,
         timeout: float = 10.0,
+        source_agent: str = "python-sdk",
     ):
         self.base_url = base_url.rstrip("/")
         if token:
@@ -80,9 +81,12 @@ class CortexClient:
                 "Pass token=... when using non-loopback targets."
             )
         self.timeout = timeout
+        normalized_source_agent = source_agent.strip()
+        self.source_agent = normalized_source_agent or "python-sdk"
 
     def _headers(self) -> dict[str, str]:
         h = dict(_CORTEX_HEADERS)
+        h["X-Source-Agent"] = self.source_agent
         if self.token:
             h["Authorization"] = f"Bearer {self.token}"
         return h
@@ -195,14 +199,15 @@ class CortexClient:
         self,
         decision: str,
         context: Optional[str] = None,
-        source_agent: str = "python-sdk",
+        source_agent: Optional[str] = None,
         source_model: Optional[str] = None,
         confidence: Optional[float] = None,
         reasoning_depth: Optional[str] = None,
         ttl_seconds: Optional[int] = None,
         entry_type: Optional[str] = None,
     ) -> StoreResponse:
-        body: dict[str, object] = {"decision": decision, "source_agent": source_agent}
+        normalized_source_agent = (source_agent or self.source_agent).strip() or self.source_agent
+        body: dict[str, object] = {"decision": decision, "source_agent": normalized_source_agent}
         if context is not None:
             body["context"] = context
         if source_model is not None:
@@ -217,11 +222,13 @@ class CortexClient:
             body["type"] = entry_type
         return cast(StoreResponse, self._post("/store", body))
 
-    def diary(self, text: str, agent: str = "python-sdk") -> DiaryResponse:
-        return cast(DiaryResponse, self._post("/diary", {"text": text, "agent": agent}))
+    def diary(self, text: str, agent: Optional[str] = None) -> DiaryResponse:
+        normalized_agent = (agent or self.source_agent).strip() or self.source_agent
+        return cast(DiaryResponse, self._post("/diary", {"text": text, "agent": normalized_agent}))
 
-    def boot(self, agent: str = "python-sdk", budget: int = 600) -> BootResponse:
-        return cast(BootResponse, self._get("/boot", {"agent": agent, "budget": budget}))
+    def boot(self, agent: Optional[str] = None, budget: int = 600) -> BootResponse:
+        normalized_agent = (agent or self.source_agent).strip() or self.source_agent
+        return cast(BootResponse, self._get("/boot", {"agent": normalized_agent, "budget": budget}))
 
     def export(self, fmt: str = "json") -> ExportResponse:
         return cast(ExportResponse, self._get("/export", {"format": fmt}))
