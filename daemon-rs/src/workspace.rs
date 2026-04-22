@@ -4,7 +4,7 @@
 use std::env;
 
 /// Derive the Claude Code project folder slug from the current working directory.
-/// Claude encodes paths as e.g. `C--Users-jane-cortex` for `C:\Users\jane\cortex`.
+/// Claude encodes paths with separators flattened, e.g. `C--Users-project-cortex`.
 pub(crate) fn claude_project_slug() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let canonical = cwd.to_string_lossy().to_string();
