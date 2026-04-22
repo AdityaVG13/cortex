@@ -378,7 +378,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         eprintln!("  [WARN] Team schema migrated, but token write failed: {e}");
     }
 
-    let key_preview: String = owner_key.chars().take(18).collect();
+    let key_preview: String = owner_key.chars().take(8).collect();
 
     eprintln!("    ────────────────────────────");
     eprintln!(

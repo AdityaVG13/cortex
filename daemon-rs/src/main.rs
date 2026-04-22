@@ -34,6 +34,7 @@ use chrono::{self, Utc};
 use fs2::FileExt;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -811,11 +812,21 @@ async fn main() {
                     }
                     match admin_request("POST", "/admin/user/add", Some(body)).await {
                         Ok(json) => {
+                            let api_key = json_str(&json, "api_key");
+                            let key_masked = api_key_output_masked();
                             println!("User created:");
                             println!("  Username:  {}", json_str(&json, "username"));
                             println!("  User ID:   {}", json_field(&json, "user_id"));
                             println!("  Role:      {}", json_str(&json, "role"));
-                            println!("  API Key:   {}", json_str(&json, "api_key"));
+                            println!("  API Key:   {}", format_api_key_for_output(&api_key));
+                            if key_masked {
+                                println!(
+                                    "  NOTE: API key is masked because stdout is non-interactive."
+                                );
+                                println!(
+                                    "        Re-run this command in a terminal to display the full key."
+                                );
+                            }
                             println!();
                             println!("Save the API key -- it cannot be retrieved later.");
                         }
@@ -836,8 +847,18 @@ async fn main() {
                     let body = serde_json::json!({ "username": username });
                     match admin_request("POST", "/admin/user/rotate-key", Some(body)).await {
                         Ok(json) => {
+                            let api_key = json_str(&json, "api_key");
+                            let key_masked = api_key_output_masked();
                             println!("API key rotated for '{}':", json_str(&json, "username"));
-                            println!("  New API Key: {}", json_str(&json, "api_key"));
+                            println!("  New API Key: {}", format_api_key_for_output(&api_key));
+                            if key_masked {
+                                println!(
+                                    "  NOTE: API key is masked because stdout is non-interactive."
+                                );
+                                println!(
+                                    "        Re-run this command in a terminal to display the full key."
+                                );
+                            }
                             println!();
                             println!("Save the API key -- it cannot be retrieved later.");
                         }
@@ -4009,6 +4030,35 @@ fn json_field(val: &serde_json::Value, key: &str) -> String {
         Some(v) => v.to_string(),
         None => "-".to_string(),
     }
+}
+
+fn api_key_output_masked() -> bool {
+    !std::io::stdout().is_terminal()
+}
+
+fn format_api_key_for_output(api_key: &str) -> String {
+    if !api_key_output_masked() {
+        return api_key.to_string();
+    }
+    mask_secret_for_logs(api_key)
+}
+
+fn mask_secret_for_logs(secret: &str) -> String {
+    const PREFIX: usize = 8;
+    const SUFFIX: usize = 4;
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    if chars.len() <= PREFIX + SUFFIX {
+        return "*".repeat(chars.len().max(4));
+    }
+    let prefix: String = chars.iter().take(PREFIX).collect();
+    let suffix: String = chars
+        .iter()
+        .skip(chars.len().saturating_sub(SUFFIX))
+        .collect();
+    format!("{prefix}...{suffix}")
 }
 
 // ── Shared daemon logic (used by `serve` and `service-run`) ─────────────────
