@@ -54,7 +54,7 @@ cleanup() {
 trap cleanup EXIT
 
 run_cortex() {
-  HOME="${SMOKE_HOME}" USERPROFILE="${SMOKE_HOME}" "${CORTEX_BIN}" "$@" --home "${SMOKE_CORTEX_HOME}" --port "${SMOKE_PORT}"
+  HOME="${SMOKE_HOME}" USERPROFILE="${SMOKE_HOME}" "${CORTEX_BIN}" "$@"
 }
 
 wait_for_health() {
