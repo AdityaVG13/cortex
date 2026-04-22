@@ -11,15 +11,7 @@
 </p>
 
 <p align="center">
- v0.4.1 is experimental and the first pass. 
-</p>
-
-<p align="center">
-  v0.5.0 is on the way that will significantly upgrade the Cortex experience
-</p>
-
-<p align="center">
-  <a href="https://github.com/cortex-project/cortex/releases/latest">Get started</a> |
+  <a href="https://github.com/AdityaVG13/cortex/releases/latest">Get started</a> |
   <a href="Info/connecting.md">Connect your tools</a>
 </p>
 
@@ -44,7 +36,7 @@
 If you want the quickest path from install to a working setup, start with the Claude Code plugin. Cortex handles the background setup for you.
 
 ```bash
-claude plugin marketplace add cortex-project/cortex
+claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
 ```
 
@@ -86,7 +78,7 @@ Cortex is meant to fit into the tools you already use, not make you learn a whol
 - Claude Code. The easiest setup path, with lifecycle handled for you.
 - Codex. Native MCP support, plus HTTP fallback when you need it.
 - Cursor, Gemini, and other MCP-capable tools. Point them at the same Cortex memory instead of giving each one its own silo.
-- Any AI that can make HTTP requests. If it can talk to an API, it can talk to Cortex.
+- Any AI client that can call HTTP APIs.
 - Local LLMs and custom tooling. Use HTTP or MCP from your own app, desktop tool, orchestration layer, or runtime.
 - Team mode. Run one shared memory service for a whole engineering team when one machine is no longer enough.
 
@@ -94,23 +86,23 @@ Cortex is meant to fit into the tools you already use, not make you learn a whol
 
 ### Desktop app
 
-Download the latest installer from the [release page](https://github.com/cortex-project/cortex/releases/latest).
+Download the latest installer from the [release page](https://github.com/AdityaVG13/cortex/releases/latest).
 
 <details>
 <summary>Desktop installers and daemon archives</summary>
 
 | Platform | Installer | Daemon only |
 |---|---|---|
-| Windows | [`.exe` (NSIS installer)](https://github.com/cortex-project/cortex/releases/latest) | [`cortex-v0.4.1-windows-x86_64.zip`](https://github.com/cortex-project/cortex/releases/download/v0.4.1/cortex-v0.4.1-windows-x86_64.zip) |
-| macOS | [`.dmg`](https://github.com/cortex-project/cortex/releases/latest) | [`cortex-v0.4.1-macos-aarch64.tar.gz`](https://github.com/cortex-project/cortex/releases/download/v0.4.1/cortex-v0.4.1-macos-aarch64.tar.gz) |
-| Linux | [`.AppImage` / `.deb`](https://github.com/cortex-project/cortex/releases/latest) | [`cortex-v0.4.1-linux-x86_64.tar.gz`](https://github.com/cortex-project/cortex/releases/download/v0.4.1/cortex-v0.4.1-linux-x86_64.tar.gz) |
+| Windows | [`.exe` (NSIS installer)](https://github.com/AdityaVG13/cortex/releases/latest) | [Daemon archive (`.zip`)](https://github.com/AdityaVG13/cortex/releases/latest) |
+| macOS | [`.dmg`](https://github.com/AdityaVG13/cortex/releases/latest) | [Daemon archive (`.tar.gz`)](https://github.com/AdityaVG13/cortex/releases/latest) |
+| Linux | [`.AppImage` / `.deb`](https://github.com/AdityaVG13/cortex/releases/latest) | [Daemon archive (`.tar.gz`)](https://github.com/AdityaVG13/cortex/releases/latest) |
 
 </details>
 
 ### From source
 
 ```bash
-git clone https://github.com/cortex-project/cortex.git
+git clone https://github.com/AdityaVG13/cortex.git
 cd cortex/daemon-rs
 cargo build --release
 ```
@@ -124,7 +116,7 @@ You do not need a giant platform rewrite to get value from Cortex. The useful pa
 - Smaller startup prompts. Cortex brings back the useful context instead of replaying raw history.
 - Faster recall. Keyword and semantic search work together so the right memory shows up sooner.
 - Flexible connections. Apps, scripts, and coding tools can all talk to the same memory through MCP or HTTP.
-- Local embeddings. `all-MiniLM-L6-v2` runs in-process through ONNX, with no outside inference service required.
+- Local embeddings. `all-MiniLM-L12-v2` runs in-process through ONNX, with no outside inference service required.
 - Memory controls. Decay, supersession, and conflict handling keep the memory base from turning into a junk drawer.
 - Control Center. One place to see health, savings, activity, and what Cortex is doing.
 
