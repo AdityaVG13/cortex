@@ -109,28 +109,17 @@ If the projection looks wrong, the underlying data is visible in the analytics p
 
 ## Benchmarked, not hand-waved
 
-Cortex recall quality is measured against a ground-truth dataset on every release. Both the tuned pipeline and the raw no-helper baseline are tested independently.
+Cortex recall quality is measured against a 20-query ground-truth dataset on every release. The benchmark uses the raw daemon with no helpers, no prompt engineering, and no query rewriting — just the retrieval stack on its own.
 
-<table>
-<tr>
-<td width="50%" align="center">
+<p align="center">
 
-**Tuned pipeline** (`cortex-http`)
+**18/20** top-1 hit rate &nbsp;&nbsp;·&nbsp;&nbsp; **87.5%** precision &nbsp;&nbsp;·&nbsp;&nbsp; **95%** MRR &nbsp;&nbsp;·&nbsp;&nbsp; **48 avg** query tokens
 
-`20/20` accuracy · avg `199` recall tokens
+</p>
 
-</td>
-<td width="50%" align="center">
+Two queries currently return the relevant result at position 2 instead of position 1. Retrieval quality is under active development — RRF weighting, reranking, and query expansion improvements are planned for v0.5.x. The v0.4.1 baseline started at 55% ground-truth precision; current retrieval (RRF + crystal families + synonym expansion) is a significant step forward, with more to come.
 
-**Raw baseline** (`cortex-http-base`)
-
-`20/20` accuracy · avg `202` recall tokens
-
-</td>
-</tr>
-</table>
-
-The benchmark runner is [fail-closed](benchmark/baseline-v041.md): gate-bypass shortcuts are rejected in preflight. v0.4.1 baseline started at 55% ground-truth precision. Current retrieval (RRF + crystal families + synonym expansion) reaches full accuracy on the same dataset.
+Raw results: [`benchmarking/results/`](benchmarking/results/)
 
 ---
 
