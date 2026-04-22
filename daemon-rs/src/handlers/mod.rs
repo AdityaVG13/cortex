@@ -291,6 +291,10 @@ pub fn client_ip(headers: &HeaderMap) -> IpAddr {
         .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
 }
 
+fn should_apply_auth_failure_bucket(ip: IpAddr) -> bool {
+    !ip.is_loopback()
+}
+
 #[allow(dead_code)]
 /// Rate-limited auth check. Returns Err(Response) on auth failure, rate limit
 /// exceeded, or missing SSRF header. Handles both request-volume and
@@ -306,9 +310,12 @@ pub async fn ensure_auth_rated_for_class(
     class: RequestClass,
 ) -> Result<(), Response> {
     let ip = client_ip(headers);
+    let apply_auth_failure_bucket = should_apply_auth_failure_bucket(ip);
 
-    if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
-        return Err(rate_limit_response(retry_after, 0));
+    if apply_auth_failure_bucket {
+        if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
+            return Err(rate_limit_response(retry_after, 0));
+        }
     }
 
     match state.rate_limiter.check_request_for_class(ip, class).await {
@@ -319,7 +326,9 @@ pub async fn ensure_auth_rated_for_class(
     match ensure_auth(headers, state) {
         Ok(()) => Ok(()),
         Err(resp) => {
-            let _ = state.rate_limiter.record_auth_failure(ip).await;
+            if apply_auth_failure_bucket {
+                let _ = state.rate_limiter.record_auth_failure(ip).await;
+            }
             Err(resp)
         }
     }
@@ -340,9 +349,12 @@ pub async fn ensure_auth_with_caller_rated_for_class(
     class: RequestClass,
 ) -> Result<Option<i64>, Response> {
     let ip = client_ip(headers);
+    let apply_auth_failure_bucket = should_apply_auth_failure_bucket(ip);
 
-    if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
-        return Err(rate_limit_response(retry_after, 0));
+    if apply_auth_failure_bucket {
+        if let Some(retry_after) = state.rate_limiter.is_auth_blocked(&ip).await {
+            return Err(rate_limit_response(retry_after, 0));
+        }
     }
 
     match state.rate_limiter.check_request_for_class(ip, class).await {
@@ -353,7 +365,9 @@ pub async fn ensure_auth_with_caller_rated_for_class(
     match ensure_auth_with_caller(headers, state) {
         Ok(caller) => Ok(caller),
         Err(resp) => {
-            let _ = state.rate_limiter.record_auth_failure(ip).await;
+            if apply_auth_failure_bucket {
+                let _ = state.rate_limiter.record_auth_failure(ip).await;
+            }
             Err(resp)
         }
     }
@@ -1262,6 +1276,29 @@ mod tests {
 
         headers.insert("x-cortex-request", HeaderValue::from_static("true"));
         assert!(ensure_ssrf_protection(&headers).is_ok());
+    }
+
+    #[test]
+    fn loopback_ips_skip_auth_failure_bucket() {
+        let empty_headers = HeaderMap::new();
+        let fallback_ip = client_ip(&empty_headers);
+        assert!(fallback_ip.is_loopback());
+        assert!(!should_apply_auth_failure_bucket(fallback_ip));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("::1"));
+        let ipv6_loopback = client_ip(&headers);
+        assert!(ipv6_loopback.is_loopback());
+        assert!(!should_apply_auth_failure_bucket(ipv6_loopback));
+    }
+
+    #[test]
+    fn non_loopback_ips_apply_auth_failure_bucket() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", HeaderValue::from_static("10.10.10.5"));
+        let ip = client_ip(&headers);
+        assert!(!ip.is_loopback());
+        assert!(should_apply_auth_failure_bucket(ip));
     }
 
     #[test]
