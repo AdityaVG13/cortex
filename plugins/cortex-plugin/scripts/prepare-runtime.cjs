@@ -39,7 +39,7 @@ if (!mappedPlatform || !mappedArch) {
 
 // Version is read from plugin.json (sibling of .claude-plugin)
 const pluginJsonPath = path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json');
-let version = '0.4.0';
+let version = '0.5.0';
 try {
   const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, 'utf8'));
   version = pluginJson.version || version;

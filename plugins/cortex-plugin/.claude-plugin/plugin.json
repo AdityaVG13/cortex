@@ -1,6 +1,6 @@
 {
   "name": "cortex",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Remembers your decisions, coding conventions, and debugging lessons across every Claude Code session. Persistent local memory for AI coding agents.",
   "homepage": "https://github.com/AdityaVG13/cortex",
   "repository": "https://github.com/AdityaVG13/cortex",
