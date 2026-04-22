@@ -177,8 +177,8 @@
                  ],
     "daemon":  {
                    "base_url":  "http://127.0.0.1:53331",
-                   "home":  "C:\\Users\\aditya\\AppData\\Local\\Temp\\cortex_raw_bench_dev_20260421-224217",
+                   "home":  "%LOCALAPPDATA%\\Temp\\cortex_raw_bench_dev_20260421-224217",
                    "pid":  26524,
-                   "binary":  "C:\\Users\\aditya\\cortex\\daemon-rs\\\\target\\\\debug\\\\cortex.exe"
+                   "binary":  ".\\daemon-rs\\target\\debug\\cortex.exe"
                }
 }
