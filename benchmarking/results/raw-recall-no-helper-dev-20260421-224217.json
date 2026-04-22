@@ -1,0 +1,184 @@
+{
+    "benchmark":  "raw-recall-benchmark-dev-daemon-no-python-no-helper",
+    "run_id":  "20260421-224217",
+    "cases":  20,
+    "metrics":  {
+                    "avg_precision":  0.875,
+                    "avg_mrr":  0.95,
+                    "avg_query_tokens":  48.4,
+                    "top1_hit_rate":  0.9,
+                    "recall_coverage":  1,
+                    "p95_query_tokens":  77,
+                    "tokens_per_relevant_hit":  42.087,
+                    "total_tokens":  968,
+                    "total_relevant_hits":  23
+                },
+    "per_case":  [
+                     {
+                         "slug":  "token-optimization",
+                         "query_tokens":  46,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "cache-expiry-guard",
+                         "query_tokens":  40,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "rtk-path-fix",
+                         "query_tokens":  77,
+                         "precision":  0.5,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "ccmeter-dashboard",
+                         "query_tokens":  34,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "browser-cleanup",
+                         "query_tokens":  35,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "uv-python",
+                         "query_tokens":  28,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "no-em-dashes",
+                         "query_tokens":  72,
+                         "precision":  0.5,
+                         "mrr":  0.5,
+                         "relevant_hits":  1,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "recall-before-investigation",
+                         "query_tokens":  42,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "codex-agent",
+                         "query_tokens":  62,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  2,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "gemini-agent",
+                         "query_tokens":  62,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  2,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "factory-droid",
+                         "query_tokens":  30,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "shared-state",
+                         "query_tokens":  62,
+                         "precision":  0.5,
+                         "mrr":  0.5,
+                         "relevant_hits":  1,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "boot-compiler",
+                         "query_tokens":  32,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "conflict-detection",
+                         "query_tokens":  69,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  2,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "embedding-engine",
+                         "query_tokens":  33,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "crystal-cluster",
+                         "query_tokens":  34,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "writing-voice",
+                         "query_tokens":  72,
+                         "precision":  0.5,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "self-improvement",
+                         "query_tokens":  72,
+                         "precision":  0.5,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  2
+                     },
+                     {
+                         "slug":  "tauri-dashboard",
+                         "query_tokens":  34,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     },
+                     {
+                         "slug":  "job-applicator",
+                         "query_tokens":  32,
+                         "precision":  1,
+                         "mrr":  1,
+                         "relevant_hits":  1,
+                         "result_count":  1
+                     }
+                 ],
+    "daemon":  {
+                   "base_url":  "http://127.0.0.1:53331",
+                   "home":  "C:\\Users\\aditya\\AppData\\Local\\Temp\\cortex_raw_bench_dev_20260421-224217",
+                   "pid":  26524,
+                   "binary":  "C:\\Users\\aditya\\cortex\\daemon-rs\\\\target\\\\debug\\\\cortex.exe"
+               }
+}
