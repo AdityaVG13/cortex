@@ -1550,13 +1550,27 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
         }
     };
     if schema_current {
-        let applied = db::applied_migration_versions(&conn)
-            .map(|v| v.len())
-            .unwrap_or(0);
+        let expected_versions: HashSet<&'static str> = db::migration_definitions()
+            .iter()
+            .map(|(version, _)| *version)
+            .collect();
+        let (applied, marker_rows) = db::applied_migration_versions(&conn)
+            .map(|versions| {
+                let schema_applied = versions
+                    .iter()
+                    .filter(|version| expected_versions.contains(version.as_str()))
+                    .count();
+                let non_schema_markers = versions.len().saturating_sub(schema_applied);
+                (schema_applied, non_schema_markers)
+            })
+            .unwrap_or((0, 0));
         println!(
             "[doctor] OK schema current: {applied}/{} migrations applied",
             db::migration_definitions().len()
         );
+        if marker_rows > 0 {
+            println!("[doctor] INFO schema markers: {marker_rows} non-schema row(s) ignored");
+        }
     } else if !pending_versions.is_empty() {
         println!(
             "[doctor] FAIL schema pending: {}",
