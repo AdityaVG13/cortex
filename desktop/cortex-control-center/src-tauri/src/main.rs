@@ -36,7 +36,8 @@ const DAEMON_MAX_REQUEST_TIMEOUT_MS: u64 = 120_000;
 const DAEMON_STOP_WAIT_MS: u64 = 3_000;
 const DAEMON_WAIT_POLL_MS: u64 = 200;
 const SERVICE_ENSURE_WAIT_MS: u64 = 12_000;
-const LOCAL_DAEMON_START_WAIT_MS: u64 = 8_000;
+const LOCAL_DAEMON_LOCK_WAIT_SECS: u64 = 15;
+const LOCAL_DAEMON_START_WAIT_MS: u64 = (LOCAL_DAEMON_LOCK_WAIT_SECS * 1_000) + 2_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
@@ -163,7 +164,10 @@ impl DaemonState {
             .env("CORTEX_DAEMON_OWNER_SOURCE", "control-center-app")
             .env("CORTEX_DAEMON_OWNER_MODE", "app-managed-local")
             .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
-            .env("CORTEX_DAEMON_LOCK_WAIT_SECS", "15")
+            .env(
+                "CORTEX_DAEMON_LOCK_WAIT_SECS",
+                LOCAL_DAEMON_LOCK_WAIT_SECS.to_string(),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -2939,7 +2943,8 @@ mod tests {
         let targets = editor_targets(home);
         let codex = targets.iter().find(|target| target.id == "codex").unwrap();
 
-        let registration = cortex_mcp_registration(codex, "C:/Users/testuser/.cortex/bin/cortex.exe");
+        let registration =
+            cortex_mcp_registration(codex, "C:/Users/testuser/.cortex/bin/cortex.exe");
         let cortex_entry = registration
             .as_object()
             .expect("registration should be an object");
