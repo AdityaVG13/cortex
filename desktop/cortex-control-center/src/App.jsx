@@ -1490,6 +1490,7 @@ export function App() {
   const [showMissionCompactUnits, setShowMissionCompactUnits] = useState(true);
   const [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(() => browserBootstrap.panel === "analytics");
   const [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics");
+  const [startupCoreReadyState, setStartupCoreReadyState] = useState(false);
   const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
   const [currency, setCurrency] = useState(() => normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD")));
   const [analyticsMode, setAnalyticsMode] = useState(() => {
@@ -2234,6 +2235,7 @@ export function App() {
     let result = await refreshProtectedData({ includeSecondary, forceCore: true });
     if (!includeSecondary && !result.coreErrors.length) {
       startupCoreReadyRef.current = true;
+      setStartupCoreReadyState(true);
       refreshSecondaryDataInBackground();
       result = { ...result, secondaryErrors: [] };
     }
@@ -2242,6 +2244,7 @@ export function App() {
 
   const clearStartupCoreReady = useCallback(() => {
     startupCoreReadyRef.current = false;
+    setStartupCoreReadyState(false);
     lastCoreRefreshAtRef.current = 0;
     lastSecondaryRefreshAtRef.current = 0;
   }, []);
@@ -2556,6 +2559,7 @@ export function App() {
         && warmupErrorsOnly;
       if (partialCoreReady) {
         startupCoreReadyRef.current = true;
+        setStartupCoreReadyState(true);
         refreshSecondaryDataInBackground();
         const timeoutSummary = timeoutErrors.length
           ? summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected."
@@ -2837,7 +2841,7 @@ export function App() {
       || !analyticsReady
       || !daemonState.reachable
       || !daemonState.authTokenReady
-      || !startupCoreReadyRef.current
+      || !startupCoreReadyState
     ) return;
     refreshSavings().catch((error) => {
       const message = error?.message || String(error);
@@ -2852,7 +2856,7 @@ export function App() {
       });
     }, ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [analyticsReady, daemonState.authTokenReady, daemonState.reachable, panel, refreshSavings]);
+  }, [analyticsReady, daemonState.authTokenReady, daemonState.reachable, panel, refreshSavings, startupCoreReadyState]);
 
   useEffect(() => {
     let stream = null;
