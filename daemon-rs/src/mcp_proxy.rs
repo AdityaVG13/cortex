@@ -77,7 +77,7 @@ fn read_auth_token_with_cache(token_path: &Path) -> Option<String> {
 }
 
 fn read_auth_token_uncached(token_path: &Path) -> Option<String> {
-    match std::fs::read_to_string(&token_path) {
+    match std::fs::read_to_string(token_path) {
         Ok(token) => {
             let trimmed = token.trim();
             if trimmed.is_empty() {

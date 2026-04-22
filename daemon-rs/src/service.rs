@@ -74,6 +74,27 @@ fn build_sc_create_command(exe_path: &str, username: &str) -> String {
     )
 }
 
+fn username_is_safe_for_cmd_fragment(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '.' | '_' | '-'))
+}
+
+fn resolve_service_username_from_env() -> String {
+    match std::env::var("USERNAME") {
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if username_is_safe_for_cmd_fragment(trimmed) {
+                trimmed.to_string()
+            } else {
+                "cortex-user".to_string()
+            }
+        }
+        Err(_) => "cortex-user".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServiceState {
     NotInstalled,
@@ -346,7 +367,17 @@ pub fn install() {
     // COR-8 fix: detect current username to run service under user account,
     // NOT LocalSystem. LocalSystem has a different USERPROFILE which would
     // open a completely separate database at C:\Windows\system32\config\systemprofile.
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "cortex-user".to_string());
+    let username_env = std::env::var("USERNAME").ok();
+    let username = resolve_service_username_from_env();
+    if let Some(raw) = username_env {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && trimmed != username {
+            eprintln!(
+                "[cortex] Warning: USERNAME contains unsupported characters; falling back to '{}'",
+                username
+            );
+        }
+    }
 
     // COR-5 fix: use cmd /C for sc.exe to handle binPath quoting correctly.
     // sc.exe has non-standard argument parsing that fights with Rust's Command.
@@ -695,6 +726,27 @@ mod tests {
             cmd.contains("obj= \".\\alice\""),
             "missing user account object: {cmd}"
         );
+    }
+
+    #[test]
+    fn username_is_safe_for_cmd_fragment_rejects_shell_metacharacters() {
+        assert!(username_is_safe_for_cmd_fragment("alice"));
+        assert!(username_is_safe_for_cmd_fragment("alice.svc"));
+        assert!(username_is_safe_for_cmd_fragment("alice svc"));
+        assert!(!username_is_safe_for_cmd_fragment("alice&whoami"));
+        assert!(!username_is_safe_for_cmd_fragment("alice|powershell"));
+        assert!(!username_is_safe_for_cmd_fragment("alice%PATH%"));
+        assert!(!username_is_safe_for_cmd_fragment("alice\"quoted"));
+    }
+
+    #[test]
+    fn resolve_service_username_from_env_falls_back_when_username_is_unsafe() {
+        std::env::set_var("USERNAME", "alice&whoami");
+        assert_eq!(resolve_service_username_from_env(), "cortex-user");
+        std::env::set_var("USERNAME", "alice.svc");
+        assert_eq!(resolve_service_username_from_env(), "alice.svc");
+        std::env::remove_var("USERNAME");
+        assert_eq!(resolve_service_username_from_env(), "cortex-user");
     }
 
     #[test]
