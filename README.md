@@ -137,7 +137,7 @@ The docs are organized around what you are trying to do, not around internal fol
 
 - Connect Cortex. [Info/connecting.md](Info/connecting.md) covers setup, MCP, HTTP, auth, and troubleshooting.
 - Research and roadmap. [Info/research.md](Info/research.md) and [Info/roadmap.md](Info/roadmap.md) show what shipped, what is planned, and why.
-- Security and contribution. [security/SECURITY.md](security/SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
+- Security and contribution. [Info/security-rules.md](Info/security-rules.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) cover trust, reporting, and project standards.
 - Team deployment. [Info/team-mode-setup.md](Info/team-mode-setup.md) covers the shared-server setup when one machine is no longer enough.
 
 <details>
@@ -151,7 +151,7 @@ The docs are organized around what you are trying to do, not around internal fol
 - [Info/research.md](Info/research.md) - papers, inspirations, and Cortex adaptation notes
 - [Info/roadmap.md](Info/roadmap.md) - public roadmap
 - [Info/team-mode-setup.md](Info/team-mode-setup.md) - shared team-memory setup
-- [security/SECURITY.md](security/SECURITY.md) - security posture and reporting
+- [Info/security-rules.md](Info/security-rules.md) - security posture and reporting
 
 ### CLI reference
 
@@ -181,7 +181,7 @@ Roadmap details: [Info/roadmap.md](Info/roadmap.md)
   <a href="https://github.com/sponsors">Support Cortex</a> |
   <a href="Info/research.md">Research</a> |
   <a href="Info/connecting.md">Connecting</a> |
-  <a href="security/SECURITY.md">Security</a> |
+  <a href="Info/security-rules.md">Security</a> |
   <a href="CONTRIBUTING.md">Contributing</a> |
   <a href="CODE_OF_CONDUCT.md">Code of Conduct</a> |
   <a href="CHANGELOG.md">Changelog</a> |

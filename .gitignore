@@ -126,6 +126,8 @@ Cortex?Ingester?Instructions.txt
 .tmp-*
 .tmp/
 tmp/
+.claude/
+**/.claude/
 .codex-cache/
 .venv/
 **/.venv/
