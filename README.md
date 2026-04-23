@@ -38,65 +38,51 @@ Install once. Your tools stop starting from scratch.</p>
 ---
 
 <p align="center">
-  <img src="assets/cc-tour.gif" alt="Cortex Control Center — Analytics, Agents, Brain, About" width="100%">
-  <br><sub>Control Center: analytics, agents, brain state, and about — in one place.</sub>
+  <img src="assets/cc-tour.gif" alt="Cortex Control Center" width="100%">
+  <br><sub>Control Center: analytics, agents, brain state, and about in one place.</sub>
 </p>
 
 Cortex runs a local daemon that stores decisions, context, and lessons across every AI session you run. Claude Code, Codex, Cursor, Gemini, and your own scripts share the same memory through HTTP or MCP. New sessions pick up where the last one left off instead of starting cold.
 
 <p align="center">
-  🔒 <b>Private by default</b> — localhost only, data never leaves your machine<br>
-  🔗 <b>One memory, every tool</b> — HTTP and MCP, same brain, no per-tool silos<br>
-  📊 <b>Prove it works</b> — token savings, recall quality, and Monte Carlo projections
+  🔒 <b>Private by default</b>: localhost only, data never leaves your machine<br>
+  🔗 <b>One memory, every tool</b>: HTTP and MCP, same brain, no per-tool silos<br>
+  📊 <b>Prove it works</b>: token savings, recall quality, and Monte Carlo projections
 </p>
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Savings&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=How%20It%20Works&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
-<table>
+<p align="center">
+  <img src="https://img.shields.io/badge/1-STORE-6B4FBB?style=for-the-badge" alt="Store">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/→-grey?style=for-the-badge" alt="→">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/2-RECALL-4a2d8a?style=for-the-badge" alt="Recall">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/→-grey?style=for-the-badge" alt="→">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/3-BOOT-8B5CF6?style=for-the-badge" alt="Boot">
+</p>
+
+<table align="center">
 <tr>
-<td width="58%">
+<td align="center" width="33%">
 
-![Cortex analytics dashboard](assets/control-center-analytics.png)
+**`POST /store`**
 
-</td>
-<td width="42%" valign="top">
-
-### Compounding memory economics
-
-Every session that reuses context instead of rebuilding it saves tokens. Cortex tracks each one:
-
-- **Token savings per session** — boot prompts vs raw file baselines
-- **Recall hit rate** — what percentage of queries find useful context
-- **Compression ratios** — how much Cortex compresses vs what tools would have re-read
-- **Agent activity heatmap** — which tools use memory most and when
-
-The savings compound. Week one saves hundreds of tokens. Week four saves tens of thousands.
+Save decisions, lessons, preferences. Conflict detection is automatic.
 
 </td>
-</tr>
-</table>
+<td align="center" width="33%">
 
-<table>
-<tr>
-<td width="42%" valign="top">
+**`GET /recall`**
 
-### Monte Carlo savings horizon
-
-Cortex projects your savings forward using Monte Carlo simulation on your actual usage data — not synthetic benchmarks.
-
-- Based on your real boot frequency, recall patterns, and compression history
-- 30-day projection with confidence intervals
-- Updates as your usage patterns change
-
-If the projection looks wrong, the underlying data is visible in the analytics panel. No black boxes.
+Hybrid keyword + semantic search. In-process ONNX embeddings, no external service.
 
 </td>
-<td width="58%">
+<td align="center" width="33%">
 
-![Monte Carlo savings projection and recall quality](assets/cc-monte-carlo.png)
+**`GET /boot`**
+
+Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 
 </td>
 </tr>
@@ -104,8 +90,48 @@ If the projection looks wrong, the underlying data is visible in the analytics p
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,80:6B4FBB,100:2d1b69&height=110&text=Benchmarks&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Cortex recall quality is measured against a 20-query ground-truth dataset on every release. The benchmark uses the raw daemon with no helpers, no prompt engineering, and no query rewriting — just the retrieval stack on its own.
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,80:6B4FBB,100:2d1b69&height=110&text=Savings&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.
+
+<table>
+<tr>
+<td width="50%">
+
+<p align="center"><b>📊 Analytics Dashboard</b></p>
+<img src="assets/grid-control-center-analytics.png" width="100%">
+<p align="center"><sub>Token savings, compression ratios, agent activity heatmaps. Measured per session.</sub></p>
+
+</td>
+<td width="50%">
+
+<p align="center"><b>📈 Monte Carlo Projections</b></p>
+<img src="assets/grid-cc-monte-carlo.png" width="100%">
+<p align="center"><sub>30-day savings forecast with P10/P50/P90 confidence bands from your real data.</sub></p>
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+<p align="center"><b>🤖 Connected Agents</b></p>
+<img src="assets/grid-cc-agents.png" width="100%">
+<p align="center"><sub>Live sessions, operator inbox, deduped by identity. Multi-agent, one brain.</sub></p>
+
+</td>
+<td width="50%">
+
+<p align="center"><b>🎛️ Command Center</b></p>
+<img src="assets/grid-cc-overview.png" width="100%">
+<p align="center"><sub>Memory counts, daemon health, knowledge entries, and quick navigation.</sub></p>
+
+</td>
+</tr>
+</table>
+
+---
+
+![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Benchmarks&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+Cortex recall quality is measured against a 20-query ground-truth dataset on every release. The benchmark uses the raw daemon with no helpers, no prompt engineering, and no query rewriting.
 
 <p align="center">
 
@@ -113,19 +139,19 @@ Cortex recall quality is measured against a 20-query ground-truth dataset on eve
 
 </p>
 
-Two queries currently return the relevant result at position 2 instead of position 1. Retrieval quality is under active development — RRF weighting, reranking, and query expansion improvements are planned for v0.6.0+. The v0.4.1 baseline started at 55% ground-truth precision; current retrieval (RRF + crystal families + synonym expansion) is a significant step forward, with more to come.
+Two queries currently return the relevant result at position 2 instead of position 1. Retrieval quality is under active development. RRF weighting, reranking, and query expansion improvements are planned for v0.6.0+. The v0.4.1 baseline started at 55% ground-truth precision; current retrieval (RRF + crystal families + synonym expansion) is a significant step forward, with more to come.
 
 [Raw Benchmark JSON](benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json) · [Helper Benchmark JSON](benchmarking/results/helper-benchmark-cortex-http-20260419.json)
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=v0.5.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=v0.5.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 349 commits since v0.4.1. Full details in [CHANGELOG.md](CHANGELOG.md).
 
 ### Retrieval
 
-- **Reciprocal rank fusion** — query-adaptive keyword/semantic weighting
-- **Crystal family recall** — collapsed members cut token cost, preserve context
+- **Reciprocal rank fusion**: query-adaptive keyword/semantic weighting
+- **Crystal family recall**: collapsed members cut token cost, preserve context
 - **Synonym-expanded keywords** across all retrieval paths
 - FTS tokenizer upgrade and BM25 tuning
 - Entity-alignment boost, co-occurrence expansion
@@ -140,10 +166,10 @@ Two queries currently return the relevant result at position 2 instead of positi
 
 ### Agent intelligence
 
-- **Feedback telemetry** — record outcomes, track reliability over time
-- **Recall explainability** — see why results ranked the way they did
-- **Conflict detection** — AGREES / CONTRADICTS / REFINES / UNRELATED
-- **Client permissions** — read / write / admin gates per agent
+- **Feedback telemetry**: record outcomes, track reliability over time
+- **Recall explainability**: see why results ranked the way they did
+- **Conflict detection**: AGREES / CONTRADICTS / REFINES / UNRELATED
+- **Client permissions**: read / write / admin gates per agent
 
 ### Security
 
@@ -155,7 +181,7 @@ Two queries currently return the relevant result at position 2 instead of positi
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 Cortex tracks active agent sessions when clients identify themselves through `cortex_boot` or `GET /boot?agent=NAME`.
 
 <table>
@@ -170,11 +196,11 @@ Cortex tracks active agent sessions when clients identify themselves through `co
 ### Multi-agent, one brain
 
 - Each boot call registers a session. Control Center shows active sessions, **deduplicated by agent identity**.
-- Read-path tools (recall, peek, unfold) reattach to existing sessions — no duplicates.
+- Read-path tools (recall, peek, unfold) reattach to existing sessions. No duplicates.
 - Session descriptions preserved across reconnects and daemon restarts.
 - What one agent stores, every other agent can recall.
 
-Claude Code, Codex, Cursor, Gemini, and custom scripts can all be connected simultaneously. Each tracks its own session while sharing the same memory.
+Claude Code, Codex, Cursor, and custom scripts can all be connected simultaneously. Each tracks its own session while sharing the same memory.
 
 </td>
 </tr>
@@ -182,7 +208,7 @@ Claude Code, Codex, Cursor, Gemini, and custom scripts can all be connected simu
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 | Tool | Connection | Setup |
 |------|-----------|-------|
 | **Claude Code** | MCP (plugin) or desktop app | Plugin: `claude plugin install cortex@cortex-marketplace` |
@@ -197,7 +223,8 @@ Full setup guide: **[Info/connecting.md](Info/connecting.md)**
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+
 ### Desktop app (Control Center)
 
 Download from the [release page](https://github.com/AdityaVG13/cortex/releases/latest). The Control Center manages daemon lifecycle for you.
@@ -227,8 +254,8 @@ The plugin handles daemon startup, health checks, and MCP bridging automatically
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Cortex enforces a **single-daemon invariant** — only one daemon process runs at a time.
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+Cortex enforces a **single-daemon invariant**: only one daemon process runs at a time.
 
 | Mode | How it works |
 |------|-------------|
@@ -242,7 +269,7 @@ If using the Control Center, manage the daemon from there. Do not run a second `
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 After installing, verify everything works:
 
 ```bash
@@ -292,7 +319,7 @@ cargo audit
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 | Document | Covers |
 |----------|--------|
 | **[Connecting](Info/connecting.md)** | Setup, MCP, HTTP, auth, troubleshooting |
@@ -322,10 +349,54 @@ cargo audit
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 Cortex defaults to localhost-only access with bearer-token auth. Full threat model, auth rules, and vulnerability reporting:
 
 **[Info/security-rules.md](Info/security-rules.md)**
+
+---
+
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=FAQ&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+
+<details>
+<summary>💾 <b>How much disk space does Cortex use?</b></summary>
+<br>
+The daemon binary is ~30 MB. The SQLite database grows with usage. A real install with 286 memories and 493 decisions uses ~386 MB after compaction. The ONNX embedding model (~50 MB) downloads on first run.
+</details>
+
+<details>
+<summary>🤖 <b>Can multiple agents write to Cortex at the same time?</b></summary>
+<br>
+Yes. SQLite WAL mode handles concurrent reads and serialized writes. Each agent maintains its own session while sharing the same memory. Conflict detection handles contradictions automatically.
+</details>
+
+<details>
+<summary>🔒 <b>Does Cortex send any data externally?</b></summary>
+<br>
+No. In solo mode, Cortex runs entirely on localhost. No telemetry, no phone-home, no cloud sync. Team mode sends data only to the configured team server over your network.
+</details>
+
+<details>
+<summary>🔄 <b>What happens if the daemon crashes mid-session?</b></summary>
+<br>
+The MCP proxy detects daemon death and restarts automatically (bounded to 3 attempts with backoff). SQLite WAL mode ensures no data corruption. Sessions survive transient crashes.
+</details>
+
+<details>
+<summary>🧹 <b>How do I reset Cortex to a clean state?</b></summary>
+<br>
+Delete <code>~/.cortex/cortex.db</code> and restart the daemon. A new empty database and auth token are generated. Settings and model files are preserved.
+</details>
+
+---
+
+<p align="center"><b>Built by</b></p>
+
+<p align="center">
+  <a href="https://github.com/AdityaVG13/cortex/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=AdityaVG13/cortex&max=20&columns=10" />
+  </a>
+</p>
 
 ---
 
