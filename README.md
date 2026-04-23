@@ -26,11 +26,20 @@ Install once. Your tools stop starting from scratch.</p>
   <a href="Info/roadmap.md">Roadmap</a>
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/works_with-Claude_Code-6B4FBB?style=flat-square&logo=anthropic&logoColor=white">&nbsp;
+  <img src="https://img.shields.io/badge/works_with-Codex-412991?style=flat-square&logo=openai&logoColor=white">&nbsp;
+  <img src="https://img.shields.io/badge/works_with-Cursor-000?style=flat-square&logo=cursor&logoColor=white">&nbsp;
+  <img src="https://img.shields.io/badge/works_with-Factory_Droid-F97316?style=flat-square">&nbsp;
+  <img src="https://img.shields.io/badge/works_with-MCP-58a6ff?style=flat-square">&nbsp;
+  <img src="https://img.shields.io/badge/works_with-HTTP_API-333?style=flat-square">
+</p>
+
 ---
 
 <p align="center">
-  <img src="assets/cc-tour.gif" alt="Cortex Control Center — Overview, Analytics, Agents, Brain, About" width="100%">
-  <br><sub>Control Center: overview, analytics, agents, brain state, and about — in one place.</sub>
+  <img src="assets/cc-tour.gif" alt="Cortex Control Center — Analytics, Agents, Brain, About" width="100%">
+  <br><sub>Control Center: analytics, agents, brain state, and about — in one place.</sub>
 </p>
 
 Cortex runs a local daemon that stores decisions, context, and lessons across every AI session you run. Claude Code, Codex, Cursor, Gemini, and your own scripts share the same memory through HTTP or MCP. New sessions pick up where the last one left off instead of starting cold.
@@ -43,7 +52,7 @@ Cortex runs a local daemon that stores decisions, context, and lessons across ev
 
 ---
 
-## See the savings compound
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Savings&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
 Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.
 
@@ -96,7 +105,7 @@ If the projection looks wrong, the underlying data is visible in the analytics p
 
 ---
 
-## Benchmarked, not hand-waved
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,80:6B4FBB,100:2d1b69&height=110&text=Benchmarks&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 
 Cortex recall quality is measured against a 20-query ground-truth dataset on every release. The benchmark uses the raw daemon with no helpers, no prompt engineering, and no query rewriting — just the retrieval stack on its own.
 
@@ -112,7 +121,7 @@ Two queries currently return the relevant result at position 2 instead of positi
 
 ---
 
-## What's new in v0.5.0
+![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=v0.5.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 
 349 commits since v0.4.1. Full details in [CHANGELOG.md](CHANGELOG.md).
 
@@ -149,7 +158,7 @@ Two queries currently return the relevant result at position 2 instead of positi
 
 ---
 
-## Connected agents
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
 Cortex tracks active agent sessions when clients identify themselves through `cortex_boot` or `GET /boot?agent=NAME`.
 
@@ -177,15 +186,14 @@ Claude Code, Codex, Cursor, Gemini, and custom scripts can all be connected simu
 
 ---
 
-## Works with
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 
 | Tool | Connection | Setup |
 |------|-----------|-------|
 | **Claude Code** | MCP (plugin) or desktop app | Plugin: `claude plugin install cortex@cortex-marketplace` |
 | **Codex** | MCP | `codex mcp add cortex -- cortex.exe mcp --agent codex` |
 | **Cursor** | MCP | Point MCP server at `cortex mcp --agent cursor` |
-| **Gemini** | MCP | `cortex mcp --agent gemini` |
-| **Cline** | MCP | `cortex mcp --agent cline` |
+| **Factory Droid** | MCP | `cortex mcp --agent droid` |
 | **Aider** | CLI / HTTP | `cortex boot --agent aider` |
 | **Custom tools** | HTTP | Three endpoints: `/boot`, `/recall`, `/store` |
 | **Local LLMs** | HTTP / MCP | Same protocol, any runtime |
@@ -194,7 +202,7 @@ Full setup guide: **[Info/connecting.md](Info/connecting.md)**
 
 ---
 
-## Install
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
 ### Desktop app (Control Center)
 
@@ -225,7 +233,7 @@ The plugin handles daemon startup, health checks, and MCP bridging automatically
 
 ---
 
-## Daemon behavior
+![](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 
 Cortex enforces a **single-daemon invariant** — only one daemon process runs at a time.
 
@@ -241,7 +249,7 @@ If using the Control Center, manage the daemon from there. Do not run a second `
 
 ---
 
-## Release verification
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
 After installing, verify everything works:
 
@@ -292,7 +300,7 @@ cargo audit
 
 ---
 
-## Documentation
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 
 | Document | Covers |
 |----------|--------|
@@ -323,7 +331,7 @@ cargo audit
 
 ---
 
-## Security
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
 Cortex defaults to localhost-only access with bearer-token auth. Full threat model, auth rules, and vulnerability reporting:
 
