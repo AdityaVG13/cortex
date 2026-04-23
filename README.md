@@ -44,7 +44,39 @@ Install once. Your tools stop starting from scratch.</p>
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=How%20It%20Works&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Before%20/%20After&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+<table>
+<tr>
+<td align="center" valign="top">
+<img width="400" height="1" src="https://raw.githubusercontent.com/AdityaVG13/cortex/master/assets/spacer.png"><br>
+<h3>❌ Without Cortex</h3>
+<p>
+Session 1 &nbsp;→&nbsp; explain preferences<br>
+Session 2 &nbsp;→&nbsp; explain them again<br>
+Session 3 &nbsp;→&nbsp; and again, new tool<br>
+Session 14 &nbsp;→&nbsp; still explaining<br><br>
+<b>~15,000 tokens wasted</b>
+</p>
+<br>
+</td>
+<td align="center" valign="top">
+<img width="400" height="1" src="https://raw.githubusercontent.com/AdityaVG13/cortex/master/assets/spacer.png"><br>
+<h3>✅ With Cortex</h3>
+<p>
+Session 1 &nbsp;→&nbsp; store once<br>
+Session 2 &nbsp;→&nbsp; boot, already knows<br>
+Session 3 &nbsp;→&nbsp; boot, already knows<br>
+Session 14 &nbsp;→&nbsp; boot, still knows<br><br>
+<b>~300 tokens per boot (97% less)</b>
+</p>
+<br>
+</td>
+</tr>
+</table>
+
+---
+
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,80:6B4FBB,100:2d1b69&height=110&text=How%20It%20Works&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 
 <p align="center">
   <img src="https://img.shields.io/badge/1-STORE-6B4FBB?style=for-the-badge" alt="Store">&nbsp;&nbsp;
