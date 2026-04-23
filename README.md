@@ -27,12 +27,11 @@ Install once. Your tools stop starting from scratch.</p>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/works_with-Claude_Code-6B4FBB?style=flat-square&logo=anthropic&logoColor=white">&nbsp;
-  <img src="https://img.shields.io/badge/works_with-Codex-412991?style=flat-square&logo=openai&logoColor=white">&nbsp;
-  <img src="https://img.shields.io/badge/works_with-Cursor-000?style=flat-square&logo=cursor&logoColor=white">&nbsp;
-  <img src="https://img.shields.io/badge/works_with-Factory_Droid-F97316?style=flat-square">&nbsp;
-  <img src="https://img.shields.io/badge/works_with-MCP-58a6ff?style=flat-square">&nbsp;
-  <img src="https://img.shields.io/badge/works_with-HTTP_API-333?style=flat-square">
+  <img src="https://img.shields.io/badge/works_with-Claude_Code-6B4FBB?style=flat-square&logo=anthropic&logoColor=white">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/works_with-Codex-412991?style=flat-square&logo=openai&logoColor=white">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/works_with-Cursor-000?style=flat-square&logo=cursor&logoColor=white">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/works_with-Factory_Droid-F97316?style=flat-square">&nbsp;&nbsp;
+  <img src="https://img.shields.io/badge/works_with-MCP_·_HTTP-58a6ff?style=flat-square">
 </p>
 
 ---
@@ -123,18 +122,47 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Benchmarks&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Cortex recall quality is measured against a 20-query ground-truth dataset on every release. The benchmark uses the raw daemon with no helpers, no prompt engineering, and no query rewriting.
+![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
+Cortex recall quality is measured against a 20-query ground-truth dataset on every release. Raw daemon, no helpers, no prompt engineering.
 
+<table align="center">
+<tr>
+<th></th>
+<th align="center">v0.4.1</th>
+<th align="center">v0.5.0</th>
+<th align="center">Δ</th>
+</tr>
+<tr>
+<td align="center"><b>Precision</b></td>
+<td align="center">55.2%</td>
+<td align="center"><b>87.5%</b></td>
+<td align="center">📈 +32.3%</td>
+</tr>
+<tr>
+<td align="center"><b>MRR</b></td>
+<td align="center">69.2%</td>
+<td align="center"><b>95.0%</b></td>
+<td align="center">📈 +25.8%</td>
+</tr>
+<tr>
+<td align="center"><b>Top-1 hit</b></td>
+<td align="center">90.0%</td>
+<td align="center"><b>90.0%</b></td>
+<td align="center">—</td>
+</tr>
+<tr>
+<td align="center"><b>Latency</b></td>
+<td align="center">97.5 ms</td>
+<td align="center"><b>48 ms</b></td>
+<td align="center">⚡ 2x</td>
+</tr>
+</table>
 <p align="center">
-
-**18/20** top-1 hit rate &nbsp;&nbsp;·&nbsp;&nbsp; **87.5%** precision &nbsp;&nbsp;·&nbsp;&nbsp; **95%** MRR &nbsp;&nbsp;·&nbsp;&nbsp; **48 avg** query tokens
-
+<sub>Same 20-query ground-truth dataset. Raw daemon, no helpers.</sub><br>
+<sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a> · <a href="benchmark/baseline-v041.md">v0.4.1 baseline</a></sub>
 </p>
 
-Two queries currently return the relevant result at position 2 instead of position 1. Retrieval quality is under active development. RRF weighting, reranking, and query expansion improvements are planned for v0.6.0+. The v0.4.1 baseline started at 55% ground-truth precision; current retrieval (RRF + crystal families + synonym expansion) is a significant step forward, with more to come.
-
-[Raw Benchmark JSON](benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json) · [Helper Benchmark JSON](benchmarking/results/helper-benchmark-cortex-http-20260419.json)
+Retrieval improvements (reranking, query expansion) are planned for v0.6.0+.
 
 ---
 
