@@ -42,7 +42,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **MCP**: 15 new tools — `cortex_semantic_recall`, `cortex_recall_policy_explain`, `cortex_reconnect`, `cortex_lastCall`, `cortex_consensus_promote`, `cortex_eval_run`, `cortex_memory_decay_run`, `cortex_agent_feedback_record`, `cortex_agent_feedback_stats`, `cortex_conflicts_list`, `cortex_conflicts_get`, `cortex_conflicts_resolve`, `cortex_permissions_grant`, `cortex_permissions_list`, `cortex_permissions_revoke`
 - **Specs**: OpenAPI spec (`specs/cortex-openapi.yaml`) version-aligned to 0.5.0
 - **Benchmark**: Isolated benchmark runner with multi-dataset matrix workflow and fail-closed gate enforcement
-- **Benchmark**: Both tuned (`cortex-http`) and raw (`cortex-http-base`) backends reach 20/20 accuracy
+- **Benchmark**: Tuned (`cortex-http`) adapter reaches 20/20 accuracy on the 20-query dataset. Raw (`cortex-http-base`) adapter reaches avg_precision 0.875 and top-1 hit rate 0.90 on the same dataset (see `benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json`). Note: `cortex-http-base` retains some adapter-layer helpers; a fully helper-free `cortex-http-pure` adapter lands in v0.6.0 to establish the canonical core baseline
 
 ### Changed
 

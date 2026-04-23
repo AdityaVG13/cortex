@@ -155,7 +155,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=38&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-<p align="center">Measured against a 20-query ground-truth dataset on every release. Raw daemon, no helpers.</p>
+<p align="center">Measured against a 20-query ground-truth dataset on every release via the <code>cortex-http-base</code> adapter. A fully helper-free <code>cortex-http-pure</code> adapter lands in v0.6.0 to establish the canonical core baseline.</p>
 
 <table align="center">
 <tr>
@@ -183,16 +183,16 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 <td align="center">—</td>
 </tr>
 <tr>
-<td align="center"><b>Latency</b></td>
-<td align="center">97.5 ms</td>
-<td align="center"><b>48 ms</b></td>
-<td align="center">⚡ 2x</td>
+<td align="center"><b>Avg query tokens</b></td>
+<td align="center">n/a</td>
+<td align="center"><b>48.4</b></td>
+<td align="center">—</td>
 </tr>
 </table>
 
 <p align="center">
 <sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
-<sub>Reranking and query expansion planned for v0.6.0+</sub>
+<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains some adapter-layer helpers. A fully helper-free baseline lands with the <code>cortex-http-pure</code> adapter in v0.6.0. Reranking + query expansion targeted for v0.6.0+.</sub>
 </p>
 
 ---
