@@ -40,6 +40,13 @@ tmp-browser-harness-*
 *browser-harness*
 *browser_harness*
 
+# Internal dev script (syncs gitignored security rules into gitignored CLAUDE.md/etc)
+tools/sync-security-rules.sh
+
+# Chrome extension — not yet public (shipping in future release)
+extensions/cortex-chrome-extension/
+tools/validate_chrome_extension_policy.py
+
 # Build artifacts at repo root
 cortex-app.exe
 *.exe

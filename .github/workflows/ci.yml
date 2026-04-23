@@ -144,26 +144,6 @@ jobs:
       - name: Run adapter tests
         run: python -m pytest benchmarking/adapters/tests -q
 
-  chrome-extension-validation:
-    name: Chrome extension validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: 22
-
-      - name: Validate manifest + extension tests
-        run: |
-          node -e "JSON.parse(require('fs').readFileSync('extensions/cortex-chrome-extension/manifest.json', 'utf8'))"
-          node --test extensions/cortex-chrome-extension/tests/core.test.mjs
-
-      - name: Enforce Chrome Web Store policy guardrails
-        run: python tools/validate_chrome_extension_policy.py
-
   python-sdk:
     name: Python SDK tests
     runs-on: ubuntu-latest
