@@ -191,7 +191,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 </table>
 
 <p align="center">
-<sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a> · <a href="benchmark/baseline-v041.md">v0.4.1 baseline</a></sub><br>
+<sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
 <sub>Reranking and query expansion planned for v0.6.0+</sub>
 </p>
 

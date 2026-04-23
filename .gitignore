@@ -32,6 +32,9 @@ ROADMAP.md
 docs/team-mode-setup.md
 docs/CONNECTING.md
 
+# Stale v0.4.1 benchmark dumps (superseded by benchmarking/)
+benchmark/
+
 # Build artifacts at repo root
 cortex-app.exe
 *.exe
