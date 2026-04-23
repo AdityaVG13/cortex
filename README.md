@@ -115,7 +115,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,80:6B4FBB,100:2d1b69&height=110&text=Savings&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.
+<p align="center">Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.</p>
 
 <table>
 <tr>
@@ -154,8 +154,7 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
+![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=38&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 <p align="center">Measured against a 20-query ground-truth dataset on every release. Raw daemon, no helpers.</p>
 
 <table align="center">
@@ -199,7 +198,7 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=v0.5.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-349 commits since v0.4.1. Full details in [CHANGELOG.md](CHANGELOG.md).
+<p align="center">349 commits since v0.4.1. Full details in <a href="CHANGELOG.md">CHANGELOG.md</a>.</p>
 
 ### Retrieval
 
@@ -235,7 +234,7 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Cortex tracks active agent sessions when clients identify themselves through `cortex_boot` or `GET /boot?agent=NAME`.
+<p align="center">Cortex tracks active agent sessions when clients identify themselves through <code>cortex_boot</code> or <code>GET /boot?agent=NAME</code>.</p>
 
 <table>
 <tr>
@@ -272,15 +271,13 @@ Claude Code, Codex, Cursor, and custom scripts can all be connected simultaneous
 | **Custom tools** | HTTP | Three endpoints: `/boot`, `/recall`, `/store` |
 | **Local LLMs** | HTTP / MCP | Same protocol, any runtime |
 
-Full setup guide: **[Info/connecting.md](Info/connecting.md)**
+<p align="center">Full setup guide: <a href="Info/connecting.md"><b>Info/connecting.md</b></a></p>
 
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
-### Desktop app (Control Center)
-
-Download from the [release page](https://github.com/AdityaVG13/cortex/releases/latest). The Control Center manages daemon lifecycle for you.
+<p align="center"><b>Desktop app (Control Center)</b><br>
+Download from the <a href="https://github.com/AdityaVG13/cortex/releases/latest">release page</a>. The Control Center manages daemon lifecycle for you.</p>
 
 | Platform | Desktop installer | Daemon archive |
 |----------|------------------|----------------|
@@ -308,7 +305,7 @@ The plugin handles daemon startup, health checks, and MCP bridging automatically
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-Cortex enforces a **single-daemon invariant**: only one daemon process runs at a time.
+<p align="center">Cortex enforces a <b>single-daemon invariant</b>: only one daemon process runs at a time.</p>
 
 | Mode | How it works |
 |------|-------------|
@@ -316,14 +313,13 @@ Cortex enforces a **single-daemon invariant**: only one daemon process runs at a
 | **CLI** | `cortex serve` starts the daemon. Exits cleanly if one is already running. |
 | **Plugin** | `cortex plugin ensure-daemon` attaches to an existing daemon or starts one. |
 
-Default bind: `127.0.0.1:7437`. Non-loopback binds require TLS. Auth token at `~/.cortex/cortex.token`.
-
-If using the Control Center, manage the daemon from there. Do not run a second `cortex serve` alongside it.
+<p align="center">Default bind: <code>127.0.0.1:7437</code>. Non-loopback binds require TLS. Auth token at <code>~/.cortex/cortex.token</code>.<br>
+If using the Control Center, manage the daemon from there. Do not run a second <code>cortex serve</code> alongside it.</p>
 
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-After installing, verify everything works:
+<p align="center">After installing, verify everything works:</p>
 
 ```bash
 # Start the daemon (skip if using Control Center)
@@ -403,9 +399,8 @@ cargo audit
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Cortex defaults to localhost-only access with bearer-token auth. Full threat model, auth rules, and vulnerability reporting:
-
-**[Info/security-rules.md](Info/security-rules.md)**
+<p align="center">Cortex defaults to localhost-only access with bearer-token auth.<br>
+Full threat model, auth rules, and vulnerability reporting: <a href="Info/security-rules.md"><b>Info/security-rules.md</b></a></p>
 
 ---
 
