@@ -37,11 +37,6 @@ Install once. Your tools stop starting from scratch.</p>
 
 ---
 
-<p align="center">
-  <img src="assets/cc-tour.gif" alt="Cortex Control Center" width="100%">
-  <br><sub>Control Center: analytics, agents, brain state, and about in one place.</sub>
-</p>
-
 Cortex runs a local daemon that stores decisions, context, and lessons across every AI session you run. Claude Code, Codex, Cursor, Gemini, and your own scripts share the same memory through HTTP or MCP. New sessions pick up where the last one left off instead of starting cold.
 
 <p align="center">
@@ -97,32 +92,32 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
 <tr>
 <td width="50%">
 
-<p align="center"><b>📊 Analytics Dashboard</b></p>
+<p align="center"><b>📊 Analytics</b></p>
 <img src="assets/grid-control-center-analytics.png" width="100%">
-<p align="center"><sub>Token savings, compression ratios, agent activity heatmaps. Measured per session.</sub></p>
+<p align="center"><sub>Savings, compression, and activity heatmaps</sub></p>
 
 </td>
 <td width="50%">
 
-<p align="center"><b>📈 Monte Carlo Projections</b></p>
+<p align="center"><b>📈 Monte Carlo</b></p>
 <img src="assets/grid-cc-monte-carlo.png" width="100%">
-<p align="center"><sub>30-day savings forecast with P10/P50/P90 confidence bands from your real data.</sub></p>
+<p align="center"><sub>30-day projection with confidence bands</sub></p>
 
 </td>
 </tr>
 <tr>
 <td width="50%">
 
-<p align="center"><b>🤖 Connected Agents</b></p>
+<p align="center"><b>🤖 Agents</b></p>
 <img src="assets/grid-cc-agents.png" width="100%">
-<p align="center"><sub>Live sessions, operator inbox, deduped by identity. Multi-agent, one brain.</sub></p>
+<p align="center"><sub>Live sessions, inbox, deduped by identity</sub></p>
 
 </td>
 <td width="50%">
 
-<p align="center"><b>🎛️ Command Center</b></p>
+<p align="center"><b>🎛️ Overview</b></p>
 <img src="assets/grid-cc-overview.png" width="100%">
-<p align="center"><sub>Memory counts, daemon health, knowledge entries, and quick navigation.</sub></p>
+<p align="center"><sub>Memory counts, health, and navigation</sub></p>
 
 </td>
 </tr>
