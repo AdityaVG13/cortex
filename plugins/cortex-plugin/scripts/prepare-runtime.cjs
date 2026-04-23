@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 const { spawnSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
@@ -94,6 +95,59 @@ function computeSha256(filePath) {
   return hash.digest('hex').toLowerCase();
 }
 
+const GITHUB_RELEASE_BASE = 'https://github.com/AdityaVG13/cortex/releases/download';
+
+// Download a file from GitHub Releases, following redirects
+function downloadFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    const request = (reqUrl) => {
+      https.get(reqUrl, { headers: { 'User-Agent': 'cortex-plugin' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          request(res.headers.location);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`Download failed: HTTP ${res.statusCode} for ${reqUrl}`));
+          return;
+        }
+        res.pipe(file);
+        file.on('finish', () => { file.close(); resolve(); });
+      }).on('error', (err) => {
+        fs.unlink(destPath, () => {});
+        reject(err);
+      });
+    };
+    request(url);
+  });
+}
+
+// Download archive + SHA256SUMS from GitHub Releases if not bundled locally
+async function ensureAssets() {
+  const needArchive = !fs.existsSync(archivePath);
+  const needSums = !fs.existsSync(sha256sumsPath);
+
+  if (!needArchive && !needSums) return;
+
+  const tag = `v${version}`;
+  fs.mkdirSync(assetsDir, { recursive: true });
+
+  if (needSums) {
+    const sumsUrl = `${GITHUB_RELEASE_BASE}/${tag}/SHA256SUMS`;
+    console.error(`[cortex-plugin] Downloading SHA256SUMS from release ${tag}...`);
+    await downloadFile(sumsUrl, sha256sumsPath);
+  }
+
+  if (needArchive) {
+    const archiveUrl = `${GITHUB_RELEASE_BASE}/${tag}/${archiveName}`;
+    console.error(`[cortex-plugin] Downloading ${archiveName} from release ${tag}...`);
+    await downloadFile(archiveUrl, archivePath);
+    console.error(`[cortex-plugin] Download complete.`);
+  }
+}
+
 function escapePowerShellLiteral(value) {
   return value.replace(/'/g, "''");
 }
@@ -148,13 +202,16 @@ function extractArchive(archivePath, destDir) {
 }
 
 // Main logic
-function main() {
+async function main() {
   if (isAlreadyExtracted()) {
     // Already extracted, nothing to do
     return;
   }
 
   console.error(`[cortex-plugin] First run: extracting daemon binary for ${mappedPlatform}-${mappedArch}`);
+
+  // Download from GitHub Releases if assets not bundled locally
+  await ensureAssets();
 
   // Verify archive exists
   if (!fs.existsSync(archivePath)) {
@@ -218,9 +275,7 @@ function main() {
   console.error(`[cortex-plugin] Daemon binary ready at ${binaryPath}`);
 }
 
-try {
-  main();
-} catch (e) {
+main().catch((e) => {
   console.error(`[cortex-plugin] ERROR: ${e.message}`);
   process.exit(1);
-}
+});
