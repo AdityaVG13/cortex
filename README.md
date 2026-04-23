@@ -53,7 +53,6 @@ Cortex runs a local daemon that stores decisions, context, and lessons across ev
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Savings&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-
 Memory tools are easy to pitch and hard to trust. Cortex starts to matter when the savings stop looking theoretical.
 
 <table>
@@ -106,7 +105,6 @@ If the projection looks wrong, the underlying data is visible in the analytics p
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,80:6B4FBB,100:2d1b69&height=110&text=Benchmarks&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
 Cortex recall quality is measured against a 20-query ground-truth dataset on every release. The benchmark uses the raw daemon with no helpers, no prompt engineering, and no query rewriting — just the retrieval stack on its own.
 
 <p align="center">
@@ -122,7 +120,6 @@ Two queries currently return the relevant result at position 2 instead of positi
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=v0.5.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
 349 commits since v0.4.1. Full details in [CHANGELOG.md](CHANGELOG.md).
 
 ### Retrieval
@@ -159,7 +156,6 @@ Two queries currently return the relevant result at position 2 instead of positi
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-
 Cortex tracks active agent sessions when clients identify themselves through `cortex_boot` or `GET /boot?agent=NAME`.
 
 <table>
@@ -187,7 +183,6 @@ Claude Code, Codex, Cursor, Gemini, and custom scripts can all be connected simu
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
 | Tool | Connection | Setup |
 |------|-----------|-------|
 | **Claude Code** | MCP (plugin) or desktop app | Plugin: `claude plugin install cortex@cortex-marketplace` |
@@ -203,7 +198,6 @@ Full setup guide: **[Info/connecting.md](Info/connecting.md)**
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-
 ### Desktop app (Control Center)
 
 Download from the [release page](https://github.com/AdityaVG13/cortex/releases/latest). The Control Center manages daemon lifecycle for you.
@@ -234,7 +228,6 @@ The plugin handles daemon startup, health checks, and MCP bridging automatically
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
 Cortex enforces a **single-daemon invariant** — only one daemon process runs at a time.
 
 | Mode | How it works |
@@ -250,7 +243,6 @@ If using the Control Center, manage the daemon from there. Do not run a second `
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-
 After installing, verify everything works:
 
 ```bash
@@ -301,7 +293,6 @@ cargo audit
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-
 | Document | Covers |
 |----------|--------|
 | **[Connecting](Info/connecting.md)** | Setup, MCP, HTTP, auth, troubleshooting |
@@ -332,7 +323,6 @@ cargo audit
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-
 Cortex defaults to localhost-only access with bearer-token auth. Full threat model, auth rules, and vulnerability reporting:
 
 **[Info/security-rules.md](Info/security-rules.md)**
