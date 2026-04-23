@@ -261,6 +261,8 @@ Claude Code, Codex, Cursor, and custom scripts can all be connected simultaneous
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+<div align="center">
+
 | Tool | Connection | Setup |
 |------|-----------|-------|
 | **Claude Code** | MCP (plugin) or desktop app | Plugin: `claude plugin install cortex@cortex-marketplace` |
@@ -271,6 +273,8 @@ Claude Code, Codex, Cursor, and custom scripts can all be connected simultaneous
 | **Custom tools** | HTTP | Three endpoints: `/boot`, `/recall`, `/store` |
 | **Local LLMs** | HTTP / MCP | Same protocol, any runtime |
 
+</div>
+
 <p align="center">Full setup guide: <a href="Info/connecting.md"><b>Info/connecting.md</b></a></p>
 
 ---
@@ -279,13 +283,17 @@ Claude Code, Codex, Cursor, and custom scripts can all be connected simultaneous
 <p align="center"><b>Desktop app (Control Center)</b><br>
 Download from the <a href="https://github.com/AdityaVG13/cortex/releases/latest">release page</a>. The Control Center manages daemon lifecycle for you.</p>
 
+<div align="center">
+
 | Platform | Desktop installer | Daemon archive |
 |----------|------------------|----------------|
 | **Windows** | [`.exe` (NSIS installer)](https://github.com/AdityaVG13/cortex/releases/latest) | [`.zip`](https://github.com/AdityaVG13/cortex/releases/latest) |
 | **macOS** | [`.dmg`](https://github.com/AdityaVG13/cortex/releases/latest) | [`.tar.gz`](https://github.com/AdityaVG13/cortex/releases/latest) |
 | **Linux** | [`.AppImage` / `.deb`](https://github.com/AdityaVG13/cortex/releases/latest) | [`.tar.gz`](https://github.com/AdityaVG13/cortex/releases/latest) |
 
-### From source
+</div>
+
+<p align="center"><b>From source</b></p>
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
@@ -293,25 +301,29 @@ cd cortex/daemon-rs
 cargo build --release
 ```
 
-### Claude Code plugin
+<p align="center"><b>Claude Code plugin</b></p>
 
 ```bash
 claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
 ```
 
-The plugin handles daemon startup, health checks, and MCP bridging automatically.
+<p align="center">The plugin handles daemon startup, health checks, and MCP bridging automatically.</p>
 
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 <p align="center">Cortex enforces a <b>single-daemon invariant</b>: only one daemon process runs at a time.</p>
 
+<div align="center">
+
 | Mode | How it works |
 |------|-------------|
 | **Desktop app** | Control Center owns the daemon. Restart and monitor from the app. |
 | **CLI** | `cortex serve` starts the daemon. Exits cleanly if one is already running. |
 | **Plugin** | `cortex plugin ensure-daemon` attaches to an existing daemon or starts one. |
+
+</div>
 
 <p align="center">Default bind: <code>127.0.0.1:7437</code>. Non-loopback binds require TLS. Auth token at <code>~/.cortex/cortex.token</code>.<br>
 If using the Control Center, manage the daemon from there. Do not run a second <code>cortex serve</code> alongside it.</p>
@@ -369,6 +381,8 @@ cargo audit
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+<div align="center">
+
 | Document | Covers |
 |----------|--------|
 | **[Connecting](Info/connecting.md)** | Setup, MCP, HTTP, auth, troubleshooting |
@@ -378,6 +392,8 @@ cargo audit
 | **[Security](Info/security-rules.md)** | Threat model, auth rules, vulnerability reporting |
 | **[Team mode](Info/team-mode-setup.md)** | Shared-server setup for engineering teams |
 | **[Contributing](CONTRIBUTING.md)** | Development setup and PR guidelines |
+
+</div>
 
 <details>
 <summary>CLI reference</summary>
