@@ -37,8 +37,6 @@ Install once. Your tools stop starting from scratch.</p>
 
 ---
 
-Cortex runs a local daemon that stores decisions, context, and lessons across every AI session you run. Claude Code, Codex, Cursor, Gemini, and your own scripts share the same memory through HTTP or MCP. New sessions pick up where the last one left off instead of starting cold.
-
 <p align="center">
   🔒 <b>Private by default</b>: localhost only, data never leaves your machine<br>
   🔗 <b>One memory, every tool</b>: HTTP and MCP, same brain, no per-tool silos<br>
