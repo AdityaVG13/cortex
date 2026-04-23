@@ -6,15 +6,10 @@
 
 ---
 
-## v0.5.0 — Stabilization Closeout &nbsp; `current`
+## v0.5.0 — Stabilization &nbsp; `shipped`
 
-> Ship a reliable, one-daemon, local-first release that is benchmark-honest and adapter-consistent.
+> Reliable, one-daemon, local-first release. Benchmark-honest and adapter-consistent.
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
-**Shipped**
 - One-daemon lifecycle hardening and spawn-path guardrails
 - Cross-surface adapter conformance + contract test coverage
 - OpenAPI / version sweep + clippy / test release gates
@@ -22,22 +17,11 @@
 - Retrieval: RRF, crystal family recall, synonym parity
 - Control Center: analytics, agents, Monte Carlo projections
 - Agent telemetry, conflict detection, client permissions
-
-</td>
-<td width="50%" valign="top">
-
-**Remaining closeout**
-- Startup matrix + troubleshooting refresh across public docs
-- Team-mode security wording alignment for non-loopback deployment
-- Final release-facing docs sync
-
-</td>
-</tr>
-</table>
+- Public docs, CHANGELOG, security policy, and release verification
 
 ---
 
-## v0.5.x — Foundation Hardening &nbsp; `next`
+## v0.6.0 — Foundation Hardening &nbsp; `next`
 
 > Make Cortex robust for daily development workflows.
 
@@ -59,7 +43,7 @@
 
 ---
 
-## v0.6.0 — Governance & Economics &nbsp; `planned`
+## v0.7.0 — Governance & Economics &nbsp; `planned`
 
 > Make team deployments predictable, auditable, and budget-aware.
 
@@ -82,7 +66,7 @@
 
 ---
 
-## v0.7.0 — Multi-Tenant Hardening &nbsp; `planned`
+## v0.8.0 — Multi-Tenant Hardening &nbsp; `planned`
 
 > Secure, fair, and operable team mode at larger scale.
 
@@ -104,7 +88,7 @@
 
 ---
 
-## v0.8.0 — Advanced Agent Support &nbsp; `planned`
+## v0.9.0 — Advanced Agent Support &nbsp; `planned`
 
 > Improve multi-agent coordination and provenance.
 
