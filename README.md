@@ -123,7 +123,8 @@ Memory tools are easy to pitch and hard to trust. Cortex starts to matter when t
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-Cortex recall quality is measured against a 20-query ground-truth dataset on every release. Raw daemon, no helpers, no prompt engineering.
+
+<p align="center">Measured against a 20-query ground-truth dataset on every release. Raw daemon, no helpers.</p>
 
 <table align="center">
 <tr>
@@ -157,12 +158,11 @@ Cortex recall quality is measured against a 20-query ground-truth dataset on eve
 <td align="center">⚡ 2x</td>
 </tr>
 </table>
-<p align="center">
-<sub>Same 20-query ground-truth dataset. Raw daemon, no helpers.</sub><br>
-<sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a> · <a href="benchmark/baseline-v041.md">v0.4.1 baseline</a></sub>
-</p>
 
-Retrieval improvements (reranking, query expansion) are planned for v0.6.0+.
+<p align="center">
+<sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a> · <a href="benchmark/baseline-v041.md">v0.4.1 baseline</a></sub><br>
+<sub>Reranking and query expansion planned for v0.6.0+</sub>
+</p>
 
 ---
 
