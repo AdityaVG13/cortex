@@ -35,6 +35,11 @@ docs/CONNECTING.md
 # Stale v0.4.1 benchmark dumps (superseded by benchmarking/)
 benchmark/
 
+# Browser-harness (internal dev automation — never public)
+tmp-browser-harness-*
+*browser-harness*
+*browser_harness*
+
 # Build artifacts at repo root
 cortex-app.exe
 *.exe
