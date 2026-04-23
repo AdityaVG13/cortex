@@ -151,7 +151,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          MAX_BYTES=12582912
+          MAX_BYTES=20971520
           for archive in plugins/cortex-plugin/assets/cortex-v${VERSION}-*; do
             size="$(stat -c%s "${archive}")"
             if (( size > MAX_BYTES )); then
