@@ -5,6 +5,7 @@
 /// constant rather than hard-coding `7437`. Test fixtures are exempt.
 pub const DEFAULT_CORTEX_PORT: u16 = 7437;
 
+mod admin;
 mod aging;
 mod api_types;
 mod auth;
@@ -1221,8 +1222,13 @@ async fn main() {
                         std::process::exit(1);
                     }
                 },
+                "rollback" => {
+                    run_admin_rollback_cli(&paths, &args[3..]);
+                }
                 _ => {
-                    eprintln!("Usage: cortex admin <list-unowned|assign-owner|stats>");
+                    eprintln!(
+                        "Usage: cortex admin <list-unowned|assign-owner|stats|rollback>"
+                    );
                     std::process::exit(1);
                 }
             }
@@ -1285,6 +1291,12 @@ fn print_usage_and_exit(code: i32) -> ! {
     );
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
+    eprintln!(
+        "  admin rollback --session-id <id> [--apply] [--json]"
+    );
+    eprintln!(
+        "                  Soft-delete memories + decisions for a session (dry-run default)"
+    );
     eprintln!();
     eprintln!("Embeddings:");
     eprintln!("  embeddings status [--json]  Show active-model embedding backlog counts");
@@ -1663,6 +1675,149 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
 
     println!("[doctor] RED");
     std::process::exit(1);
+}
+
+/// `cortex admin rollback --session-id <id> [--apply] [--json]`
+///
+/// Soft-deletes every memory + decision the session's agent wrote from
+/// session start onward. Dry-run by default (reports counts, writes
+/// nothing). Recall already filters `status='active'` so flipped rows
+/// stop surfacing immediately.
+///
+/// When applied, writes a persistent `session.rolled_back` entry to the
+/// `events` table so SSE subscribers + audit trails see the action. The
+/// CLI runs offline; no live daemon connection is required.
+fn run_admin_rollback_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let mut session_id: Option<String> = None;
+    let mut apply = false;
+    let mut json_output = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--session-id" | "--session" => {
+                if let Some(v) = args.get(i + 1) {
+                    session_id = Some(v.clone());
+                    i += 1;
+                }
+            }
+            "--apply" => apply = true,
+            "--json" => json_output = true,
+            "--help" | "-h" => {
+                println!(
+                    "Usage: cortex admin rollback --session-id <id> [--apply] [--json]\n\
+                     \n\
+                     Soft-deletes every memory + decision written by the session's\n\
+                     agent since the session started. Dry-run by default; pass\n\
+                     --apply to write. Idempotent."
+                );
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("Unknown flag: {other}");
+                eprintln!(
+                    "Usage: cortex admin rollback --session-id <id> [--apply] [--json]"
+                );
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let Some(session_id) = session_id else {
+        eprintln!(
+            "Usage: cortex admin rollback --session-id <id> [--apply] [--json]"
+        );
+        std::process::exit(1);
+    };
+
+    let conn = match db::open(&paths.db) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("Error: failed to open database for rollback: {err}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(err) = db::configure(&conn) {
+        eprintln!("Error: failed to configure database for rollback: {err}");
+        std::process::exit(1);
+    }
+    // Ensure tables exist on a freshly-created DB so `--session-id`
+    // returns "not found" instead of "no such table".
+    if let Err(err) = db::initialize_schema(&conn) {
+        eprintln!("Error: failed to initialize schema: {err}");
+        std::process::exit(1);
+    }
+    db::run_pending_migrations(&conn);
+
+    let stats = match admin::rollback_session_by_id(&conn, &session_id, apply) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("Error: rollback failed: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    // On apply, persist a `session.rolled_back` event so SSE/audit see it
+    // even when the daemon was offline at rollback time.
+    if apply && !stats.agent.is_empty() {
+        let payload = json!({
+            "session_id": stats.session_id,
+            "agent": stats.agent,
+            "session_started_at": stats.session_started_at,
+            "memories_affected": stats.memories_affected,
+            "decisions_affected": stats.decisions_affected,
+            "already_rolled_back": stats.already_rolled_back,
+        });
+        let _ = conn.execute(
+            "INSERT INTO events(type, data, source_agent) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                "session.rolled_back",
+                payload.to_string(),
+                stats.agent,
+            ],
+        );
+    }
+
+    if json_output {
+        println!(
+            "{}",
+            json!({
+                "rollback": true,
+                "applied": stats.applied,
+                "session_id": stats.session_id,
+                "agent": stats.agent,
+                "session_started_at": stats.session_started_at,
+                "memories_affected": stats.memories_affected,
+                "decisions_affected": stats.decisions_affected,
+                "already_rolled_back": stats.already_rolled_back,
+            })
+        );
+    } else if stats.agent.is_empty() {
+        eprintln!(
+            "Session not found: '{session_id}'. The sessions table is keyed\n\
+             by agent + current session_id; expired / superseded sessions\n\
+             cannot be rolled back by id alone."
+        );
+        std::process::exit(1);
+    } else {
+        let label = if stats.applied { "applied" } else { "dry-run" };
+        println!(
+            "[rollback {label}] session={} agent={} started_at={}",
+            stats.session_id, stats.agent, stats.session_started_at
+        );
+        println!(
+            "  memories to flip: {}    decisions to flip: {}",
+            stats.memories_affected, stats.decisions_affected
+        );
+        if stats.already_rolled_back {
+            println!("  note: session already rolled back previously; nothing to do.");
+        }
+        if !stats.applied {
+            println!("  Dry-run only. Pass --apply to persist.");
+        }
+    }
+
+    std::process::exit(0);
 }
 
 fn run_reindex_cli(paths: &auth::CortexPaths, json_output: bool) {
