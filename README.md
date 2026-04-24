@@ -192,7 +192,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 
 <p align="center">
 <sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
-<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains some adapter-layer helpers. A fully helper-free baseline lands with the <code>cortex-http-pure</code> adapter in v0.6.0. Reranking + query expansion targeted for v0.6.0+.</sub>
+<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter ships in v0.6.0 as the canonical measurement floor -- every v0.6.0+ recall-quality claim is measured through it, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking production-ships in v0.6.0 Phase 2; query expansion (HyDE) targeted for v0.7.0.</sub>
 </p>
 
 ---
@@ -409,6 +409,7 @@ cargo audit
 | `cortex setup --team` | Initialize team mode and generate API keys |
 | `cortex export` | Export data (json or sql) |
 | `cortex import` | Import from a previous export |
+| `cortex admin rollback --session-id <id>` | Soft-delete a session's memory writes (dry-run default; `--apply` to persist) |
 
 </details>
 
