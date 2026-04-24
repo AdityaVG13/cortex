@@ -22,10 +22,7 @@ mod focus;
 mod handlers;
 mod hook_boot;
 mod indexer;
-mod logging;
 mod mcp_proxy;
-#[allow(dead_code)]
-mod mcp_stdio;
 mod prompt_inject;
 mod rate_limit;
 mod server;
