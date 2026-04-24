@@ -58,7 +58,9 @@ class BrainErrorBoundary extends Component {
   }
 }
 
-const DEFAULT_CORTEX_BASE = "http://127.0.0.1:7437";
+// Matches daemon-rs/src/main.rs:DEFAULT_CORTEX_PORT. Bump both simultaneously.
+const DEFAULT_CORTEX_PORT = 7437;
+const DEFAULT_CORTEX_BASE = `http://127.0.0.1:${DEFAULT_CORTEX_PORT}`;
 const FALLBACK_REFRESH_MS = 15000;
 const ANALYTICS_REFRESH_MS = 60000;
 const SSE_REFRESH_THROTTLE_MS = 300;
@@ -290,7 +292,7 @@ function formatDaemonEndpoint(cortexBase) {
     const port = url.port || (url.protocol === "https:" ? "443" : "80");
     return `${url.hostname}:${port}`;
   } catch {
-    return "127.0.0.1:7437";
+    return `127.0.0.1:${DEFAULT_CORTEX_PORT}`;
   }
 }
 

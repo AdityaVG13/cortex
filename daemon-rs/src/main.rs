@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: MIT
+
+/// Default TCP port the Cortex daemon binds to when no `--port` flag or
+/// `CORTEX_PORT` env var is set. Prod-path consumers must reference this
+/// constant rather than hard-coding `7437`. Test fixtures are exempt.
+pub const DEFAULT_CORTEX_PORT: u16 = 7437;
+
 mod aging;
 mod api_types;
 mod auth;

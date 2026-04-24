@@ -61,7 +61,7 @@ impl CortexPaths {
                     .ok()
                     .and_then(|s| s.parse().ok())
             })
-            .unwrap_or(7437);
+            .unwrap_or(crate::DEFAULT_CORTEX_PORT);
         let env_bind = std::env::var("CORTEX_BIND").ok();
         let bind = resolve_bind(bind_override, env_bind.as_deref());
         let ipc_endpoint = resolve_ipc_endpoint(&home, port);
