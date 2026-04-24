@@ -37,19 +37,84 @@ function isTruthy(value) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
+/**
+ * Resolve the routing decision for MCP bridge traffic.
+ *
+ * Priority order:
+ *   1. `CLAUDE_PLUGIN_OPTION_CORTEX_URL` (user-set via plugin config) — always wins.
+ *   2. When `CORTEX_DEV_PREFER_APP=1`: use `CORTEX_DEV_APP_URL` or `CORTEX_APP_URL`.
+ *      If neither is set the route fails with an explicit error — no local spawn fallback.
+ *   3. `CORTEX_APP_URL` (app installed + emitted its URL).
+ *   4. Local spawn (plugin-bundled daemon), guarded by policy flags:
+ *      - `CORTEX_DEV_DISABLE_LOCAL_SPAWN=1` forces failure unless
+ *      - `CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN=1` explicitly re-enables the fallback.
+ *
+ * Returned shape always includes `spawnAllowed` so downstream logic doesn't
+ * have to re-derive it from the reason string.
+ */
 function resolveRoute(config, env = process.env) {
   const explicitUrl = normalizeOption(config.cortexUrl);
+  const devPreferApp = isTruthy(env.CORTEX_DEV_PREFER_APP);
+  const devAppUrl = normalizeOption(env.CORTEX_DEV_APP_URL);
   const appUrl = normalizeOption(env.CORTEX_APP_URL);
+  const disableLocalSpawn = isTruthy(env.CORTEX_DEV_DISABLE_LOCAL_SPAWN);
+  const allowLocalSpawn = isTruthy(env.CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN);
 
   if (explicitUrl) {
-    return { mode: 'remote', url: explicitUrl, reason: 'explicit plugin URL' };
+    return {
+      mode: 'remote',
+      url: explicitUrl,
+      reason: 'explicit plugin URL',
+      spawnAllowed: false
+    };
+  }
+
+  if (devPreferApp) {
+    const chosenUrl = devAppUrl || appUrl;
+    if (!chosenUrl) {
+      return {
+        mode: 'fail',
+        url: '',
+        reason:
+          'CORTEX_DEV_PREFER_APP=1 but neither CORTEX_DEV_APP_URL nor CORTEX_APP_URL is set',
+        spawnAllowed: false,
+        error: true
+      };
+    }
+    return {
+      mode: 'remote',
+      url: chosenUrl,
+      reason: devAppUrl ? 'dev prefer app (CORTEX_DEV_APP_URL)' : 'dev prefer app (CORTEX_APP_URL)',
+      spawnAllowed: false
+    };
   }
 
   if (appUrl) {
-    return { mode: 'remote', url: appUrl, reason: 'app route' };
+    return {
+      mode: 'remote',
+      url: appUrl,
+      reason: 'app route',
+      spawnAllowed: false
+    };
   }
 
-  return { mode: 'local', url: '', reason: 'local service-first' };
+  if (disableLocalSpawn && !allowLocalSpawn) {
+    return {
+      mode: 'fail',
+      url: '',
+      reason:
+        'CORTEX_DEV_DISABLE_LOCAL_SPAWN=1 and no remote URL is set; set CORTEX_PLUGIN_ALLOW_LOCAL_SPAWN=1 to override',
+      spawnAllowed: false,
+      error: true
+    };
+  }
+
+  return {
+    mode: 'local',
+    url: '',
+    reason: 'local service-first',
+    spawnAllowed: true
+  };
 }
 
 function buildMcpArgs(route, pluginAgent) {
@@ -63,6 +128,9 @@ function buildMcpArgs(route, pluginAgent) {
 function resolveOwnerMode(route) {
   if (route.mode === 'local') {
     return 'solo-service';
+  }
+  if (route.mode === 'fail') {
+    return 'unresolved';
   }
   return route.reason === 'explicit plugin URL' ? 'team' : 'app';
 }
@@ -123,6 +191,27 @@ function runMcpBridge(options = {}) {
   const dryRun = isTruthy(env.CORTEX_PLUGIN_DRY_RUN);
   const route = resolveRoute({ cortexUrl }, env);
 
+  // Route-level failure (policy mismatch) is reported before we touch the
+  // binary resolver. Dry-run still prints the decision and exits 0; real
+  // invocations exit 1 so Claude Code surfaces the error.
+  if (route.mode === 'fail') {
+    log(`[cortex-plugin] MCP route: FAIL (${route.reason})`);
+    if (dryRun) {
+      log(
+        `[cortex-plugin] Dry run complete. agent=${pluginAgent} mode=fail url=(none) spawnAllowed=${route.spawnAllowed}`
+      );
+      if (options.exitOnDryRun !== false) {
+        exit(0);
+      }
+      return { ok: false, dryRun: true, route, pluginAgent };
+    }
+    crashLogger(`ROUTE FAILURE: ${route.reason}`);
+    if (options.exitOnFailure !== false) {
+      exit(1);
+    }
+    return { ok: false, route, pluginAgent };
+  }
+
   let binaryPath = '';
   let binarySource = '';
   try {
@@ -153,7 +242,11 @@ function runMcpBridge(options = {}) {
   const ownerMode = resolveOwnerMode(route);
   const childEnv = buildChildEnv(env, route, pluginAgent, ownerMode, processRef.pid, cortexApiKey);
 
-  log(`[cortex-plugin] MCP route: ${route.mode} (${route.reason})`);
+  log(
+    `[cortex-plugin] MCP route: ${route.mode} (${route.reason})` +
+      `${route.url ? ` url=${route.url}` : ''}` +
+      ` spawnAllowed=${route.spawnAllowed}`
+  );
   log(`[cortex-plugin] Cortex binary: ${binaryPath} (${binarySource})`);
   if (route.mode === 'local') {
     log(
@@ -164,7 +257,7 @@ function runMcpBridge(options = {}) {
 
   if (dryRun) {
     log(
-      `[cortex-plugin] Dry run complete. agent=${pluginAgent} mode=${route.mode} url=${route.url || '(none)'}`
+      `[cortex-plugin] Dry run complete. agent=${pluginAgent} mode=${route.mode} url=${route.url || '(none)'} spawnAllowed=${route.spawnAllowed}`
     );
     if (options.exitOnDryRun !== false) {
       exit(0);
