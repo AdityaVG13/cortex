@@ -37,6 +37,7 @@ DEFAULT_MEMORY_BACKEND = "cortex-http"
 SUPPORTED_MEMORY_BACKENDS = (
     "cortex-http",
     "cortex-http-base",
+    "cortex-http-pure",
 )
 TOKEN_GATE_PROFILES: dict[str, dict[str, float]] = {
     # Tighter ratios for providers that tend to carry heavier prompt wrappers/history overhead.
@@ -1950,10 +1951,12 @@ def _register_provider() -> None:
     _configure_imports()
     from cortex_amb_provider import CortexHTTPMemoryProvider
     from cortex_http_base_provider import CortexHTTPBaseMemoryProvider
+    from cortex_http_pure_provider import CortexHTTPPureMemoryProvider
     from memory_bench.memory import REGISTRY
 
     REGISTRY["cortex-http"] = CortexHTTPMemoryProvider
     REGISTRY["cortex-http-base"] = CortexHTTPBaseMemoryProvider
+    REGISTRY["cortex-http-pure"] = CortexHTTPPureMemoryProvider
 
 
 def _assert_amb_environment() -> None:

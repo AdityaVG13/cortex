@@ -358,3 +358,38 @@ jobs:
 
       - name: cargo check
         run: cargo check --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml
+
+  purity-gates:
+    name: Purity gates (v0.6.0+ recall-claim floor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Setup Python
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d
+        with:
+          python-version: "3.11"
+
+      - name: Make gates executable
+        run: chmod +x scripts/purity-gates/*.sh scripts/benchmark-triad.sh
+
+      - name: Gate -- adapter surface (<=150 LOC, no forbidden patterns)
+        run: bash scripts/purity-gates/adapter-surface-check.sh
+
+      - name: Gate -- daemon clean of benchmark-mode branches
+        run: bash scripts/purity-gates/daemon-clean.sh
+
+      - name: Gate -- CODEOWNERS protects purity surface
+        run: bash scripts/purity-gates/codeowners-protection.sh
+
+      - name: Gate -- CHANGELOG truthfulness (advisory)
+        run: bash scripts/purity-gates/changelog-truthfulness.sh
+
+      - name: Gate -- no helper env vars during pure run
+        env:
+          CORTEX_BENCHMARK_MODE: pure
+        run: bash scripts/purity-gates/no-helper-envvar.sh
+
+      - name: Pure adapter imports under py_compile
+        run: python -m py_compile benchmarking/adapters/cortex_http_pure_provider.py

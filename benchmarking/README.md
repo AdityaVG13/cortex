@@ -7,6 +7,42 @@ It intentionally separates:
 - `benchmark/`: existing in-repo Cortex recall/metric scripts
 - `benchmarking/`: external benchmark suites plus the glue needed to run Cortex against them
 
+## Benchmark modes (v0.6.0+)
+
+Cortex ships three measurement adapters. Pick based on what you want to measure.
+
+| Mode | Adapter | When to use | What it measures |
+|------|---------|-------------|------------------|
+| **Pure** | `cortex-http-pure` | **Default. Every new quality claim.** | Core daemon recall quality only. Zero helpers. Zero pre-/post-processing. Single `/recall` call per query. |
+| Base (deprecated) | `cortex-http-base` | Historical comparison only. | Partial helpers. Retained for pre-v0.6.0 continuity. Do not use for new claims. |
+| Tuned | `cortex-http` | Regression testing only. | Full helper stack. Not a core-quality claim. Shows what's possible with adapter-layer tuning; not representative of the daemon itself. |
+
+### Run a triad
+
+```bash
+bash scripts/benchmark-triad.sh longmemeval-s
+```
+
+Writes three JSON result files to `benchmarking/results/`. Pure is the canonical measurement.
+
+### Purity pledge
+
+Cortex commits to:
+
+1. **Local-first** -- measurements run against a local daemon; no cloud fallbacks.
+2. **No oracle leakage** -- queries never carry metadata the daemon would not see in production.
+3. **No scoring without credentials** -- scored runs require explicit answerer/judge API keys.
+4. **No helper inflation** -- every public recall-quality score claim comes from `cortex-http-pure`.
+
+Five CI gates enforce these in `scripts/purity-gates/`. `CODEOWNERS` protects the canonical adapter, `CHANGELOG.md`, and the gate scripts themselves from silent drift.
+
+### Adversarial suite + triangle judge
+
+- `benchmarking/adversarial/cas-100.jsonl` -- 100-item Cortex Adversarial Suite (15 categories). Wilson 95% CI half-width ±7pp at N=100.
+- `benchmarking/judges/triangle.py` -- three-judge cross-family protocol (GPT-4o + Claude + local Qwen3-30B via Ollama). Pairwise Cohen's κ + Fleiss' κ. `--answerer-family` overlap refuses to run.
+
+See `benchmarking/adversarial/cas-100.spec.md` for suite format + usage.
+
 ## Layout
 
 - `benchmarks.lock.json`: pinned external benchmark repos and their target commits

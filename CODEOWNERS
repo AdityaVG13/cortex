@@ -1,0 +1,13 @@
+# Cortex CODEOWNERS -- v0.6.0+ purity surface.
+#
+# The paths below protect the canonical measurement floor. Any change
+# requires maintainer review. Accidental helper reintroduction or
+# CHANGELOG drift would silently invalidate published recall-quality
+# claims.
+#
+# This file is referenced by scripts/purity-gates/codeowners-protection.sh.
+
+/benchmarking/adapters/cortex_http_pure_provider.py   @AdityaVG13
+/CHANGELOG.md                                         @AdityaVG13
+/scripts/purity-gates/                                @AdityaVG13
+/scripts/benchmark-triad.sh                           @AdityaVG13
