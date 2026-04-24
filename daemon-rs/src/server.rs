@@ -68,6 +68,7 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
         .route("/peek", get(handlers::recall::handle_peek))
         .route("/unfold", get(handlers::recall::handle_unfold))
         .route("/boot", get(handlers::boot::handle_boot))
+        .route("/boot/audit", get(handlers::boot::handle_boot_audit))
         .route("/diary", post(handlers::diary::handle_diary))
         .route(
             "/recall/budget",

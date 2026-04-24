@@ -150,7 +150,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 14] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 15] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -165,6 +165,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 14] = [
     ("012", "fts_tokenizer_porter_unicode61"),
     ("013", "embeddings_model_lookup_indexes"),
     ("014", "temporal_semantics_fields"),
+    ("015", "boot_audits"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -558,6 +559,33 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
                   ON embeddings(LOWER(COALESCE(model, '')));
                 CREATE INDEX IF NOT EXISTS idx_embeddings_target_model_norm
                   ON embeddings(target_type, target_id, LOWER(COALESCE(model, '')));
+                "#,
+            )?;
+            Ok(())
+        }
+        "015" => {
+            // C5 — boot audit trail. One row per /boot call so operators
+            // can reconstruct "what did Cortex inject into the prompt at
+            // time T for agent X". 30-day auto-prune runs in handler.
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS boot_audits (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  agent TEXT NOT NULL,
+                  profile TEXT NOT NULL,
+                  budget_tokens INTEGER NOT NULL,
+                  token_estimate INTEGER NOT NULL,
+                  token_savings INTEGER NOT NULL DEFAULT 0,
+                  capsules_count INTEGER NOT NULL DEFAULT 0,
+                  capsules_json TEXT,
+                  latency_ms INTEGER,
+                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_boot_audits_created_at
+                  ON boot_audits(created_at);
+                CREATE INDEX IF NOT EXISTS idx_boot_audits_agent_created
+                  ON boot_audits(agent, created_at);
                 "#,
             )?;
             Ok(())
