@@ -19,6 +19,10 @@ use serde_json::{json, Value};
 
 use crate::handlers::{estimate_tokens, estimate_tokens_from_chars};
 
+const DEFAULT_BOOT_MIN_SOURCE_TOKENS: usize = 40;
+const DEFAULT_BOOT_MAX_SOURCE_TOKENS: usize = 600;
+const SCORE_VARIANCE_FLAT_THRESHOLD: f64 = 0.0001;
+
 fn detect_identity() -> String {
     let user = env::var("USERNAME")
         .or_else(|_| env::var("USER"))
@@ -708,12 +712,300 @@ impl ContextItem {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SourceTokenBounds {
+    min: usize,
+    max: usize,
+}
+
+impl SourceTokenBounds {
+    fn new(min: usize, max: usize) -> Self {
+        let min = min.max(1);
+        Self {
+            min,
+            max: max.max(min),
+        }
+    }
+}
+
+struct PackedContext {
+    assembled_parts: Vec<String>,
+    admitted: Vec<Value>,
+    rejected: Vec<Value>,
+}
+
+fn read_usize_env(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn boot_source_token_bounds() -> SourceTokenBounds {
+    SourceTokenBounds::new(
+        read_usize_env(
+            "CORTEX_BOOT_MIN_SOURCE_TOKENS",
+            DEFAULT_BOOT_MIN_SOURCE_TOKENS,
+        ),
+        read_usize_env(
+            "CORTEX_BOOT_MAX_SOURCE_TOKENS",
+            DEFAULT_BOOT_MAX_SOURCE_TOKENS,
+        ),
+    )
+}
+
+fn score_signal_is_flat(items: &[ContextItem]) -> bool {
+    let mut count = 0usize;
+    let mut sum = 0.0;
+    for item in items.iter().filter(|item| !item.text.is_empty()) {
+        count += 1;
+        sum += item.priority;
+    }
+    if count <= 1 {
+        return true;
+    }
+
+    let mean = sum / count as f64;
+    let variance = items
+        .iter()
+        .filter(|item| !item.text.is_empty())
+        .map(|item| {
+            let delta = item.priority - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / count as f64;
+    variance < SCORE_VARIANCE_FLAT_THRESHOLD
+}
+
+fn truncate_to_token_budget(text: &str, token_budget: usize) -> (String, usize) {
+    if token_budget == 0 {
+        return (String::new(), 0);
+    }
+
+    let total_chars = text.chars().count();
+    let mut char_budget = ((token_budget as f64 * 3.5) as usize)
+        .max(1)
+        .min(total_chars);
+
+    loop {
+        let prefix: String = text.chars().take(char_budget).collect();
+        let candidate = format!("{prefix}...");
+        let tokens = estimate_tokens(&candidate);
+        if tokens <= token_budget || char_budget <= 1 {
+            return (candidate, tokens);
+        }
+        char_budget -= 1;
+    }
+}
+
+fn pack_context_items_greedy(items: &[ContextItem], max_tokens: usize) -> PackedContext {
+    let mut budget_remaining = max_tokens;
+    let mut admitted: Vec<Value> = Vec::new();
+    let mut rejected: Vec<Value> = Vec::new();
+    let mut assembled_parts: Vec<String> = Vec::new();
+
+    for item in items {
+        if item.tokens <= budget_remaining && !item.text.is_empty() {
+            assembled_parts.push(item.text.clone());
+            budget_remaining -= item.tokens;
+            admitted.push(json!({
+                "name": item.name,
+                "tokens": item.tokens,
+                "priority": item.priority,
+                "utility": (item.utility * 10000.0).round() / 10000.0
+            }));
+        } else if !item.text.is_empty() {
+            // Try truncation for high-priority items
+            if item.priority >= 0.7 && budget_remaining > 30 {
+                let trunc_chars = (budget_remaining as f64 * 3.5) as usize;
+                let truncated: String = item.text.chars().take(trunc_chars).collect();
+                let trunc_tokens = estimate_tokens(&truncated);
+                assembled_parts.push(format!("{truncated}..."));
+                budget_remaining = budget_remaining.saturating_sub(trunc_tokens);
+                admitted.push(json!({
+                    "name": item.name,
+                    "tokens": trunc_tokens,
+                    "priority": item.priority,
+                    "truncated": true
+                }));
+            } else {
+                rejected.push(json!({
+                    "name": item.name,
+                    "tokens": item.tokens,
+                    "priority": item.priority,
+                    "reason": "budget_exceeded"
+                }));
+            }
+        }
+    }
+
+    PackedContext {
+        assembled_parts,
+        admitted,
+        rejected,
+    }
+}
+
+fn score_adaptive_allocations(
+    items: &[ContextItem],
+    max_tokens: usize,
+    bounds: SourceTokenBounds,
+) -> Vec<usize> {
+    let mut order: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !item.text.is_empty())
+        .map(|(idx, _)| idx)
+        .collect();
+    order.sort_by(|left, right| {
+        items[*right]
+            .priority
+            .partial_cmp(&items[*left].priority)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                items[*right]
+                    .utility
+                    .partial_cmp(&items[*left].utility)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+
+    let mut allocations = vec![0usize; items.len()];
+    let mut floor_spent = 0usize;
+    for idx in order {
+        let item = &items[idx];
+        let floor = item.tokens.min(bounds.min).min(bounds.max);
+        if floor == 0 {
+            continue;
+        }
+        if floor_spent.saturating_add(floor) <= max_tokens {
+            allocations[idx] = floor;
+            floor_spent += floor;
+        } else if allocations.iter().all(|allocation| *allocation == 0) && max_tokens > 0 {
+            allocations[idx] = item.tokens.min(bounds.max).min(max_tokens);
+            floor_spent += allocations[idx];
+        }
+    }
+
+    let mut remaining = max_tokens.saturating_sub(floor_spent);
+    while remaining > 0 {
+        let eligible: Vec<usize> = allocations
+            .iter()
+            .enumerate()
+            .filter(|(idx, allocation)| {
+                **allocation > 0 && **allocation < items[*idx].tokens.min(bounds.max)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+        if eligible.is_empty() {
+            break;
+        }
+
+        let total_score = eligible
+            .iter()
+            .map(|idx| items[*idx].priority.max(0.01))
+            .sum::<f64>();
+        let mut allocated_any = false;
+        for idx in eligible {
+            if remaining == 0 {
+                break;
+            }
+            let cap = items[idx].tokens.min(bounds.max);
+            let room = cap.saturating_sub(allocations[idx]);
+            if room == 0 {
+                continue;
+            }
+            let share = ((remaining as f64) * (items[idx].priority.max(0.01) / total_score)).ceil()
+                as usize;
+            let delta = share.max(1).min(room).min(remaining);
+            allocations[idx] += delta;
+            remaining -= delta;
+            allocated_any = true;
+        }
+        if !allocated_any {
+            break;
+        }
+    }
+
+    allocations
+}
+
+fn pack_context_items_score_adaptive(
+    items: &[ContextItem],
+    max_tokens: usize,
+    bounds: SourceTokenBounds,
+) -> PackedContext {
+    let allocations = score_adaptive_allocations(items, max_tokens, bounds);
+    let mut admitted: Vec<Value> = Vec::new();
+    let mut rejected: Vec<Value> = Vec::new();
+    let mut assembled_parts: Vec<String> = Vec::new();
+
+    for (idx, item) in items.iter().enumerate() {
+        if item.text.is_empty() {
+            continue;
+        }
+        let allocation = allocations[idx];
+        if allocation == 0 {
+            rejected.push(json!({
+                "name": item.name,
+                "tokens": item.tokens,
+                "priority": item.priority,
+                "reason": "score_adaptive_budget_exceeded"
+            }));
+            continue;
+        }
+
+        if item.tokens <= allocation {
+            assembled_parts.push(item.text.clone());
+            admitted.push(json!({
+                "name": item.name,
+                "tokens": item.tokens,
+                "allocatedTokens": allocation,
+                "priority": item.priority,
+                "utility": (item.utility * 10000.0).round() / 10000.0,
+                "packing": "score_adaptive"
+            }));
+        } else {
+            let (truncated, trunc_tokens) = truncate_to_token_budget(&item.text, allocation);
+            assembled_parts.push(truncated);
+            admitted.push(json!({
+                "name": item.name,
+                "tokens": trunc_tokens,
+                "allocatedTokens": allocation,
+                "priority": item.priority,
+                "truncated": true,
+                "packing": "score_adaptive"
+            }));
+        }
+    }
+
+    PackedContext {
+        assembled_parts,
+        admitted,
+        rejected,
+    }
+}
+
+fn pack_context_items(
+    items: &[ContextItem],
+    max_tokens: usize,
+    bounds: SourceTokenBounds,
+) -> PackedContext {
+    if score_signal_is_flat(items) {
+        pack_context_items_greedy(items, max_tokens)
+    } else {
+        pack_context_items_score_adaptive(items, max_tokens, bounds)
+    }
+}
+
 /// Compile the boot prompt for an agent within a token budget.
 ///
-/// Prompt Compiler Pipeline (v2 -- ranked context packing):
+/// Prompt Compiler Pipeline (v3 -- score-adaptive context packing):
 ///  1. Gather all context items with priority scores
 ///  2. Sort by utility (priority / token_cost) -- best bang-per-token first
-///  3. Greedily pack within budget
+///  3. Pack within budget using score-adaptive truncation when score variance exists
 ///  4. Record admitted vs rejected for observability
 ///  5. Return prompt with compilation metadata and savings
 pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -> BootResult {
@@ -792,46 +1084,11 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // ── 4. Greedy budget packing ────────────────────────────────────────────
-    let mut budget_remaining = max_tokens;
-    let mut admitted: Vec<Value> = Vec::new();
-    let mut rejected: Vec<Value> = Vec::new();
-    let mut assembled_parts: Vec<String> = Vec::new();
-
-    for item in &items {
-        if item.tokens <= budget_remaining && !item.text.is_empty() {
-            assembled_parts.push(item.text.clone());
-            budget_remaining -= item.tokens;
-            admitted.push(json!({
-                "name": item.name,
-                "tokens": item.tokens,
-                "priority": item.priority,
-                "utility": (item.utility * 10000.0).round() / 10000.0
-            }));
-        } else if !item.text.is_empty() {
-            // Try truncation for high-priority items
-            if item.priority >= 0.7 && budget_remaining > 30 {
-                let trunc_chars = (budget_remaining as f64 * 3.5) as usize;
-                let truncated: String = item.text.chars().take(trunc_chars).collect();
-                let trunc_tokens = estimate_tokens(&truncated);
-                assembled_parts.push(format!("{truncated}..."));
-                budget_remaining = budget_remaining.saturating_sub(trunc_tokens);
-                admitted.push(json!({
-                    "name": item.name,
-                    "tokens": trunc_tokens,
-                    "priority": item.priority,
-                    "truncated": true
-                }));
-            } else {
-                rejected.push(json!({
-                    "name": item.name,
-                    "tokens": item.tokens,
-                    "priority": item.priority,
-                    "reason": "budget_exceeded"
-                }));
-            }
-        }
-    }
+    // ── 4. Score-adaptive budget packing ────────────────────────────────────
+    let packed = pack_context_items(&items, max_tokens, boot_source_token_bounds());
+    let admitted = packed.admitted;
+    let rejected = packed.rejected;
+    let assembled_parts = packed.assembled_parts;
 
     let assembled = assembled_parts.join("\n\n");
     let token_estimate = estimate_tokens(&assembled);
@@ -881,3 +1138,83 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
 
 // Dead code removed: find_memory_dir, read_memory_files, read_lessons
 // (indexer.rs has its own implementation; these were ported but unused)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repeated_text(label: &str, repeats: usize) -> String {
+        let mut text = format!("## {label}\n");
+        for idx in 0..repeats {
+            text.push_str(&format!("{label} detail {idx}. "));
+        }
+        text
+    }
+
+    fn admitted_tokens(admitted: &[Value], name: &str, key: &str) -> usize {
+        admitted
+            .iter()
+            .find(|item| item.get("name").and_then(Value::as_str) == Some(name))
+            .and_then(|item| item.get(key))
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn flat_score_fallback_matches_legacy_greedy_packing() {
+        let items = vec![
+            ContextItem::new("alpha", repeated_text("alpha", 40), 0.5),
+            ContextItem::new("beta", repeated_text("beta", 40), 0.5),
+            ContextItem::new("gamma", repeated_text("gamma", 40), 0.5),
+        ];
+
+        let legacy = pack_context_items_greedy(&items, 120);
+        let packed = pack_context_items(&items, 120, SourceTokenBounds::new(20, 200));
+
+        assert_eq!(packed.assembled_parts, legacy.assembled_parts);
+        assert_eq!(packed.admitted, legacy.admitted);
+        assert_eq!(packed.rejected, legacy.rejected);
+    }
+
+    #[test]
+    fn score_adaptive_packing_gives_high_score_sources_more_tokens() {
+        let items = vec![
+            ContextItem::new("high", repeated_text("high", 140), 0.95),
+            ContextItem::new("low", repeated_text("low", 140), 0.15),
+        ];
+
+        let packed = pack_context_items(&items, 140, SourceTokenBounds::new(24, 120));
+        let high_allocated = admitted_tokens(&packed.admitted, "high", "allocatedTokens");
+        let low_allocated = admitted_tokens(&packed.admitted, "low", "allocatedTokens");
+        let high_tokens = admitted_tokens(&packed.admitted, "high", "tokens");
+        let low_tokens = admitted_tokens(&packed.admitted, "low", "tokens");
+
+        assert!(
+            high_allocated > low_allocated,
+            "expected high-score allocation > low-score allocation: {packed:?}",
+            packed = packed.admitted
+        );
+        assert!(
+            high_tokens > low_tokens,
+            "expected high-score source to receive more emitted tokens: {packed:?}",
+            packed = packed.admitted
+        );
+    }
+
+    #[test]
+    fn source_token_bounds_keeps_max_at_or_above_min() {
+        assert_eq!(
+            SourceTokenBounds::new(80, 40),
+            SourceTokenBounds { min: 80, max: 80 }
+        );
+    }
+
+    #[test]
+    fn score_adaptive_allocation_respects_budget_below_floor() {
+        let items = vec![ContextItem::new("tiny", repeated_text("tiny", 80), 1.0)];
+        let allocations = score_adaptive_allocations(&items, 10, SourceTokenBounds::new(40, 120));
+
+        assert_eq!(allocations, vec![10]);
+    }
+}
