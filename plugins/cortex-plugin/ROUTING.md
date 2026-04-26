@@ -1,65 +1,57 @@
-# Cortex Plugin Routing Policy (App-First + Local Service-First)
+# Cortex Plugin Routing Policy (HTTP Attach-Only)
 
-The plugin prefers app-managed routing, but local plugin mode is allowed for
-plugin-only users. In local mode, `cortex plugin mcp` performs service-first
-daemon ensure on Windows and then bridges MCP.
+The Claude Code plugin never starts a Cortex daemon and never shells into a
+`cortex` binary for the MCP bridge. The Control Center/service owns daemon
+lifecycle. The plugin attaches to an already-running daemon over HTTP.
 
 ## Priority Order
+
 1. Explicit plugin URL (`CLAUDE_PLUGIN_OPTION_CORTEX_URL`)
 2. App route URL (`CORTEX_APP_URL`)
-3. Local route (`localhost` with service-first ensure)
+3. Local attach-only route (`http://127.0.0.1:7437`)
 
-## Binary Selection Order (for MCP bridge and SessionStart probes)
-1. Explicit binary override (`CORTEX_APP_BINARY`, `CORTEX_DAEMON_BINARY`, `CORTEX_PLUGIN_CORTEX_BINARY`)
-2. App-managed canonical install (`~/.cortex/bin/cortex[.exe]`)
-3. Common workspace dev/release builds (`~/cortex/daemon-rs/target*`)
-4. Bundled plugin runtime binary (`CLAUDE_PLUGIN_DATA/bin/cortex[.exe]`) -- allowed as local fallback when safe
-
-This keeps plugin tooling aligned with the app daemon in development and avoids
-relying on stale bundled binaries when a canonical app-managed binary exists.
-
-## Local Binary Safety Gate
-- In local mode, plugin scripts reject temporary runtime binaries by default.
-- App-managed binaries are preferred; plugin-bundled fallback is allowed when safe.
-- Optional strict mode:
-  - `CORTEX_PLUGIN_REQUIRE_APP_BINARY=1` forces app-managed binary only.
-- Optional compatibility override:
-  - `CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY=1` permits bundled fallback even when strict mode is set.
+`CORTEX_DEV_PREFER_APP=1` is strict: it requires `CORTEX_APP_URL` and fails
+instead of falling back.
 
 ## Supported Environment Inputs
+
 - `CLAUDE_PLUGIN_OPTION_CORTEX_URL`
   - Preferred explicit route for team/remote endpoint.
 - `CLAUDE_PLUGIN_OPTION_CORTEX_API_KEY`
-  - Optional API key for explicit remote route.
+  - Required API key for non-local explicit remote routes.
 - `CORTEX_APP_URL`
   - Preferred app-managed endpoint route during development.
+- `CORTEX_API_KEY`
+  - Fallback API key for app-managed remote routes.
 - `CORTEX_PLUGIN_DRY_RUN=1`
-  - Prints resolved route and exits without launching MCP bridge child.
-- `CORTEX_APP_BINARY`, `CORTEX_DAEMON_BINARY`, `CORTEX_PLUGIN_CORTEX_BINARY`
-  - Optional explicit binary override for plugin bridge/hook execution.
-- `CORTEX_WORKSPACE_ROOT`
-  - Optional workspace root used to discover dev/release daemon builds.
-- `CORTEX_PLUGIN_REQUIRE_APP_BINARY=1`
-  - Optional strict policy to require app-managed binary in local mode.
-- `CORTEX_PLUGIN_ALLOW_BUNDLED_BINARY=1`
-  - Optional escape hatch to permit bundled plugin binaries when strict mode is active.
+  - Prints resolved route and exits without opening the MCP proxy loop.
+
+Legacy local-spawn toggles are ignored by the MCP entry point because no local
+spawn path exists there anymore.
 
 ## Route Matrix
-- Plugin URL set -> route `remote` -> pass `--url` and optional `--api-key`
-- No plugin URL, app URL set -> route `remote` -> pass `--url`
-- No plugin/app URL -> route `local` -> service-first ensure on Windows, then local bridge
+
+- Plugin URL set -> route `remote` -> Node stdio-to-HTTP proxy
+- No plugin URL, app URL set -> route `remote` -> Node stdio-to-HTTP proxy
+- No plugin/app URL -> route `local` -> Node stdio-to-HTTP proxy to `127.0.0.1:7437`
+- `CORTEX_DEV_PREFER_APP=1` without `CORTEX_APP_URL` -> explicit failure
 
 ## Lifecycle Guarantees
+
 - Plugin SessionStart hook is status-only and never starts/stops daemon.
-- SessionStart probes `/readiness` first and falls back to `/health` for older daemons.
-- Plugin MCP bridge never direct-spawns daemon binaries itself.
-- Local plugin mode delegates daemon readiness to `cortex plugin mcp` service-first policy (Windows) or returns a clear unsupported-local-ensure error on non-Windows.
-- If local mode resolves only temporary binaries, plugin blocks fallback and surfaces safe-binary guidance.
+- SessionStart probes `/readiness` first and falls back to `/health`.
+- Plugin MCP bridge posts JSON-RPC to `/mcp-rpc` with:
+  - `X-Cortex-Request: true`
+  - `Authorization: Bearer <token>` for local or remote authenticated routes
+  - `X-Source-Agent`
+  - optional `X-Source-Model`
+- Local token auth is read from `CORTEX_TOKEN_PATH`, `CORTEX_HOME/cortex.token`,
+  or `~/.cortex/cortex.token`.
+- If local mode cannot reach a ready daemon, the bridge exits with
+  `APP_INIT_REQUIRED` and instructs the user to open Cortex Control Center.
 
 ## Lockstep Requirement
-Plugin-bundled daemon versions and app daemon versions should ship in lockstep.
 
-Minimum release guard:
-1. Build plugin bundle from the same daemon commit used by app release artifacts.
-2. Keep plugin version and daemon release manifest aligned in release checklist.
-3. Add CI guard that fails release when plugin bundle daemon version differs from app daemon version.
+Plugin release artifacts and app daemon versions should still ship in lockstep,
+but plugin MCP routing no longer depends on a bundled or canonical daemon binary.
+
