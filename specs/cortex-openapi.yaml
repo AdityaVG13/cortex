@@ -335,7 +335,14 @@ components:
           type: string
         confidence:
           type: number
+        ttl_seconds:
+          type: integer
+        retention_class:
+          $ref: '#/components/schemas/RetentionClass'
       additionalProperties: true
+    RetentionClass:
+      type: string
+      enum: [durable, operational, audit, ephemeral]
     ImportPayload:
       type: object
       properties:
@@ -365,6 +372,8 @@ components:
           type: number
         score:
           type: number
+        retention_class:
+          $ref: '#/components/schemas/RetentionClass'
     ImportDecision:
       type: object
       required: [decision]
@@ -381,3 +390,5 @@ components:
           type: number
         score:
           type: number
+        retention_class:
+          $ref: '#/components/schemas/RetentionClass'

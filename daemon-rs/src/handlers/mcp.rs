@@ -17,10 +17,11 @@ use super::recall::{
     parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext,
 };
 use super::store::{
-    persist_decision_embedding, store_decision_with_input_embedding_and_provenance,
+    persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention,
     DecisionProvenance,
 };
 use super::{estimate_tokens, now_iso, SourceIdentity};
+use crate::api_types::RetentionClass;
 use crate::state::RuntimeState;
 use crate::{aging, db, indexer};
 
@@ -1730,7 +1731,9 @@ pub fn mcp_tools() -> Vec<Value> {
                     "type": { "type": "string", "description": "Entry type (default: decision)" },
                     "source_agent": { "type": "string", "description": "Agent that produced this" },
                     "confidence": { "type": "number", "description": "Confidence score 0-1 (default: 0.8)" },
-                    "reasoning_depth": { "type": "string", "description": "single-shot | multi-step | tool-assisted | chain-of-thought | user-stated" }
+                    "reasoning_depth": { "type": "string", "description": "single-shot | multi-step | tool-assisted | chain-of-thought | user-stated" },
+                    "ttl_seconds": { "type": "number", "description": "Explicit TTL in seconds; overrides retention-class default TTL" },
+                    "retention_class": { "type": "string", "enum": ["durable", "operational", "audit", "ephemeral"], "description": "Retention policy class; default inferred from type/text" }
                 },
                 "required": ["decision"]
             }
@@ -2289,13 +2292,20 @@ async fn mcp_dispatch(
                 DecisionProvenance::from_fields(&source_agent, source_model, reasoning_depth);
             let confidence = arg_f64(args, &["confidence", "conf"]);
             let ttl_seconds = arg_i64(args, &["ttl_seconds", "ttl"]);
+            let retention_class = match arg_str(args, &["retention_class", "retentionClass"]) {
+                Some(raw) => Some(
+                    RetentionClass::parse(raw)
+                        .ok_or_else(|| format!("Invalid retention_class: {raw}"))?,
+                ),
+                None => None,
+            };
             let decision_embedding = state
                 .embedding_engine
                 .as_ref()
                 .and_then(|engine| engine.embed(decision));
 
             let mut conn = state.db.lock().await;
-            let (entry, new_id) = store_decision_with_input_embedding_and_provenance(
+            let (entry, new_id) = store_decision_with_input_embedding_and_provenance_retention(
                 &mut conn,
                 decision,
                 context,
@@ -2304,6 +2314,7 @@ async fn mcp_dispatch(
                 provenance,
                 confidence,
                 ttl_seconds,
+                retention_class,
                 decision_embedding.as_deref(),
                 caller_id,
             )
@@ -2327,6 +2338,7 @@ async fn mcp_dispatch(
                 "sourceAgent": source_agent,
                 "kind": entry.get("kind").cloned().unwrap_or(Value::Null),
                 "action": entry.get("action").cloned().unwrap_or_else(|| json!("stored")),
+                "retention_class": entry.get("retention_class").cloned().unwrap_or(Value::Null),
             }))
         }
 

@@ -10,7 +10,7 @@ use super::{
     ensure_auth_with_caller_rated_for_class, json_response, log_event, now_iso,
     resolve_source_identity, truncate_chars,
 };
-use crate::api_types::StoreRequest;
+use crate::api_types::{RetentionClass, StoreRequest};
 use crate::conflict::{
     detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
 };
@@ -276,7 +276,7 @@ pub async fn handle_store(
         .and_then(|engine| engine.embed(&decision_text));
 
     let mut conn = state.db.lock().await;
-    let result = store_decision_with_input_embedding_and_provenance(
+    let result = store_decision_with_input_embedding_and_provenance_retention(
         &mut conn,
         &decision_text,
         body.context,
@@ -285,6 +285,7 @@ pub async fn handle_store(
         provenance,
         body.confidence,
         body.ttl_seconds,
+        body.retention_class,
         decision_embedding.as_deref(),
         caller_id,
     );
@@ -357,6 +358,7 @@ pub fn store_decision(
         confidence,
         None,
         None,
+        None,
         owner_id,
     )
     .map_err(|err| err.to_string())
@@ -383,6 +385,7 @@ pub fn store_decision_with_ttl(
         provenance,
         confidence,
         ttl_seconds,
+        None,
         None,
         owner_id,
     )
@@ -429,6 +432,35 @@ pub(crate) fn store_decision_with_input_embedding_and_provenance(
     query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
+    store_decision_with_input_embedding_and_provenance_retention(
+        conn,
+        decision,
+        context,
+        entry_type,
+        source_agent,
+        provenance,
+        confidence,
+        ttl_seconds,
+        None,
+        query_embedding,
+        owner_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn store_decision_with_input_embedding_and_provenance_retention(
+    conn: &mut Connection,
+    decision: &str,
+    context: Option<String>,
+    entry_type: Option<String>,
+    source_agent: String,
+    provenance: DecisionProvenance,
+    confidence: Option<f64>,
+    ttl_seconds: Option<i64>,
+    retention_class: Option<RetentionClass>,
+    query_embedding: Option<&[f32]>,
+    owner_id: Option<i64>,
+) -> Result<(Value, Option<i64>), StoreError> {
     store_decision_internal(
         conn,
         decision,
@@ -438,6 +470,7 @@ pub(crate) fn store_decision_with_input_embedding_and_provenance(
         provenance,
         confidence,
         ttl_seconds,
+        retention_class,
         query_embedding,
         owner_id,
     )
@@ -453,6 +486,7 @@ fn store_decision_internal(
     provenance: DecisionProvenance,
     confidence: Option<f64>,
     ttl_seconds: Option<i64>,
+    retention_class: Option<RetentionClass>,
     query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
@@ -471,7 +505,11 @@ fn store_decision_internal(
     let confidence = confidence.unwrap_or(0.8);
     let trust_score = provenance.trust_score(confidence);
     let ts = now_iso();
-    let expires_at = compute_expires_at(conn, ttl_seconds).map_err(StoreError::Internal)?;
+    let retention_class =
+        RetentionClass::classify(retention_class, &entry_type, decision, context.as_deref());
+    let effective_ttl_seconds = ttl_seconds.or_else(|| retention_class.default_ttl_seconds());
+    let expires_at =
+        compute_expires_at(conn, effective_ttl_seconds).map_err(StoreError::Internal)?;
 
     if decision_truncated {
         let _ = log_event(
@@ -500,6 +538,7 @@ fn store_decision_internal(
             confidence,
             trust_score,
             quality.score,
+            retention_class,
             expires_at,
             &ts,
             owner_id,
@@ -554,6 +593,7 @@ fn store_decision_internal(
             confidence,
             trust_score,
             quality.score,
+            retention_class,
             expires_at,
             &ts,
             owner_id,
@@ -572,6 +612,7 @@ fn store_decision_internal(
         confidence,
         trust_score,
         quality.score,
+        retention_class,
         expires_at,
         &ts,
         owner_id,
@@ -589,6 +630,7 @@ fn store_decision_legacy(
     confidence: f64,
     trust_score: f64,
     quality: i32,
+    retention_class: RetentionClass,
     expires_at: Option<String>,
     ts: &str,
     owner_id: Option<i64>,
@@ -608,6 +650,7 @@ fn store_decision_legacy(
                 confidence,
                 trust_score,
                 quality,
+                retention_class,
                 expires_at.as_deref(),
                 ts,
                 owner_id,
@@ -636,6 +679,7 @@ fn store_decision_legacy(
                 confidence,
                 trust_score,
                 quality,
+                retention_class,
                 expires_at.as_deref(),
                 ts,
                 owner_id,
@@ -713,6 +757,7 @@ fn store_decision_legacy(
         confidence,
         trust_score,
         quality,
+        retention_class,
         expires_at,
         ts,
         owner_id,
@@ -734,6 +779,7 @@ fn handle_contradiction_policy(
     confidence: f64,
     trust_score: f64,
     quality: i32,
+    retention_class: RetentionClass,
     expires_at: Option<&str>,
     ts: &str,
     owner_id: Option<i64>,
@@ -780,6 +826,7 @@ fn handle_contradiction_policy(
         confidence,
         trust_score,
         quality,
+        retention_class,
         expires_at,
         ts,
         owner_id,
@@ -834,6 +881,7 @@ fn handle_contradiction_policy(
         "action": "inserted",
         "id": new_id,
         "status": if incoming_wins { "active" } else { "disputed" },
+        "retention_class": retention_class.as_str(),
         "quality": quality,
         "conflictWith": existing_id,
         "resolution_strategy": strategy,
@@ -967,6 +1015,7 @@ fn handle_refinement_policy(
     confidence: f64,
     trust_score: f64,
     quality: i32,
+    retention_class: RetentionClass,
     expires_at: Option<&str>,
     ts: &str,
     owner_id: Option<i64>,
@@ -1009,6 +1058,7 @@ fn handle_refinement_policy(
         confidence,
         trust_score,
         quality,
+        retention_class,
         expires_at,
         ts,
         owner_id,
@@ -1084,6 +1134,7 @@ fn handle_refinement_policy(
         "action": "inserted",
         "id": new_id,
         "status": if should_supersede { "superseded_old" } else { "disputed" },
+        "retention_class": retention_class.as_str(),
         "quality": quality,
     });
     if should_supersede {
@@ -1117,6 +1168,7 @@ fn insert_decision_with_state(
     confidence: f64,
     trust_score: f64,
     quality: i32,
+    retention_class: RetentionClass,
     expires_at: Option<&str>,
     ts: &str,
     owner_id: Option<i64>,
@@ -1129,8 +1181,8 @@ fn insert_decision_with_state(
     if let Some(oid) = owner_id {
         tx.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, disputes_id, supersedes_id, owner_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14, ?15, ?16, ?17)",
+             (decision, context, type, source_agent, confidence, surprise, status, disputes_id, supersedes_id, owner_id, quality, retention_class, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16, ?17, ?18)",
             params![
                 decision,
                 context,
@@ -1143,6 +1195,7 @@ fn insert_decision_with_state(
                 supersedes_id,
                 oid,
                 quality,
+                retention_class.as_str(),
                 expires_at,
                 ts,
                 provenance.source_client.as_str(),
@@ -1154,8 +1207,8 @@ fn insert_decision_with_state(
     } else {
         tx.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, disputes_id, supersedes_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16)",
+             (decision, context, type, source_agent, confidence, surprise, status, disputes_id, supersedes_id, quality, retention_class, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?14, ?15, ?16, ?17)",
             params![
                 decision,
                 context,
@@ -1167,6 +1220,7 @@ fn insert_decision_with_state(
                 disputes_id,
                 supersedes_id,
                 quality,
+                retention_class.as_str(),
                 expires_at,
                 ts,
                 provenance.source_client.as_str(),
@@ -1595,6 +1649,7 @@ fn insert_decision(
     confidence: f64,
     trust_score: f64,
     quality: i32,
+    retention_class: RetentionClass,
     expires_at: Option<String>,
     ts: &str,
     owner_id: Option<i64>,
@@ -1605,8 +1660,8 @@ fn insert_decision(
     if let Some(oid) = owner_id {
         conn.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, owner_id, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)",
+             (decision, context, type, source_agent, confidence, surprise, status, owner_id, quality, retention_class, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14, ?15)",
             params![
                 decision,
                 context,
@@ -1616,6 +1671,7 @@ fn insert_decision(
                 surprise,
                 oid,
                 quality,
+                retention_class.as_str(),
                 expires_at,
                 ts,
                 provenance.source_client.as_str(),
@@ -1627,8 +1683,8 @@ fn insert_decision(
     } else {
         conn.execute(
             "INSERT INTO decisions \
-             (decision, context, type, source_agent, confidence, surprise, status, quality, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
+             (decision, context, type, source_agent, confidence, surprise, status, quality, retention_class, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)",
             params![
                 decision,
                 context,
@@ -1637,6 +1693,7 @@ fn insert_decision(
                 confidence,
                 surprise,
                 quality,
+                retention_class.as_str(),
                 expires_at,
                 ts,
                 provenance.source_client.as_str(),
@@ -1667,9 +1724,10 @@ fn insert_decision(
     Ok((
         json!({
             "action": "inserted",
-            "id": id,
-            "status": "active",
-            "surprise": surprise,
+                "id": id,
+                "status": "active",
+                "retention_class": retention_class.as_str(),
+                "surprise": surprise,
             "quality": quality,
         }),
         Some(id),
@@ -2388,6 +2446,103 @@ mod tests {
     }
 
     #[test]
+    fn store_decision_explicit_retention_class_overrides_entry_type() {
+        let mut conn = test_conn();
+        let provenance = DecisionProvenance::from_fields("tester", None, None);
+        let (entry, new_id) = store_decision_with_input_embedding_and_provenance_retention(
+            &mut conn,
+            "audit record with enough detail to persist",
+            Some("permission audit".to_string()),
+            Some("decision".to_string()),
+            "tester".to_string(),
+            provenance,
+            None,
+            None,
+            Some(RetentionClass::Audit),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            entry.get("retention_class").and_then(Value::as_str),
+            Some("audit")
+        );
+        let new_id = new_id.unwrap();
+        let row: (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT retention_class, expires_at,
+                        expires_at > datetime('now', '+364 days')
+                        AND expires_at < datetime('now', '+366 days')
+                 FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "audit");
+        assert!(row.1.is_some());
+        assert_eq!(row.2, 1);
+    }
+
+    #[test]
+    fn store_decision_entry_type_sets_default_retention_ttl() {
+        let mut conn = test_conn();
+        let (_, new_id) = store_decision_with_ttl(
+            &mut conn,
+            "observation with enough detail to persist",
+            Some("ops note".to_string()),
+            Some("observation".to_string()),
+            "tester".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let new_id = new_id.unwrap();
+        let row: (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT retention_class, expires_at,
+                        expires_at > datetime('now', '+89 days')
+                        AND expires_at < datetime('now', '+91 days')
+                 FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "operational");
+        assert!(row.1.is_some());
+        assert_eq!(row.2, 1);
+    }
+
+    #[test]
+    fn store_decision_text_heuristic_marks_unknown_type_durable() {
+        let mut conn = test_conn();
+        let (_, new_id) = store_decision_with_ttl(
+            &mut conn,
+            "Always preserve this architecture convention with enough detail",
+            Some("api contract".to_string()),
+            Some("misc".to_string()),
+            "tester".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let new_id = new_id.unwrap();
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT retention_class, expires_at FROM decisions WHERE id = ?1",
+                [new_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "durable");
+        assert!(row.1.is_none());
+    }
+
+    #[test]
     fn store_decision_without_ttl_leaves_expires_at_null() {
         let mut conn = test_conn();
         let (_, new_id) = store_decision_with_ttl(
@@ -2403,13 +2558,14 @@ mod tests {
         .unwrap();
 
         let new_id = new_id.unwrap();
-        let expires_at: Option<String> = conn
+        let row: (String, Option<String>) = conn
             .query_row(
-                "SELECT expires_at FROM decisions WHERE id = ?1",
+                "SELECT retention_class, expires_at FROM decisions WHERE id = ?1",
                 [new_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert!(expires_at.is_none());
+        assert_eq!(row.0, "durable");
+        assert!(row.1.is_none());
     }
 }

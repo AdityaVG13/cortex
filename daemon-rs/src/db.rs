@@ -150,7 +150,7 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
 
 type MigrationDef = (&'static str, &'static str);
 
-const SCHEMA_MIGRATIONS: [MigrationDef; 15] = [
+const SCHEMA_MIGRATIONS: [MigrationDef; 16] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -166,6 +166,7 @@ const SCHEMA_MIGRATIONS: [MigrationDef; 15] = [
     ("013", "embeddings_model_lookup_indexes"),
     ("014", "temporal_semantics_fields"),
     ("015", "boot_audits"),
+    ("016", "retention_classes"),
 ];
 
 /// Return ordered schema migration definitions.
@@ -623,6 +624,41 @@ fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
             )?;
             Ok(())
         }
+        "016" => {
+            ensure_column(
+                conn,
+                "memories",
+                "ALTER TABLE memories ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'",
+            )?;
+            ensure_column(
+                conn,
+                "decisions",
+                "ALTER TABLE decisions ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'",
+            )?;
+            let _ = conn.execute(
+                "UPDATE memories SET retention_class = 'operational'
+                 WHERE retention_class IS NULL
+                    OR retention_class = ''
+                    OR retention_class NOT IN ('durable', 'operational', 'audit', 'ephemeral')",
+                [],
+            );
+            let _ = conn.execute(
+                "UPDATE decisions SET retention_class = 'operational'
+                 WHERE retention_class IS NULL
+                    OR retention_class = ''
+                    OR retention_class NOT IN ('durable', 'operational', 'audit', 'ephemeral')",
+                [],
+            );
+            conn.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_memories_retention_class
+                  ON memories(retention_class);
+                CREATE INDEX IF NOT EXISTS idx_decisions_retention_class
+                  ON decisions(retention_class);
+                "#,
+            )?;
+            Ok(())
+        }
         other => Err(migration_error(format!(
             "unknown schema migration: {other}"
         ))),
@@ -740,6 +776,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           confirmed_by TEXT,
           merged_count INTEGER DEFAULT 0,
           quality INTEGER DEFAULT 50,
+          retention_class TEXT NOT NULL DEFAULT 'operational'
+            CHECK (retention_class IN ('durable', 'operational', 'audit', 'ephemeral')),
           expires_at TEXT,
           observed_at TEXT,
           valid_from TEXT,
@@ -771,6 +809,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           confirmed_by TEXT,
           merged_count INTEGER DEFAULT 0,
           quality INTEGER DEFAULT 50,
+          retention_class TEXT NOT NULL DEFAULT 'operational'
+            CHECK (retention_class IN ('durable', 'operational', 'audit', 'ephemeral')),
           expires_at TEXT,
           observed_at TEXT,
           valid_from TEXT,
@@ -2504,6 +2544,7 @@ mod tests {
         assert!(table_has_column(&conn, "memories", "source_model"));
         assert!(table_has_column(&conn, "memories", "reasoning_depth"));
         assert!(table_has_column(&conn, "memories", "trust_score"));
+        assert!(table_has_column(&conn, "memories", "retention_class"));
         assert!(table_has_column(&conn, "memories", "observed_at"));
         assert!(table_has_column(&conn, "memories", "valid_from"));
         assert!(table_has_column(&conn, "memories", "valid_until"));
@@ -2514,6 +2555,7 @@ mod tests {
         assert!(table_has_column(&conn, "decisions", "source_model"));
         assert!(table_has_column(&conn, "decisions", "reasoning_depth"));
         assert!(table_has_column(&conn, "decisions", "trust_score"));
+        assert!(table_has_column(&conn, "decisions", "retention_class"));
         assert!(table_has_column(&conn, "decisions", "observed_at"));
         assert!(table_has_column(&conn, "decisions", "valid_from"));
         assert!(table_has_column(&conn, "decisions", "valid_until"));
