@@ -387,6 +387,8 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
                 "key": embedding_model.key,
                 "display_name": embedding_model.display_name,
                 "dimension": embedding_model.dimension,
+                "max_input_tokens": embedding_model.max_input_tokens,
+                "pooling": embedding_model.pooling,
                 "model_file": embedding_model.model_file,
                 "tokenizer_file": embedding_model.tokenizer_file
             },

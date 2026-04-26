@@ -1,61 +1,182 @@
 // SPDX-License-Identifier: MIT
 //! In-process ONNX embedding engine.
 //!
-//! Uses a selectable embedding profile (default: all-MiniLM-L12-v2, 118MB, 384-dim)
-//! downloaded on first run.
+//! Uses a selectable embedding profile (default: bge-base-en-v1.5, 438MB,
+//! 768-dim) downloaded on first run.
 //! Embeddings work the moment Cortex starts.
 
 use ort::session::Session;
 use ort::value::Tensor;
+use std::borrow::Cow;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
-const MAX_INPUT_TOKENS: usize = 256;
-
 const MODEL_ENV_KEY: &str = "CORTEX_EMBEDDING_MODEL";
 const POOL_ENV_KEY: &str = "CORTEX_EMBED_SESSION_POOL_SIZE";
+const TEXT_TRUNCATE_BYTES: usize = 2000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PoolingStrategy {
+    Mean,
+    Cls,
+    LastToken,
+}
+
+impl PoolingStrategy {
+    fn as_str(self) -> &'static str {
+        match self {
+            PoolingStrategy::Mean => "mean",
+            PoolingStrategy::Cls => "cls",
+            PoolingStrategy::LastToken => "last_token",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EmbeddingInputKind {
+    Query,
+    Passage,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EmbeddingModelAsset {
+    file: &'static str,
+    url: &'static str,
+}
 
 struct EmbeddingModelProfile {
     key: &'static str,
     display_name: &'static str,
     dimension: usize,
+    max_input_tokens: usize,
     model_file: &'static str,
     tokenizer_file: &'static str,
     model_url: &'static str,
     tokenizer_url: &'static str,
+    auxiliary_files: &'static [EmbeddingModelAsset],
+    query_prefix: &'static str,
+    passage_prefix: &'static str,
+    pooling: PoolingStrategy,
+    normalize: bool,
+    include_token_type_ids: bool,
+}
+
+impl EmbeddingModelProfile {
+    fn primary_assets(&self) -> [EmbeddingModelAsset; 2] {
+        [
+            EmbeddingModelAsset {
+                file: self.model_file,
+                url: self.model_url,
+            },
+            EmbeddingModelAsset {
+                file: self.tokenizer_file,
+                url: self.tokenizer_url,
+            },
+        ]
+    }
+
+    fn missing_assets(&self, models_dir: &Path) -> Vec<EmbeddingModelAsset> {
+        let primary = self.primary_assets();
+        primary
+            .iter()
+            .chain(self.auxiliary_files.iter())
+            .copied()
+            .filter(|asset| !models_dir.join(asset.file).exists())
+            .collect()
+    }
+
+    fn assets_exist(&self, models_dir: &Path) -> bool {
+        self.missing_assets(models_dir).is_empty()
+    }
 }
 
 const ALL_MINILM_L6_V2: EmbeddingModelProfile = EmbeddingModelProfile {
     key: "all-minilm-l6-v2",
     display_name: "all-MiniLM-L6-v2",
     dimension: 384,
+    max_input_tokens: 256,
     model_file: "all-MiniLM-L6-v2.onnx",
     tokenizer_file: "tokenizer.json",
     model_url:
         "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
     tokenizer_url:
         "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+    auxiliary_files: &[],
+    query_prefix: "",
+    passage_prefix: "",
+    pooling: PoolingStrategy::Mean,
+    normalize: true,
+    include_token_type_ids: true,
 };
 
 const ALL_MINILM_L12_V2: EmbeddingModelProfile = EmbeddingModelProfile {
     key: "all-minilm-l12-v2",
     display_name: "all-MiniLM-L12-v2",
     dimension: 384,
+    max_input_tokens: 256,
     model_file: "all-MiniLM-L12-v2.onnx",
     tokenizer_file: "all-MiniLM-L12-v2-tokenizer.json",
     model_url:
         "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
     tokenizer_url:
         "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/tokenizer.json",
+    auxiliary_files: &[],
+    query_prefix: "",
+    passage_prefix: "",
+    pooling: PoolingStrategy::Mean,
+    normalize: true,
+    include_token_type_ids: true,
 };
+
+const BGE_BASE_EN_V1_5: EmbeddingModelProfile = EmbeddingModelProfile {
+    key: "bge-base-en-v1.5",
+    display_name: "bge-base-en-v1.5",
+    dimension: 768,
+    max_input_tokens: 512,
+    model_file: "bge-base-en-v1.5.onnx",
+    tokenizer_file: "bge-base-en-v1.5-tokenizer.json",
+    model_url: "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/onnx/model.onnx",
+    tokenizer_url: "https://huggingface.co/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json",
+    auxiliary_files: &[],
+    query_prefix: "Represent this sentence for searching relevant passages: ",
+    passage_prefix: "",
+    pooling: PoolingStrategy::Cls,
+    normalize: true,
+    include_token_type_ids: true,
+};
+
+const QWEN3_EMBEDDING_0_6B: EmbeddingModelProfile = EmbeddingModelProfile {
+    key: "qwen3-embedding-0.6b",
+    display_name: "Qwen3-Embedding-0.6B",
+    dimension: 1024,
+    max_input_tokens: 512,
+    model_file: "qwen3-embedding-0.6b/model_uint8.onnx",
+    tokenizer_file: "qwen3-embedding-0.6b/tokenizer.json",
+    model_url:
+        "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_uint8.onnx",
+    tokenizer_url:
+        "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json",
+    auxiliary_files: &[],
+    query_prefix:
+        "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:",
+    passage_prefix: "",
+    pooling: PoolingStrategy::LastToken,
+    normalize: true,
+    include_token_type_ids: false,
+};
+
+const DEFAULT_PROFILE: &EmbeddingModelProfile = &BGE_BASE_EN_V1_5;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EmbeddingModelSelection {
     pub key: &'static str,
     pub display_name: &'static str,
     pub dimension: usize,
+    pub max_input_tokens: usize,
     pub model_file: &'static str,
     pub tokenizer_file: &'static str,
+    pub pooling: &'static str,
 }
 
 fn normalize_model_key(raw: &str) -> String {
@@ -70,15 +191,19 @@ fn resolve_profile() -> &'static EmbeddingModelProfile {
             }
             "all-minilm-l12-v2" | "all-minilm-l12v2" | "minilm-l12" | "minilm-modern"
             | "minilm" => &ALL_MINILM_L12_V2,
+            "bge-base-en-v1.5" | "bge-base-en-v15" | "bge-base" | "bge" => &BGE_BASE_EN_V1_5,
+            "qwen3-embedding-0.6b" | "qwen3-embedding-06b" | "qwen3-embedding" | "qwen3" => {
+                &QWEN3_EMBEDDING_0_6B
+            }
             unknown => {
                 eprintln!(
                     "[embeddings] Unknown {MODEL_ENV_KEY}='{unknown}', falling back to {}",
-                    ALL_MINILM_L12_V2.key
+                    DEFAULT_PROFILE.key
                 );
-                &ALL_MINILM_L12_V2
+                DEFAULT_PROFILE
             }
         },
-        Err(_) => &ALL_MINILM_L12_V2,
+        Err(_) => DEFAULT_PROFILE,
     }
 }
 
@@ -88,13 +213,19 @@ pub fn selected_model_selection() -> EmbeddingModelSelection {
         key: profile.key,
         display_name: profile.display_name,
         dimension: profile.dimension,
+        max_input_tokens: profile.max_input_tokens,
         model_file: profile.model_file,
         tokenizer_file: profile.tokenizer_file,
+        pooling: profile.pooling.as_str(),
     }
 }
 
 pub fn selected_model_key() -> &'static str {
     selected_model_selection().key
+}
+
+pub fn selected_model_assets_exist(models_dir: &Path) -> bool {
+    resolve_profile().assets_exist(models_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -129,7 +260,13 @@ pub struct EmbeddingEngine {
     next: std::sync::atomic::AtomicUsize,
     tokenizer: Tokenizer,
     dimension: usize,
+    max_input_tokens: usize,
     model_key: &'static str,
+    query_prefix: &'static str,
+    passage_prefix: &'static str,
+    pooling: PoolingStrategy,
+    normalize: bool,
+    include_token_type_ids: bool,
 }
 
 impl EmbeddingEngine {
@@ -151,11 +288,15 @@ impl EmbeddingEngine {
         let model_path = models_dir.join(profile.model_file);
         let tok_path = models_dir.join(profile.tokenizer_file);
 
-        if !model_path.exists() || !tok_path.exists() {
+        let missing_assets = profile.missing_assets(models_dir);
+        if !missing_assets.is_empty() {
+            let missing = missing_assets
+                .iter()
+                .map(|asset| asset.file)
+                .collect::<Vec<_>>()
+                .join(", ");
             return Err(format!(
-                "model assets missing (model_exists={}, tokenizer_exists={}) at {}",
-                model_path.exists(),
-                tok_path.exists(),
+                "model assets missing ({missing}) at {}",
                 models_dir.display()
             ));
         }
@@ -179,7 +320,13 @@ impl EmbeddingEngine {
             next: std::sync::atomic::AtomicUsize::new(0),
             tokenizer,
             dimension: profile.dimension,
+            max_input_tokens: profile.max_input_tokens,
             model_key: profile.key,
+            query_prefix: profile.query_prefix,
+            passage_prefix: profile.passage_prefix,
+            pooling: profile.pooling,
+            normalize: profile.normalize,
+            include_token_type_ids: profile.include_token_type_ids,
         })
     }
 
@@ -231,17 +378,31 @@ impl EmbeddingEngine {
         &text[..end]
     }
 
-    /// Generate an embedding for `text` using the selected profile dimension.
-    pub fn embed(&self, text: &str) -> Option<Vec<f32>> {
-        let truncated = Self::truncate_to_char_boundary(text, 2000);
+    fn input_text<'a>(&self, text: &'a str, kind: EmbeddingInputKind) -> Cow<'a, str> {
+        let prefix = match kind {
+            EmbeddingInputKind::Query => self.query_prefix,
+            EmbeddingInputKind::Passage => self.passage_prefix,
+        };
+        if prefix.is_empty() {
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(format!("{prefix}{text}"))
+        }
+    }
 
+    fn embed_with_kind(&self, text: &str, kind: EmbeddingInputKind) -> Option<Vec<f32>> {
+        let input = self.input_text(text, kind);
+        let truncated = Self::truncate_to_char_boundary(input.as_ref(), TEXT_TRUNCATE_BYTES);
         let encoding = self.tokenizer.encode(truncated, true).ok()?;
 
         let ids = encoding.get_ids();
         let attention = encoding.get_attention_mask();
         let type_ids = encoding.get_type_ids();
 
-        let len = ids.len().min(MAX_INPUT_TOKENS);
+        let len = ids.len().min(self.max_input_tokens);
+        if len == 0 {
+            return None;
+        }
         let ids = &ids[..len];
         let attention = &attention[..len];
         let type_ids = &type_ids[..len];
@@ -259,13 +420,19 @@ impl EmbeddingEngine {
         let idx =
             self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.sessions.len();
         let mut session = self.sessions[idx].lock().ok()?;
-        let outputs = session
-            .run(ort::inputs![
+        let outputs = if self.include_token_type_ids {
+            session.run(ort::inputs![
                 "input_ids" => ids_tensor,
                 "attention_mask" => mask_tensor,
                 "token_type_ids" => type_tensor,
             ])
-            .ok()?;
+        } else {
+            session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+            ])
+        }
+        .ok()?;
 
         let (shape, data) = outputs[0].try_extract_tensor::<f32>().ok()?;
         let dims: Vec<i64> = shape.iter().copied().collect();
@@ -276,32 +443,88 @@ impl EmbeddingEngine {
         }
 
         let seq_len_out = dims[1] as usize;
-        let mut pooled = vec![0.0f32; self.dimension];
-        let mut mask_sum = 0.0f32;
+        Self::pool_output(
+            data,
+            self.dimension,
+            seq_len_out,
+            attention,
+            self.pooling,
+            self.normalize,
+        )
+    }
 
-        for seq_idx in 0..seq_len_out {
-            let mask_val = attention[seq_idx.min(len - 1)] as f32;
-            mask_sum += mask_val;
-            let offset = seq_idx * self.dimension;
-            for dim in 0..self.dimension {
-                pooled[dim] += data[offset + dim] * mask_val;
+    fn pool_output(
+        data: &[f32],
+        dimension: usize,
+        seq_len_out: usize,
+        attention: &[u32],
+        pooling: PoolingStrategy,
+        normalize: bool,
+    ) -> Option<Vec<f32>> {
+        if dimension == 0 || seq_len_out == 0 || data.len() < seq_len_out * dimension {
+            return None;
+        }
+
+        let mut pooled = vec![0.0f32; dimension];
+        match pooling {
+            PoolingStrategy::Mean => {
+                let mut mask_sum = 0.0f32;
+                let attention_fallback_index = attention.len().saturating_sub(1);
+                for seq_idx in 0..seq_len_out {
+                    let mask_val = attention
+                        .get(seq_idx)
+                        .or_else(|| attention.get(attention_fallback_index))
+                        .copied()
+                        .unwrap_or(1) as f32;
+                    mask_sum += mask_val;
+                    let offset = seq_idx * dimension;
+                    for dim in 0..dimension {
+                        pooled[dim] += data[offset + dim] * mask_val;
+                    }
+                }
+
+                if mask_sum > 0.0 {
+                    for v in &mut pooled {
+                        *v /= mask_sum;
+                    }
+                }
+            }
+            PoolingStrategy::Cls => {
+                pooled.copy_from_slice(data.get(0..dimension)?);
+            }
+            PoolingStrategy::LastToken => {
+                let attention_limit = seq_len_out.min(attention.len());
+                let last_idx = attention
+                    .iter()
+                    .take(attention_limit)
+                    .rposition(|mask| *mask != 0)
+                    .unwrap_or(seq_len_out - 1);
+                let offset = last_idx * dimension;
+                pooled.copy_from_slice(data.get(offset..offset + dimension)?);
             }
         }
 
-        if mask_sum > 0.0 {
-            for v in &mut pooled {
-                *v /= mask_sum;
-            }
-        }
-
-        let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for v in &mut pooled {
-                *v /= norm;
+        if normalize {
+            let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for v in &mut pooled {
+                    *v /= norm;
+                }
             }
         }
 
         Some(pooled)
+    }
+
+    /// Generate a passage embedding for `text` using the selected profile.
+    pub fn embed(&self, text: &str) -> Option<Vec<f32>> {
+        self.embed_with_kind(text, EmbeddingInputKind::Passage)
+    }
+
+    /// Generate a query embedding for retrieval. Profiles such as BGE apply a
+    /// query instruction prefix here while stored passages remain unprefixed.
+    pub fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
+        self.embed_with_kind(text, EmbeddingInputKind::Query)
     }
 
     pub fn dimension(&self) -> usize {
@@ -371,10 +594,7 @@ pub async fn ensure_model_downloaded_in(models_dir: &Path) -> Option<PathBuf> {
     let profile = resolve_profile();
     std::fs::create_dir_all(models_dir).ok()?;
 
-    let model_path = models_dir.join(profile.model_file);
-    let tok_path = models_dir.join(profile.tokenizer_file);
-
-    if model_path.exists() && tok_path.exists() {
+    if profile.assets_exist(models_dir) {
         return Some(models_dir.to_path_buf());
     }
 
@@ -383,21 +603,12 @@ pub async fn ensure_model_downloaded_in(models_dir: &Path) -> Option<PathBuf> {
         profile.display_name
     );
 
-    if !model_path.exists() {
-        match download_file(profile.model_url, &model_path).await {
-            Ok(()) => eprintln!("[embeddings] Model downloaded: {}", model_path.display()),
+    for asset in profile.missing_assets(models_dir) {
+        let asset_path = models_dir.join(asset.file);
+        match download_file(asset.url, &asset_path).await {
+            Ok(()) => eprintln!("[embeddings] Asset downloaded: {}", asset_path.display()),
             Err(e) => {
-                eprintln!("[embeddings] Model download failed: {e}");
-                return None;
-            }
-        }
-    }
-
-    if !tok_path.exists() {
-        match download_file(profile.tokenizer_url, &tok_path).await {
-            Ok(()) => eprintln!("[embeddings] Tokenizer downloaded: {}", tok_path.display()),
-            Err(e) => {
-                eprintln!("[embeddings] Tokenizer download failed: {e}");
+                eprintln!("[embeddings] Asset download failed for {}: {e}", asset.file);
                 return None;
             }
         }
@@ -407,19 +618,35 @@ pub async fn ensure_model_downloaded_in(models_dir: &Path) -> Option<PathBuf> {
 }
 
 async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
+    let mut resp = client.get(url).send().await.map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    std::fs::write(dest, &bytes).map_err(|e| e.to_string())?;
+    let tmp_dest = dest.with_file_name(format!(
+        "{}.tmp",
+        dest.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("download")
+    ));
+    let mut file = std::fs::File::create(&tmp_dest).map_err(|e| e.to_string())?;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+    }
+    file.sync_all().map_err(|e| e.to_string())?;
+    drop(file);
+
+    std::fs::rename(&tmp_dest, dest).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -464,15 +691,27 @@ mod tests {
     }
 
     #[test]
-    fn selected_model_defaults_to_minilm_modern() {
+    fn selected_model_defaults_to_bge_base() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(None);
         let selected = selected_model_selection();
-        assert_eq!(selected.key, "all-minilm-l12-v2");
-        assert_eq!(selected.display_name, "all-MiniLM-L12-v2");
-        assert_eq!(selected.dimension, 384);
-        assert_eq!(selected.model_file, "all-MiniLM-L12-v2.onnx");
-        assert_eq!(selected.tokenizer_file, "all-MiniLM-L12-v2-tokenizer.json");
+        assert_eq!(selected.key, "bge-base-en-v1.5");
+        assert_eq!(selected.display_name, "bge-base-en-v1.5");
+        assert_eq!(selected.dimension, 768);
+        assert_eq!(selected.max_input_tokens, 512);
+        assert_eq!(selected.model_file, "bge-base-en-v1.5.onnx");
+        assert_eq!(selected.tokenizer_file, "bge-base-en-v1.5-tokenizer.json");
+        assert_eq!(selected.pooling, "cls");
+    }
+
+    #[test]
+    fn selected_model_accepts_bge_aliases() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _restore = set_model_env_for_test(None);
+        std::env::set_var(MODEL_ENV_KEY, "bge");
+        assert_eq!(selected_model_key(), "bge-base-en-v1.5");
+        std::env::set_var(MODEL_ENV_KEY, "bge-base");
+        assert_eq!(selected_model_key(), "bge-base-en-v1.5");
     }
 
     #[test]
@@ -489,7 +728,7 @@ mod tests {
     fn unknown_model_falls_back_to_default() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_model_env_for_test(Some("unknown-model-key"));
-        assert_eq!(selected_model_key(), "all-minilm-l12-v2");
+        assert_eq!(selected_model_key(), "bge-base-en-v1.5");
     }
 
     #[test]
@@ -502,6 +741,63 @@ mod tests {
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
         std::env::set_var(MODEL_ENV_KEY, "minilm-modern");
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
+    }
+
+    #[test]
+    fn selected_model_accepts_qwen3_aliases() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _restore = set_model_env_for_test(None);
+        std::env::set_var(MODEL_ENV_KEY, "qwen3");
+        let selected = selected_model_selection();
+        assert_eq!(selected.key, "qwen3-embedding-0.6b");
+        assert_eq!(selected.dimension, 1024);
+        assert_eq!(selected.max_input_tokens, 512);
+        assert_eq!(selected.model_file, "qwen3-embedding-0.6b/model_uint8.onnx");
+        assert_eq!(
+            selected.tokenizer_file,
+            "qwen3-embedding-0.6b/tokenizer.json"
+        );
+        assert_eq!(selected.pooling, "last_token");
+    }
+
+    #[test]
+    fn qwen3_profile_uses_single_quantized_onnx_asset() {
+        let missing = QWEN3_EMBEDDING_0_6B.missing_assets(Path::new("missing-models-dir"));
+        let files = missing.iter().map(|asset| asset.file).collect::<Vec<_>>();
+        assert!(files.contains(&"qwen3-embedding-0.6b/model_uint8.onnx"));
+        assert!(files.contains(&"qwen3-embedding-0.6b/tokenizer.json"));
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn pooling_strategies_select_expected_token() {
+        let data = [
+            1.0, 0.0, // token 0
+            0.0, 2.0, // token 1
+            3.0, 0.0, // token 2
+        ];
+        let attention = [1, 1, 0];
+
+        let mean =
+            EmbeddingEngine::pool_output(&data, 2, 3, &attention, PoolingStrategy::Mean, false)
+                .unwrap();
+        assert_eq!(mean, vec![0.5, 1.0]);
+
+        let cls =
+            EmbeddingEngine::pool_output(&data, 2, 3, &attention, PoolingStrategy::Cls, false)
+                .unwrap();
+        assert_eq!(cls, vec![1.0, 0.0]);
+
+        let last = EmbeddingEngine::pool_output(
+            &data,
+            2,
+            3,
+            &attention,
+            PoolingStrategy::LastToken,
+            false,
+        )
+        .unwrap();
+        assert_eq!(last, vec![0.0, 2.0]);
     }
 
     #[test]

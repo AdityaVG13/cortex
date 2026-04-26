@@ -534,8 +534,7 @@ async fn step_init() -> StepResult {
 
     // Check ONNX model
     let models_dir = cortex_dir.join("models");
-    let model_exists = models_dir.join(embedding_model.model_file).exists()
-        && models_dir.join(embedding_model.tokenizer_file).exists();
+    let model_exists = embeddings::selected_model_assets_exist(&models_dir);
 
     if model_exists {
         notes.push(format!(
@@ -559,8 +558,12 @@ async fn step_init() -> StepResult {
     }
 
     notes.push(format!(
-        "Embedding profile: {} [{} | {}d]",
-        embedding_model.display_name, embedding_model.key, embedding_model.dimension
+        "Embedding profile: {} [{} | {}d | {} pooling | {} tokens]",
+        embedding_model.display_name,
+        embedding_model.key,
+        embedding_model.dimension,
+        embedding_model.pooling,
+        embedding_model.max_input_tokens
     ));
 
     if let Some((backlog_memories, backlog_decisions)) =

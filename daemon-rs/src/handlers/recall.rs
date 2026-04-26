@@ -2017,7 +2017,7 @@ pub async fn execute_unified_recall(
     let mut conn = state.db.lock().await;
     let engine = state.embedding_engine.as_deref();
     let dflag = Some(&state.degraded_mode);
-    let mut query_vector = engine.and_then(|runtime_engine| runtime_engine.embed(query_text));
+    let mut query_vector = engine.and_then(|runtime_engine| runtime_engine.embed_query(query_text));
     if engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
@@ -2246,7 +2246,7 @@ async fn execute_recall_policy_explain_inner(
     let dflag = Some(&state.degraded_mode);
     let query_vector = query_vector_override
         .map(|vector| vector.to_vec())
-        .or_else(|| engine.and_then(|runtime_engine| runtime_engine.embed(query_text)));
+        .or_else(|| engine.and_then(|runtime_engine| runtime_engine.embed_query(query_text)));
     if query_vector_override.is_none() && engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
@@ -2513,7 +2513,7 @@ pub async fn execute_semantic_recall(
     let query_vector = state
         .embedding_engine
         .as_ref()
-        .and_then(|engine| engine.embed(query_text));
+        .and_then(|engine| engine.embed_query(query_text));
     let semantic_available = query_vector.is_some();
     let (budgeted, semantic_route) = {
         let conn = state.db.lock().await;
@@ -2600,7 +2600,7 @@ fn run_recall_with_engine(
     source_prefix: Option<&str>,
     degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
-    let query_vector = engine.and_then(|engine| engine.embed(query_text));
+    let query_vector = engine.and_then(|engine| engine.embed_query(query_text));
     if engine.is_some() {
         update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
     }
@@ -3988,7 +3988,7 @@ fn run_budget_recall_trace_with_engine(
     source_prefix: Option<&str>,
     degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<RecallBudgetTrace, String> {
-    let query_vector = engine.and_then(|engine| engine.embed(query_text));
+    let query_vector = engine.and_then(|engine| engine.embed_query(query_text));
     if engine.is_some() {
         update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
     }

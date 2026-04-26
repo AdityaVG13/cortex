@@ -72,7 +72,7 @@ pub async fn handle_feedback(
     let query_embedding = state
         .embedding_engine
         .as_ref()
-        .and_then(|e| e.embed(query_text))
+        .and_then(|e| e.embed_query(query_text))
         .map(|v| embeddings::vector_to_blob(&v));
 
     let conn = state.db.lock().await;
@@ -120,7 +120,7 @@ pub fn record_unfold_feedback(
 ) {
     let query_text = query_hint.unwrap_or("");
     let query_blob = engine
-        .and_then(|e| e.embed(query_text))
+        .and_then(|e| e.embed_query(query_text))
         .map(|v| embeddings::vector_to_blob(&v));
 
     for source in sources {

@@ -5,7 +5,7 @@
 //! proxy forwards all MCP messages to the running daemon via POST /mcp-rpc.
 //!
 //! Architecture win:
-//! - One ONNX MiniLM engine (in the daemon), shared across ALL clients
+//! - One ONNX embedding engine (in the daemon), shared across ALL clients
 //! - One set of caches and counters (served_content, co-occurrence)
 //! - Zero extra memory per MCP session (~2MB proxy vs ~70MB standalone)
 //! - All agents (Claude, Cursor, Gemini, Codex) hit the same state
