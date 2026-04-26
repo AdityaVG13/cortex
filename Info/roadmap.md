@@ -13,69 +13,60 @@
 - One-daemon lifecycle hardening and spawn-path guardrails
 - Cross-surface adapter conformance + contract test coverage
 - OpenAPI / version sweep + clippy / test release gates
-- Chrome extension local-first MV3 companion + CI policy guardrails
 - Retrieval: RRF, crystal family recall, synonym parity
 - Control Center: analytics, agents, Monte Carlo projections
 - Agent telemetry, conflict detection, client permissions
 - Public docs, CHANGELOG, security policy, and release verification
+- TTL / hard expiration for temporal facts
+- Schema migration framework with `cortex doctor` validation
+- Derived-state repair CLIs: `reindex`, `re-embed`, `recrystallize`
+- Semantic dedup on store path
+- Recall feedback loop — agent usage tunes future ranking
+- Embedding profile selection (`all-MiniLM-L6-v2` default, `L12-v2` opt-in)
 
 ---
 
-## v0.6.0 — Foundation Hardening &nbsp; `next`
+## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `next`
 
-> Make Cortex robust for daily development workflows.
+> Make Cortex usable day-to-day, manageable at team scale, and measurably better at recall.
 
 | Theme | Details |
 |-------|---------|
-| **Lifecycle control** | TTL / hard expiration for short-lived facts. Session rollback for bad agent runs. |
-| **Schema discipline** | Versioned migrations with explicit upgrade checks. Doctor-style validation command. |
-| **Derived-state repair** | Rebuild commands for indexes, embeddings, and crystallized state. |
-| **Memory quality** | Semantic dedup on store path. Boot prompt audit trail. |
+| **Accessibility & Settings** | WCAG 2.2 AA engine. First-class Settings panel (Accessibility, Appearance & Motion, Connection, Keyboard & Navigation). Real preference-driven behavior. |
+| **Motion system** | Unified sidebar and tab transitions with reduced-motion support. One shared easing language. |
+| **Recall quality** | Phase 0 purity (`cortex-http-pure` adapter, 5 CI gates, CAS-100 + triangle judge). Phase 1 embedding upgrade (`bge-base-en-v1.5` default). Phase 2 cross-encoder reranker (`ms-marco-MiniLM-L-6-v2` int8). |
+| **Budget governance** | Per-endpoint limits: recall depth, boot budget, invocation frequency caps. |
+| **Retention classes** | Durable knowledge vs operational context vs audit vs ephemera. Prereq for budget governance. |
+| **Context ranking** | Dynamic ranking in injectors — top-N by activeness × relevance, not fixed set. |
+| **Foundation carryovers** | Session rollback CLI (`cortex admin rollback`). Boot prompt audit trail. Score-adaptive truncation for boot. `DEFAULT_CORTEX_PORT` consolidation. |
 
 <details>
 <summary>Contributor-ready tasks</summary>
 
-- Add migration tests for new metadata columns
-- Improve CLI UX around repair/reindex status output
-- Add failure-mode tests for rollback and dedup edge cases
+- Keyboard navigation model across Control Center
+- ARIA compliance pass (dialogs, tablists, live regions)
+- Reduced-motion runtime plumbing (not just preference flag)
+- Retention class schema migration + classification helpers
+- Per-endpoint rate-limit config + tests
+- CLI and tests for `cortex admin rollback --session-id`
 
 </details>
 
 ---
 
-## v0.7.0 — Governance & Economics &nbsp; `planned`
+## v0.7.0 — Multi-Tenant Hardening &nbsp; `planned`
 
-> Make team deployments predictable, auditable, and budget-aware.
-
-| Theme | Details |
-|-------|---------|
-| **Budget governance** | Per-endpoint limits (recall depth, boot budget, invocation rates) |
-| **Retention classes** | Durable knowledge vs operational context vs ephemera |
-| **Human review** | Queue/review flow for promoting shared knowledge |
-| **Context quality** | Dynamic ranking — high-value memories injected first |
-| **Adapter conformance** | Shared contract tests across MCP + HTTP + SDKs |
-
-<details>
-<summary>Contributor-ready tasks</summary>
-
-- Contract tests for tool parity across transports
-- Config schema improvements for retention/budget policies
-- Dashboard UX for review queues and budget visibility
-
-</details>
-
----
-
-## v0.8.0 — Multi-Tenant Hardening &nbsp; `planned`
-
-> Secure, fair, and operable team mode at larger scale.
+> Privacy, fairness, and auth for team deployments.
 
 | Theme | Details |
 |-------|---------|
-| **Privacy** | Deep erasure across core rows + derived indices. Crystal lineage. |
-| **Auth hardening** | Capability-scoped identity model for agent calls |
-| **Fairness** | Per-user quotas, admission control, backup/restore workflows |
-| **Isolation** | Namespace / team-aware embedding boundaries |
+| **Privacy** | Deep erasure across core rows + derived indices. Crystal lineage tracking. |
+| **Auth hardening** | Capability-scoped identity model for agent calls (IBCTs). |
+| **Fairness** | Per-user quotas, admission control, backup/restore workflows. |
+| **Isolation** | Namespace / team-aware embedding boundaries. |
+| **Query expansion** | HyDE-style query rewriting on top of v0.6.0 reranker. |
+| **Adapter conformance** | Shared contract tests across MCP + HTTP + SDKs. |
+| **External memory bridges** | First read-only bridge (ChatGPT import) against the v0.6.0 acceptance gate spec. |
 
 <details>
 <summary>Contributor-ready tasks</summary>
@@ -88,7 +79,7 @@
 
 ---
 
-## v0.9.0 — Advanced Agent Support &nbsp; `planned`
+## v0.8.0 — Advanced Agent Support &nbsp; `planned`
 
 > Improve multi-agent coordination and provenance.
 
