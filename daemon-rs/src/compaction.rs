@@ -128,6 +128,9 @@ pub struct CompactionResult {
     pub crystal_embeddings_pruned: usize,
     pub cluster_members_pruned: usize,
     pub feedback_aggregated: usize,
+    pub stale_embeddings_pruned: usize,
+    pub co_occurrence_pruned: usize,
+    pub fts_optimized: bool,
     pub bytes_before: i64,
     pub bytes_after: i64,
 }
@@ -330,7 +333,26 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     // 5. Feedback aggregation
     result.feedback_aggregated = aggregate_old_feedback(conn);
 
-    // 6. Reclaim space
+    // 6. Stale-model embedding pruning. The active embedding model can change
+    // (we just switched the default to BGE); embeddings tagged with retired
+    // model keys cannot serve any current recall and only exist to satisfy a
+    // potential future re-embed. Once the active model has good coverage we
+    // prune the rest. ~30 bytes saved per row × thousands of stale rows.
+    result.stale_embeddings_pruned = prune_stale_embeddings(conn);
+
+    // 7. Sparse co-occurrence pruning. Pairs seen exactly once are noise that
+    // never influence recall; the table is one of the largest by row count.
+    result.co_occurrence_pruned = prune_singleton_co_occurrence(conn);
+
+    // 8. FTS5 segment optimize. Without this the contentless FTS shadow tables
+    // accumulate one segment per write — for our DB that bloated
+    // `decisions_fts_data` to >300MB despite only ~640 source rows. Running
+    // FTS5 'optimize' merges all segments into one, recovering the bulk of
+    // the file size. Cheap on small N, expensive on huge N — but our N is
+    // small in absolute terms; the bloat is in the segment overhead.
+    result.fts_optimized = optimize_fts_indexes(conn);
+
+    // 9. Reclaim space
     checkpoint_after_compaction(conn, allow_vacuum);
     // VACUUM is expensive. Use SQLite's freelist_count instead of raw delete
     // volume so we only pay the cost when pages are actually reclaimable.
@@ -340,17 +362,21 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
         + result.archived_text_stripped
         + result.expired_pruned
         + result.crystal_embeddings_pruned
-        + result.feedback_aggregated;
-    if allow_vacuum && freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES {
+        + result.feedback_aggregated
+        + result.stale_embeddings_pruned
+        + result.co_occurrence_pruned;
+    if allow_vacuum
+        && (freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES || result.fts_optimized)
+    {
         let _ = conn.execute_batch("VACUUM;");
     }
 
     result.bytes_after = db_size_bytes(conn);
 
-    if total_deleted > 0 {
+    if total_deleted > 0 || result.fts_optimized {
         let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
         eprintln!(
-            "[compaction] Pruned: {} events, {} benchmark rows, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows. Saved {}KB",
+            "[compaction] Pruned: {} events, {} benchmark rows, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows, {} stale embeddings, {} singleton co-occurrence pairs; fts_optimized={}. Saved {}KB",
             result.events_pruned,
             result.benchmark_pruned,
             result.archived_text_stripped,
@@ -358,11 +384,91 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
             result.crystal_embeddings_pruned,
             result.cluster_members_pruned,
             result.feedback_aggregated,
+            result.stale_embeddings_pruned,
+            result.co_occurrence_pruned,
+            result.fts_optimized,
             saved_kb
         );
     }
 
     result
+}
+
+/// Run FTS5 'optimize' on every contentless FTS shadow table. This collapses
+/// the per-write segment list into a single merged segment, recovering the
+/// dominant share of bytes in heavily-used databases. Returns true iff at
+/// least one table was optimized successfully.
+fn optimize_fts_indexes(conn: &Connection) -> bool {
+    let tables = ["decisions_fts", "memories_fts"];
+    let mut any = false;
+    for table in tables {
+        if !table_exists(conn, table) {
+            continue;
+        }
+        // FTS5 optimize is invoked via a no-op insert with a special command
+        // payload. Errors here should not abort the whole compaction pass.
+        let sql = format!("INSERT INTO {table}({table}) VALUES ('optimize')");
+        match conn.execute_batch(&sql) {
+            Ok(()) => {
+                any = true;
+            }
+            Err(err) => {
+                eprintln!("[compaction] FTS optimize failed for {table}: {err}");
+            }
+        }
+    }
+    any
+}
+
+fn table_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
+        params![name],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// Delete embeddings whose `model` column does not match the currently
+/// selected embedding model. Stale-model rows cannot satisfy any active
+/// recall and only persist to support potential re-embeds; once the active
+/// model has produced coverage the legacy rows are pure dead weight.
+///
+/// Comparison is case-insensitive: legacy rows in the wild use mixed casings
+/// of the same model key ("all-MiniLM-L6-v2" vs "all-minilm-l6-v2"). NULL
+/// model rows are also pruned — they predate model tagging entirely and have
+/// no way to match any current model.
+fn prune_stale_embeddings(conn: &Connection) -> usize {
+    let active = crate::embeddings::selected_model_key().to_ascii_lowercase();
+    // Guardrail: only prune if the active model has at least some coverage.
+    // Otherwise we'd torch every embedding on a fresh model switch before the
+    // backfill has a chance to populate replacements.
+    let active_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE LOWER(model) = ?1",
+            params![active],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if active_count < 50 {
+        return 0;
+    }
+    conn.execute(
+        "DELETE FROM embeddings WHERE model IS NULL OR LOWER(model) != ?1",
+        params![active],
+    )
+    .unwrap_or(0)
+}
+
+/// Delete co-occurrence pairs that have only ever been observed once. They
+/// contribute no signal to ranking and dominate the row count; for our DB the
+/// pruned set is typically >50% of the table.
+fn prune_singleton_co_occurrence(conn: &Connection) -> usize {
+    if !table_exists(conn, "co_occurrence") {
+        return 0;
+    }
+    conn.execute("DELETE FROM co_occurrence WHERE \"count\" <= 1", [])
+        .unwrap_or(0)
 }
 
 /// Purge all benchmark artifacts immediately.
