@@ -4744,7 +4744,7 @@ fn collect_semantic_candidates(
          AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
          AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR m.source LIKE ?3)";
     let semantic_memory_query_without_acl =
         "SELECT e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
@@ -4754,7 +4754,7 @@ fn collect_semantic_candidates(
          AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
          AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR m.source LIKE ?3)";
     let semantic_memory_stmt = match conn.prepare(semantic_memory_query_with_acl) {
         Ok(stmt) => Some(stmt),
@@ -4859,7 +4859,7 @@ fn collect_semantic_candidates(
          AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
          AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR d.context LIKE ?3)";
     let semantic_decision_query_without_acl =
         "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
@@ -4869,7 +4869,7 @@ fn collect_semantic_candidates(
          AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
          AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR d.context LIKE ?3)";
     let semantic_decision_stmt = match conn.prepare(semantic_decision_query_with_acl) {
         Ok(stmt) => Some(stmt),
@@ -4998,7 +4998,7 @@ fn collect_shadow_semantic_rows(
          AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
          AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR m.source LIKE ?3)";
     let memory_query_without_acl = "SELECT e.vector, m.source, NULL AS owner_id, NULL AS visibility \
          FROM embeddings e \
@@ -5007,7 +5007,7 @@ fn collect_shadow_semantic_rows(
          AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) \
          AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR m.source LIKE ?3)";
     let memory_stmt = match conn.prepare(memory_query_with_acl) {
         Ok(stmt) => Some(stmt),
@@ -5048,7 +5048,7 @@ fn collect_shadow_semantic_rows(
          AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
          AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR d.context LIKE ?3)";
     let decision_query_without_acl = "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility \
          FROM embeddings e \
@@ -5057,7 +5057,7 @@ fn collect_shadow_semantic_rows(
          AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) \
          AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) \
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
-         AND length(e.vector) = ?2 \
+         AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR d.context LIKE ?3)";
     let decision_stmt = match conn.prepare(decision_query_with_acl) {
         Ok(stmt) => Some(stmt),

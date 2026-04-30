@@ -130,6 +130,7 @@ pub struct CompactionResult {
     pub feedback_aggregated: usize,
     pub stale_embeddings_pruned: usize,
     pub co_occurrence_pruned: usize,
+    pub legacy_embeddings_migrated: usize,
     pub fts_optimized: bool,
     pub bytes_before: i64,
     pub bytes_after: i64,
@@ -376,6 +377,11 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     // never influence recall; the table is one of the largest by row count.
     result.co_occurrence_pruned = prune_singleton_co_occurrence(conn);
 
+    // 7b. Re-encode pre-v0.6.0 LE-f32 embedding blobs to PQ8 in place.
+    // Bounded per-pass so the write lock is short; subsequent passes
+    // continue chipping away until every row is migrated.
+    result.legacy_embeddings_migrated = migrate_legacy_embeddings_to_pq8(conn);
+
     // 8. FTS5 segment optimize. Without this the contentless FTS shadow tables
     // accumulate one segment per write — for our DB that bloated
     // `decisions_fts_data` to >300MB despite only ~640 source rows. Running
@@ -396,7 +402,8 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
         + result.crystal_embeddings_pruned
         + result.feedback_aggregated
         + result.stale_embeddings_pruned
-        + result.co_occurrence_pruned;
+        + result.co_occurrence_pruned
+        + result.legacy_embeddings_migrated;
     if allow_vacuum
         && (freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES || result.fts_optimized)
     {
@@ -408,7 +415,7 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
     if total_deleted > 0 || result.fts_optimized {
         let saved_kb = (result.bytes_before - result.bytes_after) / 1024;
         eprintln!(
-            "[compaction] Pruned: {} events, {} benchmark rows, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows, {} stale embeddings, {} singleton co-occurrence pairs; fts_optimized={}. Saved {}KB",
+            "[compaction] Pruned: {} events, {} benchmark rows, {} archived texts, {} expired rows, {} crystal embeddings, {} orphan cluster members, {} feedback rows, {} stale embeddings, {} singleton co-occurrence pairs, {} legacy embeddings migrated; fts_optimized={}. Saved {}KB",
             result.events_pruned,
             result.benchmark_pruned,
             result.archived_text_stripped,
@@ -418,6 +425,7 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
             result.feedback_aggregated,
             result.stale_embeddings_pruned,
             result.co_occurrence_pruned,
+            result.legacy_embeddings_migrated,
             result.fts_optimized,
             saved_kb
         );
@@ -501,6 +509,78 @@ fn prune_singleton_co_occurrence(conn: &Connection) -> usize {
     }
     conn.execute("DELETE FROM co_occurrence WHERE \"count\" <= 1", [])
         .unwrap_or(0)
+}
+
+/// Re-encode any legacy LE-f32 embedding blobs to the PQ8 format. New writes
+/// always use PQ8, but pre-v0.6.0 rows still hold f32 blobs at 3072 bytes
+/// each (BGE-768) — re-encoding them in place reclaims ~75% of their size
+/// without changing recall semantics. Bounded to a safety cap per pass so
+/// the write lock is never held for long.
+const PQ8_MIGRATION_BATCH: usize = 1024;
+
+fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
+    // Find legacy blobs. A single-byte magic check has a 1/256 false-positive
+    // rate against legacy LE-f32 blobs — observed in practice when the very
+    // first f32 happens to encode a value whose low byte is 0xC8. Combine
+    // both magic and version byte (2-byte signature) to eliminate that. We
+    // also gate by length divisibility: legacy blobs are always 4*D bytes
+    // (multiple of 4); PQ8 blobs are D+6 bytes which is never a multiple of
+    // 4 for any D where D % 4 == 0 (true for every embedding model we ship).
+    let mut stmt = match conn.prepare(
+        "SELECT id, vector FROM embeddings \
+         WHERE substr(vector, 1, 2) != ?1 \
+           AND (LENGTH(vector) % 4) = 0 \
+         LIMIT ?2",
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            eprintln!("[compaction] PQ8 migration prepare failed: {err}");
+            return 0;
+        }
+    };
+    let magic_signature = vec![
+        crate::embeddings::PQ8_MAGIC_BYTE,
+        crate::embeddings::PQ8_FORMAT_VERSION,
+    ];
+
+    // First gather candidates to avoid mutating during iteration.
+    let candidates: Vec<(i64, Vec<u8>)> = match stmt.query_map(
+        params![magic_signature, PQ8_MIGRATION_BATCH as i64],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+    ) {
+        Ok(rows) => rows.flatten().collect(),
+        Err(err) => {
+            eprintln!("[compaction] PQ8 migration query failed: {err}");
+            return 0;
+        }
+    };
+    drop(stmt);
+
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    let mut migrated = 0usize;
+    for (id, blob) in candidates {
+        // Decode the legacy blob, then re-encode via the canonical PQ8 path.
+        // If decoding produces an empty vector the row is corrupt; skip it
+        // rather than silently writing a zero-length PQ8 blob.
+        let decoded = crate::embeddings::legacy_f32_blob_to_vector(&blob);
+        if decoded.is_empty() {
+            continue;
+        }
+        let pq8 = crate::embeddings::vector_to_pq8_blob(&decoded);
+        match conn.execute(
+            "UPDATE embeddings SET vector = ?1 WHERE id = ?2",
+            params![pq8, id],
+        ) {
+            Ok(_) => migrated += 1,
+            Err(err) => {
+                eprintln!("[compaction] PQ8 migration update failed for id={id}: {err}");
+            }
+        }
+    }
+    migrated
 }
 
 /// Purge all benchmark artifacts immediately.
@@ -1658,6 +1738,118 @@ mod tests {
         assert!(
             after_inserts > baseline,
             "decisions inserts should bump fts_segment_row_total ({baseline} -> {after_inserts})"
+        );
+    }
+
+    #[test]
+    fn test_pq8_migration_catches_legacy_blobs_with_collision_byte() {
+        // Regression: legacy LE-f32 blobs whose first byte coincidentally
+        // equals PQ8_MAGIC_BYTE (0xC8) used to escape migration. The
+        // signature is now 2 bytes (magic + version) plus a length-mod-4
+        // gate, which legacy blobs always pass and PQ8 blobs never do.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at) \
+             VALUES ('legacy-collision', 'memory::collision', 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let mid: i64 = conn.last_insert_rowid();
+
+        // Construct a legacy LE-f32 blob whose first byte is 0xC8 by
+        // choosing an f32 whose LE encoding starts with 0xC8.
+        let collide_f32 = f32::from_le_bytes([0xC8, 0xAB, 0x12, 0x34]);
+        let legacy_vec = vec![collide_f32; 16];
+        let legacy_blob = crate::embeddings::vector_to_legacy_f32_blob(&legacy_vec);
+        assert_eq!(legacy_blob[0], 0xC8, "first byte should collide with magic");
+        assert_ne!(
+            legacy_blob[1],
+            crate::embeddings::PQ8_FORMAT_VERSION,
+            "second byte should NOT be the version byte"
+        );
+        assert_eq!(legacy_blob.len() % 4, 0);
+
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) \
+             VALUES ('memory', ?1, ?2, 'bge-base-en-v1.5')",
+            params![mid, legacy_blob],
+        )
+        .unwrap();
+
+        let migrated = migrate_legacy_embeddings_to_pq8(&conn);
+        assert_eq!(
+            migrated, 1,
+            "legacy blob with 0xC8 leading byte must still be detected"
+        );
+
+        // Migrated row carries the full 2-byte signature.
+        let new_blob: Vec<u8> = conn
+            .query_row(
+                "SELECT vector FROM embeddings WHERE target_id = ?1",
+                params![mid],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_blob[0], crate::embeddings::PQ8_MAGIC_BYTE);
+        assert_eq!(new_blob[1], crate::embeddings::PQ8_FORMAT_VERSION);
+    }
+
+    #[test]
+    fn test_pq8_migration_reencodes_legacy_blobs() {
+        let conn = setup();
+        // Insert a memory row and a paired legacy LE-f32 embedding directly
+        // — this is what pre-v0.6.0 storage produced.
+        conn.execute(
+            "INSERT INTO memories (text, source, type, status, score, created_at, updated_at) \
+             VALUES ('legacy', 'memory::legacy', 'note', 'active', 1.0, datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let mid: i64 = conn.last_insert_rowid();
+        let legacy_vec: Vec<f32> = (0..16).map(|i| (i as f32) * 0.05).collect();
+        let legacy_blob = crate::embeddings::vector_to_legacy_f32_blob(&legacy_vec);
+        assert_eq!(legacy_blob.len(), legacy_vec.len() * 4);
+        conn.execute(
+            "INSERT INTO embeddings (target_type, target_id, vector, model) \
+             VALUES ('memory', ?1, ?2, 'bge-base-en-v1.5')",
+            params![mid, legacy_blob],
+        )
+        .unwrap();
+
+        let migrated = migrate_legacy_embeddings_to_pq8(&conn);
+        assert_eq!(migrated, 1, "exactly one legacy blob should be migrated");
+
+        // The stored blob is now PQ8 — magic byte and length both shrink.
+        let (new_blob, len): (Vec<u8>, i64) = conn
+            .query_row(
+                "SELECT vector, LENGTH(vector) FROM embeddings WHERE target_id = ?1",
+                params![mid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(new_blob[0], crate::embeddings::PQ8_MAGIC_BYTE);
+        assert_eq!(
+            len as usize,
+            crate::embeddings::PQ8_HEADER_BYTES + legacy_vec.len()
+        );
+
+        // A second migration pass becomes a no-op once every row is PQ8.
+        let migrated_again = migrate_legacy_embeddings_to_pq8(&conn);
+        assert_eq!(migrated_again, 0, "idempotent: nothing left to migrate");
+
+        // Recall fidelity: re-reading via blob_to_vector should match the
+        // original within the per-vector quantization scale.
+        let recovered = crate::embeddings::blob_to_vector(&new_blob);
+        let scale =
+            f32::from_le_bytes([new_blob[2], new_blob[3], new_blob[4], new_blob[5]]);
+        let max_err = legacy_vec
+            .iter()
+            .zip(recovered.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_err <= scale,
+            "max err {max_err} should be within scale {scale}"
         );
     }
 

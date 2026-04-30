@@ -333,6 +333,7 @@ async fn handle_compact(
             "feedbackAggregated": result.feedback_aggregated,
             "staleEmbeddingsPruned": result.stale_embeddings_pruned,
             "coOccurrencePruned": result.co_occurrence_pruned,
+            "legacyEmbeddingsMigrated": result.legacy_embeddings_migrated,
             "ftsOptimized": result.fts_optimized,
             "bytesBefore": result.bytes_before,
             "bytesAfter": result.bytes_after,
