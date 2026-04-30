@@ -187,21 +187,48 @@ pub fn classify_event_pressure(nonboot_event_rows: i64) -> &'static str {
     }
 }
 
+/// FTS5 segment row count above this triggers the governor even when the
+/// overall DB size is well under soft limit. Without this, FTS shadow tables
+/// can balloon to hundreds of MB before the size-based trigger fires.
+pub const FTS_SEGMENT_ROW_SOFT_LIMIT: i64 = 10_000;
+
 /// Decide whether the storage governor should run compaction.
 /// Runs when DB size is above soft limit or when reclaimable free pages are high.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn should_run_compaction_governor(db_size_bytes: i64, freelist_pages: i64) -> bool {
-    should_run_compaction_governor_with_event_pressure(db_size_bytes, freelist_pages, 0)
+    should_run_compaction_governor_with_pressure(db_size_bytes, freelist_pages, 0, 0)
 }
 
-fn should_run_compaction_governor_with_event_pressure(
+fn should_run_compaction_governor_with_pressure(
     db_size_bytes: i64,
     freelist_pages: i64,
     nonboot_event_rows: i64,
+    fts_segment_rows: i64,
 ) -> bool {
     db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES
         || freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES
         || nonboot_event_rows > EVENT_NONBOOT_SOFT_LIMIT_ROWS
+        || fts_segment_rows > FTS_SEGMENT_ROW_SOFT_LIMIT
+}
+
+/// Sum of rows across all known FTS5 _data shadow tables. The _data table
+/// holds one row per FTS5 segment block; runaway segment counts are the
+/// dominant bloat driver in long-lived Cortex DBs.
+pub fn fts_segment_row_total(conn: &Connection) -> i64 {
+    let tables = ["decisions_fts_data", "memories_fts_data"];
+    let mut total: i64 = 0;
+    for table in tables {
+        if !table_exists(conn, table) {
+            continue;
+        }
+        let n: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+        total += n;
+    }
+    total
 }
 
 /// Run compaction only when pressure or reclaimable space justifies IO.
@@ -225,12 +252,14 @@ fn run_compaction_governor_with_options(
     let before = db_size_bytes(conn);
     let freelist_pages = freelist_count(conn);
     let nonboot_event_rows_before = non_boot_event_count(conn);
+    let fts_segment_rows_before = fts_segment_row_total(conn);
     let pressure_before = classify_storage_pressure(before);
 
-    if !should_run_compaction_governor_with_event_pressure(
+    if !should_run_compaction_governor_with_pressure(
         before,
         freelist_pages,
         nonboot_event_rows_before,
+        fts_segment_rows_before,
     ) {
         return None;
     }
@@ -276,14 +305,17 @@ fn run_compaction_governor_with_options(
     }
 
     let pressure_after = classify_storage_pressure(result.bytes_after);
+    let fts_segment_rows_after = fts_segment_row_total(conn);
     eprintln!(
-        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB, nonboot_events {} -> {}",
+        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB, nonboot_events {} -> {}, fts_segments {} -> {}",
         pressure_before,
         pressure_after,
         bytes_to_mb(result.bytes_before),
         bytes_to_mb(result.bytes_after),
         nonboot_event_rows_before,
-        non_boot_event_count(conn)
+        non_boot_event_count(conn),
+        fts_segment_rows_before,
+        fts_segment_rows_after,
     );
 
     Some(result)
@@ -1581,11 +1613,82 @@ mod tests {
             STORAGE_SOFT_LIMIT_BYTES - 1,
             VACUUM_FREELIST_THRESHOLD_PAGES + 1
         ));
-        assert!(should_run_compaction_governor_with_event_pressure(
+        assert!(should_run_compaction_governor_with_pressure(
             STORAGE_SOFT_LIMIT_BYTES - 1,
             VACUUM_FREELIST_THRESHOLD_PAGES,
-            EVENT_NONBOOT_SOFT_LIMIT_ROWS + 1
+            EVENT_NONBOOT_SOFT_LIMIT_ROWS + 1,
+            0,
         ));
+    }
+
+    #[test]
+    fn test_governor_triggers_on_fts_segment_pressure() {
+        // No size pressure, no freelist pressure, no event pressure — but FTS
+        // segment count above the soft limit MUST still trigger the governor,
+        // because that is the bloat dimension a healthy DB can hide.
+        assert!(!should_run_compaction_governor_with_pressure(
+            STORAGE_SOFT_LIMIT_BYTES - 1,
+            VACUUM_FREELIST_THRESHOLD_PAGES,
+            0,
+            FTS_SEGMENT_ROW_SOFT_LIMIT,
+        ));
+        assert!(should_run_compaction_governor_with_pressure(
+            STORAGE_SOFT_LIMIT_BYTES - 1,
+            VACUUM_FREELIST_THRESHOLD_PAGES,
+            0,
+            FTS_SEGMENT_ROW_SOFT_LIMIT + 1,
+        ));
+    }
+
+    #[test]
+    fn test_fts_segment_row_total_counts_known_tables() {
+        let conn = setup();
+        // Fresh schema: FTS shadow tables exist but should be near-empty.
+        let baseline = fts_segment_row_total(&conn);
+        // Force several inserts + updates to grow segments.
+        for i in 0..50 {
+            conn.execute(
+                "INSERT INTO decisions (decision, context, type, source_agent, status) \
+                 VALUES (?1, 'ctx', 'decision', 'test', 'active')",
+                params![format!("decision-{i} alpha beta gamma delta epsilon")],
+            )
+            .unwrap();
+        }
+        let after_inserts = fts_segment_row_total(&conn);
+        assert!(
+            after_inserts > baseline,
+            "decisions inserts should bump fts_segment_row_total ({baseline} -> {after_inserts})"
+        );
+    }
+
+    #[test]
+    fn test_fts_optimize_drops_segment_rows() {
+        let conn = setup();
+        // Generate UPDATE churn so the FTS shadow accumulates segment rows.
+        for i in 0..30 {
+            conn.execute(
+                "INSERT INTO decisions (decision, context, type, source_agent, status) \
+                 VALUES (?1, 'ctx', 'decision', 'test', 'active')",
+                params![format!("seed-{i} apple banana cherry")],
+            )
+            .unwrap();
+        }
+        for round in 0..5 {
+            conn.execute(
+                "UPDATE decisions SET decision = decision || ?1 WHERE source_agent = 'test'",
+                params![format!(" round{round}")],
+            )
+            .unwrap();
+        }
+        let pre = fts_segment_row_total(&conn);
+        assert!(pre > 0, "fixture should produce FTS segment rows");
+        let optimized = optimize_fts_indexes(&conn);
+        assert!(optimized, "optimize should report success on populated FTS");
+        let post = fts_segment_row_total(&conn);
+        assert!(
+            post < pre,
+            "optimize should reduce segment row count: {pre} -> {post}"
+        );
     }
 
     #[test]
