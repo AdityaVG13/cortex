@@ -519,6 +519,23 @@ fn prune_singleton_co_occurrence(conn: &Connection) -> usize {
 const PQ8_MIGRATION_BATCH: usize = 1024;
 
 fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
+    let from_embeddings = migrate_legacy_blob_column_to_pq8(conn, "embeddings", "vector", "id");
+    // Crystal centroids dominate `memory_clusters` size when they are still
+    // in the legacy f32 format. Same migration logic — different table.
+    let from_clusters =
+        migrate_legacy_blob_column_to_pq8(conn, "memory_clusters", "centroid", "id");
+    from_embeddings + from_clusters
+}
+
+fn migrate_legacy_blob_column_to_pq8(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    pk_column: &str,
+) -> usize {
+    if !table_exists(conn, table) {
+        return 0;
+    }
     // Find legacy blobs. A single-byte magic check has a 1/256 false-positive
     // rate against legacy LE-f32 blobs — observed in practice when the very
     // first f32 happens to encode a value whose low byte is 0xC8. Combine
@@ -526,15 +543,22 @@ fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
     // also gate by length divisibility: legacy blobs are always 4*D bytes
     // (multiple of 4); PQ8 blobs are D+6 bytes which is never a multiple of
     // 4 for any D where D % 4 == 0 (true for every embedding model we ship).
-    let mut stmt = match conn.prepare(
-        "SELECT id, vector FROM embeddings \
-         WHERE substr(vector, 1, 2) != ?1 \
-           AND (LENGTH(vector) % 4) = 0 \
+    let select_sql = format!(
+        "SELECT \"{pk}\", \"{col}\" FROM \"{tbl}\" \
+         WHERE \"{col}\" IS NOT NULL \
+           AND substr(\"{col}\", 1, 2) != ?1 \
+           AND (LENGTH(\"{col}\") % 4) = 0 \
          LIMIT ?2",
-    ) {
+        pk = pk_column,
+        col = column,
+        tbl = table,
+    );
+    let mut stmt = match conn.prepare(&select_sql) {
         Ok(stmt) => stmt,
         Err(err) => {
-            eprintln!("[compaction] PQ8 migration prepare failed: {err}");
+            eprintln!(
+                "[compaction] PQ8 migration prepare failed for {table}.{column}: {err}"
+            );
             return 0;
         }
     };
@@ -550,7 +574,7 @@ fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
     ) {
         Ok(rows) => rows.flatten().collect(),
         Err(err) => {
-            eprintln!("[compaction] PQ8 migration query failed: {err}");
+            eprintln!("[compaction] PQ8 migration query failed for {table}.{column}: {err}");
             return 0;
         }
     };
@@ -560,6 +584,12 @@ fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
         return 0;
     }
 
+    let update_sql = format!(
+        "UPDATE \"{tbl}\" SET \"{col}\" = ?1 WHERE \"{pk}\" = ?2",
+        pk = pk_column,
+        col = column,
+        tbl = table,
+    );
     let mut migrated = 0usize;
     for (id, blob) in candidates {
         // Decode the legacy blob, then re-encode via the canonical PQ8 path.
@@ -570,13 +600,12 @@ fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
             continue;
         }
         let pq8 = crate::embeddings::vector_to_pq8_blob(&decoded);
-        match conn.execute(
-            "UPDATE embeddings SET vector = ?1 WHERE id = ?2",
-            params![pq8, id],
-        ) {
+        match conn.execute(&update_sql, params![pq8, id]) {
             Ok(_) => migrated += 1,
             Err(err) => {
-                eprintln!("[compaction] PQ8 migration update failed for id={id}: {err}");
+                eprintln!(
+                    "[compaction] PQ8 migration update failed for {table}.{column} id={id}: {err}"
+                );
             }
         }
     }
@@ -1739,6 +1768,60 @@ mod tests {
             after_inserts > baseline,
             "decisions inserts should bump fts_segment_row_total ({baseline} -> {after_inserts})"
         );
+    }
+
+    #[test]
+    fn test_pq8_migration_handles_crystal_centroid_blobs() {
+        let conn = setup();
+        // Seed two clusters: one legacy LE-f32 centroid, one already-PQ8.
+        let legacy_centroid = crate::embeddings::vector_to_legacy_f32_blob(&[
+            0.10, -0.20, 0.30, -0.40, 0.50, -0.60, 0.70, -0.80,
+        ]);
+        let already_pq8 = crate::embeddings::vector_to_pq8_blob(&[
+            0.11, -0.21, 0.31, -0.41, 0.51, -0.61, 0.71, -0.81,
+        ]);
+        conn.execute(
+            "INSERT INTO memory_clusters (label, centroid, consolidated_text) \
+             VALUES ('legacy', ?1, 'legacy crystal'), ('pq8', ?2, 'pq8 crystal')",
+            params![legacy_centroid, already_pq8],
+        )
+        .unwrap();
+
+        let migrated = migrate_legacy_embeddings_to_pq8(&conn);
+        assert_eq!(
+            migrated, 1,
+            "exactly one centroid (the legacy one) should migrate"
+        );
+
+        // Both centroids must now carry the PQ8 signature.
+        let mut stmt = conn
+            .prepare("SELECT label, centroid FROM memory_clusters ORDER BY label")
+            .unwrap();
+        let rows: Vec<(String, Vec<u8>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 2);
+        for (label, blob) in &rows {
+            assert!(
+                blob.len() >= 2,
+                "{label} centroid too short to carry magic"
+            );
+            assert_eq!(
+                blob[0],
+                crate::embeddings::PQ8_MAGIC_BYTE,
+                "{label} centroid missing PQ8 magic"
+            );
+            assert_eq!(
+                blob[1],
+                crate::embeddings::PQ8_FORMAT_VERSION,
+                "{label} centroid wrong PQ8 version"
+            );
+        }
+
+        // Idempotent: re-running finds nothing new to migrate.
+        assert_eq!(migrate_legacy_embeddings_to_pq8(&conn), 0);
     }
 
     #[test]
