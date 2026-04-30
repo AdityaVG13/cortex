@@ -15,6 +15,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 
 pub fn build_router(state: RuntimeState, port: u16) -> Router {
@@ -214,8 +215,31 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
             state.clone(),
             activity_tracking_middleware,
         ))
+        // Convert handler panics into HTTP 500 responses instead of letting
+        // them tear down the request task and surface as "MCP server exited"
+        // / "daemon went down" to clients. The daemon stays up; the bad call
+        // gets a structured error.
+        .layer(CatchPanicLayer::custom(handle_handler_panic))
         .layer(cors)
         .with_state(state)
+}
+
+fn handle_handler_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    let message = if let Some(s) = err.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = err.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    };
+    eprintln!("[cortex] HTTP handler panic: {message}");
+    handlers::json_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        serde_json::json!({
+            "error": "internal handler panic",
+            "detail": message,
+        }),
+    )
 }
 
 async fn activity_tracking_middleware(

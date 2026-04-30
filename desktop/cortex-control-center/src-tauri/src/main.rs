@@ -12,7 +12,7 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::menu::MenuBuilder;
@@ -40,6 +40,7 @@ const LOCAL_DAEMON_LOCK_WAIT_SECS: u64 = 15;
 const LOCAL_DAEMON_START_WAIT_MS: u64 = (LOCAL_DAEMON_LOCK_WAIT_SECS * 1_000) + 2_000;
 const AUTH_TOKEN_WAIT_MS: u64 = 1_500;
 const AUTH_TOKEN_POLL_MS: u64 = 100;
+const SUPERVISOR_TICK_MS: u64 = 3_000;
 const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const PATH_BINARY_FALLBACK_ENV: &str = "CORTEX_ALLOW_PATH_BINARY_FALLBACK";
@@ -70,6 +71,10 @@ fn apply_hidden_daemon_process_flags(_command: &mut Command) {}
 struct DaemonState {
     exe_path: Option<PathBuf>,
     child: Mutex<Option<Child>>,
+    /// Set true by `stop()`, cleared by `ensure_local_daemon()`. Watchdog reads
+    /// this to decide whether a missing daemon should be auto-respawned. Lets
+    /// the user explicitly stop the daemon without immediate revival.
+    intentional_stop: AtomicBool,
 }
 
 impl DaemonState {
@@ -77,7 +82,12 @@ impl DaemonState {
         Self {
             exe_path,
             child: Mutex::new(None),
+            intentional_stop: AtomicBool::new(false),
         }
+    }
+
+    fn supervisor_paused(&self) -> bool {
+        self.intentional_stop.load(Ordering::SeqCst)
     }
 
     fn status(&self) -> Result<(bool, Option<u32>), String> {
@@ -181,10 +191,16 @@ impl DaemonState {
         })?;
         let pid = spawned.id();
         *child = Some(spawned);
+        // A successful spawn implicitly arms the supervisor: any later death
+        // should trigger an auto-respawn until the user explicitly stops.
+        self.intentional_stop.store(false, Ordering::SeqCst);
         Ok(Some(pid))
     }
 
     fn stop(&self) -> Result<(), String> {
+        // Pause the supervisor BEFORE killing the child so the watchdog does
+        // not race in and spawn a new instance during teardown.
+        self.intentional_stop.store(true, Ordering::SeqCst);
         let mut child = self
             .child
             .lock()
@@ -2396,6 +2412,51 @@ fn detect_editors() -> Result<Vec<EditorDetection>, String> {
     Ok(results)
 }
 
+/// Watchdog tick: respawn the daemon if it's neither reachable nor managed and
+/// the user hasn't explicitly stopped it. Runs on a blocking thread on a fixed
+/// cadence from `main()`'s setup hook.
+fn supervisor_tick(app_handle: &tauri::AppHandle, consecutive_failures: &AtomicU32) {
+    let daemon_state = app_handle.state::<DaemonState>();
+    if daemon_state.supervisor_paused() {
+        return;
+    }
+
+    let port = daemon_port();
+    let probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
+    if probe.reachable || probe.starting {
+        consecutive_failures.store(0, Ordering::SeqCst);
+        return;
+    }
+
+    let (managed, _) = daemon_state.status().unwrap_or((false, None));
+    if managed {
+        // Managed child is alive but daemon HTTP isn't up yet. Give it more time
+        // before declaring failure — startup can take several seconds.
+        return;
+    }
+
+    let attempt = consecutive_failures.fetch_add(1, Ordering::SeqCst);
+    match try_local_app_managed_ensure(&daemon_state, port) {
+        Ok(_) => {
+            log_startup_path(
+                "supervisor",
+                "respawn",
+                "daemon was unreachable; supervisor respawned via app-managed local mode",
+            );
+            consecutive_failures.store(0, Ordering::SeqCst);
+        }
+        Err(err) => {
+            // Throttle log noise: only log first failure and every 10th retry.
+            if attempt == 0 || attempt % 10 == 0 {
+                eprintln!(
+                    "[cortex-control-center] supervisor respawn attempt {attempt} failed: {err}"
+                );
+                log_startup_path("supervisor", "respawn-failed", &err);
+            }
+        }
+    }
+}
+
 fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
     let port = daemon_port();
     let probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
@@ -2494,13 +2555,29 @@ fn main() {
             if hide_to_tray_on_close() {
                 setup_tray(app)?;
             }
-            let app_handle = app.handle().clone();
+            let bootstrap_handle = app.handle().clone();
+            let supervisor_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let _ = tauri::async_runtime::spawn_blocking(move || {
-                    bootstrap_daemon_on_startup(&app_handle);
+                    bootstrap_daemon_on_startup(&bootstrap_handle);
                 })
                 .await;
             });
+
+            // Watchdog: re-spawn the daemon if it disappears for any reason
+            // (panic, OOM, manual kill, crash). The daemon is the user's
+            // memory store — it must stay up unless they explicitly stop it.
+            // Runs on a plain OS thread so it survives any Tauri runtime hiccup.
+            std::thread::Builder::new()
+                .name("cortex-daemon-supervisor".to_string())
+                .spawn(move || {
+                    let consecutive_failures = AtomicU32::new(0);
+                    loop {
+                        std::thread::sleep(Duration::from_millis(SUPERVISOR_TICK_MS));
+                        supervisor_tick(&supervisor_handle, &consecutive_failures);
+                    }
+                })
+                .expect("failed to spawn cortex daemon supervisor thread");
 
             Ok(())
         })

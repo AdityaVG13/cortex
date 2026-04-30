@@ -36,7 +36,7 @@ sysinfo = "0.33"
 sqlite-vec = "0.1.9"
 
 # HTTP middleware
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "catch-panic"] }
 
 # TLS (optional, for team/non-loopback deployments)
 rustls = "0.23"

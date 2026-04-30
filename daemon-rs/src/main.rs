@@ -39,8 +39,54 @@ use fs2::FileExt;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::IsTerminal;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+/// Install a panic hook that records every panic to `~/.cortex/panic.log` and
+/// stderr before the runtime continues unwinding. Without this, dev-build
+/// panics produce silent thread death (or process exit) with no breadcrumb,
+/// which made the daemon's intermittent crashes nearly impossible to diagnose.
+fn install_daemon_panic_hook(paths: &auth::CortexPaths) {
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let panic_log_path = paths.home.join("panic.log");
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = if let Some(s) = payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "<non-string panic payload>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "<unknown location>".to_string());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let entry = format!(
+            "[{ts}] PANIC at {location}: {message}\n{backtrace}\n",
+            ts = Utc::now().to_rfc3339(),
+        );
+        eprintln!("[cortex] {entry}");
+        if let Some(parent) = panic_log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_log_path)
+        {
+            let _ = file.write_all(entry.as_bytes());
+        }
+        previous(info);
+    }));
+}
 
 const BACKUP_RETENTION_COUNT: usize = 3;
 const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
@@ -4267,6 +4313,8 @@ pub(crate) async fn run_daemon(
         env!("CARGO_PKG_VERSION")
     );
     eprintln!("[cortex] DB: {}", db_path.display());
+
+    install_daemon_panic_hook(&paths);
 
     let daemon_owner = daemon_owner_tag_from_env();
     let parent_pid = spawn_parent_pid_from_env();

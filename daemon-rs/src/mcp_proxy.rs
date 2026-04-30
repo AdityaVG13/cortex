@@ -29,7 +29,10 @@ const REQUEST_ATTEMPTS: u32 = 3;
 const SESSION_HEARTBEAT_SECS: u64 = 15;
 const SESSION_RESTART_ATTEMPTS: u32 = 4;
 const SESSION_RESTART_DELAY_MS: u64 = 250;
-const HEARTBEAT_RECOVERY_FAILURES: u32 = 2;
+// Tolerate ~75s of transient daemon unreachability before triggering recovery.
+// At 2, brief supervisor respawns and DB lock spikes (~5–10s) caused the bridge
+// to abandon a still-healthy daemon and surface "MCP server exited" to clients.
+const HEARTBEAT_RECOVERY_FAILURES: u32 = 5;
 const STARTUP_IDLE_TIMEOUT_SECS: u64 = 60;
 const ORPHAN_CHECK_SECS: u64 = 15;
 const MAX_AGENT_HEADER_LEN: usize = 160;
