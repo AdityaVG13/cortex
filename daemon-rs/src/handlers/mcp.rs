@@ -2,6 +2,7 @@
 use chrono::{Duration, Utc};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
+use std::time::Instant;
 
 use super::diary::{write_diary_entry, DiaryRequest};
 use super::feedback::{
@@ -219,6 +220,7 @@ fn parse_client_permission(raw: &str) -> Option<ClientPermission> {
 fn required_permission_for_tool(tool_name: &str) -> Option<ClientPermission> {
     match tool_name {
         "cortex_boot"
+        | "cortex_boot_audit"
         | "cortex_reconnect"
         | "cortex_peek"
         | "cortex_recall"
@@ -735,7 +737,7 @@ fn fetch_last_call(
 mod tests {
     use super::{
         fetch_last_call, handle_mcp_message_with_caller, has_client_permission, mcp_dispatch,
-        normalize_permission_client_id, required_permission_for_tool, ClientPermission,
+        mcp_tools, normalize_permission_client_id, required_permission_for_tool, ClientPermission,
     };
     use crate::db;
     use crate::handlers::recall::RecallContext;
@@ -983,6 +985,10 @@ mod tests {
             required_permission_for_tool("cortex_recall_policy_explain"),
             Some(ClientPermission::Read)
         );
+        assert_eq!(
+            required_permission_for_tool("cortex_boot_audit"),
+            Some(ClientPermission::Read)
+        );
     }
 
     #[test]
@@ -1143,6 +1149,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cortex_boot_audit_tool_returns_mcp_boot_rows() {
+        let state = test_state();
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+        };
+
+        mcp_dispatch(
+            &state,
+            None,
+            "cortex_boot",
+            &json!({"budget": 0}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        let payload = mcp_dispatch(
+            &state,
+            None,
+            "cortex_boot_audit",
+            &json!({"agent": "codex (gpt-5.4)", "limit": 10}),
+            Some(&source),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(payload["count"].as_u64(), Some(1));
+        assert_eq!(
+            payload["audits"][0]["agent"].as_str(),
+            Some("codex (gpt-5.4)")
+        );
+        assert_eq!(payload["audits"][0]["budget_tokens"].as_i64(), Some(0));
+        assert!(payload["retention_days"].as_i64().unwrap_or_default() > 0);
+    }
+
+    #[test]
+    fn tools_list_includes_cortex_boot_audit_schema() {
+        let tools = mcp_tools();
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some("cortex_boot_audit"))
+            .expect("cortex_boot_audit should be advertised");
+        assert_eq!(
+            tool["inputSchema"]["properties"]["limit"]["description"].as_str(),
+            Some("Maximum rows to return (default 50, max 500).")
+        );
+    }
+
+    #[tokio::test]
     async fn tools_call_includes_token_usage_line_for_cortex_tools() {
         let state = test_state();
         let source = SourceIdentity {
@@ -1151,6 +1207,7 @@ mod tests {
         };
         let calls = vec![
             ("cortex_boot", json!({"budget": 0})),
+            ("cortex_boot_audit", json!({"limit": 5})),
             (
                 "cortex_recall",
                 json!({"query": "daemon lock lease", "budget": 180}),
@@ -1664,6 +1721,17 @@ pub fn mcp_tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "cortex_boot_audit",
+            "description": "Read recent boot audit rows recorded by /boot and cortex_boot. Use to inspect which boot prompts were served and their token/capsule metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": { "type": "string", "description": "Optional exact agent filter." },
+                    "limit": { "type": "number", "description": "Maximum rows to return (default 50, max 500)." }
+                }
+            }
+        }),
+        json!({
             "name": "cortex_peek",
             "description": "Lightweight check: returns source names and relevance scores only (no excerpts). Use BEFORE cortex_recall to check if relevant memories exist. Saves ~80% tokens vs full recall.",
             "inputSchema": {
@@ -2041,7 +2109,16 @@ async fn mcp_dispatch(
             let conn = state.db.lock().await;
 
             // Use the full capsule compiler (same as HTTP /boot).
+            let boot_started = Instant::now();
             let result = crate::compiler::compile(&conn, &state.home, &agent, budget);
+            crate::handlers::boot::record_boot_audit_best_effort(
+                &conn,
+                &agent,
+                &profile_str,
+                budget,
+                &result,
+                boot_started.elapsed().as_millis() as i64,
+            );
 
             // Auto-ack feed on boot: advance last_seen_id to latest feed entry.
             if let Ok(latest_id) = conn.query_row(
@@ -2100,6 +2177,15 @@ async fn mcp_dispatch(
                     budget
                 )
             }))
+        }
+
+        "cortex_boot_audit" => {
+            let limit = arg_usize(args, &["limit"]);
+            let agent = arg_str(args, &["agent", "source_agent"]).map(str::trim);
+            let agent = agent.filter(|value| !value.is_empty());
+            let conn = state.db.lock().await;
+            crate::handlers::boot::query_boot_audits(&conn, agent, limit)
+                .map_err(|err| format!("boot_audits query failed: {err}"))
         }
 
         "cortex_reconnect" => {

@@ -37,6 +37,52 @@ fn boot_audit_retention_days() -> i64 {
 
 // ─── Query types ─────────────────────────────────────────────────────────────
 
+pub fn record_boot_audit_best_effort(
+    conn: &rusqlite::Connection,
+    agent: &str,
+    profile: &str,
+    max_tokens: usize,
+    result: &crate::compiler::BootResult,
+    latency_ms: i64,
+) {
+    let token_savings = result
+        .savings
+        .get("saved")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let capsules_count = result.capsules.len() as i64;
+    let capsules_json =
+        serde_json::to_string(&result.capsules).unwrap_or_else(|_| "[]".to_string());
+    let retention_days = boot_audit_retention_days();
+    if retention_days > 0 {
+        if let Err(e) = conn.execute(
+            &format!(
+                "DELETE FROM boot_audits WHERE created_at < datetime('now', '-{retention_days} days')"
+            ),
+            [],
+        ) {
+            eprintln!("[boot_audits] prune failed: {e}");
+        }
+    }
+    if let Err(e) = conn.execute(
+        "INSERT INTO boot_audits (agent, profile, budget_tokens, token_estimate,
+                                  token_savings, capsules_count, capsules_json, latency_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            agent,
+            profile,
+            max_tokens as i64,
+            result.token_estimate as i64,
+            token_savings,
+            capsules_count,
+            capsules_json,
+            latency_ms,
+        ],
+    ) {
+        eprintln!("[boot_audits] insert failed: {e}");
+    }
+}
+
 #[derive(Deserialize, Default)]
 pub struct BootQuery {
     pub profile: Option<String>,
@@ -138,42 +184,7 @@ pub async fn handle_boot(
     // older than BOOT_AUDIT_RETENTION_DAYS. Failures are logged but never
     // block the boot response; audit rows are diagnostic, not critical-path.
     let latency_ms = boot_started.elapsed().as_millis() as i64;
-    let token_savings = result
-        .savings
-        .get("saved")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-    let capsules_count = result.capsules.len() as i64;
-    let capsules_json =
-        serde_json::to_string(&result.capsules).unwrap_or_else(|_| "[]".to_string());
-    let retention_days = boot_audit_retention_days();
-    if retention_days > 0 {
-        if let Err(e) = conn.execute(
-            &format!(
-                "DELETE FROM boot_audits WHERE created_at < datetime('now', '-{retention_days} days')"
-            ),
-            [],
-        ) {
-            eprintln!("[boot_audits] prune failed: {e}");
-        }
-    }
-    if let Err(e) = conn.execute(
-        "INSERT INTO boot_audits (agent, profile, budget_tokens, token_estimate,
-                                  token_savings, capsules_count, capsules_json, latency_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![
-            agent,
-            profile,
-            max_tokens as i64,
-            result.token_estimate as i64,
-            token_savings,
-            capsules_count,
-            capsules_json,
-            latency_ms,
-        ],
-    ) {
-        eprintln!("[boot_audits] insert failed: {e}");
-    }
+    record_boot_audit_best_effort(&conn, &agent, &profile, max_tokens, &result, latency_ms);
 
     checkpoint_wal_best_effort(&conn);
 
@@ -232,10 +243,24 @@ pub async fn handle_boot_audit(
         );
     }
 
-    let limit = query.limit.unwrap_or(50).min(500);
     let conn = state.db.lock().await;
 
-    let rows_result: Result<Vec<serde_json::Value>, rusqlite::Error> = match &query.agent {
+    match query_boot_audits(&conn, query.agent.as_deref(), query.limit) {
+        Ok(payload) => json_response(StatusCode::OK, payload),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("boot_audits query failed: {e}") }),
+        ),
+    }
+}
+
+pub fn query_boot_audits(
+    conn: &rusqlite::Connection,
+    agent: Option<&str>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, rusqlite::Error> {
+    let limit = limit.unwrap_or(50).min(500);
+    let rows: Vec<serde_json::Value> = match agent {
         Some(agent) => conn
             .prepare(
                 "SELECT id, agent, profile, budget_tokens, token_estimate,
@@ -248,7 +273,7 @@ pub async fn handle_boot_audit(
             .and_then(|mut stmt| {
                 stmt.query_map(rusqlite::params![agent, limit as i64], row_to_json)?
                     .collect()
-            }),
+            })?,
         None => conn
             .prepare(
                 "SELECT id, agent, profile, budget_tokens, token_estimate,
@@ -260,23 +285,14 @@ pub async fn handle_boot_audit(
             .and_then(|mut stmt| {
                 stmt.query_map(rusqlite::params![limit as i64], row_to_json)?
                     .collect()
-            }),
+            })?,
     };
 
-    match rows_result {
-        Ok(rows) => json_response(
-            StatusCode::OK,
-            json!({
-                "audits": rows,
-                "count": rows.len(),
-                "retention_days": boot_audit_retention_days(),
-            }),
-        ),
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": format!("boot_audits query failed: {e}") }),
-        ),
-    }
+    Ok(json!({
+        "audits": rows,
+        "count": rows.len(),
+        "retention_days": boot_audit_retention_days(),
+    }))
 }
 
 fn row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {

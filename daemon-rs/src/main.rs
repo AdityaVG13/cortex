@@ -6857,5 +6857,6 @@ mod tests {
             "missing /recall/explain in spec"
         );
         assert!(spec.contains("/stats:"), "missing /stats in spec");
+        assert!(spec.contains("/boot/audit:"), "missing /boot/audit in spec");
     }
 }

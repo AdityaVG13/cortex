@@ -222,6 +222,37 @@ paths:
           description: Unauthorized
         '403':
           description: Missing SSRF protection header
+  /boot/audit:
+    get:
+      summary: List recent boot prompt audit rows
+      operationId: bootAudit
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/XCortexRequest'
+        - in: query
+          name: agent
+          schema:
+            type: string
+          description: Optional exact agent filter.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+          description: Maximum audit rows to return.
+      responses:
+        '200':
+          description: Recent boot audit rows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BootAuditResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing SSRF protection header
   /store:
     post:
       summary: Store a memory or decision
@@ -343,6 +374,40 @@ components:
     RetentionClass:
       type: string
       enum: [durable, operational, audit, ephemeral]
+    BootAuditResponse:
+      type: object
+      properties:
+        audits:
+          type: array
+          items:
+            $ref: '#/components/schemas/BootAudit'
+        count:
+          type: integer
+        retention_days:
+          type: integer
+    BootAudit:
+      type: object
+      properties:
+        id:
+          type: integer
+        agent:
+          type: string
+        profile:
+          type: string
+        budget_tokens:
+          type: integer
+        token_estimate:
+          type: integer
+        token_savings:
+          type: integer
+        capsules_count:
+          type: integer
+        latency_ms:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
     ImportPayload:
       type: object
       properties:
