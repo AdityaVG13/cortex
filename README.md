@@ -13,7 +13,7 @@ Install once. Your tools stop starting from scratch.</p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.6.0"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat-square" alt="v0.6.0"></a>&nbsp;
+  <a href="https://github.com/AdityaVG13/cortex/releases/tag/v0.5.0"><img src="https://img.shields.io/badge/release-v0.5.0-blue?style=flat-square" alt="v0.5.0"></a>&nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/github/license/AdityaVG13/cortex?style=flat-square" alt="MIT License"></a>&nbsp;
   <img src="https://img.shields.io/badge/platforms-Windows_|_macOS_|_Linux-333?style=flat-square" alt="Windows | macOS | Linux">&nbsp;
   <img src="https://img.shields.io/badge/Rust_+_React-daemon_+_desktop-orange?style=flat-square" alt="Rust + React">
@@ -192,24 +192,8 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 
 <p align="center">
 <sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
-<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter ships in v0.6.0 as the canonical measurement floor -- every v0.6.0+ recall-quality claim is measured through it, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Cortex includes a default-off cross-encoder reranker path for local evaluation; promote it from shadow to primary only after validating against your corpus. Query expansion (HyDE) targets v0.7.0.</sub>
+<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter ships in v0.6.0 as the canonical measurement floor -- every v0.6.0+ recall-quality claim is measured through it, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking production-ships in v0.6.0 Phase 2; query expansion (HyDE) targeted for v0.7.0.</sub>
 </p>
-
----
-
-![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:111827&height=110&text=v0.6.0%20Updates&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-<p align="center">Settings, accessibility preferences, local budget governance, and measurement-honest recall work.</p>
-
-### Settings + accessibility
-- **Settings surface**: Accessibility, Appearance & Motion, Connection, Budgets, and Keyboard & Navigation live in Control Center.
-- **User-controlled preferences**: high contrast, reduced motion, keyboard hints, and compact navigation are Settings toggles, not forced base behavior.
-- **Accessibility hardening**: stronger focus states, semantics, live regions, reduced-motion plumbing, contrast-token checks, and 375px reflow gates. Formal conformance claims wait on screen-reader and browser-harness evidence.
-
-### Governance + recall
-- **Retention classes**: memories and decisions can be durable, operational, audit, or ephemeral.
-- **Local budgets**: `~/.cortex/budgets.toml` caps store, recall-family, boot, and MCP calls; Control Center can view and edit local budget config without a daemon write endpoint.
-- **Context accountability**: boot audits, score-adaptive packing, retention-aware context ranking, and session rollback make agent memory easier to inspect and recover.
-- **Recall upgrades**: `bge-base-en-v1.5` is the default embedding profile, Qwen3 embeddings are opt-in, and the cross-encoder reranker remains default-off while LongMemEval/API-backed gates are pending.
 
 ---
 
