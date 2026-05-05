@@ -131,7 +131,7 @@ const EMPTY_HEALTH_META = {
   budgets: null,
 };
 
-const CONTROL_CENTER_VERSION = "0.5.0";
+const CONTROL_CENTER_VERSION = "0.6.0";
 const RECALL_HEADLINE_MIN_QUERIES = 20;
 const CORTEX_BASE_STORAGE_KEY = "cortex_base";
 const CORTEX_AUTH_STORAGE_KEY = "cortex_auth_token";
