@@ -291,7 +291,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--markdown-output", type=Path, default=None)
     parser.add_argument("--target-dir", type=Path, default=root / "daemon-rs" / "target-codex-rq1-gate")
-    parser.add_argument("--rq2-target-dir", type=Path, default=root / "daemon-rs" / "target-codex-rq2-gate")
+    parser.add_argument(
+        "--rq2-target-dir",
+        type=Path,
+        default=None,
+        help="Target directory for the recall probe binary; defaults to --target-dir.",
+    )
     parser.add_argument("--models-source", type=Path, default=Path.home() / ".cortex" / "models")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--backfill-rows", type=int, default=32, help="Rows per table; total rows are doubled.")
@@ -307,6 +312,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     root = repo_root()
+    if args.rq2_target_dir is None:
+        args.rq2_target_dir = args.target_dir
     output = args.output or root / "benchmarking" / "results" / f"rq1-embedding-profile-{now_tag()}.json"
     markdown_output = args.markdown_output or output.with_suffix(".md")
     binary = ensure_binary(root, args.target_dir, args.skip_build)

@@ -232,7 +232,7 @@ pub fn selected_model_assets_exist(models_dir: &Path) -> bool {
 // Engine
 // ---------------------------------------------------------------------------
 
-const DEFAULT_POOL_SIZE: usize = 2;
+const DEFAULT_POOL_SIZE: usize = 1;
 const MAX_POOL_SIZE: usize = 8;
 
 fn resolved_pool_size() -> usize {
@@ -935,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn session_pool_defaults_to_two() {
+    fn session_pool_defaults_to_one() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let _restore = set_pool_env_for_test(None);
         assert_eq!(resolved_pool_size(), DEFAULT_POOL_SIZE);
