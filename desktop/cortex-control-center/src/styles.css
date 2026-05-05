@@ -99,6 +99,71 @@
   }
 }
 
+@media (forced-colors: active) {
+  :root {
+    color-scheme: light dark;
+    --bg: Canvas;
+    --bg-deep: Canvas;
+    --surface: Canvas;
+    --surface-2: Canvas;
+    --surface-3: Canvas;
+    --border: ButtonBorder;
+    --border-subtle: ButtonBorder;
+    --border-glow: transparent;
+    --text: CanvasText;
+    --text-2: CanvasText;
+    --text-3: CanvasText;
+    --cyan: LinkText;
+    --cyan-bright: Highlight;
+    --cyan-dim: transparent;
+    --cyan-glow: transparent;
+    --cyan-glow-strong: transparent;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  .app,
+  .app-shell,
+  .sidebar,
+  .main,
+  .panel,
+  .settings-section,
+  .modal,
+  .glass-card,
+  .memory-card,
+  .agent-card {
+    background-image: none !important;
+  }
+
+  :is(
+    button,
+    a[href],
+    input,
+    select,
+    textarea,
+    [role="button"],
+    [role="tab"],
+    [role="switch"],
+    [tabindex]:not([tabindex="-1"])
+  ):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 3px;
+    box-shadow: none;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    border-color: ButtonBorder !important;
+  }
+}
+
 /* ─── Reset ─────────────────────────────────────────────────────────────── */
 
 *,

@@ -116,4 +116,16 @@ describe("contrast design tokens", () => {
       );
     }
   });
+
+  it("defines a Windows forced-colors fallback for high contrast mode", () => {
+    const forcedColors = readRuleBody("@media (forced-colors: active)");
+
+    for (const systemColor of ["Canvas", "CanvasText", "ButtonBorder", "Highlight", "LinkText"]) {
+      expect(forcedColors, `forced-colors fallback should use ${systemColor}`).toContain(systemColor);
+    }
+
+    expect(forcedColors).toContain("background-image: none !important");
+    expect(forcedColors).toContain("box-shadow: none !important");
+    expect(forcedColors).toContain("outline: 2px solid Highlight");
+  });
 });
