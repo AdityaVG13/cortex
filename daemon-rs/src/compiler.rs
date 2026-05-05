@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::env;
 use std::path::Path;
 
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -21,7 +22,12 @@ use crate::handlers::{estimate_tokens, estimate_tokens_from_chars};
 
 const DEFAULT_BOOT_MIN_SOURCE_TOKENS: usize = 40;
 const DEFAULT_BOOT_MAX_SOURCE_TOKENS: usize = 600;
+const DEFAULT_BOOT_RANK_TOP_N: usize = 5;
 const SCORE_VARIANCE_FLAT_THRESHOLD: f64 = 0.0001;
+const RANK_WEIGHT_CLASS: f64 = 0.30;
+const RANK_WEIGHT_RECENCY: f64 = 0.30;
+const RANK_WEIGHT_RELEVANCE: f64 = 0.25;
+const RANK_WEIGHT_ACTIVITY: f64 = 0.15;
 
 fn detect_identity() -> String {
     let user = env::var("USERNAME")
@@ -684,6 +690,155 @@ fn record_boot(conn: &Connection, agent: &str) {
 
 // ─── Context Item for ranked compilation ───────────────────────────────────
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RankComponents {
+    class_score: f64,
+    recency_score: f64,
+    relevance_score: f64,
+    activity_score: f64,
+    total_score: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RankAudit {
+    source_kind: &'static str,
+    source_id: i64,
+    retention_class: String,
+    components: RankComponents,
+}
+
+#[derive(Clone, Debug)]
+struct RankedCandidate {
+    source_kind: &'static str,
+    source_id: i64,
+    retention_class: String,
+    title: String,
+    body: String,
+    updated_at: Option<String>,
+    created_at: Option<String>,
+    last_accessed: Option<String>,
+    retrievals: i64,
+    relevance: f64,
+    components: RankComponents,
+}
+
+fn clamp01(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn retention_class_score(retention_class: &str) -> f64 {
+    match retention_class {
+        "durable" => 1.0,
+        "operational" => 0.8,
+        "audit" => 0.4,
+        "ephemeral" => 0.2,
+        _ => 0.6,
+    }
+}
+
+fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .ok()
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|dt| Utc.from_utc_datetime(&dt))
+        })
+}
+
+fn recency_score(timestamp: Option<&str>, now: DateTime<Utc>) -> f64 {
+    let Some(timestamp) = parse_timestamp(timestamp) else {
+        return 0.05;
+    };
+    let age_hours = now.signed_duration_since(timestamp).num_hours().max(0);
+    match age_hours {
+        0..=1 => 1.0,
+        2..=24 => 0.85,
+        25..=168 => 0.60,
+        169..=720 => 0.35,
+        721..=2160 => 0.15,
+        _ => 0.05,
+    }
+}
+
+fn activity_score(retrievals: i64, last_accessed: Option<&str>, now: DateTime<Utc>) -> f64 {
+    let retrieval_score = (retrievals.max(0) as f64 / 10.0).min(1.0);
+    let access_score = recency_score(last_accessed, now);
+    (retrieval_score * 0.55) + (access_score * 0.45)
+}
+
+fn rank_components_for(candidate: &RankedCandidate, now: DateTime<Utc>) -> RankComponents {
+    let timestamp = candidate
+        .updated_at
+        .as_deref()
+        .or(candidate.created_at.as_deref());
+    let class_score = retention_class_score(&candidate.retention_class);
+    let recency_score = recency_score(timestamp, now);
+    let relevance_score = clamp01(candidate.relevance);
+    let activity_score = activity_score(
+        candidate.retrievals,
+        candidate.last_accessed.as_deref(),
+        now,
+    );
+    let total_score = (class_score * RANK_WEIGHT_CLASS)
+        + (recency_score * RANK_WEIGHT_RECENCY)
+        + (relevance_score * RANK_WEIGHT_RELEVANCE)
+        + (activity_score * RANK_WEIGHT_ACTIVITY);
+
+    RankComponents {
+        class_score,
+        recency_score,
+        relevance_score,
+        activity_score,
+        total_score,
+    }
+}
+
+fn rank_candidates(
+    mut candidates: Vec<RankedCandidate>,
+    top_n: usize,
+    now: DateTime<Utc>,
+) -> Vec<RankedCandidate> {
+    for candidate in &mut candidates {
+        candidate.components = rank_components_for(candidate, now);
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .components
+            .total_score
+            .partial_cmp(&left.components.total_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.source_id.cmp(&right.source_id))
+    });
+    candidates.truncate(top_n);
+    candidates
+}
+
+fn rank_audit_json(audit: &RankAudit) -> Value {
+    json!({
+        "sourceKind": audit.source_kind,
+        "sourceId": audit.source_id,
+        "retentionClass": audit.retention_class,
+        "rankComponents": {
+            "class": (audit.components.class_score * 10000.0).round() / 10000.0,
+            "recency": (audit.components.recency_score * 10000.0).round() / 10000.0,
+            "relevance": (audit.components.relevance_score * 10000.0).round() / 10000.0,
+            "activity": (audit.components.activity_score * 10000.0).round() / 10000.0,
+            "total": (audit.components.total_score * 10000.0).round() / 10000.0
+        }
+    })
+}
+
 struct ContextItem {
     name: String,
     text: String,
@@ -692,6 +847,7 @@ struct ContextItem {
     priority: f64,
     /// Utility score: priority / token_cost (higher = more efficient)
     utility: f64,
+    rank_audit: Option<RankAudit>,
 }
 
 impl ContextItem {
@@ -708,8 +864,41 @@ impl ContextItem {
             tokens,
             priority,
             utility,
+            rank_audit: None,
         }
     }
+
+    fn from_ranked_candidate(candidate: RankedCandidate) -> Self {
+        let title = candidate.title.chars().take(160).collect::<String>();
+        let body = candidate.body.chars().take(420).collect::<String>();
+        let text = format!(
+            "## Ranked {} Context\n- {}: {}",
+            candidate.source_kind, title, body
+        );
+        let mut item = Self::new(
+            &format!("ranked:{}:{}", candidate.source_kind, candidate.source_id),
+            text,
+            candidate.components.total_score.max(0.01),
+        );
+        item.rank_audit = Some(RankAudit {
+            source_kind: candidate.source_kind,
+            source_id: candidate.source_id,
+            retention_class: candidate.retention_class,
+            components: candidate.components,
+        });
+        item
+    }
+}
+
+fn attach_rank_audit(mut entry: Value, item: &ContextItem) -> Value {
+    if let (Some(object), Some(audit)) = (entry.as_object_mut(), item.rank_audit.as_ref()) {
+        if let Value::Object(rank_object) = rank_audit_json(audit) {
+            for (key, value) in rank_object {
+                object.insert(key, value);
+            }
+        }
+    }
+    entry
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -753,6 +942,90 @@ fn boot_source_token_bounds() -> SourceTokenBounds {
             DEFAULT_BOOT_MAX_SOURCE_TOKENS,
         ),
     )
+}
+
+fn boot_rank_top_n() -> usize {
+    read_usize_env("CORTEX_BOOT_RANK_TOP_N", DEFAULT_BOOT_RANK_TOP_N).min(20)
+}
+
+fn empty_rank_components() -> RankComponents {
+    RankComponents {
+        class_score: 0.0,
+        recency_score: 0.0,
+        relevance_score: 0.0,
+        activity_score: 0.0,
+        total_score: 0.0,
+    }
+}
+
+fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
+    let mut candidates = Vec::new();
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, text, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
+         FROM memories
+         WHERE status = 'active' AND type != 'state'
+         ORDER BY updated_at DESC
+         LIMIT 80",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(RankedCandidate {
+                source_kind: "memory",
+                source_id: row.get::<_, i64>(0)?,
+                body: row.get::<_, String>(1)?,
+                title: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "memory".to_string()),
+                retention_class: row
+                    .get::<_, Option<String>>(3)?
+                    .unwrap_or_else(|| "operational".to_string()),
+                relevance: row.get::<_, Option<f64>>(4)?.unwrap_or(0.5),
+                retrievals: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                last_accessed: row.get::<_, Option<String>>(6)?,
+                updated_at: row.get::<_, Option<String>>(7)?,
+                created_at: row.get::<_, Option<String>>(8)?,
+                components: empty_rank_components(),
+            })
+        }) {
+            candidates.extend(rows.flatten());
+        }
+    }
+
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, decision, context, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
+         FROM decisions
+         WHERE status = 'active'
+         ORDER BY updated_at DESC
+         LIMIT 80",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let decision: String = row.get(1)?;
+            let context: Option<String> = row.get(2)?;
+            let body = match context {
+                Some(context) if !context.trim().is_empty() => format!("{decision} ({context})"),
+                _ => decision,
+            };
+            Ok(RankedCandidate {
+                source_kind: "decision",
+                source_id: row.get::<_, i64>(0)?,
+                body,
+                title: row
+                    .get::<_, Option<String>>(3)?
+                    .unwrap_or_else(|| "decision".to_string()),
+                retention_class: row
+                    .get::<_, Option<String>>(4)?
+                    .unwrap_or_else(|| "operational".to_string()),
+                relevance: row.get::<_, Option<f64>>(5)?.unwrap_or(0.5),
+                retrievals: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                last_accessed: row.get::<_, Option<String>>(7)?,
+                updated_at: row.get::<_, Option<String>>(8)?,
+                created_at: row.get::<_, Option<String>>(9)?,
+                components: empty_rank_components(),
+            })
+        }) {
+            candidates.extend(rows.flatten());
+        }
+    }
+
+    candidates
 }
 
 fn score_signal_is_flat(items: &[ContextItem]) -> bool {
@@ -810,12 +1083,15 @@ fn pack_context_items_greedy(items: &[ContextItem], max_tokens: usize) -> Packed
         if item.tokens <= budget_remaining && !item.text.is_empty() {
             assembled_parts.push(item.text.clone());
             budget_remaining -= item.tokens;
-            admitted.push(json!({
-                "name": item.name,
-                "tokens": item.tokens,
-                "priority": item.priority,
-                "utility": (item.utility * 10000.0).round() / 10000.0
-            }));
+            admitted.push(attach_rank_audit(
+                json!({
+                    "name": item.name,
+                    "tokens": item.tokens,
+                    "priority": item.priority,
+                    "utility": (item.utility * 10000.0).round() / 10000.0
+                }),
+                item,
+            ));
         } else if !item.text.is_empty() {
             // Try truncation for high-priority items
             if item.priority >= 0.7 && budget_remaining > 30 {
@@ -824,19 +1100,25 @@ fn pack_context_items_greedy(items: &[ContextItem], max_tokens: usize) -> Packed
                 let trunc_tokens = estimate_tokens(&truncated);
                 assembled_parts.push(format!("{truncated}..."));
                 budget_remaining = budget_remaining.saturating_sub(trunc_tokens);
-                admitted.push(json!({
-                    "name": item.name,
-                    "tokens": trunc_tokens,
-                    "priority": item.priority,
-                    "truncated": true
-                }));
+                admitted.push(attach_rank_audit(
+                    json!({
+                        "name": item.name,
+                        "tokens": trunc_tokens,
+                        "priority": item.priority,
+                        "truncated": true
+                    }),
+                    item,
+                ));
             } else {
-                rejected.push(json!({
-                    "name": item.name,
-                    "tokens": item.tokens,
-                    "priority": item.priority,
-                    "reason": "budget_exceeded"
-                }));
+                rejected.push(attach_rank_audit(
+                    json!({
+                        "name": item.name,
+                        "tokens": item.tokens,
+                        "priority": item.priority,
+                        "reason": "budget_exceeded"
+                    }),
+                    item,
+                ));
             }
         }
     }
@@ -948,36 +1230,45 @@ fn pack_context_items_score_adaptive(
         }
         let allocation = allocations[idx];
         if allocation == 0 {
-            rejected.push(json!({
-                "name": item.name,
-                "tokens": item.tokens,
-                "priority": item.priority,
-                "reason": "score_adaptive_budget_exceeded"
-            }));
+            rejected.push(attach_rank_audit(
+                json!({
+                    "name": item.name,
+                    "tokens": item.tokens,
+                    "priority": item.priority,
+                    "reason": "score_adaptive_budget_exceeded"
+                }),
+                item,
+            ));
             continue;
         }
 
         if item.tokens <= allocation {
             assembled_parts.push(item.text.clone());
-            admitted.push(json!({
-                "name": item.name,
-                "tokens": item.tokens,
-                "allocatedTokens": allocation,
-                "priority": item.priority,
-                "utility": (item.utility * 10000.0).round() / 10000.0,
-                "packing": "score_adaptive"
-            }));
+            admitted.push(attach_rank_audit(
+                json!({
+                    "name": item.name,
+                    "tokens": item.tokens,
+                    "allocatedTokens": allocation,
+                    "priority": item.priority,
+                    "utility": (item.utility * 10000.0).round() / 10000.0,
+                    "packing": "score_adaptive"
+                }),
+                item,
+            ));
         } else {
             let (truncated, trunc_tokens) = truncate_to_token_budget(&item.text, allocation);
             assembled_parts.push(truncated);
-            admitted.push(json!({
-                "name": item.name,
-                "tokens": trunc_tokens,
-                "allocatedTokens": allocation,
-                "priority": item.priority,
-                "truncated": true,
-                "packing": "score_adaptive"
-            }));
+            admitted.push(attach_rank_audit(
+                json!({
+                    "name": item.name,
+                    "tokens": trunc_tokens,
+                    "allocatedTokens": allocation,
+                    "priority": item.priority,
+                    "truncated": true,
+                    "packing": "score_adaptive"
+                }),
+                item,
+            ));
         }
     }
 
@@ -1075,6 +1366,10 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     }
 
     // ── 2. Record boot ──────────────────────────────────────────────────────
+    for candidate in rank_candidates(fetch_rank_candidates(conn), boot_rank_top_n(), Utc::now()) {
+        items.push(ContextItem::from_ranked_candidate(candidate));
+    }
+
     record_boot(conn, agent);
 
     // ── 3. Sort by utility (priority / token_cost) descending ───────────────
@@ -1159,6 +1454,109 @@ mod tests {
             .and_then(Value::as_u64)
             .map(|value| value as usize)
             .unwrap_or(0)
+    }
+
+    fn fixed_now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 5, 5, 12, 0, 0)
+            .single()
+            .expect("valid fixed time")
+    }
+
+    fn candidate(
+        source_id: i64,
+        retention_class: &str,
+        updated_at: &str,
+        retrievals: i64,
+        last_accessed: Option<&str>,
+        relevance: f64,
+    ) -> RankedCandidate {
+        RankedCandidate {
+            source_kind: "memory",
+            source_id,
+            retention_class: retention_class.to_string(),
+            title: format!("candidate-{source_id}"),
+            body: format!("candidate body {source_id}"),
+            updated_at: Some(updated_at.to_string()),
+            created_at: Some(updated_at.to_string()),
+            last_accessed: last_accessed.map(str::to_string),
+            retrievals,
+            relevance,
+            components: empty_rank_components(),
+        }
+    }
+
+    #[test]
+    fn ranking_component_scores_cover_class_recency_relevance_and_activity() {
+        let now = fixed_now();
+
+        assert_eq!(retention_class_score("durable"), 1.0);
+        assert_eq!(retention_class_score("operational"), 0.8);
+        assert_eq!(retention_class_score("audit"), 0.4);
+        assert_eq!(retention_class_score("ephemeral"), 0.2);
+        assert!(recency_score(Some("2026-05-05T11:30:00Z"), now) > 0.9);
+        assert!(recency_score(Some("2025-01-01T00:00:00Z"), now) < 0.1);
+        assert!(
+            activity_score(10, Some("2026-05-05T11:30:00Z"), now) > activity_score(0, None, now)
+        );
+
+        let ranked = rank_components_for(
+            &candidate(
+                1,
+                "operational",
+                "2026-05-05T11:30:00Z",
+                6,
+                Some("2026-05-05T11:45:00Z"),
+                1.4,
+            ),
+            now,
+        );
+        assert_eq!(ranked.relevance_score, 1.0);
+        assert!(ranked.total_score > 0.75);
+    }
+
+    #[test]
+    fn active_operational_context_ranks_above_stale_durable_context() {
+        let now = fixed_now();
+        let stale_durable = candidate(1, "durable", "2025-01-01T00:00:00Z", 0, None, 0.85);
+        let active_operational = candidate(
+            2,
+            "operational",
+            "2026-05-05T11:50:00Z",
+            9,
+            Some("2026-05-05T11:55:00Z"),
+            0.70,
+        );
+
+        let ranked = rank_candidates(vec![stale_durable, active_operational], 2, now);
+
+        assert_eq!(ranked[0].source_id, 2);
+        assert!(ranked[0].components.total_score > ranked[1].components.total_score);
+    }
+
+    #[test]
+    fn ranked_context_items_emit_boot_audit_components() {
+        let now = fixed_now();
+        let ranked = rank_candidates(
+            vec![candidate(
+                7,
+                "operational",
+                "2026-05-05T11:50:00Z",
+                4,
+                Some("2026-05-05T11:55:00Z"),
+                0.90,
+            )],
+            1,
+            now,
+        );
+        let item = ContextItem::from_ranked_candidate(ranked[0].clone());
+        let packed = pack_context_items(&[item], 200, SourceTokenBounds::new(20, 200));
+        let capsule = &packed.admitted[0];
+
+        assert_eq!(capsule["sourceKind"], "memory");
+        assert_eq!(capsule["sourceId"], 7);
+        assert_eq!(capsule["retentionClass"], "operational");
+        assert!(capsule["rankComponents"]["class"].as_f64().unwrap() > 0.0);
+        assert!(capsule["rankComponents"]["total"].as_f64().unwrap() > 0.0);
     }
 
     #[test]
