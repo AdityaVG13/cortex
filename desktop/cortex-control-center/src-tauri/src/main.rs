@@ -1451,7 +1451,7 @@ fn hide_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 fn hide_to_tray_on_close() -> bool {
-    !cfg!(debug_assertions)
+    true
 }
 
 fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
@@ -2914,7 +2914,6 @@ fn main() {
         .manage(DaemonState::new(exe_path))
         .manage(LifecycleState::default())
         .setup(|app| {
-            // Avoid stale/duplicate tray icons during frequent dev restarts.
             if hide_to_tray_on_close() {
                 setup_tray(app)?;
             }
@@ -2947,8 +2946,6 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let lifecycle = window.app_handle().state::<LifecycleState>();
-                // In `tauri dev`, let the window close normally so the dev runner can
-                // restart without force-killing the WebView2 host.
                 if hide_to_tray_on_close() && !lifecycle.is_quit_requested() {
                     api.prevent_close();
                     hide_main_window(window.app_handle());
@@ -2995,14 +2992,14 @@ mod tests {
     use super::{
         budget_snapshot_from_contents, cortex_mcp_registration, cortex_readiness_state,
         describe_daemon_state, editor_args, editor_config_path, editor_targets,
-        extract_error_detail, health_state_with_identity_fallback, interpret_shutdown_response,
-        is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
-        local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
+        extract_error_detail, health_state_with_identity_fallback, hide_to_tray_on_close,
+        interpret_shutdown_response, is_cortex_health_response, is_disallowed_daemon_binary_path,
+        json_env_match, local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
         path_binary_fallback_enabled_from_value, readiness_state_with_identity_fallback,
         should_use_partial_response_on_read_timeout, toml_env_match, validate_budget_draft,
         workspace_binary_candidates, write_budget_config_file, BudgetConfigDraft,
         BudgetEndpointDraft, CortexReachabilityProbe, DaemonState, FetchCortexResponse,
-        ResolvedCortexPaths,
+        LifecycleState, ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -3026,6 +3023,17 @@ mod tests {
                 .spawn()
                 .expect("spawn unix sleep")
         }
+    }
+
+    #[test]
+    fn close_button_policy_hides_to_tray_until_explicit_quit() {
+        let lifecycle = LifecycleState::default();
+
+        assert!(hide_to_tray_on_close());
+        assert!(!lifecycle.is_quit_requested());
+
+        lifecycle.request_quit();
+        assert!(lifecycle.is_quit_requested());
     }
 
     #[test]
@@ -3432,7 +3440,9 @@ window_seconds = 60
     fn cortex_health_probe_rejects_identity_mismatch() {
         let expected = ResolvedCortexPaths {
             home: Some(PathBuf::from("C:/cortex-test/testuser/.cortex")),
-            token: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.token")),
+            token: Some(PathBuf::from(
+                "C:/cortex-test/testuser/.cortex/cortex.token",
+            )),
             db: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.db")),
             pid: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.pid")),
             port: Some(7437),
@@ -3456,7 +3466,9 @@ window_seconds = 60
     fn readiness_identity_fallback_classifies_starting_payload_on_path_mismatch() {
         let expected = ResolvedCortexPaths {
             home: Some(PathBuf::from("C:/cortex-test/testuser/.cortex")),
-            token: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.token")),
+            token: Some(PathBuf::from(
+                "C:/cortex-test/testuser/.cortex/cortex.token",
+            )),
             db: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.db")),
             pid: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.pid")),
             port: Some(7437),
@@ -3476,7 +3488,9 @@ window_seconds = 60
     fn health_identity_fallback_detects_reachable_payload_on_path_mismatch() {
         let expected = ResolvedCortexPaths {
             home: Some(PathBuf::from("C:/cortex-test/testuser/.cortex")),
-            token: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.token")),
+            token: Some(PathBuf::from(
+                "C:/cortex-test/testuser/.cortex/cortex.token",
+            )),
             db: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.db")),
             pid: Some(PathBuf::from("C:/cortex-test/testuser/.cortex/cortex.pid")),
             port: Some(7437),
