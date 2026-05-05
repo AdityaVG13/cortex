@@ -391,6 +391,8 @@ function Sparkline({
       viewBox={`0 0 ${width} ${height}`}
       preserveAspectRatio="xMidYMid meet"
       className={`sparkline ${className}`}
+      aria-hidden="true"
+      focusable="false"
     >
       <defs>
         <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
@@ -1390,6 +1392,17 @@ function isReachableHealthPayload(health) {
   return Boolean(health?.runtime) || Boolean(health?.stats);
 }
 
+function setElementInert(element, inert) {
+  if (!element) return;
+  if (inert) {
+    element.setAttribute("inert", "");
+    element.inert = true;
+    return;
+  }
+  element.removeAttribute("inert");
+  element.inert = false;
+}
+
 function isReadyReadinessPayload(readiness) {
   if (!readiness || typeof readiness !== "object") return false;
   if (readiness.ready === true) return true;
@@ -1524,6 +1537,14 @@ export function App() {
   const skipInitialFeedRefreshRef = useRef(true);
   const skipInitialMessagesRefreshRef = useRef(true);
   const skipInitialActivityRefreshRef = useRef(true);
+  const connectionDialogRef = useRef(null);
+  const connectionDialogTriggerRef = useRef(null);
+  const editorSetupDialogRef = useRef(null);
+  const editorSetupTriggerRef = useRef(null);
+  const topbarRef = useRef(null);
+  const analyticsPanelRef = useRef(null);
+  const brainPanelRef = useRef(null);
+  const analyticsTabRefs = useRef({});
   const sessionsRef = useRef([]);
   const daemonStateRef = useRef(EMPTY_DAEMON);
   const streamConnectedAtRef = useRef(0);
@@ -1534,7 +1555,19 @@ export function App() {
   const browserHealthProbeRef = useRef(null);
   const connectionDialogAutoPromptSuppressedRef = useRef(false);
 
-  const openConnectionDialog = useCallback(() => {
+  const restoreFocusToTrigger = useCallback((triggerRef) => {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      const target = triggerRef.current;
+      triggerRef.current = null;
+      if (target && typeof target.focus === "function" && document.contains(target)) {
+        target.focus();
+      }
+    });
+  }, []);
+
+  const openConnectionDialog = useCallback((event) => {
+    connectionDialogTriggerRef.current = event?.currentTarget || document.activeElement;
     connectionDialogAutoPromptSuppressedRef.current = false;
     setShowConnectionDialog(true);
   }, []);
@@ -1542,12 +1575,19 @@ export function App() {
   const dismissConnectionDialog = useCallback(() => {
     connectionDialogAutoPromptSuppressedRef.current = true;
     setShowConnectionDialog(false);
-  }, []);
+    restoreFocusToTrigger(connectionDialogTriggerRef);
+  }, [restoreFocusToTrigger]);
 
   const closeConnectionDialog = useCallback(() => {
     connectionDialogAutoPromptSuppressedRef.current = false;
     setShowConnectionDialog(false);
-  }, []);
+    restoreFocusToTrigger(connectionDialogTriggerRef);
+  }, [restoreFocusToTrigger]);
+
+  const closeEditorSetupWizard = useCallback(() => {
+    setShowEditorSetupWizard(false);
+    restoreFocusToTrigger(editorSetupTriggerRef);
+  }, [restoreFocusToTrigger]);
 
   const updateControlSetting = useCallback((key, value) => {
     setControlSettings((current) => ({ ...current, [key]: value }));
@@ -2365,7 +2405,8 @@ export function App() {
     [permissionsEndpointAvailable, postApi, refreshPermissions]
   );
 
-  const openEditorSetupWizard = useCallback(async () => {
+  const openEditorSetupWizard = useCallback(async (event) => {
+    editorSetupTriggerRef.current = event?.currentTarget || document.activeElement;
     setIsSettingUpEditors(true);
     try {
       const result = await call("detect_editors");
@@ -2403,7 +2444,7 @@ export function App() {
     try {
       const result = await call("setup_editors", { editorIds: selectedEditorIds });
       setEditorSetup(result);
-      setShowEditorSetupWizard(false);
+      closeEditorSetupWizard();
       const detected = result.filter((entry) => entry.detected).length;
       const registered = result.filter((entry) => entry.registered).length;
       const failed = result.filter((entry) => entry.detected && !entry.registered).length;
@@ -2419,7 +2460,7 @@ export function App() {
     } finally {
       setIsSettingUpEditors(false);
     }
-  }, [call, selectedEditorIds]);
+  }, [call, closeEditorSetupWizard, selectedEditorIds]);
 
   const refreshAll = useCallback(async () => {
     try {
@@ -3918,7 +3959,7 @@ export function App() {
 
       if (showEditorSetupWizard && !isSettingUpEditors) {
         event.preventDefault();
-        setShowEditorSetupWizard(false);
+        closeEditorSetupWizard();
         return;
       }
 
@@ -3930,7 +3971,29 @@ export function App() {
 
     window.addEventListener("keydown", handleDialogKey);
     return () => window.removeEventListener("keydown", handleDialogKey);
-  }, [dismissConnectionDialog, isSettingUpEditors, showConnectionDialog, showEditorSetupWizard]);
+  }, [closeEditorSetupWizard, dismissConnectionDialog, isSettingUpEditors, showConnectionDialog, showEditorSetupWizard]);
+
+  useEffect(() => {
+    if (!showConnectionDialog) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      connectionDialogRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [showConnectionDialog]);
+
+  useEffect(() => {
+    if (!showEditorSetupWizard) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      editorSetupDialogRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [showEditorSetupWizard]);
+
+  useEffect(() => {
+    setElementInert(topbarRef.current, panel === "overview");
+    setElementInert(analyticsPanelRef.current, panel !== "analytics");
+    setElementInert(brainPanelRef.current, panel !== "brain");
+  }, [panel]);
 
   // Keyboard nav
   useEffect(() => {
@@ -3958,6 +4021,7 @@ export function App() {
   const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport;
   const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
   const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
+  const canSetupEditors = Boolean(invokeRef.current && !isSettingUpEditors);
   const activePanelLabel = PANEL_SEQUENCE_LABEL.get(panel) || "Overview";
   const connectionEndpoint = useMemo(() => {
     const fallback = {
@@ -3981,18 +4045,39 @@ export function App() {
     () => summarizeBudgetStatus(healthMeta.budgets),
     [healthMeta.budgets],
   );
+  const handleAnalyticsTabKey = useCallback((event) => {
+    const order = ["aggregate", "operations"];
+    const currentIndex = Math.max(0, order.indexOf(analyticsMode));
+    let nextIndex = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % order.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + order.length) % order.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = order.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextMode = order[nextIndex];
+    setAnalyticsMode(nextMode);
+    window.requestAnimationFrame(() => {
+      analyticsTabRefs.current[nextMode]?.focus();
+    });
+  }, [analyticsMode]);
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className={`sidebar ${effectiveSidebarCollapsed ? "collapsed" : ""}`}>
+      <aside className={`sidebar ${effectiveSidebarCollapsed ? "collapsed" : ""}`} aria-labelledby="sidebar-title">
         <div className="sidebar-header">
           <div className="logo">
-            <span>Cortex</span>
+            <span id="sidebar-title">Cortex</span>
           </div>
           <div className={pill.className}>{pill.label}</div>
         </div>
 
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" aria-label="Primary panels">
           {PANEL_SEQUENCE.map((item, idx) => (
             <button
               key={item.key}
@@ -4078,7 +4163,7 @@ export function App() {
               </button>
             </div>
           )}
-          <p className="sidebar-status">{feedbackMessage}</p>
+          <p className="sidebar-status" aria-hidden="true">{feedbackMessage}</p>
           <button
             type="button"
             className="btn-sidebar-collapse"
@@ -4092,7 +4177,14 @@ export function App() {
       </aside>
 
       <main className="content">
-        <div className={`topbar ${panel === "overview" ? "topbar-hidden" : ""}`} aria-hidden={panel === "overview" ? true : undefined}>
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {feedbackMessage}
+        </p>
+        <div
+          ref={topbarRef}
+          className={`topbar ${panel === "overview" ? "topbar-hidden" : ""}`}
+          aria-hidden={panel === "overview" ? true : undefined}
+        >
           <div className="topbar-left">
             <span className="topbar-path">CORTEX</span>
             <span className="topbar-sep">/</span>
@@ -4107,6 +4199,7 @@ export function App() {
               type="button"
               className="topbar-stat topbar-connection"
               onClick={openConnectionDialog}
+              tabIndex={panel === "overview" ? -1 : undefined}
               title="Click to change connection"
               aria-label={`Connection host ${hostLabel}. Open connection settings.`}
             >
@@ -4120,18 +4213,28 @@ export function App() {
         </div>
 
         {showEditorSetupWizard && (
-          <div className="connection-overlay" onClick={() => !isSettingUpEditors && setShowEditorSetupWizard(false)}>
-            <div className="connection-dialog editor-setup-dialog" onClick={(e) => e.stopPropagation()}>
+          <div className="connection-overlay" role="presentation" onClick={() => !isSettingUpEditors && closeEditorSetupWizard()}>
+            <div
+              ref={editorSetupDialogRef}
+              className="connection-dialog editor-setup-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="editor-setup-title"
+              aria-describedby="editor-setup-description"
+              aria-busy={isSettingUpEditors ? true : undefined}
+              tabIndex={-1}
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="editor-setup-dialog-header">
                 <div>
                   <span className="editor-setup-kicker">Shared MCP Registration</span>
-                  <h2>Setup MCP</h2>
+                  <h2 id="editor-setup-title">Setup MCP</h2>
                 </div>
                 <span className="badge">
                   {editorDetectionSummary.detected}/{editorDetectionSummary.results.length}
                 </span>
               </div>
-              <p className="connection-subtitle">
+              <p className="connection-subtitle" id="editor-setup-description">
                 Choose which supported clients should receive the shared Cortex attach-only MCP entry. Every client points at the same
                 app-owned daemon command.
               </p>
@@ -4167,7 +4270,7 @@ export function App() {
                 <p>Replace <code>codex</code> with that AI&apos;s agent ID (for example: <code>claude</code>, <code>cursor</code>, <code>gemini</code>).</p>
               </div>
               <div className="connection-actions">
-                <button type="button" className="btn-sm" onClick={() => setShowEditorSetupWizard(false)} disabled={isSettingUpEditors}>
+                <button type="button" className="btn-sm" onClick={closeEditorSetupWizard} disabled={isSettingUpEditors}>
                   Cancel
                 </button>
                 <button
@@ -4184,10 +4287,19 @@ export function App() {
         )}
 
         {showConnectionDialog && (
-          <div className="connection-overlay" onClick={dismissConnectionDialog}>
-            <div className="connection-dialog" onClick={e => e.stopPropagation()}>
+          <div className="connection-overlay" role="presentation" onClick={dismissConnectionDialog}>
+            <div
+              ref={connectionDialogRef}
+              className="connection-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="connection-dialog-title"
+              aria-describedby="connection-dialog-description"
+              tabIndex={-1}
+              onClick={e => e.stopPropagation()}
+            >
               <div className="connection-dialog-header">
-                <h2>Connection Settings</h2>
+                <h2 id="connection-dialog-title">Connection Settings</h2>
                 <button
                   type="button"
                   className="connection-dialog-close"
@@ -4197,7 +4309,7 @@ export function App() {
                   ×
                 </button>
               </div>
-              <p className="connection-subtitle">
+              <p className="connection-subtitle" id="connection-dialog-description">
                 {isTauriRuntime
                   ? "Desktop app mode uses the local app-managed Cortex daemon only."
                   : "Connect to a local or remote Cortex daemon"}
@@ -4434,7 +4546,7 @@ export function App() {
                     />
                   </label>
                   {controlSettings.keyboardHints ? (
-                    <div className="settings-shortcut-grid" aria-label="Keyboard shortcut summary">
+                    <div className="settings-shortcut-grid" role="group" aria-label="Keyboard shortcut summary">
                       {PANEL_SEQUENCE.map((item, idx) => (
                         <span key={item.key}><kbd>{idx + 1}</kbd>{item.label}</span>
                       ))}
@@ -4460,9 +4572,10 @@ export function App() {
                   type="button"
                   className="btn-sm btn-primary"
                   onClick={openEditorSetupWizard}
-                  disabled={isSettingUpEditors}
+                  disabled={!canSetupEditors}
+                  title={invokeRef.current ? "Preview and register Cortex MCP in supported clients" : "Setup MCP requires the desktop app IPC bridge"}
                 >
-                  {isSettingUpEditors ? "Setting Up..." : "Setup MCP"}
+                  {isSettingUpEditors ? "Setting Up..." : invokeRef.current ? "Setup MCP" : "Setup MCP (Desktop)"}
                 </button>
               </div>
             </div>
@@ -4524,14 +4637,14 @@ export function App() {
               </div>
               <button
                 type="button"
-                className={`sys-item sys-item-action ${isSettingUpEditors ? "sys-item-disabled" : ""}`}
+                className={`sys-item sys-item-action ${!canSetupEditors ? "sys-item-disabled" : ""}`}
                 onClick={openEditorSetupWizard}
-                title="Preview and register Cortex MCP in supported clients"
-                disabled={isSettingUpEditors}
+                title={invokeRef.current ? "Preview and register Cortex MCP in supported clients" : "Setup MCP requires the desktop app IPC bridge"}
+                disabled={!canSetupEditors}
               >
                 <span className="sys-label">MCP</span>
                 <span className="sys-value">
-                  {isSettingUpEditors ? "WORKING" : editorSetup ? `${editorSetupSummary.registered} EDITORS` : "SETUP"}
+                  {isSettingUpEditors ? "WORKING" : editorSetup ? `${editorSetupSummary.registered} EDITORS` : invokeRef.current ? "SETUP" : "DESKTOP"}
                 </span>
               </button>
               <button
@@ -4601,7 +4714,7 @@ export function App() {
                     Metric Legend
                   </button>
                 </div>
-                <div className="overview-unit-strip" aria-label="Mission Control unit key">
+                <div className="overview-unit-strip" role="group" aria-label="Mission Control unit key">
                   <span className="overview-unit-strip-title">Unit key</span>
                   {MISSION_METRIC_LEGEND.map((entry) => (
                     <span key={entry.abbreviation} className="overview-unit-chip">
@@ -4615,8 +4728,14 @@ export function App() {
                   </span>
                 </div>
                 {showMissionMetricLegend ? (
-                  <div className="overview-metric-legend" role="dialog" aria-label="Mission Control metric legend">
-                    <div className="overview-metric-legend-title">Metric Legend</div>
+                  <div
+                    id="mission-metric-legend"
+                    className="overview-metric-legend"
+                    role="dialog"
+                    aria-modal="false"
+                    aria-labelledby="mission-metric-legend-title"
+                  >
+                    <div className="overview-metric-legend-title" id="mission-metric-legend-title">Metric Legend</div>
                     <p>
                       <strong>30d median gain</strong> is the projected p50 token savings over the next 30 days.
                       <strong> Current run-rate</strong> is the projected daily token savings pace.
@@ -5132,13 +5251,17 @@ export function App() {
             <div className="memory-layout">
               <div className="card full">
                 <div className="card-header">
-                  <h2>Memory Explorer</h2>
-                  <span className="badge">{memoryResults.length}</span>
+                  <h2 id="memory-explorer-title">Memory Explorer</h2>
+                  <span className="badge" aria-live="polite">
+                    {memoryResults.length}
+                    <span className="sr-only"> memory matches</span>
+                  </span>
                 </div>
-                <form className="memory-search" onSubmit={handleMemorySearch}>
+                <form className="memory-search" aria-labelledby="memory-explorer-title" onSubmit={handleMemorySearch}>
                   <input
                     type="text"
                     className="memory-input"
+                    aria-label="Search Cortex memories"
                     placeholder="Search the brain... (uses cortex_peek)"
                     value={memoryQuery}
                     onChange={(event) => setMemoryQuery(event.target.value)}
@@ -5376,6 +5499,7 @@ export function App() {
 
         {panel === "analytics" || hasVisitedAnalytics ? (
           <section
+            ref={analyticsPanelRef}
             className={`panel analytics-panel ${panel === "analytics" ? "active" : "panel-hidden"}`}
             aria-hidden={panel === "analytics" ? undefined : true}
           >
@@ -5399,16 +5523,28 @@ export function App() {
                 </label>
                 <div className="analytics-view-toggle" role="tablist" aria-label="Analytics view mode">
                   <button
+                    id="analytics-tab-aggregate"
+                    ref={(element) => { analyticsTabRefs.current.aggregate = element; }}
                     type="button"
+                    role="tab"
+                    aria-selected={analyticsMode === "aggregate"}
+                    tabIndex={analyticsMode === "aggregate" ? 0 : -1}
                     className={`btn-sm ${analyticsMode === "aggregate" ? "btn-primary" : ""}`}
                     onClick={() => setAnalyticsMode("aggregate")}
+                    onKeyDown={handleAnalyticsTabKey}
                   >
                     Aggregate
                   </button>
                   <button
+                    id="analytics-tab-operations"
+                    ref={(element) => { analyticsTabRefs.current.operations = element; }}
                     type="button"
+                    role="tab"
+                    aria-selected={analyticsMode === "operations"}
+                    tabIndex={analyticsMode === "operations" ? 0 : -1}
                     className={`btn-sm ${analyticsMode === "operations" ? "btn-primary" : ""}`}
                     onClick={() => setAnalyticsMode("operations")}
+                    onKeyDown={handleAnalyticsTabKey}
                   >
                     By Operation
                   </button>
@@ -5424,7 +5560,7 @@ export function App() {
               </div>
             ) : savings ? (
               <>
-                <div className="analytics-metric-legend" aria-label="Analytics metric legend">
+                <div className="analytics-metric-legend" role="group" aria-label="Analytics metric legend">
                   {ANALYTICS_METRIC_LEGEND.map((entry) => (
                     <div key={entry.label} className="analytics-metric-legend-item">
                       <span className="analytics-metric-legend-label">{entry.label}</span>
@@ -5488,7 +5624,13 @@ export function App() {
                 </div>
 
                 {analyticsMode === "aggregate" ? (
-                  <>
+                  <div
+                    id="analytics-tabpanel-aggregate"
+                    className="analytics-mode-panel"
+                    role="tabpanel"
+                    aria-labelledby="analytics-tab-aggregate"
+                    tabIndex={0}
+                  >
                     <div className="analytics-explainer analytics-explainer-rich">
                       <div className="analytics-explainer-title">How to read this</div>
                       <p>
@@ -5764,9 +5906,15 @@ export function App() {
                         </ul>
                       </div>
                     </div>
-                  </>
+                  </div>
                 ) : (
-                  <>
+                  <div
+                    id="analytics-tabpanel-operations"
+                    className="analytics-mode-panel"
+                    role="tabpanel"
+                    aria-labelledby="analytics-tab-operations"
+                    tabIndex={0}
+                  >
                     <div className="analytics-explainer analytics-explainer-rich">
                       <div className="analytics-explainer-title">Operation view</div>
                       <p>Operation view breaks savings into recall, store, boot compression, and tool-call categories using local events. Use it to see where the system is earning margin, not just how much it saved overall.</p>
@@ -5801,7 +5949,7 @@ export function App() {
                         }) : <EmptyItem text="No operation breakdown data yet" />}
                       </div>
                     </div>
-                  </>
+                  </div>
                 )}
               </>
             ) : (
@@ -5815,6 +5963,7 @@ export function App() {
 
         {brainPanelMounted ? (
           <section
+            ref={brainPanelRef}
             className={`panel brain-panel ${panel === "brain" ? "active" : "panel-hidden"}`}
             aria-hidden={panel === "brain" ? undefined : true}
           >
