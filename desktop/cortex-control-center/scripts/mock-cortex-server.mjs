@@ -356,6 +356,24 @@ function buildFixture() {
         },
       ],
     },
+    permissions: {
+      grants: [
+        {
+          client: "codex",
+          permission: "admin",
+          scope: "*",
+          granted_by: "expect-smoke",
+          granted_at: isoMinutesAgo(30),
+        },
+        {
+          client: "claude",
+          permission: "read",
+          scope: "cortex_recall",
+          granted_by: "expect-smoke",
+          granted_at: isoMinutesAgo(45),
+        },
+      ],
+    },
     feedAcks: new Map(),
   };
 }
@@ -435,6 +453,7 @@ export async function startMockCortexServer({ host = "127.0.0.1", port = 7437, t
     "/activity",
     "/savings",
     "/conflicts",
+    "/permissions",
     "/dump",
     "/peek",
     "/recall",
@@ -513,6 +532,10 @@ export async function startMockCortexServer({ host = "127.0.0.1", port = 7437, t
       sendJson(response, 200, fixture.conflicts);
       return;
     }
+    if (request.method === "GET" && url.pathname === "/permissions") {
+      sendJson(response, 200, fixture.permissions);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/dump") {
       sendJson(response, 200, fixture.dump);
       return;
@@ -527,6 +550,33 @@ export async function startMockCortexServer({ host = "127.0.0.1", port = 7437, t
     }
     if (request.method === "POST" && url.pathname === "/resolve") {
       sendJson(response, 200, { ok: true, action: "resolved" });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/permissions/grant") {
+      const body = await readJsonBody(request);
+      const grant = {
+        client: String(body.client || "unknown").trim() || "unknown",
+        permission: String(body.permission || "read").trim() || "read",
+        scope: String(body.scope || "*").trim() || "*",
+        granted_by: String(body.granted_by || "expect-smoke").trim() || "expect-smoke",
+        granted_at: nowIso(),
+      };
+      fixture.permissions.grants = fixture.permissions.grants.filter(
+        (entry) => !(entry.client === grant.client && entry.permission === grant.permission && entry.scope === grant.scope),
+      );
+      fixture.permissions.grants.push(grant);
+      sendJson(response, 200, { ok: true, grant });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/permissions/revoke") {
+      const body = await readJsonBody(request);
+      const client = String(body.client || "").trim();
+      const permission = String(body.permission || "").trim();
+      const scope = String(body.scope || "*").trim() || "*";
+      fixture.permissions.grants = fixture.permissions.grants.filter(
+        (entry) => !(entry.client === client && entry.permission === permission && entry.scope === scope),
+      );
+      sendJson(response, 200, { ok: true, revoked: true });
       return;
     }
     if (request.method === "POST" && url.pathname === "/tasks/claim") {

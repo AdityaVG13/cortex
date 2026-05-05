@@ -19,12 +19,75 @@ class GraphErrorBoundary extends Component {
         <div className="brain-loading">
           <div className="coming-icon"><AppIcon name="brain" size={48} /></div>
           <p>3D renderer crashed: {this.state.error}</p>
-          <p style={{ fontSize: 12, color: "#546580", marginTop: 8 }}>Showing 2D fallback instead.</p>
+          <p className="brain-fallback-reason">Showing 2D fallback instead.</p>
         </div>
       );
     }
     return this.props.children;
   }
+}
+
+function hasWebGLSupport() {
+  if (typeof document === "undefined") return false;
+  try {
+    const canvas = document.createElement("canvas");
+    return Boolean(
+      canvas.getContext("webgl2")
+        || canvas.getContext("webgl")
+        || canvas.getContext("experimental-webgl")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function BrainFallbackGraph({
+  graphData,
+  memoryCt,
+  decisionCt,
+  selectedNode,
+  setSelectedNode,
+  reason = "2D fallback: WebGL unavailable",
+}) {
+  return (
+    <div className="brain-container brain-fallback-container">
+      <div className="brain-hud brain-hud-fallback">
+        <span className="brain-stat"><span className="brain-label">NODES</span> {graphData.nodes.length}</span>
+        <span className="brain-stat"><span className="brain-label">LINKS</span> {graphData.links.length}</span>
+        <span className="brain-stat"><span className="brain-label">MEM</span> {memoryCt}</span>
+        <span className="brain-stat"><span className="brain-label">DEC</span> {decisionCt}</span>
+        <span className="brain-fallback-reason">{reason}</span>
+      </div>
+      <div className="brain-node-fallback-grid">
+        {graphData.nodes.map(node => (
+          <button
+            key={node.id}
+            type="button"
+            className="brain-node-fallback"
+            aria-pressed={selectedNode?.id === node.id}
+            onClick={() => setSelectedNode(prev => prev?.id === node.id ? null : node)}
+            style={{ "--brain-node-agent-color": getAgentColor(node.agent) }}
+          >
+            <div className="brain-node-fallback-label">{node.label}</div>
+            <div className="brain-node-fallback-meta">{node.group} - {node.agent}</div>
+          </button>
+        ))}
+      </div>
+      {selectedNode && (
+        <div className="brain-detail brain-detail-fixed">
+          <button className="brain-detail-close" onClick={() => setSelectedNode(null)}><AppIcon name="close" size={12} /></button>
+          <div className="brain-detail-type">
+            <span className="memory-method">{selectedNode.group}</span>
+            <span className="memory-method">{selectedNode.type}</span>
+          </div>
+          <div className="brain-detail-label">{selectedNode.label}</div>
+          <div className="brain-detail-agent" style={{ color: getAgentColor(selectedNode.agent) }}>{selectedNode.agent}</div>
+          {selectedNode.fullText && <div className="brain-detail-text">{selectedNode.fullText}</div>}
+          {selectedNode.context && <div className="brain-detail-ctx"><span className="brain-detail-ctx-label">CONTEXT</span>{selectedNode.context}</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
@@ -40,6 +103,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
   });
+  const [webglAvailable] = useState(() => hasWebGLSupport());
 
   useEffect(() => {
     if (!active) return undefined;
@@ -299,37 +363,33 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   }
 
   // 2D fallback — shown if ForceGraph3D is missing (shouldn't happen with static import)
-  if (!ForceGraph3D) {
+  if (!ForceGraph3D || !webglAvailable) {
     return (
-      <div className="brain-container" style={{ padding: 24, overflowY: "auto" }}>
-        <div className="brain-hud" style={{ position: "relative", marginBottom: 16 }}>
+      <div className="brain-container brain-fallback-container">
+        <div className="brain-hud brain-hud-fallback">
           <span className="brain-stat"><span className="brain-label">NODES</span> {graphData.nodes.length}</span>
           <span className="brain-stat"><span className="brain-label">LINKS</span> {graphData.links.length}</span>
           <span className="brain-stat"><span className="brain-label">MEM</span> {memoryCt}</span>
           <span className="brain-stat"><span className="brain-label">DEC</span> {decisionCt}</span>
-          <span style={{ color: "#ff9800", fontSize: 11, marginLeft: "auto" }}>2D Fallback — WebGL unavailable</span>
+          <span className="brain-fallback-reason">2D fallback: WebGL unavailable</span>
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <div className="brain-node-fallback-grid">
           {graphData.nodes.map(node => (
-            <div key={node.id} onClick={() => setSelectedNode(prev => prev?.id === node.id ? null : node)}
-              style={{
-                padding: "8px 12px",
-                background: selectedNode?.id === node.id ? "rgba(0,212,255,0.1)" : "#0f1520",
-                border: `1px solid ${selectedNode?.id === node.id ? "rgba(0,212,255,0.3)" : "#1e2d42"}`,
-                borderRadius: 6,
-                cursor: "pointer",
-                borderLeft: `3px solid ${getAgentColor(node.agent)}`,
-                maxWidth: 280,
-                fontSize: 12,
-              }}
+            <button
+              key={node.id}
+              type="button"
+              className="brain-node-fallback"
+              aria-pressed={selectedNode?.id === node.id}
+              onClick={() => setSelectedNode(prev => prev?.id === node.id ? null : node)}
+              style={{ "--brain-node-agent-color": getAgentColor(node.agent) }}
             >
-              <div style={{ fontWeight: 600, color: "#e8edf5" }}>{node.label}</div>
-              <div style={{ color: "#546580", fontSize: 11 }}>{node.group} · {node.agent}</div>
-            </div>
+              <div className="brain-node-fallback-label">{node.label}</div>
+              <div className="brain-node-fallback-meta">{node.group} - {node.agent}</div>
+            </button>
           ))}
         </div>
         {selectedNode && (
-          <div className="brain-detail" style={{ position: "fixed" }}>
+          <div className="brain-detail brain-detail-fixed">
             <button className="brain-detail-close" onClick={() => setSelectedNode(null)}><AppIcon name="close" size={12} /></button>
             <div className="brain-detail-type">
               <span className="memory-method">{selectedNode.group}</span>
@@ -393,41 +453,54 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
         </div>
       )}
 
-      <ForceGraph3D
-        ref={graphRef}
-        graphData={graphData}
-        nodeThreeObject={nodeThreeObject}
-        nodeThreeObjectExtend={true}
-        nodeLabel={node => `${node.label} (${node.agent})`}
-        linkColor={link => link.type === "conflict" ? "#ff1744" : "rgba(0, 212, 255, 0.06)"}
-        linkWidth={link => link.type === "conflict" ? 1.5 : 0.3}
-        linkOpacity={0.15}
-        linkDirectionalParticles={link => link.type === "conflict" ? 3 : 0}
-        linkDirectionalParticleWidth={1.5}
-        linkDirectionalParticleColor={() => "#ff1744"}
-        backgroundColor="#060a12"
-        width={dimensions.width}
-        height={dimensions.height}
-        d3AlphaDecay={0.06}
-        d3VelocityDecay={0.5}
-        warmupTicks={20}
-        cooldownTime={1500}
-        onNodeHover={node => setHoverNode(node || null)}
-        onNodeClick={node => {
-          if (!node) return;
-          setSelectedNode(prev => prev?.id === node.id ? null : node);
-          setAutoRotate(false);
-          if (graphRef.current) {
-            const d = 60;
-            const ratio = 1 + d / Math.hypot(node.x, node.y, node.z);
-            graphRef.current.cameraPosition(
-              { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
-              node,
-              1200
-            );
-          }
-        }}
-      />
+      <GraphErrorBoundary
+        fallback={(
+          <BrainFallbackGraph
+            graphData={graphData}
+            memoryCt={memoryCt}
+            decisionCt={decisionCt}
+            selectedNode={selectedNode}
+            setSelectedNode={setSelectedNode}
+            reason="2D fallback: 3D renderer unavailable"
+          />
+        )}
+      >
+        <ForceGraph3D
+          ref={graphRef}
+          graphData={graphData}
+          nodeThreeObject={nodeThreeObject}
+          nodeThreeObjectExtend={true}
+          nodeLabel={node => `${node.label} (${node.agent})`}
+          linkColor={link => link.type === "conflict" ? "#ff1744" : "rgba(0, 212, 255, 0.06)"}
+          linkWidth={link => link.type === "conflict" ? 1.5 : 0.3}
+          linkOpacity={0.15}
+          linkDirectionalParticles={link => link.type === "conflict" ? 3 : 0}
+          linkDirectionalParticleWidth={1.5}
+          linkDirectionalParticleColor={() => "#ff1744"}
+          backgroundColor="#060a12"
+          width={dimensions.width}
+          height={dimensions.height}
+          d3AlphaDecay={0.06}
+          d3VelocityDecay={0.5}
+          warmupTicks={20}
+          cooldownTime={1500}
+          onNodeHover={node => setHoverNode(node || null)}
+          onNodeClick={node => {
+            if (!node) return;
+            setSelectedNode(prev => prev?.id === node.id ? null : node);
+            setAutoRotate(false);
+            if (graphRef.current) {
+              const d = 60;
+              const ratio = 1 + d / Math.hypot(node.x, node.y, node.z);
+              graphRef.current.cameraPosition(
+                { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
+                node,
+                1200
+              );
+            }
+          }}
+        />
+      </GraphErrorBoundary>
 
       <div className="brain-legend">
         {Object.entries(AGENT_COLORS).slice(0, 5).map(([agent, color]) => (

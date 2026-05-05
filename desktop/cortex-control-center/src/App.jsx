@@ -38,6 +38,7 @@ import {
 import { buildMonteCarloProjection } from "./analytics-projection.js";
 import { summarizeBootThroughput } from "./analytics-metrics.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.js";
+import { handleKeyboardActivation, shouldIgnoreGlobalShortcut } from "./keyboard-access.js";
 import {
   readControlCenterSettings,
   summarizeBudgetStatus,
@@ -3905,10 +3906,36 @@ export function App() {
     };
   }, [api, call, callMcpTool, cortexBase, readAuthToken, runRefreshAll, runRestartDaemonSequence, waitForDaemonReachable, writeDevVerificationReport]);
 
+  useEffect(() => {
+    if (!showConnectionDialog && !showEditorSetupWizard) {
+      return undefined;
+    }
+
+    function handleDialogKey(event) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      if (showEditorSetupWizard && !isSettingUpEditors) {
+        event.preventDefault();
+        setShowEditorSetupWizard(false);
+        return;
+      }
+
+      if (showConnectionDialog) {
+        event.preventDefault();
+        dismissConnectionDialog();
+      }
+    }
+
+    window.addEventListener("keydown", handleDialogKey);
+    return () => window.removeEventListener("keydown", handleDialogKey);
+  }, [dismissConnectionDialog, isSettingUpEditors, showConnectionDialog, showEditorSetupWizard]);
+
   // Keyboard nav
   useEffect(() => {
     function handleKey(e) {
-      if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+      if (shouldIgnoreGlobalShortcut(e, showConnectionDialog || showEditorSetupWizard)) return;
       const idx = panelIndex(panel);
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
@@ -3926,7 +3953,7 @@ export function App() {
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [changePanel, panel]);
+  }, [changePanel, panel, showConnectionDialog, showEditorSetupWizard]);
 
   const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport;
   const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
@@ -4076,10 +4103,16 @@ export function App() {
             <span className="topbar-stat"><span className="topbar-label">DEC</span> {stats.decisions}</span>
             <span className="topbar-stat"><span className="topbar-label">EVT</span> {stats.events}</span>
             <span className="topbar-stat"><span className="topbar-label">AGENTS</span> {normalizedSessions.length}</span>
-            <span className="topbar-stat topbar-connection" onClick={openConnectionDialog} title="Click to change connection">
+            <button
+              type="button"
+              className="topbar-stat topbar-connection"
+              onClick={openConnectionDialog}
+              title="Click to change connection"
+              aria-label={`Connection host ${hostLabel}. Open connection settings.`}
+            >
               <span className="topbar-label">HOST</span>
               {hostLabel}
-            </span>
+            </button>
             <span className={`topbar-status ${daemonStatusBadge.className}`} title={daemonStatusBadge.title}>
               {daemonStatusBadge.label}
             </span>
@@ -4489,20 +4522,27 @@ export function App() {
                 <span className="sys-label">TASKS</span>
                 <span className="sys-value">{pendingTasks.length} PENDING</span>
               </div>
-              <div
+              <button
+                type="button"
                 className={`sys-item sys-item-action ${isSettingUpEditors ? "sys-item-disabled" : ""}`}
-                  onClick={isSettingUpEditors ? undefined : openEditorSetupWizard}
-                  title="Preview and register Cortex MCP in supported clients"
+                onClick={openEditorSetupWizard}
+                title="Preview and register Cortex MCP in supported clients"
+                disabled={isSettingUpEditors}
               >
                 <span className="sys-label">MCP</span>
                 <span className="sys-value">
                   {isSettingUpEditors ? "WORKING" : editorSetup ? `${editorSetupSummary.registered} EDITORS` : "SETUP"}
                 </span>
-              </div>
-              <div className="sys-item sys-item-action" onClick={() => changePanel("memory")} title="Open memory health and conflict resolution">
+              </button>
+              <button
+                type="button"
+                className="sys-item sys-item-action"
+                onClick={() => changePanel("memory")}
+                title="Open memory health and conflict resolution"
+              >
                 <span className="sys-label">RECALL</span>
                 <span className={`sys-value ${latestRecallHitRate >= 85 ? "sys-ok" : ""}`}>{latestRecallHitRate || 0}%</span>
-              </div>
+              </button>
             </div>
 
             {editorSetupSummary.results.length ? (
@@ -5115,7 +5155,17 @@ export function App() {
                 ) : null}
                 <ul className="item-list">
                   {memoryResults.length ? memoryResults.map((match, index) => (
-                    <li key={`${match.source}-${index}`} className="memory-item" onClick={() => !match.expanded && handleMemoryExpand(match.source)}>
+                    <li
+                      key={`${match.source}-${index}`}
+                      className={`memory-item ${match.expanded ? "" : "memory-item-action"}`}
+                      role={match.expanded ? undefined : "button"}
+                      tabIndex={match.expanded ? undefined : 0}
+                      aria-expanded={match.expanded ? undefined : false}
+                      onClick={() => !match.expanded && handleMemoryExpand(match.source)}
+                      onKeyDown={(event) =>
+                        !match.expanded && handleKeyboardActivation(event, () => handleMemoryExpand(match.source))
+                      }
+                    >
                       <div className="memory-header">
                         <span className="memory-method">{match.method}</span>
                         <span className="memory-relevance">{(match.relevance * 100).toFixed(0)}%</span>
@@ -5124,7 +5174,7 @@ export function App() {
                       {match.expanded && match.excerpt ? (
                         <div className="memory-excerpt">{match.excerpt}</div>
                       ) : null}
-                      {!match.expanded ? <div className="memory-expand-hint">Click to expand</div> : null}
+                      {!match.expanded ? <div className="memory-expand-hint">Press Enter or Space to expand</div> : null}
                     </li>
                   )) : memoryQuery ? <EmptyItem text="No matches -- try different keywords" /> : <EmptyItem text="Search to explore Cortex memories" />}
                 </ul>
