@@ -6595,7 +6595,7 @@ mod tests {
         let temp_candidate = std::env::temp_dir().join("cortex").join(binary_name);
         assert!(is_disallowed_startup_binary_path(&temp_candidate));
 
-        let safe = PathBuf::from("C:/Users/example/.cortex/bin/cortex.exe");
+        let safe = PathBuf::from("C:/cortex-test/example/.cortex/bin/cortex.exe");
         assert!(!is_disallowed_startup_binary_path(&safe));
     }
 
