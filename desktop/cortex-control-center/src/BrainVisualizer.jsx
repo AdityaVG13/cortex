@@ -1,4 +1,4 @@
-import { Component, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import { getAgentColor, truncate } from "./constants.js";
 import { AppIcon } from "./ui-icons.jsx";
@@ -18,6 +18,10 @@ const BRAIN_LEGEND = Object.freeze([
   { key: "flow", label: "Recall flow", color: BRAIN_NODE_COLORS.neighborMemory },
   { key: "selected", label: "Selected", color: BRAIN_NODE_COLORS.selected },
 ]);
+
+const BRAIN_FOCUS_DISTANCE = 136;
+const BRAIN_FOCUS_TRANSITION_MS = 1550;
+const BRAIN_OVERVIEW_LINK_CAP = 96;
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -61,6 +65,40 @@ function graphEndpointId(endpoint) {
   return endpoint;
 }
 
+function graphLinkKey(link) {
+  return `${graphEndpointId(link.source)}>${graphEndpointId(link.target)}>${link.type || "semantic"}`;
+}
+
+function graphNodePosition(node) {
+  return {
+    x: Number.isFinite(node?.x) ? node.x : 0,
+    y: Number.isFinite(node?.y) ? node.y : 0,
+    z: Number.isFinite(node?.z) ? node.z : 0,
+  };
+}
+
+function brainOverviewThreshold(nodeCount) {
+  return Math.max(480, Math.min(1080, Math.sqrt(Math.max(nodeCount, 1)) * 72));
+}
+
+function brainLinkOverviewScore(link) {
+  const type = String(link.type || "semantic");
+  const weight = Number.isFinite(Number(link.weight)) ? Number(link.weight) : 1;
+  const sourceId = String(graphEndpointId(link.source) || "");
+  const targetId = String(graphEndpointId(link.target) || "");
+  const typeScore = type === "conflict"
+    ? 8
+    : type === "persisted"
+      ? 5
+      : type.includes("decision")
+        ? 4
+        : type.includes("semantic")
+          ? 1
+          : 3;
+  const decisionEndpointScore = (sourceId.startsWith("dec-") ? 0.8 : 0) + (targetId.startsWith("dec-") ? 0.8 : 0);
+  return typeScore + (weight * 2) + decisionEndpointScore;
+}
+
 function formatFlowType(type) {
   return String(type || "semantic").replace(/[_-]+/g, " ");
 }
@@ -88,6 +126,36 @@ function brainNodeValue(node, selectedNode, selectedFlow) {
   if (selectedFlow.neighborIds.has(node.id)) return base * 1.18;
   if (selectedNode) return Math.max(1.4, base * 0.76);
   return base;
+}
+
+function focusGraphNode(graph, node) {
+  if (!graph || !node) return;
+  const target = graphNodePosition(node);
+  const camera = typeof graph.camera === "function" ? graph.camera() : null;
+  const position = camera?.position || { x: 0, y: 0, z: BRAIN_FOCUS_DISTANCE };
+
+  let dx = position.x - target.x;
+  let dy = position.y - target.y;
+  let dz = position.z - target.z;
+  let distance = Math.hypot(dx, dy, dz);
+
+  if (!Number.isFinite(distance) || distance < 1) {
+    dx = target.x || 0;
+    dy = target.y || 0;
+    dz = target.z || 1;
+    distance = Math.hypot(dx, dy, dz) || 1;
+  }
+
+  const scale = BRAIN_FOCUS_DISTANCE / distance;
+  graph.cameraPosition(
+    {
+      x: target.x + (dx * scale),
+      y: target.y + (dy * scale),
+      z: target.z + (dz * scale),
+    },
+    target,
+    BRAIN_FOCUS_TRANSITION_MS,
+  );
 }
 
 function BrainFallbackGraph({
@@ -143,17 +211,31 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
   const hoverNodeIdRef = useRef(null);
+  const selectedNodeRef = useRef(null);
+  const selectionFrameRef = useRef(null);
+  const zoomFrameRef = useRef(null);
+  const viewDepthRef = useRef("detail");
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hoverNode, setHoverNode] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const [autoRotate, setAutoRotate] = useState(false);
+  const [viewDepth, setViewDepth] = useState("detail");
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
   });
   const [webglAvailable] = useState(() => hasWebGLSupport());
+
+  useEffect(() => {
+    selectedNodeRef.current = selectedNode;
+  }, [selectedNode]);
+
+  useEffect(() => () => {
+    if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
+    if (zoomFrameRef.current) cancelAnimationFrame(zoomFrameRef.current);
+  }, []);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -177,6 +259,78 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     }
     if (typeof graph.pauseAnimation === "function") graph.pauseAnimation();
     if (typeof graph.enablePointerInteraction === "function") graph.enablePointerInteraction(false);
+  }, [active, graphData.nodes.length, graphData.links.length]);
+
+  const syncViewDepth = useCallback(() => {
+    const graph = graphRef.current;
+    const camera = graph && typeof graph.camera === "function" ? graph.camera() : null;
+    const position = camera?.position;
+    if (!position) return;
+
+    const distance = Math.hypot(position.x, position.y, position.z);
+    const threshold = brainOverviewThreshold(graphData.nodes.length);
+    const nextDepth = distance > threshold
+      ? "overview"
+      : distance < threshold * 0.82
+        ? "detail"
+        : viewDepthRef.current;
+
+    if (nextDepth !== viewDepthRef.current) {
+      viewDepthRef.current = nextDepth;
+      setViewDepth(nextDepth);
+    }
+  }, [graphData.nodes.length]);
+
+  useEffect(() => {
+    if (!active || !graphRef.current) return undefined;
+    const controls = typeof graphRef.current.controls === "function" ? graphRef.current.controls() : null;
+    if (!controls || typeof controls.addEventListener !== "function") return undefined;
+
+    const handleControlsChange = () => {
+      if (zoomFrameRef.current) return;
+      zoomFrameRef.current = requestAnimationFrame(() => {
+        zoomFrameRef.current = null;
+        syncViewDepth();
+      });
+    };
+
+    controls.addEventListener("change", handleControlsChange);
+    syncViewDepth();
+
+    return () => {
+      controls.removeEventListener("change", handleControlsChange);
+      if (zoomFrameRef.current) {
+        cancelAnimationFrame(zoomFrameRef.current);
+        zoomFrameRef.current = null;
+      }
+    };
+  }, [active, graphData.nodes.length, graphData.links.length, syncViewDepth]);
+
+  useEffect(() => {
+    const graph = graphRef.current;
+    if (!active || !graph || !graphData.nodes.length) return;
+
+    try {
+      const chargeForce = typeof graph.d3Force === "function" ? graph.d3Force("charge") : null;
+      if (chargeForce && typeof chargeForce.strength === "function") chargeForce.strength(-88);
+      if (chargeForce && typeof chargeForce.distanceMax === "function") chargeForce.distanceMax(420);
+
+      const linkForce = typeof graph.d3Force === "function" ? graph.d3Force("link") : null;
+      if (linkForce && typeof linkForce.distance === "function") {
+        linkForce.distance(link => {
+          const type = String(link.type || "semantic");
+          if (type === "conflict") return 118;
+          if (String(graphEndpointId(link.source) || "").startsWith("dec-") || String(graphEndpointId(link.target) || "").startsWith("dec-")) return 92;
+          return 68;
+        });
+      }
+      if (linkForce && typeof linkForce.strength === "function") {
+        linkForce.strength(link => Math.min(0.72, Math.max(0.12, Number(link.weight || 1) * 0.18)));
+      }
+      if (typeof graph.d3ReheatSimulation === "function") graph.d3ReheatSimulation();
+    } catch {
+      // Force tuning is best-effort; the graph should still render with library defaults.
+    }
   }, [active, graphData.nodes.length, graphData.links.length]);
 
   // Auto-rotation
@@ -382,6 +536,21 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     };
   }, [graphData.links, selectedNode?.id]);
 
+  const overviewLinkKeys = useMemo(() => {
+    const limit = Math.max(28, Math.min(BRAIN_OVERVIEW_LINK_CAP, Math.ceil(graphData.nodes.length * 1.12)));
+    if (graphData.links.length <= limit) {
+      return new Set(graphData.links.map(graphLinkKey));
+    }
+
+    return new Set(
+      graphData.links
+        .map((link, index) => ({ key: graphLinkKey(link), index, score: brainLinkOverviewScore(link) }))
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .slice(0, limit)
+        .map(link => link.key)
+    );
+  }, [graphData.links, graphData.nodes.length]);
+
   const isSelectedFlowLink = useCallback((link) => {
     const selectedId = selectedNode?.id;
     if (!selectedId) return false;
@@ -398,11 +567,48 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     (node) => brainNodeValue(node, selectedNode, selectedFlow),
     [selectedFlow, selectedNode],
   );
+  const resolveLinkVisibility = useCallback((link) => {
+    if (selectedNode) return isSelectedFlowLink(link) || link.type === "conflict";
+    if (viewDepth !== "overview") return true;
+    return overviewLinkKeys.has(graphLinkKey(link));
+  }, [isSelectedFlowLink, overviewLinkKeys, selectedNode, viewDepth]);
+  const overviewActive = viewDepth === "overview" && !selectedNode;
+  const resolveLinkColor = useCallback((link) => {
+    if (link.type === "conflict") return "#ff1744";
+    if (isSelectedFlowLink(link)) return "rgba(64, 224, 255, 0.72)";
+    if (selectedNode) return "rgba(0, 212, 255, 0.035)";
+    return overviewActive ? "rgba(64, 224, 255, 0.22)" : "rgba(0, 212, 255, 0.06)";
+  }, [isSelectedFlowLink, overviewActive, selectedNode]);
+  const resolveLinkWidth = useCallback((link) => {
+    if (link.type === "conflict") return 1.5;
+    if (isSelectedFlowLink(link)) return 1.1;
+    if (selectedNode) return 0.18;
+    return overviewActive ? 0.22 : 0.3;
+  }, [isSelectedFlowLink, overviewActive, selectedNode]);
+  const resolveLinkParticles = useCallback((link) => {
+    if (link.type === "conflict") return selectedNode ? 2 : 0;
+    return isSelectedFlowLink(link) ? 2 : 0;
+  }, [isSelectedFlowLink, selectedNode]);
   const updateHoverNode = useCallback((node) => {
     const nodeId = node?.id || null;
     if (hoverNodeIdRef.current === nodeId) return;
     hoverNodeIdRef.current = nodeId;
     setHoverNode(node || null);
+  }, []);
+  const selectGraphNode = useCallback((node) => {
+    if (!node) return;
+    const current = selectedNodeRef.current;
+    const nextNode = current?.id === node.id ? null : node;
+
+    setAutoRotate(false);
+    if (nextNode && graphRef.current) focusGraphNode(graphRef.current, nextNode);
+
+    selectedNodeRef.current = nextNode;
+    if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
+    selectionFrameRef.current = requestAnimationFrame(() => {
+      selectionFrameRef.current = null;
+      startTransition(() => setSelectedNode(nextNode));
+    });
   }, []);
 
   // Error / loading states
@@ -573,18 +779,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           nodeOpacity={0.94}
           nodeRelSize={3.6}
           nodeLabel={node => `${node.label} (${node.agent})`}
-          linkColor={link => (
-            link.type === "conflict"
-              ? "#ff1744"
-              : isSelectedFlowLink(link)
-                ? "rgba(64, 224, 255, 0.72)"
-                : selectedNode
-                  ? "rgba(0, 212, 255, 0.035)"
-                  : "rgba(0, 212, 255, 0.06)"
-          )}
-          linkWidth={link => link.type === "conflict" ? 1.5 : isSelectedFlowLink(link) ? 1.1 : selectedNode ? 0.18 : 0.3}
-          linkOpacity={selectedNode ? 0.32 : 0.15}
-          linkDirectionalParticles={link => link.type === "conflict" ? 3 : isSelectedFlowLink(link) ? 2 : 0}
+          linkVisibility={resolveLinkVisibility}
+          linkColor={resolveLinkColor}
+          linkWidth={resolveLinkWidth}
+          linkOpacity={overviewActive ? 0.12 : selectedNode ? 0.32 : 0.15}
+          linkDirectionalParticles={resolveLinkParticles}
           linkDirectionalParticleWidth={link => isSelectedFlowLink(link) ? 1.8 : 1.5}
           linkDirectionalParticleColor={link => isSelectedFlowLink(link) ? "#40e0ff" : "#ff1744"}
           backgroundColor="#040812"
@@ -595,20 +794,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           warmupTicks={45}
           cooldownTime={1200}
           onNodeHover={updateHoverNode}
-          onNodeClick={node => {
-            if (!node) return;
-            setSelectedNode(prev => prev?.id === node.id ? null : node);
-            setAutoRotate(false);
-            if (graphRef.current) {
-              const d = 60;
-              const ratio = 1 + d / Math.hypot(node.x, node.y, node.z);
-              graphRef.current.cameraPosition(
-                { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
-                node,
-                1200
-              );
-            }
-          }}
+          onNodeClick={selectGraphNode}
         />
       </GraphErrorBoundary>
 

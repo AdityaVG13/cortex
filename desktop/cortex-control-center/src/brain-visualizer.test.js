@@ -33,7 +33,8 @@ describe("Brain visualizer", () => {
     expect(source).toContain("const isSelectedFlowLink = useCallback");
     expect(source).toContain("brain-stat brain-stat-flow");
     expect(source).toContain("brain-flow-panel");
-    expect(source).toContain("linkDirectionalParticles={link => link.type === \"conflict\" ? 3 : isSelectedFlowLink(link) ? 2 : 0}");
+    expect(source).toContain("const resolveLinkParticles = useCallback");
+    expect(source).toContain("linkDirectionalParticles={resolveLinkParticles}");
   });
 
   it("uses native graph nodes for smooth type-colored rendering", () => {
@@ -54,5 +55,15 @@ describe("Brain visualizer", () => {
     expect(css).not.toContain("brain-scanline");
     expect(css).not.toContain("brain-ring-drift");
     expect(css).not.toContain(".brain-container canvas");
+  });
+
+  it("smooths selected-node focus and declutters the zoomed-out overview", () => {
+    expect(source).toContain("const BRAIN_FOCUS_TRANSITION_MS = 1550");
+    expect(source).toContain("function focusGraphNode");
+    expect(source).toContain("startTransition(() => setSelectedNode(nextNode))");
+    expect(source).toContain("const BRAIN_OVERVIEW_LINK_CAP = 96");
+    expect(source).toContain("const overviewLinkKeys = useMemo");
+    expect(source).toContain("linkVisibility={resolveLinkVisibility}");
+    expect(source).toContain("viewDepth === \"overview\"");
   });
 });
