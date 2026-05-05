@@ -26,7 +26,7 @@
 
 ---
 
-## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `shipped`
+## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `in progress`
 
 > Makes Cortex more usable day-to-day, more manageable at team scale, and more disciplined about recall measurement.
 
@@ -34,7 +34,7 @@
 |-------|---------|
 | **Accessibility & Settings** | First-class Settings panel with accessibility preferences for high contrast, reduced motion, keyboard hints, and compact navigation. Includes stronger focus states, semantics, live-region handling, contrast checks, and narrow reflow gates. |
 | **Motion system** | Unified sidebar, panel, tab, and numeric transitions with shared motion tokens and reduced-motion bypasses. |
-| **Recall quality** | Phase 0 purity (`cortex-http-pure` adapter, 5 CI gates, CAS-100 + triangle judge). Phase 1 embedding upgrade (`bge-base-en-v1.5` default). Phase 2 cross-encoder reranker (`ms-marco-MiniLM-L-6-v2` int8) is shipped default-off behind shadow/primary gates while public benchmark claims remain gated on LongMemEval/API-backed evidence. |
+| **Recall quality** | Phase 0 purity (`cortex-http-pure` adapter, 5 CI gates, CAS-100 + triangle judge). Phase 1 embedding upgrade (`bge-base-en-v1.5` default). Phase 2 cross-encoder reranker (`ms-marco-MiniLM-L-6-v2` int8) is implemented default-off behind shadow/primary gates while public benchmark claims remain gated on LongMemEval/API-backed evidence. |
 | **Budget governance** | Local per-endpoint limits for store, recall-family, boot, and MCP calls, plus Control Center budget status and a Tauri-only local budget editor. |
 | **Retention classes** | Durable knowledge vs operational context vs audit vs ephemera. Prereq for budget governance. |
 | **Context ranking** | Dynamic ranking in injectors — top-N by activeness × relevance, not fixed set. |
