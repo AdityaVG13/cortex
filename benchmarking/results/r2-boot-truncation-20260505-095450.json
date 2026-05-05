@@ -1,0 +1,199 @@
+{
+  "checks": {
+    "adaptive_allocation_pass": true,
+    "audit_rows_pass": true,
+    "expected_audit_rows_per_mode": 34,
+    "gt_precision_delta": 0.6667,
+    "gt_precision_pass": true,
+    "min_gt_precision_gain": 0.02,
+    "p50_latency_allowed_delta_ms": 5.0,
+    "p50_latency_delta_ms": 0.0,
+    "p50_latency_delta_percent": 0.0,
+    "p50_latency_pass": true
+  },
+  "config": {
+    "boots": 31,
+    "budget": 240,
+    "latency_gate": "+/- 5.0% with 5.0ms jitter floor",
+    "max_source_tokens": 120,
+    "min_source_tokens": 24,
+    "packing_modes": [
+      "legacy",
+      "score-adaptive"
+    ],
+    "rank_top_n": 12,
+    "warmups": 3
+  },
+  "fixture": {
+    "high_sentinels": [
+      "R2_GT_HIGH_01_ARCHITECTURE",
+      "R2_GT_HIGH_02_SECURITY",
+      "R2_GT_HIGH_03_ACCESSIBILITY",
+      "R2_GT_HIGH_04_GOVERNANCE",
+      "R2_GT_HIGH_05_RECALL",
+      "R2_GT_HIGH_06_RELEASE"
+    ],
+    "low_sentinels": [
+      "R2_GT_LOW_01_DECOY",
+      "R2_GT_LOW_02_DECOY",
+      "R2_GT_LOW_03_DECOY",
+      "R2_GT_LOW_04_DECOY",
+      "R2_GT_LOW_05_DECOY",
+      "R2_GT_LOW_06_DECOY"
+    ]
+  },
+  "generated_at": "2026-05-05T13:54:53.021776+00:00",
+  "git_commit": "0684525c001fd1a423cef8a5535ac58d3ef3086b",
+  "modes": {
+    "legacy": {
+      "audit": {
+        "capsule_summary_last": {
+          "high_allocated_avg": 0.0,
+          "high_allocated_total": 0,
+          "high_capsules": 0,
+          "high_tokens_avg": 0.0,
+          "high_tokens_total": 0,
+          "low_allocated_avg": 0.0,
+          "low_allocated_total": 0,
+          "low_capsules": 5,
+          "low_tokens_avg": 40,
+          "low_tokens_total": 200,
+          "packing_modes": {
+            "legacy": 5
+          }
+        },
+        "latency_ms": {
+          "max": 6.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "rows": 34
+      },
+      "capsule_summary_last": {
+        "high_allocated_avg": 0.0,
+        "high_allocated_total": 0,
+        "high_capsules": 0,
+        "high_tokens_avg": 0.0,
+        "high_tokens_total": 0,
+        "low_allocated_avg": 0.0,
+        "low_allocated_total": 0,
+        "low_capsules": 5,
+        "low_tokens_avg": 40,
+        "low_tokens_total": 200,
+        "packing_modes": {
+          "legacy": 5
+        }
+      },
+      "latency_ms": {
+        "max_response": 27.183,
+        "p50_response": 14.693,
+        "p95_response": 25.806
+      },
+      "mode": "legacy",
+      "packing_mode": "legacy",
+      "prompt_score_last": {
+        "gt_coverage": 0.0,
+        "gt_precision": 0.0,
+        "high_found": [],
+        "low_found": [
+          "R2_GT_LOW_01_DECOY",
+          "R2_GT_LOW_02_DECOY",
+          "R2_GT_LOW_03_DECOY",
+          "R2_GT_LOW_04_DECOY",
+          "R2_GT_LOW_05_DECOY"
+        ]
+      },
+      "prompt_score_min_precision": 0.0,
+      "requests": {
+        "measured": 31,
+        "warmups": 3
+      },
+      "token_usage_last": {
+        "budget": 240,
+        "saved": 1468,
+        "used": 218
+      }
+    },
+    "score_adaptive": {
+      "audit": {
+        "capsule_summary_last": {
+          "high_allocated_avg": 24.833,
+          "high_allocated_total": 149,
+          "high_capsules": 6,
+          "high_tokens_avg": 23.833,
+          "high_tokens_total": 143,
+          "low_allocated_avg": 25,
+          "low_allocated_total": 75,
+          "low_capsules": 3,
+          "low_tokens_avg": 24,
+          "low_tokens_total": 72,
+          "packing_modes": {
+            "score_adaptive": 9
+          }
+        },
+        "latency_ms": {
+          "max": 5.0,
+          "p50": 1.0,
+          "p95": 1.0
+        },
+        "rows": 34
+      },
+      "capsule_summary_last": {
+        "high_allocated_avg": 24.833,
+        "high_allocated_total": 149,
+        "high_capsules": 6,
+        "high_tokens_avg": 23.833,
+        "high_tokens_total": 143,
+        "low_allocated_avg": 25,
+        "low_allocated_total": 75,
+        "low_capsules": 3,
+        "low_tokens_avg": 24,
+        "low_tokens_total": 72,
+        "packing_modes": {
+          "score_adaptive": 9
+        }
+      },
+      "latency_ms": {
+        "max_response": 27.38,
+        "p50_response": 14.639,
+        "p95_response": 19.18
+      },
+      "mode": "score-adaptive",
+      "packing_mode": "score-adaptive",
+      "prompt_score_last": {
+        "gt_coverage": 1.0,
+        "gt_precision": 0.6667,
+        "high_found": [
+          "R2_GT_HIGH_01_ARCHITECTURE",
+          "R2_GT_HIGH_02_SECURITY",
+          "R2_GT_HIGH_03_ACCESSIBILITY",
+          "R2_GT_HIGH_04_GOVERNANCE",
+          "R2_GT_HIGH_05_RECALL",
+          "R2_GT_HIGH_06_RELEASE"
+        ],
+        "low_found": [
+          "R2_GT_LOW_01_DECOY",
+          "R2_GT_LOW_02_DECOY",
+          "R2_GT_LOW_03_DECOY"
+        ]
+      },
+      "prompt_score_min_precision": 0.6667,
+      "requests": {
+        "measured": 31,
+        "warmups": 3
+      },
+      "token_usage_last": {
+        "budget": 240,
+        "saved": 1453,
+        "used": 233
+      }
+    }
+  },
+  "passed": true,
+  "platform": {
+    "machine": "AMD64",
+    "os": "Windows-10-10.0.19045-SP0",
+    "python": "3.13.12"
+  },
+  "schema": "cortex.r2_boot_truncation_gate.v1"
+}
