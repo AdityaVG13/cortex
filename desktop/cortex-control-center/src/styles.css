@@ -53,6 +53,7 @@
   --motion-panel: 260ms;
   --motion-shell: 320ms;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --sidebar-transition: var(--motion-shell) var(--motion-ease);
 
   /* Typography */
   --font-display: "Orbitron", "Inter", sans-serif;
@@ -135,7 +136,7 @@ body {
     radial-gradient(ellipse at 20% 50%, rgba(0, 212, 255, 0.03) 0%, transparent 70%),
     radial-gradient(ellipse at 80% 20%, rgba(74, 158, 255, 0.02) 0%, transparent 60%),
     var(--bg);
-  transition: grid-template-columns var(--motion-shell) var(--motion-ease);
+  transition: grid-template-columns var(--sidebar-transition);
 }
 
 /* ─── Sidebar ───────────────────────────────────────────────────────────── */
@@ -151,7 +152,7 @@ body {
   width: var(--sidebar-w);
   overflow: hidden;
   transition:
-    width var(--motion-shell) var(--motion-ease),
+    width var(--sidebar-transition),
     padding var(--motion-base) var(--motion-ease),
     border-color var(--motion-base) ease;
 }
@@ -3690,15 +3691,6 @@ kbd {
   font-family: var(--font-mono);
   font-size: 11px;
   text-align: center;
-}
-
-.app.sidebar-collapsed {
-  grid-template-columns: var(--sidebar-collapsed-w) minmax(0, 1fr);
-}
-
-.sidebar.collapsed {
-  width: var(--sidebar-collapsed-w);
-  padding: 18px 8px;
 }
 
 .sidebar.collapsed .sidebar-utility {
