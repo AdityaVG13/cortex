@@ -616,4 +616,45 @@ mod tests {
         assert_eq!(reranked[0].id, "a");
         assert_eq!(reranked[1].id, "b");
     }
+
+    #[test]
+    fn real_minilm_model_loads_and_scores_when_enabled() {
+        if std::env::var("CORTEX_RERANK_REAL_MODEL_SMOKE")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            eprintln!("skipping real reranker smoke; set CORTEX_RERANK_REAL_MODEL_SMOKE=1");
+            return;
+        }
+        let models_dir = std::env::var("CORTEX_RERANK_REAL_MODEL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .expect("home dir should resolve")
+                    .join(".cortex")
+                    .join("models")
+            });
+        let reranker = MiniLmReranker::load(&models_dir).expect("real reranker assets should load");
+        let candidates = vec![
+            RerankCandidate {
+                id: "relevant".to_string(),
+                text: "Paris is the capital city of France.".to_string(),
+                base_score: 0.5,
+            },
+            RerankCandidate {
+                id: "irrelevant".to_string(),
+                text: "A banana ripens from green to yellow.".to_string(),
+                base_score: 0.5,
+            },
+        ];
+        let scored = reranker
+            .rerank("What is the capital of France?", &candidates, 1.0)
+            .expect("real reranker inference should score candidates");
+        assert_eq!(scored[0].id, "relevant");
+        assert!(
+            scored[0].rerank_score > scored[1].rerank_score,
+            "relevant candidate should score higher: {scored:?}"
+        );
+    }
 }
