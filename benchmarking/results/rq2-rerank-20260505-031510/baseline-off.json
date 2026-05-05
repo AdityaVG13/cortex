@@ -1,0 +1,377 @@
+{
+  "mode": "off",
+  "health_reranker": {
+    "available": false,
+    "fusion_alpha": 0.65,
+    "mode": "off",
+    "model": {
+      "display_name": "ms-marco-MiniLM-L-6-v2 int8",
+      "key": "ms-marco-MiniLM-L-6-v2",
+      "max_input_tokens": 512,
+      "model_file": "rerank/ms-marco-MiniLM-L-6-v2/model_int8.onnx",
+      "model_size_mb": 23,
+      "tokenizer_file": "rerank/ms-marco-MiniLM-L-6-v2/tokenizer.json"
+    },
+    "top_n": 24
+  },
+  "model_link": "symlink",
+  "queries": [
+    {
+      "id": "capital-france",
+      "query": "Which city is the capital of France?",
+      "latency_ms": 87.119,
+      "top1_hit": false,
+      "top3_hit": true,
+      "result_sources": [
+        "rq2-rerank::capital-france::2",
+        "rq2-rerank::capital-france::1",
+        "rq2-rerank::capital-france::3",
+        "rq2-rerank::shadow-mode::2",
+        "rq2-rerank::shadow-mode::3"
+      ],
+      "result_methods": [
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "keyword",
+        "keyword"
+      ],
+      "rerankRoute": {
+        "mode": "off",
+        "reason": "mode_off",
+        "status": "skipped"
+      },
+      "results": [
+        {
+          "source": "rq2-rerank::capital-france::2",
+          "method": "hybrid",
+          "relevance": 0.4964,
+          "excerpt": "RQ2 benchmark capital-france document 2. This decoy repeats the words city, capital, and France, but it says the phrase is only an example from a spelling worksheet."
+        },
+        {
+          "source": "rq2-rerank::capital-france::1",
+          "method": "hybrid",
+          "relevance": 0.4943,
+          "excerpt": "RQ2 benchmark capital-france document 1. The answer is Paris. Paris is the capital city of France and the seat of national government."
+        },
+        {
+          "source": "rq2-rerank::capital-france::3",
+          "method": "hybrid",
+          "relevance": 0.4858,
+          "excerpt": "RQ2 benchmark capital-france document 3. Berlin is the capital of Germany, not France."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::2",
+          "method": "keyword",
+          "relevance": 0.4169,
+          "excerpt": "RQ2 benchmark shadow-mode document 2. CORTEX_RERANK_MODE=primary may reorder the c"
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::3",
+          "method": "keyword",
+          "relevance": 0.4155,
+          "excerpt": "RQ2 benchmark shadow-mode document 3. CORTEX_RERANK_MODE=off skips rerank entirely"
+        }
+      ]
+    },
+    {
+      "id": "auth-token",
+      "query": "Where is the Cortex API token stored?",
+      "latency_ms": 65.058,
+      "top1_hit": false,
+      "top3_hit": true,
+      "result_sources": [
+        "rq2-rerank::auth-token::2",
+        "rq2-rerank::auth-token::1",
+        "rq2-rerank::auth-token::3",
+        "rq2-rerank::shadow-mode::2",
+        "rq2-rerank::shadow-mode::3"
+      ],
+      "result_methods": [
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "hybrid"
+      ],
+      "rerankRoute": {
+        "mode": "off",
+        "reason": "mode_off",
+        "status": "skipped"
+      },
+      "results": [
+        {
+          "source": "rq2-rerank::auth-token::2",
+          "method": "hybrid",
+          "relevance": 0.499,
+          "excerpt": "RQ2 benchmark auth-token document 2. A decoy mentions API token stored procedures, but describes a cloud dashboard rather than the local Cortex token file."
+        },
+        {
+          "source": "rq2-rerank::auth-token::1",
+          "method": "hybrid",
+          "relevance": 0.4923,
+          "excerpt": "RQ2 benchmark auth-token document 1. Cortex writes the API token to ~/.cortex/cortex.token and clients read that file for authenticated local requ..."
+        },
+        {
+          "source": "rq2-rerank::auth-token::3",
+          "method": "hybrid",
+          "relevance": 0.4715,
+          "excerpt": "RQ2 benchmark auth-token document 3. The daemon PID lives in cortex.pid, which is separate from the API token."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::2",
+          "method": "hybrid",
+          "relevance": 0.4383,
+          "excerpt": "...rk shadow-mode document 2. CORTEX_RERANK_MODE=primary may reorder the configured t..."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::3",
+          "method": "hybrid",
+          "relevance": 0.4362,
+          "excerpt": "...rk shadow-mode document 3. CORTEX_RERANK_MODE=off skips rerank entirely and report..."
+        }
+      ]
+    },
+    {
+      "id": "panic-log",
+      "query": "Where do daemon panic breadcrumbs go?",
+      "latency_ms": 75.986,
+      "top1_hit": false,
+      "top3_hit": true,
+      "result_sources": [
+        "rq2-rerank::shadow-mode::3",
+        "rq2-rerank::panic-log::1",
+        "rq2-rerank::panic-log::3",
+        "rq2-rerank::shadow-mode::2",
+        "rq2-rerank::auth-token::3"
+      ],
+      "result_methods": [
+        "associative",
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "hybrid"
+      ],
+      "rerankRoute": {
+        "mode": "off",
+        "reason": "mode_off",
+        "status": "skipped"
+      },
+      "results": [
+        {
+          "source": "rq2-rerank::shadow-mode::3",
+          "method": "associative",
+          "relevance": 0.5334,
+          "excerpt": "RQ2 benchmark shadow-mode document 3. CORTEX_RERANK_MODE=off skips rerank entirely and reports mode_off telemetry."
+        },
+        {
+          "source": "rq2-rerank::panic-log::1",
+          "method": "hybrid",
+          "relevance": 0.4934,
+          "excerpt": "RQ2 benchmark panic-log document 1. Daemon panics write breadcrumbs to ~/.cortex/panic.log with the payload, location, and backtrace."
+        },
+        {
+          "source": "rq2-rerank::panic-log::3",
+          "method": "hybrid",
+          "relevance": 0.4925,
+          "excerpt": "RQ2 benchmark panic-log document 3. The README changelog is not where daemon panic breadcrumbs are stored."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::2",
+          "method": "hybrid",
+          "relevance": 0.4295,
+          "excerpt": "RQ2 benchmark shadow-mode document 2. CORTEX_RERANK_MODE=primary may reorder the c"
+        },
+        {
+          "source": "rq2-rerank::auth-token::3",
+          "method": "hybrid",
+          "relevance": 0.4294,
+          "excerpt": "...auth-token document 3. The daemon PID lives in cortex.pid, which is separate from ..."
+        }
+      ]
+    },
+    {
+      "id": "pq8-footprint",
+      "query": "What compact embedding format reduced Cortex vector footprint?",
+      "latency_ms": 72.219,
+      "top1_hit": false,
+      "top3_hit": true,
+      "result_sources": [
+        "rq2-rerank::auth-token::3",
+        "rq2-rerank::pq8-footprint::1",
+        "rq2-rerank::pq8-footprint::3",
+        "rq2-rerank::auth-token::1",
+        "rq2-rerank::auth-token::2"
+      ],
+      "result_methods": [
+        "associative",
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "hybrid"
+      ],
+      "rerankRoute": {
+        "mode": "off",
+        "reason": "mode_off",
+        "status": "skipped"
+      },
+      "results": [
+        {
+          "source": "rq2-rerank::auth-token::3",
+          "method": "associative",
+          "relevance": 0.4995,
+          "excerpt": "RQ2 benchmark auth-token document 3. The daemon PID lives in cortex.pid, which is separate from the API token."
+        },
+        {
+          "source": "rq2-rerank::pq8-footprint::1",
+          "method": "hybrid",
+          "relevance": 0.4631,
+          "excerpt": "...rk pq8-footprint document 1. PQ8 int8 quantization became the canonical embedding blob format and shrank BGE vectors from 3072 bytes to 774 bytes."
+        },
+        {
+          "source": "rq2-rerank::pq8-footprint::3",
+          "method": "hybrid",
+          "relevance": 0.4552,
+          "excerpt": "...benchmark pq8-footprint document 3. FTS5 optimize reduces index bloat, not the embedding vector encoding itself."
+        },
+        {
+          "source": "rq2-rerank::auth-token::1",
+          "method": "hybrid",
+          "relevance": 0.4385,
+          "excerpt": "...ark auth-token document 1. Cortex writes the API token to ~/.cortex/cortex.token a..."
+        },
+        {
+          "source": "rq2-rerank::auth-token::2",
+          "method": "hybrid",
+          "relevance": 0.4372,
+          "excerpt": "...ocedures, but describes a cloud dashboard rather than the local Cortex token file."
+        }
+      ]
+    },
+    {
+      "id": "shadow-mode",
+      "query": "What rerank mode observes without changing recall order?",
+      "latency_ms": 85.003,
+      "top1_hit": false,
+      "top3_hit": true,
+      "result_sources": [
+        "rq2-rerank::auth-token::3",
+        "rq2-rerank::shadow-mode::1",
+        "rq2-rerank::shadow-mode::2",
+        "rq2-rerank::shadow-mode::3",
+        "rq2-rerank::pq8-footprint::1"
+      ],
+      "result_methods": [
+        "associative",
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "hybrid"
+      ],
+      "rerankRoute": {
+        "mode": "off",
+        "reason": "mode_off",
+        "status": "skipped"
+      },
+      "results": [
+        {
+          "source": "rq2-rerank::auth-token::3",
+          "method": "associative",
+          "relevance": 0.5039,
+          "excerpt": "RQ2 benchmark auth-token document 3. The daemon PID lives in cortex.pid, which is separate from the API token."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::1",
+          "method": "hybrid",
+          "relevance": 0.4548,
+          "excerpt": "...ow-mode document 1. CORTEX_RERANK_MODE=shadow runs the cross-encoder and reports rerankRoute telemetry without changing user-visible recall order."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::2",
+          "method": "hybrid",
+          "relevance": 0.4508,
+          "excerpt": "RQ2 benchmark shadow-mode document 2. CORTEX_RERANK_MODE=primary may reorder the configured top-N recall window."
+        },
+        {
+          "source": "rq2-rerank::shadow-mode::3",
+          "method": "hybrid",
+          "relevance": 0.4401,
+          "excerpt": "...ow-mode document 3. CORTEX_RERANK_MODE=off skips rerank entirely and reports mode_..."
+        },
+        {
+          "source": "rq2-rerank::pq8-footprint::1",
+          "method": "hybrid",
+          "relevance": 0.428,
+          "excerpt": "RQ2 benchmark pq8-footprint document 1. PQ8 int8 quantization became the canonical"
+        }
+      ]
+    },
+    {
+      "id": "control-center-supervisor",
+      "query": "What keeps the app-managed daemon alive after unexpected exits?",
+      "latency_ms": 69.039,
+      "top1_hit": false,
+      "top3_hit": true,
+      "result_sources": [
+        "rq2-rerank::shadow-mode::2",
+        "rq2-rerank::control-center-supervisor::1",
+        "rq2-rerank::auth-token::3",
+        "rq2-rerank::panic-log::1",
+        "rq2-rerank::panic-log::3"
+      ],
+      "result_methods": [
+        "associative",
+        "hybrid",
+        "hybrid",
+        "hybrid",
+        "hybrid"
+      ],
+      "rerankRoute": {
+        "mode": "off",
+        "reason": "mode_off",
+        "status": "skipped"
+      },
+      "results": [
+        {
+          "source": "rq2-rerank::shadow-mode::2",
+          "method": "associative",
+          "relevance": 0.5173,
+          "excerpt": "RQ2 benchmark shadow-mode document 2. CORTEX_RERANK_MODE=primary may reorder the configured top-N recall window."
+        },
+        {
+          "source": "rq2-rerank::control-center-supervisor::1",
+          "method": "hybrid",
+          "relevance": 0.4893,
+          "excerpt": "...sor document 1. The Control Center supervisor thread restarts the app-managed daemon after unexpected exits while honoring intentional user stops."
+        },
+        {
+          "source": "rq2-rerank::auth-token::3",
+          "method": "hybrid",
+          "relevance": 0.4268,
+          "excerpt": "RQ2 benchmark auth-token document 3. The daemon PID lives in cortex.pid, which is separate from the API token."
+        },
+        {
+          "source": "rq2-rerank::panic-log::1",
+          "method": "hybrid",
+          "relevance": 0.4257,
+          "excerpt": "...mark panic-log document 1. Daemon panics write breadcrumbs to ~/.cortex/panic.log ..."
+        },
+        {
+          "source": "rq2-rerank::panic-log::3",
+          "method": "hybrid",
+          "relevance": 0.4246,
+          "excerpt": "...document 3. The README changelog is not where daemon panic breadcrumbs are stored."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "queries": 6,
+    "top1": 0.0,
+    "top3": 1.0,
+    "p50_ms": 72.219,
+    "p90_ms": 85.003,
+    "p95_ms": 87.119,
+    "max_ms": 87.119
+  }
+}

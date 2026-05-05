@@ -1,0 +1,25 @@
+{
+  "git_commit": "270791379180b9562d7722d1c800e0a968df1d1d",
+  "git_status_short": "",
+  "os": "Windows-10-10.0.19045-SP0",
+  "machine": "AMD64",
+  "python": "3.13.12",
+  "binary": "C:\\Users\\aditya\\cortex\\daemon-rs\\target-codex-rq2-gate\\debug\\cortex.exe",
+  "model_path": "C:\\Users\\aditya\\.cortex\\models\\rerank\\ms-marco-MiniLM-L-6-v2\\model_int8.onnx",
+  "model_size_bytes": 23012404,
+  "env": {
+    "CORTEX_RERANK_TOP_N": "24",
+    "CORTEX_RERANK_FUSION_ALPHA": "0.65",
+    "CARGO_TARGET_DIR": "C:\\Users\\aditya\\cortex\\daemon-rs\\target-codex-rq2-gate"
+  },
+  "dataset": "rq2-local-deterministic",
+  "dataset_count": 6,
+  "modes": [
+    "off",
+    "shadow",
+    "primary"
+  ],
+  "benchmark_command": "benchmarking\\scripts\\rq2_rerank_gate.py --mode all --json --models-source C:\\Users\\aditya\\.cortex\\models --target-dir C:\\Users\\aditya\\cortex\\daemon-rs\\target-codex-rq2-gate --skip-build --skip-model-download",
+  "daemon_startup_mode": "isolated serve --home <temp> --port <reserved>",
+  "api_credits_or_cloud_judge_available": false
+}

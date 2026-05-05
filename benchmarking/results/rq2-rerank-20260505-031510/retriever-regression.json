@@ -1,0 +1,12 @@
+{
+  "owned_dataset": "rq2-local-deterministic",
+  "queries": 6,
+  "top1_delta_primary_vs_off": 0.6667,
+  "primary_regressed_by_at_least_1pp": false,
+  "p95_delta_ms_primary_vs_off": 19.004,
+  "p95_within_plus_80ms": true,
+  "shadow_order_matches_off": true,
+  "longmemeval_status": "not_run_by_this_local_gate",
+  "release_posture": "CAUTION",
+  "release_posture_reason": "Local model smoke and owned regression artifacts can support shadow/experimental posture, but scored LongMemEval-S is still required before a public primary rerank claim."
+}
