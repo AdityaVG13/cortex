@@ -18,6 +18,7 @@ REQUIRED_FIELDS = (
     "rollback_strategy",
     "measurement",
 )
+DEFAULT_MANIFEST_PATH = "docs/internal/feature-intake/manifest.json"
 
 
 def _load_manifest(path: Path) -> dict:
@@ -85,13 +86,20 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--manifest",
-        default="docs/internal/feature-intake/manifest.json",
+        default=None,
         help="Path to feature intake manifest JSON.",
     )
     args = parser.parse_args()
 
-    manifest_path = Path(args.manifest).resolve()
+    manifest_arg = args.manifest or DEFAULT_MANIFEST_PATH
+    manifest_path = Path(manifest_arg).resolve()
     if not manifest_path.exists():
+        if args.manifest is None:
+            print(
+                "Feature intake manifest validation skipped. "
+                f"Default private manifest is absent: {manifest_path}"
+            )
+            return 0
         print(f"error: manifest does not exist: {manifest_path}", file=sys.stderr)
         return 2
 
