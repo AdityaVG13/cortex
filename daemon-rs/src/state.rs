@@ -284,6 +284,10 @@ pub struct RuntimeState {
     pub write_buffer_path: std::path::PathBuf,
     /// Guarded sqlite-vec semantic trial routing controls.
     pub sqlite_vec_canary: SqliteVecCanaryConfig,
+    /// Cross-encoder reranker config. Default is off; shadow/primary are opt-in.
+    pub rerank_config: crate::rerank::RerankConfig,
+    /// Optional cross-encoder reranker loaded from local assets.
+    pub reranker: Option<Arc<dyn crate::rerank::Reranker>>,
 }
 
 impl RuntimeState {
@@ -538,6 +542,30 @@ fn initialize_with_conn(
             }
         }
     }
+    let rerank_config = crate::rerank::RerankConfig::from_env();
+    let reranker = if rerank_config.is_active() {
+        match crate::rerank::MiniLmReranker::load(&models_dir) {
+            Some(engine) => {
+                eprintln!(
+                    "[cortex] Reranker loaded (model={}, mode={}, top_n={}, alpha={:.2})",
+                    crate::rerank::Reranker::name(&engine),
+                    rerank_config.mode.as_str(),
+                    rerank_config.top_n,
+                    rerank_config.fusion_alpha
+                );
+                Some(Arc::new(engine) as Arc<dyn crate::rerank::Reranker>)
+            }
+            None => {
+                eprintln!(
+                    "[cortex] Reranker unavailable (mode={} requested, missing or invalid assets)",
+                    rerank_config.mode.as_str()
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
@@ -566,6 +594,8 @@ fn initialize_with_conn(
         last_activity_unix_secs: Arc::new(AtomicU64::new(current_unix_secs())),
         write_buffer_path,
         sqlite_vec_canary,
+        rerank_config,
+        reranker,
     };
 
     Ok((state, shutdown_rx))

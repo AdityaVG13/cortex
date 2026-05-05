@@ -336,6 +336,7 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
     let degraded = state
         .degraded_mode
         .load(std::sync::atomic::Ordering::Relaxed);
+    let reranker_model = crate::rerank::selected_reranker_selection();
 
     let db_corrupted = state
         .db_corrupted
@@ -397,6 +398,20 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
                 "effective_mode": state.sqlite_vec_canary.effective_route_mode().as_str(),
                 "trial_percent": state.sqlite_vec_canary.trial_percent,
                 "force_off": state.sqlite_vec_canary.force_off
+            },
+            "reranker": {
+                "mode": state.rerank_config.mode.as_str(),
+                "available": state.reranker.is_some(),
+                "model": {
+                    "key": reranker_model.key,
+                    "display_name": reranker_model.display_name,
+                    "model_size_mb": reranker_model.model_size_mb,
+                    "max_input_tokens": reranker_model.max_input_tokens,
+                    "model_file": reranker_model.model_file,
+                    "tokenizer_file": reranker_model.tokenizer_file
+                },
+                "top_n": state.rerank_config.top_n,
+                "fusion_alpha": state.rerank_config.fusion_alpha
             },
             "embedding_inventory": {
                 "active_model_key": embedding_model.key,

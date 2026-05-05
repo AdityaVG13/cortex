@@ -791,6 +791,8 @@ mod tests {
                 force_off: false,
                 route_mode: crate::state::SqliteVecRouteMode::Trial,
             },
+            rerank_config: crate::rerank::RerankConfig::off(),
+            reranker: None,
         }
     }
 

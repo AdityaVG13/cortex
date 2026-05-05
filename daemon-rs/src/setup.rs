@@ -516,6 +516,8 @@ async fn step_init() -> StepResult {
     let cortex_dir = auth::cortex_dir();
     let db_path = auth::db_path();
     let embedding_model = embeddings::selected_model_selection();
+    let rerank_config = crate::rerank::RerankConfig::from_env();
+    let reranker_model = crate::rerank::selected_reranker_selection();
     let mut notes = Vec::new();
 
     // Create directory
@@ -565,6 +567,32 @@ async fn step_init() -> StepResult {
         embedding_model.pooling,
         embedding_model.max_input_tokens
     ));
+
+    if rerank_config.is_active() {
+        let reranker_exists = crate::rerank::selected_reranker_assets_exist(&models_dir);
+        if reranker_exists {
+            notes.push(format!(
+                "Reranker: ready ({} | mode={})",
+                reranker_model.display_name,
+                rerank_config.mode.as_str()
+            ));
+        } else {
+            eprintln!(
+                "       Downloading reranker model ({})...",
+                reranker_model.display_name
+            );
+            match crate::rerank::ensure_reranker_downloaded().await {
+                Some(_) => notes.push(format!(
+                    "Reranker: downloaded ({} | mode={})",
+                    reranker_model.display_name,
+                    rerank_config.mode.as_str()
+                )),
+                None => {
+                    notes.push("Reranker: download failed (rerank will stay unavailable)".into())
+                }
+            }
+        }
+    }
 
     if let Some((backlog_memories, backlog_decisions)) =
         collect_reembed_backlog_counts(&db_path, embedding_model.key)

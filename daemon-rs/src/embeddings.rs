@@ -576,6 +576,7 @@ pub fn vector_to_blob(vec: &[f32]) -> Vec<u8> {
 /// Strict legacy encoder: writes LE f32 packed bytes. Used by tests that
 /// need to assert behaviour on legacy blobs, and by any one-off migration
 /// tool that needs to produce the old wire format.
+#[allow(dead_code)]
 pub fn vector_to_legacy_f32_blob(vec: &[f32]) -> Vec<u8> {
     vec.iter().flat_map(|f| f.to_le_bytes()).collect()
 }

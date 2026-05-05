@@ -22,6 +22,7 @@ use super::{
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::rate_limit::RequestClass;
+use crate::rerank::{RerankCandidate, RerankedScore};
 use crate::state::{
     PreCacheEntry, RecallHistoryEntry, RuntimeState, SqliteVecCanaryConfig, SqliteVecRouteMode,
 };
@@ -1523,6 +1524,186 @@ fn shadow_semantic_telemetry_summary(shadow_semantic: &Value) -> Value {
     summary
 }
 
+fn rerank_candidate_text(item: &RecallItem) -> String {
+    let text = if item.excerpt.trim().is_empty() {
+        item.source.clone()
+    } else {
+        format!("{} {}", item.source, item.excerpt)
+    };
+    truncate_chars(&text, 1800)
+}
+
+fn build_rerank_candidates(results: &[RecallItem], top_n: usize) -> Vec<RerankCandidate> {
+    results
+        .iter()
+        .take(top_n.max(1))
+        .map(|item| RerankCandidate {
+            id: item.source.clone(),
+            text: rerank_candidate_text(item),
+            base_score: item.relevance,
+        })
+        .collect()
+}
+
+fn remap_fused_score_to_relevance(fused_score: f64, window: &[RecallItem]) -> f64 {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for relevance in window.iter().map(|item| item.relevance) {
+        if relevance.is_finite() {
+            min = min.min(relevance);
+            max = max.max(relevance);
+        }
+    }
+    if !min.is_finite() || !max.is_finite() {
+        return round4(fused_score.clamp(0.0, 1.0));
+    }
+    let span = (max - min).max(0.01);
+    round4(min + (span * fused_score.clamp(0.0, 1.0)))
+}
+
+fn apply_primary_rerank(results: Vec<RecallItem>, reranked: &[RerankedScore]) -> Vec<RecallItem> {
+    if reranked.is_empty() {
+        return results;
+    }
+    let window_len = reranked.len().min(results.len());
+    let window = &results[..window_len];
+    let mut by_source: HashMap<String, RecallItem> = results
+        .iter()
+        .take(window_len)
+        .cloned()
+        .map(|item| (item.source.clone(), item))
+        .collect();
+    let mut output = Vec::with_capacity(results.len());
+    for score in reranked {
+        if let Some(mut item) = by_source.remove(&score.id) {
+            item.relevance = remap_fused_score_to_relevance(score.fused_score, window);
+            if !item.method.contains("rerank") {
+                item.method = format!("{}+rerank", item.method);
+            }
+            output.push(item);
+        }
+    }
+    for item in results.iter().take(window_len) {
+        if let Some(item) = by_source.remove(&item.source) {
+            output.push(item);
+        }
+    }
+    output.extend(results.into_iter().skip(window_len));
+    output
+}
+
+fn rerank_scores_json(reranked: &[RerankedScore]) -> Vec<Value> {
+    reranked
+        .iter()
+        .take(12)
+        .enumerate()
+        .map(|(idx, score)| {
+            json!({
+                "rank": idx + 1,
+                "source": score.id,
+                "baseScore": round4(score.base_score),
+                "rerankScore": round4(score.rerank_score),
+                "fusedScore": round4(score.fused_score),
+            })
+        })
+        .collect()
+}
+
+fn maybe_apply_rerank(
+    state: &RuntimeState,
+    query_text: &str,
+    results: Vec<RecallItem>,
+    budget: usize,
+) -> (Vec<RecallItem>, Value) {
+    let config = &state.rerank_config;
+    if budget == 0 {
+        return (
+            results,
+            json!({
+                "status": "skipped",
+                "reason": "headlines_mode",
+                "mode": config.mode.as_str(),
+            }),
+        );
+    }
+    if !config.is_active() {
+        return (
+            results,
+            json!({
+                "status": "skipped",
+                "reason": "mode_off",
+                "mode": config.mode.as_str(),
+            }),
+        );
+    }
+    if results.len() < 2 {
+        let candidate_count = results.len();
+        return (
+            results,
+            json!({
+                "status": "skipped",
+                "reason": "not_enough_candidates",
+                "mode": config.mode.as_str(),
+                "candidateCount": candidate_count,
+            }),
+        );
+    }
+    let Some(reranker) = state.reranker.as_ref() else {
+        return (
+            results,
+            json!({
+                "status": "unavailable",
+                "reason": "model_not_loaded",
+                "mode": config.mode.as_str(),
+                "configuredModel": crate::rerank::selected_reranker_selection().key,
+            }),
+        );
+    };
+
+    let top_n = config.top_n.min(results.len());
+    let candidates = build_rerank_candidates(&results, top_n);
+    let baseline_top_sources = candidates
+        .iter()
+        .map(|candidate| candidate.id.clone())
+        .collect::<Vec<_>>();
+    match reranker.rerank(query_text, &candidates, config.fusion_alpha) {
+        Ok(reranked) => {
+            let reranked_top_sources = reranked
+                .iter()
+                .map(|score| score.id.clone())
+                .collect::<Vec<_>>();
+            let telemetry = json!({
+                "status": "ok",
+                "mode": config.mode.as_str(),
+                "applied": config.is_primary(),
+                "model": reranker.name(),
+                "modelSizeMb": reranker.model_size_mb(),
+                "topN": top_n,
+                "fusionAlpha": round4(config.fusion_alpha),
+                "baselineTopSources": baseline_top_sources,
+                "rerankedTopSources": reranked_top_sources,
+                "scores": rerank_scores_json(&reranked),
+            });
+            let results = if config.is_primary() {
+                apply_primary_rerank(results, &reranked)
+            } else {
+                results
+            };
+            (results, telemetry)
+        }
+        Err(error) => (
+            results,
+            json!({
+                "status": "error",
+                "mode": config.mode.as_str(),
+                "applied": false,
+                "model": reranker.name(),
+                "reason": truncate_chars(&error, 240),
+            }),
+        ),
+    }
+}
+
 fn sqlite_vec_trial_sampled(
     query_text: &str,
     ctx: &RecallContext,
@@ -1946,7 +2127,7 @@ pub async fn execute_unified_recall(
     let scope_prefix = recall_owner_scope(ctx);
 
     // Check pre-cache
-    if budget > 0 {
+    if budget > 0 && !state.rerank_config.is_active() {
         if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await
         {
             let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
@@ -2094,6 +2275,8 @@ pub async fn execute_unified_recall(
         );
         shadow_semantic_telemetry_summary(&shadow_detail)
     };
+    let (reranked_results, rerank_route) = maybe_apply_rerank(state, query_text, results, budget);
+    results = reranked_results;
 
     // Co-occurrence tracking (recording only -- predictions excluded from response)
     let sources: Vec<String> = results.iter().map(|item| item.source.clone()).collect();
@@ -2153,7 +2336,8 @@ pub async fn execute_unified_recall(
                 "latency_budget_ms": latency_budget_ms,
                 "semantic_route": semantic_route.clone(),
                 "shadow_semantic": shadow_semantic,
-                "fail_closed": fail_closed
+                "fail_closed": fail_closed,
+                "rerank": rerank_route.clone()
             }),
         )
         .await;
@@ -2171,7 +2355,8 @@ pub async fn execute_unified_recall(
             "latencyMs": latency_ms,
             "latencyBudgetMs": latency_budget_ms,
             "failClosed": fail_closed,
-            "semanticRoute": semantic_route.clone()
+            "semanticRoute": semantic_route.clone(),
+            "rerankRoute": rerank_route
         }));
     }
 
@@ -2203,7 +2388,8 @@ pub async fn execute_unified_recall(
             "latency_budget_ms": latency_budget_ms,
             "semantic_route": semantic_route.clone(),
             "shadow_semantic": shadow_semantic,
-            "fail_closed": fail_closed
+            "fail_closed": fail_closed,
+            "rerank": rerank_route.clone()
         }),
     )
     .await;
@@ -2221,7 +2407,8 @@ pub async fn execute_unified_recall(
         "latencyMs": latency_ms,
         "latencyBudgetMs": latency_budget_ms,
         "failClosed": fail_closed,
-        "semanticRoute": semantic_route
+        "semanticRoute": semantic_route,
+        "rerankRoute": rerank_route
     });
 
     Ok(payload)
@@ -2331,6 +2518,7 @@ async fn execute_recall_policy_explain_inner(
     );
     drop(conn);
 
+    let (budgeted, rerank_route) = maybe_apply_rerank(state, query_text, budgeted, budget);
     let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
     let final_results = enforce_budget_token_invariant(final_results, budget, query_text);
     let usage = compute_recall_budget_usage(&final_results, budget);
@@ -2464,13 +2652,15 @@ async fn execute_recall_policy_explain_inner(
                 "droppedCount": post_compaction_dropped_count,
                 "totalPreBudgetDrops": family_compacted_count + post_compaction_dropped_count
             },
-            "semanticRoute": semantic_route
+            "semanticRoute": semantic_route,
+            "rerankRoute": rerank_route.clone()
         },
         "explain": {
             "returned": final_with_factors,
             "familyCompactions": family_compactions_json,
             "droppedCandidates": dropped_candidates,
-            "shadowSemantic": shadow_semantic
+            "shadowSemantic": shadow_semantic,
+            "rerank": rerank_route
         }
     }))
 }
@@ -7109,6 +7299,42 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex};
 
+    struct StaticReranker;
+
+    impl crate::rerank::Reranker for StaticReranker {
+        fn name(&self) -> &'static str {
+            "static_test_reranker"
+        }
+
+        fn model_size_mb(&self) -> u64 {
+            1
+        }
+
+        fn rerank(
+            &self,
+            _query: &str,
+            candidates: &[crate::rerank::RerankCandidate],
+            fusion_alpha: f64,
+        ) -> Result<Vec<crate::rerank::RerankedScore>, String> {
+            let scores = candidates
+                .iter()
+                .map(|candidate| {
+                    let score = if candidate.id == "memory::winner" {
+                        10.0
+                    } else {
+                        -10.0
+                    };
+                    (candidate.id.clone(), score)
+                })
+                .collect::<Vec<_>>();
+            Ok(crate::rerank::fuse_scores(
+                candidates,
+                &scores,
+                fusion_alpha,
+            ))
+        }
+    }
+
     // ── is_visible tests ───────────────────────────────────────────
 
     fn solo_ctx() -> RecallContext {
@@ -7189,6 +7415,8 @@ mod tests {
                 force_off: false,
                 route_mode: crate::state::SqliteVecRouteMode::Trial,
             },
+            rerank_config: crate::rerank::RerankConfig::off(),
+            reranker: None,
         }
     }
 
@@ -7201,6 +7429,73 @@ mod tests {
             )
             .expect("latest recall_query event should exist");
         serde_json::from_str(&raw).expect("recall_query event should be valid json")
+    }
+
+    fn recall_item_for_rerank(source: &str, relevance: f64) -> RecallItem {
+        RecallItem {
+            source: source.to_string(),
+            relevance,
+            excerpt: format!("rerank fixture for {source}"),
+            method: "hybrid".to_string(),
+            tokens: Some(10),
+            entropy: Some(0.5),
+            family_members: Vec::new(),
+            collapsed_sources: Vec::new(),
+            collapsed_source_scores: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn primary_rerank_reorders_top_window_and_marks_method() {
+        let mut state = shared_test_state();
+        state.rerank_config = crate::rerank::RerankConfig {
+            mode: crate::rerank::RerankMode::Primary,
+            top_n: 2,
+            fusion_alpha: 0.90,
+        };
+        state.reranker = Some(Arc::new(StaticReranker));
+        let results = vec![
+            recall_item_for_rerank("memory::baseline", 0.95),
+            recall_item_for_rerank("memory::winner", 0.70),
+            recall_item_for_rerank("memory::outside", 0.60),
+        ];
+
+        let (reranked, route) = maybe_apply_rerank(&state, "winner query", results, 240);
+
+        assert_eq!(route["status"], "ok");
+        assert_eq!(route["mode"], "primary");
+        assert_eq!(route["applied"], true);
+        assert_eq!(route["baselineTopSources"][0], "memory::baseline");
+        assert_eq!(route["rerankedTopSources"][0], "memory::winner");
+        assert_eq!(reranked[0].source, "memory::winner");
+        assert_eq!(reranked[2].source, "memory::outside");
+        assert!(reranked[0].method.ends_with("+rerank"));
+    }
+
+    #[test]
+    fn shadow_rerank_reports_route_without_reordering() {
+        let mut state = shared_test_state();
+        state.rerank_config = crate::rerank::RerankConfig {
+            mode: crate::rerank::RerankMode::Shadow,
+            top_n: 2,
+            fusion_alpha: 0.90,
+        };
+        state.reranker = Some(Arc::new(StaticReranker));
+        let results = vec![
+            recall_item_for_rerank("memory::baseline", 0.95),
+            recall_item_for_rerank("memory::winner", 0.70),
+            recall_item_for_rerank("memory::outside", 0.60),
+        ];
+
+        let (reranked, route) = maybe_apply_rerank(&state, "winner query", results, 240);
+
+        assert_eq!(route["status"], "ok");
+        assert_eq!(route["mode"], "shadow");
+        assert_eq!(route["applied"], false);
+        assert_eq!(route["baselineTopSources"][0], "memory::baseline");
+        assert_eq!(route["rerankedTopSources"][0], "memory::winner");
+        assert_eq!(reranked[0].source, "memory::baseline");
+        assert!(!reranked[0].method.ends_with("+rerank"));
     }
 
     fn insert_memory_with_embedding(

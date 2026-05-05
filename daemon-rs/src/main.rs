@@ -26,6 +26,7 @@ mod indexer;
 mod mcp_proxy;
 mod prompt_inject;
 mod rate_limit;
+mod rerank;
 mod server;
 mod service;
 mod setup;
