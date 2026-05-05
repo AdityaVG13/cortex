@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use crate::budgets::BudgetEndpoint;
 use crate::handlers;
 use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
@@ -302,6 +303,29 @@ async fn handle_mcp_rpc(
         }
     };
     let source = handlers::resolve_source_identity(&headers, "mcp");
+    let ip = handlers::client_ip(&headers);
+    if let Some(decision) = state
+        .rate_limiter
+        .check_budget_for_endpoint(ip, BudgetEndpoint::Mcp)
+        .await
+    {
+        if !decision.allowed {
+            handlers::log_budget_rejection(&state, &decision, &source.agent, &ip).await;
+            let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            return handlers::json_response(
+                StatusCode::OK,
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32029,
+                        "message": "budget_exceeded",
+                        "data": decision.http_body_json()
+                    },
+                    "id": id
+                }),
+            );
+        }
+    }
     handlers::register_agent_presence_from_headers(&state, &headers, caller_id).await;
 
     match handle_mcp_message_with_caller(&state, &msg, caller_id, Some(&source)).await {
@@ -887,10 +911,14 @@ fn parse_allowed_origin(origin: &str) -> Option<HeaderValue> {
 mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
-    use axum::http::{Method, Request, StatusCode};
+    use axum::http::{HeaderMap, Method, Request, StatusCode};
     use tower::ServiceExt;
 
     async fn build_state(team_mode: bool) -> RuntimeState {
+        build_state_with_budgets(team_mode, None).await
+    }
+
+    async fn build_state_with_budgets(team_mode: bool, budgets_toml: Option<&str>) -> RuntimeState {
         let mut home_dir = std::env::temp_dir();
         let mut db_path = std::env::temp_dir();
         let suffix = if team_mode { "team" } else { "solo" };
@@ -903,6 +931,9 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&home_dir).unwrap();
+        if let Some(contents) = budgets_toml {
+            std::fs::write(home_dir.join("budgets.toml"), contents).unwrap();
+        }
 
         let conn = crate::db::open(&db_path).unwrap();
         crate::db::configure(&conn).unwrap();
@@ -945,6 +976,49 @@ mod tests {
             .body(Body::from(body.unwrap_or_default().to_string()))
             .unwrap();
         router.clone().oneshot(req).await.unwrap().status()
+    }
+
+    fn budget_toml(endpoint: &str, limit: usize) -> String {
+        format!(
+            r#"
+[defaults]
+enabled = true
+
+[endpoints.{endpoint}]
+limit = {limit}
+window_seconds = 60
+"#
+        )
+    }
+
+    fn authed_json_request(token: &str, method: Method, uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-cortex-request", "true")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn send_json(
+        router: &Router,
+        token: &str,
+        method: Method,
+        uri: &str,
+        body: &str,
+    ) -> (StatusCode, HeaderMap, Value) {
+        let resp = router
+            .clone()
+            .oneshot(authed_json_request(token, method, uri, body))
+            .await
+            .unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let payload = serde_json::from_slice(&body).unwrap();
+        (status, headers, payload)
     }
 
     #[tokio::test]
@@ -1093,6 +1167,124 @@ mod tests {
         assert_eq!(payload["jsonrpc"], "2.0");
         assert_eq!(payload["error"]["message"], "Unauthorized");
         assert_eq!(payload["id"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn store_budget_exhaustion_returns_429_and_skips_decision_write() {
+        let state = build_state_with_budgets(false, Some(&budget_toml("store", 1))).await;
+        let token = state.token.as_ref().clone();
+        let router = build_router(state.clone(), 7437);
+
+        let first = r#"{
+            "decision": "Budget governance regression test allows the first store mutation in the configured window.",
+            "context": "budget integration test",
+            "confidence": 0.95
+        }"#;
+        let (status, _, _) = send_json(&router, &token, Method::POST, "/store", first).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let second = r#"{
+            "decision": "Budget governance regression test rejects the second store mutation before writing a row.",
+            "context": "budget integration test",
+            "confidence": 0.95
+        }"#;
+        let (status, headers, payload) =
+            send_json(&router, &token, Method::POST, "/store", second).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(payload["error"], "budget_exceeded");
+        assert_eq!(payload["endpoint"], "store");
+        assert_eq!(payload["limit"], 1);
+        assert_eq!(payload["window_seconds"], 60);
+        assert_eq!(payload["source"], "budgets.toml");
+        assert!(headers.get("Retry-After").is_some());
+
+        let conn = state.db.lock().await;
+        let decisions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(decisions, 1);
+    }
+
+    #[tokio::test]
+    async fn recall_budget_exhaustion_returns_429_and_health_stays_reachable() {
+        let state = build_state_with_budgets(false, Some(&budget_toml("recall", 1))).await;
+        let token = state.token.as_ref().clone();
+        let router = build_router(state.clone(), 7437);
+
+        let (status, _, _) = send_json(&router, &token, Method::GET, "/recall?q=budget", "").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, payload) =
+            send_json(&router, &token, Method::GET, "/recall?q=budget", "").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(payload["error"], "budget_exceeded");
+        assert_eq!(payload["endpoint"], "recall");
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let health: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health["budgets"]["enabled"], true);
+        assert_eq!(health["budgets"]["recentDenials"], 1);
+    }
+
+    #[tokio::test]
+    async fn boot_budget_exhaustion_returns_429() {
+        let state = build_state_with_budgets(false, Some(&budget_toml("boot", 1))).await;
+        let token = state.token.as_ref().clone();
+        let router = build_router(state, 7437);
+
+        let (status, _, _) = send_json(&router, &token, Method::GET, "/boot?agent=test", "").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, payload) =
+            send_json(&router, &token, Method::GET, "/boot?agent=test", "").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(payload["error"], "budget_exceeded");
+        assert_eq!(payload["endpoint"], "boot");
+    }
+
+    #[tokio::test]
+    async fn mcp_budget_exhaustion_returns_jsonrpc_error_data() {
+        let state = build_state_with_budgets(false, Some(&budget_toml("mcp", 1))).await;
+        let token = state.token.as_ref().clone();
+        let router = build_router(state, 7437);
+        let body = r#"{
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": "cortex_health", "arguments": {} }
+        }"#;
+
+        let (status, _, first) = send_json(&router, &token, Method::POST, "/mcp-rpc", body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(first.get("result").is_some());
+
+        let (status, _, denied) = send_json(&router, &token, Method::POST, "/mcp-rpc", body).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(denied["jsonrpc"], "2.0");
+        assert_eq!(denied["id"], 7);
+        assert_eq!(denied["error"]["code"], -32029);
+        assert_eq!(denied["error"]["message"], "budget_exceeded");
+        assert_eq!(denied["error"]["data"]["endpoint"], "mcp");
+        assert_eq!(denied["error"]["data"]["limit"], 1);
+        assert_eq!(denied["error"]["data"]["window_seconds"], 60);
+        assert!(
+            denied["error"]["data"]["retry_after_seconds"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
     }
 
     #[test]

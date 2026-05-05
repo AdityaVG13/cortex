@@ -6,9 +6,14 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Instant;
 
-use super::{ensure_auth_with_caller_rated, json_response, now_iso};
+use super::{
+    ensure_auth_with_caller_rated, ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget,
+    json_response, now_iso,
+};
+use crate::budgets::BudgetEndpoint;
 use crate::compiler;
 use crate::db::checkpoint_wal_best_effort;
+use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
 
 /// C5 — default retention window for `boot_audits`. Rows older than this
@@ -46,10 +51,11 @@ pub async fn handle_boot(
     Query(query): Query<BootQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
-        Ok(id) => id,
-        Err(resp) => return resp,
-    };
+    let caller_id =
+        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Boot).await {
+            Ok(id) => id,
+            Err(resp) => return resp,
+        };
     if state.team_mode && caller_id.is_none() {
         return json_response(
             StatusCode::FORBIDDEN,
@@ -57,8 +63,22 @@ pub async fn handle_boot(
         );
     }
     let source = super::resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("mcp"));
-    super::register_agent_presence(&state, &source, caller_id, "http", "HTTP boot session").await;
     let agent = source.agent;
+    if let Err(resp) = ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Boot, &agent).await
+    {
+        return resp;
+    }
+    super::register_agent_presence(
+        &state,
+        &super::SourceIdentity {
+            agent: agent.clone(),
+            model: source.model,
+        },
+        caller_id,
+        "http",
+        "HTTP boot session",
+    )
+    .await;
 
     let profile = query.profile.unwrap_or_else(|| "full".to_string());
     let max_tokens = query.budget.unwrap_or(600);
@@ -124,8 +144,8 @@ pub async fn handle_boot(
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
     let capsules_count = result.capsules.len() as i64;
-    let capsules_json = serde_json::to_string(&result.capsules)
-        .unwrap_or_else(|_| "[]".to_string());
+    let capsules_json =
+        serde_json::to_string(&result.capsules).unwrap_or_else(|_| "[]".to_string());
     let retention_days = boot_audit_retention_days();
     if retention_days > 0 {
         if let Err(e) = conn.execute(

@@ -567,6 +567,21 @@ fn initialize_with_conn(
         None
     };
 
+    let budget_config_status = crate::budgets::BudgetConfigStatus::load_from_home(&paths.home);
+    if let Some(error) = budget_config_status.error.as_ref() {
+        eprintln!(
+            "[cortex] WARNING: invalid budget config at {} ({}): {}; budget enforcement disabled",
+            budget_config_status.source.display(),
+            error.code,
+            error.message
+        );
+    } else if budget_config_status.enabled() {
+        eprintln!(
+            "[cortex] Budget governance enabled from {}",
+            budget_config_status.source.display()
+        );
+    }
+
     let state = RuntimeState {
         db: Arc::new(Mutex::new(conn)),
         db_read,
@@ -584,7 +599,7 @@ fn initialize_with_conn(
         pid_path: paths.pid.clone(),
         port: paths.port,
         embedding_engine,
-        rate_limiter: crate::rate_limit::RateLimiter::new(),
+        rate_limiter: crate::rate_limit::RateLimiter::new_with_budget_status(budget_config_status),
         team_mode,
         default_owner_id,
         team_api_key_hashes,

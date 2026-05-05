@@ -7,10 +7,11 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 use super::{
-    ensure_auth_with_caller_rated_for_class, json_response, log_event, now_iso,
-    resolve_source_identity, truncate_chars,
+    ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, log_event,
+    now_iso, resolve_source_identity, truncate_chars,
 };
 use crate::api_types::{RetentionClass, StoreRequest};
+use crate::budgets::BudgetEndpoint;
 use crate::conflict::{
     detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
 };
@@ -241,6 +242,11 @@ pub async fn handle_store(
     let source_identity =
         resolve_source_identity(&headers, body.source_agent.as_deref().unwrap_or("http"));
     let source_agent = source_identity.agent.clone();
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Store, &source_agent).await
+    {
+        return resp;
+    }
     let benchmark_store = body
         .entry_type
         .as_deref()

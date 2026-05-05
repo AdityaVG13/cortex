@@ -22,6 +22,7 @@ use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
 use serde_json::{json, Value};
 use std::net::IpAddr;
 
+use crate::budgets::{BudgetDecision, BudgetEndpoint};
 use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
 
@@ -293,6 +294,59 @@ pub fn client_ip(headers: &HeaderMap) -> IpAddr {
 
 fn should_apply_auth_failure_bucket(ip: IpAddr) -> bool {
     !ip.is_loopback()
+}
+
+#[allow(clippy::result_large_err)]
+pub async fn ensure_endpoint_budget(
+    headers: &HeaderMap,
+    state: &RuntimeState,
+    endpoint: BudgetEndpoint,
+    request_source: &str,
+) -> Result<(), Response> {
+    let ip = client_ip(headers);
+    let Some(decision) = state
+        .rate_limiter
+        .check_budget_for_endpoint(ip, endpoint)
+        .await
+    else {
+        return Ok(());
+    };
+    if decision.allowed {
+        return Ok(());
+    }
+
+    log_budget_rejection(state, &decision, request_source, &ip).await;
+    Err(budget_denial_response(&decision))
+}
+
+pub async fn log_budget_rejection(
+    state: &RuntimeState,
+    decision: &BudgetDecision,
+    request_source: &str,
+    ip: &IpAddr,
+) {
+    let conn = state.db.lock().await;
+    let _ = log_event(
+        &conn,
+        "budget_rejected",
+        decision.event_json(request_source, &ip.to_string()),
+        request_source,
+    );
+}
+
+#[allow(dead_code)]
+fn budget_denial_response(decision: &BudgetDecision) -> Response {
+    let mut resp = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(decision.http_body_json()),
+    )
+        .into_response();
+    let headers = resp.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&decision.retry_after_seconds.to_string()) {
+        headers.insert("Retry-After", v);
+    }
+    headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
+    resp
 }
 
 #[allow(dead_code)]

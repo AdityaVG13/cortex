@@ -9,6 +9,7 @@ mod admin;
 mod aging;
 mod api_types;
 mod auth;
+mod budgets;
 mod co_occurrence;
 mod compaction;
 mod compiler;
@@ -1269,12 +1270,15 @@ async fn main() {
                         std::process::exit(1);
                     }
                 },
+                "budgets" => {
+                    run_admin_budgets_cli(&paths, &args[3..]);
+                }
                 "rollback" => {
                     run_admin_rollback_cli(&paths, &args[3..]);
                 }
                 _ => {
                     eprintln!(
-                        "Usage: cortex admin <list-unowned|assign-owner|stats|rollback>"
+                        "Usage: cortex admin <list-unowned|assign-owner|stats|budgets|rollback>"
                     );
                     std::process::exit(1);
                 }
@@ -1286,6 +1290,92 @@ async fn main() {
 
         _ => {
             print_usage_and_exit(1);
+        }
+    }
+}
+
+fn run_admin_budgets_cli(paths: &auth::CortexPaths, args: &[String]) {
+    let subcmd = args.first().map(String::as_str).unwrap_or("");
+    let json_output = args.iter().any(|arg| arg == "--json");
+    match subcmd {
+        "status" => {
+            let status = budgets::BudgetConfigStatus::load_from_home(&paths.home);
+            let payload = status.to_health_json(0);
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+                return;
+            }
+            print_budget_status_human(&payload);
+        }
+        "validate" => {
+            let Some(path) = parse_flag_value(args, "--path") else {
+                eprintln!("Usage: cortex admin budgets validate --path <file> [--json]");
+                std::process::exit(1);
+            };
+            let status = budgets::BudgetConfigStatus::load_from_path(path);
+            let mut payload = status.to_health_json(0);
+            if !status.config_loaded && status.error.is_none() {
+                payload["error"] = json!({
+                    "code": "not_found",
+                    "message": "budget config file was not found",
+                    "endpoint": null,
+                    "field": null
+                });
+            }
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+            } else {
+                print_budget_status_human(&payload);
+            }
+            if payload["error"].is_object() {
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("Usage: cortex admin budgets <status|validate --path <file>> [--json]");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_budget_status_human(payload: &Value) {
+    println!("Cortex Budget Governance");
+    println!("{}", "=".repeat(50));
+    println!("Source: {}", json_str(payload, "source"));
+    println!("Config loaded: {}", json_field(payload, "configLoaded"));
+    println!("Enabled: {}", json_field(payload, "enabled"));
+    if let Some(error) = payload.get("error").and_then(Value::as_object) {
+        println!(
+            "Error: {} ({})",
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error"),
+            error
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        );
+        return;
+    }
+    if let Some(endpoints) = payload.get("endpoints").and_then(Value::as_object) {
+        if endpoints.is_empty() {
+            println!("Endpoints: unlimited");
+            return;
+        }
+        println!();
+        println!("{:<12} {:<10} WINDOW", "ENDPOINT", "LIMIT");
+        println!("{}", "-".repeat(36));
+        for (endpoint, budget) in endpoints {
+            println!(
+                "{:<12} {:<10} {}s",
+                endpoint,
+                budget.get("limit").and_then(Value::as_u64).unwrap_or(0),
+                budget
+                    .get("windowSeconds")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            );
         }
     }
 }
@@ -1338,12 +1428,8 @@ fn print_usage_and_exit(code: i32) -> ! {
     );
     eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
     eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
-    eprintln!(
-        "  admin rollback --session-id <id> [--apply] [--json]"
-    );
-    eprintln!(
-        "                  Soft-delete memories + decisions for a session (dry-run default)"
-    );
+    eprintln!("  admin rollback --session-id <id> [--apply] [--json]");
+    eprintln!("                  Soft-delete memories + decisions for a session (dry-run default)");
     eprintln!();
     eprintln!("Embeddings:");
     eprintln!("  embeddings status [--json]  Show active-model embedding backlog counts");
@@ -1367,6 +1453,8 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  admin list-unowned List rows without an owner");
     eprintln!("  admin assign-owner [--from <user>] --to <user> [--table <t>]");
     eprintln!("  admin stats        Database and per-user statistics");
+    eprintln!("  admin budgets status [--json]");
+    eprintln!("  admin budgets validate --path <file> [--json]");
     eprintln!();
     eprintln!("Service:");
     eprintln!("  service install    Register as Windows Service (manual start by default)");
@@ -1761,9 +1849,7 @@ fn run_admin_rollback_cli(paths: &auth::CortexPaths, args: &[String]) {
             }
             other => {
                 eprintln!("Unknown flag: {other}");
-                eprintln!(
-                    "Usage: cortex admin rollback --session-id <id> [--apply] [--json]"
-                );
+                eprintln!("Usage: cortex admin rollback --session-id <id> [--apply] [--json]");
                 std::process::exit(1);
             }
         }
@@ -1771,9 +1857,7 @@ fn run_admin_rollback_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
 
     let Some(session_id) = session_id else {
-        eprintln!(
-            "Usage: cortex admin rollback --session-id <id> [--apply] [--json]"
-        );
+        eprintln!("Usage: cortex admin rollback --session-id <id> [--apply] [--json]");
         std::process::exit(1);
     };
 
@@ -1817,11 +1901,7 @@ fn run_admin_rollback_cli(paths: &auth::CortexPaths, args: &[String]) {
         });
         let _ = conn.execute(
             "INSERT INTO events(type, data, source_agent) VALUES (?1, ?2, ?3)",
-            rusqlite::params![
-                "session.rolled_back",
-                payload.to_string(),
-                stats.agent,
-            ],
+            rusqlite::params!["session.rolled_back", payload.to_string(), stats.agent,],
         );
     }
 

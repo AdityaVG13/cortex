@@ -368,12 +368,17 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         None
     };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
+    let budgets = state
+        .rate_limiter
+        .budget_status()
+        .to_health_json(state.rate_limiter.recent_budget_denials().await);
 
     json!({
         "status": if degraded || db_corrupted { "degraded" } else { "ok" },
         "ready": ready,
         "degraded": degraded || db_corrupted,
         "db_corrupted": db_corrupted,
+        "budgets": budgets,
         "embedding_status": embedding_status,
         "vector_search": {
             "backend": if matches!(

@@ -12,14 +12,18 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+
+use crate::budgets::{BudgetConfigStatus, BudgetDecision, BudgetEndpoint, EndpointBudget};
 
 const AUTH_FAIL_LIMIT: usize = 10;
 const REQUEST_LIMIT_NON_LOOPBACK: usize = 100;
 const REQUEST_LIMIT_LOOPBACK: usize = 10_000;
 const WINDOW: Duration = Duration::from_secs(60);
+const BUDGET_DENIAL_RECENT_WINDOW: Duration = Duration::from_secs(60 * 60);
 const LIMIT_MAX: usize = 1_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -27,6 +31,7 @@ pub enum RequestClass {
     Default,
     Recall,
     Store,
+    Boot,
 }
 
 fn read_limit_env(key: &str, default: usize) -> usize {
@@ -49,32 +54,42 @@ impl SlidingWindow {
         }
     }
 
-    fn prune(&mut self, now: Instant) {
+    fn prune(&mut self, now: Instant, window: Duration) {
         while let Some(oldest) = self.timestamps.front().copied() {
-            if now.duration_since(oldest) < WINDOW {
+            if now.duration_since(oldest) < window {
                 break;
             }
             self.timestamps.pop_front();
         }
     }
 
-    fn seconds_until_slot_pruned(&self, now: Instant, limit: usize) -> u64 {
+    fn seconds_until_slot_pruned(&self, now: Instant, limit: usize, window: Duration) -> u64 {
         if self.timestamps.len() < limit {
             return 0;
         }
         let oldest = self.timestamps.front().copied().unwrap_or(now);
         let elapsed = now.duration_since(oldest);
-        WINDOW.as_secs().saturating_sub(elapsed.as_secs()).max(1)
+        window.as_secs().saturating_sub(elapsed.as_secs()).max(1)
     }
 
-    fn try_record(&mut self, now: Instant, limit: usize) -> Result<usize, u64> {
-        self.prune(now);
+    fn try_record(&mut self, now: Instant, limit: usize, window: Duration) -> Result<usize, u64> {
+        self.prune(now, window);
         let current = self.timestamps.len();
         if current >= limit {
-            return Err(self.seconds_until_slot_pruned(now, limit));
+            return Err(self.seconds_until_slot_pruned(now, limit, window));
         }
         self.timestamps.push_back(now);
         Ok(limit - current - 1)
+    }
+
+    fn record_unbounded(&mut self, now: Instant, window: Duration) {
+        self.prune(now, window);
+        self.timestamps.push_back(now);
+    }
+
+    fn len_after_prune(&mut self, now: Instant, window: Duration) -> usize {
+        self.prune(now, window);
+        self.timestamps.len()
     }
 }
 
@@ -83,6 +98,10 @@ impl SlidingWindow {
 pub struct RateLimiter {
     auth_failures: Arc<Mutex<HashMap<IpAddr, SlidingWindow>>>,
     requests: Arc<Mutex<HashMap<(IpAddr, RequestClass), SlidingWindow>>>,
+    budget_requests: Arc<Mutex<HashMap<(IpAddr, BudgetEndpoint), SlidingWindow>>>,
+    budget_denials: Arc<Mutex<SlidingWindow>>,
+    total_budget_denials: Arc<AtomicUsize>,
+    budget_config_status: Arc<BudgetConfigStatus>,
     auth_fail_limit: usize,
     request_limit_non_loopback: usize,
     request_limit_loopback: usize,
@@ -94,6 +113,10 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new() -> Self {
+        Self::new_with_budget_status(BudgetConfigStatus::missing_for_tests())
+    }
+
+    pub fn new_with_budget_status(budget_config_status: BudgetConfigStatus) -> Self {
         let auth_fail_limit =
             read_limit_env("CORTEX_RATE_LIMIT_AUTH_FAILS_PER_MIN", AUTH_FAIL_LIMIT);
         let request_limit_non_loopback = read_limit_env(
@@ -135,6 +158,10 @@ impl RateLimiter {
         Self {
             auth_failures: Arc::new(Mutex::new(HashMap::new())),
             requests: Arc::new(Mutex::new(HashMap::new())),
+            budget_requests: Arc::new(Mutex::new(HashMap::new())),
+            budget_denials: Arc::new(Mutex::new(SlidingWindow::new())),
+            total_budget_denials: Arc::new(AtomicUsize::new(0)),
+            budget_config_status: Arc::new(budget_config_status),
             auth_fail_limit,
             request_limit_non_loopback,
             request_limit_loopback,
@@ -148,7 +175,7 @@ impl RateLimiter {
     fn request_limit_for_ip_class(&self, ip: IpAddr, class: RequestClass) -> usize {
         let loopback = ip.is_loopback();
         match class {
-            RequestClass::Default => {
+            RequestClass::Default | RequestClass::Boot => {
                 if loopback {
                     self.request_limit_loopback
                 } else {
@@ -177,7 +204,9 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
-        window.try_record(now, self.auth_fail_limit).map(|_| ())
+        window
+            .try_record(now, self.auth_fail_limit, WINDOW)
+            .map(|_| ())
     }
 
     /// Check if an IP is currently blocked due to auth failures.
@@ -185,9 +214,9 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         if let Some(window) = map.get_mut(ip) {
             let now = Instant::now();
-            window.prune(now);
+            window.prune(now, WINDOW);
             if window.timestamps.len() >= self.auth_fail_limit {
-                return Some(window.seconds_until_slot_pruned(now, self.auth_fail_limit));
+                return Some(window.seconds_until_slot_pruned(now, self.auth_fail_limit, WINDOW));
             }
         }
         None
@@ -210,7 +239,51 @@ impl RateLimiter {
         let window = map.entry((ip, class)).or_insert_with(SlidingWindow::new);
         let request_limit = self.request_limit_for_ip_class(ip, class);
         let now = Instant::now();
-        window.try_record(now, request_limit)
+        window.try_record(now, request_limit, WINDOW)
+    }
+
+    pub fn budget_status(&self) -> BudgetConfigStatus {
+        (*self.budget_config_status).clone()
+    }
+
+    pub fn budget_for_endpoint(&self, endpoint: BudgetEndpoint) -> Option<EndpointBudget> {
+        self.budget_config_status.budget_for(endpoint)
+    }
+
+    pub async fn check_budget_for_endpoint(
+        &self,
+        ip: IpAddr,
+        endpoint: BudgetEndpoint,
+    ) -> Option<BudgetDecision> {
+        let budget = self.budget_for_endpoint(endpoint)?;
+        let window_duration = Duration::from_secs(budget.window_seconds);
+        let mut map = self.budget_requests.lock().await;
+        let window = map.entry((ip, endpoint)).or_insert_with(SlidingWindow::new);
+        let now = Instant::now();
+        match window.try_record(now, budget.limit, window_duration) {
+            Ok(remaining) => Some(BudgetDecision::allowed(endpoint, budget, remaining)),
+            Err(retry_after) => {
+                drop(map);
+                self.record_budget_denial().await;
+                Some(BudgetDecision::denied(endpoint, budget, retry_after))
+            }
+        }
+    }
+
+    async fn record_budget_denial(&self) {
+        self.total_budget_denials.fetch_add(1, Ordering::Relaxed);
+        let mut denials = self.budget_denials.lock().await;
+        denials.record_unbounded(Instant::now(), BUDGET_DENIAL_RECENT_WINDOW);
+    }
+
+    pub async fn recent_budget_denials(&self) -> usize {
+        let mut denials = self.budget_denials.lock().await;
+        denials.len_after_prune(Instant::now(), BUDGET_DENIAL_RECENT_WINDOW)
+    }
+
+    #[allow(dead_code)]
+    pub fn total_budget_denials(&self) -> usize {
+        self.total_budget_denials.load(Ordering::Relaxed)
     }
 
     /// Periodic cleanup of stale entries (call from background task).
@@ -219,14 +292,26 @@ impl RateLimiter {
         {
             let mut map = self.auth_failures.lock().await;
             map.retain(|_, w| {
-                w.prune(now);
+                w.prune(now, WINDOW);
                 !w.timestamps.is_empty()
             });
         }
         {
             let mut map = self.requests.lock().await;
             map.retain(|_, w| {
-                w.prune(now);
+                w.prune(now, WINDOW);
+                !w.timestamps.is_empty()
+            });
+        }
+        {
+            let budget_status = self.budget_status();
+            let mut map = self.budget_requests.lock().await;
+            map.retain(|(_, endpoint), w| {
+                let window = budget_status
+                    .budget_for(*endpoint)
+                    .map(|budget| Duration::from_secs(budget.window_seconds))
+                    .unwrap_or(WINDOW);
+                w.prune(now, window);
                 !w.timestamps.is_empty()
             });
         }
@@ -336,7 +421,7 @@ mod tests {
         window.timestamps.push_back(now - Duration::from_secs(59));
 
         let remaining = window
-            .try_record(now, 2)
+            .try_record(now, 2, WINDOW)
             .expect("expired entries should be pruned before limit check");
         assert_eq!(remaining, 0);
         assert_eq!(window.timestamps.len(), 2);
@@ -346,14 +431,130 @@ mod tests {
             .all(|ts| now.duration_since(*ts) < WINDOW));
 
         let retry = window
-            .try_record(now, 2)
+            .try_record(now, 2, WINDOW)
             .expect_err("window should be full at limit");
         assert_eq!(retry, 1);
 
         let later = now + Duration::from_secs(2);
         assert!(
-            window.try_record(later, 2).is_ok(),
+            window.try_record(later, 2, WINDOW).is_ok(),
             "oldest non-expired entry should age out and free a slot"
         );
+    }
+
+    #[tokio::test]
+    async fn budget_allows_exactly_limit_then_rejects() {
+        let status = BudgetConfigStatus::load_from_path(write_budget_file(
+            r#"
+[endpoints.recall]
+limit = 2
+window_seconds = 60
+"#,
+        ));
+        let rl = RateLimiter::new_with_budget_status(status);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 88));
+
+        assert!(
+            rl.check_budget_for_endpoint(ip, BudgetEndpoint::Recall)
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            rl.check_budget_for_endpoint(ip, BudgetEndpoint::Recall)
+                .await
+                .unwrap()
+                .allowed
+        );
+        let denied = rl
+            .check_budget_for_endpoint(ip, BudgetEndpoint::Recall)
+            .await
+            .unwrap();
+        assert!(!denied.allowed);
+        assert_eq!(denied.endpoint, BudgetEndpoint::Recall);
+        assert_eq!(denied.limit, 2);
+        assert_eq!(denied.window_seconds, 60);
+        assert_eq!(
+            denied.http_body_json()["source"],
+            crate::budgets::BUDGET_SOURCE
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_resets_after_window() {
+        let status = BudgetConfigStatus::load_from_path(write_budget_file(
+            r#"
+[endpoints.store]
+limit = 1
+window_seconds = 1
+"#,
+        ));
+        let rl = RateLimiter::new_with_budget_status(status);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 89));
+
+        assert!(
+            rl.check_budget_for_endpoint(ip, BudgetEndpoint::Store)
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            !rl.check_budget_for_endpoint(ip, BudgetEndpoint::Store)
+                .await
+                .unwrap()
+                .allowed
+        );
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            rl.check_budget_for_endpoint(ip, BudgetEndpoint::Store)
+                .await
+                .unwrap()
+                .allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_endpoint_buckets_are_independent() {
+        let status = BudgetConfigStatus::load_from_path(write_budget_file(
+            r#"
+[endpoints.store]
+limit = 1
+window_seconds = 60
+
+[endpoints.recall]
+limit = 1
+window_seconds = 60
+"#,
+        ));
+        let rl = RateLimiter::new_with_budget_status(status);
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 90));
+
+        assert!(
+            rl.check_budget_for_endpoint(ip, BudgetEndpoint::Store)
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            !rl.check_budget_for_endpoint(ip, BudgetEndpoint::Store)
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            rl.check_budget_for_endpoint(ip, BudgetEndpoint::Recall)
+                .await
+                .unwrap()
+                .allowed
+        );
+    }
+
+    fn write_budget_file(contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "cortex-budget-rate-limit-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
     }
 }

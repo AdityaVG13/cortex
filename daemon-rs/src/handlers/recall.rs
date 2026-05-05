@@ -14,11 +14,12 @@ use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use super::ensure_auth_with_caller_rated_for_class;
+use super::{ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget};
 use super::{
     estimate_tokens, json_response, now_iso, parse_timestamp_ms, resolve_source_identity,
     truncate_chars,
 };
+use crate::budgets::BudgetEndpoint;
 use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::rate_limit::RequestClass;
@@ -1035,6 +1036,11 @@ pub async fn handle_recall(
             json!({ "error": "Missing query parameter: q" }),
         );
     }
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
+    }
     budget = maybe_apply_adaptive_default_budget(
         q.trim(),
         requested_policy_mode,
@@ -1107,6 +1113,11 @@ pub async fn handle_recall_post(
             json!({ "error": "Missing recall payload field: q" }),
         );
     }
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
+    }
     budget = maybe_apply_adaptive_default_budget(
         q.trim(),
         requested_policy_mode,
@@ -1171,6 +1182,11 @@ pub async fn handle_semantic_recall(
             json!({ "error": "Missing query parameter: q" }),
         );
     }
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
+    }
 
     let ctx = RecallContext::from_caller(caller_id, &state);
     match execute_semantic_recall(&state, q.trim(), budget, k, &agent, &ctx, source_prefix).await {
@@ -1209,6 +1225,12 @@ pub async fn handle_budget_recall(
         }
     };
 
+    let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
+    }
     let budget = query.budget.unwrap_or(300);
     let k = query.k.unwrap_or(10);
     let source_prefix = query
@@ -1288,6 +1310,11 @@ pub async fn handle_recall_explain(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
+    }
     let ctx = RecallContext::from_caller(caller_id, &state);
     budget = maybe_apply_adaptive_default_budget(
         q.trim(),
@@ -1364,6 +1391,12 @@ pub async fn handle_peek(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let k = query.k.unwrap_or(10);
+    let agent = resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("http")).agent;
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
+    }
     let ctx = RecallContext::from_caller(caller_id, &state);
     let mut conn = state.db.lock().await;
     match run_recall(&mut conn, &q, k, &ctx, source_prefix) {
@@ -6791,6 +6824,13 @@ pub async fn handle_unfold(
             StatusCode::BAD_REQUEST,
             json!({"error": format!("Too many sources (max {MAX_UNFOLD_SOURCES})")}),
         );
+    }
+
+    let agent = resolve_source_identity(&headers, "http").agent;
+    if let Err(resp) =
+        ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Recall, &agent).await
+    {
+        return resp;
     }
 
     let conn = state.db_read.lock().await;
