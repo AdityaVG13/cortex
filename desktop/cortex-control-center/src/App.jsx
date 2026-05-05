@@ -1638,7 +1638,7 @@ export function App() {
     setPanelMotionDirection(
       currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex ? "backward" : "forward"
     );
-    startTransition(() => setPanel(nextPanel));
+    setPanel(nextPanel);
   }, [panel]);
 
   const normalizedSessions = useMemo(() => {
@@ -2885,8 +2885,21 @@ export function App() {
     ) {
       return;
     }
-    reloadBudgetConfigDraft({ silent: true });
-  }, [budgetConfigBusy, budgetConfigStatus, ipcAvailable, panel, reloadBudgetConfigDraft]);
+    const budgetReloadTimer = window.setTimeout(() => {
+      reloadBudgetConfigDraft({ silent: true });
+    }, effectiveReducedMotion ? 0 : MOTION_MS.panel);
+
+    return () => {
+      window.clearTimeout(budgetReloadTimer);
+    };
+  }, [
+    budgetConfigBusy,
+    budgetConfigStatus,
+    effectiveReducedMotion,
+    ipcAvailable,
+    panel,
+    reloadBudgetConfigDraft,
+  ]);
 
   useEffect(() => {
     writeControlCenterSettings(controlSettings);
@@ -4532,8 +4545,10 @@ export function App() {
         )}
 
         <div className="panel-stage" data-panel-direction={panelMotionDirection}>
-          {panel === "settings" ? (
-            <section className="panel active settings-panel">
+          <section
+            className={`panel settings-panel ${panel === "settings" ? "active" : "panel-hidden"}`}
+            aria-hidden={panel === "settings" ? undefined : true}
+          >
               <div className="panel-header">
                 <div>
                   <span className="panel-kicker">Control Center</span>
@@ -4794,7 +4809,6 @@ export function App() {
                 </section>
               </div>
             </section>
-          ) : null}
 
         {panel === "overview" ? (
           <section className="panel active">
