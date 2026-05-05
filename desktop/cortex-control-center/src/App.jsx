@@ -41,9 +41,13 @@ import { summarizeBootThroughput } from "./analytics-metrics.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.js";
 import { handleKeyboardActivation, shouldIgnoreGlobalShortcut } from "./keyboard-access.js";
 import {
+  BUDGET_ENDPOINT_DEFINITIONS,
+  createBudgetDraftFromStatus,
   readControlCenterSettings,
   resolveEffectiveReducedMotion,
+  serializeBudgetDraftForSave,
   summarizeBudgetStatus,
+  validateBudgetDraft,
   writeControlCenterSettings,
 } from "./settings/settings-state.js";
 
@@ -1531,6 +1535,12 @@ export function App() {
   const [startupCoreReadyState, setStartupCoreReadyState] = useState(false);
   const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
   const [controlSettings, setControlSettings] = useState(() => readControlCenterSettings());
+  const [budgetConfigStatus, setBudgetConfigStatus] = useState(null);
+  const [budgetDraft, setBudgetDraft] = useState(() => createBudgetDraftFromStatus(null));
+  const [budgetDraftDirty, setBudgetDraftDirty] = useState(false);
+  const [budgetConfigBusy, setBudgetConfigBusy] = useState(false);
+  const [budgetConfigMessage, setBudgetConfigMessage] = useState("");
+  const [ipcAvailable, setIpcAvailable] = useState(false);
   const [osReducedMotion, setOsReducedMotion] = useState(() => getOsReducedMotionPreference());
   const [currency, setCurrency] = useState(() => normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD")));
   const [analyticsMode, setAnalyticsMode] = useState(() => {
@@ -1574,6 +1584,7 @@ export function App() {
   const permissionsEndpointAvailableRef = useRef(true);
   const browserHealthProbeRef = useRef(null);
   const connectionDialogAutoPromptSuppressedRef = useRef(false);
+  const budgetConfigLoadAttemptedRef = useRef(false);
 
   const restoreFocusToTrigger = useCallback((triggerRef) => {
     if (typeof window === "undefined") return;
@@ -1738,6 +1749,16 @@ export function App() {
 
   const safeCurrency = normalizeCurrencyCode(currency);
   const currencyRate = USD_TO_CURRENCY_RATE[safeCurrency] ?? USD_TO_CURRENCY_RATE.USD;
+  const activeBudgetStatus = budgetConfigStatus || healthMeta.budgets;
+  const budgetSummary = useMemo(
+    () => summarizeBudgetStatus(activeBudgetStatus),
+    [activeBudgetStatus],
+  );
+  const budgetDraftError = useMemo(
+    () => validateBudgetDraft(budgetDraft),
+    [budgetDraft],
+  );
+  const budgetDraftEndpoints = budgetDraft?.endpoints || createBudgetDraftFromStatus(null).endpoints;
   const memoryLoad = useMemo(
     () =>
       (typeof stats.memories === "number" ? stats.memories : 0)
@@ -2482,12 +2503,95 @@ export function App() {
     }
   }, [call, closeEditorSetupWizard, selectedEditorIds]);
 
+  const updateBudgetDraftRoot = useCallback((patch) => {
+    setBudgetDraftDirty(true);
+    setBudgetConfigMessage("");
+    setBudgetDraft((current) => ({
+      ...(current?.endpoints ? current : createBudgetDraftFromStatus(null)),
+      ...patch,
+    }));
+  }, []);
+
+  const updateBudgetEndpointDraft = useCallback((endpoint, patch) => {
+    setBudgetDraftDirty(true);
+    setBudgetConfigMessage("");
+    setBudgetDraft((current) => {
+      const base = current?.endpoints ? current : createBudgetDraftFromStatus(null);
+      return {
+        ...base,
+        endpoints: {
+          ...base.endpoints,
+          [endpoint]: {
+            ...base.endpoints[endpoint],
+            ...patch,
+          },
+        },
+      };
+    });
+  }, []);
+
+  const reloadBudgetConfigDraft = useCallback(async ({ silent = false } = {}) => {
+    if (!invokeRef.current) {
+      if (!silent) setBudgetConfigMessage("Budget editing requires the desktop app.");
+      return;
+    }
+
+    budgetConfigLoadAttemptedRef.current = true;
+    setBudgetConfigBusy(true);
+    try {
+      const status = await call("read_budget_config");
+      setBudgetConfigStatus(status);
+      setHealthMeta((current) => ({ ...current, budgets: status }));
+      setBudgetDraft(createBudgetDraftFromStatus(status));
+      setBudgetDraftDirty(false);
+      if (!silent) {
+        setBudgetConfigMessage(status?.source ? `Loaded ${status.source}` : "Loaded budget config.");
+      }
+    } catch (err) {
+      setBudgetConfigMessage(`Budget load failed: ${err?.message || String(err)}`);
+    } finally {
+      setBudgetConfigBusy(false);
+    }
+  }, [call]);
+
+  const saveBudgetConfigDraft = useCallback(async (event) => {
+    event.preventDefault();
+    if (!invokeRef.current) {
+      setBudgetConfigMessage("Budget editing requires the desktop app.");
+      return;
+    }
+
+    const validationError = validateBudgetDraft(budgetDraft);
+    if (validationError) {
+      setBudgetConfigMessage(validationError);
+      return;
+    }
+
+    setBudgetConfigBusy(true);
+    try {
+      const status = await call("save_budget_config", {
+        draft: serializeBudgetDraftForSave(budgetDraft),
+      });
+      setBudgetConfigStatus(status);
+      setHealthMeta((current) => ({ ...current, budgets: status }));
+      setBudgetDraft(createBudgetDraftFromStatus(status));
+      setBudgetDraftDirty(false);
+      setBudgetConfigMessage("Saved budgets.toml. Restart daemon to apply enforcement.");
+      setFeedbackMessage("Budget config saved.");
+    } catch (err) {
+      setBudgetConfigMessage(`Budget save failed: ${err?.message || String(err)}`);
+    } finally {
+      setBudgetConfigBusy(false);
+    }
+  }, [budgetDraft, call]);
+
   const refreshAll = useCallback(async () => {
     try {
       invokeRef.current = await readTauriInvoke();
     } catch {
       invokeRef.current = null;
     }
+    setIpcAvailable(Boolean(invokeRef.current));
 
     const nextDaemonState = await refreshDaemonState();
     let healthReady = await refreshHealth();
@@ -2765,6 +2869,24 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("cortex_currency", safeCurrency);
   }, [safeCurrency]);
+
+  useEffect(() => {
+    if (budgetDraftDirty) return;
+    setBudgetDraft(createBudgetDraftFromStatus(activeBudgetStatus));
+  }, [activeBudgetStatus, budgetDraftDirty]);
+
+  useEffect(() => {
+    if (
+      panel !== "settings"
+      || !ipcAvailable
+      || budgetConfigStatus
+      || budgetConfigBusy
+      || budgetConfigLoadAttemptedRef.current
+    ) {
+      return;
+    }
+    reloadBudgetConfigDraft({ silent: true });
+  }, [budgetConfigBusy, budgetConfigStatus, ipcAvailable, panel, reloadBudgetConfigDraft]);
 
   useEffect(() => {
     writeControlCenterSettings(controlSettings);
@@ -4077,10 +4199,6 @@ export function App() {
     }
   }, [cortexBase]);
   const hostLabel = connectionEndpoint.hostLabel;
-  const budgetSummary = useMemo(
-    () => summarizeBudgetStatus(healthMeta.budgets),
-    [healthMeta.budgets],
-  );
   const handleAnalyticsTabKey = useCallback((event) => {
     const order = ["aggregate", "operations"];
     const currentIndex = Math.max(0, order.indexOf(analyticsMode));
@@ -4563,6 +4681,91 @@ export function App() {
                       </tbody>
                     </table>
                   </div>
+                  <form className="settings-budget-editor" onSubmit={saveBudgetConfigDraft}>
+                    <div className="settings-budget-editor-head">
+                      <label className="settings-row settings-budget-defaults">
+                        <span>
+                          <strong>Enforce budgets</strong>
+                          <small>Writes the local operator budget config.</small>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={budgetDraft.enabled}
+                          disabled={!ipcAvailable || budgetConfigBusy}
+                          onChange={(event) => updateBudgetDraftRoot({ enabled: event.target.checked })}
+                        />
+                      </label>
+                      <div className="settings-budget-actions">
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          disabled={!ipcAvailable || budgetConfigBusy}
+                          onClick={() => reloadBudgetConfigDraft()}
+                        >
+                          Reload
+                        </button>
+                        <button
+                          type="submit"
+                          className="btn-sm btn-primary"
+                          disabled={!ipcAvailable || budgetConfigBusy || Boolean(budgetDraftError)}
+                        >
+                          {budgetConfigBusy ? "Saving..." : "Save"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="settings-budget-edit-grid" aria-label="Budget endpoint editor">
+                      {BUDGET_ENDPOINT_DEFINITIONS.map((definition) => {
+                        const draft = budgetDraftEndpoints[definition.key];
+                        const endpointEnabled = Boolean(draft?.enabled);
+                        return (
+                          <fieldset
+                            key={definition.key}
+                            className="settings-budget-edit-row"
+                            disabled={!ipcAvailable || budgetConfigBusy}
+                          >
+                            <legend>{definition.label}</legend>
+                            <label className="settings-budget-enable">
+                              <input
+                                type="checkbox"
+                                checked={endpointEnabled}
+                                onChange={(event) => updateBudgetEndpointDraft(definition.key, { enabled: event.target.checked })}
+                              />
+                              <span>Limited</span>
+                            </label>
+                            <label className="settings-budget-input">
+                              <span>Calls</span>
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                inputMode="numeric"
+                                value={draft?.limit ?? ""}
+                                disabled={!endpointEnabled}
+                                onChange={(event) => updateBudgetEndpointDraft(definition.key, { limit: event.target.value })}
+                              />
+                            </label>
+                            <label className="settings-budget-input">
+                              <span>Window</span>
+                              <input
+                                type="number"
+                                min="1"
+                                step="1"
+                                inputMode="numeric"
+                                value={draft?.windowSeconds ?? ""}
+                                disabled={!endpointEnabled}
+                                onChange={(event) => updateBudgetEndpointDraft(definition.key, { windowSeconds: event.target.value })}
+                              />
+                            </label>
+                          </fieldset>
+                        );
+                      })}
+                    </div>
+                    {!ipcAvailable ? (
+                      <p className="settings-budget-note">Budget edits require the desktop app.</p>
+                    ) : null}
+                    {budgetDraftError ? <p className="settings-error">{budgetDraftError}</p> : null}
+                    {budgetConfigMessage ? <p className="settings-budget-note" role="status">{budgetConfigMessage}</p> : null}
+                  </form>
                 </section>
 
                 <section className="settings-section" aria-labelledby="settings-keyboard">

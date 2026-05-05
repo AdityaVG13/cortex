@@ -3,8 +3,8 @@
 
 use fs2::FileExt;
 use rusqlite::Connection;
-use serde::Serialize;
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -45,6 +45,9 @@ const CONTROL_CENTER_LOCK_FILE: &str = "control-center.lock";
 const CONTROL_CENTER_OWNER_TAG: &str = "control-center";
 const PATH_BINARY_FALLBACK_ENV: &str = "CORTEX_ALLOW_PATH_BINARY_FALLBACK";
 const SERVICE_ENSURE_FALLBACK_ENV: &str = "CORTEX_ALLOW_SERVICE_ENSURE_FALLBACK";
+const BUDGETS_FILE_NAME: &str = "budgets.toml";
+const BUDGET_ENDPOINT_NAMES: [&str; 4] = ["store", "recall", "boot", "mcp"];
+const MAX_BUDGET_INTEGER: u64 = i64::MAX as u64;
 #[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
 
@@ -312,6 +315,86 @@ struct DaemonCommandResult {
     message: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetConfigDraft {
+    enabled: bool,
+    endpoints: Vec<BudgetEndpointDraft>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetEndpointDraft {
+    endpoint: String,
+    enabled: bool,
+    limit: Option<u64>,
+    window_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetConfigSnapshot {
+    config_loaded: bool,
+    enabled: bool,
+    source: String,
+    error: Option<BudgetConfigErrorSnapshot>,
+    endpoints: BTreeMap<String, BudgetEndpointSnapshot>,
+    recent_denials: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetEndpointSnapshot {
+    limit: u64,
+    window_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetConfigErrorSnapshot {
+    code: String,
+    message: String,
+    endpoint: Option<String>,
+    field: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgetFile {
+    defaults: Option<RawBudgetDefaults>,
+    endpoints: Option<BTreeMap<String, RawBudgetEndpoint>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgetDefaults {
+    enabled: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgetEndpoint {
+    limit: Option<i64>,
+    window_seconds: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct BudgetTomlFile {
+    defaults: BudgetTomlDefaults,
+    endpoints: BTreeMap<String, BudgetTomlEndpoint>,
+}
+
+#[derive(Debug, Serialize)]
+struct BudgetTomlDefaults {
+    enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct BudgetTomlEndpoint {
+    limit: u64,
+    window_seconds: u64,
+}
+
 fn cortex_home() -> Result<PathBuf, String> {
     env::var_os("USERPROFILE")
         .map(PathBuf::from)
@@ -333,6 +416,266 @@ struct ResolvedCortexPaths {
 
 fn default_cortex_dir() -> Result<PathBuf, String> {
     Ok(cortex_home()?.join(".cortex"))
+}
+
+fn budget_config_path() -> Result<PathBuf, String> {
+    let home = resolved_cortex_paths()
+        .home
+        .or_else(|| default_cortex_dir().ok())
+        .ok_or_else(|| "Could not resolve Cortex home path".to_string())?;
+    fs::create_dir_all(&home)
+        .map_err(|err| format!("Failed to create Cortex home {}: {err}", home.display()))?;
+    let canonical_home = fs::canonicalize(&home)
+        .map_err(|err| format!("Failed to resolve Cortex home {}: {err}", home.display()))?;
+    Ok(canonical_home.join(BUDGETS_FILE_NAME))
+}
+
+fn budget_error(
+    code: &str,
+    message: impl Into<String>,
+    endpoint: Option<String>,
+    field: Option<&str>,
+) -> BudgetConfigErrorSnapshot {
+    BudgetConfigErrorSnapshot {
+        code: code.to_string(),
+        message: message.into(),
+        endpoint,
+        field: field.map(str::to_string),
+    }
+}
+
+fn parse_budget_endpoint_name(name: &str) -> Option<String> {
+    let normalized = name.trim().to_ascii_lowercase();
+    BUDGET_ENDPOINT_NAMES
+        .contains(&normalized.as_str())
+        .then_some(normalized)
+}
+
+fn empty_budget_snapshot(path: &Path) -> BudgetConfigSnapshot {
+    BudgetConfigSnapshot {
+        config_loaded: false,
+        enabled: false,
+        source: path.display().to_string(),
+        error: None,
+        endpoints: BTreeMap::new(),
+        recent_denials: 0,
+    }
+}
+
+fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSnapshot {
+    let parsed = match toml::from_str::<RawBudgetFile>(contents) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: path.display().to_string(),
+                error: Some(budget_error(
+                    "parse_error",
+                    format!("failed to parse budgets.toml: {err}"),
+                    None,
+                    None,
+                )),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            };
+        }
+    };
+
+    let enabled = parsed
+        .defaults
+        .and_then(|defaults| defaults.enabled)
+        .unwrap_or(true);
+    let mut endpoints = BTreeMap::new();
+    for (raw_name, raw_budget) in parsed.endpoints.unwrap_or_default() {
+        let Some(endpoint) = parse_budget_endpoint_name(&raw_name) else {
+            return BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: path.display().to_string(),
+                error: Some(budget_error(
+                    "unknown_endpoint",
+                    format!("unknown budget endpoint: {raw_name}"),
+                    Some(raw_name),
+                    None,
+                )),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            };
+        };
+        let Some(limit) = raw_budget.limit else {
+            return BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: path.display().to_string(),
+                error: Some(budget_error(
+                    "missing_limit",
+                    format!("budget endpoint {endpoint} is missing limit"),
+                    Some(endpoint),
+                    Some("limit"),
+                )),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            };
+        };
+        if limit <= 0 {
+            return BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: path.display().to_string(),
+                error: Some(budget_error(
+                    "invalid_limit",
+                    format!("budget endpoint {endpoint} limit must be a positive integer"),
+                    Some(endpoint),
+                    Some("limit"),
+                )),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            };
+        }
+
+        let Some(window_seconds) = raw_budget.window_seconds else {
+            return BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: path.display().to_string(),
+                error: Some(budget_error(
+                    "missing_window_seconds",
+                    format!("budget endpoint {endpoint} is missing window_seconds"),
+                    Some(endpoint),
+                    Some("window_seconds"),
+                )),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            };
+        };
+        if window_seconds <= 0 {
+            return BudgetConfigSnapshot {
+                config_loaded: true,
+                enabled: false,
+                source: path.display().to_string(),
+                error: Some(budget_error(
+                    "invalid_window_seconds",
+                    format!("budget endpoint {endpoint} window_seconds must be a positive integer"),
+                    Some(endpoint),
+                    Some("window_seconds"),
+                )),
+                endpoints: BTreeMap::new(),
+                recent_denials: 0,
+            };
+        }
+
+        endpoints.insert(
+            endpoint,
+            BudgetEndpointSnapshot {
+                limit: limit as u64,
+                window_seconds: window_seconds as u64,
+            },
+        );
+    }
+
+    BudgetConfigSnapshot {
+        config_loaded: true,
+        enabled,
+        source: path.display().to_string(),
+        error: None,
+        endpoints,
+        recent_denials: 0,
+    }
+}
+
+fn read_budget_config_snapshot(path: &Path) -> Result<BudgetConfigSnapshot, String> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(budget_snapshot_from_contents(path, &contents)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(empty_budget_snapshot(path)),
+        Err(err) => Ok(BudgetConfigSnapshot {
+            config_loaded: true,
+            enabled: false,
+            source: path.display().to_string(),
+            error: Some(budget_error(
+                "io_error",
+                format!("failed to read budgets.toml: {err}"),
+                None,
+                None,
+            )),
+            endpoints: BTreeMap::new(),
+            recent_denials: 0,
+        }),
+    }
+}
+
+fn validate_budget_draft(draft: BudgetConfigDraft) -> Result<BudgetTomlFile, String> {
+    let mut endpoints = BTreeMap::new();
+    for raw in draft.endpoints {
+        if !raw.enabled {
+            continue;
+        }
+        let endpoint = parse_budget_endpoint_name(&raw.endpoint)
+            .ok_or_else(|| format!("Unknown budget endpoint: {}", raw.endpoint))?;
+        if endpoints.contains_key(&endpoint) {
+            return Err(format!("Duplicate budget endpoint: {endpoint}"));
+        }
+
+        let limit = raw
+            .limit
+            .ok_or_else(|| format!("Budget endpoint {endpoint} is missing limit"))?;
+        if limit == 0 || limit > MAX_BUDGET_INTEGER {
+            return Err(format!(
+                "Budget endpoint {endpoint} limit must be between 1 and {MAX_BUDGET_INTEGER}"
+            ));
+        }
+
+        let window_seconds = raw
+            .window_seconds
+            .ok_or_else(|| format!("Budget endpoint {endpoint} is missing window_seconds"))?;
+        if window_seconds == 0 || window_seconds > MAX_BUDGET_INTEGER {
+            return Err(format!(
+                "Budget endpoint {endpoint} window_seconds must be between 1 and {MAX_BUDGET_INTEGER}"
+            ));
+        }
+
+        endpoints.insert(
+            endpoint,
+            BudgetTomlEndpoint {
+                limit,
+                window_seconds,
+            },
+        );
+    }
+
+    Ok(BudgetTomlFile {
+        defaults: BudgetTomlDefaults {
+            enabled: draft.enabled,
+        },
+        endpoints,
+    })
+}
+
+fn write_budget_config_file(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Invalid budget config path: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    let temp_path = parent.join(format!(".{}.{}.tmp", BUDGETS_FILE_NAME, std::process::id()));
+    {
+        let mut file = File::create(&temp_path)
+            .map_err(|err| format!("Failed to create {}: {err}", temp_path.display()))?;
+        file.write_all(contents.as_bytes())
+            .map_err(|err| format!("Failed to write {}: {err}", temp_path.display()))?;
+        file.sync_all()
+            .map_err(|err| format!("Failed to flush {}: {err}", temp_path.display()))?;
+    }
+
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|err| format!("Failed to replace {}: {err}", path.display()))?;
+    }
+    fs::rename(&temp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&temp_path);
+        format!("Failed to save {}: {err}", path.display())
+    })?;
+    Ok(())
 }
 
 fn token_path() -> Result<PathBuf, String> {
@@ -1503,6 +1846,22 @@ async fn read_auth_token() -> Result<String, String> {
     read_auth_token_with_retry().await
 }
 
+#[tauri::command]
+fn read_budget_config() -> Result<BudgetConfigSnapshot, String> {
+    let path = budget_config_path()?;
+    read_budget_config_snapshot(&path)
+}
+
+#[tauri::command]
+fn save_budget_config(draft: BudgetConfigDraft) -> Result<BudgetConfigSnapshot, String> {
+    let path = budget_config_path()?;
+    let config = validate_budget_draft(draft)?;
+    let contents = toml::to_string_pretty(&config)
+        .map_err(|err| format!("Failed to serialize budget config: {err}"))?;
+    write_budget_config_file(&path, &contents)?;
+    read_budget_config_snapshot(&path)
+}
+
 // ─── HTTP Proxy (bypasses WebView2 mixed-content restrictions) ──────────────
 
 #[tauri::command]
@@ -2599,6 +2958,8 @@ fn main() {
             quit_app,
             hide_to_tray,
             read_auth_token,
+            read_budget_config,
+            save_budget_config,
             fetch_cortex,
             post_cortex,
             write_dev_verification_report,
@@ -2628,18 +2989,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        cortex_mcp_registration, cortex_readiness_state, describe_daemon_state, editor_args,
-        editor_config_path, editor_targets, extract_error_detail,
-        health_state_with_identity_fallback, interpret_shutdown_response,
+        budget_snapshot_from_contents, cortex_mcp_registration, cortex_readiness_state,
+        describe_daemon_state, editor_args, editor_config_path, editor_targets,
+        extract_error_detail, health_state_with_identity_fallback, interpret_shutdown_response,
         is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
         local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
         path_binary_fallback_enabled_from_value, readiness_state_with_identity_fallback,
-        should_use_partial_response_on_read_timeout, toml_env_match, workspace_binary_candidates,
-        CortexReachabilityProbe, DaemonState, FetchCortexResponse, ResolvedCortexPaths,
+        should_use_partial_response_on_read_timeout, toml_env_match, validate_budget_draft,
+        workspace_binary_candidates, write_budget_config_file, BudgetConfigDraft,
+        BudgetEndpointDraft, CortexReachabilityProbe, DaemonState, FetchCortexResponse,
+        ResolvedCortexPaths,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command};
+    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
     fn spawn_test_sleep_process() -> Child {
@@ -2705,6 +3069,128 @@ mod tests {
     }
 
     #[test]
+    fn budget_editor_snapshot_parses_valid_config() {
+        let snapshot = budget_snapshot_from_contents(
+            Path::new("C:/Users/testuser/.cortex/budgets.toml"),
+            r#"
+[defaults]
+enabled = true
+
+[endpoints.recall]
+limit = 300
+window_seconds = 60
+"#,
+        );
+
+        assert!(snapshot.config_loaded);
+        assert!(snapshot.enabled);
+        assert_eq!(
+            snapshot.error.as_ref().map(|error| error.code.as_str()),
+            None
+        );
+        assert_eq!(snapshot.endpoints["recall"].limit, 300);
+        assert_eq!(snapshot.endpoints["recall"].window_seconds, 60);
+    }
+
+    #[test]
+    fn budget_editor_snapshot_returns_structured_errors() {
+        let snapshot = budget_snapshot_from_contents(
+            Path::new("C:/Users/testuser/.cortex/budgets.toml"),
+            r#"
+[endpoints.unknown]
+limit = 1
+window_seconds = 60
+"#,
+        );
+
+        let error = snapshot.error.expect("unknown endpoint should be invalid");
+        assert_eq!(error.code, "unknown_endpoint");
+        assert_eq!(error.endpoint.as_deref(), Some("unknown"));
+        assert!(!snapshot.enabled);
+    }
+
+    #[test]
+    fn budget_editor_draft_serializes_only_enabled_endpoints() {
+        let config = validate_budget_draft(BudgetConfigDraft {
+            enabled: true,
+            endpoints: vec![
+                BudgetEndpointDraft {
+                    endpoint: "store".to_string(),
+                    enabled: false,
+                    limit: Some(120),
+                    window_seconds: Some(60),
+                },
+                BudgetEndpointDraft {
+                    endpoint: "recall".to_string(),
+                    enabled: true,
+                    limit: Some(42),
+                    window_seconds: Some(15),
+                },
+            ],
+        })
+        .expect("draft should validate");
+
+        assert!(config.defaults.enabled);
+        assert_eq!(config.endpoints.len(), 1);
+        assert_eq!(config.endpoints["recall"].limit, 42);
+    }
+
+    #[test]
+    fn budget_editor_rejects_duplicate_or_invalid_endpoint_drafts() {
+        let duplicate = validate_budget_draft(BudgetConfigDraft {
+            enabled: true,
+            endpoints: vec![
+                BudgetEndpointDraft {
+                    endpoint: "recall".to_string(),
+                    enabled: true,
+                    limit: Some(1),
+                    window_seconds: Some(60),
+                },
+                BudgetEndpointDraft {
+                    endpoint: "recall".to_string(),
+                    enabled: true,
+                    limit: Some(2),
+                    window_seconds: Some(60),
+                },
+            ],
+        })
+        .unwrap_err();
+        assert!(duplicate.contains("Duplicate budget endpoint"));
+
+        let invalid = validate_budget_draft(BudgetConfigDraft {
+            enabled: true,
+            endpoints: vec![BudgetEndpointDraft {
+                endpoint: "recall".to_string(),
+                enabled: true,
+                limit: Some(0),
+                window_seconds: Some(60),
+            }],
+        })
+        .unwrap_err();
+        assert!(invalid.contains("limit must be between 1"));
+    }
+
+    #[test]
+    fn budget_editor_write_replaces_file_atomically() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("cortex-budget-editor-{unique}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("budgets.toml");
+
+        write_budget_config_file(&path, "[defaults]\nenabled = true\n")
+            .expect("write initial file");
+        write_budget_config_file(&path, "[defaults]\nenabled = false\n")
+            .expect("replace existing file");
+
+        let contents = fs::read_to_string(&path).expect("read replaced file");
+        assert!(contents.contains("enabled = false"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn disallowed_daemon_binary_path_blocks_wrappers_temp_and_test_artifacts() {
         let wrapper = PathBuf::from(
             "C:/repo/daemon-rs/target/debug/daemon-lifecycle-runtime/cortex-daemon-run.exe",
@@ -2764,6 +3250,7 @@ mod tests {
         let state = DaemonState {
             exe_path: None,
             child: Mutex::new(Some(child)),
+            intentional_stop: AtomicBool::new(false),
         };
 
         let (managed_before, _) = state.status().expect("initial status");

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createBudgetDraftFromStatus,
   CONTROL_CENTER_SETTINGS_STORAGE_KEY,
   DEFAULT_CONTROL_CENTER_SETTINGS,
   normalizeControlCenterSettings,
   readControlCenterSettings,
   resolveEffectiveReducedMotion,
+  serializeBudgetDraftForSave,
   summarizeBudgetStatus,
+  validateBudgetDraft,
   writeControlCenterSettings,
 } from "./settings-state.js";
 
@@ -105,12 +108,71 @@ describe("summarizeBudgetStatus", () => {
       summarizeBudgetStatus({
         config_loaded: true,
         enabled: false,
-        error: "unknown endpoint",
+        error: { code: "unknown_endpoint", message: "unknown endpoint" },
       }),
     ).toMatchObject({
       statusLabel: "Invalid",
       error: "unknown endpoint",
     });
+  });
+
+  it("creates editable budget drafts from daemon status", () => {
+    const draft = createBudgetDraftFromStatus({
+      configLoaded: true,
+      enabled: true,
+      endpoints: {
+        recall: { limit: 300, windowSeconds: 60 },
+      },
+    });
+
+    expect(draft.enabled).toBe(true);
+    expect(draft.endpoints.recall).toEqual({
+      enabled: true,
+      limit: 300,
+      windowSeconds: 60,
+    });
+    expect(draft.endpoints.store.enabled).toBe(false);
+  });
+
+  it("serializes only enabled budget endpoints", () => {
+    expect(
+      serializeBudgetDraftForSave({
+        enabled: true,
+        endpoints: {
+          store: { enabled: false, limit: 120, windowSeconds: 60 },
+          recall: { enabled: true, limit: "42", windowSeconds: "15" },
+        },
+      }),
+    ).toEqual({
+      enabled: true,
+      endpoints: [
+        {
+          endpoint: "recall",
+          enabled: true,
+          limit: 42,
+          windowSeconds: 15,
+        },
+      ],
+    });
+  });
+
+  it("validates enabled budget endpoint numbers", () => {
+    expect(
+      validateBudgetDraft({
+        enabled: true,
+        endpoints: {
+          store: { enabled: true, limit: 0, windowSeconds: 60 },
+        },
+      }),
+    ).toBe("Store limit must be a positive integer.");
+    expect(
+      validateBudgetDraft({
+        enabled: true,
+        endpoints: {
+          store: { enabled: true, limit: 1, windowSeconds: 60 },
+        },
+      }),
+    ).toBe("");
   });
 
   it("uses the documented storage key", () => {
