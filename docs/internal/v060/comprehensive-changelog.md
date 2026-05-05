@@ -64,6 +64,7 @@ This file is the source of truth for:
   - `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean.
   - `git diff --check` -> clean.
   - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean.
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed.
 - Release posture:
   - Backend slice is landed and pushed to `origin/main`.
   - Admin CLI shipped for local status/validation.

@@ -136,7 +136,7 @@ At initial scope lock, planning surface was the only deliverable. Code landings 
 - Visibility: `/health` exposes `budgets.configLoaded`, `enabled`, `source`, `error`, configured endpoints, and in-memory `recentDenials`. Local CLI shipped: `cortex admin budgets status --json` and `cortex admin budgets validate --path <file> --json`.
 - Audit: budget denials write `budget_rejected` event rows with endpoint, limit, window, retry hint, source, request source, and source IP. Health tracks recent denial counters even if event insertion fails.
 - Files touched: `daemon-rs/src/budgets.rs`, `daemon-rs/src/rate_limit.rs`, `daemon-rs/src/state.rs`, `daemon-rs/src/handlers/mod.rs`, `store.rs`, `recall.rs`, `boot.rs`, `health.rs`, `server.rs`, `main.rs`.
-- Validation: `rtk cargo test --manifest-path daemon-rs/Cargo.toml budget` -> 36 passed; `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean; `git diff --check` -> clean; `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean.
+- Validation: `rtk cargo test --manifest-path daemon-rs/Cargo.toml budget` -> 36 passed; `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean; `git diff --check` -> clean; `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean; full daemon suite `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed.
 - U1 Settings handoff: Settings can consume `/health.budgets` immediately for read-only status, disabled/error states, configured endpoint rows, and recent-denial state. Write/edit support is still a UI/file-write workflow decision; no daemon write endpoint shipped in this slice.
 
 ---

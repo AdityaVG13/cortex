@@ -321,6 +321,7 @@ Public-copy rule after the catalog pass: the final README/roadmap should adverti
 - `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean.
 - `git diff --check` -> clean.
 - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean.
+- `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed.
 - Remaining before final public release polish: U1 Settings write/edit path and optional load test with sustained recall traffic.
 
 **Commits:** `b41f7be`

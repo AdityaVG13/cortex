@@ -104,6 +104,7 @@ Validation:
 - `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean.
 - `git diff --check` -> clean.
 - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean.
+- `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed.
 
 Files touched:
 - `daemon-rs/src/budgets.rs`
