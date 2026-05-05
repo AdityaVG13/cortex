@@ -451,25 +451,29 @@ fn parse_budget_endpoint_name(name: &str) -> Option<String> {
         .then_some(normalized)
 }
 
-fn empty_budget_snapshot(path: &Path) -> BudgetConfigSnapshot {
+fn budget_source_label() -> String {
+    BUDGETS_FILE_NAME.to_string()
+}
+
+fn empty_budget_snapshot(_path: &Path) -> BudgetConfigSnapshot {
     BudgetConfigSnapshot {
         config_loaded: false,
         enabled: false,
-        source: path.display().to_string(),
+        source: budget_source_label(),
         error: None,
         endpoints: BTreeMap::new(),
         recent_denials: 0,
     }
 }
 
-fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSnapshot {
+fn budget_snapshot_from_contents(_path: &Path, contents: &str) -> BudgetConfigSnapshot {
     let parsed = match toml::from_str::<RawBudgetFile>(contents) {
         Ok(parsed) => parsed,
         Err(err) => {
             return BudgetConfigSnapshot {
                 config_loaded: true,
                 enabled: false,
-                source: path.display().to_string(),
+                source: budget_source_label(),
                 error: Some(budget_error(
                     "parse_error",
                     format!("failed to parse budgets.toml: {err}"),
@@ -492,7 +496,7 @@ fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSna
             return BudgetConfigSnapshot {
                 config_loaded: true,
                 enabled: false,
-                source: path.display().to_string(),
+                source: budget_source_label(),
                 error: Some(budget_error(
                     "unknown_endpoint",
                     format!("unknown budget endpoint: {raw_name}"),
@@ -507,7 +511,7 @@ fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSna
             return BudgetConfigSnapshot {
                 config_loaded: true,
                 enabled: false,
-                source: path.display().to_string(),
+                source: budget_source_label(),
                 error: Some(budget_error(
                     "missing_limit",
                     format!("budget endpoint {endpoint} is missing limit"),
@@ -522,7 +526,7 @@ fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSna
             return BudgetConfigSnapshot {
                 config_loaded: true,
                 enabled: false,
-                source: path.display().to_string(),
+                source: budget_source_label(),
                 error: Some(budget_error(
                     "invalid_limit",
                     format!("budget endpoint {endpoint} limit must be a positive integer"),
@@ -538,7 +542,7 @@ fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSna
             return BudgetConfigSnapshot {
                 config_loaded: true,
                 enabled: false,
-                source: path.display().to_string(),
+                source: budget_source_label(),
                 error: Some(budget_error(
                     "missing_window_seconds",
                     format!("budget endpoint {endpoint} is missing window_seconds"),
@@ -553,7 +557,7 @@ fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSna
             return BudgetConfigSnapshot {
                 config_loaded: true,
                 enabled: false,
-                source: path.display().to_string(),
+                source: budget_source_label(),
                 error: Some(budget_error(
                     "invalid_window_seconds",
                     format!("budget endpoint {endpoint} window_seconds must be a positive integer"),
@@ -577,7 +581,7 @@ fn budget_snapshot_from_contents(path: &Path, contents: &str) -> BudgetConfigSna
     BudgetConfigSnapshot {
         config_loaded: true,
         enabled,
-        source: path.display().to_string(),
+        source: budget_source_label(),
         error: None,
         endpoints,
         recent_denials: 0,
@@ -591,7 +595,7 @@ fn read_budget_config_snapshot(path: &Path) -> Result<BudgetConfigSnapshot, Stri
         Err(err) => Ok(BudgetConfigSnapshot {
             config_loaded: true,
             enabled: false,
-            source: path.display().to_string(),
+            source: budget_source_label(),
             error: Some(budget_error(
                 "io_error",
                 format!("failed to read budgets.toml: {err}"),
@@ -3088,6 +3092,7 @@ window_seconds = 60
             snapshot.error.as_ref().map(|error| error.code.as_str()),
             None
         );
+        assert_eq!(snapshot.source, "budgets.toml");
         assert_eq!(snapshot.endpoints["recall"].limit, 300);
         assert_eq!(snapshot.endpoints["recall"].window_seconds, 60);
     }

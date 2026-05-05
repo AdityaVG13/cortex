@@ -275,7 +275,7 @@ impl BudgetConfigStatus {
             "configLoaded": self.config_loaded,
             "config_loaded": self.config_loaded,
             "enabled": self.enabled(),
-            "source": self.source.display().to_string(),
+            "source": BUDGET_SOURCE,
             "error": self.error.as_ref().map(BudgetConfigError::to_json),
             "endpoints": self
                 .config
@@ -456,6 +456,16 @@ window_seconds = 60
         assert!(status.error.is_none());
         assert!(!status.enabled());
         assert!(status.budget_for(BudgetEndpoint::Recall).is_none());
+    }
+
+    #[test]
+    fn health_json_uses_portable_budget_source_label() {
+        let status = BudgetConfigStatus::from_contents(
+            PathBuf::from("C:/cortex-test/testuser/.cortex/budgets.toml"),
+            valid_config(),
+        );
+        let payload = status.to_health_json(0);
+        assert_eq!(payload["source"], BUDGET_SOURCE);
     }
 
     #[test]
