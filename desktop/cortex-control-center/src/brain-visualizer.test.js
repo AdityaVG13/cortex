@@ -49,9 +49,12 @@ describe("Brain visualizer", () => {
   it("keeps the Jarvis-style Brain overlay static and cheap", () => {
     expect(source).toContain("brain-orbital-ring brain-orbital-ring-a");
     expect(source).toContain("brain-orbital-ring brain-orbital-ring-b");
+    expect(source).toContain("brain-hologram-shell");
+    expect(source).toContain("brain-hemisphere brain-hemisphere-left");
     expect(source).not.toContain("brain-scanline");
 
     expect(readBlock(css, ".brain-orbital-ring {")).not.toContain("animation:");
+    expect(readBlock(css, ".brain-hologram-shell {")).not.toContain("animation:");
     expect(css).not.toContain("brain-scanline");
     expect(css).not.toContain("brain-ring-drift");
     expect(css).not.toContain(".brain-container canvas");
@@ -65,5 +68,16 @@ describe("Brain visualizer", () => {
     expect(source).toContain("const overviewLinkKeys = useMemo");
     expect(source).toContain("linkVisibility={resolveLinkVisibility}");
     expect(source).toContain("viewDepth === \"overview\"");
+  });
+
+  it("uses a deterministic brain-shaped layout instead of a generic force cluster", () => {
+    expect(source).toContain("const BRAIN_REGIONS = Object.freeze");
+    expect(source).toContain("function brainLayoutPoint");
+    expect(source).toContain("function applyBrainLayout");
+    expect(source).toContain("function createBrainShapeForce");
+    expect(source).toContain("nodes: applyBrainLayout(nodes)");
+    expect(source).toContain("graph.d3Force(\"brainShape\", createBrainShapeForce())");
+    expect(css).toContain(".brain-hemisphere-left");
+    expect(css).toContain(".brain-midline");
   });
 });

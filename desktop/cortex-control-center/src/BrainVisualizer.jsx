@@ -22,6 +22,15 @@ const BRAIN_LEGEND = Object.freeze([
 const BRAIN_FOCUS_DISTANCE = 136;
 const BRAIN_FOCUS_TRANSITION_MS = 1550;
 const BRAIN_OVERVIEW_LINK_CAP = 96;
+const BRAIN_SHAPE_FORCE = 0.42;
+
+const BRAIN_REGIONS = Object.freeze([
+  { key: "frontal", x: 0.88, y: 0.34, z: 0.12 },
+  { key: "parietal", x: 0.55, y: 0.74, z: -0.18 },
+  { key: "temporal", x: 0.90, y: -0.30, z: 0.22 },
+  { key: "occipital", x: 0.36, y: -0.10, z: -0.34 },
+  { key: "limbic", x: 0.30, y: 0.06, z: 0.48 },
+]);
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -77,6 +86,21 @@ function graphNodePosition(node) {
   };
 }
 
+function hashString(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededUnit(seed, salt = 0) {
+  const value = Math.sin((seed + (salt * 1013)) * 12.9898) * 43758.5453;
+  return value - Math.floor(value);
+}
+
 function brainOverviewThreshold(nodeCount) {
   return Math.max(480, Math.min(1080, Math.sqrt(Math.max(nodeCount, 1)) * 72));
 }
@@ -105,6 +129,69 @@ function formatFlowType(type) {
 
 function isDecisionNode(node) {
   return node?.group === "decision" || node?.type === "decision";
+}
+
+function brainRegionForNode(node, seed) {
+  if (isDecisionNode(node)) return seed % 2 === 0 ? BRAIN_REGIONS[0] : BRAIN_REGIONS[4];
+  const type = String(node?.type || "").toLowerCase();
+  if (type.includes("episodic") || type.includes("conversation")) return BRAIN_REGIONS[2];
+  if (type.includes("summary") || type.includes("semantic")) return BRAIN_REGIONS[1];
+  if (type.includes("goal") || type.includes("plan")) return BRAIN_REGIONS[0];
+  return BRAIN_REGIONS[seed % BRAIN_REGIONS.length];
+}
+
+function brainLayoutPoint(node, index, total) {
+  const seed = hashString(`${node.id}:${node.agent}:${node.type}:${index}`);
+  const region = brainRegionForNode(node, seed);
+  const hemisphere = seed % 2 === 0 ? -1 : 1;
+  const angle = (index * 2.399963229728653) + (seededUnit(seed, 2) * Math.PI * 2);
+  const density = 0.28 + (seededUnit(seed, 3) * 0.72);
+  const layer = total > 1 ? index / (total - 1) : 0.5;
+  const outerX = 120;
+  const outerY = 92;
+  const outerZ = 74;
+  const centralGap = 22;
+  const x = hemisphere * (centralGap + (region.x * outerX * 0.66))
+    + (hemisphere * Math.cos(angle) * outerX * 0.20 * density);
+  const y = ((region.y - 0.18) * outerY)
+    + (Math.sin(angle) * outerY * 0.24 * density)
+    + (Math.sin(layer * Math.PI) * 16);
+  const z = (region.z * outerZ)
+    + (Math.sin(angle * 1.7) * outerZ * 0.32 * density);
+
+  return {
+    brainRegion: region.key,
+    brainHemisphere: hemisphere < 0 ? "left" : "right",
+    brainX: x,
+    brainY: y,
+    brainZ: z,
+    x,
+    y,
+    z,
+  };
+}
+
+function applyBrainLayout(nodes) {
+  const total = Math.max(nodes.length, 1);
+  return nodes.map((node, index) => ({
+    ...node,
+    ...brainLayoutPoint(node, index, total),
+  }));
+}
+
+function createBrainShapeForce(strength = BRAIN_SHAPE_FORCE) {
+  let nodes = [];
+  function force(alpha) {
+    const pull = Math.min(0.24, strength * alpha);
+    for (const node of nodes) {
+      if (!Number.isFinite(node.brainX) || !Number.isFinite(node.brainY) || !Number.isFinite(node.brainZ)) continue;
+      node.vx += (node.brainX - (node.x || 0)) * pull;
+      node.vy += (node.brainY - (node.y || 0)) * pull;
+      node.vz += (node.brainZ - (node.z || 0)) * pull;
+    }
+  }
+  force.initialize = assignedNodes => { nodes = assignedNodes || []; };
+  return force;
 }
 
 function brainNodeBaseColor(node) {
@@ -312,21 +399,22 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
     try {
       const chargeForce = typeof graph.d3Force === "function" ? graph.d3Force("charge") : null;
-      if (chargeForce && typeof chargeForce.strength === "function") chargeForce.strength(-88);
-      if (chargeForce && typeof chargeForce.distanceMax === "function") chargeForce.distanceMax(420);
+      if (chargeForce && typeof chargeForce.strength === "function") chargeForce.strength(-32);
+      if (chargeForce && typeof chargeForce.distanceMax === "function") chargeForce.distanceMax(240);
 
       const linkForce = typeof graph.d3Force === "function" ? graph.d3Force("link") : null;
       if (linkForce && typeof linkForce.distance === "function") {
         linkForce.distance(link => {
           const type = String(link.type || "semantic");
-          if (type === "conflict") return 118;
-          if (String(graphEndpointId(link.source) || "").startsWith("dec-") || String(graphEndpointId(link.target) || "").startsWith("dec-")) return 92;
-          return 68;
+          if (type === "conflict") return 64;
+          if (String(graphEndpointId(link.source) || "").startsWith("dec-") || String(graphEndpointId(link.target) || "").startsWith("dec-")) return 48;
+          return 38;
         });
       }
       if (linkForce && typeof linkForce.strength === "function") {
-        linkForce.strength(link => Math.min(0.72, Math.max(0.12, Number(link.weight || 1) * 0.18)));
+        linkForce.strength(link => Math.min(0.32, Math.max(0.04, Number(link.weight || 1) * 0.08)));
       }
+      if (typeof graph.d3Force === "function") graph.d3Force("brainShape", createBrainShapeForce());
       if (typeof graph.d3ReheatSimulation === "function") graph.d3ReheatSimulation();
     } catch {
       // Force tuning is best-effort; the graph should still render with library defaults.
@@ -480,7 +568,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       // Final validation — ensure all link targets exist
       const validLinks = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
 
-      setGraphData({ nodes, links: validLinks });
+      setGraphData({ nodes: applyBrainLayout(nodes), links: validLinks });
       setLoading(false);
     } catch (err) {
       setError(err.message);
@@ -688,6 +776,14 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
       <div className="brain-orbital-ring brain-orbital-ring-a" aria-hidden="true" />
       <div className="brain-orbital-ring brain-orbital-ring-b" aria-hidden="true" />
+      <div className="brain-hologram-shell" aria-hidden="true">
+        <div className="brain-hemisphere brain-hemisphere-left" />
+        <div className="brain-hemisphere brain-hemisphere-right" />
+        <div className="brain-midline" />
+        <div className="brain-cortex-line brain-cortex-line-a" />
+        <div className="brain-cortex-line brain-cortex-line-b" />
+        <div className="brain-cortex-line brain-cortex-line-c" />
+      </div>
 
       <div className="brain-hud brain-hud-primary">
         <div className="brain-hud-copy">
