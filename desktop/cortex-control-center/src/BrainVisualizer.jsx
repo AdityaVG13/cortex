@@ -1,5 +1,6 @@
 import { Component, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
+import * as THREE from "three";
 import { getAgentColor, truncate } from "./constants.js";
 import { AppIcon } from "./ui-icons.jsx";
 
@@ -23,6 +24,7 @@ const BRAIN_FOCUS_DISTANCE = 136;
 const BRAIN_FOCUS_TRANSITION_MS = 1550;
 const BRAIN_OVERVIEW_LINK_CAP = 96;
 const BRAIN_SHAPE_FORCE = 0.42;
+const BRAIN_JARVIS_SHELL_NAME = "cortex-jarvis-brain-shell";
 
 const BRAIN_REGIONS = Object.freeze([
   { key: "frontal", x: 0.88, y: 0.34, z: 0.12 },
@@ -194,6 +196,93 @@ function createBrainShapeForce(strength = BRAIN_SHAPE_FORCE) {
   return force;
 }
 
+function createLine(points, color = "#40e0ff", opacity = 0.36) {
+  const material = new THREE.LineBasicMaterial({
+    color,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  return new THREE.Line(geometry, material);
+}
+
+function hemisphereOutline(centerX, radiusX, radiusY, zBias, side) {
+  const points = [];
+  const segments = 112;
+  for (let index = 0; index <= segments; index += 1) {
+    const theta = (index / segments) * Math.PI * 2;
+    const lobe = 1 + (Math.sin(theta * 3 + side) * 0.035);
+    const x = centerX + (Math.cos(theta) * radiusX * lobe);
+    const y = Math.sin(theta) * radiusY * (1 - (Math.cos(theta) * 0.05));
+    const z = zBias + (Math.sin(theta * 2) * 12) + (Math.cos(theta) * side * 8);
+    points.push(new THREE.Vector3(x, y, z));
+  }
+  return points;
+}
+
+function cortexPath(centerX, y, width, z, side, phase) {
+  const points = [];
+  const segments = 72;
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const x = centerX - (width / 2) + (width * t);
+    const arch = Math.sin(t * Math.PI) * 18;
+    const wave = Math.sin((t * Math.PI * 5) + phase) * 5;
+    points.push(new THREE.Vector3(x, y + arch + wave, z + (Math.cos(t * Math.PI) * side * 7)));
+  }
+  return points;
+}
+
+function ellipseRing(radiusX, radiusY, z, rotationX = 0, rotationY = 0) {
+  const points = [];
+  const segments = 128;
+  const euler = new THREE.Euler(rotationX, rotationY, 0);
+  for (let index = 0; index <= segments; index += 1) {
+    const theta = (index / segments) * Math.PI * 2;
+    const point = new THREE.Vector3(Math.cos(theta) * radiusX, Math.sin(theta) * radiusY, z);
+    point.applyEuler(euler);
+    points.push(point);
+  }
+  return points;
+}
+
+function createJarvisBrainShell() {
+  const group = new THREE.Group();
+  group.name = BRAIN_JARVIS_SHELL_NAME;
+
+  const lines = [
+    createLine(hemisphereOutline(-76, 72, 82, -4, -1), "#40e0ff", 0.42),
+    createLine(hemisphereOutline(76, 72, 82, -4, 1), "#40e0ff", 0.42),
+    createLine(hemisphereOutline(-76, 54, 62, 18, -1), "#40e0ff", 0.18),
+    createLine(hemisphereOutline(76, 54, 62, 18, 1), "#40e0ff", 0.18),
+    createLine(cortexPath(-76, 36, 92, 20, -1, 0.2), "#40e0ff", 0.28),
+    createLine(cortexPath(-76, 4, 106, 10, -1, 1.7), "#40e0ff", 0.24),
+    createLine(cortexPath(-76, -32, 82, -2, -1, 2.9), "#ffd166", 0.16),
+    createLine(cortexPath(76, 36, 92, 20, 1, 1.1), "#40e0ff", 0.28),
+    createLine(cortexPath(76, 4, 106, 10, 1, 2.4), "#40e0ff", 0.24),
+    createLine(cortexPath(76, -32, 82, -2, 1, 3.2), "#ffd166", 0.16),
+    createLine([
+      new THREE.Vector3(0, -72, 12),
+      new THREE.Vector3(-4, -40, 20),
+      new THREE.Vector3(5, -8, 24),
+      new THREE.Vector3(-3, 30, 18),
+      new THREE.Vector3(0, 74, 10),
+    ], "#f8fbff", 0.22),
+    createLine(ellipseRing(172, 110, -10, Math.PI * 0.20, 0), "#40e0ff", 0.14),
+    createLine(ellipseRing(138, 84, 24, Math.PI * 0.34, Math.PI * 0.12), "#ffd166", 0.10),
+    createLine(ellipseRing(118, 68, -32, Math.PI * 0.48, -Math.PI * 0.10), "#40e0ff", 0.11),
+  ];
+
+  for (const line of lines) {
+    line.renderOrder = 1;
+    group.add(line);
+  }
+
+  return group;
+}
+
 function brainNodeBaseColor(node) {
   return isDecisionNode(node) ? BRAIN_NODE_COLORS.decision : BRAIN_NODE_COLORS.memory;
 }
@@ -298,6 +387,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
   const hoverNodeIdRef = useRef(null);
+  const jarvisShellRef = useRef(null);
   const selectedNodeRef = useRef(null);
   const selectionFrameRef = useRef(null);
   const zoomFrameRef = useRef(null);
@@ -347,6 +437,26 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     if (typeof graph.pauseAnimation === "function") graph.pauseAnimation();
     if (typeof graph.enablePointerInteraction === "function") graph.enablePointerInteraction(false);
   }, [active, graphData.nodes.length, graphData.links.length]);
+
+  useEffect(() => {
+    if (!active || !webglAvailable || !graphRef.current) return undefined;
+    const graph = graphRef.current;
+    const scene = typeof graph.scene === "function" ? graph.scene() : null;
+    if (!scene) return undefined;
+
+    if (!jarvisShellRef.current) {
+      jarvisShellRef.current = createJarvisBrainShell();
+    }
+
+    const shell = jarvisShellRef.current;
+    if (!scene.getObjectByName(BRAIN_JARVIS_SHELL_NAME)) {
+      scene.add(shell);
+    }
+
+    return () => {
+      if (shell.parent) shell.parent.remove(shell);
+    };
+  }, [active, graphData.nodes.length, webglAvailable]);
 
   const syncViewDepth = useCallback(() => {
     const graph = graphRef.current;
@@ -776,14 +886,6 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
       <div className="brain-orbital-ring brain-orbital-ring-a" aria-hidden="true" />
       <div className="brain-orbital-ring brain-orbital-ring-b" aria-hidden="true" />
-      <div className="brain-hologram-shell" aria-hidden="true">
-        <div className="brain-hemisphere brain-hemisphere-left" />
-        <div className="brain-hemisphere brain-hemisphere-right" />
-        <div className="brain-midline" />
-        <div className="brain-cortex-line brain-cortex-line-a" />
-        <div className="brain-cortex-line brain-cortex-line-b" />
-        <div className="brain-cortex-line brain-cortex-line-c" />
-      </div>
 
       <div className="brain-hud brain-hud-primary">
         <div className="brain-hud-copy">
@@ -875,6 +977,9 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           nodeOpacity={0.94}
           nodeRelSize={3.6}
           nodeLabel={node => `${node.label} (${node.agent})`}
+          controlType="orbit"
+          enableNavigationControls={true}
+          showNavInfo={false}
           linkVisibility={resolveLinkVisibility}
           linkColor={resolveLinkColor}
           linkWidth={resolveLinkWidth}

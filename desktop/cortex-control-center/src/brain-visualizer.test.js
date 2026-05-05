@@ -38,7 +38,6 @@ describe("Brain visualizer", () => {
   });
 
   it("uses native graph nodes for smooth type-colored rendering", () => {
-    expect(source).not.toContain("import * as THREE");
     expect(source).not.toContain("nodeThreeObject={");
     expect(source).toContain("const BRAIN_NODE_COLORS = Object.freeze");
     expect(source).toContain("nodeColor={resolveNodeColor}");
@@ -46,15 +45,13 @@ describe("Brain visualizer", () => {
     expect(source).toContain("nodeResolution={8}");
   });
 
-  it("keeps the Jarvis-style Brain overlay static and cheap", () => {
+  it("keeps the screen-space Brain overlay static and cheap", () => {
     expect(source).toContain("brain-orbital-ring brain-orbital-ring-a");
     expect(source).toContain("brain-orbital-ring brain-orbital-ring-b");
-    expect(source).toContain("brain-hologram-shell");
-    expect(source).toContain("brain-hemisphere brain-hemisphere-left");
+    expect(source).not.toContain("brain-hologram-shell");
     expect(source).not.toContain("brain-scanline");
 
     expect(readBlock(css, ".brain-orbital-ring {")).not.toContain("animation:");
-    expect(readBlock(css, ".brain-hologram-shell {")).not.toContain("animation:");
     expect(css).not.toContain("brain-scanline");
     expect(css).not.toContain("brain-ring-drift");
     expect(css).not.toContain(".brain-container canvas");
@@ -77,7 +74,15 @@ describe("Brain visualizer", () => {
     expect(source).toContain("function createBrainShapeForce");
     expect(source).toContain("nodes: applyBrainLayout(nodes)");
     expect(source).toContain("graph.d3Force(\"brainShape\", createBrainShapeForce())");
-    expect(css).toContain(".brain-hemisphere-left");
-    expect(css).toContain(".brain-midline");
+  });
+
+  it("renders the Jarvis brain shell inside the rotatable 3D scene", () => {
+    expect(source).toContain("import * as THREE from \"three\"");
+    expect(source).toContain("const BRAIN_JARVIS_SHELL_NAME");
+    expect(source).toContain("function createJarvisBrainShell");
+    expect(source).toContain("scene.add(shell)");
+    expect(source).toContain("controlType=\"orbit\"");
+    expect(source).toContain("enableNavigationControls={true}");
+    expect(source).toContain("showNavInfo={false}");
   });
 });
