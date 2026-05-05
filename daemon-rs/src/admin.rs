@@ -267,26 +267,39 @@ mod tests {
         // Older memory predating the session — must not be touched.
         seed_memory(&conn, "claude", "old", "2026-04-23T23:59:00Z", "active");
         // Another agent's memory in the same time window — must not be touched.
-        seed_memory(&conn, "codex", "other-agent", "2026-04-24T00:05:00Z", "active");
+        seed_memory(
+            &conn,
+            "codex",
+            "other-agent",
+            "2026-04-24T00:05:00Z",
+            "active",
+        );
         // In-session memories + one already-rolled-back row to confirm we only
         // touch active rows.
         seed_memory(&conn, "claude", "m1", "2026-04-24T00:05:00Z", "active");
         seed_memory(&conn, "claude", "m2", "2026-04-24T00:10:00Z", "active");
-        seed_memory(&conn, "claude", "pre-rolled", "2026-04-24T00:07:00Z", ROLLED_BACK_STATUS);
+        seed_memory(
+            &conn,
+            "claude",
+            "pre-rolled",
+            "2026-04-24T00:07:00Z",
+            ROLLED_BACK_STATUS,
+        );
         seed_decision(&conn, "claude", "d1", "2026-04-24T00:06:00Z");
 
         let stats = rollback_session_by_id(&conn, "sess-1", true).unwrap();
-        assert_eq!(stats.memories_affected, 2, "only the 2 active in-session memories");
+        assert_eq!(
+            stats.memories_affected, 2,
+            "only the 2 active in-session memories"
+        );
         assert_eq!(stats.decisions_affected, 1);
         assert!(stats.applied);
 
         // Pre-existing rows preserved
         let old_status: String = conn
-            .query_row(
-                "SELECT status FROM memories WHERE text = 'old'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT status FROM memories WHERE text = 'old'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(old_status, "active");
         let other_status: String = conn

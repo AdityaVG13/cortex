@@ -404,9 +404,7 @@ fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> Compact
         + result.stale_embeddings_pruned
         + result.co_occurrence_pruned
         + result.legacy_embeddings_migrated;
-    if allow_vacuum
-        && (freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES || result.fts_optimized)
-    {
+    if allow_vacuum && (freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES || result.fts_optimized) {
         let _ = conn.execute_batch("VACUUM;");
     }
 
@@ -556,9 +554,7 @@ fn migrate_legacy_blob_column_to_pq8(
     let mut stmt = match conn.prepare(&select_sql) {
         Ok(stmt) => stmt,
         Err(err) => {
-            eprintln!(
-                "[compaction] PQ8 migration prepare failed for {table}.{column}: {err}"
-            );
+            eprintln!("[compaction] PQ8 migration prepare failed for {table}.{column}: {err}");
             return 0;
         }
     };
@@ -1804,10 +1800,7 @@ mod tests {
             .collect();
         assert_eq!(rows.len(), 2);
         for (label, blob) in &rows {
-            assert!(
-                blob.len() >= 2,
-                "{label} centroid too short to carry magic"
-            );
+            assert!(blob.len() >= 2, "{label} centroid too short to carry magic");
             assert_eq!(
                 blob[0],
                 crate::embeddings::PQ8_MAGIC_BYTE,
@@ -1923,8 +1916,7 @@ mod tests {
         // Recall fidelity: re-reading via blob_to_vector should match the
         // original within the per-vector quantization scale.
         let recovered = crate::embeddings::blob_to_vector(&new_blob);
-        let scale =
-            f32::from_le_bytes([new_blob[2], new_blob[3], new_blob[4], new_blob[5]]);
+        let scale = f32::from_le_bytes([new_blob[2], new_blob[3], new_blob[4], new_blob[5]]);
         let max_err = legacy_vec
             .iter()
             .zip(recovered.iter())

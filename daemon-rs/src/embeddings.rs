@@ -674,9 +674,7 @@ pub fn vector_to_pq8_blob(vec: &[f32]) -> Vec<u8> {
 
 /// True iff the blob is a PQ8-encoded vector (magic + version match).
 pub fn is_pq8_blob(blob: &[u8]) -> bool {
-    blob.len() >= PQ8_HEADER_BYTES
-        && blob[0] == PQ8_MAGIC_BYTE
-        && blob[1] == PQ8_FORMAT_VERSION
+    blob.len() >= PQ8_HEADER_BYTES && blob[0] == PQ8_MAGIC_BYTE && blob[1] == PQ8_FORMAT_VERSION
 }
 
 /// Decode a PQ8 blob back to Vec<f32>. Returns None if the blob is not a
@@ -1193,6 +1191,9 @@ mod tests {
         );
         // Top-3 may permute slightly; require at least 2/3 overlap.
         let overlap = raw_top.iter().filter(|i| q_top.contains(i)).count();
-        assert!(overlap >= 2, "top-3 overlap < 2: raw={raw_top:?}, q={q_top:?}");
+        assert!(
+            overlap >= 2,
+            "top-3 overlap < 2: raw={raw_top:?}, q={q_top:?}"
+        );
     }
 }
