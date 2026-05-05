@@ -29,6 +29,26 @@ const RANK_WEIGHT_RECENCY: f64 = 0.30;
 const RANK_WEIGHT_RELEVANCE: f64 = 0.25;
 const RANK_WEIGHT_ACTIVITY: f64 = 0.15;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BootPackingMode {
+    Auto,
+    LegacyGreedy,
+    ScoreAdaptive,
+}
+
+fn boot_packing_mode() -> BootPackingMode {
+    match env::var("CORTEX_BOOT_PACKING_MODE")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "legacy" | "greedy" | "v0.5" | "v0.5.0" => BootPackingMode::LegacyGreedy,
+        "adaptive" | "score-adaptive" | "score_adaptive" => BootPackingMode::ScoreAdaptive,
+        _ => BootPackingMode::Auto,
+    }
+}
+
 fn detect_identity() -> String {
     let user = env::var("USERNAME")
         .or_else(|_| env::var("USER"))
@@ -1284,10 +1304,27 @@ fn pack_context_items(
     max_tokens: usize,
     bounds: SourceTokenBounds,
 ) -> PackedContext {
-    if score_signal_is_flat(items) {
-        pack_context_items_greedy(items, max_tokens)
-    } else {
-        pack_context_items_score_adaptive(items, max_tokens, bounds)
+    pack_context_items_with_mode(items, max_tokens, bounds, boot_packing_mode())
+}
+
+fn pack_context_items_with_mode(
+    items: &[ContextItem],
+    max_tokens: usize,
+    bounds: SourceTokenBounds,
+    mode: BootPackingMode,
+) -> PackedContext {
+    match mode {
+        BootPackingMode::LegacyGreedy => pack_context_items_greedy(items, max_tokens),
+        BootPackingMode::ScoreAdaptive => {
+            pack_context_items_score_adaptive(items, max_tokens, bounds)
+        }
+        BootPackingMode::Auto => {
+            if score_signal_is_flat(items) {
+                pack_context_items_greedy(items, max_tokens)
+            } else {
+                pack_context_items_score_adaptive(items, max_tokens, bounds)
+            }
+        }
     }
 }
 
@@ -1569,6 +1606,27 @@ mod tests {
 
         let legacy = pack_context_items_greedy(&items, 120);
         let packed = pack_context_items(&items, 120, SourceTokenBounds::new(20, 200));
+
+        assert_eq!(packed.assembled_parts, legacy.assembled_parts);
+        assert_eq!(packed.admitted, legacy.admitted);
+        assert_eq!(packed.rejected, legacy.rejected);
+    }
+
+    #[test]
+    fn forced_legacy_mode_uses_greedy_packer_for_variance_fixture() {
+        let items = vec![
+            ContextItem::new("high", repeated_text("high", 90), 0.95),
+            ContextItem::new("low", repeated_text("low", 10), 0.20),
+            ContextItem::new("medium", repeated_text("medium", 40), 0.60),
+        ];
+
+        let legacy = pack_context_items_greedy(&items, 120);
+        let packed = pack_context_items_with_mode(
+            &items,
+            120,
+            SourceTokenBounds::new(24, 120),
+            BootPackingMode::LegacyGreedy,
+        );
 
         assert_eq!(packed.assembled_parts, legacy.assembled_parts);
         assert_eq!(packed.admitted, legacy.admitted);
