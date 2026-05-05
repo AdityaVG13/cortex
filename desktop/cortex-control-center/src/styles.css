@@ -13,14 +13,14 @@
   --surface: #0f1520;
   --surface-2: #141c2b;
   --surface-3: #1a2435;
-  --border: #1e2d42;
-  --border-subtle: #152030;
+  --border: #557090;
+  --border-subtle: #557090;
   --border-glow: rgba(0, 212, 255, 0.15);
 
   /* Text hierarchy */
   --text: #e8edf5;
   --text-2: #8899b0;
-  --text-3: #546580;
+  --text-3: #7c8fa8;
 
   /* Accent — Jarvis cyan */
   --cyan: #00d4ff;
@@ -67,12 +67,12 @@
   --surface: #0b1420;
   --surface-2: #101c2b;
   --surface-3: #17263a;
-  --border: #526b8d;
-  --border-subtle: #3b506e;
+  --border: #7aa4d4;
+  --border-subtle: #6f98c5;
   --border-glow: rgba(70, 230, 255, 0.44);
   --text: #ffffff;
   --text-2: #d7e6f7;
-  --text-3: #a9bdd4;
+  --text-3: #bfd5ec;
   --cyan: #46e6ff;
   --cyan-bright: #9af3ff;
   --cyan-dim: rgba(70, 230, 255, 0.16);
@@ -86,12 +86,12 @@
     --surface: #0b1420;
     --surface-2: #101c2b;
     --surface-3: #17263a;
-    --border: #526b8d;
-    --border-subtle: #3b506e;
+    --border: #7aa4d4;
+    --border-subtle: #6f98c5;
     --border-glow: rgba(70, 230, 255, 0.44);
     --text: #ffffff;
     --text-2: #d7e6f7;
-    --text-3: #a9bdd4;
+    --text-3: #bfd5ec;
     --cyan: #46e6ff;
     --cyan-bright: #9af3ff;
     --cyan-dim: rgba(70, 230, 255, 0.16);
