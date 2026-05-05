@@ -1176,6 +1176,7 @@ body {
 }
 
 .topbar-hidden {
+  display: none;
   opacity: 0;
   max-height: 0;
   padding-top: 0;
@@ -1404,10 +1405,16 @@ button.sys-item {
 }
 
 :root[data-cortex-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .panel.active,
+:root[data-cortex-effective-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .panel.active,
 :root[data-cortex-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .analytics-panel.active,
+:root[data-cortex-effective-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .analytics-panel.active,
 :root[data-cortex-reduced-motion="reduce"] .metrics .metric,
+:root[data-cortex-effective-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-reduced-motion="reduce"] .item-list li,
+:root[data-cortex-effective-reduced-motion="reduce"] .item-list li,
 :root[data-cortex-reduced-motion="reduce"] .activity-feed li,
+:root[data-cortex-effective-reduced-motion="reduce"] .activity-feed li,
+:root[data-cortex-effective-reduced-motion="reduce"] .coming-soon,
 :root[data-cortex-reduced-motion="reduce"] .coming-soon {
   animation: none !important;
 }
@@ -4028,7 +4035,10 @@ kbd {
 }
 
 :root[data-cortex-reduced-motion="reduce"] *,
+:root[data-cortex-effective-reduced-motion="reduce"] *,
 :root[data-cortex-reduced-motion="reduce"] *::before,
+:root[data-cortex-effective-reduced-motion="reduce"] *::before,
+:root[data-cortex-effective-reduced-motion="reduce"] *::after,
 :root[data-cortex-reduced-motion="reduce"] *::after {
   scroll-behavior: auto !important;
   transition-duration: 0ms !important;

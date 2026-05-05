@@ -41,6 +41,7 @@ import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.
 import { handleKeyboardActivation, shouldIgnoreGlobalShortcut } from "./keyboard-access.js";
 import {
   readControlCenterSettings,
+  resolveEffectiveReducedMotion,
   summarizeBudgetStatus,
   writeControlCenterSettings,
 } from "./settings/settings-state.js";
@@ -308,11 +309,24 @@ function feedKindLabel(kind) {
   return FEED_KIND_LABEL[kind] || kind || "Unknown";
 }
 
-function AnimatedNumber({ value, duration = 600 }) {
+function getOsReducedMotionPreference() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function AnimatedNumber({ value, duration = 600, reducedMotion = false }) {
   const [display, setDisplay] = useState(value);
   const prevRef = useRef(value);
 
   useEffect(() => {
+    if (reducedMotion) {
+      setDisplay(value);
+      prevRef.current = value;
+      return undefined;
+    }
+
     const from = typeof prevRef.current === "number" ? prevRef.current : 0;
     const to = typeof value === "number" ? value : 0;
     if (from === to || typeof value !== "number") {
@@ -337,7 +351,7 @@ function AnimatedNumber({ value, duration = 600 }) {
     requestAnimationFrame(tick);
     prevRef.current = to;
     return () => { cancelled = true; };
-  }, [value, duration]);
+  }, [value, duration, reducedMotion]);
 
   return <>{typeof display === "number" ? display.toLocaleString() : display}</>;
 }
@@ -1516,11 +1530,16 @@ export function App() {
   const [startupCoreReadyState, setStartupCoreReadyState] = useState(false);
   const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
   const [controlSettings, setControlSettings] = useState(() => readControlCenterSettings());
+  const [osReducedMotion, setOsReducedMotion] = useState(() => getOsReducedMotionPreference());
   const [currency, setCurrency] = useState(() => normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD")));
   const [analyticsMode, setAnalyticsMode] = useState(() => {
     const stored = readLocalStorageValue("cortex_analytics_mode", "aggregate");
     return stored === "operations" ? "operations" : "aggregate";
   });
+  const effectiveReducedMotion = useMemo(
+    () => resolveEffectiveReducedMotion(controlSettings.reducedMotion, osReducedMotion),
+    [controlSettings.reducedMotion, osReducedMotion],
+  );
 
   const invokeRef = useRef(null);
   const tokenRef = useRef(browserBootstrap.authToken || "");
@@ -2750,10 +2769,26 @@ export function App() {
     writeControlCenterSettings(controlSettings);
     if (typeof document === "undefined") return;
     document.documentElement.dataset.cortexReducedMotion = controlSettings.reducedMotion;
+    document.documentElement.dataset.cortexEffectiveReducedMotion = effectiveReducedMotion ? "reduce" : "full";
     document.documentElement.dataset.cortexContrast = controlSettings.highContrast ? "high" : "standard";
     document.documentElement.dataset.cortexKeyboardHints = controlSettings.keyboardHints ? "on" : "off";
     document.documentElement.dataset.cortexCompactNavigation = controlSettings.compactNavigation ? "on" : "off";
-  }, [controlSettings]);
+  }, [controlSettings, effectiveReducedMotion]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const syncReducedMotion = () => setOsReducedMotion(Boolean(query.matches));
+    syncReducedMotion();
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", syncReducedMotion);
+      return () => query.removeEventListener("change", syncReducedMotion);
+    }
+    query.addListener?.(syncReducedMotion);
+    return () => query.removeListener?.(syncReducedMotion);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("cortex_analytics_mode", analyticsMode);
@@ -4582,22 +4617,22 @@ export function App() {
 
             <div className="metrics overview-metrics">
               <div className="metric" data-accent="cyan">
-                <span className="metric-value"><AnimatedNumber value={typeof stats.memories === "number" ? stats.memories : 0} /></span>
+                <span className="metric-value"><AnimatedNumber value={typeof stats.memories === "number" ? stats.memories : 0} reducedMotion={effectiveReducedMotion} /></span>
                 <span className="metric-label">Memories</span>
                 <span className="metric-icon"><AppIcon name="memory" /></span>
               </div>
               <div className="metric" data-accent="blue">
-                <span className="metric-value"><AnimatedNumber value={typeof stats.decisions === "number" ? stats.decisions : 0} /></span>
+                <span className="metric-value"><AnimatedNumber value={typeof stats.decisions === "number" ? stats.decisions : 0} reducedMotion={effectiveReducedMotion} /></span>
                 <span className="metric-label">Decisions</span>
                 <span className="metric-icon"><AppIcon name="decision" /></span>
               </div>
               <div className="metric" data-accent="purple">
-                <span className="metric-value"><AnimatedNumber value={typeof stats.events === "number" ? stats.events : 0} /></span>
+                <span className="metric-value"><AnimatedNumber value={typeof stats.events === "number" ? stats.events : 0} reducedMotion={effectiveReducedMotion} /></span>
                 <span className="metric-label">Events</span>
                 <span className="metric-icon"><AppIcon name="event" /></span>
               </div>
               <div className="metric" data-accent="green">
-                <span className="metric-value"><AnimatedNumber value={normalizedSessions.length} /></span>
+                <span className="metric-value"><AnimatedNumber value={normalizedSessions.length} reducedMotion={effectiveReducedMotion} /></span>
                 <span className="metric-label">Active Agents</span>
                 <span className="metric-icon"><AppIcon name="agents" /></span>
               </div>
@@ -5572,7 +5607,7 @@ export function App() {
                 <div className="analytics-metrics-grid">
                   <div className="metric metric-featured" data-accent="cyan">
                     <span className="metric-kicker">Compounding return</span>
-                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} /></span>
+                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} reducedMotion={effectiveReducedMotion} /></span>
                     <span className="metric-label">Boot Tokens Saved (30d total)</span>
                     <span className="metric-footnote">
                       {bootSavingsMomentum === null
@@ -5583,7 +5618,7 @@ export function App() {
                   </div>
                   <div className="metric" data-accent="green">
                     <span className="metric-kicker">Efficiency</span>
-                    <span className="metric-value"><AnimatedNumber value={savings.summary?.avgPercent || 0} />%</span>
+                    <span className="metric-value"><AnimatedNumber value={savings.summary?.avgPercent || 0} reducedMotion={effectiveReducedMotion} />%</span>
                     <span className="metric-label">30d Avg Compression</span>
                     <span className="metric-footnote">
                       Average tokens saved per boot: {formatCompactNumber(Number(savings.summary?.avgSavedPerBoot || 0))} over the same 30-day window
@@ -5592,7 +5627,7 @@ export function App() {
                   </div>
                   <div className="metric" data-accent="blue">
                     <span className="metric-kicker">Throughput</span>
-                    <span className="metric-value"><AnimatedNumber value={throughputBoots7d} /></span>
+                    <span className="metric-value"><AnimatedNumber value={throughputBoots7d} reducedMotion={effectiveReducedMotion} /></span>
                     <span className="metric-label">Boot Compilations (last 7 calendar days)</span>
                     <span className="metric-footnote">
                       {throughputSummary.daysRepresented === 0
@@ -5605,7 +5640,7 @@ export function App() {
                   </div>
                   <div className="metric" data-accent="purple">
                     <span className="metric-kicker">Compiled context</span>
-                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} /></span>
+                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} reducedMotion={effectiveReducedMotion} /></span>
                     <span className="metric-label">Boot Prompt Tokens Served (30d total)</span>
                     <span className="metric-footnote">
                       30-day cumulative prompt tokens served at boot; average {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} per boot

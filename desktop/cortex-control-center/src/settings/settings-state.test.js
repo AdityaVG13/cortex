@@ -5,6 +5,7 @@ import {
   DEFAULT_CONTROL_CENTER_SETTINGS,
   normalizeControlCenterSettings,
   readControlCenterSettings,
+  resolveEffectiveReducedMotion,
   summarizeBudgetStatus,
   writeControlCenterSettings,
 } from "./settings-state.js";
@@ -44,6 +45,14 @@ describe("control center settings state", () => {
     writeControlCenterSettings(settings, storage);
 
     expect(readControlCenterSettings(storage)).toEqual(settings);
+  });
+
+  it("resolves effective reduced motion from settings and OS preference", () => {
+    expect(resolveEffectiveReducedMotion("system", true)).toBe(true);
+    expect(resolveEffectiveReducedMotion("system", false)).toBe(false);
+    expect(resolveEffectiveReducedMotion("reduce", false)).toBe(true);
+    expect(resolveEffectiveReducedMotion("full", true)).toBe(false);
+    expect(resolveEffectiveReducedMotion("unexpected", true)).toBe(true);
   });
 });
 

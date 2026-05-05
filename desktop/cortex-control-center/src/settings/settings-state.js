@@ -9,6 +9,15 @@ export const DEFAULT_CONTROL_CENTER_SETTINGS = Object.freeze({
 
 const REDUCED_MOTION_VALUES = new Set(["system", "reduce", "full"]);
 
+export function resolveEffectiveReducedMotion(setting = "system", osPrefersReducedMotion = false) {
+  const reducedMotion = REDUCED_MOTION_VALUES.has(setting)
+    ? setting
+    : DEFAULT_CONTROL_CENTER_SETTINGS.reducedMotion;
+  if (reducedMotion === "reduce") return true;
+  if (reducedMotion === "full") return false;
+  return Boolean(osPrefersReducedMotion);
+}
+
 export function normalizeControlCenterSettings(value = {}) {
   const raw = value && typeof value === "object" ? value : {};
   const reducedMotion = REDUCED_MOTION_VALUES.has(raw.reducedMotion)
