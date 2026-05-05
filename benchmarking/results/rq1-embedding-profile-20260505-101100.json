@@ -1,0 +1,70 @@
+{
+  "backfill": {
+    "drain": {
+      "batch_size": 32,
+      "computed_total": 64,
+      "exhausted": true,
+      "iterations_ran": 1,
+      "lock_wait_ms": 2000,
+      "max_batches_per_pass": 10,
+      "max_iterations": 32,
+      "model": "bge-base-en-v1.5",
+      "passes_ran": 1,
+      "queued_total": 64,
+      "remaining": {
+        "decisions": 0,
+        "memories": 0,
+        "total": 0
+      },
+      "until_exhausted": true
+    },
+    "elapsed_seconds": 2.251,
+    "model_link": "symlink",
+    "profile": "bge-base-en-v1.5",
+    "rows_seeded": 64,
+    "throughput_embeddings_per_hour": 102352.11
+  },
+  "checks": {
+    "backfill_exhausted_pass": true,
+    "backfill_throughput_pass": true,
+    "longmemeval_status": "blocked_no_provider_key",
+    "max_recall_p50_regression_ms": 10.0,
+    "min_backfill_embeddings_per_hour": 500.0,
+    "recall_p50_delta_ms": 8.228,
+    "recall_p50_pass": true
+  },
+  "config": {
+    "backfill_rows_per_table": 32,
+    "profiles": [
+      "all-MiniLM-L12-v2",
+      "bge-base-en-v1.5"
+    ],
+    "recall_limit": 6
+  },
+  "generated_at": "2026-05-05T14:11:13.161313+00:00",
+  "git_commit": "6c95725eef90133656d59b50e6f1f516f7cfc715",
+  "passed": true,
+  "recall_latency": {
+    "all-MiniLM-L12-v2": {
+      "dataset": "rq2-local-deterministic-off-mode",
+      "max_ms": 83.789,
+      "p50_ms": 58.485,
+      "p95_ms": 83.789,
+      "profile": "all-MiniLM-L12-v2",
+      "queries": 6,
+      "top1": 0.0,
+      "top3": 1.0
+    },
+    "bge-base-en-v1.5": {
+      "dataset": "rq2-local-deterministic-off-mode",
+      "max_ms": 82.007,
+      "p50_ms": 66.713,
+      "p95_ms": 82.007,
+      "profile": "bge-base-en-v1.5",
+      "queries": 6,
+      "top1": 0.0,
+      "top3": 1.0
+    }
+  },
+  "schema": "cortex.rq1_embedding_profile_gate.v1"
+}
