@@ -4713,7 +4713,7 @@ export function App() {
                         </button>
                       </div>
                     </div>
-                    <div className="settings-budget-edit-grid" aria-label="Budget endpoint editor">
+                    <div className="settings-budget-edit-grid" role="group" aria-label="Budget endpoint editor">
                       {BUDGET_ENDPOINT_DEFINITIONS.map((definition) => {
                         const draft = budgetDraftEndpoints[definition.key];
                         const endpointEnabled = Boolean(draft?.enabled);
