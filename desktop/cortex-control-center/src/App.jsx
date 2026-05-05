@@ -1,5 +1,6 @@
 import { startTransition, useCallback, useEffect, useId, useMemo, useRef, useState, Component, lazy, Suspense } from "react";
 import { checkForUpdates, installUpdate } from "./updater.js";
+import { MOTION_MS, easeOutCubic } from "./design/motion.js";
 import {
   createApi,
   createPostApi,
@@ -316,7 +317,7 @@ function getOsReducedMotionPreference() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function AnimatedNumber({ value, duration = 600, reducedMotion = false }) {
+function AnimatedNumber({ value, duration = MOTION_MS.number, reducedMotion = false }) {
   const [display, setDisplay] = useState(value);
   const prevRef = useRef(value);
 
@@ -343,7 +344,7 @@ function AnimatedNumber({ value, duration = 600, reducedMotion = false }) {
       if (cancelled) return;
       const elapsed = now - start;
       const progress = Math.min(elapsed / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
+      const eased = easeOutCubic(progress);
       setDisplay(Math.round(from + diff * eased));
       if (progress < 1) requestAnimationFrame(tick);
     }
@@ -5607,7 +5608,7 @@ export function App() {
                 <div className="analytics-metrics-grid">
                   <div className="metric metric-featured" data-accent="cyan">
                     <span className="metric-kicker">Compounding return</span>
-                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={1000} reducedMotion={effectiveReducedMotion} /></span>
+                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalSaved || 0} duration={MOTION_MS.numberSlow} reducedMotion={effectiveReducedMotion} /></span>
                     <span className="metric-label">Boot Tokens Saved (30d total)</span>
                     <span className="metric-footnote">
                       {bootSavingsMomentum === null
@@ -5640,7 +5641,7 @@ export function App() {
                   </div>
                   <div className="metric" data-accent="purple">
                     <span className="metric-kicker">Compiled context</span>
-                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={1000} reducedMotion={effectiveReducedMotion} /></span>
+                    <span className="metric-value"><AnimatedNumber value={savings.summary?.totalServed || 0} duration={MOTION_MS.numberSlow} reducedMotion={effectiveReducedMotion} /></span>
                     <span className="metric-label">Boot Prompt Tokens Served (30d total)</span>
                     <span className="metric-footnote">
                       30-day cumulative prompt tokens served at boot; average {formatCompactNumber(Number(savings.summary?.avgServedPerBoot || 0))} per boot
