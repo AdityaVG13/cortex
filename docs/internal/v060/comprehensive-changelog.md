@@ -17,8 +17,8 @@
 
 Last updated: 2026-05-05
 Baseline: `v0.5.0` (`b9a6458` benchmark-claims correction, 2026-04-23)
-Current head: `b41f7be` on `origin/main` (C3 budget governance backend)
-Commit range size: 26 pushed commits on v0.6.0 track (plugin parity + benchmarking infra + H3 + cleanup + G2 + Phase 0 + C5 + plugin MCP hardening + C9 + R2 + RQ1 + daemon stability + storage hygiene + RQ2 + C3 backend)
+C3 evidence head: `1231d58` on `origin/main` (C3 backend + docs/full-suite validation)
+Commit range size through C3 evidence: 28 pushed commits on v0.6.0 track (plugin parity + benchmarking infra + H3 + cleanup + G2 + Phase 0 + C5 + plugin MCP hardening + C9 + R2 + RQ1 + daemon stability + storage hygiene + RQ2 + C3 backend/docs)
 
 ## Purpose
 
@@ -42,8 +42,11 @@ This file is the source of truth for:
 ## 2026-05-05 — C3 budget governance backend
 
 - Commit: `b41f7be` — `v0.6.0 - C3: add budget governance backend`
+- Related commits:
+  - `efe38a2` - `v0.6.0 - C3: update budget governance handoff docs`
+  - `1231d58` - `v0.6.0 - C3: record full-suite validation`
 - Why: RQ2 improved local recall but left agent loops unbounded. C3 adds the operator boundary for daemon work before U1 Settings and future bridge/adapters build on top of local memory.
-- Files touched:
+- Backend files touched:
   - `daemon-rs/src/budgets.rs` — new structured parser/status/denial metadata for `~/.cortex/budgets.toml`.
   - `daemon-rs/src/rate_limit.rs` — existing limiter extended with endpoint budget buckets, recent-denial counters, and budget decisions.
   - `daemon-rs/src/state.rs` — loads budget status at startup from resolved Cortex home.
@@ -51,11 +54,18 @@ This file is the source of truth for:
   - `daemon-rs/src/handlers/store.rs`, `recall.rs`, `boot.rs`, `server.rs` — pre-work budget checks for `/store`, recall-family routes, `/boot`, and `/mcp-rpc`.
   - `daemon-rs/src/handlers/health.rs` — `/health.budgets` read contract for Settings.
   - `daemon-rs/src/main.rs` — local admin CLI: `cortex admin budgets status --json` and `validate --path <file> --json`.
+- Documentation files touched:
+  - `docs/internal/v060/README.md` - index updated with C3 status.
+  - `docs/internal/v060/unified-status-plan.md` - status, open-work, validation, and source-catalog updates.
+  - `docs/internal/v060/comprehensive-changelog.md` - C3 commit/evidence log.
+  - `docs/internal/v060/updates-to-readme.md` - release README queue for budgets.
+  - `docs/internal/v060/plans/accessibility-motion-settings.md` - U1 Budgets Settings handoff.
+  - `docs/internal/v060/plans/governance-economics.md` - C3 backend result and remaining governance work.
 - Behavior:
   - Missing `budgets.toml` remains unlimited/backward-compatible.
   - `defaults.enabled = false` disables enforcement while still validating syntax.
   - Missing endpoint sections are unlimited.
-  - Unknown endpoint names or invalid non-positive limits/windows fail closed: enforcement disabled and health/admin expose a structured error.
+  - Unknown endpoint names or invalid non-positive limits/windows fail visibly/open for availability: enforcement is disabled and health/admin expose a structured error.
   - HTTP denials return `429` with stable `budget_exceeded` JSON and `Retry-After`.
   - MCP denials return JSON-RPC error `-32029` with budget metadata in `error.data`.
   - Denials write `budget_rejected` audit rows when the DB is reachable; health also keeps recent denial counters.
@@ -68,6 +78,7 @@ This file is the source of truth for:
 - Release posture:
   - Backend slice is landed and pushed to `origin/main`.
   - Admin CLI shipped for local status/validation.
+  - Docs triad and C3 plan handoff are in lockstep through `1231d58`.
   - U1 Settings can consume `/health.budgets` for read-only status, disabled/error states, configured endpoint rows, and recent-denial signals.
   - Budget editing from Control Center remains the next U1 task; no daemon write endpoint shipped.
   - No reranking defaults changed.
@@ -962,13 +973,14 @@ Internal-only docs cleanup. No product code changed and no public docs changed. 
 ### Catalog / tracking updates
 
 - `README.md` now states the reality check: not every phase doc has executed. It identifies C3 budget governance as the next big pass and RQ2 as CAUTION.
+- 2026-05-05 supersession: C3 backend is now landed; the next public-facing C3 work is U1 budget Settings UI/write support plus optional load testing.
 - `unified-status-plan.md` section 10 now catalogs every markdown file under `docs/internal/v060/` by status and role.
 - `updates-to-readme.md` now records which internal planning surfaces have public-copy implications and which are internal-only.
 - `prompts/c3-budget-governance-goal-prompt.md` now points to the root-level triad paths.
 
 ### Current interpretation after catalog pass
 
-- Active next: C3 budget governance.
+- Active next as of this catalog pass: C3 budget governance. Superseded 2026-05-05 by `b41f7be`/`efe38a2`/`1231d58`; active follow-ups are U1 Settings budget UI and benchmark-gated retrieval evidence.
 - Active but gated: RQ0/RQ1/RQ2 benchmark evidence.
 - Pending release headline: U1 accessibility/settings/motion.
 - Future research, not done: Phase 3.0, 3.5, 4, 5, 5.5, 6.

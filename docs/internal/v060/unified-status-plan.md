@@ -14,7 +14,7 @@
 ---
 
 
-**Last updated:** 2026-05-05 (C3 budget governance backend; latest pushed code `b41f7be` on `origin/main`)
+**Last updated:** 2026-05-05 (C3 budget governance backend plus docs/full-suite evidence through `1231d58`)
 **Baseline:** `v0.5.0` shipped on `master` (commit `e64887c` pre-release hygiene pass)
 **Target cut:** **2026-07-16** (Thursday). Week-6 checkpoint 2026-06-05.
 **Canonical owner doc:** this file
@@ -41,9 +41,9 @@ Mirror of `docs/internal/archive/pre-v060-docs-2026-04-26.zip::pre-v060/status/C
 - Storage hygiene acceleration landed on 2026-04-30 (`fe78000`, `84d20cc`, `2fb1c20`, `4c3b43c`): compaction now optimizes FTS5 shadow tables, prunes stale-model embeddings, prunes singleton co-occurrence rows, triggers on FTS segment pressure, and migrates legacy f32 embedding/cluster-centroid blobs to PQ8. Live verification reduced the production DB from 412 MB to 26 MB (~94%) with `db_pressure="normal"`.
 - RQ2 reranker plumbing landed and was pushed to `origin/main` on 2026-05-05 (`f07d61f`): `ms-marco-MiniLM-L-6-v2` int8 ONNX can be downloaded/loaded directly through `ort` + `tokenizers`, `/recall` supports off/shadow/primary modes behind env flags, health/setup expose reranker readiness, and primary mode only reorders the configured top-N window.
 - RQ2 local benchmark gate landed and was pushed on 2026-05-05 (`2707913`, `f6c1ebb`): artifact bundle `benchmarking/results/rq2-rerank-20260505-031510/`, release posture **CAUTION**. Local deterministic gate passes model load, shadow order preservation, owned no-regression, and p95 delta (+19.004ms <= +80ms). Scored Pure LongMemEval-S did not run because no answerer/judge API key was configured, so no public primary-rerank quality claim yet.
-- C3 budget-governance backend landed and was pushed to `origin/main` on 2026-05-05 (`b41f7be`): `~/.cortex/budgets.toml` now supports per-endpoint call budgets for `store`, `recall`, `boot`, and broad `mcp`; missing config is unlimited, invalid config disables enforcement and surfaces health/admin errors, HTTP denials return stable `429` JSON, MCP denials return JSON-RPC error data, and `/health` exposes budget status for U1 Settings.
+- C3 budget-governance backend landed and was pushed to `origin/main` on 2026-05-05 (`b41f7be`; docs/full-suite evidence `efe38a2`, `1231d58`): `~/.cortex/budgets.toml` now supports per-endpoint call budgets for `store`, `recall`, `boot`, and broad `mcp`; missing config is unlimited, invalid config disables enforcement and surfaces health/admin errors, HTTP denials return stable `429` JSON, MCP denials return JSON-RPC error data, and `/health` exposes budget status for U1 Settings.
 - Phase-2A retrieval benchmark path is clean: last strict no-helper LongMemEval run is `20/20` on `cortex-http-base` (`benchmarking/runs/amb-run-20260419-074548`). `v0.6.0` retrieval work (R1/R7 measurement-only harness) starts from this baseline.
-- v0.6.0 work is landing to `origin/main`. Latest pushed main head: `b41f7be`; `origin/master` remains at `4c3b43c`.
+- v0.6.0 work is landing to `origin/main`. C3 backend/docs evidence is current through `1231d58`; `origin/master` remains at `4c3b43c`.
 
 ---
 
@@ -128,15 +128,16 @@ At initial scope lock, planning surface was the only deliverable. Code landings 
 
 ### C3 budget governance backend (2026-05-05)
 
-- `b41f7be` landed the backend slice for configurable per-endpoint budgets.
+- `b41f7be` landed the backend slice for configurable per-endpoint budgets. Follow-up commits `efe38a2` and `1231d58` captured the U1 handoff, release-note queue, and full-suite validation evidence.
 - Config contract: `~/.cortex/budgets.toml` with `[defaults] enabled = true|false` plus optional `[endpoints.store|recall|boot|mcp] limit/window_seconds` sections.
-- Semantics: missing config is unlimited/backward-compatible; `defaults.enabled = false` validates config while disabling enforcement; missing endpoint section is unlimited; invalid/unknown endpoint config fails closed by disabling enforcement and surfacing a structured health/admin error instead of partially enforcing a surprising policy.
+- Semantics: missing config is unlimited/backward-compatible; `defaults.enabled = false` validates config while disabling enforcement; missing endpoint section is unlimited; invalid/unknown endpoint config fails visibly/open for availability by disabling enforcement and surfacing a structured health/admin error instead of partially enforcing a surprising policy.
 - Enforcement: existing `RateLimiter` now owns budget endpoint buckets keyed by endpoint + source IP, without weakening auth-failure/request-volume protections. Store, recall-family, boot, and HTTP MCP RPC paths check budgets after auth/cheap validation and before expensive work or mutation.
 - Denials: HTTP store/recall/boot return stable `429` bodies with `error=budget_exceeded`, endpoint, limit, window, retry hint, and source. MCP RPC returns a JSON-RPC error (`-32029`) with the same metadata in `error.data`.
 - Visibility: `/health` exposes `budgets.configLoaded`, `enabled`, `source`, `error`, configured endpoints, and in-memory `recentDenials`. Local CLI shipped: `cortex admin budgets status --json` and `cortex admin budgets validate --path <file> --json`.
 - Audit: budget denials write `budget_rejected` event rows with endpoint, limit, window, retry hint, source, request source, and source IP. Health tracks recent denial counters even if event insertion fails.
-- Files touched: `daemon-rs/src/budgets.rs`, `daemon-rs/src/rate_limit.rs`, `daemon-rs/src/state.rs`, `daemon-rs/src/handlers/mod.rs`, `store.rs`, `recall.rs`, `boot.rs`, `health.rs`, `server.rs`, `main.rs`.
-- Validation: `rtk cargo test --manifest-path daemon-rs/Cargo.toml budget` -> 36 passed; `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean; `git diff --check` -> clean; `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean; full daemon suite `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed.
+- Backend files touched: `daemon-rs/src/budgets.rs`, `daemon-rs/src/rate_limit.rs`, `daemon-rs/src/state.rs`, `daemon-rs/src/handlers/mod.rs`, `store.rs`, `recall.rs`, `boot.rs`, `health.rs`, `server.rs`, `main.rs`.
+- Documentation files touched: `docs/internal/v060/README.md`, `unified-status-plan.md`, `comprehensive-changelog.md`, `updates-to-readme.md`, `plans/accessibility-motion-settings.md`, `plans/governance-economics.md`.
+- Validation: `rtk cargo test --manifest-path daemon-rs/Cargo.toml budget` -> 36 passed; `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean; `git diff --check` -> clean; `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean; full daemon suite `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed and recorded in `1231d58`.
 - U1 Settings handoff: Settings can consume `/health.budgets` immediately for read-only status, disabled/error states, configured endpoint rows, and recent-denial state. Write/edit support is still a UI/file-write workflow decision; no daemon write endpoint shipped in this slice.
 
 ---
@@ -160,7 +161,7 @@ See `accessibility-motion-settings.md` for full scope. High-level breakdown:
 
 | ID | Task | Status | Primary files | Acceptance |
 |----|------|--------|---------------|------------|
-| U1 | First-class Settings panel (Accessibility / Appearance & Motion / Connection / Keyboard & Navigation) | `pending; Budgets backend contract available b41f7be` | `desktop/cortex-control-center/src/settings/` *(new tree)*, navigation changes in `App.jsx` | All 4 initial sections render; Budgets can read `/health.budgets`; changes persist to localStorage + optional daemon/file sync; round-trips across app restart |
+| U1 | First-class Settings panel (Accessibility / Appearance & Motion / Connection / Keyboard & Navigation) | `pending; Budgets read contract available b41f7be; docs/full-suite evidence 1231d58` | `desktop/cortex-control-center/src/settings/` *(new tree)*, navigation changes in `App.jsx` | All 4 initial sections render; Budgets can read `/health.budgets`; changes persist to localStorage + optional daemon/file sync; round-trips across app restart |
 | U2a | Keyboard-only operation across app | `pending` | All interactive components in `desktop/cortex-control-center/src/` | Manual walkthrough passes: every action reachable without mouse |
 | U2b | ARIA pass: dialogs, tablists, live regions | `pending` | Dialog + nav components | Automated axe-core audit + manual NVDA/VoiceOver walkthrough |
 | U2c | Reduced-motion runtime plumbing | `pending` | Motion tokens module + all animated components | Respects `prefers-reduced-motion` OS pref; Settings toggle overrides OS |
@@ -177,7 +178,7 @@ See `governance-economics.md`. Ordered by dependency. **C4 demoted to Tier 3 str
 | ID | Task | Status | Primary files | Acceptance |
 |----|------|--------|---------------|------------|
 | C9 | Retention policy classes (`durable` / `operational` / `audit` / `ephemeral`) | `landed bd85025` | `daemon-rs/src/db.rs` migration 016, `daemon-rs/src/api_types.rs` `RetentionClass`, `daemon-rs/src/handlers/store.rs` classifier, `daemon-rs/src/handlers/mcp.rs` MCP schema/validation, `daemon-rs/src/export_data.rs`, `specs/cortex-openapi.yaml` | Store/MCP support class input; auto-classification heuristics tested; existing rows migrate/default to `operational`; TTL per class; full daemon suite 465/465 |
-| C3 | Budget governance — per-endpoint limits via `~/.cortex/budgets.toml` | `backend landed b41f7be; U1 UI pending` | `daemon-rs/src/budgets.rs`, `rate_limit.rs`, `state.rs`, `handlers/{mod,store,recall,boot,health,mcp via server}.rs`, `server.rs`, `main.rs`; UI still pending | Parser + limiter + store/recall/boot/MCP denial tests; missing config unlimited; health/admin status shipped; Settings read UI can now consume `/health.budgets`; write UI/load test still pending |
+| C3 | Budget governance - per-endpoint limits via `~/.cortex/budgets.toml` | `backend landed b41f7be; docs/full-suite evidence 1231d58; U1 UI pending` | `daemon-rs/src/budgets.rs`, `rate_limit.rs`, `state.rs`, `handlers/{mod,store,recall,boot,health,mcp via server}.rs`, `server.rs`, `main.rs`; UI still pending | Parser + limiter + store/recall/boot/MCP denial tests; missing config unlimited; health/admin status shipped; Settings read UI can now consume `/health.budgets`; write UI/load test still pending |
 | G5 | Dynamic context ranking for injectors (prereq: C9 + C5) | `pending` | `prompt_inject.rs` new `rank_candidates()` pass, `tests/injector_ranking.rs` *(new)* | Score = `w₁·class + w₂·recency + w₃·relevance + w₄·activity`; durable+stale ranks below operational+active; boot latency ±5%; audit records components |
 
 ### 3G) Recall improvements Phase 0-2 (Tier 2-essential, 10-12 days) — **NEW 2026-04-24**
@@ -328,7 +329,7 @@ References:
 ### Weeks 6-7 (2026-06-01 → 2026-06-14)
 10. ~~R2 score-adaptive truncation~~ — `landed a547a07`; benchmark proof remains a release-gate follow-up.
 11. ~~RQ1 embedding profile implementation~~ — `landed c971a5a`; benchmark proof remains a release-gate follow-up.
-12. C3 budget governance (needs C9 + Settings UI).
+12. ~~C3 budget governance backend~~ - `landed b41f7be`; U1 Settings write/edit path and optional load test remain release follow-ups.
 13. G5 dynamic ranking (needs C9 + C5).
 
 ### Weeks 8-9 (2026-06-15 → 2026-06-28)
@@ -430,7 +431,7 @@ Active and near-term plans:
 |------|--------|------|
 | `plans/accessibility-motion-settings.md` | pending | U1 accessibility/settings/motion master plan. |
 | `plans/foundation-carryovers.md` | mostly landed / partial | Tracks H3, G2, C5, R2; C5 MCP/OpenAPI remains deferred. |
-| `plans/governance-economics.md` | active next | C9/C3/G5/C4 plan. C3 budget governance is next recommended pass. |
+| `plans/governance-economics.md` | partially landed / active | C9 and C3 backend are landed; U1 budget UI, G5, and C4 remain pending. |
 | `plans/recall-improvement-plan.md` | partially executed | Master recall roadmap. RQ0 infra, RQ1 code, RQ2 code/local gate done; benchmark gates remain. |
 | `plans/bridge-track-spec.md` | spec-only | v0.7+ external memory bridge gate; zero bridge code in v0.6.0. |
 | `plans/db-stats-cli-spec.md` | future/storage spec | DB stats CLI output contract; not shipped. |
@@ -459,7 +460,7 @@ Prompts and archive:
 
 | Path | Status | Role |
 |------|--------|------|
-| `prompts/c3-budget-governance-goal-prompt.md` | current next `/goal` | High-detail prompt for C3 backend pass and U1 handoff. |
+| `prompts/c3-budget-governance-goal-prompt.md` | executed / provenance | Produced C3 backend `b41f7be` plus docs/full-suite evidence `efe38a2` and `1231d58`; keep for audit trail, not as the next prompt. |
 | `archive/next-big-pass-goal-prompt.md` | executed / archived | RQ2 gate prompt that produced `2707913` + `f6c1ebb`. |
 | `archive/reranking-harness.md` | superseded | Original measurement-only reranker harness, superseded by RQ2 Phase 2 implementation. |
 

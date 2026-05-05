@@ -15,8 +15,8 @@
 ---
 
 
-Last updated: 2026-05-05 (C3 backend landed `b41f7be`)
-Scope baseline: `v0.5.0` (master) → current `b41f7be` on `origin/main`
+Last updated: 2026-05-05 (C3 backend + docs/full-suite evidence through `1231d58`)
+Scope baseline: `v0.5.0` (master) -> C3 evidence through `1231d58` on `origin/main`
 Target: `v0.6.0` release cut
 
 ## Purpose
@@ -63,7 +63,7 @@ This section maps the reorganized `docs/internal/v060/` files to their public-do
 | `future/phase-5-5-observer-reflector-execution.md` | future | No v0.6.0 public copy. |
 | `future/observer-reflector-prompts.md` | future | No v0.6.0 public copy. |
 | `future/phase-6-execution.md` | future | No v0.6.0 public copy. |
-| `prompts/c3-budget-governance-goal-prompt.md` | internal execution aid | No public copy; use after C3 lands to update this queue. |
+| `prompts/c3-budget-governance-goal-prompt.md` | executed internal aid | No direct public copy; evidence is captured in the C3 budget governance queue entry. |
 | `archive/next-big-pass-goal-prompt.md` | executed prompt | No public copy; evidence is captured through RQ2 entries. |
 | `archive/reranking-harness.md` | superseded | Do not use for current public claims. |
 | `status/SESSION-HANDOFF.md` | historical handoff | No direct copy; provenance only. |
@@ -306,15 +306,22 @@ Public-copy rule after the catalog pass: the final README/roadmap should adverti
 
 ### 3.2) Budget governance — per-endpoint limits (C3)
 
-**Status:** `backend landed b41f7be; Settings UI pending`
+**Status:** `backend landed b41f7be; release docs/full-suite evidence 1231d58; Settings UI pending`
 - Add a team-admin section to README:
   - "Per-endpoint local budgets via `~/.cortex/budgets.toml` cap how often agents can call `/store`, recall-family routes, `/boot`, and MCP RPC. Missing config remains unlimited; denials return stable `429` JSON or JSON-RPC error data with retry hints."
 - Include a minimal TOML example:
-  - `[endpoints.recall] limit = 300, window_seconds = 60`
+  ```toml
+  [endpoints.recall]
+  limit = 300
+  window_seconds = 60
+  ```
 - Operator/admin note:
   - "`/health.budgets` and `cortex admin budgets status --json` expose whether budgets are loaded, enabled, invalid, and which endpoints are configured. `cortex admin budgets validate --path <file> --json` validates draft files before use."
 - UI note:
   - Control Center can now render a read-only Budgets section from `/health.budgets`; writing `budgets.toml` from Settings remains a U1 follow-up.
+- Release inclusion guidance:
+  - Include budget governance in the v0.6.0 README if the release ships after C3; this is operator-facing behavior, not just internal plumbing.
+  - Keep public copy precise: local per-endpoint call budgets only. Do not imply centralized billing controls, multi-tenant quotas, or Control Center write/edit support until U1 lands.
 
 **Validation:**
 - `rtk cargo test --manifest-path daemon-rs/Cargo.toml budget` -> 36 passed, including parser, limiter, store/recall/boot HTTP denial, health reachability, and MCP JSON-RPC denial tests.
@@ -324,7 +331,7 @@ Public-copy rule after the catalog pass: the final README/roadmap should adverti
 - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 513 passed.
 - Remaining before final public release polish: U1 Settings write/edit path and optional load test with sustained recall traffic.
 
-**Commits:** `b41f7be`
+**Commits:** `b41f7be`, `efe38a2`, `1231d58`
 
 ---
 
