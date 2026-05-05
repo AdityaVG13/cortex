@@ -1,0 +1,29 @@
+{
+  "base_url": "http://127.0.0.1:7459",
+  "duration_seconds": 1.199,
+  "expected": {
+    "max_p95_all_ms": 2000.0,
+    "status_200": 60,
+    "status_429": 40
+  },
+  "latency_ms": {
+    "max": 850.936,
+    "median": 491.493,
+    "min": 31.234,
+    "p95_accepted": 836.921,
+    "p95_all": 817.66,
+    "p95_denied": 542.36
+  },
+  "passed": true,
+  "rate_per_second": 100.0,
+  "recall_budget": 0,
+  "requests": 100,
+  "sample_unexpected": [],
+  "schema": "cortex.c3_budget_load_probe.v1",
+  "started_at": "2026-05-05T13:33:18.790948+00:00",
+  "status_counts": {
+    "200": 60,
+    "429": 40
+  },
+  "workers": 64
+}
