@@ -155,7 +155,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=38&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-<p align="center">Measured against a 20-query ground-truth dataset on every release via the <code>cortex-http-base</code> adapter. A fully helper-free <code>cortex-http-pure</code> adapter lands in v0.6.0 to establish the canonical core baseline.</p>
+<p align="center">Measured against a 20-query ground-truth dataset on every release via the <code>cortex-http-base</code> adapter. A fully helper-free <code>cortex-http-pure</code> adapter is targeted for v0.6.0 to establish the canonical core baseline.</p>
 
 <table align="center">
 <tr>
@@ -192,7 +192,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 
 <p align="center">
 <sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
-<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter ships in v0.6.0 as the canonical measurement floor -- every v0.6.0+ recall-quality claim is measured through it, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking production-ships in v0.6.0 Phase 2; query expansion (HyDE) targeted for v0.7.0.</sub>
+<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter is targeted for v0.6.0 as the canonical measurement floor -- planned v0.6.0+ recall-quality claims are measured through it, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking production promotion remains targeted for v0.6.0 after validation; query expansion (HyDE) targeted for v0.7.0.</sub>
 </p>
 
 ---
