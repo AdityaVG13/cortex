@@ -1,0 +1,111 @@
+{
+  "schema": "cortex.adapter.contract",
+  "version": "0.6.0",
+  "description": "JSON-compatible YAML contract for Cortex HTTP, MCP-RPC, and SDK adapter conformance.",
+  "protectedHeaders": {
+    "X-Cortex-Request": "true",
+    "Authorization": "Bearer <token>"
+  },
+  "scenarios": [
+    {
+      "id": "health-public",
+      "transport": "http",
+      "sdkMethod": "health",
+      "http": { "method": "GET", "path": "/health", "auth": "none", "xCortexRequest": false },
+      "expect": { "status": 200, "jsonFields": ["status", "runtime", "stats"] }
+    },
+    {
+      "id": "store-decision",
+      "transport": "http",
+      "sdkMethod": "store",
+      "http": { "method": "POST", "path": "/store", "auth": "required", "xCortexRequest": true },
+      "request": {
+        "json": {
+          "decision": "Adapter conformance sentinel memory",
+          "context": "C4 contract round trip",
+          "type": "decision",
+          "source_agent": "adapter-conformance-sdk",
+          "source_model": "gpt-5.4",
+          "confidence": 0.93,
+          "reasoning_depth": "high",
+          "ttl_seconds": 3600
+        }
+      },
+      "expect": { "status": 200, "jsonFields": ["stored", "entry"] }
+    },
+    {
+      "id": "recall-get",
+      "transport": "http",
+      "sdkMethod": "recall",
+      "http": { "method": "GET", "path": "/recall", "auth": "required", "xCortexRequest": true },
+      "request": { "query": { "q": "Adapter conformance sentinel memory", "budget": 200, "k": 5, "agent": "adapter-conformance-sdk" } },
+      "expect": { "status": 200, "jsonFields": ["results", "budget", "spent", "saved", "tokenUsageLine"] }
+    },
+    {
+      "id": "recall-post",
+      "transport": "http",
+      "http": { "method": "POST", "path": "/recall", "auth": "required", "xCortexRequest": true },
+      "request": { "json": { "q": "Adapter conformance sentinel memory", "budget": 200, "k": 5, "agent": "adapter-conformance-sdk" } },
+      "expect": { "status": 200, "jsonFields": ["results", "budget", "spent", "saved", "tokenUsageLine"] }
+    },
+    {
+      "id": "peek",
+      "transport": "http",
+      "sdkMethod": "peek",
+      "http": { "method": "GET", "path": "/peek", "auth": "required", "xCortexRequest": true },
+      "request": { "query": { "q": "Adapter conformance sentinel memory", "k": 5 } },
+      "expect": { "status": 200, "jsonFields": ["matches", "count", "tokenUsage"] }
+    },
+    {
+      "id": "boot",
+      "transport": "http",
+      "sdkMethod": "boot",
+      "http": { "method": "GET", "path": "/boot", "auth": "required", "xCortexRequest": true },
+      "request": { "query": { "agent": "adapter-conformance-sdk", "budget": 120 } },
+      "expect": { "status": 200, "jsonFields": ["bootPrompt", "tokenEstimate", "savings", "tokenUsage"] }
+    },
+    {
+      "id": "export-json",
+      "transport": "http",
+      "sdkMethod": "export",
+      "http": { "method": "GET", "path": "/export", "auth": "required", "xCortexRequest": true },
+      "request": { "query": { "format": "json" } },
+      "expect": { "status": 200, "jsonFields": ["memories", "decisions"] }
+    },
+    {
+      "id": "mcp-initialize",
+      "transport": "mcp-rpc",
+      "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
+      "request": { "jsonrpc": { "method": "initialize" } },
+      "expect": { "status": 200, "jsonFields": ["jsonrpc", "id", "result"] }
+    },
+    {
+      "id": "mcp-tools-list",
+      "transport": "mcp-rpc",
+      "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
+      "request": { "jsonrpc": { "method": "tools/list" } },
+      "expect": { "status": 200, "requiredTools": ["cortex_health", "cortex_store", "cortex_recall", "cortex_boot", "cortex_peek"] }
+    },
+    {
+      "id": "mcp-health-tool",
+      "transport": "mcp-rpc",
+      "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
+      "request": { "tool": { "name": "cortex_health", "arguments": {} } },
+      "expect": { "status": 200, "toolResult": true }
+    },
+    {
+      "id": "mcp-store-tool",
+      "transport": "mcp-rpc",
+      "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
+      "request": { "tool": { "name": "cortex_store", "arguments": { "decision": "Adapter conformance MCP memory", "context": "C4 MCP contract" } } },
+      "expect": { "status": 200, "toolResult": true }
+    },
+    {
+      "id": "mcp-recall-tool",
+      "transport": "mcp-rpc",
+      "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
+      "request": { "tool": { "name": "cortex_recall", "arguments": { "query": "Adapter conformance MCP memory", "budget": 120, "k": 5 } } },
+      "expect": { "status": 200, "toolResult": true }
+    }
+  ]
+}

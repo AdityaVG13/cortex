@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && node --test ./test/client.test.mjs"
+    "test": "npm run build && node --test ./test/*.test.mjs"
   },
   "files": ["dist"],
   "devDependencies": {
