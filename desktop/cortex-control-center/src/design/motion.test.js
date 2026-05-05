@@ -32,7 +32,7 @@ describe("motion design tokens", () => {
   it("uses one easing language for JS number animation", () => {
     expect(MOTION_MS).toMatchObject({
       base: 200,
-      panel: 260,
+      panel: 340,
       shell: 320,
       number: 600,
       numberSlow: 1000,

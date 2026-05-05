@@ -50,7 +50,7 @@
   --sidebar-w: 240px;
   --sidebar-collapsed-w: 64px;
   --motion-base: 200ms;
-  --motion-panel: 260ms;
+  --motion-panel: 340ms;
   --motion-shell: 320ms;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --sidebar-transition: var(--motion-shell) var(--motion-ease);

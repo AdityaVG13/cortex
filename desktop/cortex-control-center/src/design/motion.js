@@ -1,7 +1,7 @@
 export const MOTION_MS = Object.freeze({
   fast: 150,
   base: 200,
-  panel: 260,
+  panel: 340,
   shell: 320,
   number: 600,
   numberSlow: 1000,
