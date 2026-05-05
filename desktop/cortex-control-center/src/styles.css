@@ -127,8 +127,10 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
+  min-width: 0;
   background:
     radial-gradient(ellipse at 20% 50%, rgba(0, 212, 255, 0.03) 0%, transparent 70%),
     radial-gradient(ellipse at 80% 20%, rgba(74, 158, 255, 0.02) 0%, transparent 60%),
@@ -502,9 +504,20 @@ body {
 /* ─── Content Area ──────────────────────────────────────────────────────── */
 
 .content {
+  min-width: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 28px 36px;
   transition: padding var(--motion-base) var(--motion-ease);
+  scrollbar-gutter: stable;
+}
+
+.panel,
+.card,
+.item-list li,
+.settings-section {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .panel-header {
@@ -3680,7 +3693,7 @@ kbd {
 }
 
 .app.sidebar-collapsed {
-  grid-template-columns: var(--sidebar-collapsed-w) 1fr;
+  grid-template-columns: var(--sidebar-collapsed-w) minmax(0, 1fr);
 }
 
 .sidebar.collapsed {
@@ -3899,7 +3912,7 @@ kbd {
 }
 
 .app.sidebar-collapsed {
-  grid-template-columns: var(--sidebar-collapsed-w) 1fr;
+  grid-template-columns: var(--sidebar-collapsed-w) minmax(0, 1fr);
 }
 
 .sidebar.collapsed {
@@ -3958,6 +3971,151 @@ kbd {
 .sidebar.collapsed .sidebar-collapse-btn {
   right: -1px;
   top: 20px;
+}
+
+@media (max-width: 480px) {
+  .app,
+  .app.sidebar-collapsed {
+    grid-template-columns: var(--sidebar-collapsed-w) minmax(0, 1fr);
+  }
+
+  .sidebar {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .content {
+    padding: 16px 10px;
+  }
+
+  .topbar {
+    gap: 8px;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .topbar-right {
+    gap: 8px;
+  }
+
+  .topbar-stat {
+    white-space: normal;
+  }
+
+  .panel-header h1,
+  .analytics-header-copy h1 {
+    font-size: 20px;
+    line-height: 1.2;
+  }
+
+  .metric {
+    padding: 14px;
+  }
+
+  .metric-value {
+    font-size: 24px;
+  }
+
+  .overview-metrics,
+  .overview-dashboard-grid,
+  .overview-summary-grid,
+  .surface-stat-grid,
+  .task-columns,
+  .work-grid,
+  .work-feed-toolbar,
+  .memory-layout,
+  .agents-grid,
+  .analytics-metrics-grid,
+  .analytics-metric-legend,
+  .analytics-stage-grid,
+  .analytics-secondary-grid,
+  .analytics-lists-grid,
+  .analytics-stat-strip,
+  .analytics-stat-strip-tight,
+  .settings-grid,
+  .settings-status-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .overview-span-2,
+  .agents-card-span-2,
+  .analytics-card-span-2,
+  .metric-featured {
+    grid-column: auto;
+  }
+
+  .overview-hero-actions,
+  .overview-hero-meta,
+  .surface-actions,
+  .feed-actions,
+  .analytics-toolbar,
+  .analytics-view-toggle,
+  .permission-actions {
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .analytics-toolbar,
+  .analytics-view-toggle {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .analytics-view-toggle .btn-sm,
+  .surface-actions .btn-sm,
+  .feed-actions .btn-sm,
+  .permission-actions .btn-sm {
+    width: 100%;
+  }
+
+  .settings-shortcut-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-budget-table th,
+  .settings-budget-table td {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .brain-panel {
+    margin: -16px -10px 0;
+  }
+
+  .brain-hud,
+  .brain-hud-primary,
+  .brain-hud-secondary {
+    left: 10px;
+    right: 10px;
+    max-width: none;
+  }
+
+  .brain-hud-secondary {
+    top: 154px;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .brain-hud-secondary .brain-toggle {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .brain-detail,
+  .brain-tooltip {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    max-width: none;
+  }
+
+  .brain-legend {
+    left: 10px;
+    right: 10px;
+  }
 }
 
 /* ─── Connection Dialog ────────────────────────────────────────────────── */
