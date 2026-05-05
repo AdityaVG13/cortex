@@ -238,8 +238,8 @@ function buildFixture() {
           timestamp: isoMinutesAgo(9),
           priority: "high",
           tokens: 318,
-          summary: "Expect smoke harness switched to mock-backed auth bootstrap.",
-          files: ["scripts/run-expect-smoke.mjs", "scripts/mock-cortex-server.mjs"],
+          summary: "Browser smoke harness switched to mock-backed auth bootstrap.",
+          files: ["scripts/mock-cortex-server.mjs"],
         },
         {
           id: "feed-2",
@@ -284,7 +284,7 @@ function buildFixture() {
           id: "activity-1",
           agent: "Codex",
           timestamp: isoMinutesAgo(5),
-          description: "Patched CI workflow and local expect smoke scripts.",
+          description: "Patched CI workflow and local browser smoke scripts.",
           files: [".github/workflows/ci.yml", "desktop/cortex-control-center/package.json"],
         },
         {
@@ -321,13 +321,13 @@ function buildFixture() {
     },
     dump: {
       memories: [
-        { id: 1, source: "memory::expect_smoke_ci", text: "Expect smoke should use a mock daemon on port 7437 for browser fallback.", source_agent: "Codex", score: 5 },
+        { id: 1, source: "memory::browser_smoke_ci", text: "Browser smoke should use a mock daemon on port 7437 for browser fallback.", source_agent: "Codex", score: 5 },
         { id: 2, source: "memory::analytics_projection", text: "Monte Carlo chart now shows a fixed summary box instead of stacked endpoint labels.", source_agent: "Codex", score: 4 },
         { id: 3, source: "memory::brain_title", text: "Brain page headline should use Neural topology, not Jarvis.", source_agent: "Claude", score: 4 },
         { id: 4, source: "memory::activity_stream", text: "Recent activity panel should be populated for smoke coverage.", source_agent: "Factory Droid", score: 3 },
       ],
       decisions: [
-        { id: 11, decision: "Prefer repo-local expect-cli via npm exec for deterministic versions.", context: "Matches npm ci installs in local dev and CI.", source_agent: "Codex", score: 5, status: "active" },
+        { id: 11, decision: "Prefer browser-harness for deterministic browser verification.", context: "Avoids Playwright-based browser tooling in local dev and CI.", source_agent: "Codex", score: 5, status: "active" },
         { id: 12, decision: "Use browser bootstrap query params for smoke auth.", context: "Avoids cookie extraction and live daemon token reads.", source_agent: "Codex", score: 4, status: "active" },
         { id: 13, decision: "Keep CI smoke opt-in until an agent provider secret is configured.", context: "Hosted runners do not come with agent auth by default.", source_agent: "Claude", score: 4, status: "active", disputes_id: 14 },
         { id: 14, decision: "Require live daemon auth for browser smoke.", context: "Superseded by deterministic mock-backed auth.", source_agent: "Factory Droid", score: 1, status: "disputed" },
@@ -335,7 +335,7 @@ function buildFixture() {
     },
     peek: {
       matches: [
-        { source: "memory::expect_smoke_ci", relevance: 0.98, method: "keyword" },
+        { source: "memory::browser_smoke_ci", relevance: 0.98, method: "keyword" },
         { source: "memory::analytics_projection", relevance: 0.93, method: "semantic" },
         { source: "decision::ci_opt_in", relevance: 0.89, method: "keyword" },
       ],
@@ -343,7 +343,7 @@ function buildFixture() {
     recall: {
       results: [
         {
-          source: "memory::expect_smoke_ci",
+          source: "memory::browser_smoke_ci",
           excerpt: "Expect smoke should use a mock daemon on port 7437 so browser fallback auth is deterministic in CI and source builds.",
           relevance: 0.98,
           method: "keyword",
