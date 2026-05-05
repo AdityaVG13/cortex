@@ -4356,24 +4356,31 @@ export function App() {
                     </div>
                   </div>
                   {budgetSummary.error ? <p className="settings-error">{budgetSummary.error}</p> : null}
-                  <div className="settings-budget-table" role="table" aria-label="Configured budget endpoints">
-                    <div className="settings-budget-row settings-budget-head" role="row">
-                      <span role="columnheader">Endpoint</span>
-                      <span role="columnheader">Limit</span>
-                      <span role="columnheader">Window</span>
-                      <span role="columnheader">Recent Denials</span>
-                    </div>
+                  <div className="settings-budget-table-wrap">
+                    <table className="settings-budget-table">
+                      <caption className="sr-only">Configured budget endpoints</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Endpoint</th>
+                          <th scope="col">Limit</th>
+                          <th scope="col">Window</th>
+                          <th scope="col">Recent Denials</th>
+                        </tr>
+                      </thead>
+                      <tbody>
                     {(budgetSummary.endpointRows.length ? budgetSummary.endpointRows : [{ endpoint: "none", limit: null, windowSeconds: null }]).map((row) => {
                       const denial = budgetSummary.denialRows.find((entry) => entry.endpoint === row.endpoint)?.count;
                       return (
-                        <div key={row.endpoint} className="settings-budget-row" role="row">
-                          <span role="cell">{row.endpoint}</span>
-                          <span role="cell">{row.limit ?? "--"}</span>
-                          <span role="cell">{row.windowSeconds ? `${row.windowSeconds}s` : "--"}</span>
-                          <span role="cell">{denial ?? (budgetSummary.denialRows.length ? 0 : "--")}</span>
-                        </div>
+                        <tr key={row.endpoint}>
+                          <th scope="row" data-label="Endpoint">{row.endpoint}</th>
+                          <td data-label="Limit">{row.limit ?? "--"}</td>
+                          <td data-label="Window">{row.windowSeconds ? `${row.windowSeconds}s` : "--"}</td>
+                          <td data-label="Recent Denials">{denial ?? (budgetSummary.denialRows.length ? 0 : "--")}</td>
+                        </tr>
                       );
                     })}
+                      </tbody>
+                    </table>
                   </div>
                 </section>
 
