@@ -1393,13 +1393,15 @@ button.sys-item {
 
 /* ─── Phase 3: Animations & Transitions ─────────────────────────────────── */
 
-/* Panel fade-in on switch */
 .panel-stage {
   min-height: 100%;
+  position: relative;
+  isolation: isolate;
 }
 
 .panel {
-  will-change: opacity;
+  transform-origin: top center;
+  will-change: opacity, transform;
 }
 
 .panel-hidden {
@@ -1407,21 +1409,29 @@ button.sys-item {
 }
 
 .panel-stage[data-panel-direction="forward"] > .panel.active {
-  animation: panel-fade-in 120ms ease-out;
+  animation: panel-slide-forward var(--motion-panel) var(--motion-ease) both;
 }
 
 .panel-stage[data-panel-direction="backward"] > .panel.active {
-  animation: panel-fade-in 120ms ease-out;
+  animation: panel-slide-backward var(--motion-panel) var(--motion-ease) both;
 }
 
 .panel-stage[data-panel-direction] > .analytics-panel.active {
-  animation: panel-fade-in 120ms ease-out;
+  animation-duration: var(--motion-panel);
+}
+
+.analytics-mode-panel {
+  transform-origin: top center;
+  animation: tab-panel-enter var(--motion-panel) var(--motion-ease) both;
+  will-change: opacity, transform;
 }
 
 :root[data-cortex-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .panel.active,
 :root[data-cortex-effective-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .panel.active,
 :root[data-cortex-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .analytics-panel.active,
 :root[data-cortex-effective-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .analytics-panel.active,
+:root[data-cortex-reduced-motion="reduce"] .analytics-mode-panel,
+:root[data-cortex-effective-reduced-motion="reduce"] .analytics-mode-panel,
 :root[data-cortex-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-effective-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-reduced-motion="reduce"] .item-list li,
@@ -1433,9 +1443,37 @@ button.sys-item {
   animation: none !important;
 }
 
-@keyframes panel-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+@keyframes panel-slide-forward {
+  from {
+    opacity: 0;
+    transform: translate3d(18px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes panel-slide-backward {
+  from {
+    opacity: 0;
+    transform: translate3d(-18px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes tab-panel-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
 }
 
 /* Staggered metric card entrance */
@@ -4163,6 +4201,7 @@ kbd {
   :root:not([data-cortex-reduced-motion="full"]) .btn-sidebar-collapse,
   :root:not([data-cortex-reduced-motion="full"]) .task-complete-panel,
   :root:not([data-cortex-reduced-motion="full"]) .panel-stage[data-panel-direction] > .panel.active,
+  :root:not([data-cortex-reduced-motion="full"]) .analytics-mode-panel,
   :root:not([data-cortex-reduced-motion="full"]) .coming-soon {
     animation: none !important;
     transition: none !important;
