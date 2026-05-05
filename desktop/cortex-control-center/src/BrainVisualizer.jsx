@@ -41,6 +41,15 @@ function hasWebGLSupport() {
   }
 }
 
+function graphEndpointId(endpoint) {
+  if (endpoint && typeof endpoint === "object") return endpoint.id;
+  return endpoint;
+}
+
+function formatFlowType(type) {
+  return String(type || "semantic").replace(/[_-]+/g, " ");
+}
+
 function BrainFallbackGraph({
   graphData,
   memoryCt,
@@ -288,11 +297,66 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
   const memoryCt = useMemo(() => graphData.nodes.filter(n => n.group === "memory").length, [graphData]);
   const decisionCt = useMemo(() => graphData.nodes.filter(n => n.group === "decision").length, [graphData]);
+  const selectedFlow = useMemo(() => {
+    const selectedId = selectedNode?.id;
+    const neighborIds = new Set();
+    const typeCounts = new Map();
+    const flowLinks = [];
+
+    if (!selectedId) {
+      return {
+        neighborIds,
+        flowLinks,
+        connectionCount: 0,
+        primaryType: "idle",
+      };
+    }
+
+    for (const link of graphData.links) {
+      const sourceId = graphEndpointId(link.source);
+      const targetId = graphEndpointId(link.target);
+      if (sourceId !== selectedId && targetId !== selectedId) continue;
+
+      const neighborId = sourceId === selectedId ? targetId : sourceId;
+      const type = link.type || "semantic";
+      neighborIds.add(neighborId);
+      typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+      flowLinks.push({
+        neighborId,
+        type,
+        direction: sourceId === selectedId ? "outbound" : "inbound",
+        weight: link.weight || 1,
+      });
+    }
+
+    const [primaryType = "isolated"] = [...typeCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([type]) => type);
+
+    return {
+      neighborIds,
+      flowLinks: flowLinks.slice(0, 5),
+      connectionCount: flowLinks.length,
+      primaryType,
+    };
+  }, [graphData.links, selectedNode?.id]);
+
+  const isSelectedFlowLink = useCallback((link) => {
+    const selectedId = selectedNode?.id;
+    if (!selectedId) return false;
+    const sourceId = graphEndpointId(link.source);
+    const targetId = graphEndpointId(link.target);
+    return sourceId === selectedId || targetId === selectedId;
+  }, [selectedNode?.id]);
+
   const nodeThreeObject = useCallback((node) => {
     const color = new THREE.Color(getAgentColor(node.agent));
     const baseColor = color.clone().multiplyScalar(0.7);
     const coreColor = color.clone().multiplyScalar(1.22);
-    const radius = Math.max(1.6, (node.val || 3) * 0.45);
+    const selected = selectedNode?.id === node.id;
+    const neighbor = !selected && selectedFlow.neighborIds.has(node.id);
+    const dimmed = Boolean(selectedNode) && !selected && !neighbor;
+    const radius = Math.max(1.6, (node.val || 3) * 0.45) * (selected ? 1.34 : neighbor ? 1.12 : 1);
 
     const group = new THREE.Group();
     const core = new THREE.Mesh(
@@ -300,9 +364,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       new THREE.MeshStandardMaterial({
         color: baseColor,
         emissive: baseColor,
-        emissiveIntensity: 0.22,
+        emissiveIntensity: selected ? 0.58 : neighbor ? 0.36 : 0.22,
         metalness: 0.05,
         roughness: 0.48,
+        transparent: dimmed,
+        opacity: dimmed ? 0.32 : 1,
       })
     );
     group.add(core);
@@ -312,7 +378,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       new THREE.MeshBasicMaterial({
         color,
         transparent: true,
-        opacity: 0.18,
+        opacity: dimmed ? 0.05 : selected ? 0.36 : neighbor ? 0.24 : 0.18,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       })
@@ -324,14 +390,33 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       new THREE.MeshStandardMaterial({
         color: coreColor,
         emissive: coreColor,
-        emissiveIntensity: 0.45,
+        emissiveIntensity: selected ? 0.8 : 0.45,
         metalness: 0.25,
         roughness: 0.2,
+        transparent: dimmed,
+        opacity: dimmed ? 0.44 : 1,
       })
     );
     group.add(nucleus);
+
+    if (selected || neighbor) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(radius * (selected ? 2.35 : 2.05), selected ? 0.035 : 0.024, 8, 72),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: selected ? 0.52 : 0.26,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+      );
+      ring.rotation.x = Math.PI / 2;
+      group.add(ring);
+    }
+
     return group;
-  }, []);
+  }, [selectedFlow.neighborIds, selectedNode]);
 
   // Error / loading states
   if (error) {
@@ -408,6 +493,10 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   // 3D Graph
   return (
     <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
+      <div className="brain-orbital-ring brain-orbital-ring-a" aria-hidden="true" />
+      <div className="brain-orbital-ring brain-orbital-ring-b" aria-hidden="true" />
+      <div className="brain-scanline" aria-hidden="true" />
+
       <div className="brain-hud brain-hud-primary">
         <div className="brain-hud-copy">
           <span className="brain-mode">Neural topology</span>
@@ -421,6 +510,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
         <span className="brain-stat"><span className="brain-label">LINKS</span> {graphData.links.length}</span>
         <span className="brain-stat"><span className="brain-label">MEM</span> {memoryCt}</span>
         <span className="brain-stat"><span className="brain-label">DEC</span> {decisionCt}</span>
+        {selectedNode ? (
+          <span className="brain-stat brain-stat-flow">
+            <span className="brain-label">FLOW</span> {selectedFlow.connectionCount}
+          </span>
+        ) : null}
         <button className={`brain-toggle ${autoRotate ? "active" : ""}`} onClick={() => setAutoRotate(r => !r)} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
           {autoRotate ? <AppIcon name="refresh" size={14} /> : <AppIcon name="activity" size={14} />}
           <span>{autoRotate ? "AUTO" : "MANUAL"}</span>
@@ -438,6 +532,25 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           <div className="brain-detail-agent" style={{ color: getAgentColor(selectedNode.agent) }}>{selectedNode.agent}</div>
           {selectedNode.fullText && <div className="brain-detail-text">{selectedNode.fullText}</div>}
           {selectedNode.context && <div className="brain-detail-ctx"><span className="brain-detail-ctx-label">CONTEXT</span>{selectedNode.context}</div>}
+          <div className="brain-flow-panel">
+            <div className="brain-flow-head">
+              <span>Recall Flow</span>
+              <strong>{formatFlowType(selectedFlow.primaryType)}</strong>
+            </div>
+            {selectedFlow.flowLinks.length ? (
+              <div className="brain-flow-list">
+                {selectedFlow.flowLinks.map((link) => (
+                  <div key={`${link.direction}-${link.neighborId}-${link.type}`} className="brain-flow-row">
+                    <span className={`brain-flow-direction ${link.direction}`}>{link.direction}</span>
+                    <span className="brain-flow-node">{link.neighborId}</span>
+                    <span className="brain-flow-type">{formatFlowType(link.type)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="brain-flow-empty">No immediate graph paths for this node.</p>
+            )}
+          </div>
           <div className="brain-detail-meta">
             <span>Score: {selectedNode.score?.toFixed(2)}</span>
             <span>ID: {selectedNode.id}</span>
@@ -471,13 +584,21 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           nodeThreeObject={nodeThreeObject}
           nodeThreeObjectExtend={true}
           nodeLabel={node => `${node.label} (${node.agent})`}
-          linkColor={link => link.type === "conflict" ? "#ff1744" : "rgba(0, 212, 255, 0.06)"}
-          linkWidth={link => link.type === "conflict" ? 1.5 : 0.3}
-          linkOpacity={0.15}
-          linkDirectionalParticles={link => link.type === "conflict" ? 3 : 0}
-          linkDirectionalParticleWidth={1.5}
-          linkDirectionalParticleColor={() => "#ff1744"}
-          backgroundColor="#060a12"
+          linkColor={link => (
+            link.type === "conflict"
+              ? "#ff1744"
+              : isSelectedFlowLink(link)
+                ? "rgba(64, 224, 255, 0.72)"
+                : selectedNode
+                  ? "rgba(0, 212, 255, 0.035)"
+                  : "rgba(0, 212, 255, 0.06)"
+          )}
+          linkWidth={link => link.type === "conflict" ? 1.5 : isSelectedFlowLink(link) ? 1.1 : selectedNode ? 0.18 : 0.3}
+          linkOpacity={selectedNode ? 0.32 : 0.15}
+          linkDirectionalParticles={link => link.type === "conflict" ? 3 : isSelectedFlowLink(link) ? 2 : 0}
+          linkDirectionalParticleWidth={link => isSelectedFlowLink(link) ? 1.8 : 1.5}
+          linkDirectionalParticleColor={link => isSelectedFlowLink(link) ? "#40e0ff" : "#ff1744"}
+          backgroundColor="#040812"
           width={dimensions.width}
           height={dimensions.height}
           d3AlphaDecay={0.06}
