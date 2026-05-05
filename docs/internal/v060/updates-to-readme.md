@@ -48,7 +48,7 @@ This section maps the reorganized `docs/internal/v060/` files to their public-do
 | `scope/v050-shipped-vs-slipped.md` | public correction source | Use to avoid re-promising v0.5.0 shipped features as v0.6.0 work. |
 | `scope/public-roadmap-update.md` | pending public copy | Draft source for `Info/roadmap.md` and README positioning. |
 | `plans/accessibility-motion-settings.md` | pending headline copy | Release copy only after U1/U2/U3 land and accessibility validation exists. |
-| `plans/foundation-carryovers.md` | partial public copy | H3/G2/C5/R2 entries only where landed; C5 MCP/OpenAPI still deferred. |
+| `plans/foundation-carryovers.md` | partial public copy | H3/G2/C5/R2 entries only where landed; C5 MCP/OpenAPI wrapper is now release-note eligible. |
 | `plans/governance-economics.md` | C9 + C3 backend landed | C9 copy can ship; C3 backend copy can ship as governed local budgets with health/admin visibility; C3 Settings write UI and G5 copy wait for implementation/tests. |
 | `plans/recall-improvement-plan.md` | partially public | RQ1/RQ2 copy must stay benchmark-gated and cautious. |
 | `plans/bridge-track-spec.md` | spec-only | Public roadmap may mention future bridge criteria, not shipped bridge code. |
@@ -153,7 +153,7 @@ Public-copy rule after the catalog pass: the final README/roadmap should adverti
 
 ### 1.1) Settings panel first-class navigation entry
 
-**Status:** `pending`
+**Status:** `landed 83509b4; MCP/OpenAPI wrapper landed 0a4575d`
 - Add `Settings` to primary navigation (sidebar or top-bar, consistent with existing nav).
 - Land four sub-sections: `Accessibility`, `Appearance & Motion`, `Connection`, `Keyboard & Navigation`.
 - README copy: "Cortex Control Center now has a first-class Settings surface with accessibility-first defaults, motion controls, and per-agent budget visibility."
@@ -233,16 +233,17 @@ Public-copy rule after the catalog pass: the final README/roadmap should adverti
 
 **Status:** `pending`
 - Add a short transparency note:
-  - "Every `/boot` and `cortex_boot` call now writes one row to `boot_audits` capturing which sources contributed, how they ranked, and how tokens were allocated. Audits auto-prune after 30 days. Query via `GET /boot/audit?session_id=X` or `cortex_boot_audit` MCP tool."
+  - "Every `/boot` and `cortex_boot` call now writes one row to `boot_audits` capturing which sources contributed, how they ranked, and how tokens were allocated. Audits auto-prune after 90 days by default. Query via `GET /boot/audit?agent=X&limit=N` or the read-only `cortex_boot_audit` MCP tool."
 - Prereq for understanding R2 (score-adaptive truncation) behavior in the wild.
 
 **Validation:**
-- Migration 008 applies cleanly on v0.5.0 databases
-- Storage overhead measurement: < 1MB per 1000 boots on realistic data
-- MCP tool test in `tests/mcp_rpc_headers.rs` style
-- OpenAPI spec includes new endpoint
+- Migration 015 applies cleanly on v0.5.0 databases.
+- HTTP `/boot/audit` shipped in `83509b4`.
+- MCP `cortex_boot_audit` wrapper and `cortex_boot` audit write path shipped in `0a4575d`.
+- OpenAPI spec includes `/boot/audit` and `BootAuditResponse`.
+- Validation for `0a4575d`: `rtk cargo test --manifest-path daemon-rs/Cargo.toml boot_audit` -> 2 passed; `cortex_boot_audit_tool_returns_mcp_boot_rows` -> 1 passed; `tools_list_includes_cortex_boot_audit_schema` -> 1 passed; OpenAPI path test -> 1 passed; `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean; clippy -> clean; full daemon suite -> 515 passed.
 
-**Commits:** *(pending)*
+**Commits:** `83509b4`, `0a4575d`
 
 ---
 
@@ -459,21 +460,18 @@ Public-copy rule after the catalog pass: the final README/roadmap should adverti
 
 Internal consolidation; no public README copy needed.
 
-### C5 landed — `83509b4`
+### C5 landed - `83509b4`, completed by `0a4575d`
 
-**Public impact:** new HTTP endpoint + env var.
+**Public impact:** new HTTP endpoint, MCP tool, OpenAPI row, and env var.
 
 **Draft release-notes copy:**
 
-> `GET /boot/audit` — returns the most recent boot events Cortex served
+> `GET /boot/audit` and `cortex_boot_audit` - return the most recent boot events Cortex served
 > to each agent (agent, profile, budget, token estimate + savings, capsule
 > count, latency, timestamp). Supports `?agent=<name>` + `?limit=<N>` (cap
 > 500). Auth-guarded like `/boot`. Rows auto-prune after 90 days; override
 > via `CORTEX_BOOT_AUDIT_RETENTION_DAYS=<days>` (0 disables prune).
 
-**Limitations:**
-- MCP tool wrapper deferred (HTTP endpoint covers the surface).
-- OpenAPI spec row still pending — tracked for release-gate sweep.
 - `boot_audits` is diagnostic metadata only; memory retention (C9)
   is separate and handles the actual "which memories survive" logic.
 

@@ -17,8 +17,8 @@
 
 Last updated: 2026-05-05
 Baseline: `v0.5.0` (`b9a6458` benchmark-claims correction, 2026-04-23)
-C3 evidence head: `1231d58` on `origin/main` (C3 backend + docs/full-suite validation)
-Commit range size through C3 evidence: 28 pushed commits on v0.6.0 track (plugin parity + benchmarking infra + H3 + cleanup + G2 + Phase 0 + C5 + plugin MCP hardening + C9 + R2 + RQ1 + daemon stability + storage hygiene + RQ2 + C3 backend/docs)
+C5 implementation evidence head: `0a4575d` on `origin/main` (C5 boot-audit MCP/OpenAPI wrapper)
+Commit range size through C5 implementation evidence: 30 pushed commits on v0.6.0 track (plugin parity + benchmarking infra + H3 + cleanup + G2 + Phase 0 + C5 + plugin MCP hardening + C9 + R2 + RQ1 + daemon stability + storage hygiene + RQ2 + C3 backend/docs + C5 wrapper)
 
 ## Purpose
 
@@ -36,6 +36,30 @@ This file is the source of truth for:
 - Cutting the public `CHANGELOG.md` v0.6.0 section at release
 - Populating `updates-to-readme.md` validation references as work lands
 - Audit trail during post-release incident review
+
+---
+
+## 2026-05-05 - C5 boot audit MCP/OpenAPI wrapper
+
+- Commit: `0a4575d` - `v0.6.0 - C5: add boot audit MCP and OpenAPI surface`
+- Why: C5's HTTP audit endpoint had landed, but `unified-status-plan.md` still tracked the MCP wrapper and OpenAPI row as release-gate cleanup. This closes that remaining C5 surface and makes MCP `cortex_boot` calls write the same audit rows as HTTP `/boot`.
+- Files touched:
+  - `daemon-rs/src/handlers/boot.rs` - shared boot-audit write/query helpers reused by HTTP and MCP paths.
+  - `daemon-rs/src/handlers/mcp.rs` - read-only `cortex_boot_audit` tool, advertised tool schema, permission mapping, and MCP `cortex_boot` audit write.
+  - `daemon-rs/src/main.rs` - OpenAPI path coverage test now includes `/boot/audit`.
+  - `specs/cortex-openapi.yaml` - `/boot/audit`, `BootAuditResponse`, and `BootAudit` schemas.
+- Behavior:
+  - `cortex_boot` now records one `boot_audits` row with agent, profile, budget, token estimate/savings, capsule count, capsule JSON, latency, and timestamp.
+  - `cortex_boot_audit` returns the same payload shape as `GET /boot/audit`, with optional exact `agent` and capped `limit` arguments.
+  - The tool is read-permission scoped and preserves existing team-mode caller requirements.
+- Validation:
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml boot_audit` -> 2 passed.
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml cortex_boot_audit_tool_returns_mcp_boot_rows` -> 1 passed.
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml tools_list_includes_cortex_boot_audit_schema` -> 1 passed.
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml openapi_spec_declares_readiness_recall_explain_and_stats_paths` -> 1 passed.
+  - `rtk cargo check --manifest-path daemon-rs/Cargo.toml --tests` -> clean.
+  - `rtk cargo clippy --manifest-path daemon-rs/Cargo.toml --all-targets -- -D warnings` -> clean.
+  - `rtk cargo test --manifest-path daemon-rs/Cargo.toml` -> 515 passed.
 
 ---
 
@@ -302,6 +326,8 @@ The entries below are **placeholders** — fill in as work lands. Keep placehold
 
 ### 1C) C5 — Boot prompt audit trail
 
+**Superseded by landed implementation:** base C5 shipped in `83509b4`; MCP/OpenAPI completion shipped in `0a4575d`. Actual implementation uses migration 015, `GET /boot/audit?agent=X&limit=N`, `cortex_boot_audit({ agent?, limit? })`, and a configurable 90-day prune default.
+
 **Expected files:**
 - `daemon-rs/src/db.rs` — migration 008 creating `boot_audits` table with columns: `id`, `session_id`, `agent`, `timestamp`, `token_budget`, `tokens_used`, `sources_json`, `decisions_json`, `recall_latency_ms`, `expires_at`
 - `daemon-rs/src/prompt_inject.rs` — write one audit row on every boot assembly
@@ -318,7 +344,7 @@ The entries below are **placeholders** — fill in as work lands. Keep placehold
 - Storage overhead: < 1MB per 1000 boots on realistic workload (measured explicitly, recorded here)
 - 30-day auto-prune runs in existing compaction loop (integration test)
 
-**Commit:** *(pending)*
+**Commit:** `83509b4`, completed by `0a4575d`
 
 ---
 

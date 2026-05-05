@@ -152,7 +152,7 @@ Ordered by execution sequence. Every entry has file touches, acceptance gates, a
 |----|------|--------|---------------|------------|
 | H3 | Consolidate `localhost:7437` literals into `DEFAULT_CORTEX_PORT` const | `landed c734886` | `daemon-rs/src/main.rs` (new const; no lib.rs in binary crate), `daemon-rs/src/auth.rs:64`, `desktop/cortex-control-center/src/App.jsx:61,293` | Single const in daemon (`pub const DEFAULT_CORTEX_PORT: u16 = 7437` in `main.rs`); test/doc literals unchanged; `cargo clippy -D warnings` green; 434/434 daemon tests (1 Windows flake isolated); 90/90 desktop tests |
 | G2 | Add `cortex admin rollback --session-id` CLI + `session_rolled_back` event | `landed f1d23ae` | `daemon-rs/src/main.rs` (mod admin + admin rollback subcommand + run_admin_rollback_cli), `daemon-rs/src/admin.rs` *(new ~310 LOC)* | Dry-run default; soft-delete via `status='rolled_back'`; idempotent via status-guarded UPDATE; `--json` emits stable RollbackStats; recall excludes rolled-back rows via existing `status='active'` filter (no hot-path edits); event row persisted to `events` table for SSE/audit. Integration test file deferred — 5 unit tests in admin.rs cover full logic against real schema |
-| C5 | Boot prompt audit trail (`boot_audits` table + `GET /boot/audit` + MCP tool) | `landed 83509b4` | `daemon-rs/src/db.rs` migration 015 (not 008 — 008 was `client_permissions`), `daemon-rs/src/handlers/boot.rs` audit write in `handle_boot` + new `handle_boot_audit`, `daemon-rs/src/server.rs` route. MCP tool + OpenAPI row deferred. | One row per boot shipped; configurable prune via `CORTEX_BOOT_AUDIT_RETENTION_DAYS` env (default **90 days**, revised from 30 in spec); GET endpoint supports `agent=` + `limit=`; 462/462 tests green, clippy clean. Remaining: MCP tool wrapper + `specs/cortex-openapi.yaml` row. |
+| C5 | Boot prompt audit trail (`boot_audits` table + `GET /boot/audit` + MCP tool) | `landed 83509b4; MCP/OpenAPI wrapper landed 0a4575d` | `daemon-rs/src/db.rs` migration 015 (not 008 — 008 was `client_permissions`), `daemon-rs/src/handlers/boot.rs` audit write/query helper + `handle_boot_audit`, `daemon-rs/src/handlers/mcp.rs` `cortex_boot_audit`, `daemon-rs/src/server.rs` route, `specs/cortex-openapi.yaml` row. | One row per HTTP `/boot` and MCP `cortex_boot`; configurable prune via `CORTEX_BOOT_AUDIT_RETENTION_DAYS` env (default **90 days**, revised from 30 in spec); GET + MCP support `agent=` + `limit=`; OpenAPI documents `/boot/audit`; validation: boot-audit targeted tests, OpenAPI path test, check, clippy, and full daemon suite 515/515. |
 | R2 | Score-adaptive truncation in boot assembly (prereq: C5) | `landed a547a07` | `daemon-rs/src/compiler.rs` (actual `/boot` assembly path; `prompt_inject.rs` only fetches `/boot`) | High-score sources get more tokens; flat-score fallback matches current; C5 boot-audit capsules include allocation metadata; p50/GT benchmark still needed before release claim |
 
 ### 3B) Accessibility + Settings + Motion (Tier 1 headline, 3-4 weeks)
@@ -249,7 +249,7 @@ All of the following must hold at release time:
    - C4 contract tests green on all 3 transports
 4. **Foundation carryovers**
    - G2 rollback CLI shipped + tested
-   - C5 boot audit trail on every boot call, 30-day prune
+   - C5 boot audit trail on every boot call, configurable prune defaulting to 90 days
    - R2 truncation allocator with variance fallback
    - H3 single `DEFAULT_CORTEX_PORT` const across daemon prod paths
 5. **Retrieval quality**
@@ -319,7 +319,7 @@ References:
 
 ### Weeks 4-5 (2026-05-18 → 2026-05-31)
 7. Accessibility Tier 1B (ARIA, reduced-motion, contrast).
-8. ~~C5 boot audit trail~~ — `landed 83509b4`; MCP/OpenAPI wrapper remains release-gate cleanup.
+8. ~~C5 boot audit trail + MCP/OpenAPI wrapper~~ — `landed 83509b4`, completed by `0a4575d`.
 9. ~~G2 rollback CLI~~ — `landed f1d23ae`.
 
 ### Week 6 checkpoint (2026-06-05) — mandatory
@@ -430,7 +430,7 @@ Active and near-term plans:
 | Path | Status | Role |
 |------|--------|------|
 | `plans/accessibility-motion-settings.md` | pending | U1 accessibility/settings/motion master plan. |
-| `plans/foundation-carryovers.md` | mostly landed / partial | Tracks H3, G2, C5, R2; C5 MCP/OpenAPI remains deferred. |
+| `plans/foundation-carryovers.md` | mostly landed / partial | Tracks H3, G2, C5, R2; C5 MCP/OpenAPI wrapper is landed, R2 benchmark proof remains deferred. |
 | `plans/governance-economics.md` | partially landed / active | C9 and C3 backend are landed; U1 budget UI, G5, and C4 remain pending. |
 | `plans/recall-improvement-plan.md` | partially executed | Master recall roadmap. RQ0 infra, RQ1 code, RQ2 code/local gate done; benchmark gates remain. |
 | `plans/bridge-track-spec.md` | spec-only | v0.7+ external memory bridge gate; zero bridge code in v0.6.0. |
