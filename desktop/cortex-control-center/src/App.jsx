@@ -38,6 +38,11 @@ import {
 import { buildMonteCarloProjection } from "./analytics-projection.js";
 import { summarizeBootThroughput } from "./analytics-metrics.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.js";
+import {
+  readControlCenterSettings,
+  summarizeBudgetStatus,
+  writeControlCenterSettings,
+} from "./settings/settings-state.js";
 
 const LazyBrainVisualizer = lazy(() =>
   import("./BrainVisualizer.jsx").then((module) => ({ default: module.BrainVisualizer })),
@@ -91,6 +96,7 @@ const PANEL_SEQUENCE = [
   { key: "work", label: "Work", icon: "work" },
   { key: "memory", label: "Memory", icon: "memory" },
   { key: "brain", label: "Brain", icon: "brain" },
+  { key: "settings", label: "Settings", icon: "settings" },
   { key: "about", label: "About", icon: "about" },
 ];
 const PANEL_SEQUENCE_INDEX = new Map(PANEL_SEQUENCE.map((entry, idx) => [entry.key, idx]));
@@ -115,6 +121,7 @@ const EMPTY_HEALTH_META = {
   degraded: false,
   dbCorrupted: false,
   runtimeVersion: "",
+  budgets: null,
 };
 
 const CONTROL_CENTER_VERSION = "0.5.0";
@@ -1494,6 +1501,7 @@ export function App() {
   const [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics");
   const [startupCoreReadyState, setStartupCoreReadyState] = useState(false);
   const [isSettingUpEditors, setIsSettingUpEditors] = useState(false);
+  const [controlSettings, setControlSettings] = useState(() => readControlCenterSettings());
   const [currency, setCurrency] = useState(() => normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD")));
   const [analyticsMode, setAnalyticsMode] = useState(() => {
     const stored = readLocalStorageValue("cortex_analytics_mode", "aggregate");
@@ -1538,6 +1546,10 @@ export function App() {
   const closeConnectionDialog = useCallback(() => {
     connectionDialogAutoPromptSuppressedRef.current = false;
     setShowConnectionDialog(false);
+  }, []);
+
+  const updateControlSetting = useCallback((key, value) => {
+    setControlSettings((current) => ({ ...current, [key]: value }));
   }, []);
 
   const changePanel = useCallback((nextPanel) => {
@@ -1978,6 +1990,7 @@ export function App() {
       degraded: Boolean(health?.degraded),
       dbCorrupted: Boolean(health?.db_corrupted),
       runtimeVersion,
+      budgets: health?.budgets || null,
     });
 
     if (!health?.stats) {
@@ -2690,6 +2703,15 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("cortex_currency", safeCurrency);
   }, [safeCurrency]);
+
+  useEffect(() => {
+    writeControlCenterSettings(controlSettings);
+    if (typeof document === "undefined") return;
+    document.documentElement.dataset.cortexReducedMotion = controlSettings.reducedMotion;
+    document.documentElement.dataset.cortexContrast = controlSettings.highContrast ? "high" : "standard";
+    document.documentElement.dataset.cortexKeyboardHints = controlSettings.keyboardHints ? "on" : "off";
+    document.documentElement.dataset.cortexCompactNavigation = controlSettings.compactNavigation ? "on" : "off";
+  }, [controlSettings]);
 
   useEffect(() => {
     localStorage.setItem("cortex_analytics_mode", analyticsMode);
@@ -3928,6 +3950,10 @@ export function App() {
     }
   }, [cortexBase]);
   const hostLabel = connectionEndpoint.hostLabel;
+  const budgetSummary = useMemo(
+    () => summarizeBudgetStatus(healthMeta.budgets),
+    [healthMeta.budgets],
+  );
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -3947,6 +3973,7 @@ export function App() {
               className={`nav-item ${panel === item.key ? "active" : ""}`}
               onClick={() => changePanel(item.key)}
               data-key={idx + 1}
+              aria-current={panel === item.key ? "page" : undefined}
             >
               <span style={{ opacity: 0.5, fontSize: "12px" }}><AppIcon name={item.icon} /></span>
               {item.label}
@@ -4206,6 +4233,178 @@ export function App() {
         )}
 
         <div className="panel-stage" data-panel-direction={panelMotionDirection}>
+          {panel === "settings" ? (
+            <section className="panel active settings-panel">
+              <div className="panel-header">
+                <div>
+                  <span className="panel-kicker">Control Center</span>
+                  <h1>Settings</h1>
+                  <p className="panel-subtitle">Accessibility, motion, connection, keyboard, and local budget state.</p>
+                </div>
+                <button type="button" className="btn-sm" onClick={runRefreshAll}>Refresh</button>
+              </div>
+
+              <div className="settings-grid">
+                <section className="settings-section" aria-labelledby="settings-accessibility">
+                  <div className="settings-section-head">
+                    <AppIcon name="settings" size={18} />
+                    <h2 id="settings-accessibility">Accessibility</h2>
+                  </div>
+                  <label className="settings-row">
+                    <span>
+                      <strong>High contrast</strong>
+                      <small>Increase text and border contrast.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={controlSettings.highContrast}
+                      onChange={(event) => updateControlSetting("highContrast", event.target.checked)}
+                    />
+                  </label>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Keyboard hints</strong>
+                      <small>Show shortcut labels.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={controlSettings.keyboardHints}
+                      onChange={(event) => updateControlSetting("keyboardHints", event.target.checked)}
+                    />
+                  </label>
+                </section>
+
+                <section className="settings-section" aria-labelledby="settings-motion">
+                  <div className="settings-section-head">
+                    <AppIcon name="analytics" size={18} />
+                    <h2 id="settings-motion">Appearance & Motion</h2>
+                  </div>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Motion</strong>
+                      <small>Runtime transition profile.</small>
+                    </span>
+                    <select
+                      value={controlSettings.reducedMotion}
+                      onChange={(event) => updateControlSetting("reducedMotion", event.target.value)}
+                    >
+                      <option value="system">System</option>
+                      <option value="reduce">Reduced</option>
+                      <option value="full">Full</option>
+                    </select>
+                  </label>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Currency</strong>
+                      <small>Token-savings estimates.</small>
+                    </span>
+                    <select
+                      value={safeCurrency}
+                      onChange={(event) => setCurrency(normalizeCurrencyCode(event.target.value))}
+                    >
+                      {CURRENCY_OPTIONS.map((code) => <option key={code} value={code}>{code}</option>)}
+                    </select>
+                  </label>
+                </section>
+
+                <section className="settings-section settings-section-wide" aria-labelledby="settings-connection">
+                  <div className="settings-section-head">
+                    <AppIcon name="outbound" size={18} />
+                    <h2 id="settings-connection">Connection</h2>
+                  </div>
+                  <div className="settings-status-grid">
+                    <div>
+                      <span className="settings-label">Host</span>
+                      <strong>{formatDaemonEndpoint(cortexBase)}</strong>
+                    </div>
+                    <div>
+                      <span className="settings-label">Mode</span>
+                      <strong>{isTauriRuntime ? "Desktop managed" : "Browser attach"}</strong>
+                    </div>
+                    <div>
+                      <span className="settings-label">Daemon</span>
+                      <strong>{daemonStatusBadge.label}</strong>
+                    </div>
+                  </div>
+                  <button type="button" className="btn-sm" onClick={openConnectionDialog}>Connection Settings</button>
+                </section>
+
+                <section className="settings-section settings-section-wide" aria-labelledby="settings-budgets">
+                  <div className="settings-section-head">
+                    <AppIcon name="token" size={18} />
+                    <h2 id="settings-budgets">Budgets</h2>
+                    <span className={`settings-budget-pill ${budgetSummary.statusLabel.toLowerCase()}`}>
+                      {budgetSummary.statusLabel}
+                    </span>
+                  </div>
+                  <div className="settings-status-grid">
+                    <div>
+                      <span className="settings-label">Config</span>
+                      <strong>{budgetSummary.configLoaded ? "Loaded" : "Not loaded"}</strong>
+                    </div>
+                    <div>
+                      <span className="settings-label">Enforcement</span>
+                      <strong>{budgetSummary.enabled ? "Enabled" : "Off"}</strong>
+                    </div>
+                    <div>
+                      <span className="settings-label">Source</span>
+                      <strong>{budgetSummary.source || "Default unlimited"}</strong>
+                    </div>
+                    <div>
+                      <span className="settings-label">Recent Denials</span>
+                      <strong>{budgetSummary.recentDenialsTotal}</strong>
+                    </div>
+                  </div>
+                  {budgetSummary.error ? <p className="settings-error">{budgetSummary.error}</p> : null}
+                  <div className="settings-budget-table" role="table" aria-label="Configured budget endpoints">
+                    <div className="settings-budget-row settings-budget-head" role="row">
+                      <span role="columnheader">Endpoint</span>
+                      <span role="columnheader">Limit</span>
+                      <span role="columnheader">Window</span>
+                      <span role="columnheader">Recent Denials</span>
+                    </div>
+                    {(budgetSummary.endpointRows.length ? budgetSummary.endpointRows : [{ endpoint: "none", limit: null, windowSeconds: null }]).map((row) => {
+                      const denial = budgetSummary.denialRows.find((entry) => entry.endpoint === row.endpoint)?.count;
+                      return (
+                        <div key={row.endpoint} className="settings-budget-row" role="row">
+                          <span role="cell">{row.endpoint}</span>
+                          <span role="cell">{row.limit ?? "--"}</span>
+                          <span role="cell">{row.windowSeconds ? `${row.windowSeconds}s` : "--"}</span>
+                          <span role="cell">{denial ?? (budgetSummary.denialRows.length ? 0 : "--")}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="settings-section" aria-labelledby="settings-keyboard">
+                  <div className="settings-section-head">
+                    <AppIcon name="work" size={18} />
+                    <h2 id="settings-keyboard">Keyboard & Navigation</h2>
+                  </div>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Compact navigation</strong>
+                      <small>Denser sidebar controls.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={controlSettings.compactNavigation}
+                      onChange={(event) => updateControlSetting("compactNavigation", event.target.checked)}
+                    />
+                  </label>
+                  {controlSettings.keyboardHints ? (
+                    <div className="settings-shortcut-grid" aria-label="Keyboard shortcut summary">
+                      {PANEL_SEQUENCE.map((item, idx) => (
+                        <span key={item.key}><kbd>{idx + 1}</kbd>{item.label}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+              </div>
+            </section>
+          ) : null}
+
         {panel === "overview" ? (
           <section className="panel active">
             <div className="panel-header overview-panel-header">

@@ -157,6 +157,20 @@ export function AppIcon({ name, className = "", size = "1em", title = "" }) {
           <path d="M7 16h10" />
         </IconBase>
       );
+    case "settings":
+      return (
+        <IconBase className={className} size={size} title={title}>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 4v2" />
+          <path d="M12 18v2" />
+          <path d="m5.6 5.6 1.4 1.4" />
+          <path d="m17 17 1.4 1.4" />
+          <path d="M4 12h2" />
+          <path d="M18 12h2" />
+          <path d="m5.6 18.4 1.4-1.4" />
+          <path d="m17 7 1.4-1.4" />
+        </IconBase>
+      );
     case "savings":
       return (
         <IconBase className={className} size={size} title={title}>

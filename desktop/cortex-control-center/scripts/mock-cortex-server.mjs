@@ -146,6 +146,20 @@ function buildFixture() {
         port: 7437,
         version: "0.5.0",
       },
+      budgets: {
+        configLoaded: true,
+        config_loaded: true,
+        enabled: true,
+        source: "budgets.toml",
+        error: null,
+        endpoints: {
+          recall: { limit: 300, windowSeconds: 60, window_seconds: 60 },
+          store: { limit: 180, windowSeconds: 60, window_seconds: 60 },
+          mcp: { limit: 120, windowSeconds: 60, window_seconds: 60 },
+        },
+        recentDenials: 2,
+        recent_denials: 2,
+      },
       stats: {
         memories: 239,
         decisions: 61,
