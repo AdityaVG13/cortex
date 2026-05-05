@@ -1497,10 +1497,6 @@ button.sys-item {
 :root[data-cortex-effective-reduced-motion="reduce"] .panel-stage[data-panel-direction] > .analytics-panel.active,
 :root[data-cortex-reduced-motion="reduce"] .analytics-mode-panel,
 :root[data-cortex-effective-reduced-motion="reduce"] .analytics-mode-panel,
-:root[data-cortex-reduced-motion="reduce"] .brain-orbital-ring,
-:root[data-cortex-effective-reduced-motion="reduce"] .brain-orbital-ring,
-:root[data-cortex-reduced-motion="reduce"] .brain-scanline,
-:root[data-cortex-effective-reduced-motion="reduce"] .brain-scanline,
 :root[data-cortex-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-effective-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-reduced-motion="reduce"] .item-list li,
@@ -2719,10 +2715,6 @@ button.sys-item {
     #040812;
 }
 
-.brain-container canvas {
-  filter: saturate(1.12) contrast(1.04);
-}
-
 .brain-loading {
   display: flex;
   flex-direction: column;
@@ -3508,8 +3500,7 @@ button.sys-item {
   opacity: 0.34;
 }
 
-.brain-orbital-ring,
-.brain-scanline {
+.brain-orbital-ring {
   position: absolute;
   pointer-events: none;
   z-index: 2;
@@ -3526,39 +3517,13 @@ button.sys-item {
     inset 0 0 24px rgba(64, 224, 255, 0.08),
     0 0 26px rgba(64, 224, 255, 0.06);
   transform: translate(-50%, -50%) rotateX(64deg) rotateZ(8deg);
-  opacity: 0.72;
-  animation: brain-ring-drift 28s linear infinite;
+  opacity: 0.58;
 }
 
 .brain-orbital-ring-b {
   width: min(58vw, 640px);
   border-color: rgba(255, 171, 0, 0.16);
   transform: translate(-50%, -50%) rotateX(68deg) rotateZ(-18deg);
-  animation-duration: 38s;
-  animation-direction: reverse;
-}
-
-.brain-scanline {
-  left: 12%;
-  right: 12%;
-  top: 50%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(64, 224, 255, 0.46), transparent);
-  box-shadow: 0 0 18px rgba(64, 224, 255, 0.28);
-  opacity: 0.5;
-  transform: translateY(-50%);
-  animation: brain-scanline-drift 9s var(--motion-ease) infinite;
-}
-
-@keyframes brain-ring-drift {
-  from { transform: translate(-50%, -50%) rotateX(64deg) rotateZ(0deg); }
-  to { transform: translate(-50%, -50%) rotateX(64deg) rotateZ(360deg); }
-}
-
-@keyframes brain-scanline-drift {
-  0%, 100% { transform: translateY(-34vh); opacity: 0; }
-  20%, 78% { opacity: 0.48; }
-  50% { transform: translateY(34vh); opacity: 0.26; }
 }
 
 .brain-hud {
@@ -4557,8 +4522,6 @@ kbd {
   :root:not([data-cortex-reduced-motion="full"]) .task-complete-panel,
   :root:not([data-cortex-reduced-motion="full"]) .panel-stage[data-panel-direction] > .panel.active,
   :root:not([data-cortex-reduced-motion="full"]) .analytics-mode-panel,
-  :root:not([data-cortex-reduced-motion="full"]) .brain-orbital-ring,
-  :root:not([data-cortex-reduced-motion="full"]) .brain-scanline,
   :root:not([data-cortex-reduced-motion="full"]) .coming-soon {
     animation: none !important;
     transition: none !important;

@@ -36,14 +36,23 @@ describe("Brain visualizer", () => {
     expect(source).toContain("linkDirectionalParticles={link => link.type === \"conflict\" ? 3 : isSelectedFlowLink(link) ? 2 : 0}");
   });
 
-  it("renders the cinematic Brain overlay without bypassing reduced motion", () => {
+  it("uses native graph nodes for smooth type-colored rendering", () => {
+    expect(source).not.toContain("import * as THREE");
+    expect(source).not.toContain("nodeThreeObject={");
+    expect(source).toContain("const BRAIN_NODE_COLORS = Object.freeze");
+    expect(source).toContain("nodeColor={resolveNodeColor}");
+    expect(source).toContain("nodeVal={resolveNodeValue}");
+    expect(source).toContain("nodeResolution={8}");
+  });
+
+  it("keeps the Jarvis-style Brain overlay static and cheap", () => {
     expect(source).toContain("brain-orbital-ring brain-orbital-ring-a");
     expect(source).toContain("brain-orbital-ring brain-orbital-ring-b");
-    expect(source).toContain("brain-scanline");
+    expect(source).not.toContain("brain-scanline");
 
-    expect(readBlock(css, ".brain-orbital-ring {")).toContain("animation: brain-ring-drift 28s linear infinite");
-    expect(css).toContain("animation: brain-scanline-drift 9s var(--motion-ease) infinite");
-    expect(css).toContain(':root[data-cortex-effective-reduced-motion="reduce"] .brain-orbital-ring');
-    expect(css).toContain(':root:not([data-cortex-reduced-motion="full"]) .brain-scanline');
+    expect(readBlock(css, ".brain-orbital-ring {")).not.toContain("animation:");
+    expect(css).not.toContain("brain-scanline");
+    expect(css).not.toContain("brain-ring-drift");
+    expect(css).not.toContain(".brain-container canvas");
   });
 });

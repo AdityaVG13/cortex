@@ -1,8 +1,23 @@
 import { Component, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
-import * as THREE from "three";
-import { AGENT_COLORS, getAgentColor, truncate } from "./constants.js";
+import { getAgentColor, truncate } from "./constants.js";
 import { AppIcon } from "./ui-icons.jsx";
+
+const BRAIN_NODE_COLORS = Object.freeze({
+  memory: "#22d3ee",
+  decision: "#f6b34b",
+  selected: "#f8fbff",
+  neighborMemory: "#67e8f9",
+  neighborDecision: "#ffd166",
+  dimmed: "#1b3348",
+});
+
+const BRAIN_LEGEND = Object.freeze([
+  { key: "memory", label: "Memory", color: BRAIN_NODE_COLORS.memory },
+  { key: "decision", label: "Decision", color: BRAIN_NODE_COLORS.decision },
+  { key: "flow", label: "Recall flow", color: BRAIN_NODE_COLORS.neighborMemory },
+  { key: "selected", label: "Selected", color: BRAIN_NODE_COLORS.selected },
+]);
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -48,6 +63,31 @@ function graphEndpointId(endpoint) {
 
 function formatFlowType(type) {
   return String(type || "semantic").replace(/[_-]+/g, " ");
+}
+
+function isDecisionNode(node) {
+  return node?.group === "decision" || node?.type === "decision";
+}
+
+function brainNodeBaseColor(node) {
+  return isDecisionNode(node) ? BRAIN_NODE_COLORS.decision : BRAIN_NODE_COLORS.memory;
+}
+
+function brainNodeColor(node, selectedNode, selectedFlow) {
+  if (selectedNode?.id === node.id) return BRAIN_NODE_COLORS.selected;
+  const neighbor = selectedFlow.neighborIds.has(node.id);
+  if (neighbor && isDecisionNode(node)) return BRAIN_NODE_COLORS.neighborDecision;
+  if (neighbor) return BRAIN_NODE_COLORS.neighborMemory;
+  if (selectedNode) return BRAIN_NODE_COLORS.dimmed;
+  return brainNodeBaseColor(node);
+}
+
+function brainNodeValue(node, selectedNode, selectedFlow) {
+  const base = Math.max(2.2, node.val || 3);
+  if (selectedNode?.id === node.id) return base * 1.55;
+  if (selectedFlow.neighborIds.has(node.id)) return base * 1.18;
+  if (selectedNode) return Math.max(1.4, base * 0.76);
+  return base;
 }
 
 function BrainFallbackGraph({
@@ -102,6 +142,7 @@ function BrainFallbackGraph({
 function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
   const graphRef = useRef(null);
   const rotationRef = useRef(null);
+  const hoverNodeIdRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -349,74 +390,20 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     return sourceId === selectedId || targetId === selectedId;
   }, [selectedNode?.id]);
 
-  const nodeThreeObject = useCallback((node) => {
-    const color = new THREE.Color(getAgentColor(node.agent));
-    const baseColor = color.clone().multiplyScalar(0.7);
-    const coreColor = color.clone().multiplyScalar(1.22);
-    const selected = selectedNode?.id === node.id;
-    const neighbor = !selected && selectedFlow.neighborIds.has(node.id);
-    const dimmed = Boolean(selectedNode) && !selected && !neighbor;
-    const radius = Math.max(1.6, (node.val || 3) * 0.45) * (selected ? 1.34 : neighbor ? 1.12 : 1);
-
-    const group = new THREE.Group();
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(radius, 18, 18),
-      new THREE.MeshStandardMaterial({
-        color: baseColor,
-        emissive: baseColor,
-        emissiveIntensity: selected ? 0.58 : neighbor ? 0.36 : 0.22,
-        metalness: 0.05,
-        roughness: 0.48,
-        transparent: dimmed,
-        opacity: dimmed ? 0.32 : 1,
-      })
-    );
-    group.add(core);
-
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(radius * 1.9, 18, 18),
-      new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: dimmed ? 0.05 : selected ? 0.36 : neighbor ? 0.24 : 0.18,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      })
-    );
-    group.add(glow);
-
-    const nucleus = new THREE.Mesh(
-      new THREE.SphereGeometry(radius * 0.45, 18, 18),
-      new THREE.MeshStandardMaterial({
-        color: coreColor,
-        emissive: coreColor,
-        emissiveIntensity: selected ? 0.8 : 0.45,
-        metalness: 0.25,
-        roughness: 0.2,
-        transparent: dimmed,
-        opacity: dimmed ? 0.44 : 1,
-      })
-    );
-    group.add(nucleus);
-
-    if (selected || neighbor) {
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(radius * (selected ? 2.35 : 2.05), selected ? 0.035 : 0.024, 8, 72),
-        new THREE.MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: selected ? 0.52 : 0.26,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        })
-      );
-      ring.rotation.x = Math.PI / 2;
-      group.add(ring);
-    }
-
-    return group;
-  }, [selectedFlow.neighborIds, selectedNode]);
+  const resolveNodeColor = useCallback(
+    (node) => brainNodeColor(node, selectedNode, selectedFlow),
+    [selectedFlow, selectedNode],
+  );
+  const resolveNodeValue = useCallback(
+    (node) => brainNodeValue(node, selectedNode, selectedFlow),
+    [selectedFlow, selectedNode],
+  );
+  const updateHoverNode = useCallback((node) => {
+    const nodeId = node?.id || null;
+    if (hoverNodeIdRef.current === nodeId) return;
+    hoverNodeIdRef.current = nodeId;
+    setHoverNode(node || null);
+  }, []);
 
   // Error / loading states
   if (error) {
@@ -495,7 +482,6 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
       <div className="brain-orbital-ring brain-orbital-ring-a" aria-hidden="true" />
       <div className="brain-orbital-ring brain-orbital-ring-b" aria-hidden="true" />
-      <div className="brain-scanline" aria-hidden="true" />
 
       <div className="brain-hud brain-hud-primary">
         <div className="brain-hud-copy">
@@ -581,8 +567,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
         <ForceGraph3D
           ref={graphRef}
           graphData={graphData}
-          nodeThreeObject={nodeThreeObject}
-          nodeThreeObjectExtend={true}
+          nodeColor={resolveNodeColor}
+          nodeVal={resolveNodeValue}
+          nodeResolution={8}
+          nodeOpacity={0.94}
+          nodeRelSize={3.6}
           nodeLabel={node => `${node.label} (${node.agent})`}
           linkColor={link => (
             link.type === "conflict"
@@ -601,11 +590,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           backgroundColor="#040812"
           width={dimensions.width}
           height={dimensions.height}
-          d3AlphaDecay={0.06}
-          d3VelocityDecay={0.5}
-          warmupTicks={20}
-          cooldownTime={1500}
-          onNodeHover={node => setHoverNode(node || null)}
+          d3AlphaDecay={0.07}
+          d3VelocityDecay={0.46}
+          warmupTicks={45}
+          cooldownTime={1200}
+          onNodeHover={updateHoverNode}
           onNodeClick={node => {
             if (!node) return;
             setSelectedNode(prev => prev?.id === node.id ? null : node);
@@ -624,10 +613,10 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       </GraphErrorBoundary>
 
       <div className="brain-legend">
-        {Object.entries(AGENT_COLORS).slice(0, 5).map(([agent, color]) => (
-          <span key={agent} className="brain-legend-item">
+        {BRAIN_LEGEND.map(({ key, label, color }) => (
+          <span key={key} className="brain-legend-item">
             <span className="brain-legend-dot" style={{ background: color, boxShadow: `0 0 6px ${color}` }} />
-            {agent}
+            {label}
           </span>
         ))}
       </div>
