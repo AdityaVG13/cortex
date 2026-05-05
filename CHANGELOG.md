@@ -7,6 +7,78 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-05
+
+This release turns v0.6.0 into the accessibility, governance, and recall-quality foundation: Settings becomes a first-class Control Center surface, local budgets and retention classes become operator-visible controls, boot context gets auditability and smarter ranking, and recall-quality experiments move behind explicit measurement gates.
+
+Public recall-quality claims remain conservative: the helper-free purity infrastructure, BGE default, and reranker code paths ship here, but LongMemEval/API-backed proof gates are still required before claiming production quality gains.
+
+### Added
+
+- **Desktop Settings**: first-class Settings panel with Accessibility, Appearance & Motion, Connection, Budgets, and Keyboard & Navigation sections.
+- **Accessibility controls**: Settings-driven high contrast, reduced motion, keyboard hints, and compact navigation preferences with persisted local state and runtime document attributes.
+- **Accessibility gates**: keyboard fallback helpers, ARIA/live-region hardening, reduced-motion runtime plumbing, contrast token checks, and a 375px reflow static gate.
+- **Governance**: retention classes for memories and decisions (`durable`, `operational`, `audit`, `ephemeral`) across store, MCP, OpenAPI, export, and import.
+- **Budgets**: local per-endpoint budgets via `~/.cortex/budgets.toml` for store, recall-family, boot, and MCP RPC calls, with stable HTTP `429` / JSON-RPC denial metadata.
+- **Budget UI**: Control Center budget status and a Tauri-only local budget editor that writes the resolved local `budgets.toml` without adding a daemon write endpoint.
+- **Boot audits**: `boot_audits` table, `GET /boot/audit`, and read-only `cortex_boot_audit` MCP tool, with 90-day default pruning.
+- **Admin rollback**: `cortex admin rollback --session-id` dry-run/commit workflow with `session_rolled_back` audit events.
+- **Recall purity infrastructure**: `cortex-http-pure` adapter, purity CI gates, CODEOWNERS coverage, CAS-100 adversarial set, and triangle judge tooling.
+- **Embeddings**: `bge-base-en-v1.5` is the default profile; MiniLM profiles remain opt-in, and `qwen3-embedding-0.6b` is available as an explicit opt-in.
+- **Reranking**: `ms-marco-MiniLM-L-6-v2` int8 cross-encoder support behind off/shadow/primary modes; default remains off.
+- **Context ranking**: boot context candidates now rank by retention class, recency, relevance, and activity before score-adaptive packing.
+- **Adapter conformance**: shared contract spec plus HTTP, MCP-RPC, Python SDK, and TypeScript SDK conformance tests.
+
+### Changed
+
+- Claude plugin MCP is HTTP attach-only and no longer starts a second local daemon from plugin MCP paths.
+- Boot prompt assembly now uses score-adaptive token allocation with exact flat-score fallback to the v0.5.0 greedy packer.
+- Sidebar, panel, and numeric transitions now share motion tokens and honor reduced-motion bypasses.
+- Root package, daemon, plugin, marketplace, OpenAPI, SDK, and Control Center version metadata are aligned to `0.6.0`.
+- Browser automation policy is browser-harness-only; the old `expect-cli`/Playwright-based desktop smoke path was removed.
+
+### Fixed
+
+- Control Center now supervises the app-managed daemon and respawns it after unexpected exits while honoring intentional stops.
+- Daemon panics write a local breadcrumb to `~/.cortex/panic.log`.
+- Handler panics return JSON 500 responses instead of taking down the daemon process.
+- MCP heartbeat tolerance now survives normal supervisor recovery windows.
+- Settings and main app surfaces gained stronger visible focus, native table semantics, disabled unavailable actions, hidden-panel inerting, and focus restoration.
+
+### Performance
+
+- Compaction now optimizes FTS5 shadow tables, prunes stale-model embeddings, prunes singleton co-occurrence rows, and triggers on FTS segment pressure.
+- Canonical embedding and cluster-centroid storage now uses PQ8 int8 blobs with legacy f32 read compatibility and batched migration.
+- Maintainer live verification reduced one production DB from 412 MB to 26 MB after the storage hygiene pass.
+
+### Security
+
+- Plugin and daemon versions are enforced with a lockstep guard.
+- Budget denials write `budget_rejected` audit events when the DB is reachable.
+- `rustls-webpki` was updated to `0.103.13` in daemon and desktop Tauri lockfiles.
+- Desktop npm audit blockers were cleared by removing the Playwright-carrying `expect-cli` dependency tree and refreshing the lockfile.
+
+### Desktop
+
+- Settings Budgets renders daemon `/health.budgets` with native table semantics and supports local edit/save of configured endpoint budgets.
+- Brain visualization has a 2D fallback for unavailable WebGL.
+- Browser-mode unavailable actions are disabled instead of presented as active commands.
+- Control Center version display now reports `0.6.0`.
+
+### Documentation
+
+- Public roadmap was reconciled away from stale "Foundation Hardening" promises and toward accessibility, governance, and recall quality.
+- Plugin lockstep guidance moved into public `Info/`.
+- Benchmark documentation now distinguishes `cortex-http-pure`, `cortex-http-base`, and tuned `cortex-http` adapters.
+- Internal v0.6.0 changelog, README staging queue, and unified status plan were kept current without publishing ignored `docs/` internals.
+
+### CI
+
+- Added adapter conformance CI coverage across daemon HTTP/MCP and Python/TypeScript SDK mirrors.
+- Added recall purity gates.
+- Removed the optional Expect/Playwright desktop browser-smoke CI path.
+- Release audit sweep now has clean daemon `cargo audit`, root/desktop/SDK npm audits, and documented upstream desktop Tauri maintenance warnings.
+
 ## [0.5.0] - 2026-04-22
 
 349 commits since v0.4.1. This release focuses on retrieval quality, daemon reliability, Control Center resilience, and security hardening.
@@ -158,7 +230,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 Initial public release.
 
-[Unreleased]: https://github.com/AdityaVG13/cortex/compare/v0.5.0...HEAD
+[0.6.0]: https://github.com/AdityaVG13/cortex/compare/v0.5.0...v0.6.0
+
+[Unreleased]: https://github.com/AdityaVG13/cortex/compare/v0.6.0...HEAD
 [0.5.0]: https://github.com/AdityaVG13/cortex/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/AdityaVG13/cortex/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AdityaVG13/cortex/compare/v0.3.0...v0.4.0
