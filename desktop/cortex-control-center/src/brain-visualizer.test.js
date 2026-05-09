@@ -126,10 +126,10 @@ describe("Brain visualizer", () => {
     expect(postFx).toContain("export function refreshBloomSelection");
   });
 
-  it("BrainVisualizer mounts post-fx, assigns layers, and exposes bloom state", () => {
+  it("BrainVisualizer keeps post-fx scaffolding present but bloom temporarily disabled", () => {
     expect(source).toContain("import { BRAIN_LAYERS, assignLayer, markBloom }");
     expect(source).toContain("import { attachBloom }");
-    expect(source).toContain("attachBloom(graph,");
+    expect(source).not.toContain("attachBloom(graph,");
     expect(source).toContain("assignLayer(jarvisShellRef.current, BRAIN_LAYERS.BASE)");
     expect(source).toContain("data-bloom={bloomActive ? \"on\" : \"off\"}");
     expect(source).toContain("data-shell-split={useShellSplit ? \"on\" : \"off\"}");

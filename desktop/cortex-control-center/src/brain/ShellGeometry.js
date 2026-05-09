@@ -99,8 +99,8 @@ export function createConstellationShells() {
   const group = new THREE.Group();
   group.name = CONSTELLATION_SHELL_NAME;
 
-  const outerShell = icosphereWireframe(SHELL_OUTER_RADIUS, 2, OUTER_LINE_COLOR, 0.28);
-  const innerShell = icosphereWireframe(SHELL_INNER_RADIUS, 2, INNER_LINE_COLOR, 0.18);
+  const outerShell = icosphereWireframe(SHELL_OUTER_RADIUS, 2, OUTER_LINE_COLOR, 0.55);
+  const innerShell = icosphereWireframe(SHELL_INNER_RADIUS, 2, INNER_LINE_COLOR, 0.42);
   group.add(outerShell);
   group.add(innerShell);
 

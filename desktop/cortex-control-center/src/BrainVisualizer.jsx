@@ -285,45 +285,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     };
   }, [active, graphData.nodes.length, webglAvailable]);
 
-  useEffect(() => {
-    if (!active || !webglAvailable || !graphRef.current) return undefined;
-    const graph = graphRef.current;
-
-    let attempt = 0;
-    let cancelled = false;
-    let handle;
-
-    const tryAttach = () => {
-      if (cancelled) return;
-      const renderer = typeof graph.renderer === "function" ? graph.renderer() : null;
-      if (!renderer) {
-        attempt += 1;
-        if (attempt < 30) {
-          handle = setTimeout(tryAttach, 50);
-        }
-        return;
-      }
-      bloomRef.current = attachBloom(graph, {
-        onAutoDegrade: (disabled) => setBloomActive(!disabled),
-      });
-      const scene = typeof graph.scene === "function" ? graph.scene() : null;
-      if (scene) {
-        scene.traverse(obj => {
-          if (obj.isInstancedMesh) markBloom(obj, true);
-        });
-        bloomRef.current?.refreshSelection?.();
-      }
-    };
-
-    tryAttach();
-
-    return () => {
-      cancelled = true;
-      if (handle) clearTimeout(handle);
-      bloomRef.current?.dispose?.();
-      bloomRef.current = null;
-    };
-  }, [active, webglAvailable, graphData.nodes.length]);
+  // Bloom post-fx temporarily disabled — earlier integration with the
+  // force-graph composer was rendering only orbital rings while hiding nodes,
+  // shells, and edges. Will re-introduce a conservative bloom pass once the
+  // ripple polish phase lands. Until then we fall back to plain three.js
+  // rendering and rely on the additive line materials for emissive feel.
 
   useEffect(() => () => {
     if (jarvisShellRef.current) {
