@@ -166,11 +166,9 @@ describe("Brain visualizer", () => {
     expect(source).toContain("disposeEdgeMesh(edgeMeshRef.current)");
   });
 
-  it("uses smooth orbit controls with damping and origin-locked target", () => {
-    expect(source).toContain("controls.enableDamping = true");
-    expect(source).toContain("controls.dampingFactor = 0.06");
-    expect(source).toContain("controls.zoomToCursor = false");
-    expect(source).toContain("controls.target.set(0, 0, 0)");
+  it("slows scroll-zoom while leaving orbit defaults intact", () => {
+    expect(source).toContain("controls.zoomSpeed = 0.7");
+    expect(source).not.toContain("controls.enableDamping = true");
   });
 
   it("right-click deselects the active node and suppresses the context menu", () => {
