@@ -45,7 +45,7 @@ describe("Brain visualizer", () => {
     expect(source).toContain("const BRAIN_NODE_COLORS = Object.freeze");
     expect(source).toContain("nodeColor={resolveNodeColor}");
     expect(source).toContain("nodeVal={resolveNodeValue}");
-    expect(source).toContain("nodeResolution={8}");
+    expect(source).toContain("nodeResolution={6}");
   });
 
   it("keeps the screen-space Brain overlay static and cheap", () => {
@@ -74,9 +74,9 @@ describe("Brain visualizer", () => {
     expect(source).not.toContain("brainRegionForNode");
     expect(source).not.toContain("applyBrainLayout");
     expect(source).not.toContain("createBrainShapeForce");
-    expect(source).toContain("import { applyShellLayout, createShellProjectionForce }");
+    expect(source).toContain("import { applyShellLayout }");
     expect(source).toContain("applyShellLayout(nodes, { useShellSplit: useShellSplitRef.current })");
-    expect(source).toContain("graph.d3Force(\"shellProjection\", createShellProjectionForce())");
+    expect(source).toContain("graph.d3Force(\"charge\", null)");
   });
 
   it("renders the constellation shell scaffolding inside the rotatable 3D scene", () => {

@@ -7,7 +7,7 @@ import {
   createConstellationShells,
   disposeConstellationShells,
 } from "./brain/ShellGeometry.js";
-import { applyShellLayout, createShellProjectionForce } from "./brain/ShellLayout.js";
+import { applyShellLayout } from "./brain/ShellLayout.js";
 import { BRAIN_LAYERS, assignLayer, markBloom } from "./brain/RenderLayers.js";
 import { attachBloom } from "./brain/PostFx.js";
 import { buildEdgeMesh, disposeEdgeMesh, tickEdgeMaterialTime } from "./brain/EdgeMesh.js";
@@ -208,6 +208,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const edgeMeshRef = useRef(null);
   const edgeTickRef = useRef(null);
   const rippleEngineRef = useRef(null);
+  const shellSplitInitRef = useRef(true);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [bloomActive, setBloomActive] = useState(true);
   const [useShellSplit, setUseShellSplit] = useState(true);
@@ -229,9 +230,20 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
   useEffect(() => {
     useShellSplitRef.current = useShellSplit;
+    if (shellSplitInitRef.current) {
+      shellSplitInitRef.current = false;
+      return;
+    }
     setGraphData(prev => {
       if (!prev?.nodes?.length) return prev;
-      return { ...prev, nodes: applyShellLayout(prev.nodes, { useShellSplit }) };
+      const relaid = applyShellLayout(prev.nodes, { useShellSplit });
+      const nodesById = new Map(relaid.map(node => [node.id, node]));
+      const links = prev.links.map(link => ({
+        ...link,
+        source: nodesById.get(typeof link.source === "object" ? link.source.id : link.source) || link.source,
+        target: nodesById.get(typeof link.target === "object" ? link.target.id : link.target) || link.target,
+      }));
+      return { nodes: relaid, links };
     });
   }, [useShellSplit]);
 
@@ -400,26 +412,13 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     if (!active || !graph || !graphData.nodes.length) return;
 
     try {
-      const chargeForce = typeof graph.d3Force === "function" ? graph.d3Force("charge") : null;
-      if (chargeForce && typeof chargeForce.strength === "function") chargeForce.strength(-32);
-      if (chargeForce && typeof chargeForce.distanceMax === "function") chargeForce.distanceMax(240);
-
-      const linkForce = typeof graph.d3Force === "function" ? graph.d3Force("link") : null;
-      if (linkForce && typeof linkForce.distance === "function") {
-        linkForce.distance(link => {
-          const type = String(link.type || "semantic");
-          if (type === "conflict") return 64;
-          if (String(graphEndpointId(link.source) || "").startsWith("dec-") || String(graphEndpointId(link.target) || "").startsWith("dec-")) return 48;
-          return 38;
-        });
+      if (typeof graph.d3Force === "function") {
+        graph.d3Force("charge", null);
+        graph.d3Force("link", null);
+        graph.d3Force("center", null);
       }
-      if (linkForce && typeof linkForce.strength === "function") {
-        linkForce.strength(link => Math.min(0.32, Math.max(0.04, Number(link.weight || 1) * 0.08)));
-      }
-      if (typeof graph.d3Force === "function") graph.d3Force("shellProjection", createShellProjectionForce());
-      if (typeof graph.d3ReheatSimulation === "function") graph.d3ReheatSimulation();
     } catch {
-      // Force tuning is best-effort; the graph should still render with library defaults.
+      // best-effort: nodes are pinned via fx/fy/fz so simulation should be inert anyway
     }
   }, [active, graphData.nodes.length, graphData.links.length]);
 
@@ -834,7 +833,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           graphData={graphData}
           nodeColor={resolveNodeColor}
           nodeVal={resolveNodeValue}
-          nodeResolution={8}
+          nodeResolution={6}
           nodeOpacity={0.94}
           nodeRelSize={3.6}
           nodeLabel={node => `${node.label} (${node.agent})`}
@@ -845,10 +844,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           backgroundColor="#040812"
           width={dimensions.width}
           height={dimensions.height}
-          d3AlphaDecay={0.07}
-          d3VelocityDecay={0.46}
-          warmupTicks={45}
-          cooldownTime={1200}
+          d3AlphaDecay={1}
+          d3VelocityDecay={1}
+          warmupTicks={0}
+          cooldownTicks={0}
+          cooldownTime={0}
           onNodeHover={updateHoverNode}
           onNodeClick={selectGraphNode}
         />
