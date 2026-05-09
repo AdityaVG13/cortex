@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { EffectComposer, EffectPass, RenderPass, SelectiveBloomEffect } from "postprocessing";
+import { BloomEffect, EffectComposer, EffectPass, RenderPass } from "postprocessing";
 
 const BLOOM_INTENSITY = 0.85;
 const BLOOM_THRESHOLD = 0.18;
@@ -39,20 +39,16 @@ export function attachBloom(graph, { onAutoDegrade } = {}) {
     ownsComposer = true;
   }
 
-  const bloom = new SelectiveBloomEffect(scene, camera, {
+  const bloom = new BloomEffect({
     intensity: BLOOM_INTENSITY,
     luminanceThreshold: BLOOM_THRESHOLD,
     luminanceSmoothing: BLOOM_SMOOTHING,
     mipmapBlur: true,
   });
-  bloom.inverted = false;
-  bloom.ignoreBackground = true;
 
   const bloomPass = new EffectPass(camera, bloom);
   bloomPass.enabled = true;
   composer.addPass(bloomPass);
-
-  refreshBloomSelection(scene, bloom);
 
   let lastTimestamp = performance.now();
   let frameSamples = [];
@@ -93,7 +89,7 @@ export function attachBloom(graph, { onAutoDegrade } = {}) {
     bloom,
     bloomPass,
     composer,
-    refreshSelection: () => refreshBloomSelection(scene, bloom),
+    refreshSelection: () => {},
     setIntensity: (value) => { bloom.intensity = value; },
     isEnabled: () => bloomEnabled,
     dispose: () => {
@@ -110,13 +106,6 @@ export function attachBloom(graph, { onAutoDegrade } = {}) {
   };
 }
 
-export function refreshBloomSelection(scene, bloom) {
-  if (!scene || !bloom?.selection) return;
-  bloom.selection.clear();
-  scene.traverse(obj => {
-    if (obj.userData?.brainBloom) bloom.selection.add(obj);
-    if (obj.isInstancedMesh && !obj.userData?.brainNoBloom) {
-      bloom.selection.add(obj);
-    }
-  });
+export function refreshBloomSelection() {
+  /* no-op: BloomEffect uses a luminance threshold, not a Selection */
 }

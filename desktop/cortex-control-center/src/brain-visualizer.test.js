@@ -113,8 +113,8 @@ describe("Brain visualizer", () => {
     expect(renderLayers).toContain("export function markBloom");
   });
 
-  it("PostFx wires selective bloom + ACES tonemapping + auto-degrade thresholds", () => {
-    expect(postFx).toContain("import { EffectComposer, EffectPass, RenderPass, SelectiveBloomEffect } from \"postprocessing\"");
+  it("PostFx wires luminance-thresholded bloom + ACES tonemapping + auto-degrade thresholds", () => {
+    expect(postFx).toContain("import { BloomEffect, EffectComposer, EffectPass, RenderPass } from \"postprocessing\"");
     expect(postFx).toContain("ACESFilmicToneMapping");
     expect(postFx).toContain("BLOOM_INTENSITY = 0.85");
     expect(postFx).toContain("BLOOM_THRESHOLD = 0.18");
