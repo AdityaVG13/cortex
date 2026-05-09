@@ -171,4 +171,13 @@ describe("Brain visualizer", () => {
     expect(source).toContain("controls.dampingFactor = 0.085");
     expect(source).toContain("controls.zoomToCursor = true");
   });
+
+  it("BrainVisualizer instantiates RippleEngine, ticks per frame, and fires on click", () => {
+    expect(source).toContain("import { RippleEngine }");
+    expect(source).toContain("new RippleEngine()");
+    expect(source).toContain("engine.attachMesh(mesh)");
+    expect(source).toContain("engine.buildAdjacency(graphData.links)");
+    expect(source).toContain("engine.tick(now)");
+    expect(source).toContain("rippleEngineRef.current?.fire(nextNode.id, performance.now())");
+  });
 });

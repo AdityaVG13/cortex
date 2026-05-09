@@ -11,6 +11,7 @@ import { applyShellLayout, createShellProjectionForce } from "./brain/ShellLayou
 import { BRAIN_LAYERS, assignLayer, markBloom } from "./brain/RenderLayers.js";
 import { attachBloom } from "./brain/PostFx.js";
 import { buildEdgeMesh, disposeEdgeMesh, tickEdgeMaterialTime } from "./brain/EdgeMesh.js";
+import { RippleEngine } from "./brain/RippleEngine.js";
 
 const BRAIN_NODE_COLORS = Object.freeze({
   memory: "#22d3ee",
@@ -206,6 +207,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const bloomRef = useRef(null);
   const edgeMeshRef = useRef(null);
   const edgeTickRef = useRef(null);
+  const rippleEngineRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [bloomActive, setBloomActive] = useState(true);
   const [useShellSplit, setUseShellSplit] = useState(true);
@@ -349,10 +351,17 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       edgeMeshRef.current = mesh;
       bloomRef.current?.refreshSelection?.();
 
+      const engine = new RippleEngine();
+      engine.attachMesh(mesh);
+      engine.buildAdjacency(graphData.links);
+      rippleEngineRef.current = engine;
+
       const start = performance.now();
       const tick = () => {
-        const elapsedSec = (performance.now() - start) * 0.001;
+        const now = performance.now();
+        const elapsedSec = (now - start) * 0.001;
         tickEdgeMaterialTime(mesh, elapsedSec);
+        engine.tick(now);
         edgeTickRef.current = requestAnimationFrame(tick);
       };
       edgeTickRef.current = requestAnimationFrame(tick);
@@ -362,6 +371,10 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       if (edgeTickRef.current) {
         cancelAnimationFrame(edgeTickRef.current);
         edgeTickRef.current = null;
+      }
+      if (rippleEngineRef.current) {
+        rippleEngineRef.current.reset();
+        rippleEngineRef.current = null;
       }
       if (edgeMeshRef.current) {
         disposeEdgeMesh(edgeMeshRef.current);
@@ -676,6 +689,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
     setAutoRotate(false);
     if (nextNode && graphRef.current) focusGraphNode(graphRef.current, nextNode);
+    if (nextNode) rippleEngineRef.current?.fire(nextNode.id, performance.now());
 
     selectedNodeRef.current = nextNode;
     if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
