@@ -59,16 +59,18 @@ When the user clicks a node, the system runs a depth-capped BFS from that node a
 
 ### Timing
 
-- Per-hop delay: 110 ms.
-- Activation rise: `easeOutCubic`, 80 ms.
-- Activation decay: `easeInQuad`, 500 ms.
-- Total ripple budget: 1.2 s (3 hops × 110 ms + 80 ms rise + 500 ms decay tail).
-- Depth cap: 2 hops. Activation magnitude decays by `0.55^depth` per hop.
+- **Depth cap:** 2 hops (source = depth 0, frontier reaches depth 2).
+- **Per-hop delay:** 110 ms (`stepMs`).
+- **Activation rise:** `easeOutCubic`, 80 ms (`riseMs`).
+- **Activation decay:** continuous exponential `exp(-t / tau)` with `tau = 280 ms`. The previously listed `easeInQuad` curve is dropped — exponential decay is the canonical action-potential shape and is what the GPU shader applies. Practical visible tail: ~500 ms (decay reaches 16 % at `t = tau × ln(6) ≈ 500 ms`).
+- **Total ripple budget formula:** `depth × stepMs + riseMs + visibleTailMs`.
+- **Computed total at depth 2:** `2 × 110 + 80 + 500 = 800 ms`. Acceptance criterion uses 800 ms with a 100 ms slack → **must complete within 900 ms**.
+- **Depth attenuation:** activation magnitude scales by `0.55^depth` per hop.
 
 ### Per-element behavior
 
 - **Source node:** scale pulse 1.0 → 1.4 → 1.0, emissive flash, 600 ms total.
-- **Edges on the BFS frontier:** traveling pulse via `TubeGeometry` + GLSL `uHeadPos` shader. (Fallback: gate the existing `linkDirectionalParticles` API by activation state — same behavior, lower implementation cost.)
+- **Edges on the BFS frontier:** traveling pulse via `TubeGeometry` + GLSL `uHeadPos` shader.
 - **Secondary nodes (depth 1, 2):** pop-in ripple ring (additive sprite, expands and fades, 400 ms) on packet arrival.
 - **Non-affected nodes:** fade to 25 % opacity, 200 ms ease. Restore at 400 ms ease-out when ripple ends.
 - **Camera:** 15 % ease toward the clicked node's position, no re-center, no orbit. User retains orbit control.
@@ -80,18 +82,21 @@ A new module `RippleEngine.js` owns:
 - BFS executed at click time, returning `{ nodeId → depth, edgeKey → depth }`.
 - Activation values written to a `DataTexture` keyed by edge index, sampled in the pulse shader's vertex stage.
 - A single `requestAnimationFrame` loop comparing `now − clickTime` against `depth × stepMs` and writing activation crossings — no per-frame BFS.
-- Decoupling: time advances continuously; activation values decay with `exp(-t / tau)` per element. Multiple simultaneous ripples are additive.
+- Decoupling: time advances continuously; activation values decay with `exp(-t / tau)` per element, `tau = 280 ms`. Multiple simultaneous ripples are additive — same edge can receive activation from two sources, values sum and clamp at 1.0.
 
 ## 6. Render pipeline
 
-- `@react-three/postprocessing` `<EffectComposer>` with selective `<Bloom>` on layer 1.
-- Emissive elements (nodes, pulses, halos, reticle ticks) → layer 1.
-- Wireframe shells use `THREE.AdditiveBlending`, no bloom — keeps line-art crisp.
-- Single `THREE.InstancedMesh` for nodes (1 draw call).
-- Merged `BufferGeometry` for edges with an `aEdgeId` attribute (1 draw call).
-- Total draw call target: < 50.
-- Bloom auto-disables when measured frame time exceeds 33 ms over a 1 s window (auto-degrade).
-- WebGL fallback: existing 2D grid path preserved unchanged.
+- **Layer assignment:**
+  - Layer 0 (default, no bloom): wireframe shells, orbital rings, reticle, crosshair, HUD overlays. Material: `LineBasicMaterial` w/ `THREE.AdditiveBlending` on near-black backdrop — already glows mildly, no halo bleed.
+  - Layer 1 (selective bloom): node instances, traveling pulse tubes, node halos, secondary ripple sprites, reticle tick highlights.
+- **Effect composer:** `@react-three/postprocessing` `<EffectComposer>` with selective `<Bloom>` bound to layer 1, `intensity = 0.85`, `luminanceThreshold = 0.18`, `luminanceSmoothing = 0.4`. Tonemapping: `ACESFilmicToneMapping`, `toneMappingExposure = 1.0`.
+- **Geometry & draw calls:**
+  - 1× `THREE.InstancedMesh` for nodes (1 draw call).
+  - 1× merged `BufferGeometry` for all edges with `aEdgeId` + `aActivation` vertex attributes, driven by a single `ShaderMaterial` (1 draw call).
+  - Shells: 2 line-mesh draw calls (outer + inner). Rings: 3 draw calls. HUD overlays: ≤ 6 draw calls.
+  - **Total draw call ceiling: 50.** Asserted by perf test.
+- **Bloom auto-degrade:** monitor a 1 s rolling window of frame times; disable bloom when **median frame time ≥ 33.3 ms** (≤30 fps p50). Re-enable when median falls below 22 ms (≥45 fps p50) sustained for 3 s. Single source of truth — §9 references this section.
+- **WebGL fallback:** existing 2D grid path preserved unchanged. No path keeps `linkDirectionalParticles` — the per-link object model conflicts with merged edge geometry, and a parallel non-merged mode is rejected as scope creep.
 
 ## 7. File layout
 
@@ -129,35 +134,58 @@ Estimated size: ~1015 LOC current → ~1400 LOC distributed across the entry fil
 
 ## 9. Performance budget
 
-- Target: 60 fps at 1000 nodes / 300 links with bloom enabled on a midrange GPU (e.g. Intel Iris Xe / GTX 1650 class).
+- **Reference machine (single source of truth for fps acceptance):** Windows 11, Intel Core i7-12700H, integrated Iris Xe + NVIDIA GTX 1650, Chrome stable, 1920×1080 viewport, throttling off, dev tools closed.
+- **Target:** 60 fps median at 1000 nodes / 300 links with bloom enabled on the reference machine.
 - Activation values live in a GPU-side `DataTexture`; no per-frame uniform churn.
-- Bloom auto-disabled below 30 fps measured over 1 s.
+- Bloom auto-degrade thresholds defined in §6 (≥33.3 ms median p50 disables; ≤22 ms median p50 sustained 3 s re-enables).
 - BFS cost at click time: O(V + E) bounded by the 2-hop frontier, well under 1 ms for the target graph size.
 - Single rAF loop drives all activation timing — no per-edge `setTimeout` storm.
+- Total draw call ceiling: 50 (asserted in perf test).
 
 ## 10. Tests
 
-- **Unit (Vitest):**
-  - `BFS depth cap` — frontier never exceeds depth 2 regardless of graph density.
-  - `Easing functions` — `easeOutCubic` and `easeInQuad` boundary values (0, 1) match expected.
-  - `Shell projection deterministic` — `applyShellLayout` produces identical positions for identical node ids across runs (seeded hash).
-  - `Adjacency rebuild` — invalidates cache only when `graphData.links` reference changes.
-- **Visual regression:**
-  - Puppeteer snapshot of a static frame with seeded data, compared via `pixelmatch` with a 0.1 threshold.
-- **Manual smoke (recorded in PR):**
-  - 1000-node load < 2 s.
-  - Click-to-fire latency < 100 ms (click → first frame of activation).
-  - 60 fps held during a sustained ripple sequence on the developer's reference machine.
+### Unit (Vitest)
+
+- `BFS depth cap` — frontier never exceeds depth 2 regardless of graph density.
+- `Easing` — `easeOutCubic(0)=0`, `easeOutCubic(1)=1`, monotonic on [0,1]; `exp(-t/tau)` decay produces 0.16 ± 0.01 at `t = tau × ln(6)`.
+- `Shell projection deterministic` — `applyShellLayout` produces identical positions for identical node ids:
+  - across separate runs (seeded hash);
+  - across `graphData` reference changes that don't touch the node id set (regression case for memoization invalidation).
+- `Adjacency rebuild` — cache invalidates only when `graphData.links` reference changes; node-only changes leave it intact.
+- `Ripple additivity` — two simultaneous ripples that share an edge produce a clamped activation ≤ 1.0 with sum semantics.
+- `Camera ease` — `applyCameraEase(camera, target, 0.15)` moves camera by exactly 15 % of the source-to-target vector and never re-centers.
+- `Dim & restore` — non-selected nodes drop to 0.25 ± 0.01 opacity during ripple and return to 1.0 within 400 ms of completion.
+
+### Perf harness
+
+- `Draw call ceiling` — render a synthetic 1000-node / 300-link scene, assert `renderer.info.render.calls < 50`.
+- `Bloom auto-degrade trigger` — inject a 50 ms artificial frame stall for 1.5 s, assert bloom disables; remove stall, assert re-enable within 4 s.
+
+### Visual regression
+
+- Puppeteer snapshot of a static frame with seeded data. **Bloom is disabled in the snapshot harness** (driver/GPU variance routinely exceeds tight thresholds with bloom on). Compared via `pixelmatch` with a 0.1 threshold against a checked-in baseline.
+
+### Manual smoke (recorded in PR)
+
+- 1000-node load < 2 s on the reference machine.
+- Click-to-fire latency < 100 ms (click → first frame of activation).
+- Total ripple complete within 900 ms (matches §5 budget).
+- 60 fps median during a sustained ripple sequence on the reference machine.
+- "RIPPLE PATH" HUD trace populated correctly for a clicked node with ≥ 4 neighbors.
 
 ## 11. Migration & rollout
 
 - Feature is a visual replacement, not a data change — no migration required.
-- Ship behind a single env-gated flag `CORTEX_BRAIN_LATTICE=1` for the first internal build, then default-on once visually approved.
+- **Build-time flag `CORTEX_BRAIN_LATTICE`** (Vite env var, default `1` once shipped, settable to `0` to keep the old anatomy renderer for a short overlap window during internal QA only). Removed entirely after one release cycle.
+- **Runtime flag `useShellSplit`** (React state, default `true`):
+  - `true` → memory on outer shell, decisions on inner shell (option (a) — outer/inner split).
+  - `false` → both groups share the outer shell, distinguished by color + glyph only (option (c) — color-only).
+  - Toggle exposed in the HUD's MANUAL/AUTO control row as a small "SPLIT" pill button so the user can A/B in the live app once they see the prototype. No build step required to switch.
 - Old `createJarvisBrainShell` and anatomical region code are deleted in the same PR — no compatibility shim, per the user's "no backwards-compatibility hacks" rule.
 
 ## 12. Open questions
 
-- **Decision/memory split** — user picked outer/inner shells (option a) tentatively, with an explicit "needs to see it" caveat. The `useShellSplit` flag preserves the option to switch to color-only (option c) cheaply once the prototype is visible.
+- **Decision/memory split** — user picked outer/inner shells (option a) tentatively, with an explicit "needs to see it" caveat. The runtime `useShellSplit` toggle (defined in §11) lets the user A/B in the live app once the prototype is visible.
 - **Audio cues** — flagged as follow-up; not in this spec.
 - **Mobile/touch behavior** — out of scope.
 
@@ -165,17 +193,21 @@ Estimated size: ~1015 LOC current → ~1400 LOC distributed across the entry fil
 
 - **Dense clusters hidden on far hemisphere of the outer shell.** Mitigation: camera-aligned culling for non-selected nodes during selection, and the 15 % camera ease pulls the user closer to the active region.
 - **Bloom on low-end hardware** — covered by auto-degrade.
-- **Shader compile failures on non-WebGL2 drivers** — fall back to the existing `linkDirectionalParticles` path; the entire shader pipeline is gated behind a feature detection.
+- **Shader compile failures on non-WebGL2 drivers** — feature-detect WebGL2 + shader compile success at mount; on failure, fall back to the existing **2D grid** path (already used for missing WebGL). No `linkDirectionalParticles` parallel mode is retained — the per-link object model conflicts with merged edge geometry, and adding a second renderer is rejected as scope creep.
 - **Layout instability when nodes change** — `applyShellLayout` is deterministic on node id, so re-renders place the same node at the same position; force-relaxation only operates within the tangent plane.
 
 ## 14. Acceptance criteria
 
 - No anatomical brain shape visible at any zoom level.
 - Outer + inner geodesic shells, 3 orbital rings, reticle, and crosshair all render.
-- Click on any node triggers a 2-hop BFS ripple completing within 1.2 s.
+- Click on any node triggers a 2-hop BFS ripple completing within **900 ms** (matches §5 timing math).
 - Source node pulses; intermediate edges show a traveling glow; depth-1 and depth-2 neighbors pop in with ripple rings.
-- Non-selected nodes fade to 25 % opacity during ripple; restore on completion.
+- Non-selected nodes fade to 25 % opacity during ripple; restore within 400 ms of completion.
 - Camera eases 15 % toward clicked node; user retains orbit control throughout.
-- 60 fps held at 1000 nodes / 300 links with bloom on the reference machine.
+- 60 fps median at 1000 nodes / 300 links with bloom enabled on the **reference machine defined in §9**.
+- Total draw call count < 50 (asserted by perf harness).
+- Bloom auto-degrade triggers at the §6 thresholds and re-enables on recovery.
+- "RIPPLE PATH" HUD trace correctly lists BFS hops for a clicked node.
+- `useShellSplit` toggle visibly switches between outer/inner-shell and single-shell-color-only modes.
 - 2D fallback path unchanged and still renders correctly when WebGL is unavailable.
-- All existing tests still pass; new unit + snapshot tests added.
+- All existing tests still pass; new unit, perf, and snapshot tests added.
