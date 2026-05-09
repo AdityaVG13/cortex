@@ -375,6 +375,15 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     const controls = typeof graphRef.current.controls === "function" ? graphRef.current.controls() : null;
     if (!controls || typeof controls.addEventListener !== "function") return undefined;
 
+    if ("enableDamping" in controls) {
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.085;
+    }
+    if ("zoomSpeed" in controls) controls.zoomSpeed = 0.6;
+    if ("rotateSpeed" in controls) controls.rotateSpeed = 0.45;
+    if ("panSpeed" in controls) controls.panSpeed = 0.6;
+    if ("zoomToCursor" in controls) controls.zoomToCursor = true;
+
     const handleControlsChange = () => {
       if (zoomFrameRef.current) return;
       zoomFrameRef.current = requestAnimationFrame(() => {
