@@ -7,6 +7,8 @@ const shellGeometry = readFileSync(new URL("./brain/ShellGeometry.js", import.me
 const shellLayout = readFileSync(new URL("./brain/ShellLayout.js", import.meta.url), "utf8");
 const renderLayers = readFileSync(new URL("./brain/RenderLayers.js", import.meta.url), "utf8");
 const postFx = readFileSync(new URL("./brain/PostFx.js", import.meta.url), "utf8");
+const pulseShader = readFileSync(new URL("./brain/PulseShader.js", import.meta.url), "utf8");
+const edgeMesh = readFileSync(new URL("./brain/EdgeMesh.js", import.meta.url), "utf8");
 
 function readBlock(text, needle) {
   const start = text.indexOf(needle);
@@ -32,13 +34,10 @@ function readBlock(text, needle) {
 }
 
 describe("Brain visualizer", () => {
-  it("keeps selected-node recall flow visible in the graph and details panel", () => {
+  it("keeps selected-node recall flow visible in the details panel", () => {
     expect(source).toContain("const selectedFlow = useMemo");
-    expect(source).toContain("const isSelectedFlowLink = useCallback");
     expect(source).toContain("brain-stat brain-stat-flow");
     expect(source).toContain("brain-flow-panel");
-    expect(source).toContain("const resolveLinkParticles = useCallback");
-    expect(source).toContain("linkDirectionalParticles={resolveLinkParticles}");
   });
 
   it("uses native graph nodes for smooth type-colored rendering", () => {
@@ -61,14 +60,13 @@ describe("Brain visualizer", () => {
     expect(css).not.toContain(".brain-container canvas");
   });
 
-  it("smooths selected-node focus and declutters the zoomed-out overview", () => {
+  it("smooths selected-node focus and disables built-in link rendering", () => {
     expect(source).toContain("const BRAIN_FOCUS_TRANSITION_MS = 1550");
     expect(source).toContain("function focusGraphNode");
     expect(source).toContain("startTransition(() => setSelectedNode(nextNode))");
-    expect(source).toContain("const BRAIN_OVERVIEW_LINK_CAP = 96");
-    expect(source).toContain("const overviewLinkKeys = useMemo");
-    expect(source).toContain("linkVisibility={resolveLinkVisibility}");
-    expect(source).toContain("viewDepth === \"overview\"");
+    expect(source).toContain("linkVisibility={false}");
+    expect(source).not.toContain("BRAIN_OVERVIEW_LINK_CAP");
+    expect(source).not.toContain("linkDirectionalParticles=");
   });
 
   it("uses the constellation lattice layout instead of anatomical hemispheres", () => {
@@ -135,5 +133,42 @@ describe("Brain visualizer", () => {
     expect(source).toContain("assignLayer(jarvisShellRef.current, BRAIN_LAYERS.BASE)");
     expect(source).toContain("data-bloom={bloomActive ? \"on\" : \"off\"}");
     expect(source).toContain("data-shell-split={useShellSplit ? \"on\" : \"off\"}");
+  });
+
+  it("PulseShader exposes the GLSL traveling-pulse material and activation texture", () => {
+    expect(pulseShader).toContain("export function createActivationTexture");
+    expect(pulseShader).toContain("export function createPulseMaterial");
+    expect(pulseShader).toContain("DataTexture");
+    expect(pulseShader).toContain("RedFormat");
+    expect(pulseShader).toContain("FloatType");
+    expect(pulseShader).toContain("AdditiveBlending");
+    expect(pulseShader).toContain("uTime");
+    expect(pulseShader).toContain("uActivation");
+    expect(pulseShader).toContain("vProgress");
+  });
+
+  it("EdgeMesh builds a single merged BufferGeometry with per-vertex aProgress + aEdgeId", () => {
+    expect(edgeMesh).toContain("export function buildEdgeMesh");
+    expect(edgeMesh).toContain("export function disposeEdgeMesh");
+    expect(edgeMesh).toContain("export function tickEdgeMaterialTime");
+    expect(edgeMesh).toContain("aProgress");
+    expect(edgeMesh).toContain("aEdgeId");
+    expect(edgeMesh).toContain("LineSegments");
+    expect(edgeMesh).toContain("brainEdgeMesh: true");
+  });
+
+  it("BrainVisualizer mounts the merged edge mesh and ticks the pulse uniform each frame", () => {
+    expect(source).toContain("import { buildEdgeMesh, disposeEdgeMesh, tickEdgeMaterialTime }");
+    expect(source).toContain("buildEdgeMesh(graphData.links, nodesById,");
+    expect(source).toContain("assignLayer(mesh, BRAIN_LAYERS.BLOOM)");
+    expect(source).toContain("markBloom(mesh, true)");
+    expect(source).toContain("tickEdgeMaterialTime(mesh, elapsedSec)");
+    expect(source).toContain("disposeEdgeMesh(edgeMeshRef.current)");
+  });
+
+  it("uses smooth orbit + zoom-to-cursor controls", () => {
+    expect(source).toContain("controls.enableDamping = true");
+    expect(source).toContain("controls.dampingFactor = 0.085");
+    expect(source).toContain("controls.zoomToCursor = true");
   });
 });

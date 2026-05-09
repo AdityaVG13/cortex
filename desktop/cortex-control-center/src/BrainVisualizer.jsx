@@ -10,6 +10,7 @@ import {
 import { applyShellLayout, createShellProjectionForce } from "./brain/ShellLayout.js";
 import { BRAIN_LAYERS, assignLayer, markBloom } from "./brain/RenderLayers.js";
 import { attachBloom } from "./brain/PostFx.js";
+import { buildEdgeMesh, disposeEdgeMesh, tickEdgeMaterialTime } from "./brain/EdgeMesh.js";
 
 const BRAIN_NODE_COLORS = Object.freeze({
   memory: "#22d3ee",
@@ -29,7 +30,6 @@ const BRAIN_LEGEND = Object.freeze([
 
 const BRAIN_FOCUS_DISTANCE = 136;
 const BRAIN_FOCUS_TRANSITION_MS = 1550;
-const BRAIN_OVERVIEW_LINK_CAP = 96;
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -73,10 +73,6 @@ function graphEndpointId(endpoint) {
   return endpoint;
 }
 
-function graphLinkKey(link) {
-  return `${graphEndpointId(link.source)}>${graphEndpointId(link.target)}>${link.type || "semantic"}`;
-}
-
 function graphNodePosition(node) {
   return {
     x: Number.isFinite(node?.x) ? node.x : 0,
@@ -87,24 +83,6 @@ function graphNodePosition(node) {
 
 function brainOverviewThreshold(nodeCount) {
   return Math.max(480, Math.min(1080, Math.sqrt(Math.max(nodeCount, 1)) * 72));
-}
-
-function brainLinkOverviewScore(link) {
-  const type = String(link.type || "semantic");
-  const weight = Number.isFinite(Number(link.weight)) ? Number(link.weight) : 1;
-  const sourceId = String(graphEndpointId(link.source) || "");
-  const targetId = String(graphEndpointId(link.target) || "");
-  const typeScore = type === "conflict"
-    ? 8
-    : type === "persisted"
-      ? 5
-      : type.includes("decision")
-        ? 4
-        : type.includes("semantic")
-          ? 1
-          : 3;
-  const decisionEndpointScore = (sourceId.startsWith("dec-") ? 0.8 : 0) + (targetId.startsWith("dec-") ? 0.8 : 0);
-  return typeScore + (weight * 2) + decisionEndpointScore;
 }
 
 function formatFlowType(type) {
@@ -226,6 +204,8 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const viewDepthRef = useRef("detail");
   const useShellSplitRef = useRef(true);
   const bloomRef = useRef(null);
+  const edgeMeshRef = useRef(null);
+  const edgeTickRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
   const [bloomActive, setBloomActive] = useState(true);
   const [useShellSplit, setUseShellSplit] = useState(true);
@@ -349,6 +329,46 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       jarvisShellRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (!active || !webglAvailable || !graphRef.current) return undefined;
+    const graph = graphRef.current;
+    const scene = typeof graph.scene === "function" ? graph.scene() : null;
+    if (!scene || !graphData.nodes.length) return undefined;
+
+    const nodesById = new Map(graphData.nodes.map(node => [node.id, node]));
+    const mesh = buildEdgeMesh(graphData.links, nodesById, {
+      baseColor: "#22d3ee",
+      pulseColor: "#f8fbff",
+    });
+
+    if (mesh) {
+      assignLayer(mesh, BRAIN_LAYERS.BLOOM);
+      markBloom(mesh, true);
+      scene.add(mesh);
+      edgeMeshRef.current = mesh;
+      bloomRef.current?.refreshSelection?.();
+
+      const start = performance.now();
+      const tick = () => {
+        const elapsedSec = (performance.now() - start) * 0.001;
+        tickEdgeMaterialTime(mesh, elapsedSec);
+        edgeTickRef.current = requestAnimationFrame(tick);
+      };
+      edgeTickRef.current = requestAnimationFrame(tick);
+    }
+
+    return () => {
+      if (edgeTickRef.current) {
+        cancelAnimationFrame(edgeTickRef.current);
+        edgeTickRef.current = null;
+      }
+      if (edgeMeshRef.current) {
+        disposeEdgeMesh(edgeMeshRef.current);
+        edgeMeshRef.current = null;
+      }
+    };
+  }, [active, webglAvailable, graphData.nodes, graphData.links]);
 
   const syncViewDepth = useCallback(() => {
     const graph = graphRef.current;
@@ -635,29 +655,6 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     };
   }, [graphData.links, selectedNode?.id]);
 
-  const overviewLinkKeys = useMemo(() => {
-    const limit = Math.max(28, Math.min(BRAIN_OVERVIEW_LINK_CAP, Math.ceil(graphData.nodes.length * 1.12)));
-    if (graphData.links.length <= limit) {
-      return new Set(graphData.links.map(graphLinkKey));
-    }
-
-    return new Set(
-      graphData.links
-        .map((link, index) => ({ key: graphLinkKey(link), index, score: brainLinkOverviewScore(link) }))
-        .sort((a, b) => b.score - a.score || a.index - b.index)
-        .slice(0, limit)
-        .map(link => link.key)
-    );
-  }, [graphData.links, graphData.nodes.length]);
-
-  const isSelectedFlowLink = useCallback((link) => {
-    const selectedId = selectedNode?.id;
-    if (!selectedId) return false;
-    const sourceId = graphEndpointId(link.source);
-    const targetId = graphEndpointId(link.target);
-    return sourceId === selectedId || targetId === selectedId;
-  }, [selectedNode?.id]);
-
   const resolveNodeColor = useCallback(
     (node) => brainNodeColor(node, selectedNode, selectedFlow),
     [selectedFlow, selectedNode],
@@ -666,28 +663,6 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     (node) => brainNodeValue(node, selectedNode, selectedFlow),
     [selectedFlow, selectedNode],
   );
-  const resolveLinkVisibility = useCallback((link) => {
-    if (selectedNode) return isSelectedFlowLink(link) || link.type === "conflict";
-    if (viewDepth !== "overview") return true;
-    return overviewLinkKeys.has(graphLinkKey(link));
-  }, [isSelectedFlowLink, overviewLinkKeys, selectedNode, viewDepth]);
-  const overviewActive = viewDepth === "overview" && !selectedNode;
-  const resolveLinkColor = useCallback((link) => {
-    if (link.type === "conflict") return "#ff1744";
-    if (isSelectedFlowLink(link)) return "rgba(64, 224, 255, 0.72)";
-    if (selectedNode) return "rgba(0, 212, 255, 0.035)";
-    return overviewActive ? "rgba(64, 224, 255, 0.22)" : "rgba(0, 212, 255, 0.06)";
-  }, [isSelectedFlowLink, overviewActive, selectedNode]);
-  const resolveLinkWidth = useCallback((link) => {
-    if (link.type === "conflict") return 1.5;
-    if (isSelectedFlowLink(link)) return 1.1;
-    if (selectedNode) return 0.18;
-    return overviewActive ? 0.22 : 0.3;
-  }, [isSelectedFlowLink, overviewActive, selectedNode]);
-  const resolveLinkParticles = useCallback((link) => {
-    if (link.type === "conflict") return selectedNode ? 2 : 0;
-    return isSelectedFlowLink(link) ? 2 : 0;
-  }, [isSelectedFlowLink, selectedNode]);
   const updateHoverNode = useCallback((node) => {
     const nodeId = node?.id || null;
     if (hoverNodeIdRef.current === nodeId) return;
@@ -881,13 +856,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
           controlType="orbit"
           enableNavigationControls={true}
           showNavInfo={false}
-          linkVisibility={resolveLinkVisibility}
-          linkColor={resolveLinkColor}
-          linkWidth={resolveLinkWidth}
-          linkOpacity={overviewActive ? 0.12 : selectedNode ? 0.32 : 0.15}
-          linkDirectionalParticles={resolveLinkParticles}
-          linkDirectionalParticleWidth={link => isSelectedFlowLink(link) ? 1.8 : 1.5}
-          linkDirectionalParticleColor={link => isSelectedFlowLink(link) ? "#40e0ff" : "#ff1744"}
+          linkVisibility={false}
           backgroundColor="#040812"
           width={dimensions.width}
           height={dimensions.height}
