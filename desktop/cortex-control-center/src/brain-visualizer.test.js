@@ -5,6 +5,8 @@ const source = readFileSync(new URL("./BrainVisualizer.jsx", import.meta.url), "
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const shellGeometry = readFileSync(new URL("./brain/ShellGeometry.js", import.meta.url), "utf8");
 const shellLayout = readFileSync(new URL("./brain/ShellLayout.js", import.meta.url), "utf8");
+const renderLayers = readFileSync(new URL("./brain/RenderLayers.js", import.meta.url), "utf8");
+const postFx = readFileSync(new URL("./brain/PostFx.js", import.meta.url), "utf8");
 
 function readBlock(text, needle) {
   const start = text.indexOf(needle);
@@ -103,5 +105,35 @@ describe("Brain visualizer", () => {
     expect(shellLayout).toContain("export function createShellProjectionForce");
     expect(shellLayout).toContain("useShellSplit");
     expect(shellLayout).toContain("fibonacciSphere");
+  });
+
+  it("RenderLayers defines BASE/BLOOM layer constants and helpers", () => {
+    expect(renderLayers).toContain("export const BRAIN_LAYERS");
+    expect(renderLayers).toContain("BASE: 0");
+    expect(renderLayers).toContain("BLOOM: 1");
+    expect(renderLayers).toContain("export function assignLayer");
+    expect(renderLayers).toContain("export function markBloom");
+  });
+
+  it("PostFx wires selective bloom + ACES tonemapping + auto-degrade thresholds", () => {
+    expect(postFx).toContain("import { EffectComposer, EffectPass, RenderPass, SelectiveBloomEffect } from \"postprocessing\"");
+    expect(postFx).toContain("ACESFilmicToneMapping");
+    expect(postFx).toContain("BLOOM_INTENSITY = 0.85");
+    expect(postFx).toContain("BLOOM_THRESHOLD = 0.18");
+    expect(postFx).toContain("BLOOM_SMOOTHING = 0.4");
+    expect(postFx).toContain("DEGRADE_DISABLE_MS = 33.3");
+    expect(postFx).toContain("DEGRADE_REENABLE_MS = 22");
+    expect(postFx).toContain("DEGRADE_REENABLE_SUSTAIN_MS = 3000");
+    expect(postFx).toContain("export function attachBloom");
+    expect(postFx).toContain("export function refreshBloomSelection");
+  });
+
+  it("BrainVisualizer mounts post-fx, assigns layers, and exposes bloom state", () => {
+    expect(source).toContain("import { BRAIN_LAYERS, assignLayer, markBloom }");
+    expect(source).toContain("import { attachBloom }");
+    expect(source).toContain("attachBloom(graph,");
+    expect(source).toContain("assignLayer(jarvisShellRef.current, BRAIN_LAYERS.BASE)");
+    expect(source).toContain("data-bloom={bloomActive ? \"on\" : \"off\"}");
+    expect(source).toContain("data-shell-split={useShellSplit ? \"on\" : \"off\"}");
   });
 });

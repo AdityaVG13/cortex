@@ -8,6 +8,8 @@ import {
   disposeConstellationShells,
 } from "./brain/ShellGeometry.js";
 import { applyShellLayout, createShellProjectionForce } from "./brain/ShellLayout.js";
+import { BRAIN_LAYERS, assignLayer, markBloom } from "./brain/RenderLayers.js";
+import { attachBloom } from "./brain/PostFx.js";
 
 const BRAIN_NODE_COLORS = Object.freeze({
   memory: "#22d3ee",
@@ -223,7 +225,9 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const zoomFrameRef = useRef(null);
   const viewDepthRef = useRef("detail");
   const useShellSplitRef = useRef(true);
+  const bloomRef = useRef(null);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
+  const [bloomActive, setBloomActive] = useState(true);
   const [useShellSplit, setUseShellSplit] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -286,6 +290,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
     if (!jarvisShellRef.current) {
       jarvisShellRef.current = createConstellationShells();
+      assignLayer(jarvisShellRef.current, BRAIN_LAYERS.BASE);
     }
 
     const shell = jarvisShellRef.current;
@@ -297,6 +302,46 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       if (shell.parent) shell.parent.remove(shell);
     };
   }, [active, graphData.nodes.length, webglAvailable]);
+
+  useEffect(() => {
+    if (!active || !webglAvailable || !graphRef.current) return undefined;
+    const graph = graphRef.current;
+
+    let attempt = 0;
+    let cancelled = false;
+    let handle;
+
+    const tryAttach = () => {
+      if (cancelled) return;
+      const renderer = typeof graph.renderer === "function" ? graph.renderer() : null;
+      if (!renderer) {
+        attempt += 1;
+        if (attempt < 30) {
+          handle = setTimeout(tryAttach, 50);
+        }
+        return;
+      }
+      bloomRef.current = attachBloom(graph, {
+        onAutoDegrade: (disabled) => setBloomActive(!disabled),
+      });
+      const scene = typeof graph.scene === "function" ? graph.scene() : null;
+      if (scene) {
+        scene.traverse(obj => {
+          if (obj.isInstancedMesh) markBloom(obj, true);
+        });
+        bloomRef.current?.refreshSelection?.();
+      }
+    };
+
+    tryAttach();
+
+    return () => {
+      cancelled = true;
+      if (handle) clearTimeout(handle);
+      bloomRef.current?.dispose?.();
+      bloomRef.current = null;
+    };
+  }, [active, webglAvailable, graphData.nodes.length]);
 
   useEffect(() => () => {
     if (jarvisShellRef.current) {
@@ -730,7 +775,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
   // 3D Graph
   return (
-    <div className="brain-container" onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
+    <div className="brain-container" data-bloom={bloomActive ? "on" : "off"} data-shell-split={useShellSplit ? "on" : "off"} onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
       <div className="brain-orbital-ring brain-orbital-ring-a" aria-hidden="true" />
       <div className="brain-orbital-ring brain-orbital-ring-b" aria-hidden="true" />
 
