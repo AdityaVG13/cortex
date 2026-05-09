@@ -18,9 +18,31 @@
 //! + extractive text synthesis. The same zero-runtime-dep architecture.
 
 use rusqlite::{params, Connection};
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::broadcast;
 
 use crate::embeddings::{self, EmbeddingEngine};
+use crate::state::{BrainFiringEvent, BrainKind};
+
+/// Optional Brain telemetry sender threaded into `run_crystallize_pass`.
+/// Existing callers pass `None`; the live daemon passes `Some(state.brain_firing.clone())`.
+pub type BrainFiringSender = Option<broadcast::Sender<BrainFiringEvent>>;
+
+fn emit_brain(
+    sender: &BrainFiringSender,
+    kind: BrainKind,
+    payload: serde_json::Value,
+    owner_id: Option<i64>,
+) {
+    if let Some(tx) = sender {
+        let _ = tx.send(BrainFiringEvent {
+            kind,
+            payload,
+            owner_id,
+        });
+    }
+}
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -77,6 +99,15 @@ pub fn run_crystallize_pass(
     engine: Option<&EmbeddingEngine>,
     owner_id: Option<i64>,
 ) -> CrystallizeResult {
+    run_crystallize_pass_with_brain(conn, engine, owner_id, &None)
+}
+
+pub fn run_crystallize_pass_with_brain(
+    conn: &Connection,
+    engine: Option<&EmbeddingEngine>,
+    owner_id: Option<i64>,
+    brain: &BrainFiringSender,
+) -> CrystallizeResult {
     let mut result = CrystallizeResult {
         clusters_found: 0,
         crystals_created: 0,
@@ -89,6 +120,8 @@ pub fn run_crystallize_pass(
     if entries.len() < MIN_CLUSTER_SIZE {
         return result;
     }
+
+    emit_brain(brain, BrainKind::ConsolidationStarted, json!({}), owner_id);
 
     // 2. Greedy clustering
     let clusters = cluster_entries(&entries);
@@ -137,6 +170,26 @@ pub fn run_crystallize_pass(
                     ],
                 );
                 update_cluster_members(conn, crystal_id, &member_entries);
+                for member in &member_entries {
+                    emit_brain(
+                        brain,
+                        BrainKind::MemberAdded,
+                        json!({
+                            "cluster_id": crystal_id,
+                            "member_id": format!("{}-{}", member.target_type, member.target_id),
+                        }),
+                        owner_id,
+                    );
+                }
+                emit_brain(
+                    brain,
+                    BrainKind::ClusterFinalized,
+                    json!({
+                        "cluster_id": crystal_id,
+                        "member_count": member_entries.len() as i64,
+                    }),
+                    owner_id,
+                );
                 result.crystals_updated += 1;
             }
             None => {
@@ -156,6 +209,26 @@ pub fn run_crystallize_pass(
                 }
                 let crystal_id = conn.last_insert_rowid();
                 update_cluster_members(conn, crystal_id, &member_entries);
+                for member in &member_entries {
+                    emit_brain(
+                        brain,
+                        BrainKind::MemberAdded,
+                        json!({
+                            "cluster_id": crystal_id,
+                            "member_id": format!("{}-{}", member.target_type, member.target_id),
+                        }),
+                        owner_id,
+                    );
+                }
+                emit_brain(
+                    brain,
+                    BrainKind::ClusterFinalized,
+                    json!({
+                        "cluster_id": crystal_id,
+                        "member_count": member_entries.len() as i64,
+                    }),
+                    owner_id,
+                );
 
                 // Embed the crystal text for recall
                 if let Some(eng) = engine {

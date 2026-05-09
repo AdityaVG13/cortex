@@ -2042,10 +2042,12 @@ async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool) {
             .unwrap_or(0);
         let removed_crystals = conn.execute("DELETE FROM memory_clusters", []).unwrap_or(0);
 
-        let pass = crystallize::run_crystallize_pass(
+        let brain_sender = Some(state.brain_firing.clone());
+        let pass = crystallize::run_crystallize_pass_with_brain(
             &conn,
             state.embedding_engine.as_deref(),
             state.default_owner_id,
+            &brain_sender,
         );
 
         let crystals_after: i64 = conn
@@ -4752,6 +4754,7 @@ pub(crate) async fn run_daemon(
         let db_crystal = state.db.clone();
         let engine_crystal = state.embedding_engine.clone();
         let crystal_owner_id = state.default_owner_id;
+        let brain_crystal: crystallize::BrainFiringSender = Some(state.brain_firing.clone());
         let initial_delay = startup_schedule.crystallize;
         let lock_wait = background_lock_wait;
         tokio::spawn(async move {
@@ -4760,10 +4763,11 @@ pub(crate) async fn run_daemon(
             if let Some(conn) =
                 acquire_background_db_lock(&db_crystal, "initial crystallization", lock_wait).await
             {
-                let result = crystallize::run_crystallize_pass(
+                let result = crystallize::run_crystallize_pass_with_brain(
                     &conn,
                     engine_crystal.as_deref(),
                     crystal_owner_id,
+                    &brain_crystal,
                 );
                 if result.crystals_created > 0 || result.crystals_updated > 0 {
                     eprintln!(
@@ -4780,10 +4784,11 @@ pub(crate) async fn run_daemon(
                 if let Some(conn) =
                     acquire_background_db_lock(&db_crystal, "crystallization pass", lock_wait).await
                 {
-                    crystallize::run_crystallize_pass(
+                    crystallize::run_crystallize_pass_with_brain(
                         &conn,
                         engine_crystal.as_deref(),
                         crystal_owner_id,
+                        &brain_crystal,
                     );
                 }
             }

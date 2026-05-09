@@ -1358,11 +1358,13 @@ mod tests {
         let write_conn = test_conn();
         let read_conn = test_conn();
         let (events, _) = broadcast::channel(8);
+        let (brain_firing, _) = broadcast::channel(8);
         RuntimeState {
             db: Arc::new(Mutex::new(write_conn)),
             db_read: Arc::new(Mutex::new(read_conn)),
             token: Arc::new("test-token".to_string()),
             events,
+            brain_firing,
             mcp_calls: Arc::new(AtomicU64::new(0)),
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             recall_history: Arc::new(Mutex::new(HashMap::new())),

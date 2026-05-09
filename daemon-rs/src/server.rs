@@ -207,6 +207,11 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
             "/events/stream",
             get(handlers::events::handle_events_stream),
         )
+        // ── Brain firing telemetry (owner-scoped, full payload) ─────
+        .route(
+            "/brain/firing",
+            get(handlers::events::handle_brain_firing_stream),
+        )
         // ── MCP-RPC proxy endpoint ─────────────────────────────────
         // Accepts raw JSON-RPC messages (same format as MCP stdio).
         // This lets `cortex mcp` run as a thin proxy -- no separate
@@ -448,10 +453,12 @@ async fn handle_crystallize(
         return resp;
     }
     let conn = state.db.lock().await;
-    let result = crate::crystallize::run_crystallize_pass(
+    let brain_sender = Some(state.brain_firing.clone());
+    let result = crate::crystallize::run_crystallize_pass_with_brain(
         &conn,
         state.embedding_engine.as_deref(),
         state.default_owner_id,
+        &brain_sender,
     );
     handlers::json_response(
         axum::http::StatusCode::OK,
@@ -1084,6 +1091,7 @@ window_seconds = 60
             (Method::GET, "/export", None),
             (Method::POST, "/import", Some("{}")),
             (Method::GET, "/events/stream", None),
+            (Method::GET, "/brain/firing", None),
             (Method::POST, "/mcp-rpc", Some("{}")),
         ];
 

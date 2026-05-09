@@ -1065,6 +1065,12 @@ pub async fn handle_recall(
                     );
                 }
             }
+            let node_ids = extract_recall_node_ids(&payload);
+            let _ = state.brain_firing.send(crate::state::BrainFiringEvent {
+                kind: crate::state::BrainKind::Recall,
+                payload: json!({ "node_ids": node_ids, "agent": agent }),
+                owner_id: state.default_owner_id,
+            });
             json_response(StatusCode::OK, payload)
         }
         Err(err) => json_response(
@@ -1072,6 +1078,44 @@ pub async fn handle_recall(
             json!({ "error": format!("Recall failed: {err}") }),
         ),
     }
+}
+
+/// Extract a flat list of node ID strings from a recall payload for Brain
+/// telemetry. Returns up to 16 IDs to keep the SSE event small. Looks at
+/// "memories", "decisions", "crystals", and "results" arrays under any nesting.
+fn extract_recall_node_ids(payload: &Value) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>, limit: usize) {
+        if out.len() >= limit {
+            return;
+        }
+        match v {
+            Value::Object(map) => {
+                if let (Some(target_type), Some(target_id)) = (
+                    map.get("type").and_then(|t| t.as_str()),
+                    map.get("id").and_then(|t| t.as_i64()),
+                ) {
+                    if matches!(target_type, "memory" | "decision" | "crystal") {
+                        out.push(format!("{target_type}-{target_id}"));
+                        if out.len() >= limit {
+                            return;
+                        }
+                    }
+                }
+                for (_, child) in map.iter() {
+                    walk(child, out, limit);
+                }
+            }
+            Value::Array(arr) => {
+                for child in arr.iter() {
+                    walk(child, out, limit);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(payload, &mut out, 16);
+    out
 }
 
 // ─── POST /recall ────────────────────────────────────────────────────────────
@@ -1142,6 +1186,12 @@ pub async fn handle_recall_post(
                     );
                 }
             }
+            let node_ids = extract_recall_node_ids(&payload);
+            let _ = state.brain_firing.send(crate::state::BrainFiringEvent {
+                kind: crate::state::BrainKind::Recall,
+                payload: json!({ "node_ids": node_ids, "agent": agent }),
+                owner_id: state.default_owner_id,
+            });
             json_response(StatusCode::OK, payload)
         }
         Err(err) => json_response(
@@ -7424,11 +7474,13 @@ mod tests {
         crate::db::run_pending_migrations(&read_conn);
 
         let (events, _) = broadcast::channel(8);
+        let (brain_firing, _) = broadcast::channel(8);
         RuntimeState {
             db: Arc::new(Mutex::new(write_conn)),
             db_read: Arc::new(Mutex::new(read_conn)),
             token: Arc::new("test-token".to_string()),
             events,
+            brain_firing,
             mcp_calls: Arc::new(AtomicU64::new(0)),
             mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
             recall_history: Arc::new(Mutex::new(HashMap::new())),

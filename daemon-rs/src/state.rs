@@ -43,6 +43,37 @@ pub struct DaemonEvent {
     pub data: Value,
 }
 
+/// Brain-tab firing telemetry. Carries full payloads (unscrubbed), but the
+/// `/brain/firing` SSE handler filters per-subscriber by `owner_id` before
+/// forwarding. Public `/events/stream` is unaffected.
+#[derive(Clone, Debug)]
+pub enum BrainKind {
+    ConsolidationStarted,
+    MemberAdded,
+    ClusterFinalized,
+    LinkInferred,
+    Recall,
+}
+
+impl BrainKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BrainKind::ConsolidationStarted => "consolidation_started",
+            BrainKind::MemberAdded => "member_added",
+            BrainKind::ClusterFinalized => "cluster_finalized",
+            BrainKind::LinkInferred => "link_inferred",
+            BrainKind::Recall => "recall",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BrainFiringEvent {
+    pub kind: BrainKind,
+    pub payload: Value,
+    pub owner_id: Option<i64>,
+}
+
 #[derive(Clone, Debug)]
 pub enum SqliteVecRouteMode {
     Baseline,
@@ -230,6 +261,9 @@ pub struct RuntimeState {
     pub token: Arc<String>,
     /// Broadcast channel for SSE events; clone the sender to fan-out.
     pub events: broadcast::Sender<DaemonEvent>,
+    /// Broadcast channel for Brain-tab firing telemetry. Subscribed only by
+    /// `/brain/firing`; full payloads, owner-scoped at the handler.
+    pub brain_firing: broadcast::Sender<BrainFiringEvent>,
     /// Monotonic counter for MCP call IDs.
     pub mcp_calls: Arc<AtomicU64>,
     /// Active MCP sessions: session-id → last-heartbeat (Unix seconds).
@@ -297,6 +331,16 @@ impl RuntimeState {
         let _ = self.events.send(DaemonEvent {
             event_type: event_type.to_string(),
             data,
+        });
+    }
+
+    /// Broadcast a brain-firing telemetry event to `/brain/firing` subscribers.
+    /// Owner filtering happens in the handler; this just fans out.
+    pub fn emit_brain(&self, kind: BrainKind, payload: Value, owner_id: Option<i64>) {
+        let _ = self.brain_firing.send(BrainFiringEvent {
+            kind,
+            payload,
+            owner_id,
         });
     }
 
@@ -493,6 +537,7 @@ fn initialize_with_conn(
 
     // Channels.
     let (events_tx, _) = broadcast::channel::<DaemonEvent>(256);
+    let (brain_firing_tx, _) = broadcast::channel::<BrainFiringEvent>(256);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let home = paths.home.clone();
@@ -587,6 +632,7 @@ fn initialize_with_conn(
         db_read,
         token: Arc::new(token),
         events: events_tx,
+        brain_firing: brain_firing_tx,
         mcp_calls: Arc::new(AtomicU64::new(0)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
         recall_history: Arc::new(Mutex::new(HashMap::new())),
