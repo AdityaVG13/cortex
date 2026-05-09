@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./BrainVisualizer.jsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const shellGeometry = readFileSync(new URL("./brain/ShellGeometry.js", import.meta.url), "utf8");
+const shellLayout = readFileSync(new URL("./brain/ShellLayout.js", import.meta.url), "utf8");
 
 function readBlock(text, needle) {
   const start = text.indexOf(needle);
@@ -67,22 +69,39 @@ describe("Brain visualizer", () => {
     expect(source).toContain("viewDepth === \"overview\"");
   });
 
-  it("uses a deterministic brain-shaped layout instead of a generic force cluster", () => {
-    expect(source).toContain("const BRAIN_REGIONS = Object.freeze");
-    expect(source).toContain("function brainLayoutPoint");
-    expect(source).toContain("function applyBrainLayout");
-    expect(source).toContain("function createBrainShapeForce");
-    expect(source).toContain("nodes: applyBrainLayout(nodes)");
-    expect(source).toContain("graph.d3Force(\"brainShape\", createBrainShapeForce())");
+  it("uses the constellation lattice layout instead of anatomical hemispheres", () => {
+    expect(source).not.toContain("BRAIN_REGIONS");
+    expect(source).not.toContain("brainRegionForNode");
+    expect(source).not.toContain("applyBrainLayout");
+    expect(source).not.toContain("createBrainShapeForce");
+    expect(source).toContain("import { applyShellLayout, createShellProjectionForce }");
+    expect(source).toContain("applyShellLayout(nodes, { useShellSplit: useShellSplitRef.current })");
+    expect(source).toContain("graph.d3Force(\"shellProjection\", createShellProjectionForce())");
   });
 
-  it("renders the Jarvis brain shell inside the rotatable 3D scene", () => {
-    expect(source).toContain("import * as THREE from \"three\"");
-    expect(source).toContain("const BRAIN_JARVIS_SHELL_NAME");
-    expect(source).toContain("function createJarvisBrainShell");
+  it("renders the constellation shell scaffolding inside the rotatable 3D scene", () => {
+    expect(source).not.toContain("createJarvisBrainShell");
+    expect(source).not.toContain("BRAIN_JARVIS_SHELL_NAME");
+    expect(source).toContain("createConstellationShells()");
+    expect(source).toContain("CONSTELLATION_SHELL_NAME");
     expect(source).toContain("scene.add(shell)");
     expect(source).toContain("controlType=\"orbit\"");
     expect(source).toContain("enableNavigationControls={true}");
     expect(source).toContain("showNavInfo={false}");
+  });
+
+  it("ShellGeometry exports the constellation builders", () => {
+    expect(shellGeometry).toContain("export const CONSTELLATION_SHELL_NAME");
+    expect(shellGeometry).toContain("export function createConstellationShells");
+    expect(shellGeometry).toContain("export function disposeConstellationShells");
+    expect(shellGeometry).toContain("IcosahedronGeometry");
+    expect(shellGeometry).toContain("WireframeGeometry");
+  });
+
+  it("ShellLayout exposes deterministic shell projection", () => {
+    expect(shellLayout).toContain("export function applyShellLayout");
+    expect(shellLayout).toContain("export function createShellProjectionForce");
+    expect(shellLayout).toContain("useShellSplit");
+    expect(shellLayout).toContain("fibonacciSphere");
   });
 });

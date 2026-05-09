@@ -1,8 +1,13 @@
 import { Component, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
-import * as THREE from "three";
 import { getAgentColor, truncate } from "./constants.js";
 import { AppIcon } from "./ui-icons.jsx";
+import {
+  CONSTELLATION_SHELL_NAME,
+  createConstellationShells,
+  disposeConstellationShells,
+} from "./brain/ShellGeometry.js";
+import { applyShellLayout, createShellProjectionForce } from "./brain/ShellLayout.js";
 
 const BRAIN_NODE_COLORS = Object.freeze({
   memory: "#22d3ee",
@@ -23,16 +28,6 @@ const BRAIN_LEGEND = Object.freeze([
 const BRAIN_FOCUS_DISTANCE = 136;
 const BRAIN_FOCUS_TRANSITION_MS = 1550;
 const BRAIN_OVERVIEW_LINK_CAP = 96;
-const BRAIN_SHAPE_FORCE = 0.42;
-const BRAIN_JARVIS_SHELL_NAME = "cortex-jarvis-brain-shell";
-
-const BRAIN_REGIONS = Object.freeze([
-  { key: "frontal", x: 0.88, y: 0.34, z: 0.12 },
-  { key: "parietal", x: 0.55, y: 0.74, z: -0.18 },
-  { key: "temporal", x: 0.90, y: -0.30, z: 0.22 },
-  { key: "occipital", x: 0.36, y: -0.10, z: -0.34 },
-  { key: "limbic", x: 0.30, y: 0.06, z: 0.48 },
-]);
 
 // Error boundary to catch Three.js/WebGL crashes
 class GraphErrorBoundary extends Component {
@@ -88,21 +83,6 @@ function graphNodePosition(node) {
   };
 }
 
-function hashString(value) {
-  let hash = 2166136261;
-  const text = String(value || "");
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function seededUnit(seed, salt = 0) {
-  const value = Math.sin((seed + (salt * 1013)) * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
 function brainOverviewThreshold(nodeCount) {
   return Math.max(480, Math.min(1080, Math.sqrt(Math.max(nodeCount, 1)) * 72));
 }
@@ -131,156 +111,6 @@ function formatFlowType(type) {
 
 function isDecisionNode(node) {
   return node?.group === "decision" || node?.type === "decision";
-}
-
-function brainRegionForNode(node, seed) {
-  if (isDecisionNode(node)) return seed % 2 === 0 ? BRAIN_REGIONS[0] : BRAIN_REGIONS[4];
-  const type = String(node?.type || "").toLowerCase();
-  if (type.includes("episodic") || type.includes("conversation")) return BRAIN_REGIONS[2];
-  if (type.includes("summary") || type.includes("semantic")) return BRAIN_REGIONS[1];
-  if (type.includes("goal") || type.includes("plan")) return BRAIN_REGIONS[0];
-  return BRAIN_REGIONS[seed % BRAIN_REGIONS.length];
-}
-
-function brainLayoutPoint(node, index, total) {
-  const seed = hashString(`${node.id}:${node.agent}:${node.type}:${index}`);
-  const region = brainRegionForNode(node, seed);
-  const hemisphere = seed % 2 === 0 ? -1 : 1;
-  const angle = (index * 2.399963229728653) + (seededUnit(seed, 2) * Math.PI * 2);
-  const density = 0.28 + (seededUnit(seed, 3) * 0.72);
-  const layer = total > 1 ? index / (total - 1) : 0.5;
-  const outerX = 120;
-  const outerY = 92;
-  const outerZ = 74;
-  const centralGap = 22;
-  const x = hemisphere * (centralGap + (region.x * outerX * 0.66))
-    + (hemisphere * Math.cos(angle) * outerX * 0.20 * density);
-  const y = ((region.y - 0.18) * outerY)
-    + (Math.sin(angle) * outerY * 0.24 * density)
-    + (Math.sin(layer * Math.PI) * 16);
-  const z = (region.z * outerZ)
-    + (Math.sin(angle * 1.7) * outerZ * 0.32 * density);
-
-  return {
-    brainRegion: region.key,
-    brainHemisphere: hemisphere < 0 ? "left" : "right",
-    brainX: x,
-    brainY: y,
-    brainZ: z,
-    x,
-    y,
-    z,
-  };
-}
-
-function applyBrainLayout(nodes) {
-  const total = Math.max(nodes.length, 1);
-  return nodes.map((node, index) => ({
-    ...node,
-    ...brainLayoutPoint(node, index, total),
-  }));
-}
-
-function createBrainShapeForce(strength = BRAIN_SHAPE_FORCE) {
-  let nodes = [];
-  function force(alpha) {
-    const pull = Math.min(0.24, strength * alpha);
-    for (const node of nodes) {
-      if (!Number.isFinite(node.brainX) || !Number.isFinite(node.brainY) || !Number.isFinite(node.brainZ)) continue;
-      node.vx += (node.brainX - (node.x || 0)) * pull;
-      node.vy += (node.brainY - (node.y || 0)) * pull;
-      node.vz += (node.brainZ - (node.z || 0)) * pull;
-    }
-  }
-  force.initialize = assignedNodes => { nodes = assignedNodes || []; };
-  return force;
-}
-
-function createLine(points, color = "#40e0ff", opacity = 0.36) {
-  const material = new THREE.LineBasicMaterial({
-    color,
-    transparent: true,
-    opacity,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  });
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-  return new THREE.Line(geometry, material);
-}
-
-function hemisphereOutline(centerX, radiusX, radiusY, zBias, side) {
-  const points = [];
-  const segments = 112;
-  for (let index = 0; index <= segments; index += 1) {
-    const theta = (index / segments) * Math.PI * 2;
-    const lobe = 1 + (Math.sin(theta * 3 + side) * 0.035);
-    const x = centerX + (Math.cos(theta) * radiusX * lobe);
-    const y = Math.sin(theta) * radiusY * (1 - (Math.cos(theta) * 0.05));
-    const z = zBias + (Math.sin(theta * 2) * 12) + (Math.cos(theta) * side * 8);
-    points.push(new THREE.Vector3(x, y, z));
-  }
-  return points;
-}
-
-function cortexPath(centerX, y, width, z, side, phase) {
-  const points = [];
-  const segments = 72;
-  for (let index = 0; index <= segments; index += 1) {
-    const t = index / segments;
-    const x = centerX - (width / 2) + (width * t);
-    const arch = Math.sin(t * Math.PI) * 18;
-    const wave = Math.sin((t * Math.PI * 5) + phase) * 5;
-    points.push(new THREE.Vector3(x, y + arch + wave, z + (Math.cos(t * Math.PI) * side * 7)));
-  }
-  return points;
-}
-
-function ellipseRing(radiusX, radiusY, z, rotationX = 0, rotationY = 0) {
-  const points = [];
-  const segments = 128;
-  const euler = new THREE.Euler(rotationX, rotationY, 0);
-  for (let index = 0; index <= segments; index += 1) {
-    const theta = (index / segments) * Math.PI * 2;
-    const point = new THREE.Vector3(Math.cos(theta) * radiusX, Math.sin(theta) * radiusY, z);
-    point.applyEuler(euler);
-    points.push(point);
-  }
-  return points;
-}
-
-function createJarvisBrainShell() {
-  const group = new THREE.Group();
-  group.name = BRAIN_JARVIS_SHELL_NAME;
-
-  const lines = [
-    createLine(hemisphereOutline(-76, 72, 82, -4, -1), "#40e0ff", 0.42),
-    createLine(hemisphereOutline(76, 72, 82, -4, 1), "#40e0ff", 0.42),
-    createLine(hemisphereOutline(-76, 54, 62, 18, -1), "#40e0ff", 0.18),
-    createLine(hemisphereOutline(76, 54, 62, 18, 1), "#40e0ff", 0.18),
-    createLine(cortexPath(-76, 36, 92, 20, -1, 0.2), "#40e0ff", 0.28),
-    createLine(cortexPath(-76, 4, 106, 10, -1, 1.7), "#40e0ff", 0.24),
-    createLine(cortexPath(-76, -32, 82, -2, -1, 2.9), "#ffd166", 0.16),
-    createLine(cortexPath(76, 36, 92, 20, 1, 1.1), "#40e0ff", 0.28),
-    createLine(cortexPath(76, 4, 106, 10, 1, 2.4), "#40e0ff", 0.24),
-    createLine(cortexPath(76, -32, 82, -2, 1, 3.2), "#ffd166", 0.16),
-    createLine([
-      new THREE.Vector3(0, -72, 12),
-      new THREE.Vector3(-4, -40, 20),
-      new THREE.Vector3(5, -8, 24),
-      new THREE.Vector3(-3, 30, 18),
-      new THREE.Vector3(0, 74, 10),
-    ], "#f8fbff", 0.22),
-    createLine(ellipseRing(172, 110, -10, Math.PI * 0.20, 0), "#40e0ff", 0.14),
-    createLine(ellipseRing(138, 84, 24, Math.PI * 0.34, Math.PI * 0.12), "#ffd166", 0.10),
-    createLine(ellipseRing(118, 68, -32, Math.PI * 0.48, -Math.PI * 0.10), "#40e0ff", 0.11),
-  ];
-
-  for (const line of lines) {
-    line.renderOrder = 1;
-    group.add(line);
-  }
-
-  return group;
 }
 
 function brainNodeBaseColor(node) {
@@ -392,7 +222,9 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   const selectionFrameRef = useRef(null);
   const zoomFrameRef = useRef(null);
   const viewDepthRef = useRef("detail");
+  const useShellSplitRef = useRef(true);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
+  const [useShellSplit, setUseShellSplit] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [hoverNode, setHoverNode] = useState(null);
@@ -408,6 +240,14 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
   useEffect(() => {
     selectedNodeRef.current = selectedNode;
   }, [selectedNode]);
+
+  useEffect(() => {
+    useShellSplitRef.current = useShellSplit;
+    setGraphData(prev => {
+      if (!prev?.nodes?.length) return prev;
+      return { ...prev, nodes: applyShellLayout(prev.nodes, { useShellSplit }) };
+    });
+  }, [useShellSplit]);
 
   useEffect(() => () => {
     if (selectionFrameRef.current) cancelAnimationFrame(selectionFrameRef.current);
@@ -445,11 +285,11 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     if (!scene) return undefined;
 
     if (!jarvisShellRef.current) {
-      jarvisShellRef.current = createJarvisBrainShell();
+      jarvisShellRef.current = createConstellationShells();
     }
 
     const shell = jarvisShellRef.current;
-    if (!scene.getObjectByName(BRAIN_JARVIS_SHELL_NAME)) {
+    if (!scene.getObjectByName(CONSTELLATION_SHELL_NAME)) {
       scene.add(shell);
     }
 
@@ -457,6 +297,13 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       if (shell.parent) shell.parent.remove(shell);
     };
   }, [active, graphData.nodes.length, webglAvailable]);
+
+  useEffect(() => () => {
+    if (jarvisShellRef.current) {
+      disposeConstellationShells(jarvisShellRef.current);
+      jarvisShellRef.current = null;
+    }
+  }, []);
 
   const syncViewDepth = useCallback(() => {
     const graph = graphRef.current;
@@ -524,7 +371,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       if (linkForce && typeof linkForce.strength === "function") {
         linkForce.strength(link => Math.min(0.32, Math.max(0.04, Number(link.weight || 1) * 0.08)));
       }
-      if (typeof graph.d3Force === "function") graph.d3Force("brainShape", createBrainShapeForce());
+      if (typeof graph.d3Force === "function") graph.d3Force("shellProjection", createShellProjectionForce());
       if (typeof graph.d3ReheatSimulation === "function") graph.d3ReheatSimulation();
     } catch {
       // Force tuning is best-effort; the graph should still render with library defaults.
@@ -678,7 +525,7 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
       // Final validation — ensure all link targets exist
       const validLinks = links.filter(l => nodeIds.has(l.source) && nodeIds.has(l.target));
 
-      setGraphData({ nodes: applyBrainLayout(nodes), links: validLinks });
+      setGraphData({ nodes: applyShellLayout(nodes, { useShellSplit: useShellSplitRef.current }), links: validLinks });
       setLoading(false);
     } catch (err) {
       setError(err.message);
