@@ -76,6 +76,7 @@ export function buildEdgeMesh(links, nodesById, options = {}) {
     activationCount: edgeCount,
     baseColor: options.baseColor,
     pulseColor: options.pulseColor,
+    baseOpacity: options.baseOpacity ?? 0.42,
   });
 
   const mesh = new THREE.LineSegments(geometry, material);

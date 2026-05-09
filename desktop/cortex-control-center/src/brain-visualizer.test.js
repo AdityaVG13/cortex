@@ -157,10 +157,10 @@ describe("Brain visualizer", () => {
     expect(edgeMesh).toContain("brainEdgeMesh: true");
   });
 
-  it("BrainVisualizer mounts the merged edge mesh and ticks the pulse uniform each frame", () => {
+  it("BrainVisualizer mounts the merged edge mesh on the default layer and ticks pulse each frame", () => {
     expect(source).toContain("import { buildEdgeMesh, disposeEdgeMesh, tickEdgeMaterialTime }");
     expect(source).toContain("buildEdgeMesh(graphData.links, nodesById,");
-    expect(source).toContain("assignLayer(mesh, BRAIN_LAYERS.BLOOM)");
+    expect(source).not.toContain("assignLayer(mesh, BRAIN_LAYERS.BLOOM)");
     expect(source).toContain("markBloom(mesh, true)");
     expect(source).toContain("tickEdgeMaterialTime(mesh, elapsedSec)");
     expect(source).toContain("disposeEdgeMesh(edgeMeshRef.current)");

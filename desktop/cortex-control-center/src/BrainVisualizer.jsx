@@ -345,7 +345,6 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
     });
 
     if (mesh) {
-      assignLayer(mesh, BRAIN_LAYERS.BLOOM);
       markBloom(mesh, true);
       scene.add(mesh);
       edgeMeshRef.current = mesh;
