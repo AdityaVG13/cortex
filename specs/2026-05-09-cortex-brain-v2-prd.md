@@ -62,7 +62,7 @@ V2 starts from a different premise: **the Brain is a live window into Cortex's c
 
 ### 4.3 Cold-start fallback
 
-If `memory_clusters` is empty (new install), the mid ring renders the top 80 memories by score using cyan hue (no per-cluster identity yet). When the first real cluster materializes, the mid ring transitions over 1.5 s to cluster mode.
+If `memory_clusters` is empty (new install), the mid ring renders the top 80 memories by score using cyan hue (no per-cluster identity yet). When the first real cluster materializes, the mid ring **crossfades** to cluster mode over 1.5 s — same 80-slot InstancedMesh stays allocated for the lifetime of the scene; only per-instance attributes (color, position, scale) lerp. No InstancedMesh rebuild, no allocation, no flicker. Slots whose semantics change run an alpha 1→0→1 fade through the transition.
 
 ### 4.4 Idle behavior
 
@@ -70,6 +70,7 @@ If `memory_clusters` is empty (new install), the mid ring renders the top 80 mem
 - **Auto-rotate**: camera orbits Y axis at 0.04 rad/s starting from first paint. User drag pauses; resume after 8 s of no input.
 - **Real-event override**: any SSE event resets the idle timer.
 - **Simulated firing**: when no real event arrives for 12 s, fire one fake beam every 4–8 s (random satellite → core, decay 600 ms). Real event arrival immediately suppresses any in-flight fakes.
+- **Reproducibility**: the simulator uses a seedable mulberry32 PRNG. Default seed is `Date.now()`; tests pass an explicit seed so fake-firing schedules are reproducible.
 
 ### 4.5 Beam aesthetics
 
@@ -80,13 +81,17 @@ If `memory_clusters` is empty (new install), the mid ring renders the top 80 mem
 
 ### 4.6 Camera spotlight on firing
 
-When any real `/brain/firing` event fires from satellite *S*, camera eases 15% toward *S*'s world position over 800 ms (cubic ease), then resumes auto-rotate. Implementation: lerp `camera.position` and `controls.target` independently. Multiple simultaneous events spotlight only the most recent.
+When any real `/brain/firing` event fires from satellite *S*: spotlight engages for 800 ms, then resumes auto-rotate.
+
+Spotlight math: target position is `camera.position + 0.15 * (S.worldPosition - camera.position)` (lerp factor 0.15 of the camera→satellite vector — pulls the camera 15 % closer to the satellite, never re-centers). Apply via `camera.position.lerp(target, easeOutCubic(t))` where `t` ramps 0→1 over 800 ms. `controls.target` lerps independently from origin to `0.15 * S.worldPosition` over the same envelope, then returns to origin in 400 ms after the 800 ms hold.
+
+Multiple simultaneous events: only the most recent spotlight is honored — the in-flight envelope is hard-cut and a fresh 800 ms ramp begins from the current camera state. No queue.
 
 ### 4.7 Color palette
 
 - Background: `#040812`
 - Decisions: `#ffd166` (amber, unchanged from v1)
-- Cluster hue: HSL(`(id * 137.508) mod 360`, 70%, 58%) → multiplied to RGB at sprite/sphere material level
+- **Cluster hue**: derived from a stable hash of the cluster's centroid bytes (NOT the row id). The daemon stores cluster `centroid` as a Float32 vector blob; the desktop client computes `palette_seed = fnv1a32(centroid_bytes)`, then `hue = (palette_seed * 137.508 / 0x100000000) * 360°` mod 360, S=70%, L=58%. Centroids drift slowly (only on consolidation passes) so hue is stable; if the daemon reincarnates a cluster under a new id with the same centroid the hue is unchanged. If the centroid genuinely changes (members merged/split), a hue shift is the correct visual signal.
 - Loose memories: `#22d3ee` (cyan)
 - Core halo: `#40e0ff`
 - Beam head: `#f8fbff`
@@ -95,7 +100,7 @@ When any real `/brain/firing` event fires from satellite *S*, camera eases 15% t
 ## 5. Interaction model
 
 - **Orbit + zoom + pan** via `THREE.OrbitControls` (vanilla three.js examples). `zoomSpeed=0.7`, no damping (simpler), origin-locked target.
-- **Hover**: pointer raycast against the satellite InstancedMesh. Highlights nearest satellite, shows DOM tooltip with `label`, `member_count` (clusters), `agent`. No state change.
+- **Hover**: pointer raycast against the satellite InstancedMesh. **rAF-throttled** — pointermove handlers store the latest screen-space cursor position; the next render frame performs at most one raycast against the InstancedMesh. Native pointer rates (up to 1 kHz) collapse to ≤ 60 raycasts/s. Highlights nearest satellite, shows DOM tooltip with `label`, `member_count` (clusters), `agent`.
 - **Click**: pins detail panel. Body color → white, halo → 1.4× scale. Other satellites do NOT dim (showcase priority — keep the constellation visible).
 - **Right-click**: deselects. Suppresses native context menu.
 - **Drag**: pauses auto-rotate. Resumes after 8 s idle.
@@ -104,46 +109,54 @@ When any real `/brain/firing` event fires from satellite *S*, camera eases 15% t
 
 ### 6.1 Endpoint
 
-`GET /brain/firing` on the daemon (port 7437). Auth via existing token. Owner-scoped: only emits events for memories/clusters owned by the requesting user.
+`GET /brain/firing?token=<token>` on the daemon (port 7437). Token must match the runtime auth token. **Auth via query string is mandatory** — the browser/Tauri webview's `EventSource` does not support custom headers, so the token rides on the URL. The handler resolves the caller's `owner_id` from the token and rejects with HTTP 401 if absent.
 
 ### 6.2 Event types
 
 ```jsonc
 // Consolidation pipeline
-{ "type": "consolidation_started", "ts": "..." }
-{ "type": "member_added",       "ts": "...", "cluster_id": 42, "member_id": "mem-123" }
-{ "type": "cluster_finalized",  "ts": "...", "cluster_id": 42, "member_count": 7 }
-{ "type": "link_inferred",      "ts": "...", "a": "mem-1", "b": "mem-9", "score": 0.81 }
-
-// Recall — emit on every /recall
-{ "type": "recall",             "ts": "...", "node_ids": ["mem-1","mem-3","crystal-7"] }
+{ "type": "consolidation_started", "ts": "..." }                                                      // visual: core halo pulse 1.0 → 1.2 → 1.0 over 800 ms
+{ "type": "member_added",       "ts": "...", "cluster_id": 42, "member_id": "mem-123" }              // visual: beam from member satellite → cluster centroid
+{ "type": "cluster_finalized",  "ts": "...", "cluster_id": 42, "member_count": 7, "owner_id": 1 }    // visual: cluster halo flash + cage scale pulse
+{ "type": "link_inferred",      "ts": "...", "a": "mem-1", "b": "mem-9", "score": 0.81 }              // visual: beam between A and B
+{ "type": "recall",             "ts": "...", "node_ids": ["mem-1","mem-3","crystal-7"] }              // visual: each node halo pulse + thin beam to core
 ```
 
-### 6.3 Throttle
+Every event payload also carries an `owner_id` field (omitted from the JSON shown above for some types but present in the Rust struct). The SSE handler filters by it before forwarding — see §6.4.
 
-SSE coalesces events arriving in the same 50 ms window into one batch. Brain receives at most ~20 events/s. Above that, oldest events drop.
+### 6.3 Throttle / coalescing
 
-### 6.4 Payload privacy
+The Brain channel coalesces by *batching*, not by merging. Events arriving in a 50 ms window are grouped into a single SSE message whose `data` field is a **JSON array** of event objects:
+
+```
+event: brain_batch
+data: [{"type":"recall",...},{"type":"member_added",...}]
+```
+
+If the broadcast channel's per-subscriber backlog exceeds 256 events, the oldest are dropped (this is `tokio::sync::broadcast`'s natural behavior; we expose the lag so the client can log it).
+
+### 6.4 Payload privacy + owner scoping
 
 - No raw memory text on the wire.
-- Only: cluster IDs, node IDs, member counts, scores, timestamps.
+- Only: cluster IDs, node IDs, member counts, scores, timestamps, `owner_id`.
+- The new `BrainFiringEvent` broadcast channel is **global**; per-subscriber owner filtering happens inside `handle_brain_firing_stream`: each event is checked against the caller's resolved `owner_id` and dropped before the SSE write if it doesn't match. **Fail-closed**: if the handler can't resolve `owner_id` it forwards nothing. Mirrors the existing pattern at `crystallize.rs:594` (`search_crystals_filtered`).
 - IDs map to local data the user already has via `/dump` cache.
 - Public `/events/stream` scrub policy unchanged.
 
 ### 6.5 Daemon emit work
 
-- `daemon-rs/src/crystallize.rs`: emit `consolidation_started`, `member_added`, `cluster_finalized`, `link_inferred` at the appropriate code points.
-- `daemon-rs/src/handlers/recall.rs`: emit `recall` with the `node_ids` returned to the caller.
-- `daemon-rs/src/handlers/events.rs`: add `handle_brain_firing_stream` mounted at `/brain/firing` that subscribes to the brain-firing channel (a separate `broadcast::Sender<BrainFiringEvent>` on `RuntimeState`) and emits full payloads (not scrubbed).
-- `daemon-rs/src/state.rs`: add `pub brain_firing: broadcast::Sender<BrainFiringEvent>`.
+- `daemon-rs/src/state.rs`: add `pub brain_firing: broadcast::Sender<BrainFiringEvent>` parallel to `pub events`. Define `BrainFiringEvent { kind: BrainKind, payload: Value, owner_id: Option<i64> }` and `BrainKind` enum mirroring §6.2.
+- `daemon-rs/src/crystallize.rs`: emit `consolidation_started`, `member_added`, `cluster_finalized`, `link_inferred` at the appropriate code points (currently no events here). Each emit goes to `state.brain_firing.send(...)` — **not** the existing scrubbed `events` channel.
+- `daemon-rs/src/handlers/recall.rs`: after the recall result is computed, emit `recall { node_ids, owner_id }` to `state.brain_firing`.
+- `daemon-rs/src/handlers/events.rs`: add `handle_brain_firing_stream(State, Query)` mounted at `GET /brain/firing`, subscribes to `state.brain_firing`, validates the `?token=` query param, resolves caller's `owner_id`, filters per §6.4, batches per §6.3, emits SSE without scrubbing.
 
 ## 7. Render pipeline
 
 - **Single `THREE.Scene`**. No composer, no postprocessing.
 - **Cameras**: one `PerspectiveCamera` (fov=55, near=1, far=2000), positioned at `(0, 60, 380)` initially.
 - **Renderer**: `THREE.WebGLRenderer` with `antialias=true`, `alpha=false`, `powerPreference="high-performance"`.
-- **Tonemapping**: `THREE.LinearToneMapping` (default). Skip ACES — v1 hurt us there.
-- **Draw call ceiling**: target ≤ 25 (1× core cages, 1× core halo sprite, 1× satellite InstancedMesh body, 1× satellite halo InstancedMesh sprite, 1× merged beam BufferGeometry, ≤ 5 HUD text quads).
+- **Tonemapping**: `THREE.LinearToneMapping` (default). Do **not** set `renderer.toneMapping = THREE.ACESFilmicToneMapping` — v1 lost frames there. Asserted by perf test.
+- **Draw call ceiling**: target ≤ 25. Inventory: 2× core cages (separate meshes for counter-rotation; not merged), 1× core halo sprite, 1× satellite InstancedMesh body (all 150 satellites), 1× satellite halo InstancedMesh sprite, 1× merged beam `LineSegments` w/ pulse shader, ≤ 5 HUD text quads, slack 14. Asserted by perf test.
 - **Frame loop**: single `requestAnimationFrame` driving:
   1. Update orbit target on selection ease
   2. Tick auto-rotate angle if not paused
@@ -199,7 +212,7 @@ desktop/cortex-control-center/src/BrainVisualizer.jsx   # becomes a thin wrapper
 ## 9. HUD
 
 - **Top-right slim strip** (single row): NODES (visible satellite count) · CLUSTERS · DECISIONS · MEM · DEC · FPS · auto-rotate state. Tiny monospace.
-- **Bottom-left FIRING ticker**: scrolling text feed of last 5 events: `cluster_finalized · 7 members · 42ms ago`. Updates on every SSE event; entries fade after 6 s.
+- **Bottom-left FIRING ticker**: scrolling text feed of last 5 events. Entry format: `cluster_finalized · 7 members · 42ms ago`. **rAF-batched**: SSE events queue into a ref; the next render frame applies at most one DOM update that swaps the entry list and runs `transform: translateY()` for entry advance — no layout thrash. Entries fade via `opacity` (compositor-only, no reflow) after 6 s.
 - **Click-pin detail panel** appears in top-left when a satellite is selected: label, type, agent, member_count (clusters), recall count last 24 h, list of linked node IDs (top 5).
 - **No legend, no MANUAL/AUTO toggle button** — the auto-rotate state is in the strip and toggles automatically on drag.
 
@@ -213,9 +226,10 @@ desktop/cortex-control-center/src/BrainVisualizer.jsx   # becomes a thin wrapper
 
 ## 11. SSE client behavior
 
-- `EventSource` to `/brain/firing` with auth header (use Tauri's existing API bridge, not raw fetch).
-- Auto-reconnect with backoff: 250 ms, 500 ms, 1 s, 2 s, 4 s, capped at 4 s.
-- Events buffered into a 256-deep FIFO; consumed by the idle simulator (which suppresses fakes) and the firing engine.
+- Native `EventSource` to `/brain/firing?token=<token>` (URL-encoded). Tauri's webview supports `EventSource`; if a future Tauri build doesn't, fall back to `fetch` + `ReadableStream` SSE parser. The existing `api-client.js` IPC bridge (`invoke("fetch_cortex" / "post_cortex")`) is one-shot and not used here.
+- **Reconnect**: native `EventSource` already auto-reconnects with browser-controlled backoff. We do **not** layer a manual backoff on top — that fights the browser. We log lifecycle (`open`, `error`, `close`) for diagnostics only.
+- Each SSE message is a `brain_batch` event whose `data` is a JSON array of events (see §6.3). Client parses array and dispatches each event individually.
+- Events buffered into a 256-deep FIFO in the renderer; consumed by the idle simulator (which suppresses fakes) and the firing engine.
 - On disconnect, idle simulator continues — viz never goes "dead".
 
 ## 12. Testing
@@ -235,7 +249,7 @@ desktop/cortex-control-center/src/BrainVisualizer.jsx   # becomes a thin wrapper
 
 ### 12.3 Visual regression
 
-- Puppeteer snapshot of static frame (auto-rotate paused, seeded data, idle simulator off). Compared via `pixelmatch` 0.15 threshold against checked-in baseline.
+- Snapshot harness uses headless `gl` (npm package) — **not a real GPU** — so output is deterministic across CI and local. Static frame: auto-rotate paused, seeded PRNG (idle simulator off), fixed cluster fixture. `pixelmatch` threshold 0.05. Baseline checked in after manual eyeball approval in PR.
 
 ### 12.4 Manual smoke (recorded in PR)
 
@@ -256,24 +270,65 @@ desktop/cortex-control-center/src/BrainVisualizer.jsx   # becomes a thin wrapper
 
 ## 14. Risks
 
-- **Daemon emit work in `crystallize.rs`** — that file is 800+ LOC and the consolidation pipeline is non-trivial. Risk: misplaced emits leak memory text or fire too often. Mitigation: review with eyes on, throttle at SSE-side as backup.
-- **Cluster cold-start gap** — if a fresh user has zero clusters and we render only the loose-memory ring, the constellation looks sparse. Mitigation: cold-start fallback in §4.3.
-- **Cluster ID instability** — if the daemon ever recycles cluster IDs (e.g. on a recompute), per-cluster hues would shuffle. Mitigation: confirm with ownership of `crystallize.rs` that IDs are stable; if not, hash on `(label, owner_id)` instead.
-- **EventSource in Tauri webview** — confirm Tauri's webview supports `EventSource` natively. Fallback: long-poll over the existing IPC bridge.
+- **Daemon emit work in `crystallize.rs`** — that file is 800+ LOC and the consolidation pipeline is non-trivial. Risk: misplaced emits leak memory text or fire too often. Mitigation: events carry only IDs/counts, never `text`; reviewer verifies emit sites; SSE batching in §6.3 caps fan-out.
+- **Cluster cold-start gap** — if a fresh user has zero clusters and we render only the loose-memory ring, the constellation looks sparse. Mitigation: cold-start fallback in §4.3, with a same-slot crossfade (no rebuild) when first cluster materializes.
+- **Cluster identity drift** — daemon may reincarnate a cluster under a new row ID with the same conceptual content (`find_existing_crystal(label)` keys by label, which can drift). Mitigation: hue is derived from a hash of the **centroid bytes**, not the row ID (§4.7). Same content → same hue, regardless of row recycling. A genuine centroid change correctly produces a hue shift.
+- **`/forget` cascade** — `cluster_members` has `ON DELETE CASCADE`; user-initiated forget can orphan clusters. Mitigation: client treats absent cluster as "removed" — fade satellite out 400 ms; no stale palette mapping persisted client-side beyond the lifetime of the visible satellite.
+- **SSE auth in Tauri** — token rides as `?token=` query param (browser `EventSource` cannot send custom headers). The token is ephemeral runtime-only, not a long-lived secret; logged URLs would still be sensitive — mitigation: never include path-with-query in any user-visible log or telemetry.
+- **EventSource in Tauri webview** — Tauri uses platform webview (WebKit on macOS, WebView2 on Windows). Both support `EventSource`. If a future Tauri config disables it, fall back to `fetch` + `ReadableStream` SSE parser.
+- **EventSource auto-reconnect** — already covered in §11; we do not fight the browser's built-in reconnect.
+- **Bundle size after dropping force-graph + postprocessing** — current BrainVisualizer chunk ~1.42 MB / 383 KB gzip. Target post-rewrite: ≤ 600 KB / 200 KB gzip. Verified by `vite build` size diff in P7.
+- **WebGL2 unavailability** — `hasWebGLSupport()` already exists in BrainVisualizer.jsx and gates a 2D fallback grid. Preserved in v2 (§8 layout). Detection covers WebGL1 + WebGL2 + experimental contexts.
 
 ## 15. Acceptance criteria
 
-- v2 renders: counter-rotating core, three-tier shells, per-cluster colors, no v1 anatomy / lattice / orbital rings / reticle / crosshair.
-- 60 fps median on the reference machine, idle and active.
-- Real `/brain/firing` events trigger the correct visual response (cluster glow, member-added beams, link-inferred arcs, recall pulses).
-- 12 s idle threshold engages simulated firing; real event suppresses.
-- Click-pin + right-click deselect both work.
-- Camera spotlight + auto-rotate resume both work.
-- v1 BrainVisualizer code, `react-force-graph-3d`, `postprocessing`, and all `brain/*` files are gone.
-- `/brain/firing` endpoint mounted, scoped to owner, emits the five event types from §6.2.
-- Bundle size for the BrainVisualizer chunk drops vs v1 (target: ≤ 600 KB / 200 KB gzip).
-- All Vitest tests pass; perf harness asserts draw call ≤ 25.
-- Existing 2D fallback path still triggers when WebGL2 is unavailable.
+**Scene**
+
+- v2 renders: counter-rotating core (two cages, opposite axes), single core halo sprite, three-tier shells (decisions inner R=80, clusters mid R=140, loose memories outer R=180-220 jittered), per-cluster centroid-hashed hue, no v1 anatomy / lattice / orbital rings / reticle / crosshair / orbital ellipses.
+- Halo breathing: core halo intensity oscillates ±8 % on a 1.5 s sin cycle.
+- Satellites bob ±2 % of their tier radius on individual phase offsets.
+- Tooltip on hover shows label + type + agent + (for clusters) member_count.
+- Click-pin detail panel shows label, type, agent, member_count, recall count last 24 h, top-5 linked node IDs.
+
+**Behavior**
+
+- Auto-rotate at 0.04 rad/s on Y axis from first paint; user drag pauses; resumes 8 s after last input.
+- Real `/brain/firing` events trigger the correct visual response per §6.2 (consolidation_started → core halo pulse 1.0→1.2→1.0/800ms; member_added → beam member→centroid; cluster_finalized → cluster halo flash + cage scale pulse; link_inferred → A↔B beam; recall → per-node halo pulse + thin beam to core).
+- Beam life: 600 ms (rise 80 ms cubic, exponential decay τ=280 ms).
+- Camera spotlight: lerp factor 0.15 of camera→satellite vector over 800 ms cubic, then 400 ms return; only most recent event honored.
+- 12 s idle threshold engages simulated firing; real event arrival immediately suppresses any in-flight fakes.
+- Click-pin + right-click deselect both work; right-click suppresses native context menu.
+
+**Daemon**
+
+- `/brain/firing` endpoint mounted at `GET /brain/firing?token=...`.
+- Owner scoping: events filtered against caller's resolved `owner_id`; fail-closed on missing owner.
+- Public `/events/stream` scrub policy unchanged — verify by reading `handle_events_stream` after PR and asserting payload shape unchanged.
+- Five event types (consolidation_started, member_added, cluster_finalized, link_inferred, recall) emitted from `crystallize.rs` and `handlers/recall.rs` to the `brain_firing` channel — not the existing `events` channel.
+- SSE coalescing: `brain_batch` events whose `data` is a JSON array; max 50 ms window per batch.
+
+**Disposal**
+
+- v1 BrainVisualizer code, `react-force-graph-3d`, `postprocessing`, and all `brain/*` files (except ports to `brain-v2/`) are gone.
+- Bundle size for the BrainVisualizer chunk: ≤ 600 KB raw / ≤ 200 KB gzip — measured by `vite build`.
+
+**Perf**
+
+- 60 fps median on the reference machine, idle and active under 10 events/s firing.
+- Draw call count ≤ 25, vertex count ≤ 5 000 — both asserted by perf harness.
+- Renderer tonemapping is `THREE.LinearToneMapping`; perf test asserts no ACES.
+- Hover raycast rAF-throttled to ≤ 60 raycasts/s regardless of pointer rate.
+- FIRING ticker DOM updates rAF-batched to ≤ 1 update/frame.
+
+**Tests**
+
+- All Vitest tests pass.
+- Perf harness asserts draw call + vertex ceilings.
+- Snapshot harness uses headless `gl` w/ pixelmatch threshold 0.05.
+
+**Fallback**
+
+- Existing 2D fallback path still triggers when WebGL2 is unavailable; trigger gated by the existing `hasWebGLSupport()` helper.
 
 ---
 
