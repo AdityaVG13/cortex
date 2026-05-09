@@ -409,12 +409,13 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
     if ("enableDamping" in controls) {
       controls.enableDamping = true;
-      controls.dampingFactor = 0.085;
+      controls.dampingFactor = 0.06;
     }
-    if ("zoomSpeed" in controls) controls.zoomSpeed = 0.6;
-    if ("rotateSpeed" in controls) controls.rotateSpeed = 0.45;
-    if ("panSpeed" in controls) controls.panSpeed = 0.6;
-    if ("zoomToCursor" in controls) controls.zoomToCursor = true;
+    if ("zoomSpeed" in controls) controls.zoomSpeed = 0.4;
+    if ("rotateSpeed" in controls) controls.rotateSpeed = 0.4;
+    if ("panSpeed" in controls) controls.panSpeed = 0.5;
+    if ("zoomToCursor" in controls) controls.zoomToCursor = false;
+    if (controls.target && typeof controls.target.set === "function") controls.target.set(0, 0, 0);
 
     const handleControlsChange = () => {
       if (zoomFrameRef.current) return;
@@ -772,7 +773,20 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
 
   // 3D Graph
   return (
-    <div className="brain-container" data-bloom={bloomActive ? "on" : "off"} data-shell-split={useShellSplit ? "on" : "off"} onMouseDown={() => autoRotate && setAutoRotate(false)} onWheel={() => autoRotate && setAutoRotate(false)}>
+    <div
+      className="brain-container"
+      data-bloom={bloomActive ? "on" : "off"}
+      data-shell-split={useShellSplit ? "on" : "off"}
+      onMouseDown={(e) => {
+        if (autoRotate) setAutoRotate(false);
+        if (e.button === 2 && selectedNodeRef.current) {
+          selectedNodeRef.current = null;
+          startTransition(() => setSelectedNode(null));
+        }
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+      onWheel={() => autoRotate && setAutoRotate(false)}
+    >
       <div className="brain-orbital-ring brain-orbital-ring-a" aria-hidden="true" />
       <div className="brain-orbital-ring brain-orbital-ring-b" aria-hidden="true" />
 

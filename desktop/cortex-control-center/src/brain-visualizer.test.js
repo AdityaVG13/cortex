@@ -166,10 +166,17 @@ describe("Brain visualizer", () => {
     expect(source).toContain("disposeEdgeMesh(edgeMeshRef.current)");
   });
 
-  it("uses smooth orbit + zoom-to-cursor controls", () => {
+  it("uses smooth orbit controls with damping and origin-locked target", () => {
     expect(source).toContain("controls.enableDamping = true");
-    expect(source).toContain("controls.dampingFactor = 0.085");
-    expect(source).toContain("controls.zoomToCursor = true");
+    expect(source).toContain("controls.dampingFactor = 0.06");
+    expect(source).toContain("controls.zoomToCursor = false");
+    expect(source).toContain("controls.target.set(0, 0, 0)");
+  });
+
+  it("right-click deselects the active node and suppresses the context menu", () => {
+    expect(source).toContain("e.button === 2");
+    expect(source).toContain("onContextMenu={(e) => e.preventDefault()}");
+    expect(source).toContain("startTransition(() => setSelectedNode(null))");
   });
 
   it("BrainVisualizer instantiates RippleEngine, ticks per frame, and fires on click", () => {

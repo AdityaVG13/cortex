@@ -2,8 +2,8 @@ import * as THREE from "three";
 
 export const CONSTELLATION_SHELL_NAME = "cortex-constellation-shell";
 
-export const SHELL_OUTER_RADIUS = 140;
-export const SHELL_INNER_RADIUS = 80;
+export const SHELL_OUTER_RADIUS = 220;
+export const SHELL_INNER_RADIUS = 130;
 
 const OUTER_LINE_COLOR = "#40e0ff";
 const INNER_LINE_COLOR = "#ffd166";
@@ -105,14 +105,14 @@ export function createConstellationShells() {
   group.add(innerShell);
 
   const rings = [
-    makeLine(ellipseRingPoints(172, 110, -10, Math.PI * 0.20, 0), OUTER_LINE_COLOR, 0.14),
-    makeLine(ellipseRingPoints(138, 84, 24, Math.PI * 0.34, Math.PI * 0.12), INNER_LINE_COLOR, 0.10),
-    makeLine(ellipseRingPoints(118, 68, -32, Math.PI * 0.48, -Math.PI * 0.10), OUTER_LINE_COLOR, 0.11),
+    makeLine(ellipseRingPoints(270, 170, -16, Math.PI * 0.20, 0), OUTER_LINE_COLOR, 0.14),
+    makeLine(ellipseRingPoints(215, 130, 38, Math.PI * 0.34, Math.PI * 0.12), INNER_LINE_COLOR, 0.10),
+    makeLine(ellipseRingPoints(185, 105, -50, Math.PI * 0.48, -Math.PI * 0.10), OUTER_LINE_COLOR, 0.11),
   ];
   for (const ring of rings) group.add(ring);
 
-  group.add(reticleRing(186, 96, 8, 6));
-  group.add(centerCrosshair(14));
+  group.add(reticleRing(290, 96, 8, 8));
+  group.add(centerCrosshair(20));
 
   for (const child of group.children) {
     child.renderOrder = 1;
