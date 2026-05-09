@@ -50,6 +50,9 @@ function shellPoint(node, indexInGroup, totalInGroup, radius, jitter = 0.06) {
     x,
     y,
     z,
+    fx: x,
+    fy: y,
+    fz: z,
   };
 }
 
