@@ -1,16 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { createScene } from "./Scene.js";
-import { createCore, tickCore, disposeCore } from "./Core.js";
+import { createCore, tickCore, disposeCore, pulseCoreHalo } from "./Core.js";
 import { createSatellites } from "./Satellites.js";
 import { createBeams } from "./Beams.js";
 import { buildTiers } from "./Tiers.js";
+import { createFiringClient } from "./FiringClient.js";
+import { createIdleSimulator } from "./IdleSimulator.js";
+import { createEventDispatcher } from "./EventDispatcher.js";
 
-export function BrainV2({ api = null, active = true }) {
+export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
   const coreRef = useRef(null);
   const satellitesRef = useRef(null);
   const beamsRef = useRef(null);
+  const firingClientRef = useRef(null);
+  const idleSimRef = useRef(null);
+  const dispatcherRef = useRef(null);
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
@@ -50,6 +56,33 @@ export function BrainV2({ api = null, active = true }) {
     const beams = createBeams({ scene: sceneHandle.scene });
     beamsRef.current = beams;
 
+    const dispatcher = createEventDispatcher({
+      satellites,
+      beams,
+      core,
+      pulseCoreHalo: () => pulseCoreHalo(core),
+      onTickerEntry: () => {},
+      onSpotlight: () => {},
+    });
+    dispatcherRef.current = dispatcher;
+
+    const idleSim = createIdleSimulator({
+      onFake: (slotId) => dispatcher.dispatchFake(slotId),
+      getNodeIds: () => satellitesRef.current?.getAllIds() || [],
+    });
+    idleSimRef.current = idleSim;
+
+    if (authToken) {
+      firingClientRef.current = createFiringClient({
+        baseUrl: cortexBase,
+        token: authToken,
+        onEvent: (event) => {
+          idleSim.noteRealEvent();
+          dispatcher.dispatch(event);
+        },
+      });
+    }
+
     if (typeof window !== "undefined") {
       window.__brainFire = (fromId, toId, color) => {
         const sats = satellitesRef.current;
@@ -73,6 +106,15 @@ export function BrainV2({ api = null, active = true }) {
       if (typeof window !== "undefined" && window.__brainFire) {
         delete window.__brainFire;
       }
+      if (firingClientRef.current) {
+        firingClientRef.current.disconnect();
+        firingClientRef.current = null;
+      }
+      if (idleSimRef.current) {
+        idleSimRef.current.dispose();
+        idleSimRef.current = null;
+      }
+      dispatcherRef.current = null;
       if (beamsRef.current) {
         beamsRef.current.dispose();
         beamsRef.current = null;

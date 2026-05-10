@@ -145,3 +145,48 @@ describe("Brain v2 Beams + PulseShader", () => {
     expect(v2Index).toContain("window.__brainFire");
   });
 });
+
+describe("Brain v2 firing pipeline (P5)", () => {
+  const firingClient = readFileSync(new URL("./brain-v2/FiringClient.js", import.meta.url), "utf8");
+  const idleSim = readFileSync(new URL("./brain-v2/IdleSimulator.js", import.meta.url), "utf8");
+  const dispatcher = readFileSync(new URL("./brain-v2/EventDispatcher.js", import.meta.url), "utf8");
+  const mulberry = readFileSync(new URL("./brain-v2/util/mulberry32.js", import.meta.url), "utf8");
+
+  it("FiringClient uses native EventSource with ?token= and listens for brain_batch", () => {
+    expect(firingClient).toContain("new EventSource(url)");
+    expect(firingClient).toContain("token=");
+    expect(firingClient).toContain("brain_batch");
+    expect(firingClient).toContain("encodeURIComponent(token)");
+    expect(firingClient).not.toContain("setTimeout");
+  });
+
+  it("IdleSimulator threshold is 12s and fake interval 4-8s with mulberry32", () => {
+    expect(idleSim).toContain("IDLE_THRESHOLD_MS = 12_000");
+    expect(idleSim).toContain("FAKE_INTERVAL_MIN_MS = 4_000");
+    expect(idleSim).toContain("FAKE_INTERVAL_MAX_MS = 8_000");
+    expect(idleSim).toContain("mulberry32");
+    expect(idleSim).toContain("noteRealEvent");
+  });
+
+  it("EventDispatcher routes the five firing event types", () => {
+    expect(dispatcher).toContain("consolidation_started");
+    expect(dispatcher).toContain("member_added");
+    expect(dispatcher).toContain("cluster_finalized");
+    expect(dispatcher).toContain("link_inferred");
+    expect(dispatcher).toContain("recall");
+    expect(dispatcher).toContain("dispatchFake");
+  });
+
+  it("mulberry32 PRNG is reproducible from a seed", () => {
+    expect(mulberry).toContain("export function mulberry32");
+    expect(mulberry).toContain("0x6D2B79F5");
+  });
+
+  it("BrainV2 wires FiringClient + IdleSimulator + EventDispatcher", () => {
+    expect(v2Index).toContain("createFiringClient");
+    expect(v2Index).toContain("createIdleSimulator");
+    expect(v2Index).toContain("createEventDispatcher");
+    expect(v2Index).toContain("idleSim.noteRealEvent()");
+    expect(v2Index).toContain("dispatcher.dispatch(event)");
+  });
+});
