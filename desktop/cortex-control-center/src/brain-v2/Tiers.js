@@ -1,6 +1,36 @@
 import { fnv1a32 } from "./util/fnv1a.js";
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const LABEL_MAX_LEN = 56;
+
+function truncate(text, max = LABEL_MAX_LEN) {
+  if (!text) return "";
+  const flat = String(text).replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, max - 1)}…`;
+}
+
+function memoryLabel(mem) {
+  const text = mem?.text;
+  const source = mem?.source;
+  if (text && text.trim().length > 0) return truncate(text);
+  if (source && source.trim().length > 0) return truncate(source);
+  return `Memory ${mem?.id ?? "?"}`;
+}
+
+function clusterLabelOf(cluster) {
+  const label = cluster?.label;
+  const consolidated = cluster?.consolidated_text;
+  if (label && label.trim().length > 0) return truncate(label);
+  if (consolidated && consolidated.trim().length > 0) return truncate(consolidated);
+  return `Cluster ${cluster?.id ?? "?"}`;
+}
+
+function decisionLabelOf(dec) {
+  const decision = dec?.decision;
+  if (decision && decision.trim().length > 0) return truncate(decision);
+  return `Decision ${dec?.id ?? "?"}`;
+}
 
 const TIER_DECISION_RADIUS = 80;
 const TIER_CLUSTER_RADIUS = 140;
@@ -65,7 +95,7 @@ export function buildTiers(dump, options = {}) {
       id,
       sourceId: node.id,
       tier: "decision",
-      label: node.decision || `Decision ${node.id}`,
+      label: decisionLabelOf(node),
       agent: node.source_agent || "system",
       type: "decision",
       bodyRadius: 2.0,
@@ -93,7 +123,7 @@ export function buildTiers(dump, options = {}) {
           sourceId: mem.id,
           tier: "cluster",
           coldStart: true,
-          label: mem.source || mem.text || `Memory ${mem.id}`,
+          label: memoryLabel(mem),
           agent: mem.source_agent || "system",
           type: "memory",
           bodyRadius: 1.4,
@@ -116,7 +146,7 @@ export function buildTiers(dump, options = {}) {
           sourceId: cluster.id,
           tier: "cluster",
           coldStart: false,
-          label: cluster.label || `Cluster ${cluster.id}`,
+          label: clusterLabelOf(cluster),
           agent: "consolidation",
           type: "cluster",
           bodyRadius,
@@ -143,7 +173,7 @@ export function buildTiers(dump, options = {}) {
       id,
       sourceId: mem.id,
       tier: "loose",
-      label: mem.source || mem.text || `Memory ${mem.id}`,
+      label: memoryLabel(mem),
       agent: mem.source_agent || "system",
       type: "memory",
       bodyRadius: 1.0,
