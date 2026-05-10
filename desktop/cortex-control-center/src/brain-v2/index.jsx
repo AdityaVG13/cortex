@@ -76,7 +76,6 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
 
     const hover = createHover({
       camera: sceneHandle.camera,
-      instancedMesh: satellites.bodies,
       slotsRef: slotsAccessor,
       onHoverChange: (slot) => {
         hoveredSlotRef.current = slot;

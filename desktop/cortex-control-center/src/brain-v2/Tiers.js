@@ -7,9 +7,22 @@ const TIER_CLUSTER_RADIUS = 140;
 const TIER_LOOSE_RADIUS_MIN = 180;
 const TIER_LOOSE_RADIUS_MAX = 220;
 
-const MAX_DECISIONS = 20;
-const MAX_CLUSTERS = 80;
-const MAX_LOOSE = 50;
+const TOTAL_BUDGET_MIN = 70;
+const TOTAL_BUDGET_MAX = 90;
+const DECISION_RATIO = 0.15;
+const CLUSTER_RATIO = 0.55;
+const LOOSE_RATIO = 0.30;
+
+function pickBudget() {
+  const span = TOTAL_BUDGET_MAX - TOTAL_BUDGET_MIN + 1;
+  const total = TOTAL_BUDGET_MIN + Math.floor(Math.random() * span);
+  return {
+    total,
+    decisions: Math.max(3, Math.round(total * DECISION_RATIO)),
+    clusters: Math.max(10, Math.round(total * CLUSTER_RATIO)),
+    loose: Math.max(5, Math.round(total * LOOSE_RATIO)),
+  };
+}
 
 function fibonacciOnSphere(index, total, seedOffset = 0) {
   const i = index + 0.5;
@@ -32,12 +45,13 @@ function looseRadius(seed) {
   return TIER_LOOSE_RADIUS_MIN + (TIER_LOOSE_RADIUS_MAX - TIER_LOOSE_RADIUS_MIN) * f;
 }
 
-export function buildTiers(dump) {
-  const decisions = (dump?.decisions || []).slice(0, MAX_DECISIONS);
-  const rawClusters = (dump?.clusters || dump?.crystals || []).slice(0, MAX_CLUSTERS);
+export function buildTiers(dump, options = {}) {
+  const budget = options.budget || pickBudget();
+  const decisions = (dump?.decisions || []).slice(0, budget.decisions);
+  const rawClusters = (dump?.clusters || dump?.crystals || []).slice(0, budget.clusters);
   const memories = (dump?.memories || []).slice();
   memories.sort((a, b) => (b?.score || 0) - (a?.score || 0));
-  const looseMemories = memories.slice(0, MAX_LOOSE);
+  const looseMemories = memories.slice(0, budget.loose);
 
   const decisionsLayout = decisions.map((node, index) => {
     const id = `decision-${node.id}`;
@@ -62,7 +76,7 @@ export function buildTiers(dump) {
   const clusterCount = rawClusters.length;
   const useColdStart = clusterCount === 0 && looseMemories.length > 0;
   const clusterSourceCount = useColdStart
-    ? Math.min(MAX_CLUSTERS, looseMemories.length)
+    ? Math.min(budget.clusters, looseMemories.length)
     : clusterCount;
 
   const clustersLayout = useColdStart
@@ -112,7 +126,7 @@ export function buildTiers(dump) {
       });
 
   const loosePool = useColdStart ? looseMemories.slice(clusterSourceCount) : looseMemories;
-  const looseLayout = loosePool.slice(0, MAX_LOOSE).map((mem, index) => {
+  const looseLayout = loosePool.slice(0, budget.loose).map((mem, index) => {
     const id = `loose-${mem.id}`;
     const seed = fnv1a32(id);
     const { nx, ny, nz } = fibonacciOnSphere(index, loosePool.length, (seed % 1024) / 1024);
@@ -138,8 +152,11 @@ export function buildTiers(dump) {
     clusters: clustersLayout,
     looseMemories: looseLayout,
     coldStart: useColdStart,
+    budget,
   };
 }
+
+export { pickBudget };
 
 export const TIER_RADII = Object.freeze({
   decision: TIER_DECISION_RADIUS,

@@ -65,16 +65,30 @@ describe("buildTiers", () => {
     }
   });
 
-  it("caps decisions at 20, clusters at 80, loose at 50", () => {
+  it("respects an explicit budget", () => {
+    const dump = makeDump({
+      decisions: Array.from({ length: 100 }, (_, i) => ({ id: i + 1 })),
+      clusters: Array.from({ length: 200 }, (_, i) => ({ id: i + 1, label: `c${i}`, member_count: 4 })),
+      memories: Array.from({ length: 200 }, (_, i) => ({ id: i + 1, score: i })),
+    });
+    const budget = { total: 80, decisions: 12, clusters: 44, loose: 24 };
+    const tiers = buildTiers(dump, { budget });
+    expect(tiers.decisions.length).toBe(12);
+    expect(tiers.clusters.length).toBe(44);
+    expect(tiers.looseMemories.length).toBe(24);
+    expect(tiers.budget).toEqual(budget);
+  });
+
+  it("default budget falls within 70-90 total", () => {
     const dump = makeDump({
       decisions: Array.from({ length: 100 }, (_, i) => ({ id: i + 1 })),
       clusters: Array.from({ length: 200 }, (_, i) => ({ id: i + 1, label: `c${i}`, member_count: 4 })),
       memories: Array.from({ length: 200 }, (_, i) => ({ id: i + 1, score: i })),
     });
     const tiers = buildTiers(dump);
-    expect(tiers.decisions.length).toBe(20);
-    expect(tiers.clusters.length).toBe(80);
-    expect(tiers.looseMemories.length).toBe(50);
+    const total = tiers.decisions.length + tiers.clusters.length + tiers.looseMemories.length;
+    expect(total).toBeGreaterThanOrEqual(70);
+    expect(total).toBeLessThanOrEqual(90);
   });
 
   it("cluster body radius scales with member_count", () => {

@@ -3,9 +3,9 @@ import { mulberry32 } from "./util/mulberry32.js";
 const IDLE_THRESHOLD_MS = 6_000;
 const FAKE_INTERVAL_MIN_MS = 900;
 const FAKE_INTERVAL_MAX_MS = 2_400;
-const BURST_MIN = 1;
-const BURST_MAX = 3;
-const BURST_STAGGER_MS = 90;
+const BURST_MIN = 2;
+const BURST_MAX = 4;
+const BURST_STAGGER_MS = 140;
 
 export function createIdleSimulator({ onFake, getNodeIds, seed = Date.now() }) {
   let lastReal = performance.now();

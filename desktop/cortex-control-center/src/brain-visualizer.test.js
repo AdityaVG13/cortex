@@ -77,9 +77,11 @@ describe("Brain v2 scene scaffolding", () => {
     expect(tiers).toContain("TIER_CLUSTER_RADIUS = 140");
     expect(tiers).toContain("TIER_LOOSE_RADIUS_MIN = 180");
     expect(tiers).toContain("TIER_LOOSE_RADIUS_MAX = 220");
-    expect(tiers).toContain("MAX_DECISIONS = 20");
-    expect(tiers).toContain("MAX_CLUSTERS = 80");
-    expect(tiers).toContain("MAX_LOOSE = 50");
+    expect(tiers).toContain("TOTAL_BUDGET_MIN = 70");
+    expect(tiers).toContain("TOTAL_BUDGET_MAX = 90");
+    expect(tiers).toContain("DECISION_RATIO = 0.15");
+    expect(tiers).toContain("CLUSTER_RATIO = 0.55");
+    expect(tiers).toContain("LOOSE_RATIO = 0.30");
     expect(tiers).toContain("useColdStart");
   });
 
@@ -160,10 +162,12 @@ describe("Brain v2 firing pipeline (P5)", () => {
     expect(firingClient).not.toContain("setTimeout");
   });
 
-  it("IdleSimulator threshold is 6s and fake interval 0.9-2.4s with mulberry32", () => {
+  it("IdleSimulator threshold is 6s, fake interval 0.9-2.4s, burst 2-4 with mulberry32", () => {
     expect(idleSim).toContain("IDLE_THRESHOLD_MS = 6_000");
     expect(idleSim).toContain("FAKE_INTERVAL_MIN_MS = 900");
     expect(idleSim).toContain("FAKE_INTERVAL_MAX_MS = 2_400");
+    expect(idleSim).toContain("BURST_MIN = 2");
+    expect(idleSim).toContain("BURST_MAX = 4");
     expect(idleSim).toContain("mulberry32");
     expect(idleSim).toContain("noteRealEvent");
   });
@@ -197,12 +201,13 @@ describe("Brain v2 interaction (P6)", () => {
   const hud = readFileSync(new URL("./brain-v2/Hud.jsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
-  it("Hover raycasts on tick (rAF-throttled), not on every pointermove", () => {
+  it("Hover uses ray-vs-sphere against slot positions, rAF-throttled", () => {
     expect(hover).toContain("export function createHover");
     expect(hover).toContain("setCursor");
     expect(hover).toContain("clearCursor");
     expect(hover).toContain("function tick");
-    expect(hover).toContain("intersectObject(instancedMesh");
+    expect(hover).toContain("Raycaster");
+    expect(hover).toContain("hitRadiusScale");
   });
 
   it("Camera defines auto-rotate + spotlight envelope", () => {
