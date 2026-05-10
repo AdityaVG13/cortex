@@ -3,20 +3,22 @@ import { easeInOutCubic } from "./util/easing.js";
 
 const AUTO_ROTATE_RATE = 0.04;
 const AUTO_RESUME_MS = 8_000;
-const SPOTLIGHT_PULL = 0.15;
 const SPOTLIGHT_DURATION_MS = 1_200;
+const RETURN_DURATION_MS = 900;
 
 export function createCamera({ camera, controls }) {
   let lastInteractionAt = 0;
   let prevTime = performance.now();
-  let spotlightActive = false;
-  let spotlightStart = 0;
+  let easeActive = false;
+  let easeStart = 0;
+  let easeDuration = SPOTLIGHT_DURATION_MS;
   const cameraStart = new THREE.Vector3();
   const cameraEnd = new THREE.Vector3();
   const targetStart = new THREE.Vector3();
   const targetEnd = new THREE.Vector3();
   const _tmpCam = new THREE.Vector3();
   const _tmpTgt = new THREE.Vector3();
+  const _offset = new THREE.Vector3();
 
   function pauseAutoRotate() {
     lastInteractionAt = performance.now();
@@ -24,32 +26,43 @@ export function createCamera({ camera, controls }) {
 
   function spotlight(satelliteWorldPos) {
     if (!satelliteWorldPos) return;
-    spotlightActive = true;
-    spotlightStart = performance.now();
+    easeActive = true;
+    easeStart = performance.now();
+    easeDuration = SPOTLIGHT_DURATION_MS;
     cameraStart.copy(camera.position);
     targetStart.copy(controls.target);
-    // Pull camera 15% closer along the camera→satellite vector — never re-center.
-    cameraEnd.copy(satelliteWorldPos).sub(cameraStart).multiplyScalar(SPOTLIGHT_PULL).add(cameraStart);
-    // Bias target toward the satellite by 15% — gentle, retains origin orientation.
-    targetEnd.copy(satelliteWorldPos).multiplyScalar(SPOTLIGHT_PULL);
+    // Look at the satellite without changing camera→target distance.
+    // Camera shifts only by the same delta the target shifts by, so the
+    // viewing distance stays constant across repeated clicks.
+    targetEnd.set(satelliteWorldPos.x, satelliteWorldPos.y, satelliteWorldPos.z);
+    _offset.copy(camera.position).sub(controls.target);
+    cameraEnd.copy(targetEnd).add(_offset);
+  }
+
+  function returnToOrigin() {
+    easeActive = true;
+    easeStart = performance.now();
+    easeDuration = RETURN_DURATION_MS;
+    cameraStart.copy(camera.position);
+    targetStart.copy(controls.target);
+    targetEnd.set(0, 0, 0);
+    _offset.copy(camera.position).sub(controls.target);
+    cameraEnd.copy(targetEnd).add(_offset);
   }
 
   function tick(now = performance.now()) {
     const dt = (now - prevTime) * 0.001;
     prevTime = now;
 
-    if (spotlightActive) {
-      const elapsed = now - spotlightStart;
-      if (elapsed >= SPOTLIGHT_DURATION_MS) {
+    if (easeActive) {
+      const elapsed = now - easeStart;
+      if (elapsed >= easeDuration) {
         camera.position.copy(cameraEnd);
         controls.target.copy(targetEnd);
         camera.lookAt(controls.target);
-        spotlightActive = false;
-        // Don't bounce target back — leaving the camera focused on the
-        // selection feels more "Jarvis examining" than snapping to origin.
-        // Auto-rotate continues from the new pivot if the user idles.
+        easeActive = false;
       } else {
-        const t = easeInOutCubic(elapsed / SPOTLIGHT_DURATION_MS);
+        const t = easeInOutCubic(elapsed / easeDuration);
         _tmpCam.copy(cameraStart).lerp(cameraEnd, t);
         _tmpTgt.copy(targetStart).lerp(targetEnd, t);
         camera.position.copy(_tmpCam);
@@ -77,11 +90,12 @@ export function createCamera({ camera, controls }) {
   return {
     pauseAutoRotate,
     spotlight,
+    returnToOrigin,
     tick,
   };
 }
 
 export const CAMERA_AUTO_ROTATE_RATE = AUTO_ROTATE_RATE;
 export const CAMERA_AUTO_RESUME_MS = AUTO_RESUME_MS;
-export const CAMERA_SPOTLIGHT_PULL = SPOTLIGHT_PULL;
 export const CAMERA_SPOTLIGHT_DURATION_MS = SPOTLIGHT_DURATION_MS;
+export const CAMERA_RETURN_DURATION_MS = RETURN_DURATION_MS;

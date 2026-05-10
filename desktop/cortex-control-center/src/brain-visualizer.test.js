@@ -210,17 +210,18 @@ describe("Brain v2 interaction (P6)", () => {
     expect(hover).toContain("hitRadiusScale");
   });
 
-  it("Camera defines auto-rotate + single-phase spotlight envelope", () => {
+  it("Camera defines auto-rotate + spotlight + returnToOrigin", () => {
     expect(cameraSrc).toContain("AUTO_ROTATE_RATE = 0.04");
     expect(cameraSrc).toContain("AUTO_RESUME_MS = 8_000");
-    expect(cameraSrc).toContain("SPOTLIGHT_PULL = 0.15");
     expect(cameraSrc).toContain("SPOTLIGHT_DURATION_MS = 1_200");
+    expect(cameraSrc).toContain("RETURN_DURATION_MS = 900");
     expect(cameraSrc).toContain("easeInOutCubic");
     expect(cameraSrc).toContain("export function createCamera");
-    expect(cameraSrc).toContain("pauseAutoRotate");
-    expect(cameraSrc).toContain("spotlight(satelliteWorldPos)");
+    expect(cameraSrc).toContain("function pauseAutoRotate");
+    expect(cameraSrc).toContain("function spotlight");
+    expect(cameraSrc).toContain("function returnToOrigin");
     expect(cameraSrc).toContain("cameraStart.copy(camera.position)");
-    expect(cameraSrc).toContain("cameraEnd.copy(");
+    expect(cameraSrc).toContain("cameraEnd.copy(targetEnd).add(_offset)");
   });
 
   it("Hud renders tooltip + detail panel via React props", () => {

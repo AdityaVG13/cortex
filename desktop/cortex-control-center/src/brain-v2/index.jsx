@@ -275,6 +275,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       satellitesRef.current.setSelected(null);
       setSelectedSlot(null);
       selectedSlotRef.current = null;
+      cameraHandleRef.current?.returnToOrigin?.();
       return;
     }
     satellitesRef.current.setSelected(slot.id);
@@ -291,6 +292,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     satellitesRef.current?.setSelected(null);
     setSelectedSlot(null);
     selectedSlotRef.current = null;
+    cameraHandleRef.current?.returnToOrigin?.();
   }
 
   return (
