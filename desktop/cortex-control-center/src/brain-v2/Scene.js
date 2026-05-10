@@ -5,7 +5,7 @@ const BACKGROUND = "#040812";
 const CAMERA_FOV = 55;
 const CAMERA_NEAR = 1;
 const CAMERA_FAR = 2000;
-const CAMERA_INITIAL = { x: 0, y: 60, z: 380 };
+const CAMERA_INITIAL = { x: 0, y: 0, z: 380 };
 
 export function createScene({ container, width, height }) {
   const scene = new THREE.Scene();
