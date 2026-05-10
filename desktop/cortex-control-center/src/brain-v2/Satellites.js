@@ -75,6 +75,8 @@ export function createSatellites({ scene }) {
     bodies.count = slots.length;
     halos.count = slots.length;
     writeAll();
+    bodies.computeBoundingSphere();
+    halos.computeBoundingSphere();
   }
 
   function writeAll(now = performance.now()) {
