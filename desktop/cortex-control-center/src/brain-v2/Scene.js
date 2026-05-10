@@ -37,6 +37,13 @@ export function createScene({ container, width, height }) {
   controls.zoomSpeed = 0.7;
   controls.minDistance = 60;
   controls.maxDistance = 800;
+  controls.enablePan = false;
+  // Polar band: keep camera within ±25° of the horizon. Prevents the
+  // over-the-top flip OrbitControls produces on long vertical drags,
+  // where 180° of vertical motion places the camera directly above the
+  // scene looking down.
+  controls.minPolarAngle = Math.PI * 0.35;
+  controls.maxPolarAngle = Math.PI * 0.65;
   controls.update();
 
   const ticks = new Set();
