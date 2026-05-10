@@ -11,6 +11,8 @@ import { createHover } from "./Hover.js";
 import { createCamera } from "./Camera.js";
 import { Hud } from "./Hud.jsx";
 
+const TICKER_MAX = 5;
+
 export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
@@ -23,16 +25,21 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
   const hoverRef = useRef(null);
   const cameraHandleRef = useRef(null);
   const slotsAccessor = useRef([]);
-  const hudRef = useRef(null);
   const hoveredSlotRef = useRef(null);
   const selectedSlotRef = useRef(null);
+  const statRefs = useRef({ nodes: null, clusters: null, decisions: null, beams: null });
+  const lastStatsRef = useRef({ nodes: 0, clusters: 0, decisions: 0, activeBeams: 0 });
+  const lastStatsAtRef = useRef(0);
+  const tickerRef = useRef(null);
+  const tickerEntriesRef = useRef([]);
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
   });
   const [tiers, setTiers] = useState({ decisions: [], clusters: [], looseMemories: [], coldStart: false });
   const [error, setError] = useState(null);
-  const [stats, setStats] = useState({ nodes: 0, clusters: 0, decisions: 0, activeBeams: 0 });
+  const [hoverSlot, setHoverSlot] = useState(null);
+  const [selectedSlot, setSelectedSlot] = useState(null);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -79,18 +86,32 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       slotsRef: slotsAccessor,
       onHoverChange: (slot) => {
         hoveredSlotRef.current = slot;
-        hudRef.current?.setHover?.(slot);
+        setHoverSlot(slot);
       },
     });
     hoverRef.current = hover;
+
+    function pushTickerEntry(label) {
+      const entry = { id: `${performance.now()}-${Math.random()}`, label, ts: performance.now() };
+      tickerEntriesRef.current = [entry, ...tickerEntriesRef.current].slice(0, TICKER_MAX);
+      // Update DOM directly (no React re-render).
+      if (tickerRef.current) {
+        renderTicker(tickerRef.current, tickerEntriesRef.current);
+      }
+    }
 
     const dispatcher = createEventDispatcher({
       satellites,
       beams,
       core,
       pulseCoreHalo: () => pulseCoreHalo(core),
-      onTickerEntry: (label) => hudRef.current?.pushFiringEntry?.(label),
-      onSpotlight: (slot) => slot && cameraHandle.spotlight(slot),
+      onTickerEntry: pushTickerEntry,
+      onSpotlight: (slot) => {
+        if (slot) {
+          cameraHandle.pauseAutoRotate();
+          cameraHandle.spotlight(slot);
+        }
+      },
     });
     dispatcherRef.current = dispatcher;
 
@@ -123,27 +144,39 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       };
     }
 
-    let frame = 0;
     const unregister = sceneHandle.registerTick((t, now) => {
       tickCore(core, t, now);
       satellites.tick(t, now);
       beams.tick(now);
       cameraHandle.tick(now);
       hover.tick();
-      frame += 1;
-      if ((frame & 31) === 0) {
+
+      // Stats: throttle to once per second AND only update DOM when values change.
+      if (now - lastStatsAtRef.current >= 1000) {
+        lastStatsAtRef.current = now;
+        const slots = slotsAccessor.current || [];
+        let clusters = 0;
+        let decisions = 0;
+        for (const slot of slots) {
+          if (slot.tier === "cluster") clusters += 1;
+          else if (slot.tier === "decision") decisions += 1;
+        }
         const next = {
-          nodes: satellites.getAllIds().length,
-          clusters: 0,
-          decisions: 0,
+          nodes: slots.length,
+          clusters,
+          decisions,
           activeBeams: beams.activeCount(),
         };
-        const slots = slotsAccessor.current || [];
-        for (const slot of slots) {
-          if (slot.tier === "cluster") next.clusters += 1;
-          else if (slot.tier === "decision") next.decisions += 1;
+        const prev = lastStatsRef.current;
+        if (
+          next.nodes !== prev.nodes
+          || next.clusters !== prev.clusters
+          || next.decisions !== prev.decisions
+          || next.activeBeams !== prev.activeBeams
+        ) {
+          lastStatsRef.current = next;
+          writeStats(statRefs.current, next);
         }
-        setStats(next);
       }
     });
 
@@ -234,26 +267,29 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     const slot = hoveredSlotRef.current;
     if (!slot) {
       satellitesRef.current.setSelected(null);
-      hudRef.current?.setSelected?.(null);
+      setSelectedSlot(null);
       selectedSlotRef.current = null;
       return;
     }
     if (selectedSlotRef.current?.id === slot.id) {
       satellitesRef.current.setSelected(null);
-      hudRef.current?.setSelected?.(null);
+      setSelectedSlot(null);
       selectedSlotRef.current = null;
       return;
     }
     satellitesRef.current.setSelected(slot.id);
-    hudRef.current?.setSelected?.(slot);
+    setSelectedSlot(slot);
     selectedSlotRef.current = slot;
-    cameraHandleRef.current?.spotlight?.(slot);
+    if (cameraHandleRef.current) {
+      cameraHandleRef.current.pauseAutoRotate();
+      cameraHandleRef.current.spotlight(slot);
+    }
   }
 
   function handleContextMenu(e) {
     e.preventDefault();
     satellitesRef.current?.setSelected(null);
-    hudRef.current?.setSelected?.(null);
+    setSelectedSlot(null);
     selectedSlotRef.current = null;
   }
 
@@ -278,9 +314,47 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
           {error}
         </div>
       ) : null}
-      <Hud ref={hudRef} stats={stats} />
+      <div className="brain-v2-hud-strip">
+        <span className="brain-v2-hud-stat">
+          <span className="brain-v2-hud-label">NODES</span>
+          <span ref={(el) => { statRefs.current.nodes = el; }}>0</span>
+        </span>
+        <span className="brain-v2-hud-stat">
+          <span className="brain-v2-hud-label">CLUSTERS</span>
+          <span ref={(el) => { statRefs.current.clusters = el; }}>0</span>
+        </span>
+        <span className="brain-v2-hud-stat">
+          <span className="brain-v2-hud-label">DECISIONS</span>
+          <span ref={(el) => { statRefs.current.decisions = el; }}>0</span>
+        </span>
+        <span className="brain-v2-hud-stat">
+          <span className="brain-v2-hud-label">FIRING</span>
+          <span ref={(el) => { statRefs.current.beams = el; }}>0</span>
+        </span>
+      </div>
+      <div className="brain-v2-ticker" aria-hidden="true" ref={tickerRef} />
+      <Hud stats={null} hover={hoverSlot} selected={selectedSlot} firingEntries={[]} />
     </div>
   );
+}
+
+function writeStats(refs, stats) {
+  if (!refs) return;
+  if (refs.nodes) refs.nodes.textContent = String(stats.nodes);
+  if (refs.clusters) refs.clusters.textContent = String(stats.clusters);
+  if (refs.decisions) refs.decisions.textContent = String(stats.decisions);
+  if (refs.beams) refs.beams.textContent = String(stats.activeBeams);
+}
+
+function renderTicker(host, entries) {
+  if (!host) return;
+  while (host.firstChild) host.removeChild(host.firstChild);
+  for (const entry of entries) {
+    const div = document.createElement("div");
+    div.className = "brain-v2-ticker-line";
+    div.textContent = entry.label;
+    host.appendChild(div);
+  }
 }
 
 export default BrainV2;

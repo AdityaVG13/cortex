@@ -221,16 +221,22 @@ describe("Brain v2 interaction (P6)", () => {
     expect(cameraSrc).toContain("spotlight(satelliteWorldPos)");
   });
 
-  it("Hud renders strip + ticker + tooltip + detail panel", () => {
-    expect(hud).toContain("brain-v2-hud-strip");
-    expect(hud).toContain("brain-v2-ticker");
+  it("Hud renders tooltip + detail panel via React props", () => {
     expect(hud).toContain("brain-v2-tooltip");
     expect(hud).toContain("brain-v2-detail");
-    expect(hud).toContain("pushFiringEntry");
-    expect(hud).toContain("setHover");
-    expect(hud).toContain("setSelected");
-    expect(hud).toContain("TICKER_MAX = 5");
-    expect(hud).toContain("TICKER_TTL_MS = 6_000");
+    expect(hud).toContain("brain-v2-detail-grid");
+    expect(hud).toContain("brain-v2-detail-row");
+    expect(hud).toContain("hover && !selected");
+    expect(hud).toContain("function tierLabel");
+  });
+
+  it("Stats + ticker render via direct DOM refs in BrainV2 (no React reconciliation)", () => {
+    expect(v2Index).toContain("brain-v2-hud-strip");
+    expect(v2Index).toContain("brain-v2-ticker");
+    expect(v2Index).toContain("statRefs");
+    expect(v2Index).toContain("function writeStats");
+    expect(v2Index).toContain("function renderTicker");
+    expect(v2Index).toContain("now - lastStatsAtRef.current >= 1000");
   });
 
   it("BrainV2 wires hover + camera spotlight + click-pin + right-click deselect", () => {
@@ -238,7 +244,7 @@ describe("Brain v2 interaction (P6)", () => {
     expect(v2Index).toContain("createCamera");
     expect(v2Index).toContain("hoveredSlotRef");
     expect(v2Index).toContain("selectedSlotRef");
-    expect(v2Index).toContain("cameraHandleRef.current?.spotlight");
+    expect(v2Index).toContain("cameraHandleRef.current.spotlight(slot)");
     expect(v2Index).toContain("e.preventDefault()");
     expect(v2Index).toContain("onContextMenu={handleContextMenu}");
   });

@@ -51,7 +51,11 @@ export function buildTiers(dump, options = {}) {
   const rawClusters = (dump?.clusters || dump?.crystals || []).slice(0, budget.clusters);
   const memories = (dump?.memories || []).slice();
   memories.sort((a, b) => (b?.score || 0) - (a?.score || 0));
-  const looseMemories = memories.slice(0, budget.loose);
+  // Backfill: compute how many memories we actually need to hit the budget.
+  const desiredTotal = budget.decisions + budget.clusters + budget.loose;
+  const usedSoFar = decisions.length + rawClusters.length;
+  const looseTargetEarly = Math.max(budget.loose, desiredTotal - usedSoFar);
+  const looseMemories = memories.slice(0, looseTargetEarly);
 
   const decisionsLayout = decisions.map((node, index) => {
     const id = `decision-${node.id}`;
@@ -125,8 +129,12 @@ export function buildTiers(dump, options = {}) {
         };
       });
 
+  const usedDecisions = decisionsLayout.length;
+  const usedClusters = clustersLayout.length;
+  const looseTarget = Math.max(budget.loose, desiredTotal - usedDecisions - usedClusters);
+
   const loosePool = useColdStart ? looseMemories.slice(clusterSourceCount) : looseMemories;
-  const looseLayout = loosePool.slice(0, budget.loose).map((mem, index) => {
+  const looseLayout = loosePool.slice(0, looseTarget).map((mem, index) => {
     const id = `loose-${mem.id}`;
     const seed = fnv1a32(id);
     const { nx, ny, nz } = fibonacciOnSphere(index, loosePool.length, (seed % 1024) / 1024);
