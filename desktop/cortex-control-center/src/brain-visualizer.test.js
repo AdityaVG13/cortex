@@ -7,6 +7,10 @@ const scene = readFileSync(new URL("./brain-v2/Scene.js", import.meta.url), "utf
 const core = readFileSync(new URL("./brain-v2/Core.js", import.meta.url), "utf8");
 const halo = readFileSync(new URL("./brain-v2/Halo.js", import.meta.url), "utf8");
 const easing = readFileSync(new URL("./brain-v2/util/easing.js", import.meta.url), "utf8");
+const tiers = readFileSync(new URL("./brain-v2/Tiers.js", import.meta.url), "utf8");
+const satellites = readFileSync(new URL("./brain-v2/Satellites.js", import.meta.url), "utf8");
+const palette = readFileSync(new URL("./brain-v2/ClusterPalette.js", import.meta.url), "utf8");
+const fnv1a = readFileSync(new URL("./brain-v2/util/fnv1a.js", import.meta.url), "utf8");
 
 describe("Brain v2 wrapper", () => {
   it("v1 force-graph and brain/* modules are gone", () => {
@@ -65,5 +69,40 @@ describe("Brain v2 scene scaffolding", () => {
     expect(easing).toContain("export function easeOutCubic");
     expect(easing).toContain("export function expDecay");
     expect(easing).toContain("export function riseDecay");
+  });
+
+  it("Tiers builds three layers with Fibonacci spacing and cold-start fallback", () => {
+    expect(tiers).toContain("export function buildTiers");
+    expect(tiers).toContain("TIER_DECISION_RADIUS = 80");
+    expect(tiers).toContain("TIER_CLUSTER_RADIUS = 140");
+    expect(tiers).toContain("TIER_LOOSE_RADIUS_MIN = 180");
+    expect(tiers).toContain("TIER_LOOSE_RADIUS_MAX = 220");
+    expect(tiers).toContain("MAX_DECISIONS = 20");
+    expect(tiers).toContain("MAX_CLUSTERS = 80");
+    expect(tiers).toContain("MAX_LOOSE = 50");
+    expect(tiers).toContain("useColdStart");
+  });
+
+  it("Satellites uses InstancedMesh bodies + halos and exposes pulse + selection", () => {
+    expect(satellites).toContain("export function createSatellites");
+    expect(satellites).toContain("InstancedMesh");
+    expect(satellites).toContain("AdditiveBlending");
+    expect(satellites).toContain("setData");
+    expect(satellites).toContain("pulseSlot");
+    expect(satellites).toContain("setSelected");
+  });
+
+  it("ClusterPalette derives hue from FNV-1a hash via golden-angle stride", () => {
+    expect(palette).toContain("export function paletteForCluster");
+    expect(palette).toContain("GOLDEN_ANGLE = 137.508");
+    expect(palette).toContain("SATURATION = 0.70");
+    expect(palette).toContain("LIGHTNESS = 0.58");
+    expect(palette).toContain("fnv1a32");
+  });
+
+  it("FNV-1a hash exports a 32-bit unsigned function", () => {
+    expect(fnv1a).toContain("export function fnv1a32");
+    expect(fnv1a).toContain("2166136261");
+    expect(fnv1a).toContain("16777619");
   });
 });

@@ -1,15 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { createScene } from "./Scene.js";
 import { createCore, tickCore, disposeCore } from "./Core.js";
+import { createSatellites } from "./Satellites.js";
+import { buildTiers } from "./Tiers.js";
 
-export function BrainV2({ active = true }) {
+export function BrainV2({ api = null, active = true }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
   const coreRef = useRef(null);
+  const satellitesRef = useRef(null);
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
   });
+  const [tiers, setTiers] = useState({ decisions: [], clusters: [], looseMemories: [], coldStart: false });
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -31,17 +36,26 @@ export function BrainV2({ active = true }) {
       height: dimensions.height,
     });
     sceneRef.current = sceneHandle;
+    sceneHandle.scene._camera = sceneHandle.camera;
 
     const core = createCore();
     coreRef.current = core;
     sceneHandle.scene.add(core);
 
+    const satellites = createSatellites({ scene: sceneHandle.scene });
+    satellitesRef.current = satellites;
+
     const unregister = sceneHandle.registerTick((t, now) => {
       tickCore(core, t, now);
+      satellites.tick(t, now);
     });
 
     return () => {
       unregister();
+      if (satellitesRef.current) {
+        satellitesRef.current.dispose();
+        satellitesRef.current = null;
+      }
       if (coreRef.current) {
         sceneHandle.scene.remove(coreRef.current);
         disposeCore(coreRef.current);
@@ -57,6 +71,29 @@ export function BrainV2({ active = true }) {
     sceneRef.current.resize(dimensions.width, dimensions.height);
   }, [dimensions.width, dimensions.height]);
 
+  useEffect(() => {
+    if (!active) return undefined;
+    let cancelled = false;
+    async function load() {
+      if (typeof api !== "function") return;
+      try {
+        const dump = await api("/dump", true);
+        if (cancelled || !dump) return;
+        const next = buildTiers(dump);
+        setTiers(next);
+      } catch (err) {
+        if (!cancelled) setError(err?.message || String(err));
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [active, api]);
+
+  useEffect(() => {
+    if (!satellitesRef.current) return;
+    satellitesRef.current.setData(tiers);
+  }, [tiers]);
+
   return (
     <div
       ref={containerRef}
@@ -68,7 +105,13 @@ export function BrainV2({ active = true }) {
         background: "#040812",
         overflow: "hidden",
       }}
-    />
+    >
+      {error ? (
+        <div className="brain-v2-error" style={{ position: "absolute", top: 12, right: 12, color: "#ff8a8a" }}>
+          {error}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
