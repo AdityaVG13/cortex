@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createScene } from "./Scene.js";
 import { createCore, tickCore, disposeCore } from "./Core.js";
 import { createSatellites } from "./Satellites.js";
+import { createBeams } from "./Beams.js";
 import { buildTiers } from "./Tiers.js";
 
 export function BrainV2({ api = null, active = true }) {
@@ -9,6 +10,7 @@ export function BrainV2({ api = null, active = true }) {
   const sceneRef = useRef(null);
   const coreRef = useRef(null);
   const satellitesRef = useRef(null);
+  const beamsRef = useRef(null);
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
@@ -45,13 +47,36 @@ export function BrainV2({ api = null, active = true }) {
     const satellites = createSatellites({ scene: sceneHandle.scene });
     satellitesRef.current = satellites;
 
+    const beams = createBeams({ scene: sceneHandle.scene });
+    beamsRef.current = beams;
+
+    if (typeof window !== "undefined") {
+      window.__brainFire = (fromId, toId, color) => {
+        const sats = satellitesRef.current;
+        if (!sats) return;
+        const a = sats.getSlotById(fromId);
+        const b = sats.getSlotById(toId) || { x: 0, y: 0, z: 0 };
+        if (!a) return;
+        beamsRef.current?.fire({ from: a, to: b, color: color || "#22d3ee" });
+        sats.pulseSlot(fromId);
+      };
+    }
+
     const unregister = sceneHandle.registerTick((t, now) => {
       tickCore(core, t, now);
       satellites.tick(t, now);
+      beams.tick(now);
     });
 
     return () => {
       unregister();
+      if (typeof window !== "undefined" && window.__brainFire) {
+        delete window.__brainFire;
+      }
+      if (beamsRef.current) {
+        beamsRef.current.dispose();
+        beamsRef.current = null;
+      }
       if (satellitesRef.current) {
         satellitesRef.current.dispose();
         satellitesRef.current = null;

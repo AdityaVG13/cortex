@@ -106,3 +106,42 @@ describe("Brain v2 scene scaffolding", () => {
     expect(fnv1a).toContain("16777619");
   });
 });
+
+describe("Brain v2 Beams + PulseShader", () => {
+  const beams = readFileSync(new URL("./brain-v2/Beams.js", import.meta.url), "utf8");
+  const pulseShader = readFileSync(new URL("./brain-v2/PulseShader.js", import.meta.url), "utf8");
+  const bezier = readFileSync(new URL("./brain-v2/util/bezierArc.js", import.meta.url), "utf8");
+
+  it("Beams pool 64 slots, single merged LineSegments, GLSL pulse material", () => {
+    expect(beams).toContain("POOL_SIZE = 64");
+    expect(beams).toContain("SEGMENTS = 16");
+    expect(beams).toContain("LineSegments");
+    expect(beams).toContain("createPulseMaterial");
+    expect(beams).toContain("createActivationTexture");
+    expect(beams).toContain("export function createBeams");
+    expect(beams).toContain("riseDecay");
+  });
+
+  it("PulseShader uses RedFormat FloatType DataTexture with NearestFilter", () => {
+    expect(pulseShader).toContain("export function createActivationTexture");
+    expect(pulseShader).toContain("export function createPulseMaterial");
+    expect(pulseShader).toContain("RedFormat");
+    expect(pulseShader).toContain("FloatType");
+    expect(pulseShader).toContain("NearestFilter");
+    expect(pulseShader).toContain("AdditiveBlending");
+    expect(pulseShader).toContain("uTime");
+    expect(pulseShader).toContain("vProgress");
+    expect(pulseShader).toContain("aColor");
+  });
+
+  it("bezierArcPoints returns segments+1 control-lifted points", () => {
+    expect(bezier).toContain("export function bezierArcPoints");
+    expect(bezier).toContain("normalize().multiplyScalar");
+  });
+
+  it("BrainV2 mounts Beams alongside Satellites and exposes window.__brainFire", () => {
+    expect(v2Index).toContain("createBeams");
+    expect(v2Index).toContain("beamsRef.current?.fire");
+    expect(v2Index).toContain("window.__brainFire");
+  });
+});
