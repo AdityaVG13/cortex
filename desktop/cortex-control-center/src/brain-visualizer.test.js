@@ -190,3 +190,58 @@ describe("Brain v2 firing pipeline (P5)", () => {
     expect(v2Index).toContain("dispatcher.dispatch(event)");
   });
 });
+
+describe("Brain v2 interaction (P6)", () => {
+  const hover = readFileSync(new URL("./brain-v2/Hover.js", import.meta.url), "utf8");
+  const cameraSrc = readFileSync(new URL("./brain-v2/Camera.js", import.meta.url), "utf8");
+  const hud = readFileSync(new URL("./brain-v2/Hud.jsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+  it("Hover raycasts on tick (rAF-throttled), not on every pointermove", () => {
+    expect(hover).toContain("export function createHover");
+    expect(hover).toContain("setCursor");
+    expect(hover).toContain("clearCursor");
+    expect(hover).toContain("function tick");
+    expect(hover).toContain("intersectObject(instancedMesh");
+  });
+
+  it("Camera defines auto-rotate + spotlight envelope", () => {
+    expect(cameraSrc).toContain("AUTO_ROTATE_RATE = 0.04");
+    expect(cameraSrc).toContain("AUTO_RESUME_MS = 8_000");
+    expect(cameraSrc).toContain("SPOTLIGHT_PULL = 0.15");
+    expect(cameraSrc).toContain("SPOTLIGHT_RAMP_MS = 800");
+    expect(cameraSrc).toContain("SPOTLIGHT_RETURN_MS = 400");
+    expect(cameraSrc).toContain("export function createCamera");
+    expect(cameraSrc).toContain("pauseAutoRotate");
+    expect(cameraSrc).toContain("spotlight(satelliteWorldPos)");
+  });
+
+  it("Hud renders strip + ticker + tooltip + detail panel", () => {
+    expect(hud).toContain("brain-v2-hud-strip");
+    expect(hud).toContain("brain-v2-ticker");
+    expect(hud).toContain("brain-v2-tooltip");
+    expect(hud).toContain("brain-v2-detail");
+    expect(hud).toContain("pushFiringEntry");
+    expect(hud).toContain("setHover");
+    expect(hud).toContain("setSelected");
+    expect(hud).toContain("TICKER_MAX = 5");
+    expect(hud).toContain("TICKER_TTL_MS = 6_000");
+  });
+
+  it("BrainV2 wires hover + camera spotlight + click-pin + right-click deselect", () => {
+    expect(v2Index).toContain("createHover");
+    expect(v2Index).toContain("createCamera");
+    expect(v2Index).toContain("hoveredSlotRef");
+    expect(v2Index).toContain("selectedSlotRef");
+    expect(v2Index).toContain("cameraHandleRef.current?.spotlight");
+    expect(v2Index).toContain("e.preventDefault()");
+    expect(v2Index).toContain("onContextMenu={handleContextMenu}");
+  });
+
+  it("CSS includes Brain v2 HUD layout rules", () => {
+    expect(css).toContain(".brain-v2-hud-strip");
+    expect(css).toContain(".brain-v2-ticker");
+    expect(css).toContain(".brain-v2-tooltip");
+    expect(css).toContain(".brain-v2-detail");
+  });
+});
