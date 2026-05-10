@@ -106,11 +106,11 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       core,
       pulseCoreHalo: () => pulseCoreHalo(core),
       onTickerEntry: pushTickerEntry,
-      onSpotlight: (slot) => {
-        if (slot) {
-          cameraHandle.pauseAutoRotate();
-          cameraHandle.spotlight(slot);
-        }
+      onSpotlight: () => {
+        // Camera spotlight on real firing events disabled — repeated triggers
+        // were producing inconsistent zoom direction depending on which side
+        // of origin the firing satellite lived on. Selection feedback comes
+        // from the satellite halo pulse + detail panel only.
       },
     });
     dispatcherRef.current = dispatcher;
@@ -275,16 +275,11 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       satellitesRef.current.setSelected(null);
       setSelectedSlot(null);
       selectedSlotRef.current = null;
-      cameraHandleRef.current?.returnToOrigin?.();
       return;
     }
     satellitesRef.current.setSelected(slot.id);
     setSelectedSlot(slot);
     selectedSlotRef.current = slot;
-    if (cameraHandleRef.current) {
-      cameraHandleRef.current.pauseAutoRotate();
-      cameraHandleRef.current.spotlight(slot);
-    }
   }
 
   function handleContextMenu(e) {
@@ -292,7 +287,6 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     satellitesRef.current?.setSelected(null);
     setSelectedSlot(null);
     selectedSlotRef.current = null;
-    cameraHandleRef.current?.returnToOrigin?.();
   }
 
   return (

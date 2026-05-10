@@ -242,12 +242,12 @@ describe("Brain v2 interaction (P6)", () => {
     expect(v2Index).toContain("now - lastStatsAtRef.current >= 1000");
   });
 
-  it("BrainV2 wires hover + camera spotlight + click-pin + right-click deselect", () => {
+  it("BrainV2 wires hover + click-pin + right-click deselect (no click camera move)", () => {
     expect(v2Index).toContain("createHover");
     expect(v2Index).toContain("createCamera");
     expect(v2Index).toContain("hoveredSlotRef");
     expect(v2Index).toContain("selectedSlotRef");
-    expect(v2Index).toContain("cameraHandleRef.current.spotlight(slot)");
+    expect(v2Index).not.toContain("cameraHandleRef.current.spotlight(slot)");
     expect(v2Index).toContain("e.preventDefault()");
     expect(v2Index).toContain("onContextMenu={handleContextMenu}");
   });
