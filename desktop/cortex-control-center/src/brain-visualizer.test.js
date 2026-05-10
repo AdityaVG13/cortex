@@ -160,10 +160,10 @@ describe("Brain v2 firing pipeline (P5)", () => {
     expect(firingClient).not.toContain("setTimeout");
   });
 
-  it("IdleSimulator threshold is 12s and fake interval 4-8s with mulberry32", () => {
-    expect(idleSim).toContain("IDLE_THRESHOLD_MS = 12_000");
-    expect(idleSim).toContain("FAKE_INTERVAL_MIN_MS = 4_000");
-    expect(idleSim).toContain("FAKE_INTERVAL_MAX_MS = 8_000");
+  it("IdleSimulator threshold is 6s and fake interval 0.9-2.4s with mulberry32", () => {
+    expect(idleSim).toContain("IDLE_THRESHOLD_MS = 6_000");
+    expect(idleSim).toContain("FAKE_INTERVAL_MIN_MS = 900");
+    expect(idleSim).toContain("FAKE_INTERVAL_MAX_MS = 2_400");
     expect(idleSim).toContain("mulberry32");
     expect(idleSim).toContain("noteRealEvent");
   });
