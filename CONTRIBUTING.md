@@ -70,10 +70,11 @@ npm run expect:smoke
 From the repo root:
 
 ```bash
+npm run daemon:clippy
 npm run test
 npm run build
 npm run desktop:build
-npm run desktop:expect
+npm run desktop:verify:lifecycle:dev
 ```
 
 ## Pull Request Guidelines

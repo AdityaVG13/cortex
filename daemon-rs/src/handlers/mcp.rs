@@ -2346,7 +2346,7 @@ async fn mcp_dispatch(
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
             let k =
-                arg_usize(args, &["k", "limit"]).unwrap_or({ if budget <= 220 { 14 } else { 10 } });
+                arg_usize(args, &["k", "limit"]).unwrap_or(if budget <= 220 { 14 } else { 10 });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let model = source_model_for_tool(source, args);

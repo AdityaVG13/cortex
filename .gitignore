@@ -182,3 +182,4 @@ plugins/cortex-plugin/assets/SHA256SUMS
 .shipsecure-temp/
 security/
 !info/security.md
+.code-upgrade/

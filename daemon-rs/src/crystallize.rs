@@ -92,16 +92,6 @@ pub struct CrystallizeResult {
 
 // ─── Main entry point ───────────────────────────────────────────────────────
 
-/// Run one crystallization pass. Safe to call repeatedly.
-/// Returns stats about what was created/updated.
-pub fn run_crystallize_pass(
-    conn: &Connection,
-    engine: Option<&EmbeddingEngine>,
-    owner_id: Option<i64>,
-) -> CrystallizeResult {
-    run_crystallize_pass_with_brain(conn, engine, owner_id, &None)
-}
-
 pub fn run_crystallize_pass_with_brain(
     conn: &Connection,
     engine: Option<&EmbeddingEngine>,
@@ -860,7 +850,7 @@ mod tests {
             .unwrap();
         }
 
-        let result = run_crystallize_pass(&conn, None, None);
+        let result = run_crystallize_pass_with_brain(&conn, None, None, &None);
         assert_eq!(result.clusters_found, 1);
         assert_eq!(result.crystals_created, 1);
         assert_eq!(result.entries_consolidated, 4);

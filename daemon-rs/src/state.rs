@@ -51,7 +51,6 @@ pub enum BrainKind {
     ConsolidationStarted,
     MemberAdded,
     ClusterFinalized,
-    LinkInferred,
     Recall,
 }
 
@@ -61,7 +60,6 @@ impl BrainKind {
             BrainKind::ConsolidationStarted => "consolidation_started",
             BrainKind::MemberAdded => "member_added",
             BrainKind::ClusterFinalized => "cluster_finalized",
-            BrainKind::LinkInferred => "link_inferred",
             BrainKind::Recall => "recall",
         }
     }
@@ -331,16 +329,6 @@ impl RuntimeState {
         let _ = self.events.send(DaemonEvent {
             event_type: event_type.to_string(),
             data,
-        });
-    }
-
-    /// Broadcast a brain-firing telemetry event to `/brain/firing` subscribers.
-    /// Owner filtering happens in the handler; this just fans out.
-    pub fn emit_brain(&self, kind: BrainKind, payload: Value, owner_id: Option<i64>) {
-        let _ = self.brain_firing.send(BrainFiringEvent {
-            kind,
-            payload,
-            owner_id,
         });
     }
 
