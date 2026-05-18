@@ -8,6 +8,7 @@ from urllib.parse import urlencode, quote
 
 BASE_URL = "http://localhost:7437"
 TOKEN_PATH = Path.home() / ".cortex" / "cortex.token"
+SSRF_HEADER = "X-Cortex-Request"
 
 
 def _read_token() -> str | None:
@@ -17,14 +18,25 @@ def _read_token() -> str | None:
         return None
 
 
+def _add_cortex_headers(
+    req: Request,
+    token: str | None,
+    content_type: str | None = None,
+) -> None:
+    req.add_header(SSRF_HEADER, "true")
+    if content_type:
+        req.add_header("Content-Type", content_type)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+
+
 def _get(path: str, params: dict | None = None) -> dict:
     url = f"{BASE_URL}{path}"
     if params:
         url += "?" + urlencode(params)
     token = _read_token()
     req = Request(url)
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -33,9 +45,7 @@ def _post(path: str, body: dict) -> dict:
     token = _read_token()
     data = json.dumps(body).encode()
     req = Request(f"{BASE_URL}{path}", data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -59,8 +69,7 @@ def store(decision: str, context: str | None = None, agent: str = "worker") -> d
 def dump() -> dict:
     token = _read_token()
     req = Request(f"{BASE_URL}/dump")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
@@ -85,7 +94,7 @@ def get_locks() -> dict:
     if not token:
         raise RuntimeError("No auth token found")
     req = Request(f"{BASE_URL}/locks")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -95,7 +104,7 @@ def get_activity(since: str = "1h") -> dict:
     if not token:
         raise RuntimeError("No auth token found")
     req = Request(f"{BASE_URL}/activity?since={since}")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -105,7 +114,7 @@ def get_sessions() -> dict:
     if not token:
         raise RuntimeError("No auth token found")
     req = Request(f"{BASE_URL}/sessions")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -116,8 +125,7 @@ def post_activity(agent: str, description: str, files: list[str] | None = None) 
         raise RuntimeError("No auth token found")
     body = {"agent": agent, "description": description, "files": files or []}
     req = Request(f"{BASE_URL}/activity", data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -131,7 +139,7 @@ def get_tasks(status: str = "pending") -> dict:
     if not token:
         raise RuntimeError("No auth token found")
     req = Request(f"{BASE_URL}/tasks?status={status}")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -142,7 +150,7 @@ def get_next_task(agent: str, capability: str = "any") -> dict | None:
     if not token:
         raise RuntimeError("No auth token found")
     req = Request(f"{BASE_URL}/tasks/next?agent={agent}&capability={capability}")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -168,8 +176,7 @@ def create_task(
         "requiredCapability": required_capability,
     }
     req = Request(f"{BASE_URL}/tasks", data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -181,8 +188,7 @@ def claim_task(task_id: str, agent: str) -> dict:
         raise RuntimeError("No auth token found")
     body = {"taskId": task_id, "agent": agent}
     req = Request(f"{BASE_URL}/tasks/claim", data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -194,8 +200,7 @@ def complete_task(task_id: str, agent: str, summary: str = "") -> dict:
         raise RuntimeError("No auth token found")
     body = {"taskId": task_id, "agent": agent, "summary": summary}
     req = Request(f"{BASE_URL}/tasks/complete", data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -207,8 +212,7 @@ def abandon_task(task_id: str, agent: str) -> dict:
         raise RuntimeError("No auth token found")
     body = {"taskId": task_id, "agent": agent}
     req = Request(f"{BASE_URL}/tasks/abandon", data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -223,8 +227,7 @@ def send_message(from_agent: str, to_agent: str, message: str) -> dict:
         raise RuntimeError("No auth token found")
     body = {"from": from_agent, "to": to_agent, "message": message}
     req = Request(f"{BASE_URL}/message", data=json.dumps(body).encode(), method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token, "application/json")
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -235,7 +238,7 @@ def get_messages(agent: str) -> dict:
     if not token:
         raise RuntimeError("No auth token found")
     req = Request(f"{BASE_URL}/messages?agent={agent}")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 
@@ -260,7 +263,7 @@ def get_feed(
         params["unread"] = "true" if unread else "false"
 
     req = Request(f"{BASE_URL}/feed?{urlencode(params)}")
-    req.add_header("Authorization", f"Bearer {token}")
+    _add_cortex_headers(req, token)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())
 

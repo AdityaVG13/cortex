@@ -26,6 +26,7 @@ from pathlib import Path
 
 CORTEX_URL = "http://127.0.0.1:7437"
 HOME = str(Path.home())
+SSRF_HEADER = "X-Cortex-Request"
 
 
 def _get_auth_token() -> str | None:
@@ -35,6 +36,12 @@ def _get_auth_token() -> str | None:
         return token_path.read_text().strip()
     except FileNotFoundError:
         return None
+
+
+def _add_cortex_headers(req: urllib.request.Request, token: str | None) -> None:
+    req.add_header(SSRF_HEADER, "true")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
 
 # Filler patterns to strip (model narration, boilerplate)
 FILLER_PATTERNS = [
@@ -159,8 +166,7 @@ def check_duplicate(
         token = _get_auth_token()
         url = f"{cortex_url}/recall?q={urllib.parse.quote(text[:200])}&budget=200"
         req = urllib.request.Request(url)
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
+        _add_cortex_headers(req, token)
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
 
@@ -193,8 +199,7 @@ def cleanup_existing(
         token = _get_auth_token()
         url = f"{cortex_url}/recall?q=*&budget=2000"
         req = urllib.request.Request(url)
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
+        _add_cortex_headers(req, token)
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
 
