@@ -37,6 +37,7 @@ const CTX_API_KEY_LEN: usize = 50;
 const MAX_EVENT_JSON_BYTES: usize = 1_200;
 const MAX_EVENT_VALUE_CHARS: usize = 240;
 const MERGE_EVENT_PREVIEW_CHARS: usize = 240;
+pub(crate) const CORTEX_PEER_IP_HEADER: &str = "x-cortex-peer-ip";
 const HIGH_VOLUME_EVENT_PRUNE_INTERVAL: i64 = 64;
 const HIGH_VOLUME_EVENT_CAPS: &[(&str, i64)] = &[
     ("agent_boot", 4_000),
@@ -276,19 +277,13 @@ fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
 }
 
 #[allow(dead_code)]
-/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or default to loopback.
+/// Extract the server-observed peer IP stamped by trusted transport code.
+/// Caller-provided forwarding headers are intentionally ignored.
 pub fn client_ip(headers: &HeaderMap) -> IpAddr {
     headers
-        .get("x-forwarded-for")
+        .get(CORTEX_PEER_IP_HEADER)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
         .and_then(|s| s.trim().parse().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse().ok())
-        })
         .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
 }
 
@@ -1457,7 +1452,7 @@ mod tests {
         assert!(!should_apply_auth_failure_bucket(fallback_ip));
 
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", HeaderValue::from_static("::1"));
+        headers.insert(CORTEX_PEER_IP_HEADER, HeaderValue::from_static("::1"));
         let ipv6_loopback = client_ip(&headers);
         assert!(ipv6_loopback.is_loopback());
         assert!(!should_apply_auth_failure_bucket(ipv6_loopback));
@@ -1466,10 +1461,25 @@ mod tests {
     #[test]
     fn non_loopback_ips_apply_auth_failure_bucket() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-real-ip", HeaderValue::from_static("10.10.10.5"));
+        headers.insert(
+            CORTEX_PEER_IP_HEADER,
+            HeaderValue::from_static("10.10.10.5"),
+        );
         let ip = client_ip(&headers);
         assert!(!ip.is_loopback());
         assert!(should_apply_auth_failure_bucket(ip));
+    }
+
+    #[test]
+    fn forwarded_headers_do_not_select_rate_limit_identity() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("10.10.10.5"));
+        headers.insert("x-real-ip", HeaderValue::from_static("10.10.10.6"));
+
+        let ip = client_ip(&headers);
+
+        assert!(ip.is_loopback());
+        assert!(!should_apply_auth_failure_bucket(ip));
     }
 
     #[test]

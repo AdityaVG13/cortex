@@ -5,6 +5,7 @@ use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
 use axum::body::Bytes;
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
@@ -16,6 +17,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tower::Service;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 
@@ -250,10 +252,24 @@ fn handle_handler_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Respons
 
 async fn activity_tracking_middleware(
     State(state): State<RuntimeState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     state.mark_activity_now();
+    request
+        .headers_mut()
+        .remove(handlers::CORTEX_PEER_IP_HEADER);
+    let peer_ip = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    if let Some(ip) = peer_ip {
+        if let Ok(value) = HeaderValue::from_str(&ip.to_string()) {
+            request
+                .headers_mut()
+                .insert(handlers::CORTEX_PEER_IP_HEADER, value);
+        }
+    }
     next.run(request).await
 }
 
@@ -818,9 +834,12 @@ async fn run_plain(
     } else {
         eprintln!("[cortex] Listening on http://{bind_addr}:{port}");
     }
-    if let Err(e) = axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
+    if let Err(e) = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
     {
         eprintln!("[cortex] HTTP server exited with error: {e}");
     }
@@ -853,7 +872,7 @@ async fn run_tls(
         eprintln!("[cortex] Listening on https://{bind_addr}:{port} (TLS via rustls)");
     }
 
-    let mut make_svc = router.into_make_service();
+    let mut make_svc = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
     tokio::pin!(shutdown);
 
@@ -867,17 +886,16 @@ async fn run_tls(
                 match accept {
                     Ok((stream, _addr)) => {
                         let acceptor = acceptor.clone();
-                        let svc = tower::MakeService::<&std::net::SocketAddr, axum::http::Request<axum::body::Body>>::make_service(&mut make_svc, &_addr);
+                        let tower_svc = match make_svc.call(_addr).await {
+                            Ok(tower_svc) => tower_svc,
+                            Err(e) => {
+                                eprintln!("[cortex] Failed to build TLS service for {_addr}: {e}");
+                                continue;
+                            }
+                        };
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    let tower_svc = match svc.await {
-                                        Ok(tower_svc) => tower_svc,
-                                        Err(e) => {
-                                            eprintln!("[cortex] Failed to build TLS service for {_addr}: {e}");
-                                            return;
-                                        }
-                                    };
                                     let hyper_svc = hyper_util::service::TowerToHyperService::new(tower_svc);
                                     let io = hyper_util::rt::TokioIo::new(tls_stream);
                                     if let Err(e) = hyper_util::server::conn::auto::Builder::new(
