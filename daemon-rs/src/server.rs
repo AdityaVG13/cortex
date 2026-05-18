@@ -244,8 +244,7 @@ fn handle_handler_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Respons
     handlers::json_response(
         StatusCode::INTERNAL_SERVER_ERROR,
         serde_json::json!({
-            "error": "internal handler panic",
-            "detail": message,
+            "error": "internal server error",
         }),
     )
 }
@@ -1193,6 +1192,17 @@ window_seconds = 60
         assert_eq!(payload["jsonrpc"], "2.0");
         assert_eq!(payload["error"]["message"], "Unauthorized");
         assert_eq!(payload["id"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn handler_panic_response_does_not_expose_panic_payload() {
+        let response = handle_handler_panic(Box::new("secret internal detail"));
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["error"], "internal server error");
+        assert!(!String::from_utf8_lossy(&body).contains("secret internal detail"));
     }
 
     #[tokio::test]
