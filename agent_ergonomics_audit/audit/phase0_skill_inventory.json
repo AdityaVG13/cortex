@@ -1,0 +1,24 @@
+{
+  "skill": "agent-ergonomics-and-intuitiveness-maximization-for-cli-tools",
+  "mode": "full",
+  "target_agents": [
+    "Codex-style coding agents",
+    "Claude-style coding agents",
+    "Gemini-style coding agents"
+  ],
+  "tools_used": [
+    "skill RUN.md catalog lookup",
+    "skill preflight script",
+    "skill scaffold-workspace script",
+    "manual fallback inspection",
+    "Rust unit tests",
+    "cargo check",
+    "cargo clippy",
+    "cargo run probes"
+  ],
+  "tools_unavailable": [
+    "jq inside WSL preflight shell",
+    "optional CASS helper suite",
+    "optional shellcheck"
+  ]
+}

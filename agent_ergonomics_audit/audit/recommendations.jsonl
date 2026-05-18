@@ -1,0 +1,5 @@
+{"id":"R-001","priority":"P1","status":"applied","title":"Expose a stable capabilities JSON contract","rationale":"Agents need deterministic self-discovery without scraping help text."}
+{"id":"R-002","priority":"P1","status":"applied","title":"Make bare/help invocation successful and useful","rationale":"First contact should not look like a failure when the user or agent is discovering the CLI."}
+{"id":"R-003","priority":"P1","status":"applied","title":"Add a compact robot guide","rationale":"Agents need a short operational path for discovery, local attach, health checks, and danger gates."}
+{"id":"R-004","priority":"P2","status":"applied","title":"Improve unknown-command errors with likely intent suggestions","rationale":"Typo-aware hints reduce dead ends for common agent discovery attempts."}
+{"id":"R-005","priority":"P2","status":"next","title":"Normalize subcommand help and JSON error contracts","rationale":"Nested command families still use mixed usage/error patterns."}

@@ -1,0 +1,5 @@
+{"id":"surface-001","name":"bare invocation","before":"printed usage as an error exit","after":"prints normal help and exits 0","file":"daemon-rs/src/main.rs"}
+{"id":"surface-002","name":"help","before":"available but stderr-oriented via usage helper","after":"prints expanded stdout help for --help, -h, help, and bare invocation","file":"daemon-rs/src/main.rs"}
+{"id":"surface-003","name":"capabilities","before":"missing","after":"cortex capabilities --json emits deterministic machine-readable CLI contract","file":"daemon-rs/src/main.rs"}
+{"id":"surface-004","name":"robot docs","before":"missing","after":"cortex robot-docs guide emits short agent/operator command guide","file":"daemon-rs/src/main.rs"}
+{"id":"surface-005","name":"unknown command","before":"generic usage only","after":"unknown commands include typo-aware suggestions for common agent intents","file":"daemon-rs/src/main.rs"}

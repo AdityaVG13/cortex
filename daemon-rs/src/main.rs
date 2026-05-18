@@ -4,6 +4,7 @@
 /// `CORTEX_PORT` env var is set. Prod-path consumers must reference this
 /// constant rather than hard-coding `7437`. Test fixtures are exempt.
 pub const DEFAULT_CORTEX_PORT: u16 = 7437;
+const CLI_CAPABILITIES_CONTRACT_VERSION: &str = "1";
 
 mod admin;
 mod aging;
@@ -38,7 +39,7 @@ mod workspace;
 
 use chrono::{self, Utc};
 use fs2::FileExt;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Write as _;
@@ -456,15 +457,38 @@ async fn main() {
     }
 
     match mode {
+        "" | "--help" | "-h" | "help" => {
+            print_usage_and_exit(0);
+        }
         "--version" | "-V" | "version" => {
             println!("cortex {}", env!("CARGO_PKG_VERSION"));
+        }
+        "capabilities" => {
+            if args.iter().any(|arg| arg == "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&cli_capabilities_payload()).unwrap()
+                );
+            } else {
+                println!("{}", cli_capabilities_summary());
+            }
+        }
+        "robot-docs" => {
+            let subcmd = args.get(2).map(String::as_str).unwrap_or("guide");
+            match subcmd {
+                "" | "guide" | "--help" | "-h" => println!("{}", cli_robot_docs_guide()),
+                other => {
+                    eprintln!("{}", unknown_robot_docs_subcommand_message(other));
+                    std::process::exit(1);
+                }
+            }
         }
 
         // ── HTTP daemon (standalone or via service) ─────────────────
         "serve" => {
             #[cfg(unix)]
             async fn sigterm_future() {
-                use tokio::signal::unix::{SignalKind, signal};
+                use tokio::signal::unix::{signal, SignalKind};
                 let mut sigterm =
                     signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
                 sigterm.recv().await;
@@ -1288,12 +1312,9 @@ async fn main() {
                 }
             }
         }
-        "--help" | "-h" | "help" => {
-            print_usage_and_exit(0);
-        }
-
-        _ => {
-            print_usage_and_exit(1);
+        other => {
+            eprintln!("{}", unknown_cli_command_message(other));
+            std::process::exit(1);
         }
     }
 }
@@ -1384,115 +1405,305 @@ fn print_budget_status_human(payload: &Value) {
     }
 }
 
+fn cli_usage_text() -> String {
+    format!(
+        r#"Cortex v{} -- Universal AI Memory Daemon
+
+Usage:
+  cortex <command>
+  cortex help
+  cortex capabilities --json
+  cortex robot-docs guide
+
+Options:
+  --version, -V      Print CLI version
+  --help, -h         Print this help
+
+Agent surfaces:
+  capabilities --json  Print a deterministic machine-readable CLI contract
+  robot-docs guide     Print a short operator guide for coding agents
+
+Setup:
+  setup              First-run setup: detect AI tools, configure, verify
+  setup --team       Team-mode setup + schema migration + owner API key
+  migrate            Alias for setup --team (solo -> team migration)
+  migrate --dry-run  Preview migration without modifying the database
+
+Daemon:
+  serve [--bind <addr>]  HTTP daemon on :{} (default bind 127.0.0.1)
+  mcp [--url <base>] [--api-key <key>] [--agent <name>]  MCP stdio
+  paths --json       Print resolved Cortex paths + port + bind as JSON
+  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]
+  plugin ensure-daemon [--agent <name>]  Ensure daemon is running, then print port
+  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]
+
+Hooks:
+  hook-boot [AGENT]  SessionStart hook (default: claude-opus)
+  hook-status        Statusline one-liner
+
+Tools:
+  prompt-inject      Inject Cortex context into system prompt files
+  export             Export data (--format json|sql, --out <file>)
+  import             Import JSON data (--file <path>, optional --user <username>)
+  sync export        Export changeset JSON (--out <file>, optional --since <iso>)
+  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)
+  sync watch         Watched-folder sync loop (--dir <path>, optional --once)
+  eval               Run retrieval evaluation; supports --json and regression flags
+  doctor             Validate DB schema, migrations, integrity, and FTS health
+  reindex [--json]   Fully rebuild FTS indexes from canonical rows
+  re-embed [...]     Alias for embeddings drain --until-exhausted
+  recrystallize [--json]  Rebuild crystal graph and embeddings
+  cleanup [--dry-run] [--events] [--max-passes <n>]
+  backup             Create manual backup (stores in ~/.cortex/backups/)
+  restore <file>     Restore from backup file (daemon must be stopped)
+  admin rollback --session-id <id> [--apply] [--json]
+
+Embeddings:
+  embeddings status [--json]  Show active-model embedding backlog counts
+  embeddings drain [--batch-size <n>] [--max-batches <n>] [--lock-wait-ms <n>] [--until-exhausted] [--json]
+
+User Management (team mode):
+  user add <name>    Add user [--role member|admin] [--display-name "..."]
+  user rotate-key <name>  Rotate a user's API key
+  user remove <name> Remove user (with confirmation)
+  user list          List all users
+
+Team Management (team mode):
+  team create <name> Create a team
+  team add <team> <user>  Add member [--role member|admin]
+  team remove <team> <user>  Remove member (with confirmation)
+  team list          List all teams
+
+Admin (team mode):
+  admin list-unowned List rows without an owner
+  admin assign-owner [--from <user>] --to <user> [--table <t>]
+  admin stats        Database and per-user statistics
+  admin budgets status [--json]
+  admin budgets validate --path <file> [--json]
+
+Service:
+  service install    Register as Windows Service (manual start by default)
+  service uninstall  Remove Windows Service
+  service start      Start the service
+  service stop       Stop the service
+  service status     Check service status
+  service ensure     Ensure service is installed, running, and healthy
+
+Troubleshooting:
+  cortex doctor      Validate DB schema, migrations, integrity, and FTS state
+  cortex boot        Preferred local boot path (auto-adds auth + SSRF headers)
+  HTTP 403           Add header: X-Cortex-Request: true
+  HTTP 401           Use Authorization: Bearer <token> from ~/.cortex/cortex.token
+  MCP not visible    Restart the client after adding MCP servers; they do not hot-attach mid-session
+  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually
+  More help          See Info/connecting.md for full connection and auth examples
+"#,
+        env!("CARGO_PKG_VERSION"),
+        DEFAULT_CORTEX_PORT
+    )
+}
+
+fn cli_capabilities_payload() -> Value {
+    json!({
+        "schema_version": 1,
+        "contract_version": CLI_CAPABILITIES_CONTRACT_VERSION,
+        "tool": {
+            "name": "cortex",
+            "version": env!("CARGO_PKG_VERSION"),
+            "default_port": DEFAULT_CORTEX_PORT,
+            "default_bind": "127.0.0.1"
+        },
+        "agent_entrypoints": [
+            {
+                "name": "help",
+                "command": "cortex help",
+                "output": "human",
+                "side_effects": "none"
+            },
+            {
+                "name": "capabilities",
+                "command": "cortex capabilities --json",
+                "output": "json",
+                "side_effects": "none"
+            },
+            {
+                "name": "robot-docs",
+                "command": "cortex robot-docs guide",
+                "output": "text",
+                "side_effects": "none"
+            }
+        ],
+        "commands": {
+            "serve": {
+                "usage": "cortex serve [--bind <addr>] [--port <n>]",
+                "purpose": "Run the HTTP daemon",
+                "output": "logs",
+                "side_effects": "starts_daemon"
+            },
+            "mcp": {
+                "usage": "cortex mcp [--url <base>] [--api-key <key>] [--agent <name>]",
+                "purpose": "Run the MCP stdio proxy",
+                "output": "stdio_json_rpc",
+                "side_effects": "may_ensure_local_daemon"
+            },
+            "paths": {
+                "usage": "cortex paths --json",
+                "purpose": "Print resolved paths, port, and bind configuration",
+                "output": "json",
+                "side_effects": "none"
+            },
+            "boot": {
+                "usage": "cortex boot [--agent <name>] [--budget <n>] [--json]",
+                "purpose": "Preferred local boot path with auth and SSRF headers",
+                "output": "human_or_json",
+                "side_effects": "may_ensure_local_daemon"
+            },
+            "doctor": {
+                "usage": "cortex doctor",
+                "purpose": "Validate database schema, migrations, integrity, and FTS health",
+                "output": "human",
+                "side_effects": "reads_database"
+            },
+            "admin budgets": {
+                "usage": "cortex admin budgets status [--json]",
+                "purpose": "Inspect or validate budget governance configuration",
+                "output": "human_or_json",
+                "side_effects": "none"
+            },
+            "admin rollback": {
+                "usage": "cortex admin rollback --session-id <id> [--apply] [--json]",
+                "purpose": "Dry-run or apply soft-delete rollback for one session",
+                "output": "human_or_json",
+                "side_effects": "mutates_database_with_--apply"
+            }
+        },
+        "environment": {
+            "CORTEX_HOME": "Overrides the Cortex home directory",
+            "CORTEX_PORT": "Overrides the daemon port",
+            "CORTEX_BIND": "Overrides daemon bind address; defaults to localhost",
+            "CORTEX_API_KEY": "Supplies API key for remote client commands",
+            "CORTEX_API_BASE": "Supplies base URL for remote client commands",
+            "NO_COLOR": "Requests plain output where color is supported"
+        },
+        "exit_codes": {
+            "0": "success",
+            "1": "user_input_or_runtime_error"
+        },
+        "dangerous_operations": [
+            {
+                "command": "cortex restore <file>",
+                "gate": "requires explicit backup file and warns when daemon appears active"
+            },
+            {
+                "command": "cortex admin rollback --session-id <id> --apply",
+                "gate": "dry-run by default; --apply required to mutate"
+            },
+            {
+                "command": "cortex user remove <name>",
+                "gate": "interactive confirmation"
+            },
+            {
+                "command": "cortex team remove <team> <user>",
+                "gate": "interactive confirmation"
+            }
+        ],
+        "recommended_agent_flow": [
+            "Run `cortex capabilities --json` to discover supported surfaces.",
+            "Use `cortex paths --json` before reading or writing Cortex files.",
+            "Use `cortex boot --json` for local attachment when a daemon may be needed.",
+            "Use JSON flags where available and treat non-zero exit as retryable only after inspecting stderr."
+        ]
+    })
+}
+
+fn cli_capabilities_summary() -> String {
+    format!(
+        "Cortex agent capabilities\n\
+         JSON contract: cortex capabilities --json\n\
+         Agent guide: cortex robot-docs guide\n\
+         Core JSON commands: paths --json, boot --json, reindex --json, recrystallize --json, embeddings status --json, admin budgets status --json\n\
+         Default daemon endpoint: http://127.0.0.1:{}\n\
+         Exit codes: 0 success, 1 user-input or runtime error",
+        DEFAULT_CORTEX_PORT
+    )
+}
+
+fn cli_robot_docs_guide() -> &'static str {
+    r#"Cortex robot guide
+
+Discovery:
+  cortex capabilities --json
+  cortex help
+  cortex paths --json
+
+Local attach:
+  cortex boot --json
+  cortex mcp --agent codex
+
+Health checks:
+  cortex doctor
+  cortex embeddings status --json
+  cortex admin budgets status --json
+
+Maintenance:
+  cortex backup
+  cortex cleanup --dry-run
+  cortex reindex --json
+  cortex recrystallize --json
+
+Danger gates:
+  cortex restore <file> warns if a daemon appears active.
+  cortex admin rollback --session-id <id> is dry-run unless --apply is present.
+  cortex user remove and cortex team remove ask for confirmation.
+
+Output contract:
+  Prefer commands with --json when present.
+  Treat stderr as diagnostic text.
+  Treat exit code 0 as success and exit code 1 as user-input or runtime failure.
+"#
+}
+
+fn top_level_command_suggestion(command: &str) -> Option<&'static str> {
+    let normalized = command.trim().to_ascii_lowercase().replace(['_', '-'], "");
+    match normalized.as_str() {
+        "capability" | "capabilitiesjson" | "caps" => Some("cortex capabilities --json"),
+        "robotdoc" | "robotdocs" | "agentdoc" | "agentdocs" | "docs" => {
+            Some("cortex robot-docs guide")
+        }
+        "path" => Some("cortex paths --json"),
+        "budget" | "budgets" => Some("cortex admin budgets status --json"),
+        "rollback" => Some("cortex admin rollback --session-id <id> [--apply] [--json]"),
+        _ => None,
+    }
+}
+
+fn unknown_cli_command_message(command: &str) -> String {
+    let prefix = if command.starts_with('-') {
+        format!("Unknown option: {command}")
+    } else {
+        format!("Unknown command: {command}")
+    };
+    match top_level_command_suggestion(command) {
+        Some(suggestion) => format!(
+            "{prefix}\nDid you mean: `{suggestion}`?\nRun `cortex help` or `cortex capabilities --json` for supported commands."
+        ),
+        None => format!(
+            "{prefix}\nRun `cortex help` or `cortex capabilities --json` for supported commands."
+        ),
+    }
+}
+
+fn unknown_robot_docs_subcommand_message(subcommand: &str) -> String {
+    format!("Unknown robot-docs command: {subcommand}\nDid you mean: `cortex robot-docs guide`?")
+}
+
 fn print_usage_and_exit(code: i32) -> ! {
-    eprintln!(
-        "Cortex v{} -- Universal AI Memory Daemon",
-        env!("CARGO_PKG_VERSION")
-    );
-    eprintln!();
-    eprintln!("Usage: cortex <command>");
-    eprintln!();
-    eprintln!("Options:");
-    eprintln!("  --version, -V      Print CLI version");
-    eprintln!();
-    eprintln!("Setup:");
-    eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
-    eprintln!("  setup --team       Team-mode setup + schema migration + owner API key");
-    eprintln!("  migrate            Alias for setup --team (solo -> team migration)");
-    eprintln!("  migrate --dry-run  Preview migration without modifying the database");
-    eprintln!();
-    eprintln!("Daemon:");
-    eprintln!("  serve [--bind <addr>]  HTTP daemon on :7437 (default bind 127.0.0.1)");
-    eprintln!(
-        "  mcp [--url <base>] [--api-key <key>] [--agent <name>]  MCP stdio (attach-only when local)"
-    );
-    eprintln!("  paths --json       Print resolved Cortex paths + port + bind as JSON");
-    eprintln!("  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]");
-    eprintln!(
-        "  plugin ensure-daemon [--agent <name>]  Ensure daemon is running (service-first on Windows), then print port"
-    );
-    eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
-    eprintln!();
-    eprintln!("Hooks:");
-    eprintln!("  hook-boot [AGENT]  SessionStart hook (default: claude-opus)");
-    eprintln!("  hook-status        Statusline one-liner");
-    eprintln!();
-    eprintln!("Tools:");
-    eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
-    eprintln!("  export             Export data (--format json|sql, --out <file>)");
-    eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
-    eprintln!(
-        "  sync export        Export changeset JSON (--out <file>, optional --since <iso>, --cursor-file <path>)"
-    );
-    eprintln!(
-        "  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)"
-    );
-    eprintln!(
-        "  sync watch         Watched-folder sync loop (--dir <path>, optional --interval-seconds <n>, --once)"
-    );
-    eprintln!(
-        "  eval [--window-days <n>] [--json] [--baseline-file <path>] [--max-regression <f>] [--fail-on-regression]"
-    );
-    eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
-    eprintln!("  reindex [--json]   Fully rebuild FTS indexes from canonical memory/decision rows");
-    eprintln!("  re-embed [...]     Alias for `embeddings drain --until-exhausted`");
-    eprintln!(
-        "  recrystallize [--json]  Rebuild crystal graph and crystal embeddings from scratch"
-    );
-    eprintln!("  cleanup [--dry-run] [--events] [--max-passes <n>]");
-    eprintln!(
-        "                  Cleanup backups/logs/stale PID files; optionally compact oversized events"
-    );
-    eprintln!("  backup             Create manual backup (stores in ~/.cortex/backups/)");
-    eprintln!("  restore <file>     Restore from backup file (daemon must be stopped)");
-    eprintln!("  admin rollback --session-id <id> [--apply] [--json]");
-    eprintln!("                  Soft-delete memories + decisions for a session (dry-run default)");
-    eprintln!();
-    eprintln!("Embeddings:");
-    eprintln!("  embeddings status [--json]  Show active-model embedding backlog counts");
-    eprintln!(
-        "  embeddings drain [--batch-size <n>] [--max-batches <n>] [--lock-wait-ms <n>] [--until-exhausted] [--json]"
-    );
-    eprintln!();
-    eprintln!("User Management (team mode):");
-    eprintln!("  user add <name>    Add user [--role member|admin] [--display-name \"...\"]");
-    eprintln!("  user rotate-key <name>  Rotate a user's API key");
-    eprintln!("  user remove <name> Remove user (with confirmation)");
-    eprintln!("  user list          List all users");
-    eprintln!();
-    eprintln!("Team Management (team mode):");
-    eprintln!("  team create <name> Create a team");
-    eprintln!("  team add <team> <user>  Add member [--role member|admin]");
-    eprintln!("  team remove <team> <user>  Remove member (with confirmation)");
-    eprintln!("  team list          List all teams");
-    eprintln!();
-    eprintln!("Admin (team mode):");
-    eprintln!("  admin list-unowned List rows without an owner");
-    eprintln!("  admin assign-owner [--from <user>] --to <user> [--table <t>]");
-    eprintln!("  admin stats        Database and per-user statistics");
-    eprintln!("  admin budgets status [--json]");
-    eprintln!("  admin budgets validate --path <file> [--json]");
-    eprintln!();
-    eprintln!("Service:");
-    eprintln!("  service install    Register as Windows Service (manual start by default)");
-    eprintln!("  service uninstall  Remove Windows Service");
-    eprintln!("  service start      Start the service");
-    eprintln!("  service stop       Stop the service");
-    eprintln!("  service status     Check service status");
-    eprintln!("  service ensure     Ensure service is installed, running, and healthy");
-    eprintln!();
-    eprintln!("Troubleshooting:");
-    eprintln!("  cortex doctor      Validate DB schema, migrations, integrity, and FTS state");
-    eprintln!("  cortex boot        Preferred local boot path (auto-adds auth + SSRF headers)");
-    eprintln!("  HTTP 403           Add header: X-Cortex-Request: true");
-    eprintln!("  HTTP 401           Use Authorization: Bearer <token> from ~/.cortex/cortex.token");
-    eprintln!(
-        "  MCP not visible    Restart the client after `codex mcp add ...`; new MCP servers do not hot-attach mid-session"
-    );
-    eprintln!(
-        "  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually"
-    );
-    eprintln!("  More help          See Info/connecting.md for full connection and auth examples");
+    let usage = cli_usage_text();
+    if code == 0 {
+        print!("{usage}");
+    } else {
+        eprint!("{usage}");
+    }
     std::process::exit(code);
 }
 
@@ -3302,8 +3513,9 @@ fn parse_env_u64(key: &str, default: u64) -> u64 {
 #[cfg(not(windows))]
 use daemon_lifecycle::issue_owner_token_for_spawn;
 use daemon_lifecycle::{
-    DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV, daemon_healthy, is_cortex_health_payload,
-    readiness_state_from_payload, validate_spawned_owner_claim, wait_for_health,
+    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload,
+    validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
+    SPAWN_PARENT_START_TIME_ENV,
 };
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
@@ -5251,6 +5463,46 @@ mod tests {
     }
 
     #[test]
+    fn cli_usage_exposes_agent_entrypoints() {
+        let usage = cli_usage_text();
+        assert!(usage.contains("cortex capabilities --json"));
+        assert!(usage.contains("cortex robot-docs guide"));
+        assert!(usage.contains("Agent surfaces:"));
+    }
+
+    #[test]
+    fn cli_capabilities_payload_has_agent_contract() {
+        let payload = cli_capabilities_payload();
+        assert_eq!(
+            payload["contract_version"],
+            CLI_CAPABILITIES_CONTRACT_VERSION
+        );
+        assert_eq!(
+            payload["tool"]["default_port"].as_u64(),
+            Some(DEFAULT_CORTEX_PORT as u64)
+        );
+        assert_eq!(payload["commands"]["paths"]["output"], "json");
+        assert_eq!(payload["exit_codes"]["0"], "success");
+    }
+
+    #[test]
+    fn robot_docs_guide_is_paste_ready_for_agents() {
+        let guide = cli_robot_docs_guide();
+        assert!(guide.contains("cortex capabilities --json"));
+        assert!(guide.contains("cortex boot --json"));
+        assert!(guide.contains("Danger gates:"));
+        assert!(guide.contains("Treat exit code 0 as success"));
+    }
+
+    #[test]
+    fn unknown_command_message_suggests_likely_agent_surface() {
+        let message = unknown_cli_command_message("capability");
+        assert!(message.contains("Unknown command: capability"));
+        assert!(message.contains("Did you mean: `cortex capabilities --json`?"));
+        assert!(message.contains("cortex help"));
+    }
+
+    #[test]
     fn spawned_owner_parent_probe_child_process() {
         if std::env::var(SPAWN_PARENT_TEST_CHILD_ENV).ok().as_deref() != Some("1") {
             return;
@@ -6162,25 +6414,19 @@ mod tests {
         assert_eq!(parse_flag_usize(&args, "--budget").unwrap(), Some(900));
 
         let missing_value = vec!["--budget".to_string()];
-        assert!(
-            parse_flag_usize(&missing_value, "--budget")
-                .unwrap_err()
-                .contains("missing value")
-        );
+        assert!(parse_flag_usize(&missing_value, "--budget")
+            .unwrap_err()
+            .contains("missing value"));
 
         let invalid_value = vec!["--budget".to_string(), "abc".to_string()];
-        assert!(
-            parse_flag_usize(&invalid_value, "--budget")
-                .unwrap_err()
-                .contains("invalid value")
-        );
+        assert!(parse_flag_usize(&invalid_value, "--budget")
+            .unwrap_err()
+            .contains("invalid value"));
 
         let zero_value = vec!["--budget".to_string(), "0".to_string()];
-        assert!(
-            parse_flag_usize(&zero_value, "--budget")
-                .unwrap_err()
-                .contains("must be >= 1")
-        );
+        assert!(parse_flag_usize(&zero_value, "--budget")
+            .unwrap_err()
+            .contains("must be >= 1"));
     }
 
     #[test]

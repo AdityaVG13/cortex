@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "rubric_version": "agent-ergonomics-cli-v11",
+  "tool_name": "cortex",
+  "tool_repo": "C:/Users/aditya/cortex",
+  "audit_workspace": "C:/Users/aditya/cortex/agent_ergonomics_audit",
+  "target_branch": "master",
+  "target_head_before_pass": "eb576e8",
+  "current_pass": 1,
+  "pass_N_plus_1_ready": false,
+  "next_pass_focus": "Expand command-specific JSON contracts and add integration coverage for subcommand help/error consistency.",
+  "passes": [
+    {
+      "pass": 1,
+      "started_at": "2026-05-18",
+      "mode": "full",
+      "status": "implemented",
+      "preflight": {
+        "status": "partial",
+        "notes": "Skill preflight ran through WSL and failed only the required jq check; jq is present on Windows but not available to the WSL shell used by the stock script. Continued with local fallback artifacts and direct Rust verification."
+      },
+      "artifacts": {
+        "phase0_cli": "audit/phase0_cli.json",
+        "phase0_skill_inventory": "audit/phase0_skill_inventory.json",
+        "surface_inventory": "audit/surface_inventory.jsonl",
+        "recommendations": "audit/recommendations.jsonl",
+        "applied_changes": "audit/applied_changes.jsonl",
+        "scorecard": "audit/scorecard.md",
+        "playbook": "audit/playbook.md",
+        "handoff": "audit/HANDOFF.md"
+      }
+    }
+  ]
+}
