@@ -276,10 +276,10 @@ pub fn export_sql_text(conn: &Connection) -> String {
 }
 
 pub fn import_payload(
-    conn: &Connection,
+    conn: &mut Connection,
     payload: &ImportPayload,
     options: &ImportOptions,
-) -> ImportCounts {
+) -> Result<ImportCounts, String> {
     let mut counts = ImportCounts::default();
     let visibility = options.visibility.as_deref().unwrap_or("private");
     let fallback = options.source_agent_fallback.as_str();
@@ -288,12 +288,15 @@ pub fn import_payload(
     let memories_has_visibility = column_exists(conn, "memories", "visibility");
     let decisions_has_owner = column_exists(conn, "decisions", "owner_id");
     let decisions_has_visibility = column_exists(conn, "decisions", "visibility");
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("failed to start import transaction: {e}"))?;
 
     if let Some(memories) = &payload.memories {
-        for m in memories {
+        for (idx, m) in memories.iter().enumerate() {
             let entry_type = normalize_memory_entry_type(m.entry_type.as_deref());
             let inserted = if memories_has_owner && memories_has_visibility {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until, owner_id, visibility)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', ?13, ?14, ?15, ?16, ?17)",
                     params![
@@ -319,7 +322,7 @@ pub fn import_payload(
                     ],
                 )
             } else {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', ?13, ?14, ?15)",
                     params![
@@ -344,17 +347,18 @@ pub fn import_payload(
                 )
             };
 
-            if inserted.is_ok() {
-                counts.memories += 1;
+            match inserted {
+                Ok(_) => counts.memories += 1,
+                Err(e) => return Err(format!("failed to import memories[{idx}]: {e}")),
             }
         }
     }
 
     if let Some(decisions) = &payload.decisions {
-        for d in decisions {
+        for (idx, d) in decisions.iter().enumerate() {
             let entry_type = normalize_decision_entry_type(d.entry_type.as_deref());
             let inserted = if decisions_has_owner && decisions_has_visibility {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until, owner_id, visibility)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, ?14, ?15, ?16)",
                     params![
@@ -379,7 +383,7 @@ pub fn import_payload(
                     ],
                 )
             } else {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, status, observed_at, valid_from, valid_until)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, ?14)",
                     params![
@@ -403,13 +407,16 @@ pub fn import_payload(
                 )
             };
 
-            if inserted.is_ok() {
-                counts.decisions += 1;
+            match inserted {
+                Ok(_) => counts.decisions += 1,
+                Err(e) => return Err(format!("failed to import decisions[{idx}]: {e}")),
             }
         }
     }
 
-    counts
+    tx.commit()
+        .map_err(|e| format!("failed to commit import transaction: {e}"))?;
+    Ok(counts)
 }
 
 fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
@@ -767,7 +774,7 @@ mod tests {
 
     #[test]
     fn import_payload_normalizes_types_and_preserves_temporal_fields() {
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let mut conn = Connection::open_in_memory().expect("open sqlite");
         crate::db::configure(&conn).expect("configure sqlite");
         crate::db::initialize_schema(&conn).expect("initialize schema");
         crate::db::run_pending_migrations(&conn);
@@ -808,7 +815,8 @@ mod tests {
             }]),
         };
 
-        let counts = import_payload(&conn, &payload, &ImportOptions::default());
+        let counts = import_payload(&mut conn, &payload, &ImportOptions::default())
+            .expect("import should succeed");
         assert_eq!(counts.memories, 1);
         assert_eq!(counts.decisions, 1);
 
@@ -865,5 +873,71 @@ mod tests {
         assert_eq!(decision_row.2.as_deref(), Some("2026-04-18T11:00:00Z"));
         assert_eq!(decision_row.3.as_deref(), Some("2026-04-18T00:00:00Z"));
         assert_eq!(decision_row.4.as_deref(), Some("2026-05-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn import_payload_rolls_back_and_reports_failed_rows() {
+        let mut conn = Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+        conn.execute(
+            "CREATE TRIGGER fail_import_memory BEFORE INSERT ON memories
+             WHEN NEW.source = 'fail'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced import failure');
+             END",
+            [],
+        )
+        .expect("create failure trigger");
+
+        let payload = ImportPayload {
+            memories: Some(vec![
+                crate::api_types::ImportMemory {
+                    text: "first memory".to_string(),
+                    source: Some("ok".to_string()),
+                    entry_type: None,
+                    tags: None,
+                    source_agent: None,
+                    source_client: None,
+                    source_model: None,
+                    confidence: None,
+                    reasoning_depth: None,
+                    trust_score: None,
+                    score: None,
+                    observed_at: None,
+                    valid_from: None,
+                    valid_until: None,
+                    retention_class: None,
+                },
+                crate::api_types::ImportMemory {
+                    text: "second memory".to_string(),
+                    source: Some("fail".to_string()),
+                    entry_type: None,
+                    tags: None,
+                    source_agent: None,
+                    source_client: None,
+                    source_model: None,
+                    confidence: None,
+                    reasoning_depth: None,
+                    trust_score: None,
+                    score: None,
+                    observed_at: None,
+                    valid_from: None,
+                    valid_until: None,
+                    retention_class: None,
+                },
+            ]),
+            decisions: None,
+        };
+
+        let err = import_payload(&mut conn, &payload, &ImportOptions::default())
+            .expect_err("second memory should fail");
+        assert!(err.contains("memories[1]"));
+
+        let row_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .expect("count memories");
+        assert_eq!(row_count, 0, "import should roll back earlier rows");
     }
 }

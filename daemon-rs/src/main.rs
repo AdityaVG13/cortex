@@ -2937,7 +2937,7 @@ fn import_payload_from_file(
     let payload: export_data::ImportPayload =
         serde_json::from_str(&raw).map_err(|e| format!("Import file is not valid JSON: {e}"))?;
 
-    let conn = open_cli_connection(&paths.db)?;
+    let mut conn = open_cli_connection(&paths.db)?;
     let team_mode = db::current_mode(&conn) == "team";
     if parsed.username.is_some() && !team_mode {
         return Err("--user import requires team mode. Run: cortex setup --team".to_string());
@@ -2993,7 +2993,7 @@ fn import_payload_from_file(
         },
         source_agent_fallback: source_agent_fallback.to_string(),
     };
-    Ok(export_data::import_payload(&conn, &payload, &options))
+    export_data::import_payload(&mut conn, &payload, &options)
 }
 
 fn resolve_sync_since(override_since: Option<&str>, cursor_file: Option<&Path>) -> Option<String> {

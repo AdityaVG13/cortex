@@ -71,7 +71,7 @@ pub async fn handle_import(
         return resp;
     }
 
-    let conn = state.db.lock().await;
+    let mut conn = state.db.lock().await;
     let options = if state.team_mode {
         ImportOptions {
             owner_id: state.default_owner_id,
@@ -84,15 +84,22 @@ pub async fn handle_import(
             ..ImportOptions::default()
         }
     };
-    let counts = import_data(&conn, &payload, &options);
-
-    json_response(
-        StatusCode::OK,
-        json!({
-            "imported": {
-                "memories": counts.memories,
-                "decisions": counts.decisions,
-            }
-        }),
-    )
+    match import_data(&mut conn, &payload, &options) {
+        Ok(counts) => json_response(
+            StatusCode::OK,
+            json!({
+                "imported": {
+                    "memories": counts.memories,
+                    "decisions": counts.decisions,
+                }
+            }),
+        ),
+        Err(detail) => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "import failed",
+                "detail": detail,
+            }),
+        ),
+    }
 }
