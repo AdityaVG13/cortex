@@ -1,5 +1,0 @@
-{"id":"A-001","recommendation":"R-001","change":"Added CLI_CAPABILITIES_CONTRACT_VERSION and cli_capabilities_payload() with command, environment, exit-code, danger-gate, and recommended-flow metadata."}
-{"id":"A-002","recommendation":"R-002","change":"Moved bare, --help, -h, and help into the success path and made print_usage_and_exit route success help to stdout."}
-{"id":"A-003","recommendation":"R-003","change":"Added cortex robot-docs guide for discovery, local attach, health checks, maintenance, danger gates, and output contract."}
-{"id":"A-004","recommendation":"R-004","change":"Added top-level command suggestions for capabilities, robot-docs, paths, budgets, and rollback intents."}
-{"id":"A-005","recommendation":"R-001","change":"Added focused Rust regression tests for help, capabilities payload, robot guide, and unknown-command suggestion behavior."}

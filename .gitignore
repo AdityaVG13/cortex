@@ -182,4 +182,13 @@ plugins/cortex-plugin/assets/SHA256SUMS
 .shipsecure-temp/
 security/
 !info/security.md
+
+# Local skill-run workspaces/artifacts (never public unless explicitly requested)
 .code-upgrade/
+agent_ergonomics_audit/
+codebase_audit/
+codebase-audit/
+skill-runs/
+.skill-runs/
+*_skill_run/
+*_skill_audit/
