@@ -98,10 +98,8 @@ const ALL_MINILM_L6_V2: EmbeddingModelProfile = EmbeddingModelProfile {
     max_input_tokens: 256,
     model_file: "all-MiniLM-L6-v2.onnx",
     tokenizer_file: "tokenizer.json",
-    model_url:
-        "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
-    tokenizer_url:
-        "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+    model_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
+    tokenizer_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
     auxiliary_files: &[],
     query_prefix: "",
     passage_prefix: "",
@@ -117,10 +115,8 @@ const ALL_MINILM_L12_V2: EmbeddingModelProfile = EmbeddingModelProfile {
     max_input_tokens: 256,
     model_file: "all-MiniLM-L12-v2.onnx",
     tokenizer_file: "all-MiniLM-L12-v2-tokenizer.json",
-    model_url:
-        "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
-    tokenizer_url:
-        "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/tokenizer.json",
+    model_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/onnx/model.onnx",
+    tokenizer_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2/resolve/main/tokenizer.json",
     auxiliary_files: &[],
     query_prefix: "",
     passage_prefix: "",
@@ -153,13 +149,10 @@ const QWEN3_EMBEDDING_0_6B: EmbeddingModelProfile = EmbeddingModelProfile {
     max_input_tokens: 512,
     model_file: "qwen3-embedding-0.6b/model_uint8.onnx",
     tokenizer_file: "qwen3-embedding-0.6b/tokenizer.json",
-    model_url:
-        "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_uint8.onnx",
-    tokenizer_url:
-        "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json",
+    model_url: "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_uint8.onnx",
+    tokenizer_url: "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json",
     auxiliary_files: &[],
-    query_prefix:
-        "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:",
+    query_prefix: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:",
     passage_prefix: "",
     pooling: PoolingStrategy::LastToken,
     normalize: true,
@@ -525,6 +518,20 @@ impl EmbeddingEngine {
     /// query instruction prefix here while stored passages remain unprefixed.
     pub fn embed_query(&self, text: &str) -> Option<Vec<f32>> {
         self.embed_with_kind(text, EmbeddingInputKind::Query)
+    }
+
+    pub async fn embed_async(self: std::sync::Arc<Self>, text: String) -> Option<Vec<f32>> {
+        tokio::task::spawn_blocking(move || self.embed(&text))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub async fn embed_query_async(self: std::sync::Arc<Self>, text: String) -> Option<Vec<f32>> {
+        tokio::task::spawn_blocking(move || self.embed_query(&text))
+            .await
+            .ok()
+            .flatten()
     }
 
     pub fn dimension(&self) -> usize {

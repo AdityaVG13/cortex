@@ -11,13 +11,13 @@
 //! Reranking: boost = sum(signal * decay) for matching result_source,
 //! where decay = exp(-age_days / 30). Capped at [-0.2, +0.3].
 
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{ensure_auth_rated, ensure_auth_with_caller_rated, json_error, json_response};
 use crate::embeddings;
@@ -69,11 +69,13 @@ pub async fn handle_feedback(
     let agent = body.agent.as_deref().unwrap_or("http");
     let query_text = body.query.as_deref().unwrap_or("");
 
-    let query_embedding = state
-        .embedding_engine
-        .as_ref()
-        .and_then(|e| e.embed_query(query_text))
-        .map(|v| embeddings::vector_to_blob(&v));
+    let query_embedding = match state.embedding_engine.clone() {
+        Some(engine) => engine
+            .embed_query_async(query_text.to_string())
+            .await
+            .map(|v| embeddings::vector_to_blob(&v)),
+        None => None,
+    };
 
     let conn = state.db.lock().await;
     let mut stored = 0usize;
@@ -115,14 +117,9 @@ pub fn record_unfold_feedback(
     conn: &Connection,
     sources: &[String],
     agent: &str,
-    engine: Option<&embeddings::EmbeddingEngine>,
-    query_hint: Option<&str>,
+    query_text: &str,
+    query_blob: Option<&[u8]>,
 ) {
-    let query_text = query_hint.unwrap_or("");
-    let query_blob = engine
-        .and_then(|e| e.embed_query(query_text))
-        .map(|v| embeddings::vector_to_blob(&v));
-
     for source in sources {
         let (result_type, result_id) = parse_source(source);
         let _ = conn.execute(

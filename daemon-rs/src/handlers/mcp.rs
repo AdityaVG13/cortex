@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: MIT
 use chrono::{Duration, Utc};
 use rusqlite::OptionalExtension;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::Instant;
 
-use super::diary::{write_diary_entry, DiaryRequest};
+use super::diary::{DiaryRequest, write_diary_entry};
 use super::feedback::{
     build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value,
 };
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{
-    forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision,
-    resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
+    ConflictListOptions, ConflictStatusFilter, ResolutionMetadata, forget_keyword_scoped,
+    list_conflicts_payload, parse_conflict_id, resolve_decision, resolve_decision_with_metadata,
 };
 use super::recall::{
-    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
-    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext,
+    RecallContext, execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
+    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source,
 };
 use super::store::{
-    persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention,
-    DecisionProvenance,
+    DecisionProvenance, persist_decision_embedding,
+    store_decision_with_input_embedding_and_provenance_retention,
 };
-use super::{estimate_tokens, now_iso, SourceIdentity};
+use super::{SourceIdentity, estimate_tokens, now_iso};
 use crate::api_types::RetentionClass;
 use crate::state::RuntimeState;
 use crate::{aging, db, indexer};
@@ -736,19 +736,19 @@ fn fetch_last_call(
 #[cfg(test)]
 mod tests {
     use super::{
-        fetch_last_call, handle_mcp_message_with_caller, has_client_permission, mcp_dispatch,
-        mcp_tools, normalize_permission_client_id, required_permission_for_tool, ClientPermission,
+        ClientPermission, fetch_last_call, handle_mcp_message_with_caller, has_client_permission,
+        mcp_dispatch, mcp_tools, normalize_permission_client_id, required_permission_for_tool,
     };
     use crate::db;
-    use crate::handlers::recall::RecallContext;
     use crate::handlers::SourceIdentity;
+    use crate::handlers::recall::RecallContext;
     use crate::state::{DaemonEvent, RuntimeState};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::Arc;
-    use tokio::sync::{broadcast, Mutex};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use tokio::sync::{Mutex, broadcast};
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -2345,13 +2345,8 @@ async fn mcp_dispatch(
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k = arg_usize(args, &["k", "limit"]).unwrap_or({
-                if budget <= 220 {
-                    14
-                } else {
-                    10
-                }
-            });
+            let k =
+                arg_usize(args, &["k", "limit"]).unwrap_or({ if budget <= 220 { 14 } else { 10 } });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let model = source_model_for_tool(source, args);
@@ -2389,10 +2384,10 @@ async fn mcp_dispatch(
                 ),
                 None => None,
             };
-            let decision_embedding = state
-                .embedding_engine
-                .as_ref()
-                .and_then(|engine| engine.embed(decision));
+            let decision_embedding = match state.embedding_engine.clone() {
+                Some(engine) => engine.embed_async(decision.to_string()).await,
+                None => None,
+            };
 
             let mut conn = state.db.lock().await;
             let (entry, new_id) = store_decision_with_input_embedding_and_provenance_retention(
@@ -2565,13 +2560,21 @@ async fn mcp_dispatch(
 
             // Implicit positive feedback: unfolding = "this result was useful"
             if !found_sources.is_empty() {
+                let query_text = "";
+                let query_blob = match state.embedding_engine.clone() {
+                    Some(engine) => engine
+                        .embed_query_async(query_text.to_string())
+                        .await
+                        .map(|v| crate::embeddings::vector_to_blob(&v)),
+                    None => None,
+                };
                 let conn = state.db.lock().await;
                 super::feedback::record_unfold_feedback(
                     &conn,
                     &found_sources,
                     agent,
-                    state.embedding_engine.as_deref(),
-                    None,
+                    query_text,
+                    query_blob.as_deref(),
                 );
             }
 

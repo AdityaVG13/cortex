@@ -38,7 +38,7 @@ mod workspace;
 
 use chrono::{self, Utc};
 use fs2::FileExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Write as _;
@@ -460,7 +460,7 @@ async fn main() {
         "serve" => {
             #[cfg(unix)]
             async fn sigterm_future() {
-                use tokio::signal::unix::{signal, SignalKind};
+                use tokio::signal::unix::{SignalKind, signal};
                 let mut sigterm =
                     signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
                 sigterm.recv().await;
@@ -1401,7 +1401,9 @@ fn print_usage_and_exit(code: i32) -> ! {
     );
     eprintln!("  paths --json       Print resolved Cortex paths + port + bind as JSON");
     eprintln!("  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]");
-    eprintln!("  plugin ensure-daemon [--agent <name>]  Ensure daemon is running (service-first on Windows), then print port");
+    eprintln!(
+        "  plugin ensure-daemon [--agent <name>]  Ensure daemon is running (service-first on Windows), then print port"
+    );
     eprintln!("  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]");
     eprintln!();
     eprintln!("Hooks:");
@@ -1412,10 +1414,18 @@ fn print_usage_and_exit(code: i32) -> ! {
     eprintln!("  prompt-inject      Inject Cortex context into system prompt files");
     eprintln!("  export             Export data (--format json|sql, --out <file>)");
     eprintln!("  import             Import JSON data (--file <path>, optional --user <username>)");
-    eprintln!("  sync export        Export changeset JSON (--out <file>, optional --since <iso>, --cursor-file <path>)");
-    eprintln!("  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)");
-    eprintln!("  sync watch         Watched-folder sync loop (--dir <path>, optional --interval-seconds <n>, --once)");
-    eprintln!("  eval [--window-days <n>] [--json] [--baseline-file <path>] [--max-regression <f>] [--fail-on-regression]");
+    eprintln!(
+        "  sync export        Export changeset JSON (--out <file>, optional --since <iso>, --cursor-file <path>)"
+    );
+    eprintln!(
+        "  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)"
+    );
+    eprintln!(
+        "  sync watch         Watched-folder sync loop (--dir <path>, optional --interval-seconds <n>, --once)"
+    );
+    eprintln!(
+        "  eval [--window-days <n>] [--json] [--baseline-file <path>] [--max-regression <f>] [--fail-on-regression]"
+    );
     eprintln!("  doctor             Validate DB schema, migrations, integrity, and FTS health");
     eprintln!("  reindex [--json]   Fully rebuild FTS indexes from canonical memory/decision rows");
     eprintln!("  re-embed [...]     Alias for `embeddings drain --until-exhausted`");
@@ -2164,7 +2174,7 @@ async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
 async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_output: bool) {
     let (state, _shutdown_rx) =
         state::initialize(paths, false).expect("Failed to initialize state for embeddings status");
-    let Some(engine) = state.embedding_engine.as_ref() else {
+    let Some(engine) = state.embedding_engine.clone() else {
         eprintln!(
             "[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry."
         );
@@ -2247,7 +2257,7 @@ async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
 
     let (state, _shutdown_rx) =
         state::initialize(paths, false).expect("Failed to initialize state for embeddings drain");
-    let Some(engine) = state.embedding_engine.as_ref() else {
+    let Some(engine) = state.embedding_engine.clone() else {
         eprintln!(
             "[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry."
         );
@@ -2264,7 +2274,7 @@ async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
     while iterations_ran < max_iterations {
         iterations_ran += 1;
         let pass = build_embeddings_async(
-            engine,
+            engine.clone(),
             &state.db,
             batch_size,
             max_batches_per_pass,
@@ -3285,9 +3295,8 @@ fn parse_env_u64(key: &str, default: u64) -> u64 {
 #[cfg(not(windows))]
 use daemon_lifecycle::issue_owner_token_for_spawn;
 use daemon_lifecycle::{
-    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload,
-    validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
-    SPAWN_PARENT_START_TIME_ENV,
+    DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV, daemon_healthy, is_cortex_health_payload,
+    readiness_state_from_payload, validate_spawned_owner_claim, wait_for_health,
 };
 const DAEMON_STARTUP_WAIT_SECS: u64 = 90;
 const DEFAULT_BOOT_BUDGET: usize = 600;
@@ -3977,7 +3986,7 @@ fn control_center_is_active(paths: &auth::CortexPaths) -> Result<bool, String> {
             return Err(format!(
                 "open control-center lock {}: {err}",
                 lock_path.display()
-            ))
+            ));
         }
     };
 
@@ -4553,7 +4562,7 @@ pub(crate) async fn run_daemon(
                 tokio::time::sleep(startup_delay).await;
             }
             let startup_pass = build_embeddings_async(
-                &engine,
+                engine.clone(),
                 &db,
                 batch_size,
                 startup_max_batches_per_pass,
@@ -4563,7 +4572,7 @@ pub(crate) async fn run_daemon(
             if startup_pass.queued_total > 0 && !startup_pass.exhausted {
                 if drain_on_startup {
                     let drain_pass = build_embeddings_async(
-                        &engine,
+                        engine.clone(),
                         &db,
                         batch_size,
                         startup_drain_max_batches,
@@ -4578,8 +4587,7 @@ pub(crate) async fn run_daemon(
                     } else if drain_pass.queued_total > 0 {
                         eprintln!(
                             "[embeddings] Startup drain reached cap with backlog still pending (passes={}, queued={})",
-                            drain_pass.passes_ran,
-                            drain_pass.queued_total
+                            drain_pass.passes_ran, drain_pass.queued_total
                         );
                     }
                 } else {
@@ -4593,8 +4601,14 @@ pub(crate) async fn run_daemon(
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;
-                build_embeddings_async(&engine, &db, batch_size, max_batches_per_pass, lock_wait)
-                    .await;
+                build_embeddings_async(
+                    engine.clone(),
+                    &db,
+                    batch_size,
+                    max_batches_per_pass,
+                    lock_wait,
+                )
+                .await;
             }
         });
     } else {
@@ -4999,7 +5013,7 @@ fn count_unembedded_targets_for_model(
 }
 
 async fn build_embeddings_async(
-    engine: &embeddings::EmbeddingEngine,
+    engine: std::sync::Arc<embeddings::EmbeddingEngine>,
     db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
     batch_size: usize,
     max_batches_per_pass: usize,
@@ -5031,7 +5045,7 @@ async fn build_embeddings_async(
         let mut computed_batch = 0usize;
         let mut mem_results: Vec<(i64, Vec<u8>)> = Vec::new();
         for (id, text) in &unembedded_mem {
-            if let Some(vec) = engine.embed(text) {
+            if let Some(vec) = engine.clone().embed_async(text.clone()).await {
                 mem_results.push((*id, embeddings::vector_to_blob(&vec)));
                 computed_batch += 1;
             }
@@ -5039,7 +5053,7 @@ async fn build_embeddings_async(
 
         let mut dec_results: Vec<(i64, Vec<u8>)> = Vec::new();
         for (id, text) in &unembedded_dec {
-            if let Some(vec) = engine.embed(text) {
+            if let Some(vec) = engine.clone().embed_async(text.clone()).await {
                 dec_results.push((*id, embeddings::vector_to_blob(&vec)));
                 computed_batch += 1;
             }
@@ -6141,19 +6155,25 @@ mod tests {
         assert_eq!(parse_flag_usize(&args, "--budget").unwrap(), Some(900));
 
         let missing_value = vec!["--budget".to_string()];
-        assert!(parse_flag_usize(&missing_value, "--budget")
-            .unwrap_err()
-            .contains("missing value"));
+        assert!(
+            parse_flag_usize(&missing_value, "--budget")
+                .unwrap_err()
+                .contains("missing value")
+        );
 
         let invalid_value = vec!["--budget".to_string(), "abc".to_string()];
-        assert!(parse_flag_usize(&invalid_value, "--budget")
-            .unwrap_err()
-            .contains("invalid value"));
+        assert!(
+            parse_flag_usize(&invalid_value, "--budget")
+                .unwrap_err()
+                .contains("invalid value")
+        );
 
         let zero_value = vec!["--budget".to_string(), "0".to_string()];
-        assert!(parse_flag_usize(&zero_value, "--budget")
-            .unwrap_err()
-            .contains("must be >= 1"));
+        assert!(
+            parse_flag_usize(&zero_value, "--budget")
+                .unwrap_err()
+                .contains("must be >= 1")
+        );
     }
 
     #[test]

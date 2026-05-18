@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 use super::{
     ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, log_event,
@@ -13,7 +13,7 @@ use super::{
 use crate::api_types::{RetentionClass, StoreRequest};
 use crate::budgets::BudgetEndpoint;
 use crate::conflict::{
-    detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
+    ConflictClassification, ConflictResult, detect_conflict, jaccard_similarity,
 };
 use crate::db::checkpoint_wal_best_effort;
 use crate::rate_limit::RequestClass;
@@ -276,10 +276,10 @@ pub async fn handle_store(
         .as_ref()
         .map(|engine| engine.model_key())
         .unwrap_or(crate::embeddings::selected_model_key());
-    let decision_embedding = state
-        .embedding_engine
-        .as_ref()
-        .and_then(|engine| engine.embed(&decision_text));
+    let decision_embedding = match state.embedding_engine.clone() {
+        Some(engine) => engine.embed_async(decision_text.clone()).await,
+        None => None,
+    };
 
     let mut conn = state.db.lock().await;
     let result = store_decision_with_input_embedding_and_provenance_retention(
@@ -311,9 +311,10 @@ pub async fn handle_store(
                     let db = state.db.clone();
                     let text = decision_text.clone();
                     tokio::spawn(async move {
-                        if let Some(vec) = engine.embed(&text) {
+                        let model_key = engine.model_key();
+                        if let Some(vec) = engine.embed_async(text).await {
                             let conn = db.lock().await;
-                            let _ = persist_decision_embedding(&conn, id, &vec, engine.model_key());
+                            let _ = persist_decision_embedding(&conn, id, &vec, model_key);
                         }
                     });
                 }
@@ -1776,9 +1777,9 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::Arc;
-    use tokio::sync::{broadcast, Mutex};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use tokio::sync::{Mutex, broadcast};
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

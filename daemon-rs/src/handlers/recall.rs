@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use chrono::{TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -907,7 +907,7 @@ pub fn parse_recall_policy_mode(raw: Option<&str>) -> Result<Option<RecallPolicy
         _ => {
             return Err(
                 "Invalid policy mode. Expected one of: headlines, fast, balanced, deep".to_string(),
-            )
+            );
         }
     };
     Ok(Some(mode))
@@ -941,11 +941,7 @@ fn adaptive_default_budget_for_query(
     let base: usize = if profile.exactish && !profile.naturalish {
         180
     } else if profile.naturalish && !profile.exactish {
-        if token_count >= 14 {
-            300
-        } else {
-            270
-        }
+        if token_count >= 14 { 300 } else { 270 }
     } else {
         240
     };
@@ -2278,13 +2274,20 @@ pub async fn execute_unified_recall(
         }
     }
 
-    let mut conn = state.db.lock().await;
-    let engine = state.embedding_engine.as_deref();
+    let engine = state.embedding_engine.clone();
     let dflag = Some(&state.degraded_mode);
-    let mut query_vector = engine.and_then(|runtime_engine| runtime_engine.embed_query(query_text));
-    if engine.is_some() {
+    let mut query_vector = match engine {
+        Some(runtime_engine) => {
+            runtime_engine
+                .embed_query_async(query_text.to_string())
+                .await
+        }
+        None => None,
+    };
+    if state.embedding_engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
+    let mut conn = state.db.lock().await;
     let (mut results, mut semantic_baseline, mut semantic_route) = if budget == 0 {
         let trace = run_recall_with_query_vector_trace(
             &mut conn,
@@ -2511,15 +2514,23 @@ async fn execute_recall_policy_explain_inner(
 ) -> Result<Value, String> {
     let requested_k = k.max(1);
     let pool_k = pool_k.max(requested_k).min(128);
-    let mut conn = state.db.lock().await;
-    let engine = state.embedding_engine.as_deref();
+    let engine = state.embedding_engine.clone();
     let dflag = Some(&state.degraded_mode);
-    let query_vector = query_vector_override
-        .map(|vector| vector.to_vec())
-        .or_else(|| engine.and_then(|runtime_engine| runtime_engine.embed_query(query_text)));
-    if query_vector_override.is_none() && engine.is_some() {
+    let query_vector = match query_vector_override {
+        Some(vector) => Some(vector.to_vec()),
+        None => match engine {
+            Some(runtime_engine) => {
+                runtime_engine
+                    .embed_query_async(query_text.to_string())
+                    .await
+            }
+            None => None,
+        },
+    };
+    if query_vector_override.is_none() && state.embedding_engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
+    let mut conn = state.db.lock().await;
 
     let (
         budgeted,
@@ -2783,10 +2794,10 @@ pub async fn execute_semantic_recall(
     source_prefix: Option<&str>,
 ) -> Result<Value, String> {
     let started_at = Instant::now();
-    let query_vector = state
-        .embedding_engine
-        .as_ref()
-        .and_then(|engine| engine.embed_query(query_text));
+    let query_vector = match state.embedding_engine.clone() {
+        Some(engine) => engine.embed_query_async(query_text.to_string()).await,
+        None => None,
+    };
     let semantic_available = query_vector.is_some();
     let (budgeted, semantic_route) = {
         let conn = state.db.lock().await;
@@ -5009,8 +5020,7 @@ fn collect_semantic_candidates(
 
     let mut candidates: HashMap<String, SemanticCandidate> = HashMap::new();
 
-    let semantic_memory_query_with_acl =
-        "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
+    let semantic_memory_query_with_acl = "SELECT e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
@@ -5019,8 +5029,7 @@ fn collect_semantic_candidates(
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR m.source LIKE ?3)";
-    let semantic_memory_query_without_acl =
-        "SELECT e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
+    let semantic_memory_query_without_acl = "SELECT e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, m.trust_score, m.last_accessed, m.created_at \
          FROM embeddings e \
          JOIN memories m ON e.target_type = 'memory' AND e.target_id = m.id AND m.status = 'active' \
          AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) \
@@ -5124,8 +5133,7 @@ fn collect_semantic_candidates(
         }
     }
 
-    let semantic_decision_query_with_acl =
-        "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
+    let semantic_decision_query_with_acl = "SELECT e.vector, d.decision, d.context, d.owner_id, d.visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
@@ -5134,8 +5142,7 @@ fn collect_semantic_candidates(
          AND (e.model IS NULL OR LOWER(e.model) = ?1) \
          AND (length(e.vector) = ?2 OR length(e.vector) = ?2/4 + 6) \
          AND (?3 IS NULL OR d.context LIKE ?3)";
-    let semantic_decision_query_without_acl =
-        "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
+    let semantic_decision_query_without_acl = "SELECT e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility, d.score, d.trust_score, d.last_accessed, d.created_at \
          FROM embeddings e \
          JOIN decisions d ON e.target_type = 'decision' AND e.target_id = d.id AND d.status = 'active' \
          AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
@@ -6767,9 +6774,9 @@ async fn predict_and_cache(
             .into_iter()
             .filter(|(query, _)| query != current_query)
             .max_by(|a, b| {
-                a.1 .0
-                    .cmp(&b.1 .0)
-                    .then_with(|| a.1 .1.cmp(&b.1 .1))
+                a.1.0
+                    .cmp(&b.1.0)
+                    .then_with(|| a.1.1.cmp(&b.1.1))
                     .then_with(|| b.0.cmp(&a.0))
             })
             .map(|(query, _)| query)
@@ -7004,8 +7011,7 @@ type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
 type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
 
 fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfoldRow> {
-    let sql_with_visibility =
-        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
+    let sql_with_visibility = "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now')) \
@@ -7042,8 +7048,7 @@ fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfo
 }
 
 fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<DecisionUnfoldRow> {
-    let sql_with_visibility =
-        "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
+    let sql_with_visibility = "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now'))";
@@ -7081,8 +7086,7 @@ fn query_decision_by_context_for_unfold(
     conn: &Connection,
     source: &str,
 ) -> Option<DecisionUnfoldRow> {
-    let sql_with_visibility =
-        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
+    let sql_with_visibility = "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now')) \
@@ -7385,9 +7389,9 @@ mod tests {
     use rusqlite::params;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::Arc;
-    use tokio::sync::{broadcast, Mutex};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use tokio::sync::{Mutex, broadcast};
 
     struct StaticReranker;
 
@@ -8110,15 +8114,21 @@ mod tests {
             .map(|candidate| candidate.source.clone())
             .collect();
 
-        assert!(sources
-            .iter()
-            .any(|source| source == "memory::semantic-valid"));
-        assert!(!sources
-            .iter()
-            .any(|source| source == "memory::semantic-future"));
-        assert!(!sources
-            .iter()
-            .any(|source| source == "memory::semantic-stale"));
+        assert!(
+            sources
+                .iter()
+                .any(|source| source == "memory::semantic-valid")
+        );
+        assert!(
+            !sources
+                .iter()
+                .any(|source| source == "memory::semantic-future")
+        );
+        assert!(
+            !sources
+                .iter()
+                .any(|source| source == "memory::semantic-stale")
+        );
     }
 
     #[test]
