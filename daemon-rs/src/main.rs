@@ -456,6 +456,10 @@ async fn main() {
     }
 
     match mode {
+        "--version" | "-V" | "version" => {
+            println!("cortex {}", env!("CARGO_PKG_VERSION"));
+        }
+
         // ── HTTP daemon (standalone or via service) ─────────────────
         "serve" => {
             #[cfg(unix)]
@@ -1387,6 +1391,9 @@ fn print_usage_and_exit(code: i32) -> ! {
     );
     eprintln!();
     eprintln!("Usage: cortex <command>");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --version, -V      Print CLI version");
     eprintln!();
     eprintln!("Setup:");
     eprintln!("  setup              First-run setup: detect AI tools, configure, verify");
