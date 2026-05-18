@@ -2,6 +2,7 @@
 use chrono::{Duration, Utc};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use super::diary::{DiaryRequest, write_diary_entry};
@@ -34,6 +35,205 @@ pub fn mcp_success(id: Value, result: Value) -> Value {
 
 pub fn mcp_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+fn mcp_error_with_data(id: Value, code: i64, message: &str, data: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message, "data": data } })
+}
+
+fn mcp_resource_uris() -> Vec<&'static str> {
+    vec!["cortex://tooling/capabilities", "cortex://tooling/tools"]
+}
+
+fn mcp_resources() -> Vec<Value> {
+    vec![
+        json!({
+            "uri": "cortex://tooling/capabilities",
+            "name": "Cortex MCP capabilities",
+            "description": "Read-only discovery summary of Cortex tool clusters, permission tiers, and next actions for agents.",
+            "mimeType": "application/json"
+        }),
+        json!({
+            "uri": "cortex://tooling/tools",
+            "name": "Cortex MCP tool catalog",
+            "description": "Compact clustered catalog of advertised Cortex MCP tools with required args and permission tier.",
+            "mimeType": "application/json"
+        }),
+    ]
+}
+
+fn mcp_tool_cluster(tool_name: &str) -> &'static str {
+    match tool_name {
+        "cortex_boot" | "cortex_boot_audit" | "cortex_reconnect" => "session",
+        "cortex_peek"
+        | "cortex_recall"
+        | "cortex_recall_policy_explain"
+        | "cortex_semantic_recall"
+        | "cortex_unfold" => "recall",
+        "cortex_store"
+        | "cortex_forget"
+        | "cortex_resolve"
+        | "cortex_conflicts_list"
+        | "cortex_conflicts_get"
+        | "cortex_conflicts_resolve"
+        | "cortex_consensus_promote"
+        | "cortex_memory_decay_run"
+        | "cortex_eval_run" => "memory-governance",
+        "cortex_focus_start" | "cortex_focus_end" | "cortex_focus_status" | "cortex_diary" => {
+            "continuity"
+        }
+        "cortex_agent_feedback_record"
+        | "cortex_agent_feedback_stats"
+        | "cortex_health"
+        | "cortex_digest"
+        | "cortex_lastCall" => "observability",
+        "cortex_permissions_list" | "cortex_permissions_grant" | "cortex_permissions_revoke" => {
+            "admin"
+        }
+        _ => "other",
+    }
+}
+
+fn mcp_tool_permission(tool_name: &str) -> &'static str {
+    required_permission_for_tool(tool_name)
+        .map(ClientPermission::as_str)
+        .unwrap_or("unknown")
+}
+
+fn tooling_capabilities_payload() -> Value {
+    let mut clusters: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut permissions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for tool in mcp_tools() {
+        if let Some(name) = tool.get("name").and_then(Value::as_str) {
+            clusters
+                .entry(mcp_tool_cluster(name).to_string())
+                .or_default()
+                .push(name.to_string());
+            permissions
+                .entry(mcp_tool_permission(name).to_string())
+                .or_default()
+                .push(name.to_string());
+        }
+    }
+
+    let tool_count = clusters.values().map(Vec::len).sum::<usize>();
+    json!({
+        "server": "cortex",
+        "toolCount": tool_count,
+        "clusters": clusters,
+        "permissions": permissions,
+        "resources": mcp_resource_uris(),
+        "nextActions": [
+            "Call tools/list for full JSON schemas.",
+            "Read cortex://tooling/tools for a compact clustered tool catalog.",
+            "Use cortex_health before mutation-heavy workflows when daemon state is uncertain."
+        ]
+    })
+}
+
+fn tooling_tools_payload() -> Value {
+    let tools = mcp_tools()
+        .into_iter()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?.to_string();
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let required = tool
+                .pointer("/inputSchema/required")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let mut parameters = tool
+                .pointer("/inputSchema/properties")
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            parameters.sort();
+
+            Some(json!({
+                "name": name,
+                "cluster": mcp_tool_cluster(&name),
+                "permission": mcp_tool_permission(&name),
+                "description": description,
+                "required": required,
+                "parameters": parameters
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "tools": tools,
+        "discovery": {
+            "fullSchemas": "Call tools/list.",
+            "capabilities": "Read cortex://tooling/capabilities.",
+            "health": "Call cortex_health to confirm daemon liveness and database state."
+        },
+        "commonMistakes": [
+            "Use exact tool names from this catalog; aliases are not accepted.",
+            "Use read tools before admin or mutation tools when you are unsure of current state.",
+            "Do not assume a write/admin tool is available in team mode without a caller-scoped API key."
+        ]
+    })
+}
+
+fn mcp_resource_payload(uri: &str) -> Option<Value> {
+    match uri {
+        "cortex://tooling/capabilities" => Some(tooling_capabilities_payload()),
+        "cortex://tooling/tools" => Some(tooling_tools_payload()),
+        _ => None,
+    }
+}
+
+fn mcp_resource_read_result(uri: &str, payload: Value) -> Value {
+    json!({
+        "contents": [{
+            "uri": uri,
+            "mimeType": "application/json",
+            "text": payload.to_string()
+        }]
+    })
+}
+
+fn common_prefix_len(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn tool_name_suggestions(provided: &str) -> Vec<String> {
+    let needle = provided.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored = mcp_tools()
+        .into_iter()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?.to_string();
+            let lower = name.to_ascii_lowercase();
+            let short = lower.strip_prefix("cortex_").unwrap_or(&lower);
+            let score = if lower == needle || short == needle {
+                100
+            } else if lower.starts_with(&needle) || short.starts_with(&needle) {
+                90
+            } else if lower.contains(&needle) || short.contains(&needle) {
+                80
+            } else {
+                let prefix =
+                    common_prefix_len(&lower, &needle).max(common_prefix_len(short, &needle));
+                if prefix >= 4 { 50 + prefix as i32 } else { 0 }
+            };
+
+            (score > 0).then_some((score, name))
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    scored.into_iter().take(5).map(|(_, name)| name).collect()
 }
 
 fn payload_token_usage(data: &Value) -> (usize, Option<i64>, Option<usize>) {
@@ -1201,6 +1401,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initialize_advertises_mcp_resource_discovery() {
+        let state = test_state();
+        let response = handle_mcp_message_with_caller(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize"
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect("initialize should return a response");
+
+        assert_eq!(
+            response["result"]["capabilities"]["resources"]["listChanged"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn resources_list_advertises_tooling_discovery_resources() {
+        let state = test_state();
+        let response = handle_mcp_message_with_caller(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/list"
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect("resources/list should return a response");
+
+        let resources = response["result"]["resources"]
+            .as_array()
+            .expect("resources should be an array");
+        assert!(
+            resources.iter().any(|resource| {
+                resource["uri"].as_str() == Some("cortex://tooling/capabilities")
+            })
+        );
+        assert!(
+            resources
+                .iter()
+                .all(|resource| resource["mimeType"].as_str() == Some("application/json"))
+        );
+    }
+
+    #[tokio::test]
+    async fn resources_read_returns_clustered_tooling_capabilities() {
+        let state = test_state();
+        let response = handle_mcp_message_with_caller(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/read",
+                "params": { "uri": "cortex://tooling/capabilities" }
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect("resources/read should return a response");
+
+        let text = response["result"]["contents"][0]["text"]
+            .as_str()
+            .expect("resource content should be text JSON");
+        let payload: Value =
+            serde_json::from_str(text).expect("resource text should parse as JSON");
+        assert_eq!(
+            payload["toolCount"].as_u64(),
+            Some(mcp_tools().len() as u64)
+        );
+        assert!(
+            payload["clusters"]["recall"]
+                .as_array()
+                .expect("recall cluster should be listed")
+                .iter()
+                .any(|tool| tool.as_str() == Some("cortex_recall"))
+        );
+        assert_eq!(
+            payload["resources"][0].as_str(),
+            Some("cortex://tooling/capabilities")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_error_includes_recovery_data() {
+        let state = test_state();
+        let response = handle_mcp_message_with_caller(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": { "name": "recall" }
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect("unknown tool should return an error response");
+
+        assert_eq!(response["error"]["code"].as_i64(), Some(-32601));
+        assert_eq!(
+            response["error"]["data"]["errorType"].as_str(),
+            Some("UNKNOWN_TOOL")
+        );
+        assert!(
+            response["error"]["data"]["suggestions"]
+                .as_array()
+                .expect("suggestions should be listed")
+                .iter()
+                .any(|tool| tool.as_str() == Some("cortex_recall"))
+        );
+        assert!(
+            response["error"]["data"]["discoveryHint"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cortex://tooling/tools")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_resource_error_lists_available_resources() {
+        let state = test_state();
+        let response = handle_mcp_message_with_caller(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "resources/read",
+                "params": { "uri": "cortex://missing" }
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect("unknown resource should return an error response");
+
+        assert_eq!(response["error"]["code"].as_i64(), Some(-32602));
+        assert_eq!(
+            response["error"]["data"]["errorType"].as_str(),
+            Some("UNKNOWN_RESOURCE")
+        );
+        assert!(
+            response["error"]["data"]["availableResources"]
+                .as_array()
+                .expect("available resources should be listed")
+                .iter()
+                .any(|uri| uri.as_str() == Some("cortex://tooling/tools"))
+        );
+    }
+
+    #[tokio::test]
     async fn tools_call_includes_token_usage_line_for_cortex_tools() {
         let state = test_state();
         let source = SourceIdentity {
@@ -2345,8 +2705,7 @@ async fn mcp_dispatch(
             let query = arg_str(args, &["query", "q"])
                 .ok_or_else(|| "Missing required argument: query".to_string())?;
             let budget = arg_usize(args, &["budget", "b"]).unwrap_or(200);
-            let k =
-                arg_usize(args, &["k", "limit"]).unwrap_or(if budget <= 220 { 14 } else { 10 });
+            let k = arg_usize(args, &["k", "limit"]).unwrap_or(if budget <= 220 { 14 } else { 10 });
             let agent = arg_str(args, &["agent", "source_agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let model = source_model_for_tool(source, args);
@@ -3160,7 +3519,10 @@ pub async fn handle_mcp_message_with_caller(
             id,
             json!({
                 "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": { "listChanged": true } },
+                "capabilities": {
+                    "tools": { "listChanged": true },
+                    "resources": { "listChanged": true }
+                },
                 "serverInfo": { "name": "cortex", "version": env!("CARGO_PKG_VERSION") }
             }),
         )),
@@ -3168,6 +3530,45 @@ pub async fn handle_mcp_message_with_caller(
         "notifications/initialized" => None,
 
         "tools/list" => Some(mcp_success(id, json!({ "tools": mcp_tools() }))),
+
+        "resources/list" => Some(mcp_success(id, json!({ "resources": mcp_resources() }))),
+
+        "resources/read" => {
+            let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
+            let uri = params
+                .get("uri")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+
+            if uri.is_empty() {
+                return Some(mcp_error_with_data(
+                    id,
+                    -32602,
+                    "Missing resource URI",
+                    json!({
+                        "errorType": "MISSING_RESOURCE_URI",
+                        "availableResources": mcp_resource_uris(),
+                        "fixHint": "Call resources/list, then pass one of the returned uri values to resources/read."
+                    }),
+                ));
+            }
+
+            match mcp_resource_payload(uri) {
+                Some(payload) => Some(mcp_success(id, mcp_resource_read_result(uri, payload))),
+                None => Some(mcp_error_with_data(
+                    id,
+                    -32602,
+                    &format!("Unknown resource URI: {uri}"),
+                    json!({
+                        "errorType": "UNKNOWN_RESOURCE",
+                        "provided": uri,
+                        "availableResources": mcp_resource_uris(),
+                        "fixHint": "Call resources/list to discover valid Cortex MCP resource URIs."
+                    }),
+                )),
+            }
+        }
 
         "tools/call" => {
             let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -3177,11 +3578,31 @@ pub async fn handle_mcp_message_with_caller(
                 .unwrap_or_default();
 
             if tool_name.is_empty() {
-                return Some(mcp_error(id, -32602, "Missing tool name"));
+                return Some(mcp_error_with_data(
+                    id,
+                    -32602,
+                    "Missing tool name",
+                    json!({
+                        "errorType": "MISSING_TOOL_NAME",
+                        "fixHint": "Call tools/list or read cortex://tooling/tools, then pass params.name exactly.",
+                        "availableToolCount": mcp_tools().len()
+                    }),
+                ));
             }
 
             if required_permission_for_tool(tool_name).is_none() {
-                return Some(mcp_error(id, -32601, &format!("Unknown tool: {tool_name}")));
+                return Some(mcp_error_with_data(
+                    id,
+                    -32601,
+                    &format!("Unknown tool: {tool_name}"),
+                    json!({
+                        "errorType": "UNKNOWN_TOOL",
+                        "provided": tool_name,
+                        "suggestions": tool_name_suggestions(tool_name),
+                        "discoveryHint": "Call tools/list for full schemas or read cortex://tooling/tools for a compact catalog.",
+                        "availableToolCount": mcp_tools().len()
+                    }),
+                ));
             }
 
             let args = params
