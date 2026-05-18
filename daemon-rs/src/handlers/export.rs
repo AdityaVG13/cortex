@@ -4,22 +4,28 @@
 //! GET  /export?format=json|sql  -- dump all active memories + decisions
 //! POST /import                  -- restore from a JSON export payload
 
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 
 use super::{ensure_auth_rated, json_response};
 use crate::api_types::{ExportFormat, ImportOptions, ImportPayload};
-use crate::export_data::{export_json_value, export_sql_text, import_payload as import_data};
+use crate::export_data::{
+    DEFAULT_EXPORT_PAGE_LIMIT, MAX_EXPORT_PAGE_LIMIT, export_json_page_value,
+    import_payload as import_data,
+};
 use crate::state::RuntimeState;
-use axum::response::IntoResponse;
 
 #[derive(Deserialize)]
 pub struct ExportQuery {
     pub format: Option<ExportFormat>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub memories_offset: Option<usize>,
+    pub decisions_offset: Option<usize>,
 }
 
 pub async fn handle_export(
@@ -34,15 +40,25 @@ pub async fn handle_export(
     let conn = state.db_read.lock().await;
 
     match query.format.unwrap_or(ExportFormat::Json) {
-        ExportFormat::Json => json_response(StatusCode::OK, export_json_value(&conn)),
-        ExportFormat::Sql => {
-            let body = export_sql_text(&conn);
-            let mut resp = (StatusCode::OK, body).into_response();
-            if let Ok(v) = "text/plain; charset=utf-8".parse() {
-                resp.headers_mut().insert("content-type", v);
-            }
-            resp
+        ExportFormat::Json => {
+            let limit = query
+                .limit
+                .unwrap_or(DEFAULT_EXPORT_PAGE_LIMIT)
+                .clamp(1, MAX_EXPORT_PAGE_LIMIT);
+            let offset = query.offset.unwrap_or(0);
+            let memories_offset = query.memories_offset.unwrap_or(offset);
+            let decisions_offset = query.decisions_offset.unwrap_or(offset);
+            json_response(
+                StatusCode::OK,
+                export_json_page_value(&conn, limit, memories_offset, decisions_offset),
+            )
         }
+        ExportFormat::Sql => json_response(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "HTTP SQL export is disabled because it requires a full in-memory export; use the CLI export command instead"
+            }),
+        ),
     }
 }
 

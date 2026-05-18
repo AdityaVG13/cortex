@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
-use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use rusqlite::{Connection, params};
+use serde_json::{Value, json};
 
 pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
+
+pub const DEFAULT_EXPORT_PAGE_LIMIT: usize = 1000;
+pub const MAX_EXPORT_PAGE_LIMIT: usize = 5000;
 
 fn normalize_memory_entry_type(raw: Option<&str>) -> String {
     let normalized = raw
@@ -50,6 +53,53 @@ pub fn export_json_value(conn: &Connection) -> Value {
     json!({
         "version": 1,
         "exported_at": now_iso(),
+        "memories": memories,
+        "decisions": decisions,
+        "memories_count": memories.len(),
+        "decisions_count": decisions.len(),
+    })
+}
+
+pub fn export_json_page_value(
+    conn: &Connection,
+    limit: usize,
+    memories_offset: usize,
+    decisions_offset: usize,
+) -> Value {
+    let limit = limit.clamp(1, MAX_EXPORT_PAGE_LIMIT);
+    let (memories, memories_has_more) = query_table_json_page(
+        conn,
+        "SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
+         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM memories WHERE status = 'active' ORDER BY id LIMIT ?1 OFFSET ?2",
+        limit,
+        memories_offset,
+    );
+    let (decisions, decisions_has_more) = query_table_json_page(
+        conn,
+        "SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
+         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active' ORDER BY id LIMIT ?1 OFFSET ?2",
+        limit,
+        decisions_offset,
+    );
+
+    json!({
+        "version": 1,
+        "mode": "page",
+        "exported_at": now_iso(),
+        "limit": limit,
+        "memories_offset": memories_offset,
+        "decisions_offset": decisions_offset,
+        "next_memories_offset": if memories_has_more {
+            Some(memories_offset.saturating_add(memories.len()))
+        } else {
+            None::<usize>
+        },
+        "next_decisions_offset": if decisions_has_more {
+            Some(decisions_offset.saturating_add(decisions.len()))
+        } else {
+            None::<usize>
+        },
+        "truncated": memories_has_more || decisions_has_more,
         "memories": memories,
         "decisions": decisions,
         "memories_count": memories.len(),
@@ -397,6 +447,61 @@ fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
     .collect()
 }
 
+fn query_table_json_page(
+    conn: &Connection,
+    sql: &str,
+    limit: usize,
+    offset: usize,
+) -> (Vec<Value>, bool) {
+    let fetch_limit = limit.saturating_add(1);
+    let mut rows = query_table_json_page_inner(conn, sql, fetch_limit, offset);
+    let has_more = rows.len() > limit;
+    if has_more {
+        rows.truncate(limit);
+    }
+    (rows, has_more)
+}
+
+fn query_table_json_page_inner(
+    conn: &Connection,
+    sql: &str,
+    limit: usize,
+    offset: usize,
+) -> Vec<Value> {
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    let column_count = stmt.column_count();
+    let column_names: Vec<String> = (0..column_count)
+        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
+        .collect();
+
+    stmt.query_map(params![limit as i64, offset as i64], |row| {
+        let mut obj = serde_json::Map::new();
+        for (i, name) in column_names.iter().enumerate() {
+            let val: Value = match row.get_ref(i) {
+                Ok(rusqlite::types::ValueRef::Null) => Value::Null,
+                Ok(rusqlite::types::ValueRef::Integer(n)) => json!(n),
+                Ok(rusqlite::types::ValueRef::Real(f)) => json!(f),
+                Ok(rusqlite::types::ValueRef::Text(s)) => {
+                    json!(std::str::from_utf8(s).unwrap_or(""))
+                }
+                Ok(rusqlite::types::ValueRef::Blob(_)) => Value::Null,
+                Err(_) => Value::Null,
+            };
+            obj.insert(name.clone(), val);
+        }
+        Ok(Value::Object(obj))
+    })
+    .ok()
+    .into_iter()
+    .flatten()
+    .filter_map(|r| r.ok())
+    .collect()
+}
+
 fn query_table_json_since(
     conn: &Connection,
     sql: &str,
@@ -584,6 +689,79 @@ mod tests {
                 .and_then(Value::as_str)
                 .is_some_and(|cursor| !cursor.trim().is_empty()),
             "changeset cursor should always be emitted"
+        );
+    }
+
+    #[test]
+    fn export_json_page_limits_rows_and_emits_next_offsets() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        crate::db::configure(&conn).expect("configure sqlite");
+        crate::db::initialize_schema(&conn).expect("initialize schema");
+        crate::db::run_pending_migrations(&conn);
+
+        for idx in 0..3 {
+            conn.execute(
+                "INSERT INTO memories (text, source, status) VALUES (?1, ?2, 'active')",
+                params![format!("memory {idx}"), format!("page::memory::{idx}")],
+            )
+            .expect("insert memory");
+        }
+        for idx in 0..2 {
+            conn.execute(
+                "INSERT INTO decisions (decision, context, status) VALUES (?1, ?2, 'active')",
+                params![format!("decision {idx}"), format!("page::decision::{idx}")],
+            )
+            .expect("insert decision");
+        }
+
+        let first_page = export_json_page_value(&conn, 2, 0, 0);
+        assert_eq!(
+            first_page
+                .get("memories")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            first_page
+                .get("decisions")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            first_page
+                .get("next_memories_offset")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            first_page
+                .get("next_decisions_offset")
+                .and_then(Value::as_u64),
+            None
+        );
+        assert_eq!(
+            first_page.get("truncated").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let second_page = export_json_page_value(&conn, 2, 2, 0);
+        let memories = second_page
+            .get("memories")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(
+            memories[0].get("source").and_then(Value::as_str),
+            Some("page::memory::2")
+        );
+        assert_eq!(
+            second_page
+                .get("next_memories_offset")
+                .and_then(Value::as_u64),
+            None
         );
     }
 
