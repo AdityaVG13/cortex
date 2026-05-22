@@ -383,6 +383,7 @@ cargo audit
 | Document | Covers |
 |----------|--------|
 | **[Connecting](Info/connecting.md)** | Setup, MCP, HTTP, auth, troubleshooting |
+| **[Architecture](ARCHITECTURE.md)** | Codebase map, entry points, data flow, config, tests |
 | **[MCP Tools](Info/mcp-tools.md)** | All 28 MCP tool definitions and parameters |
 | **[Research](Info/research.md)** | Papers, inspirations, adaptation notes |
 | **[Roadmap](Info/roadmap.md)** | What shipped, what's planned, and why |
