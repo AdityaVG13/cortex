@@ -39,7 +39,7 @@ import {
 import { buildMonteCarloProjection } from "./analytics-projection.js";
 import { summarizeBootThroughput } from "./analytics-metrics.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "./number-format.js";
-import { handleKeyboardActivation, shouldIgnoreGlobalShortcut } from "./keyboard-access.js";
+import { handleKeyboardActivation, shouldIgnoreGlobalShortcut, trapFocusInContainer } from "./keyboard-access.js";
 import {
   BUDGET_ENDPOINT_DEFINITIONS,
   createBudgetDraftFromStatus,
@@ -4124,6 +4124,12 @@ export function App() {
     }
 
     function handleDialogKey(event) {
+      if (event.key === "Tab") {
+        const dialog = showEditorSetupWizard ? editorSetupDialogRef.current : connectionDialogRef.current;
+        trapFocusInContainer(event, dialog);
+        return;
+      }
+
       if (event.key !== "Escape") {
         return;
       }

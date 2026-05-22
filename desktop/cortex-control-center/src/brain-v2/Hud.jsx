@@ -15,7 +15,7 @@ export function Hud({ hover, selected }) {
         </div>
       ) : null}
       {selected ? (
-        <div className="brain-v2-detail" role="dialog" aria-label="Selected node">
+        <div className="brain-v2-detail" role="region" aria-label="Selected brain node">
           <div className="brain-v2-detail-head">
             <span className="brain-v2-detail-tier">{tierLabel(selected.tier)}</span>
             <span className="brain-v2-detail-id">{selected.id}</span>
@@ -45,7 +45,7 @@ export function Hud({ hover, selected }) {
               <span className="brain-v2-detail-val">{Math.round(selected.orbitRadius || 0)}u</span>
             </div>
           </div>
-          <div className="brain-v2-detail-footer">right-click to deselect</div>
+          <div className="brain-v2-detail-footer">Press Escape or right-click to deselect</div>
         </div>
       ) : null}
     </>

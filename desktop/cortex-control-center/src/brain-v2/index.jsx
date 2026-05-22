@@ -10,6 +10,7 @@ import { createEventDispatcher } from "./EventDispatcher.js";
 import { createHover } from "./Hover.js";
 import { createCamera } from "./Camera.js";
 import { Hud } from "./Hud.jsx";
+import { brainKeyboardHelpText, isBrainNavigationKey, nextBrainNodeIndex } from "./Keyboard.js";
 
 const TICKER_MAX = 5;
 
@@ -40,6 +41,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
   const [error, setError] = useState(null);
   const [hoverSlot, setHoverSlot] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
+  const [keyboardSlotIndex, setKeyboardSlotIndex] = useState(-1);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -246,7 +248,14 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     for (const c of tiers.clusters || []) flat.push(c);
     for (const m of tiers.looseMemories || []) flat.push(m);
     slotsAccessor.current = flat;
+    setKeyboardSlotIndex((current) => (current >= flat.length ? (flat.length ? flat.length - 1 : -1) : current));
   }, [tiers]);
+
+  function selectSlot(slot) {
+    satellitesRef.current?.setSelected(slot?.id || null);
+    setSelectedSlot(slot || null);
+    selectedSlotRef.current = slot || null;
+  }
 
   function handlePointerMove(e) {
     if (!hoverRef.current || !containerRef.current) return;
@@ -266,33 +275,70 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     hoverRef.current.tick();
     const slot = hoveredSlotRef.current;
     if (!slot) {
-      satellitesRef.current.setSelected(null);
-      setSelectedSlot(null);
-      selectedSlotRef.current = null;
+      selectSlot(null);
+      setKeyboardSlotIndex(-1);
       return;
     }
     if (selectedSlotRef.current?.id === slot.id) {
-      satellitesRef.current.setSelected(null);
-      setSelectedSlot(null);
-      selectedSlotRef.current = null;
+      selectSlot(null);
+      setKeyboardSlotIndex(-1);
       return;
     }
-    satellitesRef.current.setSelected(slot.id);
-    setSelectedSlot(slot);
-    selectedSlotRef.current = slot;
+    const index = (slotsAccessor.current || []).findIndex((candidate) => candidate?.id === slot.id);
+    setKeyboardSlotIndex(index);
+    selectSlot(slot);
   }
 
   function handleContextMenu(e) {
     e.preventDefault();
-    satellitesRef.current?.setSelected(null);
-    setSelectedSlot(null);
-    selectedSlotRef.current = null;
+    selectSlot(null);
+    setKeyboardSlotIndex(-1);
   }
+
+  function handleKeyDown(e) {
+    if (!isBrainNavigationKey(e.key)) return;
+
+    const nodes = slotsAccessor.current || [];
+    if (!nodes.length) return;
+    e.preventDefault();
+
+    if (e.key === "Escape") {
+      hoveredSlotRef.current = null;
+      setHoverSlot(null);
+      selectSlot(null);
+      setKeyboardSlotIndex(-1);
+      return;
+    }
+
+    const nextIndex = nextBrainNodeIndex({
+      key: e.key,
+      currentIndex: keyboardSlotIndex,
+      selectedId: selectedSlotRef.current?.id,
+      nodes,
+    });
+    if (nextIndex < 0) return;
+
+    const slot = nodes[nextIndex];
+    hoveredSlotRef.current = slot;
+    setHoverSlot(slot);
+    setKeyboardSlotIndex(nextIndex);
+    selectSlot(slot);
+  }
+
+  const brainNodeCount = (tiers.decisions?.length || 0) + (tiers.clusters?.length || 0) + (tiers.looseMemories?.length || 0);
+  const brainHelpId = "brain-v2-keyboard-help";
+  const selectedAnnouncement = selectedSlot
+    ? `Selected ${selectedSlot.label || selectedSlot.id}.`
+    : brainKeyboardHelpText(brainNodeCount);
 
   return (
     <div
       ref={containerRef}
       className="brain-v2-container"
+      role="region"
+      tabIndex={0}
+      aria-label={`Cortex Brain Map with ${brainNodeCount} nodes`}
+      aria-describedby={brainHelpId}
       style={{
         position: "relative",
         width: dimensions.width,
@@ -304,7 +350,10 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       onPointerLeave={handlePointerLeave}
       onClick={handleClick}
       onContextMenu={handleContextMenu}
+      onKeyDown={handleKeyDown}
     >
+      <p id={brainHelpId} className="sr-only">{brainKeyboardHelpText(brainNodeCount)}</p>
+      <p className="sr-only" aria-live="polite">{selectedAnnouncement}</p>
       {error ? (
         <div className="brain-v2-error">
           {error}
