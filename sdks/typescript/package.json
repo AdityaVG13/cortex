@@ -11,9 +11,11 @@
     "clean": "rm -rf dist",
     "test": "npm run build && node --test ./test/*.test.mjs"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "devDependencies": {
-    "@types/node": "^20.19.0",
-    "typescript": "^5.4"
+    "@types/node": "25.8.0",
+    "typescript": "6.0.3"
   }
 }
