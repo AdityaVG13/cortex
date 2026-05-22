@@ -694,6 +694,9 @@ pub fn pq8_blob_to_vector(blob: &[u8]) -> Option<Vec<f32>> {
         return None;
     }
     let scale = f32::from_le_bytes([blob[2], blob[3], blob[4], blob[5]]);
+    if !scale.is_finite() || scale < 0.0 {
+        return None;
+    }
     let body = &blob[PQ8_HEADER_BYTES..];
     let mut out = Vec::with_capacity(body.len());
     if scale == 0.0 {
@@ -1161,6 +1164,56 @@ mod tests {
         let mut bad = vector_to_pq8_blob(&[0.1, 0.2, 0.3]);
         bad[1] = 0xFF;
         assert!(pq8_blob_to_vector(&bad).is_none());
+    }
+
+    #[test]
+    fn pq8_decodes_fail_on_malformed_scale() {
+        for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+            let mut bad = vec![PQ8_MAGIC_BYTE, PQ8_FORMAT_VERSION];
+            bad.extend_from_slice(&scale.to_le_bytes());
+            bad.extend_from_slice(&[1, 2, 3, 4]);
+            assert!(
+                pq8_blob_to_vector(&bad).is_none(),
+                "scale {scale:?} should not decode as a valid PQ8 blob"
+            );
+        }
+    }
+
+    #[test]
+    fn pq8_decoder_fuzz_corpus_never_emits_non_finite_values() {
+        let mut corpus = vec![
+            Vec::new(),
+            vec![PQ8_MAGIC_BYTE],
+            vec![PQ8_MAGIC_BYTE, PQ8_FORMAT_VERSION],
+            vector_to_pq8_blob(&[]),
+            vector_to_pq8_blob(&[0.0, 1.0, -1.0, f32::NAN, f32::INFINITY]),
+        ];
+
+        let mut state = 0xC0DE_F00D_DEAD_BEEFu64;
+        for len in 0..96 {
+            let mut blob = Vec::with_capacity(len);
+            for _ in 0..len {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                blob.push((state >> 32) as u8);
+            }
+            if len >= PQ8_HEADER_BYTES && len % 7 == 0 {
+                blob[0] = PQ8_MAGIC_BYTE;
+                blob[1] = PQ8_FORMAT_VERSION;
+            }
+            corpus.push(blob);
+        }
+
+        for blob in corpus {
+            if let Some(decoded) = pq8_blob_to_vector(&blob) {
+                assert_eq!(decoded.len(), blob.len() - PQ8_HEADER_BYTES);
+                assert!(
+                    decoded.iter().all(|value| value.is_finite()),
+                    "valid PQ8 decode must not emit NaN/inf for blob {blob:?}"
+                );
+            }
+        }
     }
 
     #[test]
