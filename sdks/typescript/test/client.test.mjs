@@ -118,6 +118,21 @@ test("remote baseUrl requires explicit token", () => {
   );
 });
 
+test("baseUrl rejects embedded credentials and unsupported schemes", () => {
+  assert.throws(
+    () => new CortexClient({ baseUrl: "https://user:pass@team.example.com", token: "ctx_remote_token" }),
+    /embedded credentials/i
+  );
+  assert.throws(
+    () => new CortexClient({ baseUrl: "file:///tmp/cortex.sock", token: "ctx_file_token" }),
+    /unsupported cortex baseurl scheme/i
+  );
+});
+
+test("ipv6 loopback baseUrl is treated as local", () => {
+  assert.doesNotThrow(() => new CortexClient({ baseUrl: "http://[::1]:7437" }));
+});
+
 test("formatRecallContext keeps memory text and appends compact metrics", () => {
   const client = new CortexClient({
     baseUrl: "http://127.0.0.1:7437",
