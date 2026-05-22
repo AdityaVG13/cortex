@@ -170,6 +170,42 @@ fn resolve_ipc_endpoint(home: &std::path::Path, port: u16) -> Option<String> {
     Some(socket.display().to_string())
 }
 
+#[cfg(unix)]
+pub(crate) fn restrict_file_to_owner(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict_file_to_owner(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+pub(crate) fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents)?;
+        file.flush()?;
+        restrict_file_to_owner(path)?;
+        return Ok(());
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Legacy migration
 // ---------------------------------------------------------------------------
@@ -308,7 +344,7 @@ pub fn generate_token_for(paths: &CortexPaths) -> String {
             paths.token.parent().unwrap_or(&paths.home).display()
         );
     }
-    if let Err(e) = fs::write(&paths.token, &token) {
+    if let Err(e) = write_secret_file(&paths.token, token.as_bytes()) {
         eprintln!("[cortex] WARNING: cannot write token: {e}");
     }
     token
@@ -587,6 +623,29 @@ mod tests {
         assert_eq!(paths.token, home_dir.join("cortex.token"));
         assert!(paths.token.exists());
         assert_eq!(paths.bind, "127.0.0.1");
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_token_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home_dir = temp_test_dir("token_permissions");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(54967),
+            Some("127.0.0.1"),
+        );
+
+        let _ = generate_token_for(&paths);
+
+        let mode = fs::metadata(&paths.token).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
 
         let _ = fs::remove_dir_all(&home_dir);
     }

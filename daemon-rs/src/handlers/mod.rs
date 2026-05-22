@@ -155,7 +155,7 @@ pub fn ensure_auth_with_caller(
         }
     };
 
-    let caller = if candidate == state.token.as_str() {
+    let caller = if constant_time_eq(&candidate, state.token.as_str()) {
         None
     } else if state.team_mode && is_well_formed_ctx_api_key(&candidate) {
         let hashes = match state.team_api_key_hashes.read() {
@@ -252,8 +252,23 @@ pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
         .map(|(user_id, _)| *user_id)
 }
 
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut diff = a.len() ^ b.len();
+    let max_len = a.len().max(b.len());
+
+    for idx in 0..max_len {
+        let left = a.get(idx).copied().unwrap_or(0);
+        let right = b.get(idx).copied().unwrap_or(0);
+        diff |= usize::from(left ^ right);
+    }
+
+    diff == 0
+}
+
 fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
-    if candidate == state.token.as_str() {
+    if constant_time_eq(candidate, state.token.as_str()) {
         return true;
     }
     if !state.team_mode {
@@ -1497,6 +1512,14 @@ mod tests {
             HeaderValue::from_static("Bearer ctx_token"),
         );
         assert!(extract_auth_token(&alias_headers).is_none());
+    }
+
+    #[test]
+    fn constant_time_eq_matches_only_identical_strings() {
+        assert!(constant_time_eq("cortex-token", "cortex-token"));
+        assert!(!constant_time_eq("cortex-token", "cortex-tokeN"));
+        assert!(!constant_time_eq("cortex-token", "cortex-token-extra"));
+        assert!(!constant_time_eq("cortex-token-extra", "cortex-token"));
     }
 
     #[test]

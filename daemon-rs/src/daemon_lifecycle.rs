@@ -52,6 +52,8 @@ fn load_or_create_owner_signing_key(paths: &CortexPaths) -> Result<Vec<u8>, Stri
         .truncate(false)
         .open(&key_path)
         .map_err(|e| format!("open daemon owner signing key: {e}"))?;
+    crate::auth::restrict_file_to_owner(&key_path)
+        .map_err(|e| format!("restrict daemon owner signing key permissions: {e}"))?;
     file.lock_exclusive()
         .map_err(|e| format!("lock daemon owner signing key: {e}"))?;
 
@@ -636,6 +638,32 @@ mod tests {
             issue_owner_token_for_spawn(&paths, "plugin-claude", 4242).expect("issue owner token");
         validate_spawned_owner_claim(&paths, Some("plugin-claude"), Some(4242), Some(&token))
             .expect("validate owner token");
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owner_signing_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home_dir = temp_test_dir("owner_key_permissions");
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(7437),
+            Some("127.0.0.1"),
+        );
+
+        let _ = load_or_create_owner_signing_key(&paths).expect("load owner signing key");
+
+        let mode = std::fs::metadata(daemon_owner_signing_key_path(&paths))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
         let _ = std::fs::remove_dir_all(&home_dir);
     }
 

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 use crate::budgets::BudgetEndpoint;
 use crate::handlers;
-use crate::handlers::ensure_auth;
 use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
 use axum::body::Bytes;
@@ -279,7 +278,7 @@ async fn handle_mcp_rpc(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
-    let caller_id = match handlers::ensure_auth_with_caller(&headers, &state) {
+    let caller_id = match handlers::ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => {
             let (message, hint) = match resp.status() {
@@ -360,7 +359,7 @@ async fn handle_compact(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db.lock().await;
@@ -390,7 +389,7 @@ async fn handle_compact_benchmark(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db.lock().await;
@@ -416,7 +415,7 @@ async fn handle_storage(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
@@ -449,7 +448,7 @@ async fn handle_crystals(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
@@ -464,7 +463,7 @@ async fn handle_crystallize(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db.lock().await;
@@ -499,7 +498,7 @@ async fn handle_focus_start(
     headers: HeaderMap,
     Json(body): Json<FocusRequest>,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let label = match &body.label {
@@ -524,7 +523,7 @@ async fn handle_focus_end(
     headers: HeaderMap,
     Json(body): Json<FocusRequest>,
 ) -> axum::response::Response {
-    if let Err(resp) = ensure_auth(&headers, &state) {
+    if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let label = match &body.label {
@@ -1264,6 +1263,41 @@ window_seconds = 60
         assert_eq!(payload["jsonrpc"], "2.0");
         assert_eq!(payload["error"]["message"], "Unauthorized");
         assert_eq!(payload["id"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn mcp_rpc_auth_failures_are_rate_limited_for_remote_callers() {
+        let state = build_state(false).await;
+        let router = build_router(state, 7437);
+        let remote: std::net::SocketAddr = "10.10.10.10:43210".parse().unwrap();
+
+        for _ in 0..10 {
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri("/mcp-rpc")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer wrong-token")
+                .header("x-cortex-request", "true")
+                .extension(ConnectInfo(remote))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
+                .unwrap();
+
+            let resp = router.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp-rpc")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer wrong-token")
+            .header("x-cortex-request", "true")
+            .extension(ConnectInfo(remote))
+            .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
+            .unwrap();
+
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
