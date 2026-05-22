@@ -2567,6 +2567,14 @@ fn run_sync_cli(paths: &auth::CortexPaths, args: &[String]) {
         std::process::exit(1);
     };
 
+    let _sync_lock = match acquire_sync_lock(paths) {
+        Ok(lock) => lock,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+
     match command {
         "export" => run_sync_export_cli(paths, &args[1..]),
         "import" => run_sync_import_cli(paths, &args[1..]),
@@ -2779,7 +2787,7 @@ fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
         std::process::exit(1);
     };
 
-    let conn = match open_cli_connection(&paths.db) {
+    let mut conn = match open_cli_connection(&paths.db) {
         Ok(conn) => conn,
         Err(err) => {
             eprintln!("{err}");
@@ -2787,17 +2795,17 @@ fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
     };
 
-    let output = match export_format {
-        export_data::ExportFormat::Json => {
-            let value = export_data::export_json_value(&conn);
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+    let output = match export_snapshot_text(&mut conn, export_format) {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
         }
-        export_data::ExportFormat::Sql => export_data::export_sql_text(&conn),
     };
 
     if let Some(path) = out_path {
-        if let Err(e) = std::fs::write(&path, output) {
-            eprintln!("Failed to write export file {path}: {e}");
+        if let Err(e) = write_atomic_text_file(Path::new(&path), &output) {
+            eprintln!("{e}");
             std::process::exit(1);
         }
         eprintln!("Exported to {path}");
@@ -2820,7 +2828,7 @@ fn run_sync_export_cli(paths: &auth::CortexPaths, args: &[String]) {
 
     let cursor_file = parse_flag_value(args, "--cursor-file").map(PathBuf::from);
     let since = resolve_sync_since(since_override.as_deref(), cursor_file.as_deref());
-    let conn = match open_cli_connection(&paths.db) {
+    let mut conn = match open_cli_connection(&paths.db) {
         Ok(conn) => conn,
         Err(err) => {
             eprintln!("{err}");
@@ -2828,12 +2836,18 @@ fn run_sync_export_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
     };
 
-    let value = export_data::export_json_changeset_value(&conn, since.as_deref());
+    let value = match export_changeset_snapshot_value(&mut conn, since.as_deref()) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
     let output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
 
     if let Some(path) = out_path {
-        if let Err(e) = std::fs::write(&path, output) {
-            eprintln!("Failed to write sync export file {path}: {e}");
+        if let Err(e) = write_atomic_text_file(Path::new(&path), &output) {
+            eprintln!("{e}");
             std::process::exit(1);
         }
         eprintln!("Sync export written to {path}");
@@ -3027,14 +3041,20 @@ fn run_sync_watch_cli(paths: &auth::CortexPaths, args: &[String]) {
         }
 
         let since = read_sync_cursor_file(&cursor_file).or_else(|| bootstrap_since.take());
-        let conn = match open_cli_connection(&paths.db) {
+        let mut conn = match open_cli_connection(&paths.db) {
             Ok(conn) => conn,
             Err(err) => {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
         };
-        let changeset = export_data::export_json_changeset_value(&conn, since.as_deref());
+        let changeset = match export_changeset_snapshot_value(&mut conn, since.as_deref()) {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        };
         let memories_count = changeset
             .get("memories_count")
             .and_then(serde_json::Value::as_u64)
@@ -3053,11 +3073,8 @@ fn run_sync_watch_cli(paths: &auth::CortexPaths, args: &[String]) {
             let out_path = watch_dir.join(filename);
             let output =
                 serde_json::to_string_pretty(&changeset).unwrap_or_else(|_| "{}".to_string());
-            if let Err(err) = std::fs::write(&out_path, output) {
-                eprintln!(
-                    "Failed to write sync watch export {}: {err}",
-                    out_path.display()
-                );
+            if let Err(err) = write_atomic_text_file(&out_path, &output) {
+                eprintln!("{err}");
                 std::process::exit(1);
             }
             eprintln!(
@@ -3232,15 +3249,7 @@ fn read_sync_cursor_file(path: &Path) -> Option<String> {
 }
 
 fn write_sync_cursor_file(path: &Path, cursor: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "Failed to prepare cursor directory {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::write(path, format!("{cursor}\n"))
+    write_atomic_text_file(path, &format!("{cursor}\n"))
         .map_err(|e| format!("Failed to write cursor file {}: {e}", path.display()))
 }
 
@@ -3262,7 +3271,7 @@ fn ensure_sync_site_id(paths: &auth::CortexPaths) -> Result<String, String> {
         })?;
     }
     let created = uuid::Uuid::new_v4().to_string();
-    std::fs::write(&site_id_path, format!("{created}\n")).map_err(|e| {
+    write_atomic_text_file(&site_id_path, &format!("{created}\n")).map_err(|e| {
         format!(
             "Failed to persist sync site-id {}: {e}",
             site_id_path.display()
@@ -3337,18 +3346,104 @@ fn load_sync_seen_set(path: &Path) -> Result<HashSet<String>, String> {
 }
 
 fn write_sync_seen_set(path: &Path, seen: &HashSet<String>) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "Failed to create sync watch state directory {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
     let mut rows: Vec<&str> = seen.iter().map(String::as_str).collect();
     rows.sort_unstable();
-    std::fs::write(path, rows.join("\n"))
+    write_atomic_text_file(path, &rows.join("\n"))
         .map_err(|e| format!("Failed to write sync watch state {}: {e}", path.display()))
+}
+
+fn acquire_sync_lock(paths: &auth::CortexPaths) -> Result<std::fs::File, String> {
+    let lock_path = paths.home.join("sync.lock");
+    std::fs::create_dir_all(&paths.home).map_err(|e| {
+        format!(
+            "Failed to create sync lock directory {}: {e}",
+            paths.home.display()
+        )
+    })?;
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("Failed to open sync lock {}: {e}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|e| format!("Failed to acquire sync lock {}: {e}", lock_path.display()))?;
+    Ok(lock_file)
+}
+
+fn export_snapshot_text(
+    conn: &mut rusqlite::Connection,
+    format: export_data::ExportFormat,
+) -> Result<String, String> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to start export snapshot transaction: {e}"))?;
+    let output = match format {
+        export_data::ExportFormat::Json => {
+            let value = export_data::export_json_value(&tx);
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+        }
+        export_data::ExportFormat::Sql => export_data::export_sql_text(&tx),
+    };
+    tx.commit()
+        .map_err(|e| format!("Failed to finish export snapshot transaction: {e}"))?;
+    Ok(output)
+}
+
+fn export_changeset_snapshot_value(
+    conn: &mut rusqlite::Connection,
+    since: Option<&str>,
+) -> Result<Value, String> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to start sync export snapshot transaction: {e}"))?;
+    let value = export_data::export_json_changeset_value(&tx, since);
+    tx.commit()
+        .map_err(|e| format!("Failed to finish sync export snapshot transaction: {e}"))?;
+    Ok(value)
+}
+
+fn write_atomic_text_file(path: &Path, contents: &str) -> Result<(), String> {
+    let parent = writable_parent_dir(path)?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("Failed to create temp file in {}: {e}", parent.display()))?;
+    tmp.write_all(contents.as_bytes())
+        .map_err(|e| format!("Failed to write temp file for {}: {e}", path.display()))?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to flush temp file for {}: {e}", path.display()))?;
+    tmp.persist(path).map_err(|e| {
+        format!(
+            "Failed to replace {} atomically: {}",
+            path.display(),
+            e.error
+        )
+    })?;
+    sync_parent_dir(parent)
+        .map_err(|e| format!("Failed to flush directory {}: {e}", parent.display()))?;
+    Ok(())
+}
+
+fn writable_parent_dir(path: &Path) -> Result<&Path, String> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => Ok(parent),
+        _ => Ok(Path::new(".")),
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) -> std::io::Result<()> {
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -6457,6 +6552,20 @@ mod tests {
             resolve_sync_since(None, Some(&cursor_file)),
             Some("2026-04-20T00:00:00Z".to_string())
         );
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn atomic_text_write_replaces_existing_file() {
+        let home_dir = temp_test_dir("atomic_text_write");
+        fs::create_dir_all(&home_dir).expect("create temp home");
+        let path = home_dir.join("changeset.json");
+
+        write_atomic_text_file(&path, "{\"old\":true}\n").expect("write initial file");
+        write_atomic_text_file(&path, "{\"new\":true}\n").expect("replace file");
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"new\":true}\n");
 
         let _ = std::fs::remove_dir_all(&home_dir);
     }

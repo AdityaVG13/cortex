@@ -683,12 +683,35 @@ fn persist_write_buffer(
     buffer_path: &std::path::Path,
     remaining: &[String],
 ) -> Result<(), std::io::Error> {
-    use std::io::Write;
+    use std::io::{BufWriter, Write};
 
-    let mut file = std::fs::File::create(buffer_path)?;
-    for line in remaining {
-        writeln!(file, "{line}")?;
+    let parent = buffer_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    {
+        let mut writer = BufWriter::new(tmp.as_file_mut());
+        for line in remaining {
+            writeln!(writer, "{line}")?;
+        }
+        writer.flush()?;
     }
+    tmp.as_file().sync_all()?;
+    tmp.persist(buffer_path).map_err(|err| err.error)?;
+    sync_parent_dir(parent)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_dir(parent: &std::path::Path) -> std::io::Result<()> {
+    std::fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -1540,6 +1563,27 @@ mod tests {
         persist_write_buffer(&buffer_path, &[]).unwrap();
 
         assert_eq!(fs::read_to_string(&buffer_path).unwrap(), "");
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn persist_write_buffer_replaces_with_remaining_entries() {
+        let home_dir = temp_test_dir("write_buffer_remaining");
+        fs::create_dir_all(&home_dir).unwrap();
+        let buffer_path = home_dir.join("write_buffer.jsonl");
+        fs::write(&buffer_path, "{\"old\":true}\n").unwrap();
+
+        persist_write_buffer(
+            &buffer_path,
+            &["{\"id\":1}".to_string(), "{\"id\":2}".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&buffer_path).unwrap(),
+            "{\"id\":1}\n{\"id\":2}\n"
+        );
 
         let _ = fs::remove_dir_all(&home_dir);
     }
