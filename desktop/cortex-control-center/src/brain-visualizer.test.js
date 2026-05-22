@@ -12,6 +12,7 @@ const satellites = readFileSync(new URL("./brain-v2/Satellites.js", import.meta.
 const palette = readFileSync(new URL("./brain-v2/ClusterPalette.js", import.meta.url), "utf8");
 const fnv1a = readFileSync(new URL("./brain-v2/util/fnv1a.js", import.meta.url), "utf8");
 const keyboard = readFileSync(new URL("./brain-v2/Keyboard.js", import.meta.url), "utf8");
+const quality = readFileSync(new URL("./brain-v2/Quality.js", import.meta.url), "utf8");
 
 describe("Brain v2 wrapper", () => {
   it("v1 force-graph and brain/* modules are gone", () => {
@@ -29,6 +30,7 @@ describe("Brain v2 wrapper", () => {
     expect(wrapper).toContain("hasWebGLSupport");
     expect(wrapper).toContain("GraphErrorBoundary");
     expect(wrapper).toContain("<BrainV2");
+    expect(wrapper).toContain("reducedMotion={reducedMotion}");
   });
 });
 
@@ -90,6 +92,7 @@ describe("Brain v2 scene scaffolding", () => {
     expect(satellites).toContain("export function createSatellites");
     expect(satellites).toContain("InstancedMesh");
     expect(satellites).toContain("AdditiveBlending");
+    expect(satellites).toContain("slotBudget");
     expect(satellites).toContain("setData");
     expect(satellites).toContain("pulseSlot");
     expect(satellites).toContain("setSelected");
@@ -191,7 +194,7 @@ describe("Brain v2 firing pipeline (P5)", () => {
     expect(v2Index).toContain("createFiringClient");
     expect(v2Index).toContain("createIdleSimulator");
     expect(v2Index).toContain("createEventDispatcher");
-    expect(v2Index).toContain("idleSim.noteRealEvent()");
+    expect(v2Index).toContain("idleSim?.noteRealEvent()");
     expect(v2Index).toContain("dispatcher.dispatch(event)");
   });
 });
@@ -255,6 +258,20 @@ describe("Brain v2 interaction (P6)", () => {
     expect(v2Index).not.toContain("cameraHandleRef.current.spotlight(slot)");
     expect(v2Index).toContain("e.preventDefault()");
     expect(v2Index).toContain("onContextMenu={handleContextMenu}");
+  });
+
+  it("BrainV2 supports reduced motion and device quality tiers", () => {
+    expect(v2Index).toContain("reducedMotion = false");
+    expect(v2Index).toContain("detectBrainQualityTier");
+    expect(v2Index).toContain("brainBudgetForQuality");
+    expect(v2Index).toContain("animated: !reducedMotion");
+    expect(v2Index).toContain("pixelRatio: quality.pixelRatio");
+    expect(v2Index).toContain("hitRadiusScale: quality.hitRadiusScale");
+    expect(v2Index).toContain("quality.idleFiring");
+    expect(v2Index).toContain("idleSim?.noteRealEvent()");
+    expect(scene).toContain("requestFrame");
+    expect(quality).toContain("BRAIN_QUALITY_BUDGETS");
+    expect(quality).toContain("(hover: hover) and (pointer: fine)");
   });
 
   it("Brain map keyboard helper exposes arrow, Home/End, and Escape behaviors", () => {
