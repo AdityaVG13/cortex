@@ -57,7 +57,9 @@ fn parse_args(args: &[String]) -> Result<PromptInjectConfig, String> {
             "--watch" | "-w" => {
                 watch = true;
             }
-            _ => {}
+            other => {
+                return Err(format!("{USAGE}\nUnknown option: {other}"));
+            }
         }
         i += 1;
     }
@@ -85,6 +87,14 @@ fn output_path_for(file_path: &Path) -> PathBuf {
 }
 
 pub async fn run(args: &[String]) {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "help"))
+    {
+        println!("{USAGE}");
+        return;
+    }
+
     let config = match parse_args(args) {
         Ok(config) => config,
         Err(usage) => {
@@ -280,6 +290,20 @@ mod tests {
         ];
         let err = parse_args(&args).expect_err("invalid budget should error");
         assert!(err.contains("Invalid --budget"));
+    }
+
+    #[test]
+    fn parse_args_rejects_unknown_flags() {
+        let args = vec![
+            "--file".to_string(),
+            "prompt.txt".to_string(),
+            "--budegt".to_string(),
+            "512".to_string(),
+        ];
+
+        let err = parse_args(&args).expect_err("unknown flag should error");
+        assert!(err.contains("Unknown option: --budegt"));
+        assert!(err.contains(USAGE));
     }
 
     #[test]
