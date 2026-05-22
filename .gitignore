@@ -15,6 +15,7 @@ write_buffer.jsonl
 # Logs
 logs/
 *.log
+*.actual
 
 # Build outputs
 dist/
