@@ -28,16 +28,17 @@ fn ensure_sqlite_vec_registered() -> Result<(), String> {
         .get_or_init(|| {
             type SqliteVecEntryPoint = unsafe extern "C" fn(
                 *mut rusqlite::ffi::sqlite3,
-                *mut *mut i8,
+                *mut *mut std::os::raw::c_char,
                 *const rusqlite::ffi::sqlite3_api_routines,
-            ) -> i32;
+            ) -> std::os::raw::c_int;
+            type UntypedSqliteVecEntryPoint = unsafe extern "C" fn();
             // SAFETY: `sqlite-vec` exposes `sqlite3_vec_init` as an untyped
             // C symbol, but SQLite's auto-extension API requires this exact
             // entry-point ABI. The symbol is statically linked and lives for
             // the process lifetime.
             let init = unsafe {
-                std::mem::transmute::<*const (), SqliteVecEntryPoint>(
-                    sqlite_vec::sqlite3_vec_init as *const (),
+                std::mem::transmute::<UntypedSqliteVecEntryPoint, SqliteVecEntryPoint>(
+                    sqlite_vec::sqlite3_vec_init,
                 )
             };
             // SAFETY: `init` points to `sqlite3_vec_init` with SQLite's
