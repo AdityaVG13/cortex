@@ -38,7 +38,13 @@ function hasWebGLSupport() {
   }
 }
 
-function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
+function BrainVisualizerComponent({
+  api = null,
+  cortexBase = "http://127.0.0.1:7437",
+  authToken = "",
+  active = true,
+  reducedMotion = false,
+}) {
   const [webglAvailable] = useState(() => hasWebGLSupport());
 
   if (!webglAvailable) {
@@ -65,7 +71,13 @@ function BrainVisualizerComponent({ api = null, cortexBase = "http://127.0.0.1:7
         </div>
       </div>
       <GraphErrorBoundary>
-        <BrainV2 api={api} cortexBase={cortexBase} authToken={authToken} active={active} />
+        <BrainV2
+          api={api}
+          cortexBase={cortexBase}
+          authToken={authToken}
+          active={active}
+          reducedMotion={reducedMotion}
+        />
       </GraphErrorBoundary>
     </div>
   );

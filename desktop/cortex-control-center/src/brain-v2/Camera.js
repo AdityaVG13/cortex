@@ -6,7 +6,7 @@ const AUTO_RESUME_MS = 8_000;
 const SPOTLIGHT_DURATION_MS = 1_200;
 const RETURN_DURATION_MS = 900;
 
-export function createCamera({ camera, controls }) {
+export function createCamera({ camera, controls, autoRotate = true }) {
   let lastInteractionAt = 0;
   let prevTime = performance.now();
   let easeActive = false;
@@ -26,28 +26,40 @@ export function createCamera({ camera, controls }) {
 
   function spotlight(satelliteWorldPos) {
     if (!satelliteWorldPos) return;
-    easeActive = true;
-    easeStart = performance.now();
-    easeDuration = SPOTLIGHT_DURATION_MS;
-    cameraStart.copy(camera.position);
-    targetStart.copy(controls.target);
     // Look at the satellite without changing camera→target distance.
     // Camera shifts only by the same delta the target shifts by, so the
     // viewing distance stays constant across repeated clicks.
     targetEnd.set(satelliteWorldPos.x, satelliteWorldPos.y, satelliteWorldPos.z);
     _offset.copy(camera.position).sub(controls.target);
     cameraEnd.copy(targetEnd).add(_offset);
+    if (!autoRotate) {
+      camera.position.copy(cameraEnd);
+      controls.target.copy(targetEnd);
+      camera.lookAt(controls.target);
+      return;
+    }
+    easeActive = true;
+    easeStart = performance.now();
+    easeDuration = SPOTLIGHT_DURATION_MS;
+    cameraStart.copy(camera.position);
+    targetStart.copy(controls.target);
   }
 
   function returnToOrigin() {
+    targetEnd.set(0, 0, 0);
+    _offset.copy(camera.position).sub(controls.target);
+    cameraEnd.copy(targetEnd).add(_offset);
+    if (!autoRotate) {
+      camera.position.copy(cameraEnd);
+      controls.target.copy(targetEnd);
+      camera.lookAt(controls.target);
+      return;
+    }
     easeActive = true;
     easeStart = performance.now();
     easeDuration = RETURN_DURATION_MS;
     cameraStart.copy(camera.position);
     targetStart.copy(controls.target);
-    targetEnd.set(0, 0, 0);
-    _offset.copy(camera.position).sub(controls.target);
-    cameraEnd.copy(targetEnd).add(_offset);
   }
 
   function tick(now = performance.now()) {
@@ -73,7 +85,7 @@ export function createCamera({ camera, controls }) {
     }
 
     const idle = now - lastInteractionAt;
-    if (idle >= AUTO_RESUME_MS) {
+    if (autoRotate && idle >= AUTO_RESUME_MS) {
       const angle = AUTO_ROTATE_RATE * dt;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);

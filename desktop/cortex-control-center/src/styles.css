@@ -5193,3 +5193,45 @@ kbd {
   font-size: 11px;
   z-index: 6;
 }
+
+@media (max-width: 720px) {
+  .brain-v2-hud-strip {
+    left: 12px;
+    right: 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 10px;
+  }
+
+  .brain-v2-ticker {
+    right: 12px;
+    max-width: calc(100% - 24px);
+  }
+
+  .brain-v2-tooltip {
+    top: auto;
+    bottom: 96px;
+    left: 12px;
+    right: 12px;
+    transform: none;
+    max-width: none;
+  }
+
+  .brain-v2-tooltip-label {
+    white-space: normal;
+  }
+
+  .brain-v2-detail {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-height: min(58%, 360px);
+    transform: none;
+    border-right: none;
+    border-bottom: none;
+    border-left: none;
+    border-radius: 8px 8px 0 0;
+  }
+}

@@ -45,7 +45,7 @@ export function Hud({ hover, selected }) {
               <span className="brain-v2-detail-val">{Math.round(selected.orbitRadius || 0)}u</span>
             </div>
           </div>
-          <div className="brain-v2-detail-footer">Press Escape or right-click to deselect</div>
+          <div className="brain-v2-detail-footer">Press Escape or tap empty space to deselect</div>
         </div>
       ) : null}
     </>

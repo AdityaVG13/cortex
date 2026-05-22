@@ -11,10 +11,17 @@ import { createHover } from "./Hover.js";
 import { createCamera } from "./Camera.js";
 import { Hud } from "./Hud.jsx";
 import { brainKeyboardHelpText, isBrainNavigationKey, nextBrainNodeIndex } from "./Keyboard.js";
+import { brainBudgetForQuality, detectBrainQualityTier } from "./Quality.js";
 
 const TICKER_MAX = 5;
 
-export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", authToken = "", active = true }) {
+export function BrainV2({
+  api = null,
+  cortexBase = "http://127.0.0.1:7437",
+  authToken = "",
+  active = true,
+  reducedMotion = false,
+}) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null);
   const coreRef = useRef(null);
@@ -33,6 +40,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
   const lastStatsAtRef = useRef(0);
   const tickerRef = useRef(null);
   const tickerEntriesRef = useRef([]);
+  const [quality] = useState(() => detectBrainQualityTier());
   const [dimensions, setDimensions] = useState({
     width: Math.max(window.innerWidth - 260, 400),
     height: Math.max(window.innerHeight - 20, 300),
@@ -61,6 +69,8 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       container: containerRef.current,
       width: dimensions.width,
       height: dimensions.height,
+      animated: !reducedMotion,
+      pixelRatio: quality.pixelRatio,
     });
     sceneRef.current = sceneHandle;
     sceneHandle.scene._camera = sceneHandle.camera;
@@ -69,7 +79,10 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     coreRef.current = core;
     sceneHandle.scene.add(core);
 
-    const satellites = createSatellites({ scene: sceneHandle.scene });
+    const satellites = createSatellites({
+      scene: sceneHandle.scene,
+      slotBudget: quality.nodeBudget.total,
+    });
     satellitesRef.current = satellites;
 
     const beams = createBeams({ scene: sceneHandle.scene });
@@ -78,6 +91,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     const cameraHandle = createCamera({
       camera: sceneHandle.camera,
       controls: sceneHandle.controls,
+      autoRotate: !reducedMotion,
     });
     cameraHandleRef.current = cameraHandle;
 
@@ -86,6 +100,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     const hover = createHover({
       camera: sceneHandle.camera,
       slotsRef: slotsAccessor,
+      hitRadiusScale: quality.hitRadiusScale,
       onHoverChange: (slot) => {
         hoveredSlotRef.current = slot;
         setHoverSlot(slot);
@@ -106,7 +121,9 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       satellites,
       beams,
       core,
-      pulseCoreHalo: () => pulseCoreHalo(core),
+      pulseCoreHalo: () => {
+        if (!reducedMotion) pulseCoreHalo(core);
+      },
       onTickerEntry: pushTickerEntry,
       onSpotlight: () => {
         // Camera spotlight on real firing events disabled — repeated triggers
@@ -117,18 +134,20 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     });
     dispatcherRef.current = dispatcher;
 
-    const idleSim = createIdleSimulator({
-      onFake: (slotId) => dispatcher.dispatchFake(slotId),
-      getNodeIds: () => satellitesRef.current?.getAllIds() || [],
-    });
+    const idleSim = !reducedMotion && quality.idleFiring
+      ? createIdleSimulator({
+          onFake: (slotId) => dispatcher.dispatchFake(slotId),
+          getNodeIds: () => satellitesRef.current?.getAllIds() || [],
+        })
+      : null;
     idleSimRef.current = idleSim;
 
-    if (authToken) {
+    if (!reducedMotion && authToken) {
       firingClientRef.current = createFiringClient({
         baseUrl: cortexBase,
         token: authToken,
         onEvent: (event) => {
-          idleSim.noteRealEvent();
+          idleSim?.noteRealEvent();
           dispatcher.dispatch(event);
         },
       });
@@ -136,6 +155,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
 
     if (typeof window !== "undefined") {
       window.__brainFire = (fromId, toId, color) => {
+        if (reducedMotion) return;
         const sats = satellitesRef.current;
         if (!sats) return;
         const a = sats.getSlotById(fromId);
@@ -147,28 +167,18 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     }
 
     const unregister = sceneHandle.registerTick((t, now) => {
-      tickCore(core, t, now);
-      satellites.tick(t, now);
-      beams.tick(now);
-      cameraHandle.tick(now);
+      if (!reducedMotion) {
+        tickCore(core, t, now);
+        satellites.tick(t, now);
+        beams.tick(now);
+        cameraHandle.tick(now);
+      }
       hover.tick();
 
       // Stats: throttle to once per second AND only update DOM when values change.
       if (now - lastStatsAtRef.current >= 1000) {
         lastStatsAtRef.current = now;
-        const slots = slotsAccessor.current || [];
-        let clusters = 0;
-        let decisions = 0;
-        for (const slot of slots) {
-          if (slot.tier === "cluster") clusters += 1;
-          else if (slot.tier === "decision") decisions += 1;
-        }
-        const next = {
-          nodes: slots.length,
-          clusters,
-          decisions,
-          activeBeams: beams.activeCount(),
-        };
+        const next = brainStatsForSlots(slotsAccessor.current || [], beams.activeCount());
         const prev = lastStatsRef.current;
         if (
           next.nodes !== prev.nodes
@@ -215,7 +225,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       sceneHandle.dispose();
       sceneRef.current = null;
     };
-  }, [active]);
+  }, [active, reducedMotion, quality]);
 
   useEffect(() => {
     if (!sceneRef.current) return;
@@ -230,7 +240,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
       try {
         const dump = await api("/dump", true);
         if (cancelled || !dump) return;
-        const next = buildTiers(dump);
+        const next = buildTiers(dump, { budget: brainBudgetForQuality(quality.tier) });
         setTiers(next);
       } catch (err) {
         if (!cancelled) setError(err?.message || String(err));
@@ -238,7 +248,7 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     }
     load();
     return () => { cancelled = true; };
-  }, [active, api]);
+  }, [active, api, quality.tier]);
 
   useEffect(() => {
     if (!satellitesRef.current) return;
@@ -249,18 +259,24 @@ export function BrainV2({ api = null, cortexBase = "http://127.0.0.1:7437", auth
     for (const m of tiers.looseMemories || []) flat.push(m);
     slotsAccessor.current = flat;
     setKeyboardSlotIndex((current) => (current >= flat.length ? (flat.length ? flat.length - 1 : -1) : current));
+    const nextStats = brainStatsForSlots(flat, beamsRef.current?.activeCount() || 0);
+    lastStatsRef.current = nextStats;
+    writeStats(statRefs.current, nextStats);
+    sceneRef.current?.requestFrame();
   }, [tiers]);
 
   function selectSlot(slot) {
     satellitesRef.current?.setSelected(slot?.id || null);
     setSelectedSlot(slot || null);
     selectedSlotRef.current = slot || null;
+    sceneRef.current?.requestFrame();
   }
 
   function handlePointerMove(e) {
     if (!hoverRef.current || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     hoverRef.current.setCursor(e.clientX, e.clientY, rect);
+    if (reducedMotion) hoverRef.current.tick();
   }
 
   function handlePointerLeave() {
@@ -389,6 +405,21 @@ function writeStats(refs, stats) {
   if (refs.clusters) refs.clusters.textContent = String(stats.clusters);
   if (refs.decisions) refs.decisions.textContent = String(stats.decisions);
   if (refs.beams) refs.beams.textContent = String(stats.activeBeams);
+}
+
+function brainStatsForSlots(slots, activeBeams = 0) {
+  let clusters = 0;
+  let decisions = 0;
+  for (const slot of slots) {
+    if (slot.tier === "cluster") clusters += 1;
+    else if (slot.tier === "decision") decisions += 1;
+  }
+  return {
+    nodes: slots.length,
+    clusters,
+    decisions,
+    activeBeams,
+  };
 }
 
 function renderTicker(host, entries) {

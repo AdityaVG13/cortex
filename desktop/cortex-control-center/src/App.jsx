@@ -6240,6 +6240,7 @@ export function App() {
                   cortexBase={cortexBase}
                   authToken={tokenRef.current}
                   active={panel === "brain"}
+                  reducedMotion={effectiveReducedMotion}
                 />
               </Suspense>
             </BrainErrorBoundary>

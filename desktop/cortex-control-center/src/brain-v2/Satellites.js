@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { getHaloTexture } from "./Halo.js";
 import { paletteForCluster, DECISION_COLOR, LOOSE_COLOR, SELECTED_COLOR } from "./ClusterPalette.js";
 
-const SLOT_BUDGET = 200;
+const DEFAULT_SLOT_BUDGET = 200;
 const HALO_TO_BODY = 3.0;
 const BOB_FREQ = 2 * Math.PI / 4.0;
 const BOB_AMPLITUDE = 0.02;
@@ -22,7 +22,8 @@ function colorForSlot(slot) {
   return LOOSE_COLOR;
 }
 
-export function createSatellites({ scene }) {
+export function createSatellites({ scene, slotBudget = DEFAULT_SLOT_BUDGET }) {
+  const capacity = Math.max(1, Math.floor(slotBudget));
   const bodyGeometry = new THREE.SphereGeometry(1, 12, 12);
   const bodyMaterial = new THREE.MeshBasicMaterial({
     color: 0xffffff,
@@ -31,7 +32,7 @@ export function createSatellites({ scene }) {
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
-  const bodies = new THREE.InstancedMesh(bodyGeometry, bodyMaterial, SLOT_BUDGET);
+  const bodies = new THREE.InstancedMesh(bodyGeometry, bodyMaterial, capacity);
   bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   bodies.count = 0;
   bodies.name = "brain-v2-satellite-bodies";
@@ -47,7 +48,7 @@ export function createSatellites({ scene }) {
     depthWrite: false,
     side: THREE.DoubleSide,
   });
-  const halos = new THREE.InstancedMesh(haloGeometry, haloMaterial, SLOT_BUDGET);
+  const halos = new THREE.InstancedMesh(haloGeometry, haloMaterial, capacity);
   halos.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   halos.count = 0;
   halos.name = "brain-v2-satellite-halos";
@@ -64,7 +65,7 @@ export function createSatellites({ scene }) {
     for (const c of payload.clusters || []) flat.push({ ...c });
     for (const m of payload.looseMemories || []) flat.push({ ...m });
 
-    const next = flat.slice(0, SLOT_BUDGET).map((entry) => ({
+    const next = flat.slice(0, capacity).map((entry) => ({
       ...entry,
       phase: Math.random() * Math.PI * 2,
       pulseUntil: 0,
@@ -137,6 +138,7 @@ export function createSatellites({ scene }) {
   function setSelected(id) {
     selectedId = id;
     for (const slot of slots) slot.selected = slot.id === id;
+    writeAll();
   }
 
   function getSlotById(id) {
@@ -161,8 +163,8 @@ export function createSatellites({ scene }) {
   }
 
   // Initialize per-instance color attribute.
-  bodies.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(SLOT_BUDGET * 3), 3);
-  halos.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(SLOT_BUDGET * 3), 3);
+  bodies.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
+  halos.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3);
 
   return {
     bodies,

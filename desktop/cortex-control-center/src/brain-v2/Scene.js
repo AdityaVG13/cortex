@@ -7,7 +7,13 @@ const CAMERA_NEAR = 1;
 const CAMERA_FAR = 2000;
 const CAMERA_INITIAL = { x: 0, y: 0, z: 380 };
 
-export function createScene({ container, width, height }) {
+export function createScene({
+  container,
+  width,
+  height,
+  animated = true,
+  pixelRatio = window.devicePixelRatio || 1,
+}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(BACKGROUND);
 
@@ -25,7 +31,7 @@ export function createScene({ container, width, height }) {
     alpha: false,
     powerPreference: "high-performance",
   });
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setPixelRatio(pixelRatio);
   renderer.setSize(width, height);
   renderer.toneMapping = THREE.LinearToneMapping;
   renderer.toneMappingExposure = 1.0;
@@ -51,7 +57,7 @@ export function createScene({ container, width, height }) {
   let disposed = false;
   const startTime = performance.now();
 
-  function frame() {
+  function renderFrame() {
     if (disposed) return;
     const now = performance.now();
     const t = (now - startTime) * 0.001;
@@ -66,22 +72,39 @@ export function createScene({ container, width, height }) {
       }
     }
     renderer.render(scene, camera);
+  }
+
+  function frame() {
+    renderFrame();
+    rafHandle = animated && !disposed ? requestAnimationFrame(frame) : null;
+  }
+
+  function requestFrame() {
+    if (disposed || animated || rafHandle) return;
     rafHandle = requestAnimationFrame(frame);
   }
 
-  rafHandle = requestAnimationFrame(frame);
+  controls.addEventListener("change", requestFrame);
+
+  if (animated) {
+    rafHandle = requestAnimationFrame(frame);
+  } else {
+    requestFrame();
+  }
 
   function resize(nextWidth, nextHeight) {
     if (disposed) return;
     camera.aspect = nextWidth / Math.max(nextHeight, 1);
     camera.updateProjectionMatrix();
     renderer.setSize(nextWidth, nextHeight);
+    requestFrame();
   }
 
   function dispose() {
     disposed = true;
     if (rafHandle) cancelAnimationFrame(rafHandle);
     ticks.clear();
+    controls.removeEventListener("change", requestFrame);
     controls.dispose();
     renderer.dispose();
     if (renderer.domElement.parentNode) {
@@ -96,9 +119,11 @@ export function createScene({ container, width, height }) {
     controls,
     registerTick: (fn) => {
       ticks.add(fn);
+      requestFrame();
       return () => ticks.delete(fn);
     },
     resize,
+    requestFrame,
     dispose,
   };
 }
