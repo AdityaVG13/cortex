@@ -207,6 +207,9 @@ pub fn migrate_legacy_db(paths: &CortexPaths) -> Result<bool, String> {
     // Verify integrity of the copy
     let conn =
         rusqlite::Connection::open(&paths.db).map_err(|e| format!("open migrated db: {e}"))?;
+    let busy_timeout_ms = crate::db::SQLITE_BUSY_TIMEOUT_MS;
+    conn.execute_batch(&format!("PRAGMA busy_timeout = {busy_timeout_ms};"))
+        .map_err(|e| format!("configure migrated db busy timeout: {e}"))?;
     let check: String = conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(|e| format!("integrity check: {e}"))?;

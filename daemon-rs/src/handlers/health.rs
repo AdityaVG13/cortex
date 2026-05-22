@@ -1347,15 +1347,17 @@ pub async fn handle_savings(State(state): State<RuntimeState>, headers: HeaderMa
             return stale_or_error(format!("open savings reader failed: {err}"));
         }
     };
-    if let Err(err) = conn.execute_batch(
+    let busy_timeout_ms = crate::db::SQLITE_BUSY_TIMEOUT_MS;
+    if let Err(err) = conn.execute_batch(&format!(
         r#"
         PRAGMA query_only = ON;
+        PRAGMA busy_timeout = {busy_timeout_ms};
         PRAGMA foreign_keys = ON;
         PRAGMA mmap_size = 268435456;
         PRAGMA cache_size = -8000;
         PRAGMA temp_store = MEMORY;
         "#,
-    ) {
+    )) {
         return stale_or_error(format!("configure savings reader failed: {err}"));
     }
     let savings_window_modifier = format!("-{SAVINGS_HISTORY_DAYS} days");

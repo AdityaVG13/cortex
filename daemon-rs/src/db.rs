@@ -9,6 +9,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 const BEST_EFFORT_CHECKPOINT_MIN_INTERVAL_MS: i64 = 5_000;
 const BEST_EFFORT_TRUNCATE_INTERVAL_MS: i64 = 5 * 60 * 1_000;
+pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+pub const SQLITE_WAL_AUTOCHECKPOINT_PAGES: u64 = 1_000;
 static LAST_BEST_EFFORT_CHECKPOINT_MS: AtomicI64 = AtomicI64::new(0);
 static LAST_BEST_EFFORT_TRUNCATE_MS: AtomicI64 = AtomicI64::new(0);
 
@@ -116,7 +118,8 @@ fn env_u64_clamped(name: &str, default: u64, min: u64, max: u64) -> u64 {
     parsed.clamp(min, max)
 }
 
-/// Apply WAL mode, NORMAL synchronous writes, and foreign-key enforcement.
+/// Apply WAL mode, NORMAL synchronous writes, foreign-key enforcement, and
+/// bounded SQLite lock waits.
 ///
 /// NOTE: PRAGMA synchronous=NORMAL is safe with WAL mode. From SQLite docs:
 /// - FULL: Extra safety at the cost of significant performance (OS crash protection)
@@ -134,14 +137,18 @@ pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
     );
     let cache_size_kib = env_u64_clamped("CORTEX_DB_CACHE_SIZE_KIB", 12_000, 2_000, 131_072);
     let cache_size = -(cache_size_kib as i64);
+    let busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS;
+    let wal_autocheckpoint_pages = SQLITE_WAL_AUTOCHECKPOINT_PAGES;
     let pragmas = format!(
         r#"
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = {busy_timeout_ms};
         PRAGMA foreign_keys = ON;
         PRAGMA mmap_size = {mmap_size};
         PRAGMA cache_size = {cache_size};
         PRAGMA temp_store = MEMORY;
+        PRAGMA wal_autocheckpoint = {wal_autocheckpoint_pages};
         "#
     );
     conn.execute_batch(&pragmas)?;
@@ -1755,7 +1762,13 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     // ── Step 1: open the corrupted DB read-only ────────────────────────────
     let corrupt_conn = Connection::open(db_path).map_err(RepairError::OpenCorrupt)?;
     // Open read-only: ignore any write errors on WAL frames, read what we can.
-    let _ = corrupt_conn.execute_batch("PRAGMA query_only = ON;");
+    let busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS;
+    let _ = corrupt_conn.execute_batch(&format!(
+        r#"
+        PRAGMA busy_timeout = {busy_timeout_ms};
+        PRAGMA query_only = ON;
+        "#
+    ));
 
     // ── Step 2: export all data tables ────────────────────────────────────
     // Order matters for foreign-key integrity, though FKs are off during repair.
@@ -2052,6 +2065,14 @@ mod tests {
     fn test_open_configure_schema() {
         let conn = Connection::open_in_memory().unwrap();
         configure(&conn).unwrap();
+        let busy_timeout_ms: u64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        let wal_autocheckpoint_pages: u64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_MS);
+        assert_eq!(wal_autocheckpoint_pages, SQLITE_WAL_AUTOCHECKPOINT_PAGES);
         initialize_schema(&conn).unwrap();
         assert!(verify_integrity(&conn).unwrap());
     }
