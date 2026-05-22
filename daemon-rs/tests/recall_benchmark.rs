@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
@@ -26,6 +27,7 @@ const PROXY_MIN_EVALUATED_QUERY_COVERAGE: f64 = 0.80;
 const APP_REQUIRED_ENV: &str = "CORTEX_APP_REQUIRED";
 const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
 const APP_CLIENT_ENV: &str = "CORTEX_APP_CLIENT";
+const RECALL_PROFILE_ENV: &str = "CORTEX_RECALL_BENCHMARK_PROFILE";
 
 struct BenchmarkCase {
     slug: &'static str,
@@ -201,6 +203,8 @@ impl TestDaemon {
                 .arg(&home)
                 .arg("--port")
                 .arg(port.to_string())
+                .arg("--bind")
+                .arg("127.0.0.1")
                 // Keep benchmark spawning deterministic even when the parent shell
                 // is running attach-only app client env contracts.
                 .env_remove(APP_REQUIRED_ENV)
@@ -340,8 +344,430 @@ impl Drop for TestDaemon {
     }
 }
 
+struct RecallBenchmarkProfile {
+    enabled: bool,
+    scenario: &'static str,
+    run_id: String,
+    out_dir: PathBuf,
+    samples: Vec<RecallProfileSample>,
+}
+
+struct RecallProfileSample {
+    span_name: &'static str,
+    case_slug: Option<&'static str>,
+    duration: Duration,
+}
+
+struct RecallSpanSummary {
+    span_name: String,
+    count: usize,
+    cumulative_us: u64,
+    p50_us: u64,
+    p95_us: u64,
+    p99_us: u64,
+    max_us: u64,
+    mean_us: f64,
+}
+
+struct RecallBenchmarkQuality {
+    avg_precision: f64,
+    avg_mrr: f64,
+    avg_tokens: f64,
+    top1_hit_rate: f64,
+    recall_coverage: f64,
+    p95_query_tokens: u64,
+    tokens_per_relevant_hit: f64,
+}
+
+impl RecallBenchmarkProfile {
+    fn new(scenario: &'static str) -> Self {
+        let enabled = std::env::var(RECALL_PROFILE_ENV).ok().is_some_and(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "no"
+            )
+        });
+        let run_id = if enabled {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            format!("{}_{:06}", now.as_secs(), now.subsec_micros())
+        } else {
+            String::new()
+        };
+        let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("artifacts")
+            .join("perf")
+            .join(&run_id);
+
+        Self {
+            enabled,
+            scenario,
+            run_id,
+            out_dir,
+            samples: Vec::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        span_name: &'static str,
+        case_slug: Option<&'static str>,
+        duration: Duration,
+    ) {
+        if self.enabled {
+            self.samples.push(RecallProfileSample {
+                span_name,
+                case_slug,
+                duration,
+            });
+        }
+    }
+
+    fn write_artifacts(
+        &self,
+        quality: &RecallBenchmarkQuality,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        fs::create_dir_all(&self.out_dir)?;
+        let summaries = self.span_summaries();
+        let quality_json = quality.as_json();
+        let quality_pretty = serde_json::to_string_pretty(&quality_json)?;
+        let mut hasher = Sha256::new();
+        hasher.update(quality_pretty.as_bytes());
+        let quality_sha256 = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        fs::write(
+            self.out_dir.join("DEFINE.md"),
+            self.render_define(&summaries),
+        )?;
+        fs::write(
+            self.out_dir.join("fingerprint.json"),
+            serde_json::to_string_pretty(&self.fingerprint_json())?,
+        )?;
+        fs::write(
+            self.out_dir.join("recall_benchmark_spans.json"),
+            serde_json::to_string_pretty(&self.samples_json())?,
+        )?;
+        fs::write(
+            self.out_dir.join("span_summary.json"),
+            serde_json::to_string_pretty(&span_summary_json(&summaries))?,
+        )?;
+        fs::write(self.out_dir.join("quality_summary.json"), quality_pretty)?;
+        fs::write(
+            self.out_dir.join("BASELINE.md"),
+            self.render_baseline(&summaries),
+        )?;
+        fs::write(
+            self.out_dir.join("hotspot_table.md"),
+            self.render_hotspot_table(&summaries),
+        )?;
+        fs::write(
+            self.out_dir.join("scaling_law.md"),
+            self.render_scaling_law(),
+        )?;
+        fs::write(
+            self.out_dir.join("hypothesis.md"),
+            self.render_hypothesis(&summaries),
+        )?;
+        fs::write(
+            self.out_dir.join("golden_checksums.txt"),
+            format!("{quality_sha256}  quality_summary.json\n"),
+        )?;
+        eprintln!(
+            "recall benchmark profile artifacts: {}",
+            self.out_dir.display()
+        );
+        Ok(())
+    }
+
+    fn span_summaries(&self) -> Vec<RecallSpanSummary> {
+        let mut grouped: HashMap<String, Vec<u64>> = HashMap::new();
+        for sample in &self.samples {
+            grouped
+                .entry(sample.span_name.to_string())
+                .or_default()
+                .push(duration_us(sample.duration));
+        }
+
+        let mut summaries = grouped
+            .into_iter()
+            .map(|(span_name, mut values)| {
+                values.sort_unstable();
+                let cumulative_us = values.iter().sum();
+                let count = values.len();
+                RecallSpanSummary {
+                    span_name,
+                    count,
+                    cumulative_us,
+                    p50_us: percentile_sorted(&values, 0.50),
+                    p95_us: percentile_sorted(&values, 0.95),
+                    p99_us: percentile_sorted(&values, 0.99),
+                    max_us: values.last().copied().unwrap_or(0),
+                    mean_us: cumulative_us as f64 / count.max(1) as f64,
+                }
+            })
+            .collect::<Vec<_>>();
+        summaries.sort_by(|left, right| {
+            right
+                .cumulative_us
+                .cmp(&left.cumulative_us)
+                .then_with(|| left.span_name.cmp(&right.span_name))
+        });
+        summaries
+    }
+
+    fn render_define(&self, summaries: &[RecallSpanSummary]) -> String {
+        let recall_p95_us = summaries
+            .iter()
+            .find(|summary| summary.span_name == "recall_case")
+            .map(|summary| summary.p95_us)
+            .unwrap_or(0);
+        let advisory_budget_us = (recall_p95_us / 2).max(1);
+
+        format!(
+            "# DEFINE - {scenario}\n\n\
+             ## Scenario\n\
+             Spawn a local Cortex daemon with a temporary home, store {case_count} benchmark fixtures, then issue {case_count} recall queries with budget {budget_tokens}.\n\n\
+             ## Metric\n\
+             Wall-clock latency in microseconds for daemon startup, store calls, and recall calls; p50/p95/p99 are reported per span.\n\n\
+             ## Budget\n\
+             Advisory first-pass budget: recall_case p95 <= {advisory_budget_us} us on this fingerprint. This is 50% of the first measured p95 because no prior latency budget exists.\n\n\
+             ## Golden output\n\
+             golden_checksums.txt contains the SHA-256 of quality_summary.json.\n\n\
+             ## Scope boundary\n\
+             In scope: test-harness wall-clock attribution for recall benchmark stages. Out of scope: external CPU flamegraphs, allocation profiles, kernel tuning, and production daemon workloads.\n",
+            scenario = self.scenario,
+            case_count = BENCHMARK_CASES.len(),
+            budget_tokens = RECALL_BUDGET,
+        )
+    }
+
+    fn fingerprint_json(&self) -> Value {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        json!({
+            "run_id": self.run_id,
+            "captured_at_unix_ms": current_unix_ms(),
+            "git_sha": command_output("git", &["rev-parse", "HEAD"], Some(manifest_dir)),
+            "hardware": {
+                "processor_identifier": std::env::var("PROCESSOR_IDENTIFIER").ok(),
+                "logical_processors": std::env::var("NUMBER_OF_PROCESSORS").ok(),
+            },
+            "os": {
+                "family": std::env::consts::FAMILY,
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+            },
+            "toolchain": {
+                "rustc": command_output("rustc", &["--version", "--verbose"], Some(manifest_dir)),
+                "cargo": command_output("cargo", &["--version"], Some(manifest_dir)),
+            },
+            "build_profile": {
+                "name": "cargo test",
+                "debug_assertions": cfg!(debug_assertions),
+                "recommended_profile": "release-perf",
+                "recommended_rustflags": "-C force-frame-pointers=yes",
+            },
+            "workload_isolation": "not isolated",
+            "cache_state": "warm",
+            "external_samplers": {
+                "hyperfine": "not required for this in-test fallback",
+                "samply": "not required for this in-test fallback"
+            }
+        })
+    }
+
+    fn samples_json(&self) -> Value {
+        Value::Array(
+            self.samples
+                .iter()
+                .map(|sample| {
+                    json!({
+                        "run_id": self.run_id,
+                        "span_name": sample.span_name,
+                        "case_slug": sample.case_slug,
+                        "duration_us": duration_us(sample.duration),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn render_baseline(&self, summaries: &[RecallSpanSummary]) -> String {
+        let mut out = format!(
+            "# Baseline - {scenario} - run {run_id}\n\n\
+             | Span | Samples | p50 us | p95 us | p99 us | Max us | Mean us | Cumulative us |\n\
+             |------|--------:|-------:|-------:|-------:|-------:|--------:|--------------:|\n",
+            scenario = self.scenario,
+            run_id = self.run_id,
+        );
+        for summary in summaries {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {:.1} | {} |\n",
+                summary.span_name,
+                summary.count,
+                summary.p50_us,
+                summary.p95_us,
+                summary.p99_us,
+                summary.max_us,
+                summary.mean_us,
+                summary.cumulative_us,
+            ));
+        }
+        out.push_str(
+            "\nNote: sample counts are below 1000, so p99 and higher tails are conservative worst-observed sentinels, not tight percentile estimates.\n",
+        );
+        out
+    }
+
+    fn render_hotspot_table(&self, summaries: &[RecallSpanSummary]) -> String {
+        let mut out = format!("# Hotspot table - {}\n\n", self.run_id);
+        out.push_str(
+            "| Rank | Location | Metric | Value | Category | Evidence |\n\
+             |-----:|----------|--------|------:|----------|----------|\n",
+        );
+        for (idx, summary) in summaries.iter().enumerate() {
+            out.push_str(&format!(
+                "| {} | {} | cumulative wall time | {} us | wall | span_summary.json; recall_benchmark_spans.json |\n",
+                idx + 1,
+                summary.span_name,
+                summary.cumulative_us,
+            ));
+        }
+        out
+    }
+
+    fn render_scaling_law(&self) -> String {
+        format!(
+            "# Scaling law - {}\n\n\
+             Not applicable for this first pass. The scenario uses a fixed fixture count ({}) and has no varied scale axis in this test run.\n",
+            self.run_id,
+            BENCHMARK_CASES.len(),
+        )
+    }
+
+    fn render_hypothesis(&self, summaries: &[RecallSpanSummary]) -> String {
+        let top = summaries.first();
+        let recall = summaries
+            .iter()
+            .find(|summary| summary.span_name == "recall_case");
+        let store = summaries
+            .iter()
+            .find(|summary| summary.span_name == "store_case");
+        let verdict = match (recall, store) {
+            (Some(recall), Some(store)) if recall.cumulative_us > store.cumulative_us => "supports",
+            (Some(_), Some(_)) => "rejects",
+            _ => "unknown",
+        };
+        let evidence = match (recall, store) {
+            (Some(recall), Some(store)) => format!(
+                "recall_case cumulative {} us vs store_case cumulative {} us",
+                recall.cumulative_us, store.cumulative_us
+            ),
+            _ => "missing recall or store span summary".to_string(),
+        };
+
+        format!(
+            "# Hypothesis ledger - {run_id}\n\n\
+             | Hypothesis | Verdict | Evidence |\n\
+             |------------|---------|----------|\n\
+             | The top-ranked benchmark stage owns the current wall-clock cost | {top_verdict} | {top_evidence} |\n\
+             | Recall query execution dominates fixture ingestion | {verdict} | {evidence}; span_summary.json |\n",
+            run_id = self.run_id,
+            top_verdict = if top.is_some() { "supports" } else { "unknown" },
+            top_evidence = top
+                .map(|summary| format!(
+                    "{} ranks first at {} us cumulative",
+                    summary.span_name, summary.cumulative_us
+                ))
+                .unwrap_or_else(|| "no span summaries captured".to_string()),
+        )
+    }
+}
+
+impl RecallBenchmarkQuality {
+    fn as_json(&self) -> Value {
+        json!({
+            "avg_precision": self.avg_precision,
+            "avg_mrr": self.avg_mrr,
+            "avg_tokens": self.avg_tokens,
+            "top1_hit_rate": self.top1_hit_rate,
+            "recall_coverage": self.recall_coverage,
+            "p95_query_tokens": self.p95_query_tokens,
+            "tokens_per_relevant_hit": self.tokens_per_relevant_hit,
+        })
+    }
+}
+
+fn span_summary_json(summaries: &[RecallSpanSummary]) -> Value {
+    Value::Array(
+        summaries
+            .iter()
+            .map(|summary| {
+                json!({
+                    "span_name": summary.span_name,
+                    "count": summary.count,
+                    "cumulative_us": summary.cumulative_us,
+                    "p50_us": summary.p50_us,
+                    "p95_us": summary.p95_us,
+                    "p99_us": summary.p99_us,
+                    "max_us": summary.max_us,
+                    "mean_us": summary.mean_us,
+                    "category": "wall",
+                    "evidence": "recall_benchmark_spans.json",
+                })
+            })
+            .collect(),
+    )
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn percentile_sorted(values: &[u64], quantile: f64) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    let idx = ((values.len() - 1) as f64 * quantile).ceil() as usize;
+    values[idx.min(values.len() - 1)]
+}
+
+fn current_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn command_output(program: &str, args: &[&str], cwd: Option<&Path>) -> Option<String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_benchmark_regression_thresholds_hold() {
+    let mut profile = RecallBenchmarkProfile::new("recall_benchmark_regression_thresholds_hold");
+    let spawn_started = Instant::now();
     let daemon = match TestDaemon::spawn().await {
         Ok(daemon) => daemon,
         Err(SpawnError::Skip(reason)) => {
@@ -355,9 +781,12 @@ async fn recall_benchmark_regression_thresholds_hold() {
             panic!("failed to spawn healthy benchmark daemon after retries: {err}")
         }
     };
+    profile.record("daemon.spawn_ready", None, spawn_started.elapsed());
 
     for case in BENCHMARK_CASES {
+        let started = Instant::now();
         daemon.store_case(case).await;
+        profile.record("store_case", Some(case.slug), started.elapsed());
     }
 
     let mut precision_sum = 0.0;
@@ -370,7 +799,9 @@ async fn recall_benchmark_regression_thresholds_hold() {
     let mut query_token_samples = Vec::with_capacity(BENCHMARK_CASES.len());
 
     for case in BENCHMARK_CASES {
+        let started = Instant::now();
         let payload = daemon.recall_case(case).await;
+        profile.record("recall_case", Some(case.slug), started.elapsed());
         let results = payload["results"].as_array().cloned().unwrap_or_default();
         let relevant = results
             .iter()
@@ -427,6 +858,15 @@ async fn recall_benchmark_regression_thresholds_hold() {
     } else {
         token_sum as f64 / relevant_hits_total as f64
     };
+    let quality = RecallBenchmarkQuality {
+        avg_precision,
+        avg_mrr,
+        avg_tokens,
+        top1_hit_rate,
+        recall_coverage,
+        p95_query_tokens,
+        tokens_per_relevant_hit,
+    };
 
     assert!(
         avg_precision >= 0.50,
@@ -468,6 +908,9 @@ async fn recall_benchmark_regression_thresholds_hold() {
         tokens_per_relevant_hit,
         MAX_TOKENS_PER_RELEVANT_HIT
     );
+    profile
+        .write_artifacts(&quality)
+        .expect("failed to write recall benchmark profile artifacts");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
