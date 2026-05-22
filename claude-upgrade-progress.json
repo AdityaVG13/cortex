@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.0",
+  "started": "2026-05-22T03:53:21-04:00",
+  "last_updated": "2026-05-22T04:25:00-04:00",
+  "project": "cortex",
+  "language": "Rust, Node.js, Python",
+  "manifest": "multi",
+  "status": "completed",
+  "config": {
+    "skip_alpha_beta": true,
+    "preserve_pinned": true,
+    "max_consecutive_failures": 5,
+    "max_total_failures": 10
+  },
+  "summary": {
+    "total": 55,
+    "updated": 52,
+    "skipped": 3,
+    "failed": 0,
+    "requires_refactor": 0
+  },
+  "dependencies": [
+    {
+      "name": "sdks/typescript",
+      "current_version": "2 outdated dev dependencies",
+      "target_version": "latest stable allowed by npm minimum-release-age policy",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md",
+      "breaking_changes": [
+        "TypeScript 6 requires explicit ambient Node types."
+      ],
+      "deprecations": [],
+      "notes": "Updated typescript to 6.0.3 and @types/node to 25.8.0; added tsconfig types [node].",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "desktop/cortex-control-center Node dependencies",
+      "current_version": "8 outdated dependencies",
+      "target_version": "latest stable allowed by npm minimum-release-age policy",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md",
+      "breaking_changes": [
+        "Vite 8 uses Rolldown/Oxc internals and requires compatible plugin-react."
+      ],
+      "deprecations": [],
+      "notes": "Updated Tauri CLI, accessibility-checker-engine, React, React DOM, Three, Vite, Vitest, and @vitejs/plugin-react.",
+      "attempts": 2,
+      "error_log": [
+        "One unrelated randomized Tiers test assertion failed once and passed on immediate rerun."
+      ]
+    },
+    {
+      "name": "sdks/python",
+      "current_version": "loose lower bounds",
+      "target_version": "latest Python 3.9-compatible lower bounds",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md",
+      "breaking_changes": [
+        "HTTPX 0.28 removed deprecated client arguments not used by this SDK."
+      ],
+      "deprecations": [],
+      "notes": "Updated httpx, pytest, pytest-httpx constraints and generated uv.lock with Python 3.9/3.10+ resolution markers.",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "daemon-rs Rust dependencies",
+      "current_version": "30 direct dependencies reviewed",
+      "target_version": "latest compatible stable versions",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md",
+      "breaking_changes": [
+        "reqwest 0.13 feature split",
+        "hmac 0.13 KeyInit import",
+        "rusqlite 0.39 unsigned FromSql removal in tests",
+        "rustls-pemfile unmaintained; migrated to rustls-pki-types PemObject"
+      ],
+      "deprecations": [],
+      "notes": "Updated daemon direct dependencies, removed rustls-pemfile, and kept sysinfo at 0.38.4 because 0.39.2 requires Rust 1.95.",
+      "attempts": 2,
+      "error_log": [
+        "Initial reqwest update required replacing rustls-tls with rustls plus query feature.",
+        "Initial hmac update required importing KeyInit.",
+        "Initial rusqlite test compile required reading PRAGMA integers as i64."
+      ]
+    },
+    {
+      "name": "desktop src-tauri Rust dependencies",
+      "current_version": "9 direct dependencies reviewed",
+      "target_version": "latest compatible stable versions",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md",
+      "breaking_changes": [
+        "rusqlite 0.39 unsigned FromSql removal in tests"
+      ],
+      "deprecations": [],
+      "notes": "Updated Tauri shell direct dependencies and adjusted shutdown flush PRAGMA test.",
+      "attempts": 2,
+      "error_log": [
+        "Initial rusqlite test compile required reading PRAGMA integers as i64."
+      ]
+    }
+  ],
+  "completed": [
+    {
+      "name": "library-updater run",
+      "from": "mixed stale dependencies",
+      "to": "latest stable compatible dependencies",
+      "breaking_changes": [
+        "TypeScript ambient type behavior",
+        "Reqwest feature changes",
+        "HMAC trait import",
+        "Rusqlite FromSql behavior",
+        "Rustls PEM parsing crate deprecation"
+      ],
+      "fixes_applied": [
+        "sdks/typescript/tsconfig.json explicit Node types",
+        "daemon-rs reqwest feature migration",
+        "daemon-rs hmac KeyInit import",
+        "daemon-rs and src-tauri rusqlite test integer fixes",
+        "daemon-rs rustls-pki-types PEM migration"
+      ],
+      "timestamp": "2026-05-22T04:25:00-04:00"
+    }
+  ],
+  "failed": [],
+  "requires_refactor": [],
+  "skipped": [
+    {
+      "name": "ort",
+      "reason": "Current dependency is on release-candidate line and was preserved."
+    },
+    {
+      "name": "sqlite-vec",
+      "reason": "Latest available version is alpha; stable 0.1.9 preserved."
+    },
+    {
+      "name": "sysinfo 0.39.2",
+      "reason": "Requires Rust 1.95; updated to latest compatible stable 0.38.4."
+    }
+  ],
+  "circuit_breaker": {
+    "consecutive_failures": 0,
+    "total_failures": 0,
+    "triggered": false,
+    "reason": ""
+  }
+}
