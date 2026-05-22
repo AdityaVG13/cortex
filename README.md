@@ -155,7 +155,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=38&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-<p align="center">Measured against a 20-query ground-truth dataset on every release via the <code>cortex-http-base</code> adapter. A fully helper-free <code>cortex-http-pure</code> adapter is targeted for v0.6.0 to establish the canonical core baseline.</p>
+<p align="center">Historical v0.5.0 numbers below were measured against a 20-query ground-truth dataset via the <code>cortex-http-base</code> adapter. New recall-quality claims use the helper-free <code>cortex-http-pure</code> adapter as the canonical core baseline.</p>
 
 <table align="center">
 <tr>
@@ -192,44 +192,41 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 
 <p align="center">
 <sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
-<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter is targeted for v0.6.0 as the canonical measurement floor -- planned v0.6.0+ recall-quality claims are measured through it, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking production promotion remains targeted for v0.6.0 after validation; query expansion (HyDE) targeted for v0.7.0.</sub>
+<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter is the v0.6.0+ canonical measurement floor, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking ships default-off behind off/shadow/primary modes; public promotion remains gated on LongMemEval/API-backed validation. Query expansion (HyDE) is targeted for v0.7.0.</sub>
 </p>
 
 ---
 
-![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=v0.5.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
-<p align="center">349 commits since v0.4.1. Full details in <a href="CHANGELOG.md">CHANGELOG.md</a>.</p>
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=v0.6.0%20Improvements&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
+<p align="center">v0.6.0 makes settings, governance, boot audits, and recall-quality measurement first-class. Full details in <a href="CHANGELOG.md">CHANGELOG.md</a>.</p>
 
-### Retrieval
+### Accessibility and settings
 
-- **Reciprocal rank fusion**: query-adaptive keyword/semantic weighting
-- **Crystal family recall**: collapsed members cut token cost, preserve context
-- **Synonym-expanded keywords** across all retrieval paths
-- FTS tokenizer upgrade and BM25 tuning
-- Entity-alignment boost, co-occurrence expansion
+- **Settings panel**: Accessibility, Appearance & Motion, Connection, Budgets, and Keyboard & Navigation
+- **Runtime preferences**: high contrast, reduced motion, keyboard hints, and compact navigation
+- **Accessibility gates**: stronger focus states, ARIA/live regions, contrast checks, and 375px reflow checks
+
+### Governance
+
+- **Retention classes** across store, MCP, OpenAPI, export, and import
+- **Local endpoint budgets** with stable HTTP `429` / JSON-RPC denial metadata
+- **Budget UI** in Control Center, backed by the local `budgets.toml`
+- **Boot audits** plus `GET /boot/audit` and the read-only `cortex_boot_audit` MCP tool
+- **Admin rollback** with dry-run/apply workflow and audit events
+
+### Recall quality
+
+- **`cortex-http-pure` adapter** as the canonical helper-free measurement floor
+- **Purity gates, CAS-100, and triangle judge tooling** for safer quality claims
+- **`bge-base-en-v1.5` default embeddings** with MiniLM profiles and `qwen3-embedding-0.6b` opt-in
+- **Cross-encoder reranking** behind off/shadow/primary modes; default remains off
 
 ### Reliability
 
-- Schema migration framework with upgrade regression tests
-- DB integrity gate, rolling backups, crash-safe WAL
-- Storage pressure governor with event-pressure controls
-- Persistent savings rollups for long-window analytics
-- DB footprint: 720 MB → 386 MB in a real install
-
-### Agent intelligence
-
-- **Feedback telemetry**: record outcomes, track reliability over time
-- **Recall explainability**: see why results ranked the way they did
-- **Conflict detection**: AGREES / CONTRADICTS / REFINES / UNRELATED
-- **Client permissions**: read / write / admin gates per agent
-
-### Security
-
-- Localhost exempt from auth-failure lockout
-- Non-loopback binds require TLS
-- API key masking on non-interactive stdout
-- Remote targets need explicit token (no silent auto-load)
-- Team-mode destructive ops require admin + rated auth
+- Claude plugin MCP is attach-only and no longer starts a second daemon from plugin MCP paths
+- Control Center supervises the app-managed daemon and honors intentional stops
+- Handler panics return JSON 500 responses, with local panic breadcrumbs
+- Storage hygiene compacts FTS, prunes stale embeddings, and migrates canonical vectors to PQ8 int8 blobs
 
 ---
 

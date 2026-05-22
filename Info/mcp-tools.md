@@ -2,7 +2,7 @@
 
 # MCP Tool Reference
 
-> All 28 tools exposed by the Cortex MCP server. Source of truth: `daemon-rs/src/handlers/mcp.rs`.
+> All 29 tools exposed by the Cortex MCP server. Source of truth: `daemon-rs/src/handlers/mcp.rs`.
 
 ---
 
@@ -11,6 +11,7 @@
 | Tool | Required | Optional | What it does |
 |---|---|---|---|
 | `cortex_boot` | — | `agent`, `budget`, `profile` | Session boot prompt from identity + delta capsules |
+| `cortex_boot_audit` | — | `agent`, `limit` | Read recent boot audit rows and token/capsule metadata |
 | `cortex_peek` | `query` | `limit` | Headline-only relevance check (~80% cheaper than recall) |
 | `cortex_recall` | `query` | `budget`, `policyMode`, `k`, `agent`, `taskClass`, `adaptive` | Hybrid keyword + semantic memory search |
 | `cortex_semantic_recall` | `query` | `budget`, `k`, `agent` | Semantic-only recall (skips keyword fusion) |

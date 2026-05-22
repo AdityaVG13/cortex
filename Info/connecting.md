@@ -277,7 +277,7 @@ cortex/
 │  ├─ main.rs           Entry, startup, background tasks
 │  ├─ server.rs         Axum router, CORS, auth middleware
 │  ├─ state.rs          RuntimeState (DB, auth, embeddings, SSE)
-│  ├─ embeddings.rs     In-process ONNX (384-dim, MiniLM-L6/L12)
+│  ├─ embeddings.rs     In-process ONNX (BGE default, MiniLM/Qwen3 opt-in)
 │  ├─ indexer.rs        Knowledge indexer + score decay
 │  ├─ compiler.rs       Capsule boot prompt compiler
 │  ├─ conflict.rs       Conflict detection (cosine + Jaccard)
@@ -293,4 +293,4 @@ cortex/
 
 **Database** at `~/.cortex/cortex.db` — tables: `memories`, `decisions`, `embeddings`, `events`, `sessions`, `locks`, `tasks`, `feed`, `messages`, `activity`, `client_permissions`, `agent_feedback`, `event_savings_rollups`.
 
-**Embeddings**: 384-dim vectors via in-process ONNX. Default: `all-MiniLM-L6-v2`. Configurable via `CORTEX_EMBEDDING_MODEL` (e.g., `all-MiniLM-L12-v2`).
+**Embeddings**: In-process ONNX vectors. Default: `bge-base-en-v1.5` (768-dim). Configurable via `CORTEX_EMBEDDING_MODEL`; MiniLM profiles remain available at 384 dimensions, and `qwen3-embedding-0.6b` is available as a 1024-dim opt-in profile.

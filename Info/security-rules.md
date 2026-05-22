@@ -12,9 +12,9 @@ Top-level GitHub policy file: [`SECURITY.md`](../SECURITY.md)
 
 | Version | Status |
 |---------|--------|
-| 0.5.x | Current release, actively supported |
-| 0.4.x | Security fixes only |
-| < 0.4 | Not supported |
+| 0.6.x | Current release, actively supported |
+| 0.5.x | Security fixes only |
+| < 0.5 | Not supported |
 
 ---
 

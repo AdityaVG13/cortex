@@ -26,9 +26,9 @@
 
 ---
 
-## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `in progress`
+## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `shipped`
 
-> Makes Cortex more usable day-to-day, more manageable at team scale, and more disciplined about recall measurement.
+> Made Cortex more usable day-to-day, more manageable at team scale, and more disciplined about recall measurement.
 
 | Theme | Details |
 |-------|---------|
@@ -42,12 +42,12 @@
 | **Foundation carryovers** | Session rollback CLI (`cortex admin rollback`). Boot prompt audit trail. Score-adaptive truncation for boot. `DEFAULT_CORTEX_PORT` consolidation. |
 
 <details>
-<summary>Release follow-ups</summary>
+<summary>Post-release proof follow-ups</summary>
 
 - Capture manual screen-reader walkthrough evidence for NVDA+Firefox, VoiceOver+Safari, and Narrator+Edge before making formal accessibility conformance claims.
 - Capture browser-harness-based automated accessibility evidence for main flows.
 - Commit LongMemEval/API-backed recall benchmark artifacts before making public quality-gain claims.
-- Refresh public screenshots and release artifacts for the final v0.6.0 cut.
+- Refresh public screenshots and release artifacts during the next patch or docs refresh.
 
 </details>
 
