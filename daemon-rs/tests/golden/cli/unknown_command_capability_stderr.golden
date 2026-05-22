@@ -1,0 +1,3 @@
+Unknown command: capability
+Did you mean: `cortex capabilities --json`?
+Run `cortex help` or `cortex capabilities --json` for supported commands.

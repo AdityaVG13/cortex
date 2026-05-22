@@ -1,0 +1,110 @@
+{
+  "agent_entrypoints": [
+    {
+      "command": "cortex help",
+      "name": "help",
+      "output": "human",
+      "side_effects": "none"
+    },
+    {
+      "command": "cortex capabilities --json",
+      "name": "capabilities",
+      "output": "json",
+      "side_effects": "none"
+    },
+    {
+      "command": "cortex robot-docs guide",
+      "name": "robot-docs",
+      "output": "text",
+      "side_effects": "none"
+    }
+  ],
+  "commands": {
+    "admin budgets": {
+      "output": "human_or_json",
+      "purpose": "Inspect or validate budget governance configuration",
+      "side_effects": "none",
+      "usage": "cortex admin budgets status [--json]"
+    },
+    "admin rollback": {
+      "output": "human_or_json",
+      "purpose": "Dry-run or apply soft-delete rollback for one session",
+      "side_effects": "mutates_database_with_--apply",
+      "usage": "cortex admin rollback --session-id <id> [--apply] [--json]"
+    },
+    "boot": {
+      "output": "human_or_json",
+      "purpose": "Preferred local boot path with auth and SSRF headers",
+      "side_effects": "may_ensure_local_daemon",
+      "usage": "cortex boot [--agent <name>] [--budget <n>] [--json]"
+    },
+    "doctor": {
+      "output": "human",
+      "purpose": "Validate database schema, migrations, integrity, and FTS health",
+      "side_effects": "reads_database",
+      "usage": "cortex doctor"
+    },
+    "mcp": {
+      "output": "stdio_json_rpc",
+      "purpose": "Run the MCP stdio proxy",
+      "side_effects": "may_ensure_local_daemon",
+      "usage": "cortex mcp [--url <base>] [--api-key <key>] [--agent <name>]"
+    },
+    "paths": {
+      "output": "json",
+      "purpose": "Print resolved paths, port, and bind configuration",
+      "side_effects": "none",
+      "usage": "cortex paths --json"
+    },
+    "serve": {
+      "output": "logs",
+      "purpose": "Run the HTTP daemon",
+      "side_effects": "starts_daemon",
+      "usage": "cortex serve [--bind <addr>] [--port <n>]"
+    }
+  },
+  "contract_version": "1",
+  "dangerous_operations": [
+    {
+      "command": "cortex restore <file>",
+      "gate": "requires explicit backup file and warns when daemon appears active"
+    },
+    {
+      "command": "cortex admin rollback --session-id <id> --apply",
+      "gate": "dry-run by default; --apply required to mutate"
+    },
+    {
+      "command": "cortex user remove <name>",
+      "gate": "interactive confirmation"
+    },
+    {
+      "command": "cortex team remove <team> <user>",
+      "gate": "interactive confirmation"
+    }
+  ],
+  "environment": {
+    "CORTEX_API_BASE": "Supplies base URL for remote client commands",
+    "CORTEX_API_KEY": "Supplies API key for remote client commands",
+    "CORTEX_BIND": "Overrides daemon bind address; defaults to localhost",
+    "CORTEX_HOME": "Overrides the Cortex home directory",
+    "CORTEX_PORT": "Overrides the daemon port",
+    "NO_COLOR": "Requests plain output where color is supported"
+  },
+  "exit_codes": {
+    "0": "success",
+    "1": "user_input_or_runtime_error"
+  },
+  "recommended_agent_flow": [
+    "Run `cortex capabilities --json` to discover supported surfaces.",
+    "Use `cortex paths --json` before reading or writing Cortex files.",
+    "Use `cortex boot --json` for local attachment when a daemon may be needed.",
+    "Use JSON flags where available and treat non-zero exit as retryable only after inspecting stderr."
+  ],
+  "schema_version": 1,
+  "tool": {
+    "default_bind": "127.0.0.1",
+    "default_port": 7437,
+    "name": "cortex",
+    "version": "0.6.0"
+  }
+}
