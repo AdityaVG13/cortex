@@ -101,6 +101,16 @@ function expectThemeContrast(themeName, tokens) {
 }
 
 describe("contrast design tokens", () => {
+  it("defines every referenced design token except runtime-injected variables", () => {
+    const definedTokens = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map(([, token]) => token));
+    const runtimeTokens = new Set(["--brain-node-agent-color"]);
+    const missingTokens = [...new Set([...css.matchAll(/var\((--[\w-]+)/g)].map(([, token]) => token))]
+      .filter((token) => !definedTokens.has(token) && !runtimeTokens.has(token))
+      .sort();
+
+    expect(missingTokens).toEqual([]);
+  });
+
   it("meet WCAG AA text and non-text contrast thresholds", () => {
     expectThemeContrast("standard", readTokens(":root"));
     expectThemeContrast("high contrast", readTokens(':root[data-cortex-contrast="high"]'));

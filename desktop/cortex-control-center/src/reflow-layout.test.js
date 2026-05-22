@@ -67,6 +67,10 @@ describe("responsive reflow layout", () => {
       overflow: "visible",
     });
 
+    expect(declarationsFor(mobile, ".sidebar.collapsed .nav-item,")).toMatchObject({
+      "min-height": "44px",
+    });
+
     expect(declarationsFor(mobile, ".overview-metrics,")).toMatchObject({
       "grid-template-columns": "minmax(0, 1fr)",
     });

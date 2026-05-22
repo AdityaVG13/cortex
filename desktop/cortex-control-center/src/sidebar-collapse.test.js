@@ -63,4 +63,10 @@ describe("sidebar collapse tokens", () => {
     );
     expect(collapsedSidebar.width).toBe("var(--sidebar-collapsed-w)");
   });
+
+  it("removes dense utility content from the icon-only collapsed rail", () => {
+    expect(declarationsFor(css, ".sidebar.collapsed .sidebar-utility {")).toMatchObject({
+      display: "none",
+    });
+  });
 });
