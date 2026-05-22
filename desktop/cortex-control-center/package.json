@@ -23,16 +23,16 @@
     "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "three": "^0.183.2"
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "three": "0.184.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.0",
-    "@vitejs/plugin-react": "^5.1.0",
-    "accessibility-checker-engine": "4.0.16",
-    "vite": "^7.1.0",
-    "vitest": "^4.1.2"
+    "@tauri-apps/cli": "2.11.1",
+    "@vitejs/plugin-react": "6.0.2",
+    "accessibility-checker-engine": "4.0.17",
+    "vite": "8.0.13",
+    "vitest": "4.1.6"
   },
   "overrides": {
     "@effect/atom-react": "4.0.0-beta.35",

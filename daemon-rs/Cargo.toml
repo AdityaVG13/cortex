@@ -10,53 +10,53 @@ name = "cortex"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.8.4", features = ["macros"] }
-chrono = { version = "0.4.42", features = ["serde", "clock"] }
-futures-util = "0.3.31"
-regex = "1.12.2"
-rusqlite = { version = "0.37.0", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tempfile = "3"
-toml = "0.8"
-tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "io-std", "io-util"] }
-tokio-stream = { version = "0.1.17", features = ["sync"] }
-uuid = { version = "1.18.1", features = ["v4", "serde"] }
-argon2 = "0.5"
-fs2 = "0.4"
-hmac = "0.12"
-sha2 = "0.10"
+axum = { version = "0.8.9", features = ["macros"] }
+chrono = { version = "0.4.44", features = ["serde", "clock"] }
+futures-util = "0.3.32"
+regex = "1.12.3"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tempfile = "3.27.0"
+toml = "1.1.2"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "io-std", "io-util"] }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+argon2 = "0.5.3"
+fs2 = "0.4.3"
+hmac = "0.13.0"
+sha2 = "0.11.0"
 
 # Embeddings (in-process ONNX)
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
-ndarray = "0.16"
-tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
-reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking"], default-features = false }
-dirs = "6"
-sysinfo = "0.33"
+ndarray = "0.17.2"
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
+reqwest = { version = "0.13.3", features = ["rustls", "json", "blocking", "query"], default-features = false }
+dirs = "6.0.0"
+sysinfo = "0.38.4"
 sqlite-vec = "0.1.9"
 
 # HTTP middleware
-tower-http = { version = "0.6", features = ["cors", "catch-panic"] }
+tower-http = { version = "0.6.11", features = ["cors", "catch-panic"] }
 
 # TLS (optional, for team/non-loopback deployments)
-rustls = "0.23"
-tokio-rustls = "0.26"
-rustls-pemfile = "2"
+rustls = "0.23.40"
+tokio-rustls = "0.26.4"
+rustls-pki-types = { version = "1.14.1", features = ["std"] }
 
 # Required for TLS connection serving (hyper-util is a transitive dep of axum)
-hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
-tower = "0.5"
+hyper-util = { version = "0.1.20", features = ["tokio", "server-auto", "http1", "http2"] }
+tower = "0.5.3"
 
 # Windows Service support
 [target.'cfg(windows)'.dependencies]
-windows-service = "0.7"
+windows-service = "0.8.1"
 
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.186"
 
 [profile.release]
 opt-level = 3
