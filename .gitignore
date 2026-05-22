@@ -194,3 +194,6 @@ skill-runs/
 *_skill_run/
 *_skill_audit/
 refactor/artifacts/
+
+# Local performance profiling runs
+daemon-rs/tests/artifacts/perf/
