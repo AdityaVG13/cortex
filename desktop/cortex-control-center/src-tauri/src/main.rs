@@ -3047,10 +3047,10 @@ mod tests {
     fn shutdown_flush_sets_busy_timeout_before_checkpoint() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         configure_shutdown_flush_connection(&conn).expect("configure shutdown flush");
-        let busy_timeout_ms: u64 = conn
+        let busy_timeout_ms: i64 = conn
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .expect("read busy_timeout");
-        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_MS);
+        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_MS as i64);
     }
 
     #[test]
