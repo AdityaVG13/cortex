@@ -518,7 +518,8 @@ fn initialize_with_conn(
     let token = if team_mode {
         crate::auth::read_token_from(paths).unwrap_or_else(crate::auth::generate_ephemeral_token)
     } else if allow_token_rotation {
-        crate::auth::generate_token_for(paths)
+        crate::auth::try_generate_token_for(paths)
+            .map_err(|e| format!("Failed to generate shared auth token: {e}"))?
     } else {
         crate::auth::read_token_from(paths).unwrap_or_else(crate::auth::generate_ephemeral_token)
     };
@@ -890,6 +891,35 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("cortex_state_{name}_{unique}"))
+    }
+
+    #[test]
+    fn initialize_fails_when_rotated_token_cannot_be_persisted() {
+        let root_dir = temp_test_dir("token_home_is_file");
+        fs::create_dir_all(&root_dir).unwrap();
+        let home_dir = root_dir.join("home-is-file");
+        fs::write(&home_dir, "not a directory").unwrap();
+        let db_path = root_dir.join("cortex.db");
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let db_str = db_path.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            Some(&db_str),
+            Some(54968),
+            Some("127.0.0.1"),
+        );
+
+        match initialize(&paths, true) {
+            Ok(_) => panic!("startup should fail when rotated token cannot be persisted"),
+            Err(err) => assert!(
+                err.contains("Failed to generate shared auth token"),
+                "unexpected error: {err}"
+            ),
+        }
+        assert!(!paths.token.exists());
+
+        let _ = fs::remove_dir_all(&root_dir);
     }
 
     fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {

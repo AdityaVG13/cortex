@@ -530,7 +530,9 @@ async fn step_init() -> StepResult {
     if auth::read_token().is_some() {
         notes.push("Token: exists (reusing)".into());
     } else {
-        auth::generate_token();
+        if let Err(e) = auth::try_generate_token() {
+            return StepResult::Fail(format!("Token: {e}"));
+        }
         notes.push("Token: generated".into());
     }
 

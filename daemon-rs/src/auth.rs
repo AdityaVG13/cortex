@@ -336,24 +336,19 @@ pub fn cortex_dir() -> PathBuf {
 
 /// Generate a fresh UUID token, write it to the resolved token path, and
 /// return the token string.
-pub fn generate_token_for(paths: &CortexPaths) -> String {
+pub fn try_generate_token_for(paths: &CortexPaths) -> Result<String, String> {
     let token = Uuid::new_v4().simple().to_string();
-    if let Err(e) = fs::create_dir_all(paths.token.parent().unwrap_or(&paths.home)) {
-        eprintln!(
-            "[cortex] WARNING: cannot create {}: {e}",
-            paths.token.parent().unwrap_or(&paths.home).display()
-        );
-    }
-    if let Err(e) = write_secret_file(&paths.token, token.as_bytes()) {
-        eprintln!("[cortex] WARNING: cannot write token: {e}");
-    }
-    token
+    let token_dir = paths.token.parent().unwrap_or(&paths.home);
+    fs::create_dir_all(token_dir)
+        .map_err(|e| format!("cannot create token directory {}: {e}", token_dir.display()))?;
+    write_secret_file(&paths.token, token.as_bytes())
+        .map_err(|e| format!("cannot write token file {}: {e}", paths.token.display()))?;
+    Ok(token)
 }
 
-/// Generate a fresh UUID token, write it to `~/.cortex/cortex.token`, and
-/// return the token string.
-pub fn generate_token() -> String {
-    generate_token_for(&CortexPaths::resolve())
+/// Generate a fresh UUID token for the resolved token path.
+pub fn try_generate_token() -> Result<String, String> {
+    try_generate_token_for(&CortexPaths::resolve())
 }
 
 /// Read an existing token from the resolved token path.
@@ -617,7 +612,7 @@ mod tests {
             Some("127.0.0.1"),
         );
 
-        let token = generate_token_for(&paths);
+        let token = try_generate_token_for(&paths).expect("token generation should succeed");
 
         assert_eq!(read_token_from(&paths).as_deref(), Some(token.as_str()));
         assert_eq!(paths.token, home_dir.join("cortex.token"));
@@ -642,12 +637,38 @@ mod tests {
             Some("127.0.0.1"),
         );
 
-        let _ = generate_token_for(&paths);
+        let _ = try_generate_token_for(&paths).expect("token generation should succeed");
 
         let mode = fs::metadata(&paths.token).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
 
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn try_generate_token_for_reports_directory_failures() {
+        let home_dir = temp_test_dir("token_home_is_file");
+        if let Some(parent) = home_dir.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&home_dir, "not a directory").unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(54967),
+            Some("127.0.0.1"),
+        );
+
+        let err = try_generate_token_for(&paths).expect_err("token generation should fail");
+        assert!(
+            err.contains("cannot create token directory"),
+            "unexpected error: {err}"
+        );
+        assert!(!paths.token.exists());
+
+        let _ = fs::remove_file(&home_dir);
     }
 
     #[test]
