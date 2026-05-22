@@ -52,7 +52,7 @@ Run the checks relevant to the area you changed.
 ```bash
 cd daemon-rs
 cargo fmt
-cargo test
+cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
@@ -62,7 +62,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cd desktop/cortex-control-center
 npm test
 npm run build
-npm run expect:smoke
+npm run verify:lifecycle:dev
 ```
 
 ### Root convenience scripts
