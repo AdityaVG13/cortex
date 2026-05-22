@@ -48,6 +48,7 @@ const SERVICE_ENSURE_FALLBACK_ENV: &str = "CORTEX_ALLOW_SERVICE_ENSURE_FALLBACK"
 const BUDGETS_FILE_NAME: &str = "budgets.toml";
 const BUDGET_ENDPOINT_NAMES: [&str; 4] = ["store", "recall", "boot", "mcp"];
 const MAX_BUDGET_INTEGER: u64 = i64::MAX as u64;
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 #[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
 
@@ -1487,13 +1488,7 @@ fn flush_cortex_db_on_shutdown() -> Result<(), String> {
             db_path.display()
         )
     })?;
-    conn.execute_batch(
-        r#"
-    PRAGMA journal_mode = WAL;
-    PRAGMA wal_checkpoint(TRUNCATE);
-    "#,
-    )
-    .map_err(|err| {
+    configure_shutdown_flush_connection(&conn).map_err(|err| {
         format!(
             "Failed to flush WAL on shutdown {}: {err}",
             db_path.display()
@@ -1502,6 +1497,16 @@ fn flush_cortex_db_on_shutdown() -> Result<(), String> {
     conn.close()
         .map_err(|(_, err)| format!("Failed to close DB after shutdown flush: {err}"))?;
     Ok(())
+}
+
+fn configure_shutdown_flush_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(&format!(
+        r#"
+        PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};
+        PRAGMA journal_mode = WAL;
+        PRAGMA wal_checkpoint(TRUNCATE);
+        "#
+    ))
 }
 
 fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
@@ -2990,17 +2995,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        budget_snapshot_from_contents, cortex_mcp_registration, cortex_readiness_state,
-        describe_daemon_state, editor_args, editor_config_path, editor_targets,
-        extract_error_detail, health_state_with_identity_fallback, hide_to_tray_on_close,
-        interpret_shutdown_response, is_cortex_health_response, is_disallowed_daemon_binary_path,
-        json_env_match, local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
+        budget_snapshot_from_contents, configure_shutdown_flush_connection,
+        cortex_mcp_registration, cortex_readiness_state, describe_daemon_state, editor_args,
+        editor_config_path, editor_targets, extract_error_detail,
+        health_state_with_identity_fallback, hide_to_tray_on_close, interpret_shutdown_response,
+        is_cortex_health_response, is_disallowed_daemon_binary_path, json_env_match,
+        local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
         path_binary_fallback_enabled_from_value, readiness_state_with_identity_fallback,
         should_use_partial_response_on_read_timeout, toml_env_match, validate_budget_draft,
         workspace_binary_candidates, write_budget_config_file, BudgetConfigDraft,
         BudgetEndpointDraft, CortexReachabilityProbe, DaemonState, FetchCortexResponse,
-        LifecycleState, ResolvedCortexPaths,
+        LifecycleState, ResolvedCortexPaths, SQLITE_BUSY_TIMEOUT_MS,
     };
+    use rusqlite::Connection;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command};
@@ -3034,6 +3041,16 @@ mod tests {
 
         lifecycle.request_quit();
         assert!(lifecycle.is_quit_requested());
+    }
+
+    #[test]
+    fn shutdown_flush_sets_busy_timeout_before_checkpoint() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        configure_shutdown_flush_connection(&conn).expect("configure shutdown flush");
+        let busy_timeout_ms: u64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("read busy_timeout");
+        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_MS);
     }
 
     #[test]
