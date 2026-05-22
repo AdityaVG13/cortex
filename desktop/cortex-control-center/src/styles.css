@@ -9,6 +9,9 @@
 :root {
   /* Core palette — Jarvis cyan on deep space */
   --bg: #0a0e17;
+  --bg-1: var(--bg-deep);
+  --bg-2: var(--surface);
+  --bg-3: var(--surface-2);
   --bg-deep: #060a12;
   --surface: #0f1520;
   --surface-2: #141c2b;
@@ -536,9 +539,14 @@ body {
 /* ─── Buttons ───────────────────────────────────────────────────────────── */
 
 .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 600;
+  min-height: 32px;
   padding: 5px 14px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -547,6 +555,23 @@ body {
   cursor: pointer;
   transition: all 0.15s;
   letter-spacing: 0.02em;
+}
+
+.btn-sm:disabled,
+.btn-ctrl:disabled,
+.sys-item-action:disabled,
+.brain-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  box-shadow: none;
+  transform: none;
+}
+
+.btn-sm:disabled:hover,
+.btn-ctrl:disabled:hover {
+  border-color: var(--border);
+  color: var(--text-3);
+  box-shadow: none;
 }
 
 .btn-sm:hover {
@@ -4038,6 +4063,7 @@ kbd {
 }
 
 .sidebar.collapsed .sidebar-utility {
+  display: none;
   gap: 10px;
 }
 
@@ -4352,6 +4378,17 @@ kbd {
 
   .topbar-stat {
     white-space: normal;
+  }
+
+  .sidebar.collapsed .nav-item,
+  .btn-sidebar-collapse,
+  .topbar-connection,
+  .sys-item,
+  .btn-sm,
+  .btn-ctrl,
+  .brain-toggle,
+  .connection-dialog-close {
+    min-height: 44px;
   }
 
   .panel-header h1,
