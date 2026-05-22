@@ -555,6 +555,9 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
+    if a.iter().chain(b.iter()).any(|value| !value.is_finite()) {
+        return 0.0;
+    }
 
     let mut dot = 0.0f32;
     let mut norm_a = 0.0f32;
@@ -567,11 +570,16 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 
     let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
+    if denom == 0.0 || !denom.is_finite() {
         return 0.0;
     }
 
-    (dot / denom).clamp(0.0, 1.0)
+    let similarity = dot / denom;
+    if similarity.is_finite() {
+        similarity.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Encode a `Vec<f32>` as a SQLite BLOB. As of v0.6.0 this writes the
@@ -967,6 +975,12 @@ mod tests {
 
         std::env::set_var(POOL_ENV_KEY, "invalid");
         assert_eq!(resolved_pool_size(), DEFAULT_POOL_SIZE);
+    }
+
+    #[test]
+    fn cosine_similarity_rejects_non_finite_vectors() {
+        assert_eq!(cosine_similarity(&[1.0, f32::NAN], &[1.0, 0.0]), 0.0);
+        assert_eq!(cosine_similarity(&[1.0, 0.0], &[1.0, f32::INFINITY]), 0.0);
     }
 
     #[test]

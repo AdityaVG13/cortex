@@ -227,8 +227,15 @@ type ShadowMemoryRow = (Vec<u8>, String, Option<i64>, Option<String>);
 type ShadowDecisionRow = (Vec<u8>, String, Option<String>, Option<i64>, Option<String>);
 
 fn blend_importance(score: Option<f64>, trust_score: Option<f64>) -> f64 {
-    let score = score.unwrap_or(1.0).clamp(0.0, 1.0);
-    let trust = trust_score.unwrap_or(score).clamp(0.0, 1.0);
+    let score = match score {
+        Some(value) if value.is_finite() => value.clamp(0.0, 1.0),
+        Some(_) => 0.0,
+        None => 1.0,
+    };
+    let trust = match trust_score {
+        Some(value) if value.is_finite() => value.clamp(0.0, 1.0),
+        _ => score,
+    };
     round4((score * 0.65) + (trust * 0.35))
 }
 
@@ -6133,6 +6140,9 @@ fn recency_days(value: Option<&str>) -> i64 {
 }
 
 fn round4(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.0;
+    }
     (value * 10000.0).round() / 10000.0
 }
 
@@ -7319,22 +7329,23 @@ fn fallback_ranking_score(
 /// * `k`     -- smoothing constant (use `60.0` per Cormack et al.)
 ///
 fn rrf_fuse_weighted(lists: &[Vec<(i64, f64)>], weights: &[f64], k: f64) -> Vec<(i64, f64)> {
+    let smooth_k = if k.is_finite() && k >= 0.0 { k } else { 60.0 };
     let mut fused: HashMap<i64, f64> = HashMap::new();
     for (list_index, list) in lists.iter().enumerate() {
-        let weight = weights.get(list_index).copied().unwrap_or(1.0).max(0.0);
+        let weight = match weights.get(list_index).copied() {
+            Some(value) if value.is_finite() => value.max(0.0),
+            Some(_) => 0.0,
+            None => 1.0,
+        };
         if weight == 0.0 {
             continue;
         }
         for (rank, &(id, _score)) in list.iter().enumerate() {
-            *fused.entry(id).or_insert(0.0) += weight / (k + rank as f64 + 1.0);
+            *fused.entry(id).or_insert(0.0) += weight / (smooth_k + rank as f64 + 1.0);
         }
     }
     let mut result: Vec<(i64, f64)> = fused.into_iter().collect();
-    result.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
+    result.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     result
 }
 
@@ -7362,6 +7373,9 @@ fn days_since(created_at: &str) -> f64 {
 /// Normalize importance score to 0.0-1.0 range.
 /// Legacy records may use 0-100, while current records use 0-1.
 fn normalize(importance: f64) -> f64 {
+    if !importance.is_finite() {
+        return 0.0;
+    }
     let clamped = importance.clamp(0.0, 100.0);
     if clamped <= 1.0 {
         clamped
@@ -9175,6 +9189,8 @@ mod tests {
     fn test_round4() {
         assert_eq!(round4(0.12345), 0.1235);
         assert_eq!(round4(1.0), 1.0);
+        assert_eq!(round4(f64::NAN), 0.0);
+        assert_eq!(round4(f64::INFINITY), 0.0);
     }
 
     #[test]
@@ -9743,6 +9759,23 @@ mod tests {
     }
 
     #[test]
+    fn test_rrf_fuse_weighted_ignores_non_finite_weights() {
+        let keyword_list = vec![(1, 0.99)];
+        let semantic_list = vec![(2, 0.99)];
+
+        let result = rrf_fuse_weighted(&[keyword_list, semantic_list], &[f64::NAN, 1.0], 60.0);
+        assert_eq!(result, vec![(2, 1.0 / 61.0)]);
+    }
+
+    #[test]
+    fn test_rrf_fuse_weighted_falls_back_for_non_finite_k() {
+        let result = rrf_fuse_weighted(&[vec![(1, 0.99)]], &[1.0], f64::NAN);
+
+        assert_eq!(result, vec![(1, 1.0 / 61.0)]);
+        assert!(result[0].1.is_finite());
+    }
+
+    #[test]
     fn test_adaptive_rrf_weights_bias_short_exact_queries_toward_keyword() {
         let weights = adaptive_rrf_weights("auth.rs", None, true);
         assert!(weights.keyword > weights.semantic);
@@ -9835,6 +9868,10 @@ mod tests {
 
         // Clamp below 0
         assert_eq!(normalize(-10.0), 0.0);
+
+        // Reject non-finite values before clamping.
+        assert_eq!(normalize(f64::NAN), 0.0);
+        assert_eq!(normalize(f64::INFINITY), 0.0);
     }
 
     #[test]
@@ -9848,6 +9885,15 @@ mod tests {
         assert_eq!(
             blend_importance(Some(0.42), None),
             blend_importance(Some(0.42), Some(0.42))
+        );
+    }
+
+    #[test]
+    fn test_blend_importance_rejects_non_finite_values() {
+        assert_eq!(blend_importance(Some(f64::NAN), None), 0.0);
+        assert_eq!(
+            blend_importance(Some(0.42), Some(f64::INFINITY)),
+            blend_importance(Some(0.42), None)
         );
     }
 
