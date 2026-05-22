@@ -28,10 +28,12 @@ fn adapter_contract_spec_covers_required_matrix() {
         "adapter contract must keep at least 10 scenarios"
     );
 
-    let ids: BTreeSet<&str> = scenarios
-        .iter()
-        .filter_map(|scenario| scenario["id"].as_str())
-        .collect();
+    let ids = contract_scenario_ids(&spec);
+    assert_eq!(
+        ids.len(),
+        scenarios.len(),
+        "contract scenario ids must be unique"
+    );
     for required in [
         "health-public",
         "store-decision",
@@ -56,6 +58,8 @@ fn adapter_contract_spec_covers_required_matrix() {
 #[test]
 fn http_and_mcp_rpc_match_adapter_contract() {
     let _guard = adapter_conformance_guard();
+    let spec: Value = serde_json::from_str(SPEC).expect("contract spec is JSON-compatible YAML");
+    let mut exercised = BTreeSet::new();
     let home_dir = unique_temp_dir("adapter_conformance");
     fs::create_dir_all(&home_dir).expect("create temp home");
     let port = reserve_port();
@@ -65,8 +69,8 @@ fn http_and_mcp_rpc_match_adapter_contract() {
     let token = read_token(&home_dir);
 
     let health = request_json(port, "GET", "/health", None, None).expect("health");
-    assert_eq!(health.status, 200);
-    assert_json_fields(&health.body, &["status", "runtime", "stats"]);
+    assert_contract_response(&spec, "health-public", &health);
+    record_scenario(&mut exercised, "health-public");
 
     let store = request_json(
         port,
@@ -85,13 +89,14 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         })),
     )
     .expect("store");
-    assert_eq!(store.status, 200);
+    assert_contract_response(&spec, "store-decision", &store);
     assert_eq!(store.body["stored"], true);
     assert!(
         store.body.get("entry").is_some(),
         "store entry missing: {}",
         store.body
     );
+    record_scenario(&mut exercised, "store-decision");
 
     let recall_get = request_json(
         port,
@@ -101,16 +106,13 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         None,
     )
     .expect("recall get");
-    assert_eq!(recall_get.status, 200);
-    assert_json_fields(
-        &recall_get.body,
-        &["results", "budget", "spent", "saved", "tokenUsageLine"],
-    );
+    assert_contract_response(&spec, "recall-get", &recall_get);
     assert!(
         recall_get.body["results"].as_array().is_some(),
         "recall results should be an array: {}",
         recall_get.body
     );
+    record_scenario(&mut exercised, "recall-get");
 
     let recall_post = request_json(
         port,
@@ -125,11 +127,8 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         })),
     )
     .expect("recall post");
-    assert_eq!(recall_post.status, 200);
-    assert_json_fields(
-        &recall_post.body,
-        &["results", "budget", "spent", "saved", "tokenUsageLine"],
-    );
+    assert_contract_response(&spec, "recall-post", &recall_post);
+    record_scenario(&mut exercised, "recall-post");
 
     let peek = request_json(
         port,
@@ -139,8 +138,8 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         None,
     )
     .expect("peek");
-    assert_eq!(peek.status, 200);
-    assert_json_fields(&peek.body, &["matches", "count", "tokenUsage"]);
+    assert_contract_response(&spec, "peek", &peek);
+    record_scenario(&mut exercised, "peek");
 
     let boot = request_json(
         port,
@@ -150,16 +149,13 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         None,
     )
     .expect("boot");
-    assert_eq!(boot.status, 200);
-    assert_json_fields(
-        &boot.body,
-        &["bootPrompt", "tokenEstimate", "savings", "tokenUsage"],
-    );
+    assert_contract_response(&spec, "boot", &boot);
+    record_scenario(&mut exercised, "boot");
 
     let export =
         request_json(port, "GET", "/export?format=json", Some(&token), None).expect("export");
-    assert_eq!(export.status, 200);
-    assert_json_fields(&export.body, &["memories", "decisions"]);
+    assert_contract_response(&spec, "export-json", &export);
+    record_scenario(&mut exercised, "export-json");
 
     let initialize = mcp_rpc(
         port,
@@ -176,8 +172,8 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         }),
     )
     .expect("mcp initialize");
-    assert_eq!(initialize.status, 200);
-    assert_json_fields(&initialize.body, &["jsonrpc", "id", "result"]);
+    assert_contract_response(&spec, "mcp-initialize", &initialize);
+    record_scenario(&mut exercised, "mcp-initialize");
 
     let tools = mcp_rpc(
         port,
@@ -185,84 +181,78 @@ fn http_and_mcp_rpc_match_adapter_contract() {
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     )
     .expect("mcp tools/list");
-    assert_eq!(tools.status, 200);
+    assert_contract_status(&spec, "mcp-tools-list", &tools);
     let tool_names: BTreeSet<&str> = tools.body["result"]["tools"]
         .as_array()
         .expect("tools array")
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    for required in [
-        "cortex_health",
-        "cortex_store",
-        "cortex_recall",
-        "cortex_boot",
-        "cortex_peek",
-    ] {
-        assert!(tool_names.contains(required), "missing MCP tool {required}");
-    }
+    assert_contract_required_tools(&spec, "mcp-tools-list", &tool_names);
+    record_scenario(&mut exercised, "mcp-tools-list");
 
-    assert_mcp_tool_ok(
-        &mcp_rpc(
-            port,
-            &token,
-            json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": { "name": "cortex_health", "arguments": {} }
-            }),
-        )
-        .expect("mcp cortex_health")
-        .body,
-    );
+    let mcp_health = mcp_rpc(
+        port,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "cortex_health", "arguments": {} }
+        }),
+    )
+    .expect("mcp cortex_health");
+    assert_contract_status(&spec, "mcp-health-tool", &mcp_health);
+    assert_mcp_tool_ok(&mcp_health.body);
+    record_scenario(&mut exercised, "mcp-health-tool");
 
-    assert_mcp_tool_ok(
-        &mcp_rpc(
-            port,
-            &token,
-            json!({
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "name": "cortex_store",
-                    "arguments": {
-                        "decision": "Adapter conformance MCP memory",
-                        "context": "C4 MCP contract"
-                    }
+    let mcp_store = mcp_rpc(
+        port,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "cortex_store",
+                "arguments": {
+                    "decision": "Adapter conformance MCP memory",
+                    "context": "C4 MCP contract"
                 }
-            }),
-        )
-        .expect("mcp cortex_store")
-        .body,
-    );
+            }
+        }),
+    )
+    .expect("mcp cortex_store");
+    assert_contract_status(&spec, "mcp-store-tool", &mcp_store);
+    assert_mcp_tool_ok(&mcp_store.body);
+    record_scenario(&mut exercised, "mcp-store-tool");
 
-    assert_mcp_tool_ok(
-        &mcp_rpc(
-            port,
-            &token,
-            json!({
-                "jsonrpc": "2.0",
-                "id": 5,
-                "method": "tools/call",
-                "params": {
-                    "name": "cortex_recall",
-                    "arguments": {
-                        "query": "Adapter conformance MCP memory",
-                        "budget": 120,
-                        "k": 5
-                    }
+    let mcp_recall = mcp_rpc(
+        port,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "cortex_recall",
+                "arguments": {
+                    "query": "Adapter conformance MCP memory",
+                    "budget": 120,
+                    "k": 5
                 }
-            }),
-        )
-        .expect("mcp cortex_recall")
-        .body,
-    );
+            }
+        }),
+    )
+    .expect("mcp cortex_recall");
+    assert_contract_status(&spec, "mcp-recall-tool", &mcp_recall);
+    assert_mcp_tool_ok(&mcp_recall.body);
+    record_scenario(&mut exercised, "mcp-recall-tool");
 
     shutdown_daemon(port, &home_dir);
     wait_for_exit(&mut daemon, Duration::from_secs(10));
     let _ = fs::remove_dir_all(&home_dir);
+    assert_all_contract_scenarios_exercised(&spec, &exercised);
 }
 
 #[derive(Debug)]
@@ -325,6 +315,79 @@ fn assert_json_fields(payload: &Value, fields: &[&str]) {
             "missing field {field} in payload {payload}"
         );
     }
+}
+
+fn contract_scenario<'a>(spec: &'a Value, id: &str) -> &'a Value {
+    spec["scenarios"]
+        .as_array()
+        .expect("scenarios array")
+        .iter()
+        .find(|scenario| scenario["id"].as_str() == Some(id))
+        .unwrap_or_else(|| panic!("missing contract scenario {id}"))
+}
+
+fn assert_contract_status(spec: &Value, id: &str, response: &JsonHttpResponse) {
+    let expected_status = contract_scenario(spec, id)["expect"]["status"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("contract scenario {id} missing numeric expect.status"));
+    assert_eq!(
+        u64::from(response.status),
+        expected_status,
+        "status mismatch for contract scenario {id}"
+    );
+}
+
+fn assert_contract_response(spec: &Value, id: &str, response: &JsonHttpResponse) {
+    assert_contract_status(spec, id, response);
+    if let Some(fields) = contract_scenario(spec, id)["expect"]["jsonFields"].as_array() {
+        let fields: Vec<&str> = fields
+            .iter()
+            .map(|field| {
+                field
+                    .as_str()
+                    .unwrap_or_else(|| panic!("contract scenario {id} has non-string json field"))
+            })
+            .collect();
+        assert_json_fields(&response.body, &fields);
+    }
+}
+
+fn assert_contract_required_tools(spec: &Value, id: &str, tool_names: &BTreeSet<&str>) {
+    let required_tools = contract_scenario(spec, id)["expect"]["requiredTools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("contract scenario {id} missing expect.requiredTools"));
+    for required in required_tools {
+        let required = required
+            .as_str()
+            .unwrap_or_else(|| panic!("contract scenario {id} has non-string required tool"));
+        assert!(tool_names.contains(required), "missing MCP tool {required}");
+    }
+}
+
+fn contract_scenario_ids(spec: &Value) -> BTreeSet<String> {
+    spec["scenarios"]
+        .as_array()
+        .expect("scenarios array")
+        .iter()
+        .map(|scenario| scenario["id"].as_str().expect("scenario id").to_string())
+        .collect()
+}
+
+fn record_scenario(exercised: &mut BTreeSet<String>, id: &str) {
+    assert!(
+        exercised.insert(id.to_string()),
+        "contract scenario {id} was exercised more than once"
+    );
+}
+
+fn assert_all_contract_scenarios_exercised(spec: &Value, exercised: &BTreeSet<String>) {
+    let expected = contract_scenario_ids(spec);
+    let missing: Vec<&String> = expected.difference(exercised).collect();
+    let unexpected: Vec<&String> = exercised.difference(&expected).collect();
+    assert!(
+        missing.is_empty() && unexpected.is_empty(),
+        "adapter conformance coverage drift; missing={missing:?}, unexpected={unexpected:?}"
+    );
 }
 
 fn assert_mcp_tool_ok(payload: &Value) {
