@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-use rusqlite::{Connection, params};
-use serde_json::{Value, json};
+use rusqlite::{params, Connection};
+use serde_json::{json, Value};
 
 pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
 

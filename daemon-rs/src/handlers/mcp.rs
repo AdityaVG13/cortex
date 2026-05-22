@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: MIT
 use chrono::{Duration, Utc};
 use rusqlite::OptionalExtension;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use super::diary::{DiaryRequest, write_diary_entry};
+use super::diary::{write_diary_entry, DiaryRequest};
 use super::feedback::{
     build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value,
 };
 use super::health::{build_digest, build_health_payload};
 use super::mutate::{
-    ConflictListOptions, ConflictStatusFilter, ResolutionMetadata, forget_keyword_scoped,
-    list_conflicts_payload, parse_conflict_id, resolve_decision, resolve_decision_with_metadata,
+    forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision,
+    resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
 };
 use super::recall::{
-    RecallContext, execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
-    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source,
+    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
+    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext,
 };
 use super::store::{
-    DecisionProvenance, persist_decision_embedding,
-    store_decision_with_input_embedding_and_provenance_retention,
+    persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention,
+    DecisionProvenance,
 };
-use super::{SourceIdentity, estimate_tokens, now_iso};
+use super::{estimate_tokens, now_iso, SourceIdentity};
 use crate::api_types::RetentionClass;
 use crate::state::RuntimeState;
 use crate::{aging, db, indexer};
@@ -225,7 +225,11 @@ fn tool_name_suggestions(provided: &str) -> Vec<String> {
             } else {
                 let prefix =
                     common_prefix_len(&lower, &needle).max(common_prefix_len(short, &needle));
-                if prefix >= 4 { 50 + prefix as i32 } else { 0 }
+                if prefix >= 4 {
+                    50 + prefix as i32
+                } else {
+                    0
+                }
             };
 
             (score > 0).then_some((score, name))
@@ -936,19 +940,19 @@ fn fetch_last_call(
 #[cfg(test)]
 mod tests {
     use super::{
-        ClientPermission, fetch_last_call, handle_mcp_message_with_caller, has_client_permission,
-        mcp_dispatch, mcp_tools, normalize_permission_client_id, required_permission_for_tool,
+        fetch_last_call, handle_mcp_message_with_caller, has_client_permission, mcp_dispatch,
+        mcp_tools, normalize_permission_client_id, required_permission_for_tool, ClientPermission,
     };
     use crate::db;
-    use crate::handlers::SourceIdentity;
     use crate::handlers::recall::RecallContext;
+    use crate::handlers::SourceIdentity;
     use crate::state::{DaemonEvent, RuntimeState};
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use tokio::sync::{Mutex, broadcast};
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, Mutex};
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -1441,16 +1445,12 @@ mod tests {
         let resources = response["result"]["resources"]
             .as_array()
             .expect("resources should be an array");
-        assert!(
-            resources.iter().any(|resource| {
-                resource["uri"].as_str() == Some("cortex://tooling/capabilities")
-            })
-        );
-        assert!(
-            resources
-                .iter()
-                .all(|resource| resource["mimeType"].as_str() == Some("application/json"))
-        );
+        assert!(resources
+            .iter()
+            .any(|resource| { resource["uri"].as_str() == Some("cortex://tooling/capabilities") }));
+        assert!(resources
+            .iter()
+            .all(|resource| resource["mimeType"].as_str() == Some("application/json")));
     }
 
     #[tokio::test]
@@ -1479,13 +1479,11 @@ mod tests {
             payload["toolCount"].as_u64(),
             Some(mcp_tools().len() as u64)
         );
-        assert!(
-            payload["clusters"]["recall"]
-                .as_array()
-                .expect("recall cluster should be listed")
-                .iter()
-                .any(|tool| tool.as_str() == Some("cortex_recall"))
-        );
+        assert!(payload["clusters"]["recall"]
+            .as_array()
+            .expect("recall cluster should be listed")
+            .iter()
+            .any(|tool| tool.as_str() == Some("cortex_recall")));
         assert_eq!(
             payload["resources"][0].as_str(),
             Some("cortex://tooling/capabilities")
@@ -1514,19 +1512,15 @@ mod tests {
             response["error"]["data"]["errorType"].as_str(),
             Some("UNKNOWN_TOOL")
         );
-        assert!(
-            response["error"]["data"]["suggestions"]
-                .as_array()
-                .expect("suggestions should be listed")
-                .iter()
-                .any(|tool| tool.as_str() == Some("cortex_recall"))
-        );
-        assert!(
-            response["error"]["data"]["discoveryHint"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("cortex://tooling/tools")
-        );
+        assert!(response["error"]["data"]["suggestions"]
+            .as_array()
+            .expect("suggestions should be listed")
+            .iter()
+            .any(|tool| tool.as_str() == Some("cortex_recall")));
+        assert!(response["error"]["data"]["discoveryHint"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cortex://tooling/tools"));
     }
 
     #[tokio::test]
@@ -1551,13 +1545,11 @@ mod tests {
             response["error"]["data"]["errorType"].as_str(),
             Some("UNKNOWN_RESOURCE")
         );
-        assert!(
-            response["error"]["data"]["availableResources"]
-                .as_array()
-                .expect("available resources should be listed")
-                .iter()
-                .any(|uri| uri.as_str() == Some("cortex://tooling/tools"))
-        );
+        assert!(response["error"]["data"]["availableResources"]
+            .as_array()
+            .expect("available resources should be listed")
+            .iter()
+            .any(|uri| uri.as_str() == Some("cortex://tooling/tools")));
     }
 
     #[tokio::test]

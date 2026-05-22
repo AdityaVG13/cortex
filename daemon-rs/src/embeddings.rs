@@ -98,8 +98,10 @@ const ALL_MINILM_L6_V2: EmbeddingModelProfile = EmbeddingModelProfile {
     max_input_tokens: 256,
     model_file: "all-MiniLM-L6-v2.onnx",
     tokenizer_file: "tokenizer.json",
-    model_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
-    tokenizer_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+    model_url:
+        "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
+    tokenizer_url:
+        "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
     auxiliary_files: &[],
     query_prefix: "",
     passage_prefix: "",

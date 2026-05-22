@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use rusqlite::{Connection, params};
-use serde_json::{Value, json};
+use axum::Json;
+use rusqlite::{params, Connection};
+use serde_json::{json, Value};
 
 use super::{
     ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, log_event,
@@ -13,7 +13,7 @@ use super::{
 use crate::api_types::{RetentionClass, StoreRequest};
 use crate::budgets::BudgetEndpoint;
 use crate::conflict::{
-    ConflictClassification, ConflictResult, detect_conflict, jaccard_similarity,
+    detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult,
 };
 use crate::db::checkpoint_wal_best_effort;
 use crate::rate_limit::RequestClass;
@@ -1777,9 +1777,9 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use tokio::sync::{Mutex, broadcast};
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, Mutex};
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

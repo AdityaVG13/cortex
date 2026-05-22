@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::Json;
 use chrono::{TimeZone, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -941,7 +941,11 @@ fn adaptive_default_budget_for_query(
     let base: usize = if profile.exactish && !profile.naturalish {
         180
     } else if profile.naturalish && !profile.exactish {
-        if token_count >= 14 { 300 } else { 270 }
+        if token_count >= 14 {
+            300
+        } else {
+            270
+        }
     } else {
         240
     };
@@ -6774,9 +6778,9 @@ async fn predict_and_cache(
             .into_iter()
             .filter(|(query, _)| query != current_query)
             .max_by(|a, b| {
-                a.1.0
-                    .cmp(&b.1.0)
-                    .then_with(|| a.1.1.cmp(&b.1.1))
+                a.1 .0
+                    .cmp(&b.1 .0)
+                    .then_with(|| a.1 .1.cmp(&b.1 .1))
                     .then_with(|| b.0.cmp(&a.0))
             })
             .map(|(query, _)| query)
@@ -7011,7 +7015,8 @@ type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
 type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
 
 fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfoldRow> {
-    let sql_with_visibility = "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
+    let sql_with_visibility =
+        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now')) \
@@ -7048,7 +7053,8 @@ fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfo
 }
 
 fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<DecisionUnfoldRow> {
-    let sql_with_visibility = "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
+    let sql_with_visibility =
+        "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now'))";
@@ -7086,7 +7092,8 @@ fn query_decision_by_context_for_unfold(
     conn: &Connection,
     source: &str,
 ) -> Option<DecisionUnfoldRow> {
-    let sql_with_visibility = "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
+    let sql_with_visibility =
+        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
          AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
              AND (valid_from IS NULL OR valid_from <= datetime('now')) \
              AND (valid_until IS NULL OR valid_until > datetime('now')) \
@@ -7389,9 +7396,9 @@ mod tests {
     use rusqlite::params;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use tokio::sync::{Mutex, broadcast};
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, Mutex};
 
     struct StaticReranker;
 
@@ -8114,21 +8121,15 @@ mod tests {
             .map(|candidate| candidate.source.clone())
             .collect();
 
-        assert!(
-            sources
-                .iter()
-                .any(|source| source == "memory::semantic-valid")
-        );
-        assert!(
-            !sources
-                .iter()
-                .any(|source| source == "memory::semantic-future")
-        );
-        assert!(
-            !sources
-                .iter()
-                .any(|source| source == "memory::semantic-stale")
-        );
+        assert!(sources
+            .iter()
+            .any(|source| source == "memory::semantic-valid"));
+        assert!(!sources
+            .iter()
+            .any(|source| source == "memory::semantic-future"));
+        assert!(!sources
+            .iter()
+            .any(|source| source == "memory::semantic-stale"));
     }
 
     #[test]

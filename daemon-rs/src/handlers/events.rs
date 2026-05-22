@@ -65,7 +65,10 @@ pub struct BrainFiringQuery {
 
 fn brain_event_to_json(event: &BrainFiringEvent) -> Value {
     let mut obj = serde_json::Map::new();
-    obj.insert("type".to_string(), Value::String(event.kind.as_str().to_string()));
+    obj.insert(
+        "type".to_string(),
+        Value::String(event.kind.as_str().to_string()),
+    );
     obj.insert("ts".to_string(), Value::String(now_iso()));
     if let Some(payload_obj) = event.payload.as_object() {
         for (k, v) in payload_obj {
@@ -108,7 +111,11 @@ pub async fn handle_brain_firing_stream(
 
     let batch_window = StdDuration::from_millis(50);
     let buffered = futures_util::stream::unfold(
-        (event_stream, Vec::<BrainFiringEvent>::new(), caller_owner_id),
+        (
+            event_stream,
+            Vec::<BrainFiringEvent>::new(),
+            caller_owner_id,
+        ),
         move |(mut events, mut buf, owner)| async move {
             // Wait for first event, then collect all that arrive within the window.
             let first = match events.next().await {
@@ -204,7 +211,10 @@ mod tests {
         };
         let v = brain_event_to_json(&event);
         let obj = v.as_object().expect("object");
-        assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("cluster_finalized"));
+        assert_eq!(
+            obj.get("type").and_then(|v| v.as_str()),
+            Some("cluster_finalized")
+        );
         assert_eq!(obj.get("cluster_id").and_then(|v| v.as_i64()), Some(42));
         assert_eq!(obj.get("member_count").and_then(|v| v.as_i64()), Some(7));
         assert_eq!(obj.get("owner_id").and_then(|v| v.as_i64()), Some(1));
