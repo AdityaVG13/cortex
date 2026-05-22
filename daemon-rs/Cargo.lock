@@ -337,6 +337,7 @@ dependencies = [
  "sha2",
  "sqlite-vec",
  "sysinfo",
+ "tempfile",
  "tokenizers",
  "tokio",
  "tokio-rustls",
