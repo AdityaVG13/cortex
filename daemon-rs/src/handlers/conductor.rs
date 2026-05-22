@@ -4,14 +4,15 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use chrono::{Duration, Utc};
-use regex::Regex;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::OnceLock;
 use uuid::Uuid;
 
-use super::{ensure_auth_rated, json_response, now_iso, parse_timestamp_ms, resolve_caller_id};
+use super::{
+    ensure_auth_rated, json_response, now_iso, parse_duration_to_seconds, parse_json_array,
+    parse_timestamp_ms, redact_secrets, resolve_caller_id,
+};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 
@@ -25,10 +26,6 @@ const MAX_TASKS: i64 = 500;
 const DEFAULT_TASK_QUERY_LIMIT: usize = 200;
 const MAX_TASK_QUERY_LIMIT: usize = 500;
 const SESSION_FRESHNESS_IDLE_SECONDS: i64 = 24 * 60 * 60;
-// Regex compilation is intentionally one-time: redact_secrets runs on hot paths.
-static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
-static HASH_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
-static CREDENTIAL_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
 // ─── Request / query types ──────────────────────────────────────────────────
 
@@ -146,52 +143,9 @@ fn owner_id_from_headers(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
     resolve_caller_id(headers, state).or(state.default_owner_id)
 }
 
-fn parse_duration_to_seconds(raw: &str) -> i64 {
-    if raw.is_empty() {
-        return 60 * 60;
-    }
-    let mut chars = raw.chars();
-    let unit = chars.next_back().unwrap_or('h');
-    let digits = chars.as_str();
-    if digits.is_empty() {
-        return 60 * 60;
-    }
-    let value = digits.parse::<i64>().unwrap_or(1).max(1);
-    match unit {
-        'm' => value * 60,
-        'h' => value * 60 * 60,
-        'd' => value * 24 * 60 * 60,
-        _ => 60 * 60,
-    }
-}
-
-fn parse_json_array(raw: &str) -> Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
-}
-
 fn is_valid_agent_label(agent: &str) -> bool {
     let trimmed = agent.trim();
     !trimmed.is_empty() && trimmed.len() <= 160 && !trimmed.chars().any(|ch| ch.is_control())
-}
-
-// Apply redactions in three passes so broad credential masking does not hide
-// structured bearer/hash patterns from earlier, more specific replacements.
-fn redact_secrets(text: &str) -> String {
-    let bearer = BEARER_REDACTION_RE
-        .get_or_init(|| Regex::new(r"Bearer\s+[a-f0-9]{32,}").ok())
-        .as_ref()
-        .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
-        .unwrap_or_else(|| text.to_string());
-    let hashes = HASH_REDACTION_RE
-        .get_or_init(|| Regex::new(r"[a-f0-9]{40,}").ok())
-        .as_ref()
-        .map(|re| re.replace_all(&bearer, "[HASH_REDACTED]").to_string())
-        .unwrap_or(bearer);
-    CREDENTIAL_REDACTION_RE
-        .get_or_init(|| Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+").ok())
-        .as_ref()
-        .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
-        .unwrap_or(hashes)
 }
 
 fn is_unique_constraint(err: &rusqlite::Error) -> bool {

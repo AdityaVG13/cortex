@@ -19,8 +19,10 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{Duration, NaiveDateTime, TimeZone, Utc};
+use regex::Regex;
 use serde_json::{json, Value};
 use std::net::IpAddr;
+use std::sync::OnceLock;
 
 use crate::budgets::{BudgetDecision, BudgetEndpoint};
 use crate::rate_limit::RequestClass;
@@ -39,6 +41,9 @@ const MAX_EVENT_VALUE_CHARS: usize = 240;
 const MERGE_EVENT_PREVIEW_CHARS: usize = 240;
 pub(crate) const CORTEX_PEER_IP_HEADER: &str = "x-cortex-peer-ip";
 const HIGH_VOLUME_EVENT_PRUNE_INTERVAL: i64 = 64;
+static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
+static HASH_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
+static CREDENTIAL_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 const HIGH_VOLUME_EVENT_CAPS: &[(&str, i64)] = &[
     ("agent_boot", 4_000),
     ("boot_savings", 6_000),
@@ -91,6 +96,49 @@ pub fn json_error(status: StatusCode, msg: &str) -> Response {
 /// Access-Control-* headers here or they will override the CORS policy.
 fn apply_json_headers(headers: &mut HeaderMap) {
     headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
+}
+
+pub(super) fn parse_duration_to_seconds(raw: &str) -> i64 {
+    if raw.is_empty() {
+        return 60 * 60;
+    }
+    let mut chars = raw.chars();
+    let unit = chars.next_back().unwrap_or('h');
+    let digits = chars.as_str();
+    if digits.is_empty() {
+        return 60 * 60;
+    }
+    let value = digits.parse::<i64>().unwrap_or(1).max(1);
+    match unit {
+        'm' => value * 60,
+        'h' => value * 60 * 60,
+        'd' => value * 24 * 60 * 60,
+        _ => 60 * 60,
+    }
+}
+
+pub(super) fn parse_json_array(raw: &str) -> Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
+}
+
+// Apply redactions in three passes so broad credential masking does not hide
+// structured bearer/hash patterns from earlier, more specific replacements.
+pub(super) fn redact_secrets(text: &str) -> String {
+    let bearer = BEARER_REDACTION_RE
+        .get_or_init(|| Regex::new(r"Bearer\s+[a-f0-9]{32,}").ok())
+        .as_ref()
+        .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
+        .unwrap_or_else(|| text.to_string());
+    let hashes = HASH_REDACTION_RE
+        .get_or_init(|| Regex::new(r"[a-f0-9]{40,}").ok())
+        .as_ref()
+        .map(|re| re.replace_all(&bearer, "[HASH_REDACTED]").to_string())
+        .unwrap_or(bearer);
+    CREDENTIAL_REDACTION_RE
+        .get_or_init(|| Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+").ok())
+        .as_ref()
+        .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
+        .unwrap_or(hashes)
 }
 
 #[allow(clippy::result_large_err)]

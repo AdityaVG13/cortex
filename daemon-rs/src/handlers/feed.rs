@@ -4,13 +4,15 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use chrono::{Duration, Utc};
-use regex::Regex;
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::{ensure_auth_with_caller_rated, json_response, now_iso};
+use super::{
+    ensure_auth_with_caller_rated, json_response, now_iso, parse_duration_to_seconds,
+    parse_json_array, redact_secrets,
+};
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
 
@@ -87,29 +89,6 @@ pub struct FeedAckRequest {
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
-fn parse_duration_to_seconds(raw: &str) -> i64 {
-    if raw.is_empty() {
-        return 60 * 60;
-    }
-    let mut chars = raw.chars();
-    let unit = chars.next_back().unwrap_or('h');
-    let digits = chars.as_str();
-    if digits.is_empty() {
-        return 60 * 60;
-    }
-    let value = digits.parse::<i64>().unwrap_or(1).max(1);
-    match unit {
-        'm' => value * 60,
-        'h' => value * 60 * 60,
-        'd' => value * 24 * 60 * 60,
-        _ => 60 * 60,
-    }
-}
-
-fn parse_json_array(raw: &str) -> Value {
-    serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
-}
-
 fn feed_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FeedEntry> {
     Ok(FeedEntry {
         id: row.get(0)?,
@@ -124,18 +103,6 @@ fn feed_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FeedEntry> {
         timestamp: row.get(9)?,
         tokens: row.get(10)?,
     })
-}
-
-fn redact_secrets(text: &str) -> String {
-    let bearer = Regex::new(r"Bearer\s+[a-f0-9]{32,}")
-        .map(|re| re.replace_all(text, "Bearer [REDACTED]").to_string())
-        .unwrap_or_else(|_| text.to_string());
-    let hashes = Regex::new(r"[a-f0-9]{40,}")
-        .map(|re| re.replace_all(&bearer, "[HASH_REDACTED]").to_string())
-        .unwrap_or(bearer);
-    Regex::new(r"(?i)(?:token|key|secret|password)\s*[:=]\s*\S+")
-        .map(|re| re.replace_all(&hashes, "[CREDENTIAL_REDACTED]").to_string())
-        .unwrap_or(hashes)
 }
 
 fn feed_to_json(entry: &FeedEntry, include_content: bool) -> Value {
