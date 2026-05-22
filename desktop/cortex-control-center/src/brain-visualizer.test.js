@@ -11,6 +11,7 @@ const tiers = readFileSync(new URL("./brain-v2/Tiers.js", import.meta.url), "utf
 const satellites = readFileSync(new URL("./brain-v2/Satellites.js", import.meta.url), "utf8");
 const palette = readFileSync(new URL("./brain-v2/ClusterPalette.js", import.meta.url), "utf8");
 const fnv1a = readFileSync(new URL("./brain-v2/util/fnv1a.js", import.meta.url), "utf8");
+const keyboard = readFileSync(new URL("./brain-v2/Keyboard.js", import.meta.url), "utf8");
 
 describe("Brain v2 wrapper", () => {
   it("v1 force-graph and brain/* modules are gone", () => {
@@ -247,9 +248,22 @@ describe("Brain v2 interaction (P6)", () => {
     expect(v2Index).toContain("createCamera");
     expect(v2Index).toContain("hoveredSlotRef");
     expect(v2Index).toContain("selectedSlotRef");
+    expect(v2Index).toContain("onKeyDown={handleKeyDown}");
+    expect(v2Index).toContain("tabIndex={0}");
+    expect(v2Index).toContain("aria-describedby={brainHelpId}");
+    expect(v2Index).toContain("nextBrainNodeIndex");
     expect(v2Index).not.toContain("cameraHandleRef.current.spotlight(slot)");
     expect(v2Index).toContain("e.preventDefault()");
     expect(v2Index).toContain("onContextMenu={handleContextMenu}");
+  });
+
+  it("Brain map keyboard helper exposes arrow, Home/End, and Escape behaviors", () => {
+    expect(keyboard).toContain("export function isBrainNavigationKey");
+    expect(keyboard).toContain("export function nextBrainNodeIndex");
+    expect(keyboard).toContain("ArrowRight");
+    expect(keyboard).toContain("Home");
+    expect(keyboard).toContain("Escape");
+    expect(keyboard).toContain("brainKeyboardHelpText");
   });
 
   it("CSS includes Brain v2 HUD layout rules", () => {
