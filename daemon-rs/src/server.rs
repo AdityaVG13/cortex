@@ -732,6 +732,9 @@ fn resolve_socket_activation_listener(
         ));
     }
 
+    // SAFETY: systemd-compatible socket activation passes the first owned
+    // listening socket at fd 3 when LISTEN_PID matches this process and
+    // LISTEN_FDS is exactly 1; both conditions are checked above.
     let std_listener = unsafe { std::net::TcpListener::from_raw_fd(3) };
     std_listener
         .set_nonblocking(true)

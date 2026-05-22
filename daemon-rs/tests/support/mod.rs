@@ -67,6 +67,8 @@ mod windows_cleanup_job {
             // Keep this handle open for the full test process lifetime:
             // when the test process exits (including timeout/kill), the handle closes and
             // Windows terminates all child processes assigned to this job.
+            // SAFETY: null security attributes and null name request a default,
+            // unnamed Windows Job Object. No Rust pointers are handed to the OS.
             let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if job.is_null() || job == INVALID_HANDLE_VALUE {
                 eprintln!(
@@ -76,8 +78,13 @@ mod windows_cleanup_job {
                 return 0;
             }
 
+            // SAFETY: this Windows API structure is plain C data; zero is the
+            // documented baseline before setting the limit flags we need.
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `job` is a valid job handle from CreateJobObjectW, and
+            // `limits` points to a properly sized structure for the duration of
+            // the call.
             let ok = unsafe {
                 SetInformationJobObject(
                     job,
@@ -88,6 +95,8 @@ mod windows_cleanup_job {
             };
             if ok == 0 {
                 let err = std::io::Error::last_os_error();
+                // SAFETY: `job` is the valid handle created above and has not
+                // been closed yet. This branch owns cleanup after setup failure.
                 unsafe { CloseHandle(job) };
                 eprintln!("[test-support] set cleanup job info failed: {err}");
                 return 0;
@@ -106,6 +115,9 @@ mod windows_cleanup_job {
             return;
         };
         let process_handle = child.as_raw_handle() as HANDLE;
+        // SAFETY: `job` is the process-lifetime job handle retained by
+        // `cleanup_job_handle`; `process_handle` is borrowed from a live Child
+        // and is only used for the duration of this Windows API call.
         let ok = unsafe { AssignProcessToJobObject(job, process_handle) };
         if ok == 0 {
             let err = std::io::Error::last_os_error();

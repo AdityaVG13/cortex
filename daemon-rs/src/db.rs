@@ -25,16 +25,24 @@ static SQLITE_VEC_REGISTRATION: OnceLock<Result<(), String>> = OnceLock::new();
 
 fn ensure_sqlite_vec_registered() -> Result<(), String> {
     SQLITE_VEC_REGISTRATION
-        .get_or_init(|| unsafe {
+        .get_or_init(|| {
             type SqliteVecEntryPoint = unsafe extern "C" fn(
                 *mut rusqlite::ffi::sqlite3,
                 *mut *mut i8,
                 *const rusqlite::ffi::sqlite3_api_routines,
             ) -> i32;
-            let init = std::mem::transmute::<*const (), SqliteVecEntryPoint>(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            );
-            let rc = rusqlite::ffi::sqlite3_auto_extension(Some(init));
+            // SAFETY: `sqlite-vec` exposes `sqlite3_vec_init` as an untyped
+            // C symbol, but SQLite's auto-extension API requires this exact
+            // entry-point ABI. The symbol is statically linked and lives for
+            // the process lifetime.
+            let init = unsafe {
+                std::mem::transmute::<*const (), SqliteVecEntryPoint>(
+                    sqlite_vec::sqlite3_vec_init as *const (),
+                )
+            };
+            // SAFETY: `init` points to `sqlite3_vec_init` with SQLite's
+            // required auto-extension ABI and remains valid for the process.
+            let rc = unsafe { rusqlite::ffi::sqlite3_auto_extension(Some(init)) };
             if rc == 0 {
                 Ok(())
             } else {

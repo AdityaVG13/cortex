@@ -436,7 +436,13 @@ fn process_is_running(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn process_is_running(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: `pid` has been range-checked for the platform `pid_t`.
+    // Passing signal 0 performs an existence/permission probe and does not
+    // deliver a signal.
+    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 /// Returns the canonical database path: `~/.cortex/cortex.db`.
@@ -537,6 +543,25 @@ mod tests {
 
         let cleaned = cleanup_stale_pid_lock(&paths);
         assert_eq!(cleaned, Some(999999));
+        assert!(!paths.pid.exists());
+        assert!(paths.lock.exists());
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn cleanup_stale_pid_lock_removes_pid_outside_platform_range() {
+        let home_dir = temp_test_dir("stale_pid_large");
+        fs::create_dir_all(&home_dir).unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, None, None);
+        let stale_pid = u32::MAX;
+        fs::write(&paths.pid, stale_pid.to_string()).unwrap();
+        fs::write(&paths.lock, "locked").unwrap();
+
+        let cleaned = cleanup_stale_pid_lock(&paths);
+        assert_eq!(cleaned, Some(stale_pid));
         assert!(!paths.pid.exists());
         assert!(paths.lock.exists());
 
