@@ -10,6 +10,7 @@
 //!   - CORTEX_TLS_CERT / CORTEX_TLS_KEY env vars → override paths
 
 use rustls::ServerConfig;
+use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
@@ -65,17 +66,17 @@ fn load_rustls_config(cert_path: &Path, key_path: &Path) -> Result<ServerConfig,
     let key_file = std::fs::File::open(key_path)
         .map_err(|e| format!("Failed to open key {}: {e}", key_path.display()))?;
 
-    let certs: Vec<_> = rustls_pemfile::certs(&mut std::io::BufReader::new(cert_file))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to parse certs: {e}"))?;
+    let certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_reader_iter(std::io::BufReader::new(cert_file))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to parse certs: {e}"))?;
 
     if certs.is_empty() {
         return Err("No certificates found in cert file".to_string());
     }
 
-    let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_file))
-        .map_err(|e| format!("Failed to parse key: {e}"))?
-        .ok_or_else(|| "No private key found in key file".to_string())?;
+    let key = PrivateKeyDer::from_pem_reader(std::io::BufReader::new(key_file))
+        .map_err(|e| format!("Failed to parse key: {e}"))?;
 
     ServerConfig::builder()
         .with_no_client_auth()

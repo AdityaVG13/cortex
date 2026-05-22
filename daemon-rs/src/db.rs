@@ -2074,14 +2074,17 @@ mod tests {
     fn test_open_configure_schema() {
         let conn = Connection::open_in_memory().unwrap();
         configure(&conn).unwrap();
-        let busy_timeout_ms: u64 = conn
+        let busy_timeout_ms: i64 = conn
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .unwrap();
-        let wal_autocheckpoint_pages: u64 = conn
+        let wal_autocheckpoint_pages: i64 = conn
             .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_MS);
-        assert_eq!(wal_autocheckpoint_pages, SQLITE_WAL_AUTOCHECKPOINT_PAGES);
+        assert_eq!(busy_timeout_ms, SQLITE_BUSY_TIMEOUT_MS as i64);
+        assert_eq!(
+            wal_autocheckpoint_pages,
+            SQLITE_WAL_AUTOCHECKPOINT_PAGES as i64
+        );
         initialize_schema(&conn).unwrap();
         assert!(verify_integrity(&conn).unwrap());
     }
