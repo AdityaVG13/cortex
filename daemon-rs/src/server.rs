@@ -563,6 +563,7 @@ pub async fn run(
             std::process::exit(1);
         }
     };
+    let policy_bind_addr = effective_bind_addr_for_policy(bind_addr, activated_listener.as_ref());
 
     match crate::tls::try_load_tls() {
         Ok(Some(acceptor)) => {
@@ -578,6 +579,30 @@ pub async fn run(
             .await;
         }
         Ok(None) => {
+            let team_mode = detect_team_mode_for_tls(db_path);
+            let allow_insecure_remote = allow_insecure_remote_http();
+            if let Some(reason) =
+                plain_http_rejection_reason(&policy_bind_addr, team_mode, allow_insecure_remote)
+            {
+                match reason {
+                    PlainHttpRejectionReason::TeamMode => {
+                        eprintln!("[cortex] TLS certificate not configured");
+                        eprintln!(
+                            "[cortex] Team mode requires valid TLS -- add certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
+                        );
+                    }
+                    PlainHttpRejectionReason::NonLocalBind => {
+                        eprintln!("[cortex] TLS certificate not configured");
+                        eprintln!(
+                            "[cortex] Refusing plain HTTP for non-local bind '{policy_bind_addr}'."
+                        );
+                        eprintln!(
+                            "[cortex] Add TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override."
+                        );
+                    }
+                }
+                std::process::exit(1);
+            }
             run_plain(
                 router,
                 bind_addr,
@@ -592,28 +617,31 @@ pub async fn run(
             // Team mode: refuse to start with broken TLS (auth integrity requires it)
             // Solo mode: allow plain fallback only for localhost binds (or explicit override).
             let team_mode = detect_team_mode_for_tls(db_path);
-            let local_bind = is_local_bind_addr(bind_addr);
-            let allow_insecure_remote = std::env::var("CORTEX_ALLOW_INSECURE_REMOTE")
-                .ok()
-                .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"));
-            if team_mode {
-                eprintln!("[cortex] TLS configuration error: {e}");
-                eprintln!(
-                    "[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
-                );
-                std::process::exit(1);
-            } else if !local_bind && !allow_insecure_remote {
-                eprintln!("[cortex] TLS configuration error: {e}");
-                eprintln!(
-                    "[cortex] Refusing insecure HTTP fallback for non-local bind '{bind_addr}'."
-                );
-                eprintln!(
-                    "[cortex] Fix TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override."
-                );
+            let allow_insecure_remote = allow_insecure_remote_http();
+            if let Some(reason) =
+                plain_http_rejection_reason(&policy_bind_addr, team_mode, allow_insecure_remote)
+            {
+                match reason {
+                    PlainHttpRejectionReason::TeamMode => {
+                        eprintln!("[cortex] TLS configuration error: {e}");
+                        eprintln!(
+                            "[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
+                        );
+                    }
+                    PlainHttpRejectionReason::NonLocalBind => {
+                        eprintln!("[cortex] TLS configuration error: {e}");
+                        eprintln!(
+                            "[cortex] Refusing insecure HTTP fallback for non-local bind '{policy_bind_addr}'."
+                        );
+                        eprintln!(
+                            "[cortex] Fix TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override."
+                        );
+                    }
+                }
                 std::process::exit(1);
             } else {
                 eprintln!("[cortex] TLS certificate error: {e}");
-                if local_bind {
+                if is_local_bind_addr(&policy_bind_addr) {
                     eprintln!("[cortex] Starting without TLS (solo mode -- localhost bind)");
                 } else {
                     eprintln!(
@@ -631,6 +659,47 @@ pub async fn run(
                 .await;
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlainHttpRejectionReason {
+    TeamMode,
+    NonLocalBind,
+}
+
+fn allow_insecure_remote_http() -> bool {
+    std::env::var("CORTEX_ALLOW_INSECURE_REMOTE")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn effective_bind_addr_for_policy(
+    configured_bind: &str,
+    activated_listener: Option<&tokio::net::TcpListener>,
+) -> String {
+    activated_listener
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| configured_bind.to_string())
+}
+
+fn plain_http_rejection_reason(
+    bind_addr: &str,
+    team_mode: bool,
+    allow_insecure_remote: bool,
+) -> Option<PlainHttpRejectionReason> {
+    if team_mode {
+        Some(PlainHttpRejectionReason::TeamMode)
+    } else if !is_local_bind_addr(bind_addr) && !allow_insecure_remote {
+        Some(PlainHttpRejectionReason::NonLocalBind)
+    } else {
+        None
     }
 }
 
@@ -1330,5 +1399,44 @@ window_seconds = 60
         assert!(is_local_bind_addr("::1"));
         assert!(!is_local_bind_addr("0.0.0.0"));
         assert!(!is_local_bind_addr("100.84.247.96"));
+    }
+
+    #[test]
+    fn plain_http_policy_rejects_team_mode_and_non_local_binds() {
+        assert_eq!(
+            plain_http_rejection_reason("127.0.0.1", true, false),
+            Some(PlainHttpRejectionReason::TeamMode)
+        );
+        assert_eq!(
+            plain_http_rejection_reason("0.0.0.0", false, false),
+            Some(PlainHttpRejectionReason::NonLocalBind)
+        );
+        assert_eq!(
+            plain_http_rejection_reason("100.84.247.96", false, false),
+            Some(PlainHttpRejectionReason::NonLocalBind)
+        );
+        assert_eq!(plain_http_rejection_reason("127.0.0.1", false, false), None);
+        assert_eq!(plain_http_rejection_reason("0.0.0.0", false, true), None);
+    }
+
+    #[tokio::test]
+    async fn plain_http_policy_uses_socket_activation_bind_address() {
+        let local_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        assert_eq!(
+            effective_bind_addr_for_policy("0.0.0.0", Some(&local_listener)),
+            "127.0.0.1"
+        );
+
+        let wildcard_listener = tokio::net::TcpListener::bind(("0.0.0.0", 0)).await.unwrap();
+        assert_eq!(
+            plain_http_rejection_reason(
+                &effective_bind_addr_for_policy("127.0.0.1", Some(&wildcard_listener)),
+                false,
+                false,
+            ),
+            Some(PlainHttpRejectionReason::NonLocalBind)
+        );
     }
 }

@@ -240,6 +240,7 @@ fn spawn_daemon(home: &str, port: u16) -> Child {
     Command::new(env!("CARGO_BIN_EXE_cortex"))
         .args(["serve", "--home", home, "--port", &port.to_string()])
         .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
+        .env("CORTEX_BIND", "127.0.0.1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
