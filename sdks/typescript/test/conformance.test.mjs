@@ -20,6 +20,10 @@ function scenario(contract, scenarioId) {
   return item;
 }
 
+function sdkScenarioIds(contract) {
+  return new Set(contract.scenarios.filter((entry) => entry.sdkMethod).map((entry) => entry.id));
+}
+
 function okJson(payload) {
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -33,13 +37,14 @@ test("contract spec has required scenarios", () => {
   assert.equal(contract.version, "0.6.0");
   const ids = new Set(contract.scenarios.map((entry) => entry.id));
   assert.ok(ids.size >= 10);
-  for (const id of ["health-public", "store-decision", "recall-get", "boot", "export-json"]) {
+  for (const id of ["health-public", "store-decision", "recall-get", "peek", "boot", "export-json"]) {
     assert.ok(ids.has(id), `missing scenario ${id}`);
   }
 });
 
 test("typescript sdk matches HTTP contract shapes", async () => {
   const contract = loadContract();
+  const coveredSdkScenarios = new Set();
   const calls = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
@@ -58,6 +63,7 @@ test("typescript sdk matches HTTP contract shapes", async () => {
     const healthCall = calls.at(-1);
     assert.equal(new URL(String(healthCall.input)).pathname, health.http.path);
     assert.equal(healthCall.init.headers, undefined);
+    coveredSdkScenarios.add("health-public");
 
     const store = scenario(contract, "store-decision");
     const body = store.request.json;
@@ -76,6 +82,7 @@ test("typescript sdk matches HTTP contract shapes", async () => {
     assert.equal(storeCall.init.headers["X-Cortex-Request"], "true");
     assert.equal(storeCall.init.headers.Authorization, "Bearer ctx_contract_token");
     assert.deepEqual(JSON.parse(String(storeCall.init.body)), body);
+    coveredSdkScenarios.add("store-decision");
 
     const recall = scenario(contract, "recall-get");
     const query = recall.request.query;
@@ -90,6 +97,19 @@ test("typescript sdk matches HTTP contract shapes", async () => {
     for (const [key, value] of Object.entries(query)) {
       assert.equal(recallUrl.searchParams.get(key), String(value));
     }
+    coveredSdkScenarios.add("recall-get");
+
+    const peek = scenario(contract, "peek");
+    const peekQuery = peek.request.query;
+    await client.peek(peekQuery.q, peekQuery.k);
+    const peekCall = calls.at(-1);
+    const peekUrl = new URL(String(peekCall.input));
+    assert.equal(peekCall.init.method, undefined);
+    assert.equal(peekUrl.pathname, peek.http.path);
+    for (const [key, value] of Object.entries(peekQuery)) {
+      assert.equal(peekUrl.searchParams.get(key), String(value));
+    }
+    coveredSdkScenarios.add("peek");
 
     const boot = scenario(contract, "boot");
     const bootQuery = boot.request.query;
@@ -99,12 +119,15 @@ test("typescript sdk matches HTTP contract shapes", async () => {
     for (const [key, value] of Object.entries(bootQuery)) {
       assert.equal(bootUrl.searchParams.get(key), String(value));
     }
+    coveredSdkScenarios.add("boot");
 
     const exportScenario = scenario(contract, "export-json");
     await client.export(exportScenario.request.query.format);
     const exportUrl = new URL(String(calls.at(-1).input));
     assert.equal(exportUrl.pathname, exportScenario.http.path);
     assert.equal(exportUrl.searchParams.get("format"), "json");
+    coveredSdkScenarios.add("export-json");
+    assert.deepEqual([...coveredSdkScenarios].sort(), [...sdkScenarioIds(contract)].sort());
   } finally {
     globalThis.fetch = originalFetch;
   }
