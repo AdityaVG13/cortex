@@ -62,6 +62,24 @@ export type {
 
 const DEFAULT_BASE = "http://127.0.0.1:7437";
 
+function normalizeBaseUrl(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  if (!normalized) {
+    throw new Error("Cortex baseUrl must not be empty.");
+  }
+
+  const parsed = new URL(normalized);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`Unsupported Cortex baseUrl scheme '${parsed.protocol}'`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("Cortex baseUrl must not include embedded credentials.");
+  }
+  parsed.hash = "";
+  parsed.search = "";
+  return parsed.toString().replace(/\/+$/, "");
+}
+
 function readToken(): string | undefined {
   const home = process.env.USERPROFILE || process.env.HOME || ".";
   try {
@@ -77,7 +95,7 @@ function isLoopbackBaseUrl(baseUrl: string): boolean {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return false;
     }
-    const host = parsed.hostname.toLowerCase();
+    const host = parsed.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
     return host === "127.0.0.1" || host === "localhost" || host === "::1";
   } catch {
     return false;
@@ -91,7 +109,7 @@ export class CortexClient {
   private sourceAgent: string;
 
   constructor(options?: { baseUrl?: string; token?: string; timeout?: number; sourceAgent?: string }) {
-    this.baseUrl = (options?.baseUrl ?? DEFAULT_BASE).replace(/\/$/, "");
+    this.baseUrl = normalizeBaseUrl(options?.baseUrl ?? DEFAULT_BASE);
     if (options?.token) {
       this.token = options.token;
     } else if (isLoopbackBaseUrl(this.baseUrl)) {
