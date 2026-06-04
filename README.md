@@ -93,10 +93,18 @@ Restart the AI tool after changing MCP config.
 
 ### 5. Store and recall one memory
 
-From a connected MCP client, call `cortex_store`, then `cortex_recall`. From the repo on Windows, you can run:
+From a connected MCP client, call `cortex_store`, then `cortex_recall`. From the repo, run the matching smoke script:
+
+Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\first-run-smoke.ps1
+```
+
+macOS / Linux:
+
+```bash
+bash scripts/first-run-smoke.sh
 ```
 
 That smoke checks status, stores one disposable local memory, and recalls it. Normal use does not require benchmark adapters, provider keys, or LongMemEval.
@@ -397,8 +405,16 @@ If using the Control Center, manage the daemon from there. Do not run a second <
 cortex status --json
 ```
 
+Windows:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\first-run-smoke.ps1
+```
+
+macOS / Linux:
+
+```bash
+bash scripts/first-run-smoke.sh
 ```
 
 <details>
