@@ -40,6 +40,8 @@ spawn path exists there anymore.
 
 - Plugin SessionStart hook is status-only and never starts/stops daemon.
 - SessionStart probes `/readiness` first and falls back to `/health`.
+- User readiness check is `cortex status --json`; expected status is `ready`
+  before the plugin bridge is treated as connected.
 - Plugin MCP bridge posts JSON-RPC to `/mcp-rpc` with:
   - `X-Cortex-Request: true`
   - `Authorization: Bearer <token>` for local or remote authenticated routes
@@ -50,8 +52,18 @@ spawn path exists there anymore.
 - If local mode cannot reach a ready daemon, the bridge exits with
   `APP_INIT_REQUIRED` and instructs the user to open Cortex Control Center.
 
+## First-Run Success And Repair
+
+1. Open Cortex Control Center or explicitly start the local runtime.
+2. Run `cortex status --json`; success is `"status": "ready"`.
+3. Restart the MCP client after installing or changing the plugin route.
+4. Smoke the connection with `cortex_boot`, then store and recall one memory.
+
+Repair signal: `APP_INIT_REQUIRED` means the plugin is behaving correctly. It is
+attach-only, so start/open Cortex first and retry instead of expecting the plugin
+to spawn a daemon.
+
 ## Lockstep Requirement
 
 Plugin release artifacts and app daemon versions should still ship in lockstep,
 but plugin MCP routing no longer depends on a bundled or canonical daemon binary.
-

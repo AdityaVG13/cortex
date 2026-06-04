@@ -13,6 +13,12 @@
       "side_effects": "none"
     },
     {
+      "command": "cortex status --json",
+      "name": "status",
+      "output": "json",
+      "side_effects": "none"
+    },
+    {
       "command": "cortex robot-docs guide",
       "name": "robot-docs",
       "output": "text",
@@ -61,6 +67,12 @@
       "purpose": "Run the HTTP daemon",
       "side_effects": "starts_daemon",
       "usage": "cortex serve [--bind <addr>] [--port <n>]"
+    },
+    "status": {
+      "output": "human_or_json",
+      "purpose": "Report memory readiness, checks, next action, and repair without starting a daemon",
+      "side_effects": "none",
+      "usage": "cortex status [--json]"
     }
   },
   "contract_version": "1",
@@ -96,6 +108,7 @@
   },
   "recommended_agent_flow": [
     "Run `cortex capabilities --json` to discover supported surfaces.",
+    "Run `cortex status --json` when you need readiness, next action, or repair without starting a daemon.",
     "Use `cortex paths --json` before reading or writing Cortex files.",
     "Use `cortex boot --json` for local attachment when a daemon may be needed.",
     "Use JSON flags where available and treat non-zero exit as retryable only after inspecting stderr."

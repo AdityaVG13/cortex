@@ -3,6 +3,7 @@ Cortex robot guide
 Discovery:
   cortex capabilities --json
   cortex help
+  cortex status --json
   cortex paths --json
 
 Local attach:

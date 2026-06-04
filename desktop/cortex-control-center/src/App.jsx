@@ -28,6 +28,7 @@ import {
 } from "./live-surface.js";
 import { AppIcon } from "./ui-icons.jsx";
 import {
+  buildFirstRunReadiness,
   computeStartupRetryStep,
   daemonStatusPill,
   daemonSystemStatus,
@@ -4199,6 +4200,52 @@ export function App() {
   const canStartDaemon = Boolean(invokeRef.current && !restartingDaemon && !daemonState.running);
   const canStopDaemon = Boolean(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running));
   const canSetupEditors = Boolean(invokeRef.current && !isSettingUpEditors);
+  const firstRunReadiness = useMemo(
+    () => buildFirstRunReadiness({
+      daemonState,
+      stats,
+      sessions: normalizedSessions,
+      editorSetupSummary,
+      healthMeta,
+      canStartDaemon,
+      canSetupEditors,
+      isSettingUpEditors,
+    }),
+    [
+      canSetupEditors,
+      canStartDaemon,
+      daemonState.reachable,
+      daemonState.running,
+      editorSetupSummary.registered,
+      healthMeta.dbCorrupted,
+      healthMeta.degraded,
+      isSettingUpEditors,
+      normalizedSessions.length,
+      stats.decisions,
+      stats.memories,
+    ]
+  );
+  function handleFirstRunAction() {
+    if (firstRunReadiness.action.disabled) return;
+    switch (firstRunReadiness.action.kind) {
+      case "start_daemon":
+        handleStartDaemon();
+        break;
+      case "restart_daemon":
+        handleRestartDaemon();
+        break;
+      case "setup_mcp":
+        openEditorSetupWizard();
+        break;
+      case "open_memory":
+        changePanel("memory");
+        break;
+      case "refresh":
+      default:
+        runRefreshAll();
+        break;
+    }
+  }
   const activePanelLabel = PANEL_SEQUENCE_LABEL.get(panel) || "Overview";
   const connectionEndpoint = useMemo(() => {
     const fallback = {
@@ -5042,6 +5089,35 @@ export function App() {
                   <button type="button" className="btn-sm" onClick={() => changePanel("brain")}>Open Brain</button>
                   <button type="button" className="btn-sm" onClick={() => changePanel("work")}>Open Work</button>
                 </div>
+              </div>
+
+              <div className={`card onboarding-readiness-card ${firstRunReadiness.tone}`}>
+                <div className="card-header">
+                  <h2>First Run</h2>
+                  <span className={`readiness-badge ${firstRunReadiness.tone}`}>
+                    {firstRunReadiness.statusLabel}
+                  </span>
+                </div>
+                <div className="onboarding-next-action">
+                  <span>Next action</span>
+                  <strong>{firstRunReadiness.nextAction}</strong>
+                </div>
+                <div className="overview-status-list" aria-label="First-run readiness checklist">
+                  {firstRunReadiness.steps.map((step) => (
+                    <div key={step.key} className="overview-status-row onboarding-step-row">
+                      <span title={step.detail}>{step.label}</span>
+                      <strong className={`readiness-step ${step.tone}`}>{step.state}</strong>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className={`btn-sm ${firstRunReadiness.tone === "ok" ? "" : "btn-primary"}`}
+                  onClick={handleFirstRunAction}
+                  disabled={firstRunReadiness.action.disabled}
+                >
+                  {firstRunReadiness.action.label}
+                </button>
               </div>
 
               <div className="card overview-status-card">

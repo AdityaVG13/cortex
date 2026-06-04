@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildFirstRunReadiness,
   computeStartupRetryStep,
   daemonStatusPill,
   daemonSystemStatus,
@@ -9,6 +10,69 @@ import {
   isTransientDaemonFeedback,
   shouldContinueStartupRecovery,
 } from "./daemon-startup.js";
+
+describe("buildFirstRunReadiness", () => {
+  it("asks for a local start when the daemon is offline", () => {
+    const readiness = buildFirstRunReadiness({
+      daemonState: { running: false, reachable: false },
+      stats: { memories: 0, decisions: 0 },
+      canStartDaemon: true,
+    });
+
+    expect(readiness.statusLabel).toBe("Start");
+    expect(readiness.action).toEqual({
+      kind: "start_daemon",
+      label: "Start",
+      disabled: false,
+    });
+    expect(readiness.steps[0]).toMatchObject({
+      key: "runtime",
+      state: "Offline",
+      tone: "warn",
+    });
+  });
+
+  it("asks for MCP setup when runtime is ready but no tool is connected", () => {
+    const readiness = buildFirstRunReadiness({
+      daemonState: { running: true, reachable: true },
+      stats: { memories: 0, decisions: 0 },
+      editorSetupSummary: { registered: 0 },
+      canSetupEditors: true,
+    });
+
+    expect(readiness.statusLabel).toBe("Connect");
+    expect(readiness.action.kind).toBe("setup_mcp");
+    expect(readiness.nextAction).toMatch(/Register Cortex MCP/);
+  });
+
+  it("asks for the first stored memory after a tool connection exists", () => {
+    const readiness = buildFirstRunReadiness({
+      daemonState: { running: true, reachable: true },
+      stats: { memories: 0, decisions: 0 },
+      sessions: [{ agent: "codex" }],
+    });
+
+    expect(readiness.statusLabel).toBe("Store");
+    expect(readiness.action.kind).toBe("open_memory");
+    expect(readiness.steps[1]).toMatchObject({
+      key: "tool",
+      state: "Linked",
+      tone: "ok",
+    });
+  });
+
+  it("reports ready when runtime, tool connection, and memory are present", () => {
+    const readiness = buildFirstRunReadiness({
+      daemonState: { running: true, reachable: true },
+      stats: { memories: 2, decisions: 1 },
+      sessions: [{ agent: "claude" }],
+    });
+
+    expect(readiness.statusLabel).toBe("Ready");
+    expect(readiness.tone).toBe("ok");
+    expect(readiness.nextAction).toMatch(/ready/);
+  });
+});
 
 describe("daemon startup state helpers", () => {
   it("classifies running-but-unreachable as starting", () => {

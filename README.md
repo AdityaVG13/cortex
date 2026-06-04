@@ -44,6 +44,67 @@ Install once. Your tools stop starting from scratch.</p>
 
 ---
 
+## Quick Start
+
+Get to the first memory moment before learning daemon internals.
+
+### 1. Install or build Cortex
+
+Use the latest desktop installer, or build the local CLI:
+
+```bash
+git clone https://github.com/AdityaVG13/cortex.git
+cd cortex/daemon-rs
+cargo build --release
+```
+
+### 2. Start local memory
+
+Open Cortex Control Center and start Cortex from the app. CLI-only users can run:
+
+```bash
+cortex serve
+```
+
+### 3. Check readiness
+
+```bash
+cortex status --json
+```
+
+Success is `"status": "ready"`. If status is `needs_action` or `error`, follow the returned `nextAction` / `repair` before continuing.
+
+### 4. Connect one AI tool
+
+Claude Code:
+
+```bash
+claude plugin marketplace add AdityaVG13/cortex
+claude plugin install cortex@cortex-marketplace
+```
+
+Codex:
+
+```bash
+codex mcp add cortex -- cortex.exe mcp --agent codex
+```
+
+Restart the AI tool after changing MCP config.
+
+### 5. Store and recall one memory
+
+From a connected MCP client, call `cortex_store`, then `cortex_recall`. From the repo on Windows, you can run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\first-run-smoke.ps1
+```
+
+That smoke checks status, stores one disposable local memory, and recalls it. Normal use does not require benchmark adapters, provider keys, or LongMemEval.
+
+More tool-specific setup: [Info/connecting.md](Info/connecting.md).
+
+---
+
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Before%20/%20After&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 <table>
 <tr>
@@ -155,7 +216,9 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:8B5CF6,70:5B21B6,100:2e1065&height=110&text=Retrieval%20Quality&fontSize=38&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-<p align="center">Historical v0.5.0 numbers below were measured against a 20-query ground-truth dataset via the <code>cortex-http-base</code> adapter. New recall-quality claims use the helper-free <code>cortex-http-pure</code> adapter as the canonical core baseline.</p>
+<p align="center">Benchmark note: <code>cortex-http-pure</code> is a benchmark adapter only; it is not required for normal Cortex operation. Scored LongMemEval-S validation is deferred until project budget allows, so v0.6.x does not claim a LongMemEval quality lift.</p>
+
+<p align="center">Historical v0.5.0 numbers below were measured against a 20-query ground-truth dataset via the <code>cortex-http-base</code> adapter. New recall-quality claims use the helper-free <code>cortex-http-pure</code> adapter as the canonical core baseline after funded validation.</p>
 
 <table align="center">
 <tr>
@@ -305,7 +368,7 @@ claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
 ```
 
-<p align="center">The plugin handles daemon startup, health checks, and MCP bridging automatically.</p>
+<p align="center">The plugin attaches to a running Cortex runtime. If Cortex is not ready, it reports <code>APP_INIT_REQUIRED</code>; open Control Center or start the local runtime, then retry.</p>
 
 ---
 
@@ -318,7 +381,7 @@ claude plugin install cortex@cortex-marketplace
 |------|-------------|
 | **Desktop app** | Control Center owns the daemon. Restart and monitor from the app. |
 | **CLI** | `cortex serve` starts the daemon. Exits cleanly if one is already running. |
-| **Plugin** | `cortex plugin ensure-daemon` attaches to an existing daemon or starts one. |
+| **Plugin** | Attach-only MCP bridge. It connects to the running app/service daemon and does not silently spawn a second daemon. |
 
 </div>
 
@@ -328,31 +391,14 @@ If using the Control Center, manage the daemon from there. Do not run a second <
 ---
 
 ![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
-<p align="center">After installing, verify everything works:</p>
+<p align="center">After installing, verify the product path:</p>
 
 ```bash
-# Start the daemon (skip if using Control Center)
-cortex serve &
+cortex status --json
+```
 
-# Health check (no auth required)
-curl http://localhost:7437/health
-
-# Boot test
-TOKEN=$(cat ~/.cortex/cortex.token)
-curl -H "Authorization: Bearer $TOKEN" \
-     -H "X-Cortex-Request: true" \
-     "http://localhost:7437/boot?agent=smoke-test"
-
-# Store and recall round-trip
-curl -X POST http://localhost:7437/store \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "X-Cortex-Request: true" \
-     -d '{"decision": "smoke test", "context": "verifying install"}'
-
-curl -H "Authorization: Bearer $TOKEN" \
-     -H "X-Cortex-Request: true" \
-     "http://localhost:7437/recall?q=smoke+test"
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\first-run-smoke.ps1
 ```
 
 <details>

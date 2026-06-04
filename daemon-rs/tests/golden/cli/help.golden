@@ -15,6 +15,7 @@ Agent surfaces:
   robot-docs guide     Print a short operator guide for coding agents
 
 Setup:
+  status [--json]    Show memory readiness, checks, next action, and repair
   setup              First-run setup: detect AI tools, configure, verify
   setup --team       Team-mode setup + schema migration + owner API key
   migrate            Alias for setup --team (solo -> team migration)

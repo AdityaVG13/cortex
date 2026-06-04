@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- **Onboarding readiness**: `cortex status [--json]` reports local memory readiness, runtime identity checks, next action, and repair data without starting another daemon.
+- **Control Center first run**: Overview now shows runtime, AI tool connection, and first-memory readiness with one next action.
+
+### Documentation
+
+- Connection, plugin, SDK, and benchmark docs now separate normal local runtime setup from benchmark-only adapters and keep LongMemEval-S quality claims deferred until funded evidence exists.
+
 ## [0.6.0] - 2026-05-05
 
 This release turns v0.6.0 into the accessibility, governance, and recall-quality foundation: Settings becomes a first-class Control Center surface, local budgets and retention classes become operator-visible controls, boot context gets auditability and smarter ranking, and recall-quality experiments move behind explicit measurement gates.

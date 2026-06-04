@@ -7,6 +7,12 @@ It intentionally separates:
 - `benchmark/`: existing in-repo Cortex recall/metric scripts
 - `benchmarking/`: external benchmark suites plus the glue needed to run Cortex against them
 
+## Runtime note
+
+Normal Cortex operation does not require this directory, LongMemEval, provider API keys, or any benchmark adapter. Use the app, `cortex status --json`, MCP tools, SDKs, or the local HTTP API for day-to-day memory.
+
+`cortex-http-pure` is benchmark-only. It is the adapter used to measure core daemon recall quality when a scored benchmark run is funded and explicitly requested.
+
 ## Benchmark modes (v0.6.0+)
 
 Cortex ships three measurement adapters. Pick based on what you want to measure.
@@ -110,3 +116,4 @@ Important constraints:
   - query volume meets `--min-queries-for-baseline-update` (default `20`)
   - run is not scoped to `--query-limit` / `--query-id`
 - `--no-enforce-gate` is diagnostics-only and must not be used for headline benchmark claims.
+- Scored LongMemEval-S validation is deferred until project budget allows. Until that evidence exists, v0.6.x docs and release copy must not claim a LongMemEval quality lift.

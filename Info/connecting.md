@@ -9,12 +9,13 @@
 ## The 30-second version
 
 ```bash
+cortex status --json
 cortex boot --agent YOUR_NAME --json
 ```
 
-Replace `YOUR_NAME` with your agent ID (`cursor`, `claude`, `gemini`, `codex`, etc). Read the `bootPrompt` from the response — that's your context.
+Start with `cortex status --json`. It reports `ready`, `needs_action`, or `error`, plus one `nextAction` and machine-readable repair data. Replace `YOUR_NAME` with your agent ID (`cursor`, `claude`, `gemini`, `codex`, etc). Read the `bootPrompt` from the response — that's your context.
 
-Connection refused? Start the daemon first: `cortex serve`
+Not ready? Use the `nextAction` from status. In normal local use that means opening Cortex Control Center or, for CLI-only setups, running `cortex serve`.
 
 ---
 
@@ -38,7 +39,10 @@ Already connected via MCP plugin. Use `cortex_boot`, `cortex_recall`, `cortex_st
 ```bash
 claude plugin marketplace add AdityaVG13/cortex
 claude plugin install cortex@cortex-marketplace
+cortex status --json
 ```
+
+Expected status: `ready`. Repair: if the plugin reports `APP_INIT_REQUIRED`, open Cortex Control Center or start your explicit local runtime, then retry the MCP tool.
 
 </details>
 
@@ -48,8 +52,11 @@ claude plugin install cortex@cortex-marketplace
 Register the MCP sidecar:
 ```bash
 codex mcp add cortex -- /path/to/cortex.exe mcp --agent codex
+cortex status --json
 ```
 Restart Codex. MCP servers added mid-session take effect next session.
+
+Expected status: `ready`; smoke signal is a successful `cortex_boot` followed by a `cortex_store` / `cortex_recall` round trip from Codex. Repair: follow the `nextAction` from `cortex status --json`.
 
 </details>
 
@@ -59,8 +66,11 @@ Restart Codex. MCP servers added mid-session take effect next session.
 Point your MCP client at:
 ```bash
 /path/to/cortex.exe mcp --agent cursor
+cortex status --json
 ```
 Use `--agent gemini` for Gemini, `--agent cline` for Cline. The proxy also infers the parent client automatically, but explicit `--agent` is the stable path.
+
+Expected status: `ready`; repair is `APP_INIT_REQUIRED` -> start/open Cortex first, then restart the MCP client.
 
 </details>
 
@@ -101,6 +111,14 @@ All require `Authorization: Bearer <token>` and `X-Cortex-Request: true` headers
 ---
 
 ## Core operations
+
+### 0. Status — know the next action
+
+```bash
+cortex status --json
+```
+
+The JSON contract includes `schemaVersion`, `status`, `runtime`, `nextAction`, `repair`, and `checks`. Treat `ready` as usable. Treat `needs_action` or `error` as a stop-and-repair state, not a partial success.
 
 ### 1. Boot — get context (call first)
 
@@ -259,9 +277,10 @@ curl http://localhost:7437/readiness
 
 | Problem | Fix |
 |---------|-----|
-| **Connection refused** | Daemon not running. `cortex serve` to start. |
+| **Connection refused** | Run `cortex status --json` and follow `nextAction`; open Control Center or run `cortex serve` for CLI-only local mode. |
 | **403 Missing X-Cortex-Request** | Add `X-Cortex-Request: true` header to every non-health request. |
 | **401 Unauthorized** | Refresh token from `~/.cortex/cortex.token`. |
+| **APP_INIT_REQUIRED** | The client is attach-only. Open Cortex Control Center or explicitly start the local runtime, then retry. |
 | **MCP tools missing after add** | Restart your MCP client. Servers added mid-session take effect next session. |
 | **Empty boot prompt** | No memories stored yet. Store some context and boot again. |
 | **No semantic results** | ONNX model may still be downloading on first run. Keyword fallback works meanwhile. Check `~/.cortex/models/`. |
