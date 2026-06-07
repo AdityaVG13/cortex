@@ -28,6 +28,8 @@ docs/compatibility/
 docs/schema/
 docs/internal/
 docs/archive/
+specs/
+codex-verification-report-v040.md
 model_delineation.md
 ROADMAP.md
 !Info/roadmap.md
