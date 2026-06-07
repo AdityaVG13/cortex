@@ -18,8 +18,13 @@ if str(BENCHMARKING_DIR) not in sys.path:
 ADAPTERS_DIR = BENCHMARKING_DIR / "adapters"
 if str(ADAPTERS_DIR) not in sys.path:
     sys.path.insert(0, str(ADAPTERS_DIR))
+SCRIPTS_DIR = BENCHMARKING_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 import run_amb_cortex
+import r2_boot_truncation_gate
+import rq1_embedding_profile_gate
 
 from run_amb_cortex import (  # noqa: E402
     IsolatedCortexDaemon,
@@ -284,6 +289,87 @@ def test_daemon_requires_live_app_daemon_when_enforced(tmp_path: Path, monkeypat
         daemon.__enter__()
 
 
+class _FakeDaemonProcess:
+    def __init__(self, *args, stdout=None, stderr=None, **kwargs) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+def test_isolated_daemon_closes_log_streams_on_exit(tmp_path: Path, monkeypatch) -> None:
+    processes: list[_FakeDaemonProcess] = []
+
+    def fake_popen(*args, **kwargs) -> _FakeDaemonProcess:
+        proc = _FakeDaemonProcess(*args, **kwargs)
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(run_amb_cortex, "_resolve_cortex_binary", lambda: tmp_path / "cortex")
+    monkeypatch.setattr(run_amb_cortex, "_seed_model_assets", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_amb_cortex.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(IsolatedCortexDaemon, "_wait_for_health", lambda self: None)
+    monkeypatch.setattr(IsolatedCortexDaemon, "_wait_for_token", lambda self: "test-token")
+
+    daemon = IsolatedCortexDaemon(tmp_path)
+    with daemon as active:
+        assert active.token == "test-token"
+        assert processes[0].stdout is not None
+        assert processes[0].stderr is not None
+        assert not processes[0].stdout.closed
+        assert not processes[0].stderr.closed
+
+    assert processes[0].terminated is True
+    assert processes[0].stdout.closed is True
+    assert processes[0].stderr.closed is True
+    assert daemon.proc is None
+
+
+def test_isolated_daemon_closes_log_streams_when_startup_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    processes: list[_FakeDaemonProcess] = []
+
+    def fake_popen(*args, **kwargs) -> _FakeDaemonProcess:
+        proc = _FakeDaemonProcess(*args, **kwargs)
+        processes.append(proc)
+        return proc
+
+    def fail_health(self) -> None:
+        raise TimeoutError("daemon did not become healthy")
+
+    monkeypatch.setattr(run_amb_cortex, "_resolve_cortex_binary", lambda: tmp_path / "cortex")
+    monkeypatch.setattr(run_amb_cortex, "_seed_model_assets", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_amb_cortex.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(IsolatedCortexDaemon, "_wait_for_health", fail_health)
+
+    daemon = IsolatedCortexDaemon(tmp_path)
+    with pytest.raises(TimeoutError, match="daemon did not become healthy"):
+        daemon.__enter__()
+
+    assert processes[0].terminated is True
+    assert processes[0].stdout.closed is True
+    assert processes[0].stderr.closed is True
+    assert daemon.proc is None
+
+
 def test_cleanup_benchmark_rows_in_db_removes_only_matching_source_agent(tmp_path: Path) -> None:
     db_path = tmp_path / "cortex.db"
     conn = sqlite3.connect(db_path)
@@ -342,6 +428,135 @@ def test_cleanup_benchmark_rows_in_db_removes_only_matching_source_agent(tmp_pat
         )
     finally:
         check.close()
+
+
+def test_cleanup_benchmark_rows_in_db_uses_immediate_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "cortex.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE decisions (id INTEGER PRIMARY KEY, source_agent TEXT, status TEXT)")
+    conn.execute(
+        "CREATE TABLE embeddings (id INTEGER PRIMARY KEY, target_type TEXT, target_id INTEGER)"
+    )
+    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, source_agent TEXT)")
+    conn.execute(
+        "INSERT INTO decisions (id, source_agent, status) VALUES (1, 'amb-cortex::run-a', 'active')"
+    )
+    conn.commit()
+    conn.close()
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        traced = real_connect(*args, **kwargs)
+        traced.set_trace_callback(statements.append)
+        return traced
+
+    monkeypatch.setattr(run_amb_cortex.sqlite3, "connect", traced_connect)
+
+    _cleanup_benchmark_rows_in_db(db_path, "amb-cortex::run-a")
+
+    assert any(stmt.upper().startswith("BEGIN IMMEDIATE") for stmt in statements)
+
+
+def test_rq1_seed_backfill_rows_uses_immediate_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "cortex.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE embeddings (id INTEGER PRIMARY KEY, target_type TEXT, target_id INTEGER)")
+    conn.execute(
+        """
+        CREATE TABLE memories (
+            id INTEGER PRIMARY KEY,
+            text TEXT,
+            source TEXT,
+            type TEXT,
+            status TEXT,
+            score REAL,
+            created_at TEXT,
+            updated_at TEXT,
+            retention_class TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE decisions (
+            id INTEGER PRIMARY KEY,
+            decision TEXT,
+            context TEXT,
+            type TEXT,
+            source_agent TEXT,
+            status TEXT,
+            score REAL,
+            created_at TEXT,
+            updated_at TEXT,
+            retention_class TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        traced = real_connect(*args, **kwargs)
+        traced.set_trace_callback(statements.append)
+        return traced
+
+    monkeypatch.setattr(rq1_embedding_profile_gate.sqlite3, "connect", traced_connect)
+
+    rq1_embedding_profile_gate.seed_backfill_rows(db_path, 1)
+
+    assert any(stmt.upper().startswith("PRAGMA BUSY_TIMEOUT") for stmt in statements)
+    assert any(stmt.upper().startswith("BEGIN IMMEDIATE") for stmt in statements)
+
+
+def test_r2_seed_fixture_uses_immediate_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "cortex.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE decisions (
+            id INTEGER PRIMARY KEY,
+            decision TEXT,
+            context TEXT,
+            type TEXT,
+            source_agent TEXT,
+            status TEXT,
+            score REAL,
+            retrievals INTEGER,
+            last_accessed TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            retention_class TEXT
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        traced = real_connect(*args, **kwargs)
+        traced.set_trace_callback(statements.append)
+        return traced
+
+    monkeypatch.setattr(r2_boot_truncation_gate.sqlite3, "connect", traced_connect)
+
+    r2_boot_truncation_gate.seed_fixture(db_path)
+
+    assert any(stmt.upper().startswith("PRAGMA BUSY_TIMEOUT") for stmt in statements)
+    assert any(stmt.upper().startswith("BEGIN IMMEDIATE") for stmt in statements)
 
 
 def test_cleanup_benchmark_rows_in_db_retries_transient_lock(

@@ -177,7 +177,7 @@
                  ],
     "daemon":  {
                    "base_url":  "http://127.0.0.1:53331",
-                   "home":  "%LOCALAPPDATA%\\Temp\\cortex_raw_bench_dev_20260421-224217",
+                   "home":  "<temp>\\cortex_raw_bench_dev_20260421-224217",
                    "pid":  26524,
                    "binary":  ".\\daemon-rs\\target\\debug\\cortex.exe"
                }

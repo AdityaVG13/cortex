@@ -24,6 +24,7 @@ from typing import Any
 
 LEGACY_PROFILE = "all-MiniLM-L12-v2"
 BGE_PROFILE = "bge-base-en-v1.5"
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
 
 def repo_root() -> Path:
@@ -123,9 +124,18 @@ def cleanup_temp_root(temp_root: Path, home: Path) -> None:
     shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def open_gate_db(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    return conn
+
+
 def seed_backfill_rows(db_path: Path, count: int) -> None:
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(db_path) as conn:
+    with open_gate_db(db_path) as conn:
+        # SAFETY: this gate seeds rows into the daemon DB and always writes, so
+        # take SQLite's writer lock up front instead of upgrading mid-transaction.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM embeddings")
         conn.execute("DELETE FROM memories")
         conn.execute("DELETE FROM decisions")

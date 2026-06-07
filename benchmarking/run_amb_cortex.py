@@ -17,7 +17,7 @@ from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import TextIO, cast
 
 import httpx
 
@@ -488,7 +488,7 @@ def _cleanup_benchmark_rows_in_db_once(db_path: Path, source_agent: str) -> dict
     try:
         conn.execute("PRAGMA busy_timeout = 5000")
         cur = conn.cursor()
-        cur.execute("BEGIN")
+        cur.execute("BEGIN IMMEDIATE")
         cur.execute(
             "CREATE TEMP TABLE _amb_cleanup_ids AS "
             "SELECT id FROM decisions WHERE source_agent = ?1",
@@ -1800,6 +1800,8 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
         self.token_file = self.home / "cortex.token"
         self.stdout_path = run_dir / "daemon.stdout.log"
         self.stderr_path = run_dir / "daemon.stderr.log"
+        self._stdout: TextIO | None = None
+        self._stderr: TextIO | None = None
         self.attached_existing = False
 
     @property
@@ -1874,41 +1876,63 @@ class IsolatedCortexDaemon(AbstractContextManager["IsolatedCortexDaemon"]):
             "CORTEX_RATE_LIMIT_AUTH_FAILS_PER_MIN",
             os.environ.get("CORTEX_BENCHMARK_AUTH_FAILS_PER_MIN", "10000"),
         )
-        stdout = self.stdout_path.open("w", encoding="utf-8")
-        stderr = self.stderr_path.open("w", encoding="utf-8")
-        self.proc = subprocess.Popen(
-            [
-                str(self.binary),
-                "serve",
-                "--home",
-                str(self.home),
-                "--port",
-                str(self.port),
-                "--bind",
-                "127.0.0.1",
-            ],
-            stdout=stdout,
-            stderr=stderr,
-            text=True,
-            env=proc_env,
-        )
         try:
+            self._stdout = self.stdout_path.open("w", encoding="utf-8")
+            self._stderr = self.stderr_path.open("w", encoding="utf-8")
+            self.proc = subprocess.Popen(
+                [
+                    str(self.binary),
+                    "serve",
+                    "--home",
+                    str(self.home),
+                    "--port",
+                    str(self.port),
+                    "--bind",
+                    "127.0.0.1",
+                ],
+                stdout=self._stdout,
+                stderr=self._stderr,
+                text=True,
+                env=proc_env,
+            )
             self._wait_for_health()
             self.token = self._wait_for_token()
-        except RuntimeError:
-            if attach_existing and self._lock_conflict_detected() and self._try_attach_existing_daemon():
-                return self
+        except Exception as exc:
+            if (
+                isinstance(exc, RuntimeError)
+                and attach_existing
+                and self._lock_conflict_detected()
+            ):
+                self._stop_isolated_process()
+                if self._try_attach_existing_daemon():
+                    return self
+            self._stop_isolated_process()
             raise
         return self
 
+    def _close_log_streams(self) -> None:
+        for stream in (self._stdout, self._stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+        self._stdout = None
+        self._stderr = None
+
+    def _stop_isolated_process(self) -> None:
+        try:
+            if self.proc is not None and not self.attached_existing and self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=10)
+        finally:
+            if not self.attached_existing:
+                self.proc = None
+            self._close_log_streams()
+
     def __exit__(self, exc_type, exc, tb) -> None:
-        if self.proc is not None and not self.attached_existing and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=10)
+        self._stop_isolated_process()
 
     def export_env(self, namespace: str) -> dict[str, str]:
         return {

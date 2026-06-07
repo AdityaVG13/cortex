@@ -50,6 +50,7 @@ APP_ENV_KEYS = [
     "CORTEX_DAEMON_OWNER_LOCAL_SPAWN",
     "CORTEX_APP_CLIENT",
 ]
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
 
 def repo_root() -> Path:
@@ -190,11 +191,22 @@ def low_decision(sentinel: str, index: int) -> str:
     return f"{sentinel} short audit decoy {index}; useful but not release-critical."
 
 
+def open_gate_db(db_path: Path, *, query_only: bool = False) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    if query_only:
+        conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def seed_fixture(db_path: Path) -> dict[int, dict[str, str]]:
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     old = dt.datetime(2025, 1, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
     id_map: dict[int, dict[str, str]] = {}
-    with sqlite3.connect(db_path) as conn:
+    with open_gate_db(db_path) as conn:
+        # SAFETY: this gate seeds rows into the live daemon DB and always writes,
+        # so take SQLite's writer lock up front instead of upgrading mid-transaction.
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM decisions")
         rows: list[tuple[str, str, str, str, float, int, str, str, str]] = []
         for index, sentinel in enumerate(HIGH_SENTINELS, start=1):
@@ -320,7 +332,7 @@ def capsule_summary(capsules: list[dict[str, Any]], id_map: dict[int, dict[str, 
 
 
 def audit_summary(db_path: Path) -> dict[str, Any]:
-    with sqlite3.connect(db_path) as conn:
+    with open_gate_db(db_path, query_only=True) as conn:
         rows = conn.execute(
             """
             SELECT latency_ms, capsules_json
