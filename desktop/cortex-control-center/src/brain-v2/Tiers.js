@@ -46,11 +46,16 @@ const LOOSE_RATIO = 0.30;
 function pickBudget() {
   const span = TOTAL_BUDGET_MAX - TOTAL_BUDGET_MIN + 1;
   const total = TOTAL_BUDGET_MIN + Math.floor(Math.random() * span);
+  const decisions = Math.max(3, Math.round(total * DECISION_RATIO));
+  const clusters = Math.max(10, Math.round(total * CLUSTER_RATIO));
+  const looseTarget = Math.max(5, Math.round(total * LOOSE_RATIO));
+  const roundedTotal = decisions + clusters + looseTarget;
+  const loose = Math.max(5, looseTarget + total - roundedTotal);
   return {
     total,
-    decisions: Math.max(3, Math.round(total * DECISION_RATIO)),
-    clusters: Math.max(10, Math.round(total * CLUSTER_RATIO)),
-    loose: Math.max(5, Math.round(total * LOOSE_RATIO)),
+    decisions,
+    clusters,
+    loose,
   };
 }
 

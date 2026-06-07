@@ -1035,6 +1035,7 @@ function TaskItem({
           <textarea
             value={completionDraft}
             onChange={(event) => onCompletionDraftChange(task.taskId, event.target.value)}
+            aria-label={`Completion summary for ${task.title}`}
             placeholder="Optional completion summary for the task feed"
             rows={3}
           />
@@ -4289,6 +4290,7 @@ export function App() {
 
   return (
     <div className={`app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <aside className={`sidebar ${effectiveSidebarCollapsed ? "collapsed" : ""}`} aria-labelledby="sidebar-title">
         <div className="sidebar-header">
           <div className="logo">
@@ -4396,7 +4398,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="content">
+      <main id="main-content" className="content" tabIndex={-1}>
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
           {feedbackMessage}
         </p>
@@ -4722,7 +4724,7 @@ export function App() {
                       <strong>{budgetSummary.recentDenialsTotal}</strong>
                     </div>
                   </div>
-                  {budgetSummary.error ? <p className="settings-error">{budgetSummary.error}</p> : null}
+                  {budgetSummary.error ? <p className="settings-error" role="alert">{budgetSummary.error}</p> : null}
                   <div className="settings-budget-table-wrap">
                     <table className="settings-budget-table">
                       <caption className="sr-only">Configured budget endpoints</caption>
@@ -4831,7 +4833,7 @@ export function App() {
                     {!ipcAvailable ? (
                       <p className="settings-budget-note">Budget edits require the desktop app.</p>
                     ) : null}
-                    {budgetDraftError ? <p className="settings-error">{budgetDraftError}</p> : null}
+                    {budgetDraftError ? <p className="settings-error" role="alert">{budgetDraftError}</p> : null}
                     {budgetConfigMessage ? <p className="settings-budget-note" role="status">{budgetConfigMessage}</p> : null}
                   </form>
                 </section>
@@ -5463,6 +5465,11 @@ export function App() {
                     <textarea
                       value={messageDraft}
                       onChange={(event) => setMessageDraft(event.target.value)}
+                      aria-label={
+                        selectedOperatorName && messageTargetName
+                          ? `Message from ${selectedOperatorName} to ${messageTargetName}`
+                          : "Operator message body"
+                      }
                       placeholder={selectedOperator.trim() ? `Message from ${selectedOperator.trim()}` : "Select an operator to send messages"}
                       rows={3}
                     />
@@ -5715,6 +5722,7 @@ export function App() {
                     <input
                       type="text"
                       className="memory-input"
+                      aria-label="Client id for permission grant"
                       placeholder="client id (e.g. codex, claude, *)"
                       value={permissionDraft.client}
                       onChange={(event) =>
@@ -5798,7 +5806,7 @@ export function App() {
             <div className="memory-conflicts-section">
               <div className="panel-header panel-header-inline">
                 <h2>Conflict Resolution</h2>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div className="panel-header-actions">
                   <span className="badge">{conflictPairs.length} dispute{conflictPairs.length !== 1 ? "s" : ""}</span>
                   <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh</button>
                 </div>
@@ -6327,7 +6335,7 @@ export function App() {
           <section className="panel active">
             <div className="panel-header">
               <h1>Conflict Resolution</h1>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div className="panel-header-actions">
                 <span className="badge">{conflictPairs.length} dispute{conflictPairs.length !== 1 ? "s" : ""}</span>
                 <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>Refresh</button>
               </div>
@@ -6361,32 +6369,27 @@ export function App() {
               </div>
             </div>
             <div className="card full">
-              <div style={{ padding: "2rem", maxWidth: 760 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
+              <div className="about-content">
+                <div className="about-brand">
                   <img
                     src={`${import.meta.env.BASE_URL}icons/icon.png`}
                     alt="Cortex"
-                    style={{ width: 64, height: 64, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                    className="about-logo"
                     onError={(event) => { event.currentTarget.style.display = "none"; event.currentTarget.nextSibling.style.display = "flex"; }}
                   />
-                  <div style={{
-                    width: 64, height: 64, borderRadius: "50%",
-                    background: "linear-gradient(135deg, var(--cyan), var(--blue))",
-                    display: "none", alignItems: "center", justifyContent: "center",
-                    fontSize: "2rem", flexShrink: 0,
-                  }}>CC</div>
-                  <div>
-                    <h2 style={{ margin: 0, fontSize: "1.5rem" }}>Cortex Control Center</h2>
-          <p style={{ margin: "0.25rem 0 0", color: "var(--text-3)" }}>Built by the Cortex maintainer team -- Version {CONTROL_CENTER_VERSION}</p>
+                  <div className="about-logo about-logo-fallback">CC</div>
+                  <div className="about-heading">
+                    <h2 className="about-title">Cortex Control Center</h2>
+                    <p className="about-version">Built by the Cortex maintainer team -- Version {CONTROL_CENTER_VERSION}</p>
                   </div>
                 </div>
 
-                <p style={{ color: "var(--text-2)", lineHeight: 1.7, marginBottom: "1.5rem" }}>
+                <p className="about-description">
                   A desktop command surface for Cortex built around one app-managed daemon instance:
                   auth-aware startup, owned lifecycle control, live telemetry, and a brain view that can double as a showpiece.
                 </p>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "2rem" }}>
+                <div className="about-stats-grid">
                   {[
                     ["Daemon", "Rust + Axum"],
                     ["Desktop shell", "Tauri + React"],
@@ -6395,18 +6398,15 @@ export function App() {
                     ["Transport", "HTTP + MCP stdio"],
                     ["Port", "7437"],
                   ].map(([label, value]) => (
-                    <div key={label} style={{
-                      background: "var(--surface)", border: "1px solid var(--border)",
-                      borderRadius: 8, padding: "0.75rem 1rem",
-                    }}>
-                      <span style={{ color: "var(--text-3)", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</span>
-                      <div style={{ marginTop: 4, fontWeight: 500 }}>{value}</div>
+                    <div key={label} className="about-stat-card">
+                      <span className="about-stat-label">{label}</span>
+                      <div className="about-stat-value">{value}</div>
                     </div>
                   ))}
                 </div>
 
-                <div style={{ marginBottom: "2rem" }}>
-                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>App Lifecycle</h3>
+                <div className="about-section">
+                  <h3 className="about-section-title">App Lifecycle</h3>
                   <table className="about-lifecycle-table">
                     <thead>
                       <tr>
@@ -6439,23 +6439,19 @@ export function App() {
                   </table>
                 </div>
 
-                <div style={{ marginBottom: "2rem" }}>
-                  <h3 style={{ fontSize: "0.875rem", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)", marginBottom: "0.75rem" }}>Contributors</h3>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <div className="about-section">
+                  <h3 className="about-section-title">Contributors</h3>
+                  <div className="about-contributors">
                     {[
                       { handle: "Cortex-Team", role: "Creator & maintainer" },
                       { handle: "Claude Code", role: "Core architecture & retrieval pipeline" },
                       { handle: "Factory Droid", role: "Desktop app, reconnection & telemetry" },
                       { handle: "Codex", role: "Desktop rewrite, auth hardening, analytics and brain UX" },
                     ].map(({ handle, role }) => (
-                      <div key={handle} style={{
-                        display: "flex", alignItems: "center", gap: "0.75rem",
-                        background: "var(--surface)", border: "1px solid var(--border)",
-                        borderRadius: 8, padding: "0.625rem 1rem",
-                      }}>
+                      <div key={handle} className="about-contributor">
                         <span className="agent-indicator" style={{ background: "var(--cyan)", boxShadow: "0 0 8px var(--cyan)" }} />
-                        <span style={{ fontWeight: 500 }}>@{handle}</span>
-                        <span style={{ color: "var(--text-3)", fontSize: "0.875rem", marginLeft: "auto" }}>{role}</span>
+                        <span className="about-contributor-handle">@{handle}</span>
+                        <span className="about-contributor-role">{role}</span>
                       </div>
                     ))}
                   </div>

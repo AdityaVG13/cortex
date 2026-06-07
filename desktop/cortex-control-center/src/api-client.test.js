@@ -30,6 +30,24 @@ function mockFetch(status, body, ok) {
   );
 }
 
+function fetchRequestMatcher({ method, headers, body } = {}) {
+  const request = {};
+  if (method) request.method = method;
+  if (headers) request.headers = expect.objectContaining(headers);
+  if (body !== undefined) request.body = body;
+  return expect.objectContaining(request);
+}
+
+function expectFetchCall(url, options = {}) {
+  const { call, ...request } = options;
+  const matcher = fetchRequestMatcher(request);
+  if (call === undefined) {
+    expect(globalThis.fetch).toHaveBeenCalledWith(url, matcher);
+  } else {
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(call, url, matcher);
+  }
+}
+
 // =============================================================================
 // api() throw paths
 // =============================================================================
@@ -87,14 +105,9 @@ describe("createApi - api()", () => {
       const pending = api("/probe");
       await vi.advanceTimersByTimeAsync(8000);
       await expect(pending).resolves.toEqual({ status: "ok" });
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:7437/probe",
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            "X-Cortex-Request": "true",
-          }),
-        }),
-      );
+      expectFetchCall("http://127.0.0.1:7437/probe", {
+        headers: { "X-Cortex-Request": "true" },
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -106,15 +119,43 @@ describe("createApi - api()", () => {
     const api = createApi(makeDeps({ invoke, token: "tok" }));
 
     await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7437/sessions",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Cortex-Request": "true",
-        }),
+    expectFetchCall("http://127.0.0.1:7437/sessions", {
+      headers: {
+        Authorization: "Bearer tok",
+        "X-Cortex-Request": "true",
+      },
+    });
+  });
+
+  it("normalizes cortexBase before authenticated HTTP GET fallback", async () => {
+    globalThis.fetch = mockFetch(200, { status: "ok-from-http" }, true);
+    const api = createApi(
+      makeDeps({
+        token: "tok",
+        cortexBase: " http://127.0.0.1:7437///?debug=1#fragment ",
       })
     );
+
+    await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
+    expectFetchCall("http://127.0.0.1:7437/sessions", {
+      headers: {
+        Authorization: "Bearer tok",
+        "X-Cortex-Request": "true",
+      },
+    });
+  });
+
+  it("rejects unsupported cortexBase schemes before authenticated HTTP GET fallback", async () => {
+    globalThis.fetch = mockFetch(200, { status: "ok-from-http" }, true);
+    const api = createApi(
+      makeDeps({
+        token: "tok",
+        cortexBase: "file:///tmp/cortex.sock",
+      })
+    );
+
+    await expect(api("/sessions", true)).rejects.toThrow("must use http or https");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to HTTP GET for Windows connection-attempt timeout envelopes", async () => {
@@ -125,15 +166,12 @@ describe("createApi - api()", () => {
     const api = createApi(makeDeps({ invoke, token: "tok" }));
 
     await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7437/sessions",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Cortex-Request": "true",
-        }),
-      })
-    );
+    expectFetchCall("http://127.0.0.1:7437/sessions", {
+      headers: {
+        Authorization: "Bearer tok",
+        "X-Cortex-Request": "true",
+      },
+    });
   });
 
   it("throws on invalid IPC response (missing body string)", async () => {
@@ -211,14 +249,9 @@ describe("createApi - api()", () => {
     globalThis.fetch = mockFetch(200, {}, true);
     const api = createApi(makeDeps({ token: "mytoken" }));
     await api("/sessions", true);
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7437/sessions",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer mytoken",
-        }),
-      })
-    );
+    expectFetchCall("http://127.0.0.1:7437/sessions", {
+      headers: { Authorization: "Bearer mytoken" },
+    });
   });
 
   it("does NOT require auth when withAuth=false even with empty token", async () => {
@@ -328,16 +361,13 @@ describe("createPostApi - postApi()", () => {
       const pending = postApi("/resolve", { keepId: "a" });
       await vi.advanceTimersByTimeAsync(8000);
       await expect(pending).resolves.toEqual({ ok: true });
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "http://127.0.0.1:7437/resolve",
-        expect.objectContaining({
-          method: "POST",
-          headers: expect.objectContaining({
-            Authorization: "Bearer tok",
-            "X-Cortex-Request": "true",
-          }),
-        }),
-      );
+      expectFetchCall("http://127.0.0.1:7437/resolve", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer tok",
+          "X-Cortex-Request": "true",
+        },
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -349,16 +379,28 @@ describe("createPostApi - postApi()", () => {
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
 
     await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({ ok: true });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7437/resolve",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Cortex-Request": "true",
-        }),
+    expectFetchCall("http://127.0.0.1:7437/resolve", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer tok",
+        "X-Cortex-Request": "true",
+      },
+    });
+  });
+
+  it("rejects embedded cortexBase credentials before authenticated HTTP POST fallback", async () => {
+    globalThis.fetch = mockFetch(200, { ok: true }, true);
+    const postApi = createPostApi(
+      makeDeps({
+        token: "tok",
+        cortexBase: "https://user:pass@team.example.com",
       })
     );
+
+    await expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow(
+      "must not include embedded credentials"
+    );
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to HTTP POST for Windows connection-attempt timeout envelopes", async () => {
@@ -369,16 +411,13 @@ describe("createPostApi - postApi()", () => {
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
 
     await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({ ok: true });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7437/resolve",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer tok",
-          "X-Cortex-Request": "true",
-        }),
-      })
-    );
+    expectFetchCall("http://127.0.0.1:7437/resolve", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer tok",
+        "X-Cortex-Request": "true",
+      },
+    });
   });
 
   it("throws on IPC HTTP non-2xx", async () => {
@@ -463,17 +502,14 @@ describe("createPostApi - postApi()", () => {
     globalThis.fetch = mockFetch(200, { ok: true }, true);
     const postApi = createPostApi(makeDeps({ token: "tok" }));
     await postApi("/resolve", { x: 1 });
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:7437/resolve",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          "Content-Type": "application/json",
-          Authorization: "Bearer tok",
-        }),
-        body: '{"x":1}',
-      })
-    );
+    expectFetchCall("http://127.0.0.1:7437/resolve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer tok",
+      },
+      body: '{"x":1}',
+    });
   });
 
   it("retries browser POST once after 401 using refreshed token", async () => {
@@ -504,24 +540,14 @@ describe("createPostApi - postApi()", () => {
     const result = await postApi("/resolve", { x: 1 });
     expect(result).toEqual({ ok: true });
     expect(onTokenRefresh).toHaveBeenCalledTimes(1);
-    expect(globalThis.fetch).toHaveBeenNthCalledWith(
-      1,
-      "http://127.0.0.1:7437/resolve",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer stale-token",
-        }),
-      })
-    );
-    expect(globalThis.fetch).toHaveBeenNthCalledWith(
-      2,
-      "http://127.0.0.1:7437/resolve",
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: "Bearer fresh-token",
-        }),
-      })
-    );
+    expectFetchCall("http://127.0.0.1:7437/resolve", {
+      call: 1,
+      headers: { Authorization: "Bearer stale-token" },
+    });
+    expectFetchCall("http://127.0.0.1:7437/resolve", {
+      call: 2,
+      headers: { Authorization: "Bearer fresh-token" },
+    });
   });
 
   it("polls for a rotated POST token but does not reissue the request when refresh returns the same token", async () => {

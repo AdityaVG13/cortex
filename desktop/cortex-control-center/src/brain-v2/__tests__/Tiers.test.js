@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { buildTiers, TIER_RADII } from "../Tiers.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildTiers, pickBudget, TIER_RADII } from "../Tiers.js";
 
 function makeDump({ memories = [], decisions = [], clusters = [] } = {}) {
   return { memories, decisions, clusters };
@@ -89,6 +89,18 @@ describe("buildTiers", () => {
     const total = tiers.decisions.length + tiers.clusters.length + tiers.looseMemories.length;
     expect(total).toBeGreaterThanOrEqual(70);
     expect(total).toBeLessThanOrEqual(90);
+  });
+
+  it("rounds default budget tiers without exceeding the selected total", () => {
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.999999);
+    try {
+      const budget = pickBudget();
+      const total = budget.decisions + budget.clusters + budget.loose;
+      expect(budget.total).toBe(90);
+      expect(total).toBe(90);
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 
   it("cluster body radius scales with member_count", () => {

@@ -1,0 +1,22 @@
+# Private desktop package tarballs are not release artifacts; keep accidental
+# npm pack output clear of local build caches and runtime state.
+
+src-tauri/target/
+src-tauri/target-*/
+dist/
+coverage/
+.vite/
+
+.claude/
+.codex/
+.cursor/
+.secrets/
+graphify-out/
+runtime-artifacts/
+
+.env
+.env.*
+.tmp*
+*.pid
+*.log
+*.tmp

@@ -3,6 +3,7 @@
   "version": "0.6.0",
   "private": true,
   "license": "MIT",
+  "files": [],
   "type": "module",
   "scripts": {
     "web:dev": "vite",
@@ -28,11 +29,11 @@
     "three": "0.184.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.1",
+    "@tauri-apps/cli": "2.11.2",
     "@vitejs/plugin-react": "6.0.2",
-    "accessibility-checker-engine": "4.0.17",
-    "vite": "8.0.13",
-    "vitest": "4.1.6"
+    "accessibility-checker-engine": "4.0.24",
+    "vite": "8.0.14",
+    "vitest": "4.1.7"
   },
   "overrides": {
     "@effect/atom-react": "4.0.0-beta.35",

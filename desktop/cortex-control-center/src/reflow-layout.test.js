@@ -52,6 +52,35 @@ describe("responsive reflow layout", () => {
       "overflow-x": "hidden",
       "scrollbar-gutter": "stable",
     });
+
+    expect(declarationsFor(css, ".panel-header-actions {")).toMatchObject({
+      display: "flex",
+      "justify-content": "flex-end",
+      "flex-wrap": "wrap",
+      "min-width": "0",
+    });
+
+    expect(declarationsFor(css, ".about-content {")).toMatchObject({
+      "box-sizing": "border-box",
+      width: "min(100%, 760px)",
+    });
+
+    expect(declarationsFor(css, ".about-heading {")).toMatchObject({
+      "min-width": "0",
+    });
+  });
+
+  it("keeps the skip link offscreen until keyboard focus reveals it", () => {
+    expect(declarationsFor(css, ".skip-link {")).toMatchObject({
+      position: "fixed",
+      transform: "translateY(calc(-100% - 20px))",
+      "font-size": "1rem",
+    });
+
+    expect(declarationsFor(css, ".skip-link:focus,")).toMatchObject({
+      transform: "translateY(0)",
+      outline: "2px solid var(--cyan-bright)",
+    });
   });
 
   it("declares a 375px-safe mobile reflow breakpoint", () => {
@@ -71,7 +100,19 @@ describe("responsive reflow layout", () => {
       "min-height": "44px",
     });
 
+    expect(declarationsFor(mobile, 'input:not([type="checkbox"]),')).toMatchObject({
+      "min-height": "44px",
+    });
+
+    expect(mobile).toMatch(
+      /\.connection-dialog-close\s*\{[^}]*min-width:\s*44px;[^}]*width:\s*44px;[^}]*height:\s*44px;/,
+    );
+
     expect(declarationsFor(mobile, ".overview-metrics,")).toMatchObject({
+      "grid-template-columns": "minmax(0, 1fr)",
+    });
+
+    expect(declarationsFor(mobile, ".about-stats-grid,")).toMatchObject({
       "grid-template-columns": "minmax(0, 1fr)",
     });
 
@@ -81,8 +122,36 @@ describe("responsive reflow layout", () => {
       width: "100%",
     });
 
+    expect(declarationsFor(mobile, ".connection-actions,")).toMatchObject({
+      "flex-direction": "column",
+      width: "100%",
+    });
+
+    expect(declarationsFor(mobile, ".panel-header-actions .btn-sm,")).toMatchObject({
+      width: "100%",
+    });
+
+    expect(declarationsFor(mobile, ".analytics-view-toggle .btn-sm,")).toMatchObject({
+      width: "100%",
+    });
+
     expect(declarationsFor(mobile, ".settings-shortcut-grid {")).toMatchObject({
       "grid-template-columns": "minmax(0, 1fr)",
+    });
+
+    expect(declarationsFor(mobile, ".about-content {")).toMatchObject({
+      padding: "1rem",
+    });
+
+    expect(declarationsFor(mobile, ".about-contributor {")).toMatchObject({
+      display: "grid",
+      "grid-template-columns": "auto minmax(0, 1fr)",
+    });
+
+    expect(declarationsFor(mobile, ".about-contributor-role {")).toMatchObject({
+      "grid-column": "2",
+      "margin-left": "0",
+      "text-align": "left",
     });
 
     expect(declarationsFor(mobile, ".brain-panel {")).toMatchObject({

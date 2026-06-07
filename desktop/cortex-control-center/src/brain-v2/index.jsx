@@ -8,7 +8,7 @@ import { createFiringClient } from "./FiringClient.js";
 import { createIdleSimulator } from "./IdleSimulator.js";
 import { createEventDispatcher } from "./EventDispatcher.js";
 import { createHover } from "./Hover.js";
-import { createCamera } from "./Camera.js";
+import { CAMERA_SPOTLIGHT_DURATION_MS, createCamera } from "./Camera.js";
 import { Hud } from "./Hud.jsx";
 import { brainKeyboardHelpText, isBrainNavigationKey, nextBrainNodeIndex } from "./Keyboard.js";
 import { brainBudgetForQuality, detectBrainQualityTier } from "./Quality.js";
@@ -32,6 +32,7 @@ export function BrainV2({
   const dispatcherRef = useRef(null);
   const hoverRef = useRef(null);
   const cameraHandleRef = useRef(null);
+  const spotlightReturnTimerRef = useRef(null);
   const slotsAccessor = useRef([]);
   const hoveredSlotRef = useRef(null);
   const selectedSlotRef = useRef(null);
@@ -125,11 +126,18 @@ export function BrainV2({
         if (!reducedMotion) pulseCoreHalo(core);
       },
       onTickerEntry: pushTickerEntry,
-      onSpotlight: () => {
-        // Camera spotlight on real firing events disabled — repeated triggers
-        // were producing inconsistent zoom direction depending on which side
-        // of origin the firing satellite lived on. Selection feedback comes
-        // from the satellite halo pulse + detail panel only.
+      onSpotlight: (slot) => {
+        if (reducedMotion || !slot) return;
+        const cameraHandle = cameraHandleRef.current;
+        if (!cameraHandle) return;
+        cameraHandle.spotlight(slot);
+        if (spotlightReturnTimerRef.current) {
+          window.clearTimeout(spotlightReturnTimerRef.current);
+        }
+        spotlightReturnTimerRef.current = window.setTimeout(() => {
+          cameraHandleRef.current?.returnToOrigin();
+          spotlightReturnTimerRef.current = null;
+        }, CAMERA_SPOTLIGHT_DURATION_MS);
       },
     });
     dispatcherRef.current = dispatcher;
@@ -196,6 +204,10 @@ export function BrainV2({
       unregister();
       if (typeof window !== "undefined" && window.__brainFire) {
         delete window.__brainFire;
+      }
+      if (spotlightReturnTimerRef.current) {
+        window.clearTimeout(spotlightReturnTimerRef.current);
+        spotlightReturnTimerRef.current = null;
       }
       sceneHandle.controls.removeEventListener("start", cameraHandle.pauseAutoRotate);
       if (firingClientRef.current) {

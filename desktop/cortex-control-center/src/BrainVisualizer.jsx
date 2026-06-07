@@ -67,7 +67,7 @@ function BrainVisualizerComponent({
         <div className="brain-hud-copy">
           <span className="brain-mode">Neural topology</span>
           <strong className="brain-title">Cortex Brain Map</strong>
-          <p>Living constellation. Click satellites to inspect.</p>
+          <p>Living constellation. Select satellites to inspect.</p>
         </div>
       </div>
       <GraphErrorBoundary>

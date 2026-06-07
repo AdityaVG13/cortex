@@ -17,3 +17,11 @@ serde_json = "1.0.150"
 tauri = { version = "2.11.2", features = ["tray-icon"] }
 tauri-plugin-updater = "2.10.1"
 toml = "1.1.2"
+
+[lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"

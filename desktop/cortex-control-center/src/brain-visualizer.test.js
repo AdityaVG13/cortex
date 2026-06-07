@@ -32,6 +32,11 @@ describe("Brain v2 wrapper", () => {
     expect(wrapper).toContain("<BrainV2");
     expect(wrapper).toContain("reducedMotion={reducedMotion}");
   });
+
+  it("uses modality-neutral Brain map instruction copy", () => {
+    expect(wrapper).toContain("Select satellites to inspect.");
+    expect(wrapper).not.toContain("Click satellites to inspect.");
+  });
 });
 
 describe("Brain v2 scene scaffolding", () => {
@@ -196,6 +201,10 @@ describe("Brain v2 firing pipeline (P5)", () => {
     expect(v2Index).toContain("createEventDispatcher");
     expect(v2Index).toContain("idleSim?.noteRealEvent()");
     expect(v2Index).toContain("dispatcher.dispatch(event)");
+    expect(v2Index).toContain("onSpotlight: (slot)");
+    expect(v2Index).toContain("cameraHandle.spotlight(slot)");
+    expect(v2Index).toContain("CAMERA_SPOTLIGHT_DURATION_MS");
+    expect(v2Index).toContain("cameraHandleRef.current?.returnToOrigin()");
   });
 });
 

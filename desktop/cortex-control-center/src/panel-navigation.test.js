@@ -42,6 +42,31 @@ describe("panel navigation scheduling", () => {
     expect(appSource).toContain('aria-hidden={panel === "settings" ? undefined : true}');
   });
 
+  it("exposes a keyboard skip link to the main content landmark", () => {
+    const skipLinkIndex = appSource.indexOf('<a className="skip-link" href="#main-content">');
+    const sidebarIndex = appSource.indexOf("<aside");
+    const mainIndex = appSource.indexOf('<main id="main-content" className="content" tabIndex={-1}>');
+
+    expect(skipLinkIndex, "missing skip link").toBeGreaterThanOrEqual(0);
+    expect(mainIndex, "missing skip target main landmark").toBeGreaterThanOrEqual(0);
+    expect(skipLinkIndex, "skip link should be the first focusable shell control").toBeLessThan(sidebarIndex);
+  });
+
+  it("gives placeholder-only task and permission controls accessible names", () => {
+    expect(appSource).toContain('aria-label={`Completion summary for ${task.title}`}');
+    expect(appSource).toContain('aria-label="Client id for permission grant"');
+    expect(appSource).toContain(': "Operator message body"');
+  });
+
+  it("announces budget validation and load errors as alerts", () => {
+    expect(appSource).toContain(
+      '{budgetSummary.error ? <p className="settings-error" role="alert">{budgetSummary.error}</p> : null}',
+    );
+    expect(appSource).toContain(
+      '{budgetDraftError ? <p className="settings-error" role="alert">{budgetDraftError}</p> : null}',
+    );
+  });
+
   it("does not load desktop budget state during the settings panel entry animation", () => {
     expect(appSource).toContain("const budgetReloadTimer = window.setTimeout(() => {");
     expect(appSource).toContain("}, effectiveReducedMotion ? 0 : MOTION_MS.panel);");

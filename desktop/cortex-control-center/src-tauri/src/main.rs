@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#![forbid(unsafe_code)]
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 use fs2::FileExt;
@@ -2944,7 +2945,12 @@ fn main() {
                         supervisor_tick(&supervisor_handle, &consecutive_failures);
                     }
                 })
-                .expect("failed to spawn cortex daemon supervisor thread");
+                .map_err(|err| {
+                    std::io::Error::new(
+                        err.kind(),
+                        format!("failed to spawn cortex daemon supervisor thread: {err}"),
+                    )
+                })?;
 
             Ok(())
         })
@@ -2972,8 +2978,15 @@ fn main() {
             setup_editors,
             detect_editors
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building cortex control center");
+        .build(tauri::generate_context!());
+
+    let app = match app {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("Failed to build Cortex Control Center: {err}");
+            return;
+        }
+    };
 
     app.run(|app_handle, event| match event {
         tauri::RunEvent::ExitRequested { api, .. } => {

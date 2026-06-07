@@ -53,6 +53,35 @@ function normalizePathForTimeoutRouting(path) {
   return `/${raw}`;
 }
 
+function normalizeCortexBaseUrl(cortexBase) {
+  let url;
+  try {
+    url = new URL(String(cortexBase || "").trim());
+  } catch {
+    throw new Error("Cortex base URL must be a valid URL.");
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Cortex base URL must use http or https.");
+  }
+  if (!url.hostname) {
+    throw new Error("Cortex base URL must include a host.");
+  }
+  if (url.username || url.password) {
+    throw new Error("Cortex base URL must not include embedded credentials.");
+  }
+
+  url.hash = "";
+  url.search = "";
+  return url.toString().replace(/\/+$/, "");
+}
+
+function buildHttpFallbackUrl(cortexBase, path) {
+  const normalizedPath = String(path || "").trim();
+  const route = normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`;
+  return `${normalizeCortexBaseUrl(cortexBase)}${route}`;
+}
+
 function resolveIpcTimeoutMs(path) {
   const normalized = normalizePathForTimeoutRouting(path);
   if (normalized === "/health" || normalized.startsWith("/health?")) return IPC_ABORT_TIMEOUT_HEALTH_MS;
@@ -172,7 +201,7 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
     const requestViaHttp = async () => {
       const headers = { "X-Cortex-Request": "true" };
       if (withAuth) headers.Authorization = `Bearer ${token}`;
-      const response = await fetch(`${cortexBase}${path}`, { headers });
+      const response = await fetch(buildHttpFallbackUrl(cortexBase, path), { headers });
       if (isAuthStatus(response.status) && withAuth && !_retried) {
         const refreshed = await refreshTokenIfChanged(onTokenRefresh, getToken, token);
         if (refreshed) {
@@ -252,7 +281,7 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
     }
 
     const requestViaHttp = async () => {
-      const response = await fetch(`${cortexBase}${path}`, {
+      const response = await fetch(buildHttpFallbackUrl(cortexBase, path), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

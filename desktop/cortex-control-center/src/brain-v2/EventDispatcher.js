@@ -50,6 +50,7 @@ export function createEventDispatcher({
         if (member && cluster) {
           beams?.fire({ from: member, to: cluster, color: colorForSlot(cluster) });
           satellites?.pulseSlot(member.id);
+          onSpotlight?.(member);
         }
         onTickerEntry?.(`member_added · cluster ${event.cluster_id}`);
         break;
@@ -68,19 +69,23 @@ export function createEventDispatcher({
         const b = findSlot(event.b);
         if (a && b) {
           beams?.fire({ from: a, to: b, color: colorForSlot(a) });
+          onSpotlight?.(a);
         }
         onTickerEntry?.("link_inferred");
         break;
       }
       case "recall": {
         const ids = Array.isArray(event.node_ids) ? event.node_ids : [];
+        let firstSlot = null;
         for (const id of ids) {
           const slot = findSlot(id);
           if (slot) {
+            if (!firstSlot) firstSlot = slot;
             satellites?.pulseSlot(slot.id);
             beams?.fire({ from: slot, to: ORIGIN, color: colorForSlot(slot), life: 500 });
           }
         }
+        if (firstSlot) onSpotlight?.(firstSlot);
         if (typeof pulseCoreHalo === "function") pulseCoreHalo();
         onTickerEntry?.(`recall · ${ids.length} nodes`);
         break;
