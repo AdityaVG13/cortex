@@ -30,6 +30,7 @@ docs/internal/
 docs/archive/
 model_delineation.md
 ROADMAP.md
+!Info/roadmap.md
 docs/team-mode-setup.md
 docs/CONNECTING.md
 
@@ -66,7 +67,7 @@ desktop/cortex-control-center/src-tauri/target/
 desktop/cortex-control-center/src-tauri/target-*/
 target-tests/
 pytest-cache-files-*/
-Users*cortex.tmppytest/
+*.tmppytest/
 .tmp/pytest/
 tmp/ptbase-*/
 tmp/pytest-local/
@@ -142,9 +143,49 @@ Cortex?Ingester?Instructions.txt
 .tmp-*
 .tmp/
 tmp/
+pytest-cache-files-*/
 .claude/
 **/.claude/
+.claude-plugin/
+**/.claude-plugin/
+!.claude-plugin/
+!.claude-plugin/marketplace.json
+!plugins/cortex-plugin/.claude-plugin/
+!plugins/cortex-plugin/.claude-plugin/plugin.json
+plugins/.claude-plugin/
+.codex/
+**/.codex/
 .codex-cache/
+.continue/
+**/.continue/
+.grok/
+**/.grok/
+.gemini/
+**/.gemini/
+.droid/
+**/.droid/
+.factory/
+**/.factory/
+.mcp/
+**/.mcp/
+.openai/
+**/.openai/
+.anthropic/
+**/.anthropic/
+.roo/
+**/.roo/
+.cline/
+**/.cline/
+.windsurf/
+**/.windsurf/
+.devin/
+**/.devin/
+.browser-harness/
+**/.browser-harness/
+.dev-browser/
+**/.dev-browser/
+.playwright-mcp/
+**/.playwright-mcp/
 .venv/
 **/.venv/
 venv/
@@ -166,6 +207,8 @@ benchmarking/tools/*
 benchmarking/runs/*
 !benchmarking/runs/.gitkeep
 benchmarking/results/*
+!benchmarking/results/rq2-rerank-20260505-031510/
+!benchmarking/results/rq2-rerank-20260505-031510/**
 !benchmarking/results/README.md
 !benchmarking/results/*.json
 !benchmarking/results/*.md
@@ -185,6 +228,7 @@ security/
 !info/security.md
 
 # Local skill-run workspaces/artifacts (never public unless explicitly requested)
+.tokenzero/
 .code-upgrade/
 agent_ergonomics_audit/
 codebase_audit/

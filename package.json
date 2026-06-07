@@ -2,10 +2,12 @@
   "name": "cortex",
   "version": "0.6.0",
   "private": true,
+  "files": [],
   "description": "Universal AI Brain - multi-transport memory daemon for Claude Code, Gemini CLI, Codex, Cursor, and local LLMs",
   "scripts": {
     "build": "cd daemon-rs && cargo build --release",
     "test": "cd daemon-rs && cargo test --all-features",
+    "daemon:check": "cd daemon-rs && cargo check --all-features",
     "daemon:clippy": "cd daemon-rs && cargo clippy --all-targets --all-features -- -D warnings",
     "desktop:install": "npm --prefix desktop/cortex-control-center install",
     "desktop:dev": "npm --prefix desktop/cortex-control-center run dev",

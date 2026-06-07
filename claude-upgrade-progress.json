@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "started": "2026-05-22T03:53:21-04:00",
-  "last_updated": "2026-05-22T04:25:00-04:00",
+  "last_updated": "2026-06-04T06:08:40-04:00",
   "project": "cortex",
   "language": "Rust, Node.js, Python",
   "manifest": "multi",
@@ -13,10 +13,10 @@
     "max_total_failures": 10
   },
   "summary": {
-    "total": 55,
-    "updated": 52,
-    "skipped": 3,
-    "failed": 0,
+    "total": 68,
+    "updated": 60,
+    "skipped": 7,
+    "failed": 1,
     "requires_refactor": 0
   },
   "dependencies": [
@@ -105,6 +105,73 @@
       "error_log": [
         "Initial rusqlite test compile required reading PRAGMA integers as i64."
       ]
+    },
+    {
+      "name": "desktop/cortex-control-center Node continuation",
+      "current_version": "4 stale dev dependencies",
+      "target_version": "latest stable accepted by local npm minimum-release-age policy",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md#2026-06-04-continuation",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated @tauri-apps/cli to 2.11.2, accessibility-checker-engine to 4.0.24, vite to 8.0.14, and vitest to 4.1.7.",
+      "attempts": 1,
+      "error_log": [
+        "accessibility-checker-engine@4.0.26 was rejected by npm minimum-release-age policy; updated to newest accepted stable 4.0.24."
+      ]
+    },
+    {
+      "name": "sdks/typescript continuation",
+      "current_version": "@types/node 25.8.0",
+      "target_version": "@types/node 25.9.1",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md#2026-06-04-continuation",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Type-only patch update; npm test passed.",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "daemon-rs Rust continuation",
+      "current_version": "reqwest 0.13.3, uuid 1.23.1, compatible lockfile drift",
+      "target_version": "reqwest 0.13.4, uuid 1.23.2, latest Cargo-compatible lockfile versions",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md#2026-06-04-continuation",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Updated direct reqwest and uuid, then refreshed 30 compatible lockfile entries. cargo check --all-features passed.",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "desktop src-tauri Rust lockfile continuation",
+      "current_version": "compatible lockfile drift",
+      "target_version": "latest Cargo-compatible lockfile versions",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md#2026-06-04-continuation",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Refreshed 31 compatible lockfile entries, including transitive reqwest 0.13.4, uuid 1.23.2, and tao 0.35.3. cargo check --all-features passed.",
+      "attempts": 1,
+      "error_log": []
+    },
+    {
+      "name": "sdks/python continuation",
+      "current_version": "idna 3.16 in uv.lock",
+      "target_version": "idna 3.18",
+      "version_type": "stable",
+      "status": "completed",
+      "changelog_url": "UPGRADE_LOG.md#2026-06-04-continuation",
+      "breaking_changes": [],
+      "deprecations": [],
+      "notes": "Refreshed uv.lock while preserving Python 3.9-compatible manifest lower bounds. uv run --extra dev pytest passed.",
+      "attempts": 1,
+      "error_log": []
     }
   ],
   "completed": [
@@ -127,9 +194,45 @@
         "daemon-rs rustls-pki-types PEM migration"
       ],
       "timestamp": "2026-05-22T04:25:00-04:00"
+    },
+    {
+      "name": "library-updater continuation",
+      "from": "dependency drift since 2026-05-22",
+      "to": "latest stable compatible dependencies as of 2026-06-04",
+      "breaking_changes": [
+        "rusqlite 0.40.0 virtual-table breaking changes reviewed but update rolled back because libsqlite3-sys 0.38.0 does not compile on stable rustc 1.94.1"
+      ],
+      "fixes_applied": [
+        "desktop npm dev dependency patch updates",
+        "TypeScript SDK @types/node patch update",
+        "daemon reqwest and uuid patch updates",
+        "daemon and src-tauri Cargo.lock compatible refreshes",
+        "Python uv.lock idna refresh"
+      ],
+      "timestamp": "2026-06-04T05:49:23-04:00"
+    },
+    {
+      "name": "library-updater repair attempt 1",
+      "from": "queue-level verification failure: cargo test --manifest-path daemon-rs/Cargo.toml",
+      "to": "plain daemon manifest test suite passing",
+      "breaking_changes": [],
+      "fixes_applied": [
+        "Extended the daemon test response server idle deadline from 3 seconds to 15 seconds to survive Windows full-suite scheduling and startup preflight delay."
+      ],
+      "timestamp": "2026-06-04T06:08:40-04:00"
     }
   ],
-  "failed": [],
+  "failed": [
+    {
+      "name": "rusqlite",
+      "from": "0.39.0",
+      "target": "0.40.0",
+      "reason": "libsqlite3-sys 0.38.0 build.rs uses unstable cfg_select! and fails on stable rustc 1.94.1",
+      "error": "error[E0658]: use of unstable library feature `cfg_select`",
+      "rolled_back": true,
+      "timestamp": "2026-06-04T05:49:23-04:00"
+    }
+  ],
   "requires_refactor": [],
   "skipped": [
     {
@@ -141,8 +244,12 @@
       "reason": "Latest available version is alpha; stable 0.1.9 preserved."
     },
     {
-      "name": "sysinfo 0.39.2",
-      "reason": "Requires Rust 1.95; updated to latest compatible stable 0.38.4."
+      "name": "sysinfo 0.39.3",
+      "reason": "Requires Rust 1.95; current local toolchain is Rust 1.94.1, so 0.38.4 remains the latest compatible stable version."
+    },
+    {
+      "name": "Python dev lower bounds",
+      "reason": "Newer pytest and pytest-httpx resolve for Python 3.10+, but raising manifest lower bounds would drop Python 3.9 compatibility."
     }
   ],
   "circuit_breaker": {
