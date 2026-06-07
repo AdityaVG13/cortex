@@ -29,3 +29,4 @@ Notes:
 - Local default: `http://127.0.0.1:7437`.
 - Local auth token is read from `~/.cortex/cortex.token`.
 - Remote or team URLs require an explicit `token`; the SDK will not silently reuse a local token for non-loopback targets.
+- Base URLs must use `http` or `https` and must not include embedded credentials; pass credentials with `token`.

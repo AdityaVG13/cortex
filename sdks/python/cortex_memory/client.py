@@ -39,6 +39,29 @@ def _read_token() -> Optional[str]:
         return None
 
 
+def _normalize_base_url(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if not normalized:
+        raise ValueError("Cortex base_url must not be empty.")
+
+    try:
+        parsed = urlparse(normalized)
+    except ValueError as exc:
+        raise ValueError(f"Invalid Cortex base_url: {exc}") from exc
+
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported Cortex base_url scheme '{parsed.scheme}'")
+    if not parsed.hostname:
+        raise ValueError("Cortex base_url must include a host.")
+    if parsed.username or parsed.password:
+        raise ValueError("Cortex base_url must not include embedded credentials.")
+
+    normalized = parsed._replace(params="", query="", fragment="").geturl().rstrip("/")
+    if not normalized:
+        raise ValueError("Cortex base_url must not be empty.")
+    return normalized
+
+
 def _is_loopback_base_url(base_url: str) -> bool:
     try:
         parsed = urlparse(base_url)
@@ -70,7 +93,7 @@ class CortexClient:
         timeout: float = 10.0,
         source_agent: str = "python-sdk",
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _normalize_base_url(base_url)
         if token:
             self.token = token
         elif _is_loopback_base_url(self.base_url):

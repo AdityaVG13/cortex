@@ -77,6 +77,31 @@ def test_remote_base_url_requires_explicit_token():
         raise AssertionError("Expected remote base_url without token to fail")
 
 
+def test_base_url_rejects_embedded_credentials_and_unsupported_schemes():
+    for base_url, expected in [
+        ("https://user:pass@team.example.com", "embedded credentials"),
+        ("file:///tmp/cortex.sock", "unsupported cortex base_url scheme"),
+    ]:
+        try:
+            CortexClient(base_url=base_url, token="ctx_remote_token")
+        except ValueError as exc:
+            assert expected in str(exc).lower()
+        else:
+            raise AssertionError(f"Expected {base_url!r} to fail")
+
+
+def test_base_url_is_trimmed_for_requests(httpx_mock):
+    httpx_mock.add_response(json={"items": []})
+    client = CortexClient(base_url=" http://127.0.0.1:7437/// ", token="ctx_trim_token")
+
+    client.recall("trimmed")
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 1
+    req = requests[0]
+    assert str(req.url).startswith("http://127.0.0.1:7437/recall")
+
+
 def test_format_recall_context_is_content_first_with_optional_metrics():
     client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_format_token")
     payload = {
