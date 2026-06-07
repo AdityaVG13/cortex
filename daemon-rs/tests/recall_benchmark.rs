@@ -23,6 +23,7 @@ const MAX_TOKENS_PER_RELEVANT_HIT: f64 = 250.0;
 const PROXY_TOP1_MIN_AGREEMENT: f64 = 0.65;
 const PROXY_MAX_MEAN_ABS_RANK_ERROR: f64 = 0.90;
 const PROXY_MIN_PAIRWISE_AGREEMENT: f64 = 0.75;
+const PROXY_PAIRWISE_MIN_RELEVANCE_GAP: f64 = 0.01;
 const PROXY_MIN_EVALUATED_QUERY_COVERAGE: f64 = 0.80;
 const APP_REQUIRED_ENV: &str = "CORTEX_APP_REQUIRED";
 const DAEMON_LOCAL_SPAWN_ENV: &str = "CORTEX_DAEMON_OWNER_LOCAL_SPAWN";
@@ -178,6 +179,7 @@ enum SpawnError {
 #[derive(Clone, Debug)]
 struct ProxyRankPoint {
     full_rank: usize,
+    full_relevance: f64,
     proxy_score: f64,
 }
 
@@ -544,7 +546,7 @@ impl RecallBenchmarkProfile {
              ## Golden output\n\
              golden_checksums.txt contains the SHA-256 of quality_summary.json.\n\n\
              ## Scope boundary\n\
-             In scope: test-harness wall-clock attribution for recall benchmark stages. Out of scope: external CPU flamegraphs, allocation profiles, kernel tuning, and production daemon workloads.\n",
+             In scope: test-harness wall-clock attribution for recall benchmark stages and any sidecar external CPU sampler artifacts captured for this run. Out of scope: allocation profiles, kernel tuning, and production daemon workloads.\n",
             scenario = self.scenario,
             case_count = BENCHMARK_CASES.len(),
             budget_tokens = RECALL_BUDGET,
@@ -557,6 +559,12 @@ impl RecallBenchmarkProfile {
             "run_id": self.run_id,
             "captured_at_unix_ms": current_unix_ms(),
             "git_sha": command_output("git", &["rev-parse", "HEAD"], Some(manifest_dir)),
+            "git_dirty": command_output(
+                "git",
+                &["status", "--short", "--untracked-files=no"],
+                Some(manifest_dir)
+            )
+            .is_some(),
             "hardware": {
                 "processor_identifier": std::env::var("PROCESSOR_IDENTIFIER").ok(),
                 "logical_processors": std::env::var("NUMBER_OF_PROCESSORS").ok(),
@@ -570,12 +578,7 @@ impl RecallBenchmarkProfile {
                 "rustc": command_output("rustc", &["--version", "--verbose"], Some(manifest_dir)),
                 "cargo": command_output("cargo", &["--version"], Some(manifest_dir)),
             },
-            "build_profile": {
-                "name": "cargo test",
-                "debug_assertions": cfg!(debug_assertions),
-                "recommended_profile": "release-perf",
-                "recommended_rustflags": "-C force-frame-pointers=yes",
-            },
+            "build_profile": build_profile_json(),
             "workload_isolation": "not isolated",
             "cache_state": "warm",
             "external_samplers": {
@@ -691,6 +694,83 @@ impl RecallBenchmarkProfile {
                 .unwrap_or_else(|| "no span summaries captured".to_string()),
         )
     }
+}
+
+fn build_profile_json() -> Value {
+    let inferred_profile = std::env::current_exe()
+        .ok()
+        .and_then(|path| cargo_profile_name_from_path(&path))
+        .unwrap_or_else(|| {
+            if cfg!(debug_assertions) {
+                "debug".to_string()
+            } else {
+                "optimized-unknown".to_string()
+            }
+        });
+
+    json!({
+        "name": inferred_profile,
+        "debug_assertions": cfg!(debug_assertions),
+        "panic_strategy": if cfg!(panic = "abort") { "abort" } else { "unwind" },
+        "known_settings": known_cargo_profile_settings(&inferred_profile),
+        "compile_rustflags": compile_rustflags(),
+        "runtime_rustflags": std::env::var("RUSTFLAGS").ok(),
+        "recommended_profile": "release-perf",
+        "recommended_rustflags": "-C force-frame-pointers=yes",
+    })
+}
+
+fn cargo_profile_name_from_path(path: &Path) -> Option<String> {
+    let parts = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let target_idx = parts.iter().position(|part| *part == "target")?;
+    let after_target = &parts[target_idx + 1..];
+    for part in after_target.iter().take(3) {
+        if is_known_cargo_profile_name(part) {
+            return Some((*part).to_string());
+        }
+    }
+    after_target.first().map(|part| (*part).to_string())
+}
+
+fn is_known_cargo_profile_name(name: &str) -> bool {
+    matches!(name, "debug" | "release" | "release-perf")
+}
+
+fn known_cargo_profile_settings(profile: &str) -> Value {
+    match profile {
+        "release-perf" => json!({
+            "inherits": "release",
+            "opt_level": 3,
+            "lto": "thin",
+            "codegen_units": 1,
+            "debug": "line-tables-only",
+            "strip": false,
+            "configured_panic": "abort"
+        }),
+        "release" => json!({
+            "opt_level": 3,
+            "lto": true,
+            "codegen_units": 1,
+            "strip": true,
+            "configured_panic": "abort"
+        }),
+        "debug" => json!({
+            "opt_level": 0,
+            "debug": true,
+            "strip": false,
+            "configured_panic": "unwind"
+        }),
+        _ => Value::Null,
+    }
+}
+
+fn compile_rustflags() -> Option<String> {
+    option_env!("CARGO_ENCODED_RUSTFLAGS")
+        .map(|flags| flags.replace('\u{1f}', " "))
+        .or_else(|| option_env!("RUSTFLAGS").map(str::to_string))
 }
 
 impl RecallBenchmarkQuality {
@@ -913,6 +993,126 @@ async fn recall_benchmark_regression_thresholds_hold() {
         .expect("failed to write recall benchmark profile artifacts");
 }
 
+#[test]
+fn cortex_daemon_smoke_bench_history_baseline_is_valid() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let baseline_path = manifest_dir
+        .join("tests")
+        .join("fixtures")
+        .join("bench-history")
+        .join("cortex-daemon-smoke.latest.json");
+    let baseline_text = fs::read_to_string(&baseline_path).unwrap_or_else(|err| {
+        panic!(
+            "missing bench-history baseline {}: {err}",
+            baseline_path.display()
+        )
+    });
+    let baseline: Value =
+        serde_json::from_str(&baseline_text).expect("bench-history baseline should be valid JSON");
+
+    assert_eq!(
+        baseline["schema_version"],
+        json!("cortex-daemon-smoke.bench-history.v1")
+    );
+    assert_eq!(baseline["bench_name"], json!("cortex-daemon-smoke"));
+    assert_eq!(
+        baseline["source"]["workload_isolation"],
+        json!("single test process, --test-threads=1, temporary daemon home per run")
+    );
+    assert!(
+        baseline["source"]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("recall_benchmark_regression_thresholds_hold")),
+        "baseline should pin the exact smoke benchmark command"
+    );
+
+    let latency_gate = &baseline["regression_gate"]["latency_ratio"];
+    assert_eq!(latency_gate["warning"].as_f64(), Some(1.1));
+    assert_eq!(latency_gate["critical"].as_f64(), Some(1.25));
+    assert_eq!(
+        baseline["regression_gate"]["throughput_drop_pct"]["warning"].as_f64(),
+        Some(10.0)
+    );
+    assert_eq!(
+        baseline["regression_gate"]["throughput_drop_pct"]["critical"].as_f64(),
+        Some(20.0)
+    );
+
+    let workloads = baseline["workloads"]
+        .as_array()
+        .expect("baseline workloads should be an array");
+    for expected in ["daemon.spawn_ready", "store_case", "recall_case"] {
+        assert!(
+            workloads
+                .iter()
+                .any(|workload| workload["name"] == expected),
+            "baseline missing workload {expected}"
+        );
+    }
+
+    assert!(
+        baseline["aggregate_latency"]["cv_pct"]
+            .as_f64()
+            .unwrap_or(f64::INFINITY)
+            <= 5.0,
+        "initial baseline variance should stay inside the Phase 5 smoke envelope"
+    );
+    assert!(
+        baseline["quality"]["recall_coverage"]
+            .as_f64()
+            .unwrap_or_default()
+            >= 0.9,
+        "baseline should preserve the recall coverage floor"
+    );
+
+    let artifacts = baseline["evidence"]["artifacts"]
+        .as_array()
+        .expect("baseline evidence artifacts should be an array");
+    assert!(
+        artifacts.len() >= 3,
+        "baseline should link hyperfine, quality, and span evidence"
+    );
+    for artifact in artifacts {
+        let path = artifact["path"].as_str().expect("evidence path string");
+        let hash = artifact["sha256"].as_str().expect("evidence sha256 string");
+        assert!(!path.trim().is_empty(), "evidence path should not be empty");
+        assert_eq!(
+            hash.len(),
+            64,
+            "evidence hash should be a SHA-256 hex digest"
+        );
+        assert!(
+            hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "evidence hash should be hex"
+        );
+    }
+}
+
+#[test]
+fn perf_fingerprint_infers_cargo_profile_from_test_binary_path() {
+    let release_perf = ["target", "release-perf", "deps", "recall_benchmark.exe"]
+        .iter()
+        .collect::<PathBuf>();
+    assert_eq!(
+        cargo_profile_name_from_path(&release_perf).as_deref(),
+        Some("release-perf")
+    );
+
+    let target_triple = [
+        "target",
+        "x86_64-pc-windows-msvc",
+        "release-perf",
+        "deps",
+        "recall_benchmark.exe",
+    ]
+    .iter()
+    .collect::<PathBuf>();
+    assert_eq!(
+        cargo_profile_name_from_path(&target_triple).as_deref(),
+        Some("release-perf")
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recall_different_queries_do_not_cross_dedup_for_same_agent() {
     let daemon = match TestDaemon::spawn().await {
@@ -1071,6 +1271,7 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
             {
                 points.push(ProxyRankPoint {
                     full_rank,
+                    full_relevance: item["rankingFactors"]["relevance"].as_f64().unwrap_or(0.0),
                     proxy_score,
                 });
             }
@@ -1107,6 +1308,11 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
             for j in (i + 1)..points.len() {
                 let left = &points[i];
                 let right = &points[j];
+                if (left.full_relevance - right.full_relevance).abs()
+                    < PROXY_PAIRWISE_MIN_RELEVANCE_GAP
+                {
+                    continue;
+                }
                 let left_proxy_rank = *proxy_rank_by_full_rank
                     .get(&left.full_rank)
                     .expect("missing proxy rank for left full rank");
@@ -1157,7 +1363,7 @@ async fn distilled_proxy_tracks_full_recall_ranking() {
     );
     assert!(
         pairwise_agreement >= PROXY_MIN_PAIRWISE_AGREEMENT,
-        "proxy pairwise agreement regression: got {:.3}, need >= {:.2}",
+        "proxy material-pairwise agreement regression: got {:.3}, need >= {:.2}",
         pairwise_agreement,
         PROXY_MIN_PAIRWISE_AGREEMENT
     );

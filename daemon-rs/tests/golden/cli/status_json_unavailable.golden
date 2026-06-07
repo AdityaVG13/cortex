@@ -1,0 +1,62 @@
+{
+  "checks": [
+    {
+      "detail": "readiness failed: error sending request for url (http://127.0.0.1:65534/readiness); health failed: error sending request for url (http://127.0.0.1:65534/health)",
+      "name": "runtime_identity",
+      "repair": {
+        "command": "cortex serve",
+        "docs": "Info/connecting.md",
+        "kind": "start_local_runtime",
+        "label": "Open Cortex Control Center, or run `cortex serve` for CLI-only local mode."
+      },
+      "status": "warn"
+    },
+    {
+      "detail": "No token file found at [CORTEX_HOME]/cortex.token",
+      "name": "auth_token",
+      "repair": {
+        "command": "cortex setup",
+        "docs": "Info/connecting.md",
+        "kind": "run_setup",
+        "label": "Run `cortex setup`, then start Cortex from Control Center or `cortex serve`."
+      },
+      "status": "fail"
+    },
+    {
+      "detail": "Database not found at [CORTEX_HOME]/cortex.db; it is created during first setup/start.",
+      "name": "database",
+      "repair": {
+        "command": "cortex setup",
+        "docs": "Info/connecting.md",
+        "kind": "run_setup",
+        "label": "Run `cortex setup`, then start Cortex from Control Center or `cortex serve`."
+      },
+      "status": "warn"
+    }
+  ],
+  "nextAction": {
+    "command": "cortex serve",
+    "docs": "Info/connecting.md",
+    "kind": "start_local_runtime",
+    "label": "Open Cortex Control Center, or run `cortex serve` for CLI-only local mode."
+  },
+  "repair": {
+    "command": "cortex serve",
+    "docs": "Info/connecting.md",
+    "kind": "start_local_runtime",
+    "label": "Open Cortex Control Center, or run `cortex serve` for CLI-only local mode."
+  },
+  "runtime": {
+    "baseUrl": "http://127.0.0.1:65534",
+    "bind": "127.0.0.1",
+    "dbPath": "[CORTEX_HOME]/cortex.db",
+    "home": "[CORTEX_HOME]",
+    "pidPath": "[CORTEX_HOME]/cortex.pid",
+    "port": 65534,
+    "tokenPath": "[CORTEX_HOME]/cortex.token"
+  },
+  "schemaVersion": 1,
+  "status": "needs_action",
+  "summary": "No ready Cortex runtime answered the local readiness probe.",
+  "version": "0.6.0"
+}

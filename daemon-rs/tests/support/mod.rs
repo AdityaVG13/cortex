@@ -78,9 +78,7 @@ mod windows_cleanup_job {
                 return 0;
             }
 
-            // SAFETY: this Windows API structure is plain C data; zero is the
-            // documented baseline before setting the limit flags we need.
-            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             // SAFETY: `job` is a valid job handle from CreateJobObjectW, and
             // `limits` points to a properly sized structure for the duration of

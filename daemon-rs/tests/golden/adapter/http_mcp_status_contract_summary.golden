@@ -1,0 +1,572 @@
+{
+  "equivalenceTier": "Tier3Logical",
+  "fixtures": [
+    {
+      "body": {
+        "checks": [
+          {
+            "name": "runtime_identity",
+            "repairKind": "none",
+            "status": "ok"
+          },
+          {
+            "name": "auth_token",
+            "repairKind": "none",
+            "status": "ok"
+          },
+          {
+            "name": "database",
+            "repairKind": "none",
+            "status": "ok"
+          }
+        ],
+        "nextActionKind": "connect_tool_or_smoke",
+        "repairKind": "none",
+        "runtime": {
+          "baseUrl": "http://127.0.0.1:[PORT]",
+          "bind": "127.0.0.1",
+          "dbPath": "[CORTEX_HOME]/cortex.db",
+          "home": "[CORTEX_HOME]",
+          "pidPath": "[CORTEX_HOME]/cortex.pid",
+          "port": "[PORT]",
+          "tokenPath": "[CORTEX_HOME]/token"
+        },
+        "schemaVersion": 1,
+        "status": "ready",
+        "summary": "Cortex memory is ready for local AI tools.",
+        "version": "0.6.0"
+      },
+      "command": "cortex status --json --home [CORTEX_HOME] --port [PORT] --bind 127.0.0.1",
+      "exit": 0,
+      "id": "cli-status-json-ready",
+      "source": "cli"
+    },
+    {
+      "body": {
+        "ready": true,
+        "runtime": {
+          "mode": "solo",
+          "port": "[PORT]",
+          "privateFieldsPresent": false,
+          "version": "0.6.0"
+        },
+        "statsKeys": [],
+        "status": "ready"
+      },
+      "id": "http-readiness-public",
+      "method": "GET",
+      "path": "/readiness",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "budgetKeys": [
+          "configLoaded",
+          "config_loaded",
+          "enabled",
+          "endpoints",
+          "error",
+          "recentDenials",
+          "recent_denials",
+          "source"
+        ],
+        "db_corrupted": false,
+        "degraded": false,
+        "embedding_status": "unavailable",
+        "ready": true,
+        "runtime": {
+          "mode": "solo",
+          "port": "[PORT]",
+          "privateFieldsPresent": false,
+          "version": "0.6.0"
+        },
+        "stats": {
+          "decisions": 0,
+          "embeddings": 0,
+          "events": 0,
+          "memories": 0
+        },
+        "status": "ok",
+        "team_mode": false,
+        "vector_search": {
+          "backend": "sqlite_vec_primary",
+          "embedding_model": {
+            "dimension": 768,
+            "key": "bge-base-en-v1.5",
+            "pooling": "cls"
+          },
+          "routing": {
+            "effective_mode": "primary",
+            "force_off": false,
+            "mode": "primary",
+            "trial_percent": 0
+          },
+          "sqlite_vec": {
+            "available": true,
+            "errorKind": "null",
+            "versionKind": "string"
+          }
+        }
+      },
+      "id": "http-health-public",
+      "method": "GET",
+      "path": "/health",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "entry": {
+          "action": "inserted",
+          "idKind": "number",
+          "quality": 70,
+          "retention_class": "durable",
+          "status": "active",
+          "surprise": 1.0
+        },
+        "stored": true
+      },
+      "id": "http-store-decision",
+      "method": "POST",
+      "path": "/store",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "budget": 200,
+        "fieldKeys": [
+          "budget",
+          "failClosed",
+          "latencyBudgetMs",
+          "latencyMs",
+          "mode",
+          "overBudget",
+          "policyMode",
+          "rerankRoute",
+          "results",
+          "saved",
+          "semanticRoute",
+          "spent",
+          "tier",
+          "tokenUsageLine"
+        ],
+        "firstResultKeys": [
+          "excerpt",
+          "method",
+          "relevance",
+          "source",
+          "tokens"
+        ],
+        "firstResultMentionsFixture": true,
+        "resultCount": 1,
+        "savedKind": "number",
+        "spentKind": "number",
+        "tokenUsageLineKind": "string"
+      },
+      "id": "http-recall-get",
+      "method": "GET",
+      "path": "/recall?q=Adapter%20golden%20sentinel%20memory&budget=200&k=5&agent=adapter-golden-sdk",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "budget": 200,
+        "fieldKeys": [
+          "budget",
+          "failClosed",
+          "latencyBudgetMs",
+          "latencyMs",
+          "mode",
+          "overBudget",
+          "policyMode",
+          "rerankRoute",
+          "results",
+          "saved",
+          "semanticRoute",
+          "spent",
+          "tier",
+          "tokenUsageLine"
+        ],
+        "firstResultKeys": [
+          "excerpt",
+          "method",
+          "relevance",
+          "source",
+          "tokens"
+        ],
+        "firstResultMentionsFixture": true,
+        "resultCount": 1,
+        "savedKind": "number",
+        "spentKind": "number",
+        "tokenUsageLineKind": "string"
+      },
+      "id": "http-recall-post",
+      "method": "POST",
+      "path": "/recall",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "count": 1,
+        "fieldKeys": [
+          "count",
+          "matches",
+          "tokenUsage",
+          "tokenUsageLine"
+        ],
+        "firstMatchKeys": [
+          "method",
+          "relevance",
+          "source"
+        ],
+        "matchCount": 1,
+        "tokenUsageKeys": [
+          "saved",
+          "used"
+        ],
+        "tokenUsageLineKind": "string"
+      },
+      "id": "http-peek",
+      "method": "GET",
+      "path": "/peek?q=Adapter%20golden%20sentinel%20memory&k=5",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "bootPrompt": {
+          "containsAgentName": false,
+          "kind": "string",
+          "lineCount": 8
+        },
+        "fieldKeys": [
+          "bootPrompt",
+          "capsules",
+          "profile",
+          "savings",
+          "tokenEstimate",
+          "tokenUsage",
+          "tokenUsageLine"
+        ],
+        "savingsKeys": [
+          "percent",
+          "rawBaseline",
+          "saved",
+          "served"
+        ],
+        "tokenEstimateKind": "number",
+        "tokenUsageKeys": [
+          "budget",
+          "saved",
+          "used"
+        ],
+        "tokenUsageLineKind": "string"
+      },
+      "id": "http-boot",
+      "method": "GET",
+      "path": "/boot?agent=adapter-golden-sdk&budget=120",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "containsGoldenDecision": true,
+        "decisionCount": 1,
+        "decisionsCount": 1,
+        "decisionsOffsetKind": "number",
+        "fieldKeys": [
+          "decisions",
+          "decisions_count",
+          "decisions_offset",
+          "exported_at",
+          "limit",
+          "memories",
+          "memories_count",
+          "memories_offset",
+          "mode",
+          "next_decisions_offset",
+          "next_memories_offset",
+          "truncated",
+          "version"
+        ],
+        "firstDecisionKeys": [
+          "confidence",
+          "context",
+          "created_at",
+          "decision",
+          "id",
+          "observed_at",
+          "pinned",
+          "reasoning_depth",
+          "retention_class",
+          "retrievals",
+          "score",
+          "source_agent",
+          "source_client",
+          "source_model",
+          "status",
+          "trust_score",
+          "type",
+          "updated_at",
+          "valid_from",
+          "valid_until"
+        ],
+        "limit": 50,
+        "memoriesCount": 0,
+        "memoriesOffsetKind": "number",
+        "memoryCount": 0,
+        "mode": "page",
+        "nextDecisionsOffsetKind": "null",
+        "nextMemoriesOffsetKind": "null",
+        "truncated": false,
+        "version": 1
+      },
+      "id": "http-export-json",
+      "method": "GET",
+      "path": "/export?format=json&limit=50",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "decisionsImportedAtLeastOne": true,
+        "decisionsImportedKind": "number",
+        "fieldKeys": [
+          "imported"
+        ],
+        "importedKeys": [
+          "decisions",
+          "memories"
+        ],
+        "memoriesImportedKind": "number"
+      },
+      "id": "http-import-json",
+      "method": "POST",
+      "path": "/import",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "budget": 200,
+        "fieldKeys": [
+          "budget",
+          "failClosed",
+          "latencyBudgetMs",
+          "latencyMs",
+          "mode",
+          "overBudget",
+          "policyMode",
+          "rerankRoute",
+          "results",
+          "saved",
+          "semanticRoute",
+          "spent",
+          "tier",
+          "tokenUsageLine"
+        ],
+        "firstResultKeys": [
+          "excerpt",
+          "method",
+          "relevance",
+          "source",
+          "tokens"
+        ],
+        "firstResultMentionsFixture": true,
+        "resultCount": 1,
+        "savedKind": "number",
+        "spentKind": "number",
+        "tokenUsageLineKind": "string"
+      },
+      "id": "http-import-recall-get",
+      "method": "GET",
+      "path": "/recall?q=Adapter%20golden%20sentinel%20memory&budget=200&k=5&agent=adapter-golden-sdk",
+      "source": "http",
+      "status": 200
+    },
+    {
+      "body": {
+        "allToolsHaveDescription": true,
+        "allToolsHaveInputSchema": true,
+        "id": 2,
+        "jsonrpc": "2.0",
+        "resultKeys": [
+          "tools"
+        ],
+        "toolCount": 29,
+        "toolNames": [
+          "cortex_agent_feedback_record",
+          "cortex_agent_feedback_stats",
+          "cortex_boot",
+          "cortex_boot_audit",
+          "cortex_conflicts_get",
+          "cortex_conflicts_list",
+          "cortex_conflicts_resolve",
+          "cortex_consensus_promote",
+          "cortex_diary",
+          "cortex_digest",
+          "cortex_eval_run",
+          "cortex_focus_end",
+          "cortex_focus_start",
+          "cortex_focus_status",
+          "cortex_forget",
+          "cortex_health",
+          "cortex_lastCall",
+          "cortex_memory_decay_run",
+          "cortex_peek",
+          "cortex_permissions_grant",
+          "cortex_permissions_list",
+          "cortex_permissions_revoke",
+          "cortex_recall",
+          "cortex_recall_policy_explain",
+          "cortex_reconnect",
+          "cortex_resolve",
+          "cortex_semantic_recall",
+          "cortex_store",
+          "cortex_unfold"
+        ]
+      },
+      "id": "mcp-tools-list",
+      "method": "POST",
+      "path": "/mcp-rpc",
+      "source": "http",
+      "status": 200
+    }
+  ],
+  "negativeFixtures": {
+    "malformedMcp": [
+      {
+        "body": {
+          "errorCode": -32600,
+          "errorKeys": [
+            "code",
+            "message"
+          ],
+          "errorMessage": "Missing JSON-RPC version",
+          "id": 101,
+          "jsonrpc": "2.0"
+        },
+        "id": "mcp-missing-jsonrpc",
+        "method": "POST",
+        "path": "/mcp-rpc",
+        "source": "http",
+        "status": 200
+      },
+      {
+        "body": {
+          "errorCode": -32600,
+          "errorKeys": [
+            "code",
+            "message"
+          ],
+          "errorMessage": "Invalid JSON-RPC version",
+          "id": 102,
+          "jsonrpc": "2.0"
+        },
+        "id": "mcp-wrong-jsonrpc",
+        "method": "POST",
+        "path": "/mcp-rpc",
+        "source": "http",
+        "status": 200
+      },
+      {
+        "body": {
+          "errorCode": -32600,
+          "errorKeys": [
+            "code",
+            "message"
+          ],
+          "errorMessage": "Missing JSON-RPC method",
+          "id": 103,
+          "jsonrpc": "2.0"
+        },
+        "id": "mcp-missing-method",
+        "method": "POST",
+        "path": "/mcp-rpc",
+        "source": "http",
+        "status": 200
+      },
+      {
+        "body": {
+          "errorCode": -32600,
+          "errorKeys": [
+            "code",
+            "message"
+          ],
+          "errorMessage": "Missing JSON-RPC method",
+          "id": 104,
+          "jsonrpc": "2.0"
+        },
+        "id": "mcp-non-string-method",
+        "method": "POST",
+        "path": "/mcp-rpc",
+        "source": "http",
+        "status": 200
+      }
+    ],
+    "missingAuth": [
+      {
+        "body": {
+          "error": "Unauthorized",
+          "fieldKeys": [
+            "error"
+          ]
+        },
+        "id": "http-store-missing-auth",
+        "method": "POST",
+        "path": "/store",
+        "source": "http",
+        "status": 401
+      },
+      {
+        "body": {
+          "error": "Unauthorized",
+          "fieldKeys": [
+            "error"
+          ]
+        },
+        "id": "http-export-missing-auth",
+        "method": "GET",
+        "path": "/export?format=json",
+        "source": "http",
+        "status": 401
+      },
+      {
+        "body": {
+          "error": "Unauthorized",
+          "fieldKeys": [
+            "error"
+          ]
+        },
+        "id": "http-import-missing-auth",
+        "method": "POST",
+        "path": "/import",
+        "source": "http",
+        "status": 401
+      },
+      {
+        "body": {
+          "errorCode": -32600,
+          "errorKeys": [
+            "code",
+            "hint",
+            "message"
+          ],
+          "errorMessage": "Unauthorized",
+          "id": null,
+          "jsonrpc": "2.0"
+        },
+        "id": "mcp-rpc-missing-auth",
+        "method": "POST",
+        "path": "/mcp-rpc",
+        "source": "http",
+        "status": 401
+      }
+    ]
+  },
+  "schemaVersion": "cortex.adapter-golden-summary.v1"
+}

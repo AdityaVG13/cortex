@@ -198,14 +198,43 @@ fn health_runtime_paths_remain_scoped_to_requested_home() {
     let mut daemon = spawn_daemon(&home, port);
     wait_for_health(port, &mut daemon);
 
-    let response = http_request(
+    let public_response = http_request(
         port,
         "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
     )
     .expect("health request");
-    assert_eq!(http_status(&response), 200);
-    let body = split_http_body(&response).expect("http body");
-    let payload: Value = serde_json::from_str(body.trim()).expect("json payload");
+    assert_eq!(http_status(&public_response), 200);
+    let public_body = split_http_body(&public_response).expect("public http body");
+    let public_payload: Value =
+        serde_json::from_str(public_body.trim()).expect("public json payload");
+
+    let public_runtime = public_payload
+        .get("runtime")
+        .and_then(|value| value.as_object())
+        .expect("public runtime object");
+    let public_stats = public_payload
+        .get("stats")
+        .and_then(|value| value.as_object())
+        .expect("public stats object");
+    assert!(
+        !public_stats.contains_key("home"),
+        "public health payload should redact stats.home"
+    );
+    for key in ["token_path", "db_path", "pid_path"] {
+        assert!(
+            !public_runtime.contains_key(key),
+            "public health payload should redact runtime.{key}"
+        );
+    }
+
+    let private_response = http_request(
+        port,
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Cortex-Request: true\r\nConnection: close\r\n\r\n",
+    )
+    .expect("private health request");
+    assert_eq!(http_status(&private_response), 200);
+    let private_body = split_http_body(&private_response).expect("private http body");
+    let payload: Value = serde_json::from_str(private_body.trim()).expect("private json payload");
 
     let runtime = payload
         .get("runtime")
@@ -252,7 +281,7 @@ fn daemon_spawn_test_guard() -> MutexGuard<'static, ()> {
     DAEMON_TEST_MUTEX
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("daemon test mutex poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn read_token(home_dir: &std::path::Path) -> String {
