@@ -12,8 +12,8 @@ Top-level GitHub policy file: [`SECURITY.md`](../SECURITY.md)
 
 | Version | Status |
 |---------|--------|
-| 0.6.x | Current source line, actively supported |
-| 0.5.x | Latest tagged release line, still supported during the 0.6.0 publication gap |
+| 0.6.x | Current release line, actively supported |
+| 0.5.x | Previous release line, security fixes only |
 | < 0.5 | Not supported |
 
 ---

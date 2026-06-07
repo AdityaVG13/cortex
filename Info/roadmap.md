@@ -4,12 +4,11 @@
 
 > What shipped, what's next, and what's further out. Enough detail to start contributing, without internal planning artifacts.
 
-> Source/package metadata is `0.6.0`. GitHub download links currently resolve to
-> the latest tagged `v0.5.0` release until `v0.6.0` artifacts are published.
+> Current release: `v0.6.0`.
 
 ---
 
-## v0.5.0 — Stabilization &nbsp; `latest tagged release`
+## v0.5.0 — Stabilization
 
 > Reliable, one-daemon, local-first release. Benchmark-honest and adapter-consistent.
 
@@ -29,7 +28,7 @@
 
 ---
 
-## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `current source baseline`
+## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `current release`
 
 > Made Cortex more usable day-to-day, more manageable at team scale, and more disciplined about recall measurement.
 

@@ -13,7 +13,7 @@ Install once. Your tools stop starting from scratch.</p>
 </p>
 
 <p align="center">
-  <a href="CHANGELOG.md#060---2026-05-05-source-baseline"><img src="https://img.shields.io/badge/source-0.6.0-blue?style=flat-square" alt="source 0.6.0"></a>&nbsp;
+  <a href="CHANGELOG.md#060---2026-06-06"><img src="https://img.shields.io/badge/release-0.6.0-blue?style=flat-square" alt="release 0.6.0"></a>&nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/github/license/AdityaVG13/cortex?style=flat-square" alt="MIT License"></a>&nbsp;
   <img src="https://img.shields.io/badge/platforms-Windows_|_macOS_|_Linux-333?style=flat-square" alt="Windows | macOS | Linux">&nbsp;
   <img src="https://img.shields.io/badge/Rust_+_React-daemon_+_desktop-orange?style=flat-square" alt="Rust + React">
@@ -50,7 +50,7 @@ Get to the first memory moment before learning daemon internals.
 
 ### 1. Install or build Cortex
 
-Use the latest tagged desktop installer, or build the current `0.6.0` source CLI:
+Use the latest desktop installer, or build the `0.6.0` source CLI:
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
@@ -361,7 +361,7 @@ Download from the <a href="https://github.com/AdityaVG13/cortex/releases/latest"
 
 </div>
 
-<p align="center"><sub>Current source/package metadata is <code>0.6.0</code>; GitHub download links resolve to the latest tagged release until <code>v0.6.0</code> artifacts are published.</sub></p>
+<p align="center"><sub>Current release: <code>v0.6.0</code>.</sub></p>
 
 <p align="center"><b>From source</b></p>
 

@@ -5,9 +5,7 @@ All notable changes to this project are documented in this file.
 The format is inspired by [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Publication reality as of June 4, 2026: source/package metadata is at `0.6.0`,
-while GitHub tags still stop at `v0.5.0`. Download links stay on the latest
-tagged release until `v0.6.0` artifacts are published.
+Current release: `v0.6.0`.
 
 ## [Unreleased]
 
@@ -20,7 +18,7 @@ tagged release until `v0.6.0` artifacts are published.
 
 - Connection, plugin, SDK, and benchmark docs now separate normal local runtime setup from benchmark-only adapters and keep LongMemEval-S quality claims deferred until funded evidence exists.
 
-## [0.6.0] - 2026-05-05 (source baseline)
+## [0.6.0] - 2026-06-06
 
 This source baseline turns v0.6.0 into the accessibility, governance, and recall-quality foundation: Settings becomes a first-class Control Center surface, local budgets and retention classes become operator-visible controls, boot context gets auditability and smarter ranking, and recall-quality experiments move behind explicit measurement gates.
 
@@ -243,7 +241,7 @@ Public recall-quality claims remain conservative: the helper-free purity infrast
 
 Initial public release.
 
-[0.6.0]: https://github.com/AdityaVG13/cortex/compare/v0.5.0...master
+[0.6.0]: https://github.com/AdityaVG13/cortex/compare/v0.5.0...v0.6.0
 
 [Unreleased]: https://github.com/AdityaVG13/cortex/commits/master
 [0.5.0]: https://github.com/AdityaVG13/cortex/compare/v0.4.1...v0.5.0
