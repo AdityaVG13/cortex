@@ -39,6 +39,8 @@ const CTX_API_KEY_LEN: usize = 50;
 const MAX_EVENT_JSON_BYTES: usize = 1_200;
 const MAX_EVENT_VALUE_CHARS: usize = 240;
 const MERGE_EVENT_PREVIEW_CHARS: usize = 240;
+const DEFAULT_PARSED_DURATION_SECONDS: i64 = 60 * 60;
+const MAX_PARSED_DURATION_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
 pub(crate) const CORTEX_PEER_IP_HEADER: &str = "x-cortex-peer-ip";
 const HIGH_VOLUME_EVENT_PRUNE_INTERVAL: i64 = 64;
 static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
@@ -100,21 +102,30 @@ fn apply_json_headers(headers: &mut HeaderMap) {
 
 pub(super) fn parse_duration_to_seconds(raw: &str) -> i64 {
     if raw.is_empty() {
-        return 60 * 60;
+        return DEFAULT_PARSED_DURATION_SECONDS;
     }
     let mut chars = raw.chars();
     let unit = chars.next_back().unwrap_or('h');
     let digits = chars.as_str();
     if digits.is_empty() {
-        return 60 * 60;
+        return DEFAULT_PARSED_DURATION_SECONDS;
     }
-    let value = digits.parse::<i64>().unwrap_or(1).max(1);
-    match unit {
-        'm' => value * 60,
-        'h' => value * 60 * 60,
-        'd' => value * 24 * 60 * 60,
-        _ => 60 * 60,
+    let Ok(value) = digits.parse::<i64>() else {
+        return DEFAULT_PARSED_DURATION_SECONDS;
+    };
+    if value <= 0 {
+        return DEFAULT_PARSED_DURATION_SECONDS;
     }
+    let multiplier = match unit {
+        'm' => 60,
+        'h' => 60 * 60,
+        'd' => 24 * 60 * 60,
+        _ => return DEFAULT_PARSED_DURATION_SECONDS,
+    };
+    value
+        .checked_mul(multiplier)
+        .filter(|seconds| *seconds <= MAX_PARSED_DURATION_SECONDS)
+        .unwrap_or(DEFAULT_PARSED_DURATION_SECONDS)
 }
 
 pub(super) fn parse_json_array(raw: &str) -> Value {
@@ -1160,6 +1171,35 @@ mod tests {
         assert_eq!(project, "http");
         assert_eq!(description, "HTTP boot session");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn parse_duration_to_seconds_bounds_fuzzed_inputs() {
+        assert_eq!(parse_duration_to_seconds("15m"), 15 * 60);
+        assert_eq!(parse_duration_to_seconds("2h"), 2 * 60 * 60);
+        assert_eq!(parse_duration_to_seconds("3d"), 3 * 24 * 60 * 60);
+        assert_eq!(
+            parse_duration_to_seconds("36500d"),
+            MAX_PARSED_DURATION_SECONDS
+        );
+
+        for raw in [
+            "",
+            "m",
+            "-5h",
+            "10x",
+            "36501d",
+            "9223372036854775807m",
+            "9223372036854775807h",
+            "9223372036854775807d",
+            "999999999999999999999999999999d",
+        ] {
+            assert_eq!(
+                parse_duration_to_seconds(raw),
+                DEFAULT_PARSED_DURATION_SECONDS,
+                "duration parser should fall back for fuzzed input {raw:?}",
+            );
+        }
     }
 
     #[test]

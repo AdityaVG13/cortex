@@ -567,6 +567,7 @@ fn normalize(value: f64, min: f64, max: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::collections::HashMap;
 
     #[test]
@@ -621,7 +622,7 @@ mod tests {
         assert_eq!(reranked[1].id, "b");
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     struct FusionCase {
         candidates: Vec<RerankCandidate>,
         raw_scores: Vec<(String, f32)>,
@@ -680,6 +681,37 @@ mod tests {
             .collect()
     }
 
+    fn fusion_case_strategy() -> impl Strategy<Value = FusionCase> {
+        (
+            proptest::collection::vec(
+                (
+                    -1_000_000.0f64..1_000_000.0f64,
+                    -1_000_000.0f32..1_000_000.0f32,
+                ),
+                3..10,
+            ),
+            0.05f64..0.95f64,
+        )
+            .prop_map(|(scores, alpha)| {
+                let mut candidates = Vec::with_capacity(scores.len());
+                let mut raw_scores = Vec::with_capacity(scores.len());
+                for (idx, (base_score, rerank_score)) in scores.into_iter().enumerate() {
+                    let id = format!("p{idx}");
+                    candidates.push(RerankCandidate {
+                        id: id.clone(),
+                        text: format!("property candidate {idx}"),
+                        base_score: base_score + idx as f64 * 0.0001,
+                    });
+                    raw_scores.push((id, rerank_score + idx as f32 * 0.0001));
+                }
+                FusionCase {
+                    candidates,
+                    raw_scores,
+                    alpha,
+                }
+            })
+    }
+
     fn ids(scores: &[RerankedScore]) -> Vec<String> {
         scores.iter().map(|score| score.id.clone()).collect()
     }
@@ -691,14 +723,17 @@ mod tests {
             .collect()
     }
 
-    fn assert_same_fused_scores(left: &[RerankedScore], right: &[RerankedScore]) {
-        assert_eq!(left.len(), right.len());
+    fn prop_assert_same_fused_scores(
+        left: &[RerankedScore],
+        right: &[RerankedScore],
+    ) -> Result<(), TestCaseError> {
+        prop_assert_eq!(left.len(), right.len());
         let right_by_id = fused_by_id(right);
         for left_score in left {
             let right_score = right_by_id
                 .get(&left_score.id)
                 .unwrap_or_else(|| panic!("missing fused score for {}", left_score.id));
-            assert!(
+            prop_assert!(
                 (left_score.fused_score - right_score).abs() <= 1e-6,
                 "fused score changed for {}: {} vs {}",
                 left_score.id,
@@ -706,17 +741,19 @@ mod tests {
                 right_score
             );
         }
+        Ok(())
     }
 
-    fn assert_unique_rank_scores(scores: &[RerankedScore]) {
+    fn prop_assert_unique_rank_scores(scores: &[RerankedScore]) -> Result<(), TestCaseError> {
         for left in 0..scores.len() {
             for right in (left + 1)..scores.len() {
-                assert!(
+                prop_assert!(
                     (scores[left].fused_score - scores[right].fused_score).abs() > 1e-10,
                     "generated case produced tied fused scores: {scores:?}"
                 );
             }
         }
+        Ok(())
     }
 
     fn shifted_case(case: &FusionCase, base_delta: f64, rerank_delta: f32) -> FusionCase {
@@ -800,52 +837,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn mr_fuse_scores_additive_shift_invariance() {
-        for case in generated_fusion_cases() {
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 128,
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn mr_fuse_scores_additive_shift_invariance(case in fusion_case_strategy()) {
             let original = fuse_scores(&case.candidates, &case.raw_scores, case.alpha);
             let shifted = shifted_case(&case, 317.25, -49.5);
             let shifted_scores =
                 fuse_scores(&shifted.candidates, &shifted.raw_scores, shifted.alpha);
-            assert_eq!(ids(&original), ids(&shifted_scores));
-            assert_same_fused_scores(&original, &shifted_scores);
+            prop_assert_eq!(ids(&original), ids(&shifted_scores));
+            prop_assert_same_fused_scores(&original, &shifted_scores)?;
         }
-    }
 
-    #[test]
-    fn mr_fuse_scores_positive_scale_invariance() {
-        for case in generated_fusion_cases() {
+        #[test]
+        fn mr_fuse_scores_positive_scale_invariance(case in fusion_case_strategy()) {
             let original = fuse_scores(&case.candidates, &case.raw_scores, case.alpha);
             let scaled = scaled_case(&case, 11.0, 0.25);
             let scaled_scores = fuse_scores(&scaled.candidates, &scaled.raw_scores, scaled.alpha);
-            assert_eq!(ids(&original), ids(&scaled_scores));
-            assert_same_fused_scores(&original, &scaled_scores);
+            prop_assert_eq!(ids(&original), ids(&scaled_scores));
+            prop_assert_same_fused_scores(&original, &scaled_scores)?;
         }
-    }
 
-    #[test]
-    fn mr_fuse_scores_candidate_permutation_preserves_unique_rankings() {
-        for case in generated_fusion_cases() {
+        #[test]
+        fn mr_fuse_scores_candidate_permutation_preserves_unique_rankings(case in fusion_case_strategy()) {
             let original = fuse_scores(&case.candidates, &case.raw_scores, case.alpha);
-            assert_unique_rank_scores(&original);
+            prop_assert_unique_rank_scores(&original)?;
             let reversed = reverse_candidates(&case);
             let reversed_scores =
                 fuse_scores(&reversed.candidates, &reversed.raw_scores, reversed.alpha);
-            assert_eq!(ids(&original), ids(&reversed_scores));
-            assert_same_fused_scores(&original, &reversed_scores);
+            prop_assert_eq!(ids(&original), ids(&reversed_scores));
+            prop_assert_same_fused_scores(&original, &reversed_scores)?;
         }
-    }
 
-    #[test]
-    fn mr_fuse_scores_alpha_endpoints_exclude_irrelevant_signal() {
-        for case in generated_fusion_cases() {
+        #[test]
+        fn mr_fuse_scores_alpha_endpoints_exclude_irrelevant_signal(case in fusion_case_strategy()) {
             let mut base_only = case.clone();
             base_only.alpha = 0.0;
             let base_original = fuse_scores(&base_only.candidates, &base_only.raw_scores, 0.0);
             let raw_shifted = shifted_case(&base_only, 0.0, 500.0);
             let base_after_raw_shift =
                 fuse_scores(&raw_shifted.candidates, &raw_shifted.raw_scores, 0.0);
-            assert_same_fused_scores(&base_original, &base_after_raw_shift);
+            prop_assert_same_fused_scores(&base_original, &base_after_raw_shift)?;
 
             let mut rerank_only = case.clone();
             rerank_only.alpha = 1.0;
@@ -854,25 +891,21 @@ mod tests {
             let base_shifted = shifted_case(&rerank_only, -500.0, 0.0);
             let rerank_after_base_shift =
                 fuse_scores(&base_shifted.candidates, &base_shifted.raw_scores, 1.0);
-            assert_same_fused_scores(&rerank_original, &rerank_after_base_shift);
+            prop_assert_same_fused_scores(&rerank_original, &rerank_after_base_shift)?;
         }
-    }
 
-    #[test]
-    fn mr_fuse_scores_base_rerank_swap_alpha_complement() {
-        for case in generated_fusion_cases() {
+        #[test]
+        fn mr_fuse_scores_base_rerank_swap_alpha_complement(case in fusion_case_strategy()) {
             let original = fuse_scores(&case.candidates, &case.raw_scores, case.alpha);
             let swapped = swapped_score_sources(&case);
             let swapped_scores =
                 fuse_scores(&swapped.candidates, &swapped.raw_scores, swapped.alpha);
-            assert_eq!(ids(&original), ids(&swapped_scores));
-            assert_same_fused_scores(&original, &swapped_scores);
+            prop_assert_eq!(ids(&original), ids(&swapped_scores));
+            prop_assert_same_fused_scores(&original, &swapped_scores)?;
         }
-    }
 
-    #[test]
-    fn mr_fuse_scores_composes_permutation_shift_and_scale() {
-        for case in generated_fusion_cases() {
+        #[test]
+        fn mr_fuse_scores_composes_permutation_shift_and_scale(case in fusion_case_strategy()) {
             let original = fuse_scores(&case.candidates, &case.raw_scores, case.alpha);
             let composed = scaled_case(
                 &shifted_case(&reverse_candidates(&case), 42.0, -9.0),
@@ -881,8 +914,8 @@ mod tests {
             );
             let composed_scores =
                 fuse_scores(&composed.candidates, &composed.raw_scores, composed.alpha);
-            assert_eq!(ids(&original), ids(&composed_scores));
-            assert_same_fused_scores(&original, &composed_scores);
+            prop_assert_eq!(ids(&original), ids(&composed_scores));
+            prop_assert_same_fused_scores(&original, &composed_scores)?;
         }
     }
 
@@ -921,7 +954,15 @@ mod tests {
         raw_scores: &[(String, f32)],
         fusion_alpha: f64,
     ) -> Vec<RerankedScore> {
-        mutant_fuse_scores(candidates, raw_scores, fusion_alpha, true, false, false)
+        mutant_fuse_scores(
+            candidates,
+            raw_scores,
+            fusion_alpha,
+            true,
+            false,
+            false,
+            false,
+        )
     }
 
     fn mutant_rerank_scale_sensitive(
@@ -929,7 +970,15 @@ mod tests {
         raw_scores: &[(String, f32)],
         fusion_alpha: f64,
     ) -> Vec<RerankedScore> {
-        mutant_fuse_scores(candidates, raw_scores, fusion_alpha, false, true, false)
+        mutant_fuse_scores(
+            candidates,
+            raw_scores,
+            fusion_alpha,
+            false,
+            true,
+            false,
+            false,
+        )
     }
 
     fn mutant_input_order_biased(
@@ -937,7 +986,15 @@ mod tests {
         raw_scores: &[(String, f32)],
         fusion_alpha: f64,
     ) -> Vec<RerankedScore> {
-        mutant_fuse_scores(candidates, raw_scores, fusion_alpha, false, false, true)
+        mutant_fuse_scores(
+            candidates,
+            raw_scores,
+            fusion_alpha,
+            false,
+            false,
+            true,
+            false,
+        )
     }
 
     fn mutant_ignores_alpha(
@@ -952,6 +1009,23 @@ mod tests {
             false,
             false,
             false,
+            false,
+        )
+    }
+
+    fn mutant_non_complementary_alpha_weights(
+        candidates: &[RerankCandidate],
+        raw_scores: &[(String, f32)],
+        fusion_alpha: f64,
+    ) -> Vec<RerankedScore> {
+        mutant_fuse_scores(
+            candidates,
+            raw_scores,
+            fusion_alpha,
+            false,
+            false,
+            false,
+            true,
         )
     }
 
@@ -962,6 +1036,7 @@ mod tests {
         use_raw_base: bool,
         use_raw_rerank: bool,
         use_order_bias: bool,
+        use_alpha_for_both_weights: bool,
     ) -> Vec<RerankedScore> {
         let alpha = fusion_alpha.clamp(0.0, 1.0);
         let raw_by_id = raw_scores
@@ -999,8 +1074,13 @@ mod tests {
                 } else {
                     0.0
                 };
+                let base_weight = if use_alpha_for_both_weights {
+                    alpha
+                } else {
+                    1.0 - alpha
+                };
                 let fused_score =
-                    ((1.0 - alpha) * base_component) + (alpha * rerank_component) + order_bias;
+                    (base_weight * base_component) + (alpha * rerank_component) + order_bias;
                 (
                     idx,
                     RerankedScore {
@@ -1059,7 +1139,41 @@ mod tests {
             let base_original = fuse(&base_only.candidates, &base_only.raw_scores, 0.0);
             let raw_shifted = shifted_case(&base_only, 0.0, 500.0);
             let base_after_raw_shift = fuse(&raw_shifted.candidates, &raw_shifted.raw_scores, 0.0);
-            fused_by_id(&base_original) != fused_by_id(&base_after_raw_shift)
+            if fused_by_id(&base_original) != fused_by_id(&base_after_raw_shift) {
+                return true;
+            }
+
+            let mut rerank_only = case.clone();
+            rerank_only.alpha = 1.0;
+            let rerank_original = fuse(&rerank_only.candidates, &rerank_only.raw_scores, 1.0);
+            let base_shifted = shifted_case(&rerank_only, -500.0, 0.0);
+            let rerank_after_base_shift =
+                fuse(&base_shifted.candidates, &base_shifted.raw_scores, 1.0);
+            fused_by_id(&rerank_original) != fused_by_id(&rerank_after_base_shift)
+        })
+    }
+
+    fn swap_alpha_complement_mr_detects(fuse: FusionFn) -> bool {
+        generated_fusion_cases().into_iter().any(|case| {
+            let original = fuse(&case.candidates, &case.raw_scores, case.alpha);
+            let swapped = swapped_score_sources(&case);
+            let swapped_scores = fuse(&swapped.candidates, &swapped.raw_scores, swapped.alpha);
+            ids(&original) != ids(&swapped_scores)
+                || fused_by_id(&original) != fused_by_id(&swapped_scores)
+        })
+    }
+
+    fn composite_mr_detects(fuse: FusionFn) -> bool {
+        generated_fusion_cases().into_iter().any(|case| {
+            let original = fuse(&case.candidates, &case.raw_scores, case.alpha);
+            let composed = scaled_case(
+                &shifted_case(&reverse_candidates(&case), 42.0, -9.0),
+                3.0,
+                2.0,
+            );
+            let composed_scores = fuse(&composed.candidates, &composed.raw_scores, composed.alpha);
+            ids(&original) != ids(&composed_scores)
+                || fused_by_id(&original) != fused_by_id(&composed_scores)
         })
     }
 
@@ -1069,6 +1183,12 @@ mod tests {
         assert!(positive_scale_mr_detects(mutant_rerank_scale_sensitive));
         assert!(permutation_mr_detects(mutant_input_order_biased));
         assert!(alpha_endpoint_mr_detects(mutant_ignores_alpha));
+        assert!(swap_alpha_complement_mr_detects(
+            mutant_non_complementary_alpha_weights
+        ));
+        assert!(composite_mr_detects(mutant_base_shift_sensitive));
+        assert!(composite_mr_detects(mutant_rerank_scale_sensitive));
+        assert!(composite_mr_detects(mutant_input_order_biased));
     }
 
     #[test]

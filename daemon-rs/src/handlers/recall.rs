@@ -7410,9 +7410,11 @@ mod tests {
     use rusqlite::params;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use tokio::sync::{broadcast, Mutex};
+
+    static SHARED_TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct StaticReranker;
 
@@ -7480,9 +7482,11 @@ mod tests {
     }
 
     fn shared_test_state() -> RuntimeState {
+        let unique_id = SHARED_TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = std::env::temp_dir().join(format!(
-            "cortex-recall-shared-{}-{}.db",
+            "cortex-recall-shared-{}-{}-{}.db",
             std::process::id(),
+            unique_id,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -11273,8 +11277,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unified_recall_fail_closes_when_latency_budget_is_zero() {
-        let original = std::env::var("CORTEX_RECALL_FAST_MAX_LATENCY_MS").ok();
-        std::env::set_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS", "0");
+        let _env_lock = crate::test_env::lock_async().await;
+        let _latency_budget =
+            crate::test_env::ScopedEnvVar::set("CORTEX_RECALL_FAST_MAX_LATENCY_MS", "0");
 
         let state = shared_test_state();
         {
@@ -11298,11 +11303,6 @@ mod tests {
         )
         .await
         .expect("recall should succeed");
-
-        match original {
-            Some(value) => std::env::set_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS", value),
-            None => std::env::remove_var("CORTEX_RECALL_FAST_MAX_LATENCY_MS"),
-        }
 
         assert_eq!(payload["policyMode"].as_str(), Some("fast"));
         assert_eq!(payload["failClosed"]["triggered"].as_bool(), Some(true));

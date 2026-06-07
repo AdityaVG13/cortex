@@ -27,6 +27,7 @@ const TOO_VAGUE_THRESHOLD: i32 = 20;
 const BENCHMARK_ENTRY_TYPE: &str = "benchmark";
 const BENCHMARK_SOURCE_AGENT_PREFIX: &str = "amb-cortex::";
 const MAX_DECISION_CHARS: usize = 4096;
+const MAX_EXPLICIT_TTL_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 fn is_benchmark_entry_type(entry_type: &str) -> bool {
     entry_type.eq_ignore_ascii_case(BENCHMARK_ENTRY_TYPE)
@@ -110,6 +111,7 @@ enum SemanticDedupAction {
 
 #[derive(Debug)]
 pub(crate) enum StoreError {
+    BadRequest(&'static str),
     Validation {
         message: &'static str,
         quality: i32,
@@ -121,6 +123,7 @@ pub(crate) enum StoreError {
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            StoreError::BadRequest(message) => write!(f, "{message}"),
             StoreError::Validation {
                 message, quality, ..
             } => write!(f, "{message} (quality {quality})"),
@@ -209,6 +212,23 @@ fn compute_trust_score(confidence: f64, source_model: Option<&str>) -> f64 {
     ((raw * 10_000.0).round() / 10_000.0).clamp(0.0, 1.0)
 }
 
+pub(crate) fn validate_explicit_ttl_seconds(
+    ttl_seconds: Option<i64>,
+) -> Result<Option<i64>, StoreError> {
+    let Some(ttl_seconds) = ttl_seconds else {
+        return Ok(None);
+    };
+    if ttl_seconds <= 0 {
+        return Err(StoreError::BadRequest("ttl_seconds must be > 0"));
+    }
+    if ttl_seconds > MAX_EXPLICIT_TTL_SECONDS {
+        return Err(StoreError::BadRequest(
+            "ttl_seconds must be <= 31536000 (365 days)",
+        ));
+    }
+    Ok(Some(ttl_seconds))
+}
+
 pub async fn handle_store(
     State(state): State<RuntimeState>,
     headers: HeaderMap,
@@ -261,13 +281,8 @@ pub async fn handle_store(
         body.reasoning_depth.as_deref(),
     );
 
-    if let Some(ttl_seconds) = body.ttl_seconds {
-        if ttl_seconds <= 0 {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "ttl_seconds must be > 0" }),
-            );
-        }
+    if let Err(StoreError::BadRequest(message)) = validate_explicit_ttl_seconds(body.ttl_seconds) {
+        return json_response(StatusCode::BAD_REQUEST, json!({ "error": message }));
     }
 
     let decision_text = decision.trim().to_string();
@@ -324,6 +339,9 @@ pub async fn handle_store(
                 crate::focus::focus_append(&conn, &source_agent, &decision_text);
             }
             json_response(StatusCode::OK, json!({ "stored": true, "entry": entry }))
+        }
+        Err(StoreError::BadRequest(message)) => {
+            json_response(StatusCode::BAD_REQUEST, json!({ "error": message }))
         }
         Err(StoreError::Validation {
             message,
@@ -514,6 +532,7 @@ fn store_decision_internal(
     let ts = now_iso();
     let retention_class =
         RetentionClass::classify(retention_class, &entry_type, decision, context.as_deref());
+    let ttl_seconds = validate_explicit_ttl_seconds(ttl_seconds)?;
     let effective_ttl_seconds = ttl_seconds.or_else(|| retention_class.default_ttl_seconds());
     let expires_at =
         compute_expires_at(conn, effective_ttl_seconds).map_err(StoreError::Internal)?;
@@ -2454,6 +2473,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(expires_in_future, 1);
+    }
+
+    #[test]
+    fn store_decision_rejects_invalid_explicit_ttl() {
+        for ttl_seconds in [0, -1, MAX_EXPLICIT_TTL_SECONDS + 1] {
+            let mut conn = test_conn();
+            let err = store_decision_with_ttl(
+                &mut conn,
+                "temporary decision with enough detail to persist",
+                Some("ttl-test".to_string()),
+                None,
+                "tester".to_string(),
+                None,
+                Some(ttl_seconds),
+                None,
+            )
+            .unwrap_err();
+
+            if ttl_seconds <= 0 {
+                assert_eq!(err, "ttl_seconds must be > 0");
+            } else {
+                assert_eq!(err, "ttl_seconds must be <= 31536000 (365 days)");
+            }
+        }
     }
 
     #[test]

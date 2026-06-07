@@ -806,9 +806,10 @@ async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock()
+    }
 
     struct ModelEnvRestore(Option<String>);
 
@@ -844,7 +845,7 @@ mod tests {
 
     #[test]
     fn selected_model_defaults_to_bge_base() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_model_env_for_test(None);
         let selected = selected_model_selection();
         assert_eq!(selected.key, "bge-base-en-v1.5");
@@ -858,7 +859,7 @@ mod tests {
 
     #[test]
     fn selected_model_accepts_bge_aliases() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_model_env_for_test(None);
         std::env::set_var(MODEL_ENV_KEY, "bge");
         assert_eq!(selected_model_key(), "bge-base-en-v1.5");
@@ -868,7 +869,7 @@ mod tests {
 
     #[test]
     fn selected_model_accepts_legacy_l6_aliases() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_model_env_for_test(None);
         std::env::set_var(MODEL_ENV_KEY, "minilm-l6");
         assert_eq!(selected_model_key(), "all-minilm-l6-v2");
@@ -878,14 +879,14 @@ mod tests {
 
     #[test]
     fn unknown_model_falls_back_to_default() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_model_env_for_test(Some("unknown-model-key"));
         assert_eq!(selected_model_key(), "bge-base-en-v1.5");
     }
 
     #[test]
     fn selected_model_accepts_l12_aliases() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_model_env_for_test(None);
         std::env::set_var(MODEL_ENV_KEY, "all-minilm-l12-v2");
         assert_eq!(selected_model_key(), "all-minilm-l12-v2");
@@ -897,7 +898,7 @@ mod tests {
 
     #[test]
     fn selected_model_accepts_qwen3_aliases() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_model_env_for_test(None);
         std::env::set_var(MODEL_ENV_KEY, "qwen3");
         let selected = selected_model_selection();
@@ -954,14 +955,14 @@ mod tests {
 
     #[test]
     fn session_pool_defaults_to_one() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_pool_env_for_test(None);
         assert_eq!(resolved_pool_size(), DEFAULT_POOL_SIZE);
     }
 
     #[test]
     fn session_pool_parses_and_clamps_env_values() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_guard();
         let _restore = set_pool_env_for_test(None);
 
         std::env::set_var(POOL_ENV_KEY, "3");

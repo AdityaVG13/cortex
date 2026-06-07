@@ -10,13 +10,21 @@ fn normalized_host(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-pub fn local_http_base_url(paths: &CortexPaths) -> String {
-    let bind = paths.bind.trim();
-    let host = if bind.is_empty() || matches!(bind, "0.0.0.0" | "::" | "[::]") {
-        "127.0.0.1"
+pub(crate) fn http_host_for_bind(bind: &str) -> String {
+    let bind = bind.trim();
+    if bind.is_empty() || matches!(bind, "0.0.0.0" | "::" | "[::]") {
+        "127.0.0.1".to_string()
+    } else if bind.starts_with('[') && bind.ends_with(']') {
+        bind.to_string()
+    } else if bind.contains(':') {
+        format!("[{bind}]")
     } else {
-        bind
-    };
+        bind.to_string()
+    }
+}
+
+pub fn local_http_base_url(paths: &CortexPaths) -> String {
+    let host = http_host_for_bind(&paths.bind);
     format!("http://{host}:{}", paths.port)
 }
 
@@ -62,23 +70,57 @@ fn split_base_and_path(url: &str) -> Option<(String, String)> {
     Some((base.to_string().trim_end_matches('/').to_string(), path))
 }
 
-fn parse_http_response(raw: &[u8]) -> Result<(reqwest::StatusCode, String), String> {
+pub(crate) fn parse_http_response_bytes(
+    raw: &[u8],
+    source_label: &str,
+) -> Result<(reqwest::StatusCode, String), String> {
     let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return Err("invalid HTTP response from IPC endpoint".to_string());
+        return Err(format!("invalid HTTP response from {source_label}"));
     };
 
     let header = std::str::from_utf8(&raw[..header_end])
-        .map_err(|_| "IPC response headers are not valid UTF-8".to_string())?;
-    let status_code = header
+        .map_err(|_| format!("{source_label} response headers are not valid UTF-8"))?;
+    let status_line = header
         .lines()
         .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| "IPC response missing valid status line".to_string())?;
-    let status = reqwest::StatusCode::from_u16(status_code)
-        .map_err(|_| format!("IPC response returned invalid status code {status_code}"))?;
+        .ok_or_else(|| format!("{source_label} response missing valid HTTP status line"))?;
+    let status = parse_http_status_line(status_line, source_label)?;
     let body = String::from_utf8_lossy(&raw[header_end + 4..]).to_string();
     Ok((status, body))
+}
+
+fn parse_http_status_line(
+    status_line: &str,
+    source_label: &str,
+) -> Result<reqwest::StatusCode, String> {
+    let mut fields = status_line.split_whitespace();
+    let version = fields
+        .next()
+        .ok_or_else(|| format!("{source_label} response missing HTTP version"))?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
+        return Err(format!(
+            "{source_label} response has unsupported HTTP version '{version}'"
+        ));
+    }
+
+    let status_code_raw = fields
+        .next()
+        .ok_or_else(|| format!("{source_label} response missing status code"))?;
+    if status_code_raw.len() != 3 || !status_code_raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!(
+            "{source_label} response has malformed status code '{status_code_raw}'"
+        ));
+    }
+
+    let status_code = status_code_raw
+        .parse::<u16>()
+        .map_err(|_| format!("{source_label} response has malformed status code"))?;
+    reqwest::StatusCode::from_u16(status_code)
+        .map_err(|_| format!("{source_label} response returned invalid status code {status_code}"))
+}
+
+fn parse_http_response(raw: &[u8]) -> Result<(reqwest::StatusCode, String), String> {
+    parse_http_response_bytes(raw, "IPC endpoint")
 }
 
 async fn send_http_over_stream<S>(
@@ -270,5 +312,48 @@ mod tests {
     fn local_http_base_url_uses_loopback_for_wildcard_bind() {
         let paths = test_paths("0.0.0.0", 7437, None);
         assert_eq!(local_http_base_url(&paths), "http://127.0.0.1:7437");
+    }
+
+    #[test]
+    fn local_http_base_url_formats_wildcard_and_ipv6_hosts() {
+        assert_eq!(
+            local_http_base_url(&test_paths("", 7437, None)),
+            "http://127.0.0.1:7437"
+        );
+        assert_eq!(
+            local_http_base_url(&test_paths("::", 7437, None)),
+            "http://127.0.0.1:7437"
+        );
+        assert_eq!(
+            local_http_base_url(&test_paths("[::]", 7437, None)),
+            "http://127.0.0.1:7437"
+        );
+        assert_eq!(
+            local_http_base_url(&test_paths("::1", 7437, None)),
+            "http://[::1]:7437"
+        );
+        assert_eq!(
+            local_http_base_url(&test_paths("[::1]", 7437, None)),
+            "http://[::1]:7437"
+        );
+    }
+
+    #[test]
+    fn parse_http_response_rejects_malformed_status_lines() {
+        let malformed = [
+            b"garbage 200 OK\r\n\r\n{}" as &[u8],
+            b"HTTP/9.9 200 OK\r\n\r\n{}",
+            b"HTTP/1.1 99 TooLow\r\n\r\n{}",
+            b"HTTP/1.1 200OK\r\n\r\n{}",
+            b"HTTP/1.1 abc Nope\r\n\r\n{}",
+        ];
+
+        for raw in malformed {
+            assert!(
+                parse_http_response(raw).is_err(),
+                "malformed response should be rejected: {:?}",
+                String::from_utf8_lossy(raw)
+            );
+        }
     }
 }

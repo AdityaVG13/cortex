@@ -67,7 +67,13 @@ fn daemon_ready_from_payload(
     None
 }
 
+fn escape_cmd_quoted_fragment(value: &str) -> String {
+    value.replace('^', "^^").replace('%', "^%")
+}
+
 fn build_sc_create_command(exe_path: &str, username: &str) -> String {
+    let exe_path = escape_cmd_quoted_fragment(exe_path);
+    let username = escape_cmd_quoted_fragment(username);
     format!(
         "sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= {} DisplayName= \"{}\" obj= \".\\{}\"",
         SERVICE_NAME, exe_path, DEFAULT_START_MODE, DISPLAY_NAME, username
@@ -93,6 +99,18 @@ fn resolve_service_username_from_env() -> String {
         }
         Err(_) => "cortex-user".to_string(),
     }
+}
+
+fn service_exe_path_from_result(
+    result: std::io::Result<std::path::PathBuf>,
+) -> Result<String, String> {
+    result
+        .map(|exe| exe.to_string_lossy().to_string())
+        .map_err(|err| format!("Failed to get exe path: {err}"))
+}
+
+fn service_exe_path() -> Result<String, String> {
+    service_exe_path_from_result(std::env::current_exe())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,20 +183,8 @@ fn query_service_state() -> Result<ServiceState, String> {
 }
 
 fn parse_http_probe_response(raw: &[u8]) -> Result<(u16, String), String> {
-    let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return Err("invalid HTTP response from Cortex daemon".to_string());
-    };
-
-    let header = std::str::from_utf8(&raw[..header_end])
-        .map_err(|_| "daemon response headers are not valid UTF-8".to_string())?;
-    let status = header
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| "daemon response missing valid status line".to_string())?;
-    let body = String::from_utf8_lossy(&raw[header_end + 4..]).to_string();
-    Ok((status, body))
+    let (status, body) = crate::transport::parse_http_response_bytes(raw, "Cortex daemon")?;
+    Ok((status.as_u16(), body))
 }
 
 fn should_use_partial_probe_response(err: &std::io::Error, response_len: usize) -> bool {
@@ -209,8 +215,9 @@ fn daemon_probe(path: &str) -> Result<(u16, String), String> {
         )))
         .map_err(|e| format!("write timeout failed: {e}"))?;
 
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\nConnection: close\r\n\r\n"
+    );
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("write failed: {e}"))?;
@@ -360,9 +367,14 @@ fn ensure_windows() -> bool {
 
 // ---- CLI commands (work on any platform) ------------------------------------
 
-pub fn install() {
-    let exe = std::env::current_exe().expect("Failed to get exe path");
-    let exe_path = exe.to_string_lossy().to_string();
+pub fn install() -> bool {
+    let exe_path = match service_exe_path() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("[cortex] {err}");
+            return false;
+        }
+    };
 
     // COR-8 fix: detect current username to run service under user account,
     // NOT LocalSystem. LocalSystem has a different USERPROFILE which would
@@ -384,7 +396,7 @@ pub fn install() {
     let sc_cmd = build_sc_create_command(&exe_path, &username);
 
     let mut create_cmd = std::process::Command::new("cmd");
-    create_cmd.args(["/C", &sc_cmd]);
+    create_cmd.args(["/V:OFF", "/C", &sc_cmd]);
     apply_hidden_process_flags(&mut create_cmd);
     let output = create_cmd.output();
 
@@ -417,6 +429,7 @@ pub fn install() {
             eprintln!("[cortex] NOTE: You may need to set the password:");
             eprintln!("[cortex]   sc.exe config CortexDaemon password= YOUR_PASSWORD");
             eprintln!("[cortex] Then: cortex service start");
+            true
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
@@ -426,12 +439,16 @@ pub fn install() {
                 eprintln!("[cortex] Failed to install (run as Administrator)");
                 eprintln!("{}", stderr);
             }
+            false
         }
-        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+        Err(e) => {
+            eprintln!("[cortex] Failed to run sc.exe: {e}");
+            false
+        }
     }
 }
 
-pub fn uninstall() {
+pub fn uninstall() -> bool {
     // Stop first (ignore errors if not running)
     let mut stop_cmd = std::process::Command::new("sc.exe");
     stop_cmd.args(["stop", SERVICE_NAME]);
@@ -443,16 +460,23 @@ pub fn uninstall() {
     delete_cmd.args(["delete", SERVICE_NAME]);
     apply_hidden_process_flags(&mut delete_cmd);
     match delete_cmd.output() {
-        Ok(o) if o.status.success() => eprintln!("[cortex] Service uninstalled"),
+        Ok(o) if o.status.success() => {
+            eprintln!("[cortex] Service uninstalled");
+            true
+        }
         Ok(o) => {
             eprintln!("[cortex] Failed to uninstall");
             eprintln!("{}", String::from_utf8_lossy(&o.stderr));
+            false
         }
-        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+        Err(e) => {
+            eprintln!("[cortex] Failed to run sc.exe: {e}");
+            false
+        }
     }
 }
 
-pub fn start() {
+pub fn start() -> bool {
     let mut command = std::process::Command::new("sc.exe");
     command.args(["start", SERVICE_NAME]);
     apply_hidden_process_flags(&mut command);
@@ -470,40 +494,54 @@ pub fn start() {
             } else {
                 eprintln!("[cortex] Service started but health check pending");
             }
+            true
         }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             if stderr.contains("1056") {
                 eprintln!("[cortex] Service is already running");
+                true
             } else {
                 eprintln!("[cortex] Failed to start service");
                 eprintln!("{}", stderr);
+                false
             }
         }
-        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+        Err(e) => {
+            eprintln!("[cortex] Failed to run sc.exe: {e}");
+            false
+        }
     }
 }
 
-pub fn stop() {
+pub fn stop() -> bool {
     let mut command = std::process::Command::new("sc.exe");
     command.args(["stop", SERVICE_NAME]);
     apply_hidden_process_flags(&mut command);
     match command.output() {
-        Ok(o) if o.status.success() => eprintln!("[cortex] Service stopped"),
+        Ok(o) if o.status.success() => {
+            eprintln!("[cortex] Service stopped");
+            true
+        }
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr);
             if stderr.contains("1062") {
                 eprintln!("[cortex] Service is not running");
+                true
             } else {
                 eprintln!("[cortex] Failed to stop");
                 eprintln!("{}", stderr);
+                false
             }
         }
-        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+        Err(e) => {
+            eprintln!("[cortex] Failed to run sc.exe: {e}");
+            false
+        }
     }
 }
 
-pub fn status() {
+pub fn status() -> bool {
     let mut command = std::process::Command::new("sc.exe");
     command.args(["query", SERVICE_NAME]);
     apply_hidden_process_flags(&mut command);
@@ -530,24 +568,29 @@ pub fn status() {
             } else {
                 eprintln!("[cortex] HTTP: not responding");
             }
+            true
         }
-        Ok(_) => eprintln!("[cortex] Service not installed. Run: cortex service install"),
-        Err(e) => eprintln!("[cortex] Failed to run sc.exe: {e}"),
+        Ok(_) => {
+            eprintln!("[cortex] Service not installed. Run: cortex service install");
+            false
+        }
+        Err(e) => {
+            eprintln!("[cortex] Failed to run sc.exe: {e}");
+            false
+        }
     }
 }
 
-pub fn ensure() {
+pub fn ensure() -> bool {
     #[cfg(not(windows))]
     {
         eprintln!("[cortex] `service ensure` is only available on Windows");
-        std::process::exit(1);
+        false
     }
 
     #[cfg(windows)]
     {
-        if !ensure_windows() {
-            std::process::exit(1);
-        }
+        ensure_windows()
     }
 }
 
@@ -581,8 +624,10 @@ mod scm {
     define_windows_service!(ffi_service_main, cortex_service_main);
 
     pub fn dispatch() {
-        service_dispatcher::start(super::SERVICE_NAME, ffi_service_main)
-            .expect("[cortex] Failed to start service dispatcher");
+        if let Err(err) = service_dispatcher::start(super::SERVICE_NAME, ffi_service_main) {
+            eprintln!("[cortex] Failed to start service dispatcher: {err}");
+            std::process::exit(1);
+        }
     }
 
     fn cortex_service_main(_arguments: Vec<OsString>) {
@@ -599,8 +644,14 @@ mod scm {
             }
         };
 
-        let status_handle = service_control_handler::register(super::SERVICE_NAME, event_handler)
-            .expect("[cortex] Failed to register service control handler");
+        let status_handle =
+            match service_control_handler::register(super::SERVICE_NAME, event_handler) {
+                Ok(handle) => handle,
+                Err(err) => {
+                    eprintln!("[cortex-service] Failed to register service control handler: {err}");
+                    return;
+                }
+            };
 
         // Report: Starting
         let _ = status_handle.set_service_status(ServiceStatus {
@@ -729,6 +780,15 @@ mod tests {
     }
 
     #[test]
+    fn build_sc_create_command_escapes_cmd_expansion_in_exe_path() {
+        let cmd = build_sc_create_command(r"C:\Tools\%PATH%\Cortex^Bin\cortex.exe", "alice");
+        assert!(
+            cmd.contains(r"C:\Tools\^%PATH^%\Cortex^^Bin\cortex.exe"),
+            "executable path must survive cmd.exe parsing without expansion: {cmd}"
+        );
+    }
+
+    #[test]
     fn username_is_safe_for_cmd_fragment_rejects_shell_metacharacters() {
         assert!(username_is_safe_for_cmd_fragment("alice"));
         assert!(username_is_safe_for_cmd_fragment("alice.svc"));
@@ -741,12 +801,26 @@ mod tests {
 
     #[test]
     fn resolve_service_username_from_env_falls_back_when_username_is_unsafe() {
-        std::env::set_var("USERNAME", "alice&whoami");
+        let _env_lock = crate::test_env::lock();
+        let _username = crate::test_env::ScopedEnvVar::set("USERNAME", "alice&whoami");
         assert_eq!(resolve_service_username_from_env(), "cortex-user");
         std::env::set_var("USERNAME", "alice.svc");
         assert_eq!(resolve_service_username_from_env(), "alice.svc");
         std::env::remove_var("USERNAME");
         assert_eq!(resolve_service_username_from_env(), "cortex-user");
+    }
+
+    #[test]
+    fn service_exe_path_from_result_reports_resolution_failure() {
+        let err = service_exe_path_from_result(Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing exe",
+        )))
+        .unwrap_err();
+        assert!(
+            err.contains("Failed to get exe path"),
+            "expected contextual error: {err}"
+        );
     }
 
     #[test]
@@ -866,6 +940,12 @@ mod tests {
     fn parse_http_probe_response_rejects_invalid_payloads() {
         let err = parse_http_probe_response(b"not-http").unwrap_err();
         assert!(err.contains("invalid HTTP response"));
+
+        let err = parse_http_probe_response(b"not-http 200 OK\r\n\r\n{}").unwrap_err();
+        assert!(err.contains("unsupported HTTP version"));
+
+        let err = parse_http_probe_response(b"HTTP/1.1 099 TooLow\r\n\r\n{}").unwrap_err();
+        assert!(err.contains("invalid status code"));
     }
 
     #[test]

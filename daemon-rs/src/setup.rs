@@ -85,13 +85,11 @@ pub async fn run_setup() {
     eprintln!("  ====================================");
     eprintln!();
 
-    // Step 1: Init
     let init_result = step_init().await;
     print_step(1, "Initialize", &init_result);
 
     let cortex_exe = stable_mcp_binary_path();
 
-    // Step 2: Detect
     let detected = step_detect();
     print_step(
         2,
@@ -104,7 +102,6 @@ pub async fn run_setup() {
         },
     );
 
-    // Step 3: Configure
     let config_results = step_configure(&detected, &cortex_exe);
     print_step(3, "Configure AI tools", &summarize_configs(&config_results));
 
@@ -117,11 +114,9 @@ pub async fn run_setup() {
         );
     }
 
-    // Step 4: Check daemon availability
     let daemon_result = step_daemon().await;
     print_step(4, "Daemon availability", &daemon_result);
 
-    // Step 5: Verify
     let verify_result = step_verify().await;
     print_step(5, "Verify", &verify_result);
 
@@ -149,8 +144,8 @@ pub async fn run_setup() {
 /// - reports per-table row counts
 /// - writes owner API key to ~/.cortex/cortex.token for compatibility
 ///
-/// When `dry_run` is true the migration runs inside a transaction that is
-/// rolled back so the database is left untouched.
+/// The migration runs inside a transaction. Dry runs roll back; live runs commit
+/// only after the owner API key has been persisted to the shared token file.
 pub async fn run_setup_team(args: &[String], dry_run: bool) {
     let db_path = auth::db_path();
     if let Some(parent) = db_path.parent() {
@@ -262,12 +257,11 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     db::migrate_focus_table(&conn);
     crate::crystallize::migrate_crystal_tables(&conn);
 
-    // For dry-run we wrap everything in a transaction we will roll back.
-    if dry_run {
-        if let Err(e) = conn.execute_batch("BEGIN") {
-            eprintln!("  [FAIL] Cannot begin transaction: {e}");
-            return;
-        }
+    // SAFETY: team setup is a write transaction; take SQLite's writer lock
+    // up front so contention fails/retries at the transaction boundary.
+    if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
+        eprintln!("  [FAIL] Cannot begin transaction: {e}");
+        return;
     }
 
     eprintln!("  Migrating to team mode...");
@@ -278,9 +272,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("  [FAIL] Failed to hash owner API key: {e}");
-            if dry_run {
-                let _ = conn.execute_batch("ROLLBACK");
-            }
+            rollback_team_setup(&conn);
             return;
         }
     };
@@ -289,9 +281,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     if let Err(e) = db::create_team_mode_tables(&conn) {
         eprintln!("FAILED");
         eprintln!("  [FAIL] {e}");
-        if dry_run {
-            let _ = conn.execute_batch("ROLLBACK");
-        }
+        rollback_team_setup(&conn);
         return;
     }
     eprintln!("done");
@@ -300,9 +290,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("  [FAIL] Failed to create owner user: {e}");
-            if dry_run {
-                let _ = conn.execute_batch("ROLLBACK");
-            }
+            rollback_team_setup(&conn);
             return;
         }
     };
@@ -311,9 +299,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     if let Err(e) = db::migrate_to_team_mode(&conn, owner_id) {
         eprintln!("FAILED");
         eprintln!("  [FAIL] {e}");
-        if dry_run {
-            let _ = conn.execute_batch("ROLLBACK");
-        }
+        rollback_team_setup(&conn);
         return;
     }
     eprintln!("done");
@@ -356,7 +342,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             width = label_width
         );
         eprintln!();
-        let _ = conn.execute_batch("ROLLBACK");
+        rollback_team_setup(&conn);
         eprintln!("  No changes made.");
         eprintln!();
         return;
@@ -367,15 +353,26 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("  [FAIL] Failed to create default team membership: {e}");
+            rollback_team_setup(&conn);
             return;
         }
     };
 
     // Keep the existing auth path compatible with current handlers/MCP proxy.
-    let cortex_dir = auth::cortex_dir();
-    let _ = fs::create_dir_all(&cortex_dir);
-    if let Err(e) = fs::write(cortex_dir.join("cortex.token"), &owner_key) {
-        eprintln!("  [WARN] Team schema migrated, but token write failed: {e}");
+    let paths = auth::CortexPaths::resolve();
+    let previous_token = fs::read(&paths.token).ok();
+    if let Err(e) = persist_team_owner_token(&paths, &owner_key) {
+        rollback_team_setup(&conn);
+        eprintln!(
+            "  [FAIL] Team migration rolled back because owner token persistence failed: {e}"
+        );
+        return;
+    }
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        rollback_team_setup(&conn);
+        restore_previous_token(&paths, previous_token);
+        eprintln!("  [FAIL] Failed to commit team migration: {e}");
+        return;
     }
 
     let key_preview: String = owner_key.chars().take(8).collect();
@@ -392,12 +389,34 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     eprintln!();
     eprintln!("  Generated API key: {key_preview}...");
     eprintln!("  Save this key -- it will not be shown again.");
-    eprintln!("  (Full key written to ~/.cortex/cortex.token)");
+    eprintln!("  (Full key written to {})", paths.token.display());
     eprintln!();
     eprintln!("  Default team id: {default_team_id}");
     eprintln!();
     eprintln!("  Migration complete. Restart daemon: cortex serve");
     eprintln!();
+}
+
+fn rollback_team_setup(conn: &rusqlite::Connection) {
+    let _ = conn.execute_batch("ROLLBACK");
+}
+
+fn persist_team_owner_token(paths: &auth::CortexPaths, owner_key: &str) -> Result<(), String> {
+    auth::try_write_token_for(paths, owner_key)
+}
+
+fn restore_previous_token(paths: &auth::CortexPaths, previous_token: Option<Vec<u8>>) {
+    match previous_token {
+        Some(contents) => {
+            if let Some(parent) = paths.token.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = auth::write_secret_file(&paths.token, &contents);
+        }
+        None => {
+            let _ = fs::remove_file(&paths.token);
+        }
+    }
 }
 
 fn print_step(num: usize, name: &str, result: &StepResult) {
@@ -1212,5 +1231,32 @@ enabled = true
         .is_some());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persist_team_owner_token_reports_directory_failures() {
+        let home_dir = temp_test_dir("team_token_home_is_file");
+        if let Some(parent) = home_dir.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&home_dir, "not a directory").unwrap();
+
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = auth::CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(54967),
+            Some("127.0.0.1"),
+        );
+
+        let err = persist_team_owner_token(&paths, "ctx_test_owner_key")
+            .expect_err("team owner token persistence should fail");
+        assert!(
+            err.contains("cannot create token directory"),
+            "unexpected error: {err}"
+        );
+        assert!(!paths.token.exists());
+
+        let _ = fs::remove_file(&home_dir);
     }
 }

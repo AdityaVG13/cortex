@@ -34,6 +34,8 @@ mod server;
 mod service;
 mod setup;
 mod state;
+#[cfg(test)]
+mod test_env;
 mod tls;
 mod transport;
 mod workspace;
@@ -465,6 +467,7 @@ async fn main() {
             println!("cortex {}", env!("CARGO_PKG_VERSION"));
         }
         "capabilities" => {
+            validate_cli_options_or_exit(&args[2..], &[], &["--json"]);
             if args.iter().any(|arg| arg == "--json") {
                 println!(
                     "{}",
@@ -475,6 +478,7 @@ async fn main() {
             }
         }
         "status" => {
+            validate_cli_options_or_exit(&args[2..], &[], &["--json"]);
             let json_output = args.iter().any(|arg| arg == "--json");
             let exit_code = run_status_cli(&paths, json_output).await;
             if exit_code != 0 {
@@ -484,7 +488,7 @@ async fn main() {
         "robot-docs" => {
             let subcmd = args.get(2).map(String::as_str).unwrap_or("guide");
             match subcmd {
-                "" | "guide" | "--help" | "-h" => println!("{}", cli_robot_docs_guide()),
+                "" | "guide" | "help" | "--help" | "-h" => println!("{}", cli_robot_docs_guide()),
                 other => {
                     eprintln!("{}", unknown_robot_docs_subcommand_message(other));
                     std::process::exit(1);
@@ -494,11 +498,19 @@ async fn main() {
 
         // ── HTTP daemon (standalone or via service) ─────────────────
         "serve" => {
+            validate_cli_options_or_exit(&args[2..], &[], &[]);
+
             #[cfg(unix)]
             async fn sigterm_future() {
                 use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm =
-                    signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+                let mut sigterm = match signal(SignalKind::terminate()) {
+                    Ok(sigterm) => sigterm,
+                    Err(err) => {
+                        eprintln!("[cortex] Warning: failed to register SIGTERM handler: {err}");
+                        std::future::pending::<()>().await;
+                        return;
+                    }
+                };
                 sigterm.recv().await;
             }
             #[cfg(not(unix))]
@@ -522,6 +534,7 @@ async fn main() {
         // ── MCP stdio transport ─────────────────────────────────────
         "mcp" => {
             let remaining = &args[2..];
+            validate_cli_options_or_exit(remaining, &["--agent", "--url", "--api-key"], &[]);
             let agent = parse_flag_value(remaining, "--agent");
             let (base_url, api_key, local_owner_mode) = resolve_client_target(remaining, &paths);
             if let Err(e) = ensure_remote_target_has_api_key(&base_url, api_key.as_deref(), &paths)
@@ -546,6 +559,7 @@ async fn main() {
         }
 
         "paths" => {
+            validate_cli_options_or_exit(&args[2..], &[], &["--json"]);
             if args.iter().any(|a| a == "--json") {
                 println!("{}", paths.to_json());
             } else {
@@ -566,6 +580,7 @@ async fn main() {
             let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
             match subcmd {
                 "ensure-daemon" => {
+                    validate_cli_options_or_exit(&args[3..], &["--agent"], &[]);
                     let agent = parse_flag_value(&args[3..], "--agent");
                     apply_path_env(&paths);
                     if let Err(e) = ensure_daemon(&paths, agent.as_deref(), true, true).await {
@@ -575,6 +590,11 @@ async fn main() {
                 }
                 "mcp" => {
                     let remaining = &args[3..];
+                    validate_cli_options_or_exit(
+                        remaining,
+                        &["--agent", "--url", "--api-key"],
+                        &[],
+                    );
                     let (base_url, api_key, local_owner_mode) =
                         resolve_client_target(remaining, &paths);
                     let agent = parse_flag_value(remaining, "--agent");
@@ -631,21 +651,70 @@ async fn main() {
         // ── Windows Service lifecycle ───────────────────────────────
         "service" => {
             let subcmd = args.get(2).cloned().unwrap_or_default();
-            if let Err(err) = tokio::task::spawn_blocking(move || match subcmd.as_str() {
-                "install" => service::install(),
-                "uninstall" => service::uninstall(),
-                "start" => service::start(),
-                "stop" => service::stop(),
-                "status" => service::status(),
-                "ensure" => service::ensure(),
-                _ => {
-                    eprintln!("Usage: cortex service <install|uninstall|start|stop|status|ensure>");
-                }
-            })
-            .await
-            {
-                eprintln!("[cortex] Service command task failed: {err}");
-                std::process::exit(1);
+            if matches!(subcmd.as_str(), "help" | "--help" | "-h") {
+                println!("{}", cli_service_usage());
+                return;
+            }
+
+            let service_exit_code =
+                match tokio::task::spawn_blocking(move || match subcmd.as_str() {
+                    "install" => {
+                        if service::install() {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    "uninstall" => {
+                        if service::uninstall() {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    "start" => {
+                        if service::start() {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    "stop" => {
+                        if service::stop() {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    "status" => {
+                        if service::status() {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    "ensure" => {
+                        if service::ensure() {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                    _ => {
+                        eprintln!("{}", cli_service_usage());
+                        1
+                    }
+                })
+                .await
+                {
+                    Ok(code) => code,
+                    Err(err) => {
+                        eprintln!("[cortex] Service command task failed: {err}");
+                        1
+                    }
+                };
+            if service_exit_code != 0 {
+                std::process::exit(service_exit_code);
             }
         }
 
@@ -663,10 +732,21 @@ async fn main() {
         // ── Setup: detect AI tools, configure, verify ──────────────
         "setup" => {
             let remaining: Vec<String> = args[2..].to_vec();
-            if remaining.iter().any(|a| a == "--team") {
+            let team_mode = remaining.iter().any(|a| a == "--team");
+            if team_mode {
+                validate_cli_options_or_exit(
+                    &remaining,
+                    &["--owner", "--display-name"],
+                    &["--team", "--dry-run"],
+                );
                 let dry_run = remaining.iter().any(|a| a == "--dry-run");
                 setup::run_setup_team(&remaining, dry_run).await;
             } else {
+                if remaining.iter().any(|a| a == "--dry-run") {
+                    eprintln!("--dry-run requires --team");
+                    std::process::exit(1);
+                }
+                validate_cli_options_or_exit(&remaining, &[], &[]);
                 setup::run_setup().await;
             }
         }
@@ -674,6 +754,11 @@ async fn main() {
         // ── Migrate: alias for setup --team with dry-run support ───
         "migrate" => {
             let remaining: Vec<String> = args[2..].to_vec();
+            validate_cli_options_or_exit(
+                &remaining,
+                &["--owner", "--display-name"],
+                &["--dry-run"],
+            );
             let dry_run = remaining.iter().any(|a| a == "--dry-run");
             setup::run_setup_team(&remaining, dry_run).await;
         }
@@ -696,9 +781,11 @@ async fn main() {
             run_eval_cli(&paths, &remaining);
         }
         "doctor" => {
+            validate_cli_options_or_exit(&args[2..], &[], &[]);
             run_doctor_cli(&paths);
         }
         "reindex" => {
+            validate_cli_options_or_exit(&args[2..], &[], &["--json"]);
             let json_output = args.iter().any(|a| a == "--json");
             run_reindex_cli(&paths, json_output);
         }
@@ -714,6 +801,7 @@ async fn main() {
             run_recrystallize_cli(&paths, json_output).await;
         }
         "cleanup" => {
+            validate_cli_options_or_exit(&args[2..], &["--max-passes"], &["--dry-run", "--events"]);
             let dry_run = args.iter().any(|a| a == "--dry-run");
             let include_events = args.iter().any(|a| a == "--events");
             let max_event_passes = match parse_flag_usize(&args[2..], "--max-passes") {
@@ -733,6 +821,7 @@ async fn main() {
 
         // ── Backup/restore CLI ────────────────────────────────────
         "backup" => {
+            validate_cli_options_or_exit(&args[2..], &[], &[]);
             let db_path = paths.db.clone();
             let home_dir = paths.home.clone();
             // Force checkpoint before backup for consistency
@@ -759,7 +848,7 @@ async fn main() {
         }
         "restore" => {
             let restore_file = match args.get(2) {
-                Some(f) => f.clone(),
+                Some(f) if !is_cli_option_token(f) => f.clone(),
                 None => {
                     eprintln!("Usage: cortex restore <backup-file.db>");
                     eprintln!("       cortex restore <backup-file.db> --skip-verification");
@@ -767,7 +856,15 @@ async fn main() {
                     eprintln!("Example: cortex restore ~/.cortex/backups/cortex-20260407.db");
                     std::process::exit(1);
                 }
+                Some(_) => {
+                    eprintln!("Usage: cortex restore <backup-file.db>");
+                    eprintln!("       cortex restore <backup-file.db> --skip-verification");
+                    eprintln!();
+                    eprintln!("Example: cortex restore ~/.cortex/backups/cortex-20260407.db");
+                    std::process::exit(1);
+                }
             };
+            validate_cli_options_or_exit(&args[3..], &[], &["--skip-verification"]);
 
             let skip_verification = args.iter().any(|a| a == "--skip-verification");
 
@@ -861,15 +958,12 @@ async fn main() {
             let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
             match subcmd {
                 "add" => {
-                    let username = match args.get(3) {
-                        Some(u) => u.clone(),
-                        None => {
-                            eprintln!(
-                                "Usage: cortex user add <username> [--role member|admin] [--display-name \"...\"]"
-                            );
-                            std::process::exit(1);
-                        }
-                    };
+                    let username = required_cli_positional_or_exit(
+                        &args,
+                        3,
+                        "Usage: cortex user add <username> [--role member|admin] [--display-name \"...\"]",
+                    );
+                    validate_cli_options_or_exit(&args[4..], &["--role", "--display-name"], &[]);
                     let mut role = "member".to_string();
                     let mut display_name: Option<String> = None;
                     let mut i = 4usize;
@@ -898,7 +992,7 @@ async fn main() {
                     if let Some(dn) = display_name {
                         body["display_name"] = serde_json::json!(dn);
                     }
-                    match admin_request("POST", "/admin/user/add", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/user/add", Some(body)).await {
                         Ok(json) => {
                             let api_key = json_str(&json, "api_key");
                             let key_masked = api_key_output_masked();
@@ -925,15 +1019,15 @@ async fn main() {
                     }
                 }
                 "rotate-key" => {
-                    let username = match args.get(3) {
-                        Some(u) => u.clone(),
-                        None => {
-                            eprintln!("Usage: cortex user rotate-key <username>");
-                            std::process::exit(1);
-                        }
-                    };
+                    let username = required_cli_positional_or_exit(
+                        &args,
+                        3,
+                        "Usage: cortex user rotate-key <username>",
+                    );
+                    validate_cli_options_or_exit(&args[4..], &[], &[]);
                     let body = serde_json::json!({ "username": username });
-                    match admin_request("POST", "/admin/user/rotate-key", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/user/rotate-key", Some(body)).await
+                    {
                         Ok(json) => {
                             let api_key = json_str(&json, "api_key");
                             let key_masked = api_key_output_masked();
@@ -957,19 +1051,18 @@ async fn main() {
                     }
                 }
                 "remove" => {
-                    let username = match args.get(3) {
-                        Some(u) => u.clone(),
-                        None => {
-                            eprintln!("Usage: cortex user remove <username>");
-                            std::process::exit(1);
-                        }
-                    };
+                    let username = required_cli_positional_or_exit(
+                        &args,
+                        3,
+                        "Usage: cortex user remove <username>",
+                    );
+                    validate_cli_options_or_exit(&args[4..], &[], &[]);
                     if !confirm_action(&format!("Remove user '{username}'?")) {
                         eprintln!("Cancelled.");
                         std::process::exit(0);
                     }
                     let body = serde_json::json!({ "username": username });
-                    match admin_request("POST", "/admin/user/remove", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/user/remove", Some(body)).await {
                         Ok(json) => {
                             println!("Removed user '{}'", json_str(&json, "removed"));
                         }
@@ -979,37 +1072,40 @@ async fn main() {
                         }
                     }
                 }
-                "list" => match admin_request("GET", "/admin/users", None).await {
-                    Ok(json) => {
-                        let users = json["users"].as_array();
-                        match users {
-                            Some(arr) if !arr.is_empty() => {
-                                println!(
-                                    "{:<6} {:<20} {:<20} {:<10} CREATED",
-                                    "ID", "USERNAME", "DISPLAY NAME", "ROLE"
-                                );
-                                println!("{}", "-".repeat(80));
-                                for u in arr {
+                "list" => {
+                    validate_cli_options_or_exit(&args[3..], &[], &[]);
+                    match admin_request(&paths, "GET", "/admin/users", None).await {
+                        Ok(json) => {
+                            let users = json["users"].as_array();
+                            match users {
+                                Some(arr) if !arr.is_empty() => {
                                     println!(
-                                        "{:<6} {:<20} {:<20} {:<10} {}",
-                                        json_field(u, "id"),
-                                        json_str(u, "username"),
-                                        json_str_or(u, "display_name", "-"),
-                                        json_str(u, "role"),
-                                        json_str_or(u, "created_at", "-"),
+                                        "{:<6} {:<20} {:<20} {:<10} CREATED",
+                                        "ID", "USERNAME", "DISPLAY NAME", "ROLE"
                                     );
+                                    println!("{}", "-".repeat(80));
+                                    for u in arr {
+                                        println!(
+                                            "{:<6} {:<20} {:<20} {:<10} {}",
+                                            json_field(u, "id"),
+                                            json_str(u, "username"),
+                                            json_str_or(u, "display_name", "-"),
+                                            json_str(u, "role"),
+                                            json_str_or(u, "created_at", "-"),
+                                        );
+                                    }
+                                    println!();
+                                    println!("{} user(s)", arr.len());
                                 }
-                                println!();
-                                println!("{} user(s)", arr.len());
+                                _ => println!("No users found."),
                             }
-                            _ => println!("No users found."),
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                },
+                }
                 _ => {
                     eprintln!("Usage: cortex user <add|rotate-key|remove|list>");
                     std::process::exit(1);
@@ -1022,15 +1118,14 @@ async fn main() {
             let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
             match subcmd {
                 "create" => {
-                    let name = match args.get(3) {
-                        Some(n) => n.clone(),
-                        None => {
-                            eprintln!("Usage: cortex team create <name>");
-                            std::process::exit(1);
-                        }
-                    };
+                    let name = required_cli_positional_or_exit(
+                        &args,
+                        3,
+                        "Usage: cortex team create <name>",
+                    );
+                    validate_cli_options_or_exit(&args[4..], &[], &[]);
                     let body = serde_json::json!({ "name": name });
-                    match admin_request("POST", "/admin/team/create", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/team/create", Some(body)).await {
                         Ok(json) => {
                             println!("Team created:");
                             println!("  Name:    {}", json_str(&json, "name"));
@@ -1043,24 +1138,10 @@ async fn main() {
                     }
                 }
                 "add" => {
-                    let team_name = match args.get(3) {
-                        Some(t) => t.clone(),
-                        None => {
-                            eprintln!(
-                                "Usage: cortex team add <team> <username> [--role member|admin]"
-                            );
-                            std::process::exit(1);
-                        }
-                    };
-                    let username = match args.get(4) {
-                        Some(u) => u.clone(),
-                        None => {
-                            eprintln!(
-                                "Usage: cortex team add <team> <username> [--role member|admin]"
-                            );
-                            std::process::exit(1);
-                        }
-                    };
+                    let usage = "Usage: cortex team add <team> <username> [--role member|admin]";
+                    let team_name = required_cli_positional_or_exit(&args, 3, usage);
+                    let username = required_cli_positional_or_exit(&args, 4, usage);
+                    validate_cli_options_or_exit(&args[5..], &["--role"], &[]);
                     let mut role = "member".to_string();
                     let mut i = 5usize;
                     while i < args.len() {
@@ -1077,7 +1158,8 @@ async fn main() {
                         "username": username,
                         "role": role,
                     });
-                    match admin_request("POST", "/admin/team/add-member", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/team/add-member", Some(body)).await
+                    {
                         Ok(json) => {
                             println!(
                                 "Added '{}' to team '{}' as {}",
@@ -1093,20 +1175,10 @@ async fn main() {
                     }
                 }
                 "remove" => {
-                    let team_name = match args.get(3) {
-                        Some(t) => t.clone(),
-                        None => {
-                            eprintln!("Usage: cortex team remove <team> <username>");
-                            std::process::exit(1);
-                        }
-                    };
-                    let username = match args.get(4) {
-                        Some(u) => u.clone(),
-                        None => {
-                            eprintln!("Usage: cortex team remove <team> <username>");
-                            std::process::exit(1);
-                        }
-                    };
+                    let usage = "Usage: cortex team remove <team> <username>";
+                    let team_name = required_cli_positional_or_exit(&args, 3, usage);
+                    let username = required_cli_positional_or_exit(&args, 4, usage);
+                    validate_cli_options_or_exit(&args[5..], &[], &[]);
                     if !confirm_action(&format!("Remove '{username}' from team '{team_name}'?")) {
                         eprintln!("Cancelled.");
                         std::process::exit(0);
@@ -1115,7 +1187,9 @@ async fn main() {
                         "team_name": team_name,
                         "username": username,
                     });
-                    match admin_request("POST", "/admin/team/remove-member", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/team/remove-member", Some(body))
+                        .await
+                    {
                         Ok(json) => {
                             let removed = &json["removed"];
                             println!(
@@ -1130,33 +1204,39 @@ async fn main() {
                         }
                     }
                 }
-                "list" => match admin_request("GET", "/admin/teams", None).await {
-                    Ok(json) => {
-                        let teams = json["teams"].as_array();
-                        match teams {
-                            Some(arr) if !arr.is_empty() => {
-                                println!("{:<6} {:<30} {:<10} CREATED", "ID", "NAME", "MEMBERS");
-                                println!("{}", "-".repeat(70));
-                                for t in arr {
+                "list" => {
+                    validate_cli_options_or_exit(&args[3..], &[], &[]);
+                    match admin_request(&paths, "GET", "/admin/teams", None).await {
+                        Ok(json) => {
+                            let teams = json["teams"].as_array();
+                            match teams {
+                                Some(arr) if !arr.is_empty() => {
                                     println!(
-                                        "{:<6} {:<30} {:<10} {}",
-                                        json_field(t, "id"),
-                                        json_str(t, "name"),
-                                        json_field(t, "member_count"),
-                                        json_str_or(t, "created_at", "-"),
+                                        "{:<6} {:<30} {:<10} CREATED",
+                                        "ID", "NAME", "MEMBERS"
                                     );
+                                    println!("{}", "-".repeat(70));
+                                    for t in arr {
+                                        println!(
+                                            "{:<6} {:<30} {:<10} {}",
+                                            json_field(t, "id"),
+                                            json_str(t, "name"),
+                                            json_field(t, "member_count"),
+                                            json_str_or(t, "created_at", "-"),
+                                        );
+                                    }
+                                    println!();
+                                    println!("{} team(s)", arr.len());
                                 }
-                                println!();
-                                println!("{} team(s)", arr.len());
+                                _ => println!("No teams found."),
                             }
-                            _ => println!("No teams found."),
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                },
+                }
                 _ => {
                     eprintln!("Usage: cortex team <create|add|remove|list>");
                     std::process::exit(1);
@@ -1168,31 +1248,35 @@ async fn main() {
         "admin" => {
             let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
             match subcmd {
-                "list-unowned" => match admin_request("GET", "/admin/unowned", None).await {
-                    Ok(json) => {
-                        let unowned = json["unowned"].as_object();
-                        match unowned {
-                            Some(map) if !map.is_empty() => {
-                                println!("{:<25} UNOWNED ROWS", "TABLE");
-                                println!("{}", "-".repeat(40));
-                                let mut total: i64 = 0;
-                                for (table, count) in map {
-                                    let n = count.as_i64().unwrap_or(0);
-                                    total += n;
-                                    println!("{:<25} {}", table, n);
+                "list-unowned" => {
+                    validate_cli_options_or_exit(&args[3..], &[], &[]);
+                    match admin_request(&paths, "GET", "/admin/unowned", None).await {
+                        Ok(json) => {
+                            let unowned = json["unowned"].as_object();
+                            match unowned {
+                                Some(map) if !map.is_empty() => {
+                                    println!("{:<25} UNOWNED ROWS", "TABLE");
+                                    println!("{}", "-".repeat(40));
+                                    let mut total: i64 = 0;
+                                    for (table, count) in map {
+                                        let n = count.as_i64().unwrap_or(0);
+                                        total += n;
+                                        println!("{:<25} {}", table, n);
+                                    }
+                                    println!("{}", "-".repeat(40));
+                                    println!("{:<25} {}", "TOTAL", total);
                                 }
-                                println!("{}", "-".repeat(40));
-                                println!("{:<25} {}", "TOTAL", total);
+                                _ => println!("No unowned data found."),
                             }
-                            _ => println!("No unowned data found."),
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                },
+                }
                 "assign-owner" => {
+                    validate_cli_options_or_exit(&args[3..], &["--from", "--to", "--table"], &[]);
                     let mut from_user: Option<String> = None;
                     let mut to_user: Option<String> = None;
                     let mut table: Option<String> = None;
@@ -1234,7 +1318,7 @@ async fn main() {
                     if let Some(t) = table {
                         body["table"] = serde_json::json!(t);
                     }
-                    match admin_request("POST", "/admin/assign-owner", Some(body)).await {
+                    match admin_request(&paths, "POST", "/admin/assign-owner", Some(body)).await {
                         Ok(json) => {
                             let assigned = json["assigned"].as_object();
                             match assigned {
@@ -1259,53 +1343,56 @@ async fn main() {
                         }
                     }
                 }
-                "stats" => match admin_request("GET", "/admin/stats", None).await {
-                    Ok(json) => {
-                        println!("Cortex Admin Stats");
-                        println!("{}", "=".repeat(50));
-                        println!();
-                        println!(
-                            "Users: {}    Teams: {}    DB Size: {}",
-                            json_field(&json, "user_count"),
-                            json_field(&json, "team_count"),
-                            json_str_or(&json, "db_size_mb", "?"),
-                        );
-                        println!();
+                "stats" => {
+                    validate_cli_options_or_exit(&args[3..], &[], &[]);
+                    match admin_request(&paths, "GET", "/admin/stats", None).await {
+                        Ok(json) => {
+                            println!("Cortex Admin Stats");
+                            println!("{}", "=".repeat(50));
+                            println!();
+                            println!(
+                                "Users: {}    Teams: {}    DB Size: {}",
+                                json_field(&json, "user_count"),
+                                json_field(&json, "team_count"),
+                                json_str_or(&json, "db_size_mb", "?"),
+                            );
+                            println!();
 
-                        if let Some(tables) = json["tables"].as_object() {
-                            println!("{:<25} ROWS", "TABLE");
-                            println!("{}", "-".repeat(40));
-                            for (tbl, count) in tables {
-                                println!("{:<25} {}", tbl, count);
+                            if let Some(tables) = json["tables"].as_object() {
+                                println!("{:<25} ROWS", "TABLE");
+                                println!("{}", "-".repeat(40));
+                                for (tbl, count) in tables {
+                                    println!("{:<25} {}", tbl, count);
+                                }
                             }
-                        }
 
-                        if let Some(per_user) = json["per_user"].as_array() {
-                            if !per_user.is_empty() {
-                                println!();
-                                println!("Per-User Breakdown:");
-                                println!(
-                                    "  {:<20} {:<10} {:<10} CRYSTALS",
-                                    "USERNAME", "MEMORIES", "DECISIONS"
-                                );
-                                println!("  {}", "-".repeat(55));
-                                for u in per_user {
+                            if let Some(per_user) = json["per_user"].as_array() {
+                                if !per_user.is_empty() {
+                                    println!();
+                                    println!("Per-User Breakdown:");
                                     println!(
-                                        "  {:<20} {:<10} {:<10} {}",
-                                        json_str(u, "username"),
-                                        json_field(u, "memories"),
-                                        json_field(u, "decisions"),
-                                        json_field(u, "crystals"),
+                                        "  {:<20} {:<10} {:<10} CRYSTALS",
+                                        "USERNAME", "MEMORIES", "DECISIONS"
                                     );
+                                    println!("  {}", "-".repeat(55));
+                                    for u in per_user {
+                                        println!(
+                                            "  {:<20} {:<10} {:<10} {}",
+                                            json_str(u, "username"),
+                                            json_field(u, "memories"),
+                                            json_field(u, "decisions"),
+                                            json_field(u, "crystals"),
+                                        );
+                                    }
                                 }
                             }
                         }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        std::process::exit(1);
-                    }
-                },
+                }
                 "budgets" => {
                     run_admin_budgets_cli(&paths, &args[3..]);
                 }
@@ -1332,6 +1419,7 @@ fn run_admin_budgets_cli(paths: &auth::CortexPaths, args: &[String]) {
     let json_output = args.iter().any(|arg| arg == "--json");
     match subcmd {
         "status" => {
+            validate_cli_options_or_exit(&args[1..], &[], &["--json"]);
             let status = budgets::BudgetConfigStatus::load_from_home(&paths.home);
             let payload = status.to_health_json(0);
             if json_output {
@@ -1341,6 +1429,7 @@ fn run_admin_budgets_cli(paths: &auth::CortexPaths, args: &[String]) {
             print_budget_status_human(&payload);
         }
         "validate" => {
+            validate_cli_options_or_exit(&args[1..], &["--path"], &["--json"]);
             let Some(path) = parse_flag_value(args, "--path") else {
                 eprintln!("Usage: cortex admin budgets validate --path <file> [--json]");
                 std::process::exit(1);
@@ -1698,6 +1787,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
     };
     let base_url = transport::local_http_base_url(paths);
     let mut probe_errors = Vec::new();
+    let probe_headers = [(String::from("X-Cortex-Request"), String::from("true"))];
 
     match transport::request_with_local_ipc_fallback(
         &client,
@@ -1705,7 +1795,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
         &base_url,
         "/readiness",
         paths,
-        &[],
+        &probe_headers,
         None,
         Duration::from_secs(2),
     )
@@ -1747,7 +1837,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
         &base_url,
         "/health",
         paths,
-        &[],
+        &probe_headers,
         None,
         Duration::from_secs(2),
     )
@@ -1956,6 +2046,10 @@ Troubleshooting:
         env!("CARGO_PKG_VERSION"),
         DEFAULT_CORTEX_PORT
     )
+}
+
+fn cli_service_usage() -> &'static str {
+    "Usage: cortex service <install|uninstall|start|stop|status|ensure>"
 }
 
 fn cli_capabilities_payload() -> Value {
@@ -2521,6 +2615,12 @@ fn run_doctor_cli(paths: &auth::CortexPaths) {
 /// `events` table so SSE subscribers + audit trails see the action. The
 /// CLI runs offline; no live daemon connection is required.
 fn run_admin_rollback_cli(paths: &auth::CortexPaths, args: &[String]) {
+    validate_cli_options_or_exit(
+        args,
+        &["--session-id", "--session"],
+        &["--apply", "--json", "--help", "-h"],
+    );
+
     let mut session_id: Option<String> = None;
     let mut apply = false;
     let mut json_output = false;
@@ -2711,8 +2811,13 @@ fn run_reindex_cli(paths: &auth::CortexPaths, json_output: bool) {
 }
 
 async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool) {
-    let (state, _shutdown_rx) =
-        state::initialize(paths, false).expect("Failed to initialize state for recrystallize");
+    let (state, _shutdown_rx) = match state::initialize(paths, false) {
+        Ok(initialized) => initialized,
+        Err(err) => {
+            eprintln!("Error: failed to initialize state for recrystallize: {err}");
+            std::process::exit(1);
+        }
+    };
 
     let result_payload = {
         let conn = state.db.lock().await;
@@ -2860,8 +2965,13 @@ async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
 }
 
 async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_output: bool) {
-    let (state, _shutdown_rx) =
-        state::initialize(paths, false).expect("Failed to initialize state for embeddings status");
+    let (state, _shutdown_rx) = match state::initialize(paths, false) {
+        Ok(initialized) => initialized,
+        Err(err) => {
+            eprintln!("Error: failed to initialize state for embeddings status: {err}");
+            std::process::exit(1);
+        }
+    };
     let Some(engine) = state.embedding_engine.clone() else {
         eprintln!(
             "[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry."
@@ -2943,8 +3053,13 @@ async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
     let json_output = args.iter().any(|arg| arg == "--json");
     let lock_wait = Duration::from_millis(lock_wait_ms as u64);
 
-    let (state, _shutdown_rx) =
-        state::initialize(paths, false).expect("Failed to initialize state for embeddings drain");
+    let (state, _shutdown_rx) = match state::initialize(paths, false) {
+        Ok(initialized) => initialized,
+        Err(err) => {
+            eprintln!("Error: failed to initialize state for embeddings drain: {err}");
+            std::process::exit(1);
+        }
+    };
     let Some(engine) = state.embedding_engine.clone() else {
         eprintln!(
             "[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry."
@@ -3037,6 +3152,8 @@ fn run_sync_cli(paths: &auth::CortexPaths, args: &[String]) {
         std::process::exit(1);
     };
 
+    validate_sync_cli_options_or_exit(command, &args[1..]);
+
     let _sync_lock = match acquire_sync_lock(paths) {
         Ok(lock) => lock,
         Err(err) => {
@@ -3056,7 +3173,36 @@ fn run_sync_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
 }
 
+fn validate_sync_cli_options_or_exit(command: &str, args: &[String]) {
+    let result = match command {
+        "export" => validate_cli_options(args, &["--out", "--since", "--cursor-file"], &[]),
+        "import" => validate_cli_options(args, &["--file", "--user", "--visibility"], &[]),
+        "watch" => validate_cli_options(
+            args,
+            &[
+                "--dir",
+                "--interval-seconds",
+                "--user",
+                "--visibility",
+                "--since",
+                "--cursor-file",
+            ],
+            &["--once"],
+        ),
+        _ => Err("Usage: cortex sync <export|import|watch> [options]".to_string()),
+    };
+    if let Err(err) = result {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
 fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
+    validate_cli_options_or_exit(
+        args,
+        &["--baseline-file", "--max-regression", "--window-days"],
+        &["--json", "--fail-on-regression"],
+    );
     let json_output = args.iter().any(|arg| arg == "--json");
     let fail_on_regression = args.iter().any(|arg| arg == "--fail-on-regression");
     let baseline_file = parse_flag_value(args, "--baseline-file");
@@ -3229,6 +3375,7 @@ fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
 }
 
 fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
+    validate_cli_options_or_exit(args, &["--format", "--out"], &[]);
     let mut format = "json".to_string();
     let mut out_path: Option<String> = None;
 
@@ -3285,6 +3432,7 @@ fn run_export_cli(paths: &auth::CortexPaths, args: &[String]) {
 }
 
 fn run_sync_export_cli(paths: &auth::CortexPaths, args: &[String]) {
+    validate_cli_options_or_exit(args, &["--out", "--since", "--cursor-file"], &[]);
     let out_path = parse_flag_value(args, "--out");
     let since_override = parse_flag_value(args, "--since");
     if let Some(since) = since_override.as_deref() {
@@ -3347,7 +3495,12 @@ fn run_import_cli(paths: &auth::CortexPaths, args: &[String]) {
             std::process::exit(1);
         }
     };
-    let counts = match import_payload_from_file(paths, &parsed, "import-cli") {
+    let counts = match import_payload_from_file(
+        paths,
+        &parsed,
+        "import-cli",
+        ImportPayloadExpectation::GeneralJson,
+    ) {
         Ok(value) => value,
         Err(err) => {
             eprintln!("{err}");
@@ -3372,7 +3525,12 @@ fn run_sync_import_cli(paths: &auth::CortexPaths, args: &[String]) {
             std::process::exit(1);
         }
     };
-    let counts = match import_payload_from_file(paths, &parsed, "sync-import-cli") {
+    let counts = match import_payload_from_file(
+        paths,
+        &parsed,
+        "sync-import-cli",
+        ImportPayloadExpectation::SyncChangeset,
+    ) {
         Ok(value) => value,
         Err(err) => {
             eprintln!("{err}");
@@ -3386,6 +3544,18 @@ fn run_sync_import_cli(paths: &auth::CortexPaths, args: &[String]) {
 }
 
 fn run_sync_watch_cli(paths: &auth::CortexPaths, args: &[String]) {
+    validate_cli_options_or_exit(
+        args,
+        &[
+            "--dir",
+            "--interval-seconds",
+            "--user",
+            "--visibility",
+            "--since",
+            "--cursor-file",
+        ],
+        &["--once"],
+    );
     let Some(dir_raw) = parse_flag_value(args, "--dir") else {
         eprintln!(
             "Usage: cortex sync watch --dir <path> [--interval-seconds <n>] [--once] [--user <username>] [--visibility private|team|shared] [--since <iso>] [--cursor-file <path>]"
@@ -3483,7 +3653,12 @@ fn run_sync_watch_cli(paths: &auth::CortexPaths, args: &[String]) {
                 username: username.clone(),
                 visibility: visibility.clone(),
             };
-            match import_payload_from_file(paths, &import_options, "sync-watch-import") {
+            match import_payload_from_file(
+                paths,
+                &import_options,
+                "sync-watch-import",
+                ImportPayloadExpectation::SyncChangeset,
+            ) {
                 Ok(counts) => {
                     eprintln!(
                         "[sync watch] imported {} (memories={}, decisions={})",
@@ -3575,7 +3750,15 @@ struct ImportCliArgs {
     visibility: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportPayloadExpectation {
+    GeneralJson,
+    SyncChangeset,
+}
+
 fn parse_import_cli_args(args: &[String], usage: &str) -> Result<ImportCliArgs, String> {
+    validate_cli_options(args, &["--file", "--user", "--visibility"], &[])?;
+
     let mut file_path: Option<String> = None;
     let mut username: Option<String> = None;
     let mut visibility = "private".to_string();
@@ -3627,6 +3810,7 @@ fn open_cli_connection(db_path: &Path) -> Result<rusqlite::Connection, String> {
         .map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
     db::configure(&conn).map_err(|e| format!("Failed to configure database: {e}"))?;
     db::initialize_schema(&conn).map_err(|e| format!("Failed to initialize schema: {e}"))?;
+    db::run_pending_migrations_quiet(&conn);
     crystallize::migrate_crystal_tables(&conn);
     Ok(conn)
 }
@@ -3635,12 +3819,16 @@ fn import_payload_from_file(
     paths: &auth::CortexPaths,
     parsed: &ImportCliArgs,
     source_agent_fallback: &str,
+    expectation: ImportPayloadExpectation,
 ) -> Result<export_data::ImportCounts, String> {
     let file_display = parsed.file_path.display().to_string();
     let raw = std::fs::read_to_string(&parsed.file_path)
         .map_err(|e| format!("Cannot read import file {file_display}: {e}"))?;
-    let payload: export_data::ImportPayload =
+    let raw_value: Value =
         serde_json::from_str(&raw).map_err(|e| format!("Import file is not valid JSON: {e}"))?;
+    validate_import_payload_metadata(&raw_value, expectation)?;
+    let payload: export_data::ImportPayload = serde_json::from_value(raw_value)
+        .map_err(|e| format!("Import file has unsupported record shape: {e}"))?;
 
     let mut conn = open_cli_connection(&paths.db)?;
     let team_mode = db::current_mode(&conn) == "team";
@@ -3699,6 +3887,109 @@ fn import_payload_from_file(
         source_agent_fallback: source_agent_fallback.to_string(),
     };
     export_data::import_payload(&mut conn, &payload, &options)
+}
+
+fn validate_import_payload_metadata(
+    value: &Value,
+    expectation: ImportPayloadExpectation,
+) -> Result<(), String> {
+    let Some(obj) = value.as_object() else {
+        return Err("Import file must be a JSON object.".to_string());
+    };
+
+    let mode = obj.get("mode").and_then(Value::as_str);
+    match obj.get("version") {
+        Some(version) if version.as_u64() == Some(1) => {}
+        Some(version) => {
+            return Err(format!(
+                "Import file has unsupported version marker {version}; expected 1."
+            ));
+        }
+        None if expectation == ImportPayloadExpectation::SyncChangeset || mode.is_some() => {
+            return Err("Import file is missing required version marker.".to_string());
+        }
+        None => {}
+    }
+
+    match expectation {
+        ImportPayloadExpectation::GeneralJson => match mode {
+            Some("changeset") | None => {}
+            Some("page") => {
+                return Err(
+                    "Import file is a paged export fragment; import a full export or sync changeset."
+                        .to_string(),
+                );
+            }
+            Some(other) => return Err(format!("Import file has unsupported mode '{other}'.")),
+        },
+        ImportPayloadExpectation::SyncChangeset => {
+            if mode != Some("changeset") {
+                return Err(
+                    "Sync import requires a changeset export with mode=\"changeset\".".to_string(),
+                );
+            }
+            let Some(cursor) = obj.get("cursor").and_then(Value::as_str) else {
+                return Err("Sync changeset is missing cursor version marker.".to_string());
+            };
+            validate_rfc3339_marker("cursor", cursor)?;
+        }
+    }
+
+    if let Some(exported_at) = obj.get("exported_at").and_then(Value::as_str) {
+        validate_rfc3339_marker("exported_at", exported_at)?;
+    }
+    let count_markers_required = expectation == ImportPayloadExpectation::SyncChangeset;
+    validate_import_count_marker(value, "memories", "memories_count", count_markers_required)?;
+    validate_import_count_marker(
+        value,
+        "decisions",
+        "decisions_count",
+        count_markers_required,
+    )?;
+    Ok(())
+}
+
+fn validate_rfc3339_marker(label: &str, value: &str) -> Result<(), String> {
+    if chrono::DateTime::parse_from_rfc3339(value).is_ok() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Import file has invalid {label} marker '{value}'; expected RFC3339."
+        ))
+    }
+}
+
+fn validate_import_count_marker(
+    value: &Value,
+    rows_key: &str,
+    count_key: &str,
+    required: bool,
+) -> Result<(), String> {
+    let Some(expected_value) = value.get(count_key) else {
+        if required {
+            return Err(format!(
+                "Sync changeset is missing required {count_key} marker."
+            ));
+        }
+        return Ok(());
+    };
+    let Some(expected_u64) = expected_value.as_u64() else {
+        return Err(format!("Import file has non-numeric {count_key} marker."));
+    };
+    let expected = usize::try_from(expected_u64)
+        .map_err(|_| format!("Import file has out-of-range {count_key} marker."))?;
+    let actual = value
+        .get(rows_key)
+        .and_then(Value::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or(0);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "Import file {count_key} marker ({expected}) does not match {rows_key} rows ({actual})."
+        ))
+    }
 }
 
 fn resolve_sync_since(override_since: Option<&str>, cursor_file: Option<&Path>) -> Option<String> {
@@ -3923,6 +4214,59 @@ fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+const GLOBAL_VALUE_FLAGS: &[&str] = &["--home", "--db", "--port", "--bind"];
+
+fn is_cli_option_token(value: &str) -> bool {
+    value.starts_with("--")
+}
+
+fn validate_cli_options(
+    args: &[String],
+    value_flags: &[&str],
+    boolean_flags: &[&str],
+) -> Result<(), String> {
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if value_flags.contains(&arg) || GLOBAL_VALUE_FLAGS.contains(&arg) {
+            let Some(value) = args.get(i + 1) else {
+                return Err(format!("Missing value for {arg}"));
+            };
+            if is_cli_option_token(value) {
+                return Err(format!("Missing value for {arg}"));
+            }
+            i += 2;
+            continue;
+        }
+        if boolean_flags.contains(&arg) {
+            i += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            return Err(format!("Unknown option: {arg}"));
+        }
+        return Err(format!("Unexpected argument: {arg}"));
+    }
+    Ok(())
+}
+
+fn validate_cli_options_or_exit(args: &[String], value_flags: &[&str], boolean_flags: &[&str]) {
+    if let Err(err) = validate_cli_options(args, value_flags, boolean_flags) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
+fn required_cli_positional_or_exit(args: &[String], index: usize, usage: &str) -> String {
+    match args.get(index) {
+        Some(value) if !is_cli_option_token(value) => value.clone(),
+        _ => {
+            eprintln!("{usage}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn env_trimmed(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -4050,6 +4394,9 @@ fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String
     let raw = args
         .get(idx + 1)
         .ok_or_else(|| format!("missing value for {flag}"))?;
+    if is_cli_option_token(raw) {
+        return Err(format!("missing value for {flag}"));
+    }
     let value = raw
         .parse::<usize>()
         .map_err(|_| format!("invalid value for {flag}: '{raw}'"))?;
@@ -4174,6 +4521,11 @@ async fn request_boot_payload(
 }
 
 async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), String> {
+    validate_cli_options(
+        args,
+        &["--agent", "--budget", "--url", "--api-key"],
+        &["--json"],
+    )?;
     let agent = parse_flag_value(args, "--agent").unwrap_or_else(|| "cli".to_string());
     let agent = agent.trim();
     if agent.is_empty() {
@@ -4794,7 +5146,6 @@ async fn ensure_daemon(
     allow_service_ensure: bool,
 ) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
-    let _ = auth::migrate_legacy_db(paths)?;
     let local_spawn_allowed = local_spawn_allowed_for_request(allow_service_ensure);
     let control_center_active_snapshot = if local_spawn_allowed {
         control_center_is_active(paths).ok()
@@ -4809,6 +5160,7 @@ async fn ensure_daemon(
             if daemon_healthy(paths).await {
                 // already healthy
             } else if local_spawn_allowed {
+                let _ = auth::migrate_legacy_db(paths)?;
                 if control_center_active_snapshot == Some(true) {
                     return Err(app_init_required_error(paths, agent));
                 }
@@ -5022,8 +5374,8 @@ async fn ensure_local_plugin_spawn_async(
 
 // ── Admin CLI helpers ───────────────────────────────────────────────────────
 
-fn read_auth_token() -> Result<String, String> {
-    let token_path = auth::CortexPaths::resolve().token;
+fn read_auth_token(paths: &auth::CortexPaths) -> Result<String, String> {
+    let token_path = paths.token.clone();
     std::fs::read_to_string(&token_path)
         .map(|v| v.trim().to_string())
         .map_err(|_| {
@@ -5035,17 +5387,17 @@ fn read_auth_token() -> Result<String, String> {
 }
 
 async fn admin_request(
+    paths: &auth::CortexPaths,
     method: &str,
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let paths = auth::CortexPaths::resolve();
-    let token = read_auth_token()?;
+    let token = read_auth_token(paths)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("create admin client: {e}"))?;
-    let base_url = local_daemon_base_url(&paths);
+    let base_url = local_daemon_base_url(paths);
     let payload = body.map(|value| value.to_string());
     let mut headers = vec![
         ("authorization".to_string(), format!("Bearer {token}")),
@@ -5059,7 +5411,7 @@ async fn admin_request(
         method,
         &base_url,
         path,
-        &paths,
+        paths,
         &headers,
         payload.as_deref(),
         Duration::from_secs(10),
@@ -5211,7 +5563,13 @@ pub(crate) async fn run_daemon(
         std::process::exit(1);
     }
 
-    let (state, shutdown_rx) = state::initialize(&paths, true).expect("Failed to initialize state");
+    let (state, shutdown_rx) = match state::initialize(&paths, true) {
+        Ok(initialized) => initialized,
+        Err(err) => {
+            eprintln!("[cortex] FATAL: failed to initialize state: {err}");
+            std::process::exit(1);
+        }
+    };
 
     if should_watch_spawn_parent(daemon_owner.as_deref()) {
         if let (Some(parent_pid), Some(parent_start_time)) = (parent_pid, parent_start_time) {
@@ -5895,10 +6253,9 @@ mod tests {
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+    use std::sync::Arc;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     const SPAWN_PARENT_TEST_CHILD_ENV: &str = "CORTEX_SPAWN_PARENT_TEST_CHILD";
     const CONTROL_CENTER_LOCK_TEST_CHILD_ENV: &str = "CORTEX_CONTROL_CENTER_LOCK_TEST_CHILD";
     const CONTROL_CENTER_LOCK_TEST_HOME_ENV: &str = "CORTEX_CONTROL_CENTER_LOCK_TEST_HOME";
@@ -5929,11 +6286,8 @@ mod tests {
         }
     }
 
-    fn env_guard() -> MutexGuard<'static, ()> {
-        match TEST_ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock()
     }
 
     fn temp_test_dir(name: &str) -> std::path::PathBuf {
@@ -5977,8 +6331,10 @@ mod tests {
         let max_requests = max_requests.max(1);
         std::thread::spawn(move || {
             let _ = listener.set_nonblocking(true);
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let idle_grace_after_response = Duration::from_millis(500);
             let mut served = 0_usize;
+            let mut last_served_at: Option<Instant> = None;
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -5992,12 +6348,21 @@ mod tests {
                         let _ = stream.write_all(response.as_bytes());
                         let _ = stream.flush();
                         served += 1;
+                        last_served_at = Some(Instant::now());
                         if served >= max_requests {
                             break;
                         }
                     }
                     Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                        if Instant::now() >= deadline {
+                        let now = Instant::now();
+                        if served > 0
+                            && last_served_at.is_some_and(|last| {
+                                now.duration_since(last) >= idle_grace_after_response
+                            })
+                        {
+                            break;
+                        }
+                        if now >= deadline {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(25));
@@ -6008,23 +6373,13 @@ mod tests {
         })
     }
 
-    fn spawn_single_response_server(
+    fn spawn_preflight_response_server(
         listener: TcpListener,
         status_line: &str,
         content_type: &str,
         body: String,
     ) -> std::thread::JoinHandle<()> {
-        spawn_response_server(listener, status_line, content_type, body, 1)
-    }
-
-    fn spawn_multi_response_server(
-        listener: TcpListener,
-        status_line: &str,
-        content_type: &str,
-        body: String,
-        max_requests: usize,
-    ) -> std::thread::JoinHandle<()> {
-        spawn_response_server(listener, status_line, content_type, body, max_requests)
+        spawn_response_server(listener, status_line, content_type, body, 4)
     }
 
     #[test]
@@ -6947,7 +7302,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_parent_orphan_watch_task_detects_real_parent_exit() {
         let mut parent_probe_child = {
-            let _env_guard = env_guard();
+            let _env_guard = crate::test_env::lock_async().await;
             let current_exe = std::env::current_exe().expect("resolve current test binary path");
             Command::new(current_exe)
                 .arg("--exact")
@@ -7129,6 +7484,115 @@ mod tests {
         write_atomic_text_file(&path, "{\"new\":true}\n").expect("replace file");
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "{\"new\":true}\n");
+
+        let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn general_import_metadata_allows_legacy_json_without_version() {
+        let payload = json!({
+            "memories": [{"text": "legacy memory"}],
+            "decisions": []
+        });
+
+        validate_import_payload_metadata(&payload, ImportPayloadExpectation::GeneralJson)
+            .expect("legacy JSON import remains compatible");
+    }
+
+    #[test]
+    fn import_metadata_rejects_unsupported_version_marker() {
+        let payload = json!({
+            "version": 2,
+            "memories": [],
+            "decisions": []
+        });
+
+        let err = validate_import_payload_metadata(&payload, ImportPayloadExpectation::GeneralJson)
+            .expect_err("unsupported version must fail");
+        assert!(err.contains("unsupported version marker"));
+    }
+
+    #[test]
+    fn sync_import_metadata_requires_changeset_mode_and_cursor() {
+        let payload = json!({
+            "version": 1,
+            "memories": [],
+            "decisions": [],
+            "memories_count": 0,
+            "decisions_count": 0
+        });
+
+        let err =
+            validate_import_payload_metadata(&payload, ImportPayloadExpectation::SyncChangeset)
+                .expect_err("sync import requires changeset metadata");
+        assert!(err.contains("mode=\"changeset\""));
+
+        let missing_cursor = json!({
+            "version": 1,
+            "mode": "changeset",
+            "memories": [],
+            "decisions": [],
+            "memories_count": 0,
+            "decisions_count": 0
+        });
+        let err = validate_import_payload_metadata(
+            &missing_cursor,
+            ImportPayloadExpectation::SyncChangeset,
+        )
+        .expect_err("sync import requires cursor marker");
+        assert!(err.contains("missing cursor"));
+
+        let missing_counts = json!({
+            "version": 1,
+            "mode": "changeset",
+            "cursor": "2026-04-20T00:00:00Z",
+            "memories": [],
+            "decisions": []
+        });
+        let err = validate_import_payload_metadata(
+            &missing_counts,
+            ImportPayloadExpectation::SyncChangeset,
+        )
+        .expect_err("sync import requires count markers");
+        assert!(err.contains("missing required memories_count marker"));
+    }
+
+    #[test]
+    fn sync_import_metadata_rejects_count_marker_mismatch() {
+        let payload = json!({
+            "version": 1,
+            "mode": "changeset",
+            "cursor": "2026-04-20T00:00:00Z",
+            "exported_at": "2026-04-20T00:00:00Z",
+            "memories": [{"text": "one"}],
+            "decisions": [],
+            "memories_count": 2,
+            "decisions_count": 0
+        });
+
+        let err =
+            validate_import_payload_metadata(&payload, ImportPayloadExpectation::SyncChangeset)
+                .expect_err("count marker mismatch must fail before import");
+        assert!(err.contains("memories_count marker"));
+    }
+
+    #[test]
+    fn cli_connection_applies_pending_migrations_for_fresh_db() {
+        let home_dir = temp_test_dir("cli_connection_migrations");
+        fs::create_dir_all(&home_dir).expect("create temp home");
+        let db_path = home_dir.join("cortex.db");
+
+        let conn = open_cli_connection(&db_path).expect("open cli connection");
+        let pending =
+            db::pending_migration_versions(&conn).expect("read pending migration versions");
+        assert!(
+            pending.is_empty(),
+            "fresh CLI DB should not have pending migrations: {pending:?}"
+        );
+        assert!(
+            db::table_exists(&conn, "focus_sessions"),
+            "fresh CLI DB should include migrated focus table"
+        );
 
         let _ = std::fs::remove_dir_all(&home_dir);
     }
@@ -7347,6 +7811,40 @@ mod tests {
         assert!(err.contains("APP_INIT_REQUIRED"));
         assert!(err.contains("codex"));
         let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn ensure_daemon_app_required_policy_does_not_migrate_legacy_db() {
+        let _env_guard = env_guard();
+        let legacy_home = temp_test_dir("app_required_legacy_source");
+        let legacy_dir = legacy_home.join("cortex");
+        fs::create_dir_all(&legacy_dir).expect("create legacy dir");
+        let legacy_db = legacy_dir.join("cortex.db");
+        {
+            let conn = rusqlite::Connection::open(&legacy_db).expect("open legacy db");
+            db::configure(&conn).expect("configure legacy db");
+        }
+
+        let home_dir = temp_test_dir("app_required_no_migration");
+        fs::create_dir_all(&home_dir).expect("create target home");
+        let home_str = home_dir.to_string_lossy().to_string();
+        let legacy_home_str = legacy_home.to_string_lossy().to_string();
+        let _home_env = ScopedEnvVar::set("HOME", &legacy_home_str);
+        let _userprofile_env = ScopedEnvVar::set("USERPROFILE", &legacy_home_str);
+        let _app_required = ScopedEnvVar::set(APP_REQUIRED_ENV, "1");
+        let _app_client = ScopedEnvVar::set(APP_CLIENT_ENV, "codex");
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+
+        let err = run_ensure_daemon(&paths, Some("codex"), false, false).unwrap_err();
+        assert!(err.contains("APP_INIT_REQUIRED"));
+        assert!(
+            !paths.db.exists(),
+            "attach-only ensure should not copy legacy db before returning APP_INIT_REQUIRED"
+        );
+
+        let _ = fs::remove_dir_all(&home_dir);
+        let _ = fs::remove_dir_all(&legacy_home);
     }
 
     #[test]
@@ -7578,6 +8076,49 @@ mod tests {
     }
 
     #[test]
+    fn validate_cli_options_rejects_missing_value_before_next_option() {
+        let args = vec![
+            "--url".to_string(),
+            "--api-key".to_string(),
+            "ctx_key".to_string(),
+        ];
+        let err =
+            validate_cli_options(&args, &["--url", "--api-key"], &[]).expect_err("missing value");
+        assert_eq!(err, "Missing value for --url");
+    }
+
+    #[test]
+    fn validate_cli_options_rejects_unknown_options() {
+        let args = vec![
+            "--out".to_string(),
+            "dump.json".to_string(),
+            "--bogus".to_string(),
+        ];
+        let err = validate_cli_options(&args, &["--out"], &[]).expect_err("unknown option");
+        assert_eq!(err, "Unknown option: --bogus");
+    }
+
+    #[test]
+    fn validate_cli_options_allows_global_value_flags() {
+        let args = vec![
+            "--agent".to_string(),
+            "codex".to_string(),
+            "--home".to_string(),
+            "C:/tmp/cortex-home".to_string(),
+            "--port".to_string(),
+            "9876".to_string(),
+        ];
+        validate_cli_options(&args, &["--agent"], &[]).expect("global flags should be valid");
+    }
+
+    #[test]
+    fn parse_flag_usize_treats_option_token_as_missing_value() {
+        let args = vec!["--budget".to_string(), "--json".to_string()];
+        let err = parse_flag_usize(&args, "--budget").expect_err("missing numeric value");
+        assert_eq!(err, "missing value for --budget");
+    }
+
+    #[test]
     fn local_daemon_base_url_uses_loopback_for_wildcard_bind() {
         let home_dir = temp_test_dir("bind_wildcard");
         fs::create_dir_all(&home_dir).unwrap();
@@ -7610,7 +8151,7 @@ mod tests {
         // Isolate this preflight fixture from any live local daemon IPC endpoint.
         paths.ipc_endpoint = None;
         let server =
-            spawn_multi_response_server(listener, "404 Not Found", "text/plain", "nope".into(), 2);
+            spawn_preflight_response_server(listener, "404 Not Found", "text/plain", "nope".into());
 
         let err = run_preflight(&paths).unwrap_err();
         assert!(
@@ -7653,7 +8194,8 @@ mod tests {
             }
         })
         .to_string();
-        let server = spawn_single_response_server(listener, "200 OK", "application/json", payload);
+        let server =
+            spawn_preflight_response_server(listener, "200 OK", "application/json", payload);
 
         let err = run_preflight(&paths).unwrap_err();
         assert!(
@@ -7695,7 +8237,8 @@ mod tests {
             }
         })
         .to_string();
-        let server = spawn_single_response_server(listener, "200 OK", "application/json", payload);
+        let server =
+            spawn_preflight_response_server(listener, "200 OK", "application/json", payload);
 
         let err = run_preflight(&paths).unwrap_err();
         assert!(
@@ -7808,5 +8351,52 @@ mod tests {
         );
         assert!(spec.contains("/stats:"), "missing /stats in spec");
         assert!(spec.contains("/boot/audit:"), "missing /boot/audit in spec");
+    }
+
+    #[test]
+    fn openapi_spec_documents_export_pagination_and_import_auth_failures() {
+        let spec = fs::read_to_string(openapi_spec_path()).expect("read OpenAPI spec");
+        let export_block = spec
+            .split("  /export:")
+            .nth(1)
+            .and_then(|rest| rest.split("  /import:").next())
+            .expect("export block in OpenAPI spec");
+        let import_block = spec
+            .split("  /import:")
+            .nth(1)
+            .and_then(|rest| rest.split("components:").next())
+            .expect("import block in OpenAPI spec");
+
+        for expected in [
+            "name: limit",
+            "maximum: 5000",
+            "name: offset",
+            "name: memories_offset",
+            "name: decisions_offset",
+            "SQL export is available through the CLI export command",
+            "'400':",
+            "'401':",
+            "'403':",
+        ] {
+            assert!(
+                export_block.contains(expected),
+                "missing export OpenAPI contract detail: {expected}"
+            );
+        }
+        assert!(
+            !export_block.contains("enum: [json, sql]"),
+            "HTTP export must not advertise disabled SQL export as a success format"
+        );
+        assert!(
+            !export_block.contains("text/plain:"),
+            "HTTP export must not advertise SQL text/plain success content"
+        );
+
+        for expected in ["'400':", "'401':", "'403':"] {
+            assert!(
+                import_block.contains(expected),
+                "missing import OpenAPI error response: {expected}"
+            );
+        }
     }
 }

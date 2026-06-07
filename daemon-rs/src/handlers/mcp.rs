@@ -20,7 +20,7 @@ use super::recall::{
 };
 use super::store::{
     persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention,
-    DecisionProvenance,
+    validate_explicit_ttl_seconds, DecisionProvenance,
 };
 use super::{estimate_tokens, now_iso, SourceIdentity};
 use crate::api_types::RetentionClass;
@@ -534,6 +534,19 @@ fn has_client_permission(
     Ok(false)
 }
 
+fn caller_has_team_admin_role(conn: &rusqlite::Connection, caller_id: i64) -> Result<bool, String> {
+    let role = conn
+        .query_row(
+            "SELECT role FROM users WHERE id = ?1",
+            rusqlite::params![caller_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+
+    Ok(matches!(role.as_deref(), Some("owner" | "admin")))
+}
+
 async fn enforce_client_permission(
     state: &RuntimeState,
     caller_id: Option<i64>,
@@ -552,6 +565,15 @@ async fn enforce_client_permission(
     let client_id = source_client_for_permissions(source, args);
 
     let conn = state.db.lock().await;
+    if state.team_mode
+        && required == ClientPermission::Admin
+        && !caller_has_team_admin_role(&conn, owner_id)?
+    {
+        return Err(format!(
+            "Permission denied: team admin role required for '{tool_name}'"
+        ));
+    }
+
     let allowed = has_client_permission(&conn, owner_id, &client_id, tool_name, required)?;
     drop(conn);
 
@@ -1244,6 +1266,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn team_mode_admin_mcp_tool_denies_member_even_without_policy_rows() {
+        let mut state = test_state();
+        state.team_mode = true;
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: None,
+        };
+
+        let member_id = {
+            let conn = state.db.lock().await;
+            db::create_team_mode_tables(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO users (username, api_key_hash, role)
+                 VALUES ('member-user', 'argon2id-placeholder', 'member')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+
+        let result = mcp_dispatch(
+            &state,
+            Some(member_id),
+            "cortex_permissions_list",
+            &json!({}),
+            Some(&source),
+        )
+        .await;
+
+        let err = result.expect_err("member callers must not inherit admin MCP access");
+        assert!(
+            err.contains("team admin role required"),
+            "expected team admin role denial, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn team_mode_admin_mcp_tool_preserves_owner_empty_policy_compatibility() {
+        let mut state = test_state();
+        state.team_mode = true;
+        let source = SourceIdentity {
+            agent: "codex".to_string(),
+            model: None,
+        };
+
+        let owner_id = {
+            let conn = state.db.lock().await;
+            db::create_team_mode_tables(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO users (username, api_key_hash, role)
+                 VALUES ('owner-user', 'argon2id-placeholder', 'owner')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+
+        let payload = mcp_dispatch(
+            &state,
+            Some(owner_id),
+            "cortex_permissions_list",
+            &json!({}),
+            Some(&source),
+        )
+        .await
+        .expect("owner callers should preserve empty-policy admin compatibility");
+
+        assert_eq!(payload["ownerId"].as_i64(), Some(owner_id));
+        assert_eq!(payload["count"].as_u64(), Some(0));
+    }
+
+    #[tokio::test]
     async fn conflict_tools_list_and_resolve_success_path() {
         let state = test_state();
         let source = SourceIdentity {
@@ -1402,6 +1496,69 @@ mod tests {
             tool["inputSchema"]["properties"]["limit"]["description"].as_str(),
             Some("Maximum rows to return (default 50, max 500).")
         );
+    }
+
+    #[test]
+    fn documented_mcp_tool_names_match_tools_list_surface() {
+        let documented = documented_mcp_tool_names();
+        let advertised = sorted_mcp_tool_names();
+
+        assert_eq!(
+            documented, advertised,
+            "Info/mcp-tools.md must list exactly the tools advertised by MCP tools/list"
+        );
+
+        let docs = include_str!("../../../Info/mcp-tools.md");
+        let headline = docs
+            .lines()
+            .find(|line| line.starts_with("> All "))
+            .expect("MCP tool reference should declare the advertised tool count");
+        assert!(
+            headline.contains(&format!("All {} tools", advertised.len())),
+            "MCP tool count headline is stale: {headline}"
+        );
+
+        let readme = include_str!("../../../README.md");
+        let readme_row = readme
+            .lines()
+            .find(|line| line.contains("[MCP Tools](Info/mcp-tools.md)"))
+            .expect("README should link to the MCP tool reference");
+        assert!(
+            readme_row.contains(&format!("All {} MCP tool", advertised.len())),
+            "README MCP tool count is stale: {readme_row}"
+        );
+    }
+
+    fn sorted_mcp_tool_names() -> Vec<String> {
+        let mut names = mcp_tools()
+            .into_iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn documented_mcp_tool_names() -> Vec<String> {
+        let mut names = include_str!("../../../Info/mcp-tools.md")
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix("| `"))
+            .filter_map(|rest| {
+                if rest.starts_with("cortex_") {
+                    rest.split('`').next().map(str::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        names.sort();
+        let original_len = names.len();
+        names.dedup();
+        assert_eq!(
+            original_len,
+            names.len(),
+            "Info/mcp-tools.md contains duplicate MCP tool rows"
+        );
+        names
     }
 
     #[tokio::test]
@@ -1633,6 +1790,68 @@ mod tests {
                     "cortex_boot should propagate tokenUsage.budget from arguments"
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn cortex_health_tool_redacts_private_runtime_details() {
+        let state = test_state();
+        let payload = mcp_dispatch(&state, None, "cortex_health", &json!({}), None)
+            .await
+            .expect("cortex_health should return a payload");
+
+        let runtime = payload["runtime"]
+            .as_object()
+            .expect("health payload should include runtime object");
+        for field in [
+            "db_path",
+            "token_path",
+            "pid_path",
+            "ipc_endpoint",
+            "ipc_kind",
+            "executable",
+            "owner",
+        ] {
+            assert!(
+                !runtime.contains_key(field),
+                "cortex_health MCP tool should redact runtime.{field}"
+            );
+        }
+
+        let stats = payload["stats"]
+            .as_object()
+            .expect("health payload should include stats object");
+        assert!(
+            !stats.contains_key("home"),
+            "cortex_health MCP tool should redact stats.home"
+        );
+    }
+
+    #[tokio::test]
+    async fn cortex_store_rejects_invalid_explicit_ttl() {
+        let state = test_state();
+        for (ttl_seconds, expected) in [
+            (0, "ttl_seconds must be > 0"),
+            (-1, "ttl_seconds must be > 0"),
+            (31_536_001, "ttl_seconds must be <= 31536000 (365 days)"),
+        ] {
+            let err = mcp_dispatch(
+                &state,
+                None,
+                "cortex_store",
+                &json!({
+                    "decision": "temporary decision with enough detail to persist through mcp ttl validation",
+                    "ttl_seconds": ttl_seconds
+                }),
+                None,
+            )
+            .await
+            .expect_err("invalid cortex_store TTL should fail");
+
+            assert!(
+                err.contains(expected),
+                "ttl {ttl_seconds} should return {expected:?}, got {err:?}"
+            );
         }
     }
 
@@ -2735,6 +2954,7 @@ async fn mcp_dispatch(
                 ),
                 None => None,
             };
+            validate_explicit_ttl_seconds(ttl_seconds).map_err(|err| err.to_string())?;
             let decision_embedding = match state.embedding_engine.clone() {
                 Some(engine) => engine.embed_async(decision.to_string()).await,
                 None => None,
@@ -2813,7 +3033,7 @@ async fn mcp_dispatch(
             )
         }
 
-        "cortex_health" => Ok(build_health_payload(state).await),
+        "cortex_health" => Ok(build_health_payload(state, false).await),
 
         "cortex_digest" => {
             let conn = state.db.lock().await;
@@ -3491,20 +3711,22 @@ pub async fn handle_mcp_message_with_caller(
     source: Option<&SourceIdentity>,
 ) -> Option<Value> {
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
-    let method = msg
-        .get("method")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
 
-    // Validate JSON-RPC version
-    if let Some(ver) = msg.get("jsonrpc").and_then(|v| v.as_str()) {
-        if ver != "2.0" {
-            if msg.get("id").is_some() {
-                return Some(mcp_error(id, -32600, "Invalid JSON-RPC version"));
-            }
-            return None;
-        }
+    if !msg.is_object() {
+        return Some(mcp_error(id, -32600, "Invalid JSON-RPC request"));
     }
+
+    // MCP is a JSON-RPC 2.0 protocol; do not silently accept legacy or
+    // partial envelopes because that hides client/proxy conformance drift.
+    match msg.get("jsonrpc").and_then(|v| v.as_str()) {
+        Some("2.0") => {}
+        Some(_) => return Some(mcp_error(id, -32600, "Invalid JSON-RPC version")),
+        None => return Some(mcp_error(id, -32600, "Missing JSON-RPC version")),
+    }
+
+    let Some(method) = msg.get("method").and_then(|v| v.as_str()) else {
+        return Some(mcp_error(id, -32600, "Missing JSON-RPC method"));
+    };
 
     match method {
         "initialize" => Some(mcp_success(

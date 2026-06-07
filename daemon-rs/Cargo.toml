@@ -21,7 +21,7 @@ tempfile = "3.27.0"
 toml = "1.1.2"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "io-std", "io-util"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
+uuid = { version = "1.23.2", features = ["v4", "serde"] }
 argon2 = "0.5.3"
 fs2 = "0.4.3"
 hmac = "0.13.0"
@@ -31,7 +31,7 @@ sha2 = "0.11.0"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 ndarray = "0.17.2"
 tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"] }
-reqwest = { version = "0.13.3", features = ["rustls", "json", "blocking", "query"], default-features = false }
+reqwest = { version = "0.13.4", features = ["rustls", "json", "blocking", "query"], default-features = false }
 dirs = "6.0.0"
 sysinfo = "0.38.4"
 sqlite-vec = "0.1.9"
@@ -51,12 +51,23 @@ tower = "0.5.3"
 # Windows Service support
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
+[dev-dependencies]
+proptest = "1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
 
 [profile.release]
 opt-level = 3

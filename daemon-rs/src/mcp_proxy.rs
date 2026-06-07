@@ -38,6 +38,7 @@ const ORPHAN_CHECK_SECS: u64 = 15;
 const MAX_AGENT_HEADER_LEN: usize = 160;
 const MAX_MODEL_HEADER_LEN: usize = 160;
 const AUTH_TOKEN_CACHE_TTL_MS: u64 = 1_000;
+const STDIN_CHANNEL_CAPACITY: usize = 32;
 
 #[derive(Default)]
 struct AuthTokenCacheEntry {
@@ -52,6 +53,14 @@ fn auth_token_cache() -> &'static Mutex<AuthTokenCacheEntry> {
     AUTH_TOKEN_CACHE.get_or_init(|| Mutex::new(AuthTokenCacheEntry::default()))
 }
 
+#[cfg(test)]
+static AUTH_TOKEN_CACHE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+fn auth_token_cache_test_lock() -> &'static Mutex<()> {
+    AUTH_TOKEN_CACHE_TEST_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Read the auth token from ~/.cortex/cortex.token.
 pub(crate) fn read_auth_token() -> Option<String> {
     let token_path = crate::auth::CortexPaths::resolve().token;
@@ -59,6 +68,12 @@ pub(crate) fn read_auth_token() -> Option<String> {
 }
 
 fn read_auth_token_with_cache(token_path: &Path) -> Option<String> {
+    #[cfg(test)]
+    let _guard = auth_token_cache_test_lock().lock().ok();
+    read_auth_token_with_cache_inner(token_path)
+}
+
+fn read_auth_token_with_cache_inner(token_path: &Path) -> Option<String> {
     let now = std::time::Instant::now();
     if let Ok(cache) = auth_token_cache().lock() {
         if cache.token_path.as_deref() == Some(token_path) {
@@ -105,6 +120,12 @@ fn read_auth_token_uncached(token_path: &Path) -> Option<String> {
 }
 
 fn invalidate_auth_token_cache() {
+    #[cfg(test)]
+    let _guard = auth_token_cache_test_lock().lock().ok();
+    invalidate_auth_token_cache_inner();
+}
+
+fn invalidate_auth_token_cache_inner() {
     if let Ok(mut cache) = auth_token_cache().lock() {
         *cache = AuthTokenCacheEntry::default();
     }
@@ -313,22 +334,7 @@ fn split_base_and_path(url: &str) -> Option<(String, String)> {
 }
 
 fn parse_http_response(raw: &[u8]) -> Result<(reqwest::StatusCode, String), String> {
-    let Some(header_end) = raw.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return Err("invalid HTTP response from IPC endpoint".to_string());
-    };
-
-    let header = std::str::from_utf8(&raw[..header_end])
-        .map_err(|_| "IPC response headers are not valid UTF-8".to_string())?;
-    let status_code = header
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| "IPC response missing valid status line".to_string())?;
-    let status = reqwest::StatusCode::from_u16(status_code)
-        .map_err(|_| format!("IPC response returned invalid status code {status_code}"))?;
-    let body = String::from_utf8_lossy(&raw[header_end + 4..]).to_string();
-    Ok((status, body))
+    crate::transport::parse_http_response_bytes(raw, "IPC endpoint")
 }
 
 async fn send_http_over_stream<S>(
@@ -551,6 +557,10 @@ fn fallback_health_probe_url(probe_url: &str) -> Option<String> {
         .map(|base| format!("{base}/health"))
 }
 
+fn internal_health_probe_headers() -> [(String, String); 1] {
+    [(String::from("X-Cortex-Request"), String::from("true"))]
+}
+
 fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, probe_url: &str) -> bool {
     let local_paths = if is_local_daemon_base(probe_url) {
         Some(CortexPaths::resolve())
@@ -574,11 +584,12 @@ fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, probe_url:
 }
 
 async fn health_check_ready(client: &reqwest::Client, probe_url: &str) -> bool {
+    let probe_headers = internal_health_probe_headers();
     let (status, body) = match transport_request_for_url(
         client,
         "GET",
         probe_url,
-        &[],
+        &probe_headers,
         None,
         std::time::Duration::from_secs(5),
     )
@@ -599,7 +610,7 @@ async fn health_check_ready(client: &reqwest::Client, probe_url: &str) -> bool {
         client,
         "GET",
         &health_url,
-        &[],
+        &probe_headers,
         None,
         std::time::Duration::from_secs(5),
     )
@@ -948,12 +959,13 @@ pub async fn run(
 
     // Health check with retry (daemon may still be starting)
     let mut healthy = false;
+    let health_probe_headers = internal_health_probe_headers();
     for attempt in 1..=HEALTH_CHECK_ATTEMPTS {
         match transport_request_for_url(
             &client,
             "GET",
             &health_url,
-            &[],
+            &health_probe_headers,
             None,
             std::time::Duration::from_secs(5),
         )
@@ -1161,7 +1173,7 @@ pub async fn run(
     let reader = BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();
     let (stdin_tx, mut stdin_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<Option<String>, String>>();
+        tokio::sync::mpsc::channel::<Result<Option<String>, String>>(STDIN_CHANNEL_CAPACITY);
     tokio::spawn(async move {
         let mut lines = reader.lines();
         loop {
@@ -1171,7 +1183,7 @@ pub async fn run(
                 Err(err) => Err(err.to_string()),
             };
             let should_stop = matches!(next, Ok(None) | Err(_));
-            if stdin_tx.send(next).is_err() || should_stop {
+            if stdin_tx.send(next).await.is_err() || should_stop {
                 break;
             }
         }
@@ -1590,29 +1602,30 @@ mod tests {
 
     #[test]
     fn read_auth_token_cache_can_be_invalidated() {
+        let _cache_guard = auth_token_cache_test_lock().lock().unwrap();
         let home_dir = temp_test_dir("auth_token_cache");
         fs::create_dir_all(&home_dir).unwrap();
         let token_path = home_dir.join("cortex.token");
 
-        invalidate_auth_token_cache();
+        invalidate_auth_token_cache_inner();
         fs::write(&token_path, "ctx_old").unwrap();
         assert_eq!(
-            read_auth_token_with_cache(&token_path),
+            read_auth_token_with_cache_inner(&token_path),
             Some("ctx_old".to_string())
         );
 
         fs::write(&token_path, "ctx_new").unwrap();
         assert_eq!(
-            read_auth_token_with_cache(&token_path),
+            read_auth_token_with_cache_inner(&token_path),
             Some("ctx_old".to_string())
         );
 
-        invalidate_auth_token_cache();
+        invalidate_auth_token_cache_inner();
         assert_eq!(
-            read_auth_token_with_cache(&token_path),
+            read_auth_token_with_cache_inner(&token_path),
             Some("ctx_new".to_string())
         );
-        invalidate_auth_token_cache();
+        invalidate_auth_token_cache_inner();
         let _ = fs::remove_dir_all(&home_dir);
     }
 
@@ -1626,7 +1639,9 @@ mod tests {
 
     #[test]
     fn startup_idle_timeout_respects_env_override_and_floor() {
-        std::env::remove_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS");
+        let _env_lock = crate::test_env::lock();
+        let _handshake_timeout =
+            crate::test_env::ScopedEnvVar::remove("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS");
         assert_eq!(startup_idle_timeout().as_secs(), STARTUP_IDLE_TIMEOUT_SECS);
 
         std::env::set_var("CORTEX_MCP_HANDSHAKE_TIMEOUT_SECS", "0");
@@ -1705,13 +1720,14 @@ mod tests {
 
     #[test]
     fn configured_bind_host_is_treated_as_local_for_token_fallback() {
+        let _env_lock = crate::test_env::lock();
         let home_dir = temp_test_dir("configured_bind_local");
         fs::create_dir_all(&home_dir).unwrap();
         fs::write(home_dir.join("cortex.token"), "ctx_local").unwrap();
 
-        std::env::set_var("CORTEX_HOME", &home_dir);
-        std::env::set_var("CORTEX_PORT", "7437");
-        std::env::set_var("CORTEX_BIND", "100.64.0.12");
+        let _home = crate::test_env::ScopedEnvVar::set("CORTEX_HOME", &home_dir);
+        let _port = crate::test_env::ScopedEnvVar::set("CORTEX_PORT", "7437");
+        let _bind = crate::test_env::ScopedEnvVar::set("CORTEX_BIND", "100.64.0.12");
 
         let local_base = "http://100.64.0.12:7437";
         assert!(is_local_daemon_base(local_base));
@@ -1721,9 +1737,6 @@ mod tests {
         );
         assert_eq!(build_auth_header(local_base, None, false), None);
 
-        std::env::remove_var("CORTEX_HOME");
-        std::env::remove_var("CORTEX_PORT");
-        std::env::remove_var("CORTEX_BIND");
         let _ = fs::remove_dir_all(&home_dir);
     }
 
@@ -1751,6 +1764,12 @@ mod tests {
     #[test]
     fn parse_http_response_rejects_missing_header_delimiter() {
         let raw = b"HTTP/1.1 200 OK\r\ncontent-type: application/json";
+        assert!(parse_http_response(raw).is_err());
+    }
+
+    #[test]
+    fn parse_http_response_rejects_malformed_status_line() {
+        let raw = b"not-http 200 OK\r\ncontent-type: application/json\r\n\r\n{}";
         assert!(parse_http_response(raw).is_err());
     }
 }

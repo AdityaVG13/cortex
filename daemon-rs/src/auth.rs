@@ -3,6 +3,8 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::{Algorithm, Argon2, Params, Version};
 use fs2::FileExt;
 use std::fs;
+#[cfg(windows)]
+use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -177,7 +179,187 @@ pub(crate) fn restrict_file_to_owner(path: &Path) -> std::io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: this guard owns the token handle returned by OpenProcessToken.
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct LocalMemory(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl Drop for LocalMemory {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: this guard owns memory allocated by a Win32 local allocator.
+            unsafe {
+                let _ = windows_sys::Win32::Foundation::LocalFree(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+struct CurrentUserSid {
+    _token_info: Vec<usize>,
+    sid: windows_sys::Win32::Security::PSID,
+}
+
+#[cfg(windows)]
+fn windows_path_to_wide(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    path.as_os_str().encode_wide().chain([0]).collect()
+}
+
+#[cfg(windows)]
+fn win32_error(code: u32) -> io::Error {
+    io::Error::from_raw_os_error(code as i32)
+}
+
+#[cfg(windows)]
+fn current_user_sid() -> io::Result<CurrentUserSid> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token: HANDLE = null_mut();
+    // SAFETY: GetCurrentProcess returns a pseudo-handle for this process, and
+    // OpenProcessToken initializes `token` on success.
+    let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if opened == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = OwnedHandle(token);
+
+    let mut required_len = 0u32;
+    // SAFETY: this size query intentionally passes a null output buffer and
+    // zero length so Windows reports the required TOKEN_USER buffer size.
+    unsafe {
+        let _ = GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required_len);
+    }
+    if required_len == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let word_size = std::mem::size_of::<usize>();
+    let word_count = (required_len as usize).div_ceil(word_size);
+    let mut token_info = vec![0usize; word_count];
+    let mut returned_len = 0u32;
+    // SAFETY: `token_info` is a writable, word-aligned buffer large enough for
+    // the TOKEN_USER data size returned by the previous GetTokenInformation call.
+    let filled = unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            token_info.as_mut_ptr().cast(),
+            (token_info.len() * word_size) as u32,
+            &mut returned_len,
+        )
+    };
+    if filled == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if returned_len < std::mem::size_of::<TOKEN_USER>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user information is too small",
+        ));
+    }
+
+    // SAFETY: the buffer was populated by GetTokenInformation(TokenUser) and
+    // is word-aligned, so reading the leading TOKEN_USER record is valid.
+    let token_user = unsafe { *token_info.as_ptr().cast::<TOKEN_USER>() };
+    if token_user.User.Sid.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is missing",
+        ));
+    }
+    // SAFETY: token_user.User.Sid came from the validated TOKEN_USER buffer.
+    if unsafe { IsValidSid(token_user.User.Sid) } == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows token user SID is invalid",
+        ));
+    }
+
+    Ok(CurrentUserSid {
+        _token_info: token_info,
+        sid: token_user.User.Sid,
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE,
+        SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+    let current_user = current_user_sid()?;
+    let access = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: FILE_ALL_ACCESS,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: NO_INHERITANCE,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: current_user.sid.cast(),
+        },
+    };
+    let mut acl: *mut ACL = null_mut();
+    // SAFETY: `access` references the current-user SID buffer, which remains
+    // alive for this call; `acl` receives LocalFree-owned memory on success.
+    let result = unsafe { SetEntriesInAclW(1, &access, null(), &mut acl) };
+    if result != ERROR_SUCCESS {
+        return Err(win32_error(result));
+    }
+    let _acl_guard = LocalMemory(acl.cast());
+
+    let wide_path = windows_path_to_wide(path);
+    // SAFETY: `wide_path` is null-terminated, `acl` is a valid ACL produced by
+    // SetEntriesInAclW, and null owner/group/SACL preserve those fields.
+    let result = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            acl,
+            null(),
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(win32_error(result));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn restrict_file_to_owner(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
@@ -202,7 +384,16 @@ pub(crate) fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result
 
     #[cfg(not(unix))]
     {
-        fs::write(path, contents)
+        use std::io::Write as _;
+
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        restrict_file_to_owner(path)
+            .and_then(|_| file.write_all(contents))
+            .and_then(|_| file.flush())
     }
 }
 
@@ -338,12 +529,18 @@ pub fn cortex_dir() -> PathBuf {
 /// return the token string.
 pub fn try_generate_token_for(paths: &CortexPaths) -> Result<String, String> {
     let token = Uuid::new_v4().simple().to_string();
+    try_write_token_for(paths, &token)?;
+    Ok(token)
+}
+
+/// Write a shared auth token to the resolved token path.
+pub fn try_write_token_for(paths: &CortexPaths, token: &str) -> Result<(), String> {
     let token_dir = paths.token.parent().unwrap_or(&paths.home);
     fs::create_dir_all(token_dir)
         .map_err(|e| format!("cannot create token directory {}: {e}", token_dir.display()))?;
     write_secret_file(&paths.token, token.as_bytes())
         .map_err(|e| format!("cannot write token file {}: {e}", paths.token.display()))?;
-    Ok(token)
+    Ok(())
 }
 
 /// Generate a fresh UUID token for the resolved token path.
@@ -538,20 +735,15 @@ fn base62_encode_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     const LOCK_CHILD_MODE_ENV: &str = "CORTEX_LOCK_TEST_CHILD_MODE";
     const LOCK_CHILD_HOME_ENV: &str = "CORTEX_LOCK_TEST_CHILD_HOME";
     const LOCK_CHILD_READY_ENV: &str = "CORTEX_LOCK_TEST_CHILD_READY_FILE";
     const LOCK_CHILD_HOLD_MS_ENV: &str = "CORTEX_LOCK_TEST_CHILD_HOLD_MS";
 
-    fn env_guard() -> MutexGuard<'static, ()> {
-        match TEST_ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock()
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {
@@ -641,6 +833,108 @@ mod tests {
 
         let mode = fs::metadata(&paths.token).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+
+        let _ = fs::remove_dir_all(&home_dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generated_token_file_has_protected_owner_acl() {
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+        use windows_sys::Win32::Security::Authorization::{
+            GetExplicitEntriesFromAclW, GetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+            SE_FILE_OBJECT, TRUSTEE_IS_SID,
+        };
+        use windows_sys::Win32::Security::{
+            EqualSid, GetSecurityDescriptorControl, ACL, DACL_SECURITY_INFORMATION,
+            PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        };
+
+        let home_dir = temp_test_dir("token_windows_acl");
+        fs::create_dir_all(&home_dir).unwrap();
+        let home_str = home_dir.to_string_lossy().to_string();
+        let paths = CortexPaths::resolve_with_overrides(
+            Some(&home_str),
+            None,
+            Some(54967),
+            Some("127.0.0.1"),
+        );
+
+        let _ = try_generate_token_for(&paths).expect("token generation should succeed");
+
+        let wide_path = windows_path_to_wide(&paths.token);
+        let mut dacl: *mut ACL = null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: `wide_path` is null-terminated and output pointers are valid
+        // for GetNamedSecurityInfoW to initialize.
+        let result = unsafe {
+            GetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(
+            result,
+            ERROR_SUCCESS,
+            "GetNamedSecurityInfoW failed: {}",
+            win32_error(result)
+        );
+        let _descriptor_guard = LocalMemory(descriptor.cast());
+        assert!(!dacl.is_null(), "secret file DACL should be present");
+
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: `descriptor` is owned by `_descriptor_guard` and remains
+        // valid until the guard is dropped.
+        let ok = unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) };
+        assert_ne!(
+            ok,
+            0,
+            "GetSecurityDescriptorControl failed: {}",
+            io::Error::last_os_error()
+        );
+        assert_eq!(control & SE_DACL_PROTECTED, SE_DACL_PROTECTED);
+
+        let mut count = 0u32;
+        let mut entries: *mut EXPLICIT_ACCESS_W = null_mut();
+        // SAFETY: `dacl` points into the security descriptor returned above and
+        // remains valid while `_descriptor_guard` is alive.
+        let result = unsafe { GetExplicitEntriesFromAclW(dacl, &mut count, &mut entries) };
+        assert_eq!(
+            result,
+            ERROR_SUCCESS,
+            "GetExplicitEntriesFromAclW failed: {}",
+            win32_error(result)
+        );
+        let _entries_guard = LocalMemory(entries.cast());
+        assert_eq!(count, 1, "secret file should have one explicit ACE");
+
+        // SAFETY: GetExplicitEntriesFromAclW returned at least one entry.
+        let entry = unsafe { *entries };
+        assert_eq!(entry.grfAccessMode, GRANT_ACCESS);
+        assert_eq!(entry.Trustee.TrusteeForm, TRUSTEE_IS_SID);
+        let expected_access = FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE;
+        assert_eq!(
+            entry.grfAccessPermissions & expected_access,
+            expected_access
+        );
+
+        let current_user = current_user_sid().expect("read current user SID");
+        let trustee_sid: PSID = entry.Trustee.ptstrName.cast();
+        assert!(!trustee_sid.is_null(), "trustee SID should be present");
+        // SAFETY: both SIDs come from Windows security APIs and were validated
+        // before this comparison.
+        assert_ne!(unsafe { EqualSid(trustee_sid, current_user.sid) }, 0);
 
         let _ = fs::remove_dir_all(&home_dir);
     }

@@ -26,6 +26,9 @@ const MAX_TASKS: i64 = 500;
 const DEFAULT_TASK_QUERY_LIMIT: usize = 200;
 const MAX_TASK_QUERY_LIMIT: usize = 500;
 const SESSION_FRESHNESS_IDLE_SECONDS: i64 = 24 * 60 * 60;
+const MAX_REQUEST_TTL_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
+
+type SqlParam = Box<dyn rusqlite::types::ToSql>;
 
 // ─── Request / query types ──────────────────────────────────────────────────
 
@@ -146,6 +149,53 @@ fn owner_id_from_headers(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
 fn is_valid_agent_label(agent: &str) -> bool {
     let trimmed = agent.trim();
     !trimmed.is_empty() && trimmed.len() <= 160 && !trimmed.chars().any(|ch| ch.is_control())
+}
+
+fn trimmed_non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn bounded_ttl_seconds(raw: Option<i64>, default_seconds: i64) -> i64 {
+    raw.unwrap_or(default_seconds)
+        .clamp(1, MAX_REQUEST_TTL_SECONDS)
+}
+
+fn missing_field_response(error: &'static str) -> Response {
+    json_response(StatusCode::BAD_REQUEST, json!({ "error": error }))
+}
+
+fn query_json_rows(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[SqlParam],
+    row_to_json: impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<Value>,
+) -> Result<Vec<Value>, String> {
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(param_refs), row_to_json)
+        .map_err(|e| e.to_string())?;
+    Ok(rows.flatten().collect())
+}
+
+fn task_row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
+    Ok(json!({
+        "taskId": row.get::<_, String>(0)?,
+        "title": row.get::<_, String>(1)?,
+        "description": row.get::<_, Option<String>>(2)?,
+        "project": row.get::<_, Option<String>>(3)?,
+        "files": parse_json_array(&row.get::<_, String>(4)?),
+        "priority": row.get::<_, String>(5)?,
+        "requiredCapability": row.get::<_, String>(6)?,
+        "status": row.get::<_, String>(7)?,
+        "claimedBy": row.get::<_, Option<String>>(8)?,
+        "createdAt": row.get::<_, String>(9)?,
+        "claimedAt": row.get::<_, Option<String>>(10)?,
+        "completedAt": row.get::<_, Option<String>>(11)?,
+        "summary": row.get::<_, Option<String>>(12)?
+    }))
 }
 
 fn is_unique_constraint(err: &rusqlite::Error) -> bool {
@@ -299,43 +349,32 @@ fn clean_old_tasks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 
 fn fetch_locks(conn: &rusqlite::Connection, owner_id: Option<i64>) -> Result<Vec<Value>, String> {
     let now = now_iso();
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) =
-        if let Some(owner_id) = owner_id {
-            (
-                "SELECT id, path, agent, locked_at, expires_at
+    let (sql, params_vec): (&str, Vec<SqlParam>) = if let Some(owner_id) = owner_id {
+        (
+            "SELECT id, path, agent, locked_at, expires_at
              FROM locks
              WHERE owner_id = ?1 AND (expires_at IS NULL OR expires_at >= ?2)
              ORDER BY locked_at ASC",
-                vec![Box::new(owner_id), Box::new(now.clone())],
-            )
-        } else {
-            (
-                "SELECT id, path, agent, locked_at, expires_at
+            vec![Box::new(owner_id), Box::new(now.clone())],
+        )
+    } else {
+        (
+            "SELECT id, path, agent, locked_at, expires_at
              FROM locks
              WHERE expires_at IS NULL OR expires_at >= ?1
              ORDER BY locked_at ASC",
-                vec![Box::new(now)],
-            )
-        };
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(param_refs), |row| {
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "path": row.get::<_, String>(1)?,
-                "agent": row.get::<_, String>(2)?,
-                "lockedAt": row.get::<_, String>(3)?,
-                "expiresAt": row.get::<_, String>(4)?
-            }))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        out.push(row);
-    }
-    Ok(out)
+            vec![Box::new(now)],
+        )
+    };
+    query_json_rows(conn, sql, &params_vec, |row| {
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "path": row.get::<_, String>(1)?,
+            "agent": row.get::<_, String>(2)?,
+            "lockedAt": row.get::<_, String>(3)?,
+            "expiresAt": row.get::<_, String>(4)?
+        }))
+    })
 }
 
 fn fetch_messages_for_agent(
@@ -343,9 +382,7 @@ fn fetch_messages_for_agent(
     agent: &str,
     owner_id: Option<i64>,
 ) -> Result<Vec<Value>, String> {
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
-        owner_id
-    {
+    let (sql, params_vec): (&str, Vec<SqlParam>) = if let Some(owner_id) = owner_id {
         (
             "SELECT id, sender, recipient, message, timestamp FROM messages WHERE owner_id = ?1 AND recipient = ?2 ORDER BY timestamp ASC",
             vec![Box::new(owner_id), Box::new(agent.to_string())],
@@ -356,25 +393,15 @@ fn fetch_messages_for_agent(
             vec![Box::new(agent.to_string())],
         )
     };
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(param_refs), |row| {
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "from": row.get::<_, String>(1)?,
-                "to": row.get::<_, String>(2)?,
-                "message": row.get::<_, String>(3)?,
-                "timestamp": row.get::<_, String>(4)?
-            }))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        out.push(row);
-    }
-    Ok(out)
+    query_json_rows(conn, sql, &params_vec, |row| {
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "from": row.get::<_, String>(1)?,
+            "to": row.get::<_, String>(2)?,
+            "message": row.get::<_, String>(3)?,
+            "timestamp": row.get::<_, String>(4)?
+        }))
+    })
 }
 
 fn fetch_sessions(
@@ -384,9 +411,7 @@ fn fetch_sessions(
     let heartbeat_cutoff =
         (Utc::now() - Duration::seconds(ACTIVE_SESSION_WINDOW_SECONDS)).to_rfc3339();
     let now = now_iso();
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
-        owner_id
-    {
+    let (sql, params_vec): (&str, Vec<SqlParam>) = if let Some(owner_id) = owner_id {
         (
             "SELECT session_id, agent, project, files_json, description, started_at, last_heartbeat, expires_at
              FROM sessions
@@ -410,28 +435,18 @@ fn fetch_sessions(
             vec![Box::new(heartbeat_cutoff), Box::new(now)],
         )
     };
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(param_refs), |row| {
-            Ok(json!({
-                "sessionId": row.get::<_, String>(0)?,
-                "agent": row.get::<_, String>(1)?,
-                "project": row.get::<_, Option<String>>(2)?,
-                "files": parse_json_array(&row.get::<_, String>(3)?),
-                "description": row.get::<_, Option<String>>(4)?,
-                "startedAt": row.get::<_, String>(5)?,
-                "lastHeartbeat": row.get::<_, String>(6)?,
-                "expiresAt": row.get::<_, String>(7)?
-            }))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        out.push(row);
-    }
-    Ok(out)
+    query_json_rows(conn, sql, &params_vec, |row| {
+        Ok(json!({
+            "sessionId": row.get::<_, String>(0)?,
+            "agent": row.get::<_, String>(1)?,
+            "project": row.get::<_, Option<String>>(2)?,
+            "files": parse_json_array(&row.get::<_, String>(3)?),
+            "description": row.get::<_, Option<String>>(4)?,
+            "startedAt": row.get::<_, String>(5)?,
+            "lastHeartbeat": row.get::<_, String>(6)?,
+            "expiresAt": row.get::<_, String>(7)?
+        }))
+    })
 }
 
 fn fetch_tasks(
@@ -445,7 +460,7 @@ fn fetch_tasks(
     // Build parameterized query -- never interpolate user input into SQL.
     let base = "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary FROM tasks";
     let mut conditions = Vec::new();
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut params: Vec<SqlParam> = Vec::new();
 
     if status_filter != "all" {
         params.push(Box::new(status_filter.to_string()));
@@ -479,32 +494,7 @@ fn fetch_tasks(
     params.push(Box::new(limit as i64));
     params.push(Box::new(offset as i64));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(param_refs), |row| {
-            Ok(json!({
-                "taskId": row.get::<_, String>(0)?,
-                "title": row.get::<_, String>(1)?,
-                "description": row.get::<_, Option<String>>(2)?,
-                "project": row.get::<_, Option<String>>(3)?,
-                "files": parse_json_array(&row.get::<_, String>(4)?),
-                "priority": row.get::<_, String>(5)?,
-                "requiredCapability": row.get::<_, String>(6)?,
-                "status": row.get::<_, String>(7)?,
-                "claimedBy": row.get::<_, Option<String>>(8)?,
-                "createdAt": row.get::<_, String>(9)?,
-                "claimedAt": row.get::<_, Option<String>>(10)?,
-                "completedAt": row.get::<_, Option<String>>(11)?,
-                "summary": row.get::<_, Option<String>>(12)?
-            }))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for row in rows.flatten() {
-        out.push(row);
-    }
-    Ok(out)
+    query_json_rows(conn, &sql, &params, task_row_to_json)
 }
 
 // ─── POST /lock ─────────────────────────────────────────────────────────────
@@ -518,26 +508,16 @@ pub async fn handle_lock(
         return resp;
     }
 
-    let path = match body.path {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: path, agent" }),
-            );
-        }
+    let path = match trimmed_non_empty(body.path) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: path, agent"),
     };
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: path, agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: path, agent"),
     };
 
-    let ttl = body.ttl.unwrap_or(300).max(1);
+    let ttl = bounded_ttl_seconds(body.ttl, 300);
     let owner_id = owner_id_from_headers(&headers, &state);
     let conn = state.db.lock().await;
     let _ = clean_expired_locks(&conn, owner_id);
@@ -679,23 +659,13 @@ pub async fn handle_unlock(
         return resp;
     }
 
-    let path = match body.path {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: path, agent" }),
-            );
-        }
+    let path = match trimmed_non_empty(body.path) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: path, agent"),
     };
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: path, agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: path, agent"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -778,23 +748,13 @@ pub async fn handle_post_activity(
         return resp;
     }
 
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: agent, description" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: agent, description"),
     };
-    let description = match body.description {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: agent, description" }),
-            );
-        }
+    let description = match trimmed_non_empty(body.description) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: agent, description"),
     };
 
     let files = body.files.unwrap_or_default();
@@ -919,23 +879,13 @@ pub async fn handle_post_message(
         return resp;
     }
 
-    let from = match body.from {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: from, to, message" }),
-            );
-        }
+    let from = match trimmed_non_empty(body.from) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: from, to, message"),
     };
-    let to = match body.to {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: from, to, message" }),
-            );
-        }
+    let to = match trimmed_non_empty(body.to) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: from, to, message"),
     };
     let message = match body.message {
         Some(v) if !v.trim().is_empty() => v,
@@ -985,14 +935,9 @@ pub async fn handle_get_messages(
         return resp;
     }
 
-    let agent = match query.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing parameter: agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(query.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing parameter: agent"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1017,14 +962,9 @@ pub async fn handle_session_start(
         return resp;
     }
 
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required field: agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required field: agent"),
     };
     if !is_valid_agent_label(&agent) {
         return json_response(
@@ -1033,7 +973,7 @@ pub async fn handle_session_start(
         );
     }
 
-    let ttl = body.ttl.unwrap_or(SESSION_TTL_SECONDS).max(1);
+    let ttl = bounded_ttl_seconds(body.ttl, SESSION_TTL_SECONDS);
     let owner_id = owner_id_from_headers(&headers, &state);
     let now = Utc::now();
     let session_id = Uuid::new_v4().to_string();
@@ -1231,14 +1171,9 @@ pub async fn handle_session_end(
         return resp;
     }
 
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required field: agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required field: agent"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1296,14 +1231,9 @@ pub async fn handle_create_task(
         return resp;
     }
 
-    let title = match body.title {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required field: title" }),
-            );
-        }
+    let title = match trimmed_non_empty(body.title) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required field: title"),
     };
 
     let task_id = Uuid::new_v4().to_string();
@@ -1408,23 +1338,13 @@ pub async fn handle_claim_task(
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let task_id = match body.task_id {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: taskId, agent" }),
-            );
-        }
+    let task_id = match trimmed_non_empty(body.task_id) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: taskId, agent"),
     };
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: taskId, agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: taskId, agent"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1517,23 +1437,13 @@ pub async fn handle_complete_task(
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let task_id = match body.task_id {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: taskId, agent" }),
-            );
-        }
+    let task_id = match trimmed_non_empty(body.task_id) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: taskId, agent"),
     };
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: taskId, agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: taskId, agent"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1688,14 +1598,9 @@ pub async fn handle_delete_task(
         return resp;
     }
 
-    let task_id = match body.task_id {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required field: taskId" }),
-            );
-        }
+    let task_id = match trimmed_non_empty(body.task_id) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required field: taskId"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1767,23 +1672,13 @@ pub async fn handle_abandon_task(
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let task_id = match body.task_id {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: taskId, agent" }),
-            );
-        }
+    let task_id = match trimmed_non_empty(body.task_id) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: taskId, agent"),
     };
-    let agent = match body.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing required fields: taskId, agent" }),
-            );
-        }
+    let agent = match trimmed_non_empty(body.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing required fields: taskId, agent"),
     };
 
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1859,14 +1754,9 @@ pub async fn handle_next_task(
         return resp;
     }
 
-    let _agent = match query.agent {
-        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({ "error": "Missing parameter: agent" }),
-            );
-        }
+    let _agent = match trimmed_non_empty(query.agent) {
+        Some(v) => v,
+        None => return missing_field_response("Missing parameter: agent"),
     };
     let capability = query.capability.unwrap_or_else(|| "any".to_string());
     let owner_id = owner_id_from_headers(&headers, &state);
@@ -1915,48 +1805,37 @@ pub async fn handle_next_task(
     };
 
     let task = if let Some(owner_id) = owner_id {
-        stmt.query_row(params![capability, owner_id], |row| {
-            Ok(json!({
-                "taskId": row.get::<_, String>(0)?,
-                "title": row.get::<_, String>(1)?,
-                "description": row.get::<_, Option<String>>(2)?,
-                "project": row.get::<_, Option<String>>(3)?,
-                "files": parse_json_array(&row.get::<_, String>(4)?),
-                "priority": row.get::<_, String>(5)?,
-                "requiredCapability": row.get::<_, String>(6)?,
-                "status": row.get::<_, String>(7)?,
-                "claimedBy": row.get::<_, Option<String>>(8)?,
-                "createdAt": row.get::<_, String>(9)?,
-                "claimedAt": row.get::<_, Option<String>>(10)?,
-                "completedAt": row.get::<_, Option<String>>(11)?,
-                "summary": row.get::<_, Option<String>>(12)?
-            }))
-        })
-        .optional()
-        .ok()
-        .flatten()
+        stmt.query_row(params![capability, owner_id], task_row_to_json)
+            .optional()
+            .ok()
+            .flatten()
     } else {
-        stmt.query_row(params![capability], |row| {
-            Ok(json!({
-                "taskId": row.get::<_, String>(0)?,
-                "title": row.get::<_, String>(1)?,
-                "description": row.get::<_, Option<String>>(2)?,
-                "project": row.get::<_, Option<String>>(3)?,
-                "files": parse_json_array(&row.get::<_, String>(4)?),
-                "priority": row.get::<_, String>(5)?,
-                "requiredCapability": row.get::<_, String>(6)?,
-                "status": row.get::<_, String>(7)?,
-                "claimedBy": row.get::<_, Option<String>>(8)?,
-                "createdAt": row.get::<_, String>(9)?,
-                "claimedAt": row.get::<_, Option<String>>(10)?,
-                "completedAt": row.get::<_, Option<String>>(11)?,
-                "summary": row.get::<_, Option<String>>(12)?
-            }))
-        })
-        .optional()
-        .ok()
-        .flatten()
+        stmt.query_row(params![capability], task_row_to_json)
+            .optional()
+            .ok()
+            .flatten()
     };
 
     json_response(StatusCode::OK, json!({ "task": task }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_ttl_seconds_bounds_fuzzed_request_values() {
+        assert_eq!(bounded_ttl_seconds(None, 300), 300);
+        assert_eq!(bounded_ttl_seconds(Some(60), 300), 60);
+        assert_eq!(bounded_ttl_seconds(Some(0), 300), 1);
+        assert_eq!(bounded_ttl_seconds(Some(-60), 300), 1);
+        assert_eq!(
+            bounded_ttl_seconds(Some(MAX_REQUEST_TTL_SECONDS + 1), 300),
+            MAX_REQUEST_TTL_SECONDS
+        );
+        assert_eq!(
+            bounded_ttl_seconds(Some(i64::MAX), SESSION_TTL_SECONDS),
+            MAX_REQUEST_TTL_SECONDS
+        );
+    }
 }

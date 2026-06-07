@@ -237,12 +237,7 @@ pub fn validate_spawned_owner_claim(
 }
 
 fn health_probe_base(bind: &str, port: u16) -> String {
-    let bind = bind.trim();
-    let host = if bind.is_empty() || matches!(bind, "0.0.0.0" | "::" | "[::]") {
-        "127.0.0.1"
-    } else {
-        bind
-    };
+    let host = crate::transport::http_host_for_bind(bind);
     format!("http://{host}:{port}")
 }
 
@@ -259,6 +254,7 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
     let resolved_paths = CortexPaths::resolve();
     let probe_paths = expected_paths.unwrap_or(&resolved_paths);
     let base_url = health_probe_base(bind, port);
+    let probe_headers = [(String::from("X-Cortex-Request"), String::from("true"))];
 
     if let Ok((status, body)) = crate::transport::request_with_local_ipc_fallback(
         &client,
@@ -266,7 +262,7 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
         &base_url,
         "/readiness",
         probe_paths,
-        &[],
+        &probe_headers,
         None,
         Duration::from_secs(2),
     )
@@ -285,7 +281,7 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
         &base_url,
         "/health",
         probe_paths,
-        &[],
+        &probe_headers,
         None,
         Duration::from_secs(2),
     )
@@ -447,9 +443,9 @@ pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_owner_token, is_cortex_health_payload, issue_owner_token_for_spawn,
-        load_or_create_owner_signing_key, readiness_state_from_payload,
-        validate_spawned_owner_claim, DAEMON_OWNER_TOKEN_TTL_SECS,
+        build_owner_token, health_probe_base, is_cortex_health_payload,
+        issue_owner_token_for_spawn, load_or_create_owner_signing_key,
+        readiness_state_from_payload, validate_spawned_owner_claim, DAEMON_OWNER_TOKEN_TTL_SECS,
     };
     use crate::auth::CortexPaths;
     use serde_json::json;
@@ -622,6 +618,20 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&home_dir);
+    }
+
+    #[test]
+    fn health_probe_base_formats_wildcard_and_ipv6_hosts() {
+        assert_eq!(health_probe_base("", 7437), "http://127.0.0.1:7437");
+        assert_eq!(health_probe_base("0.0.0.0", 7437), "http://127.0.0.1:7437");
+        assert_eq!(
+            health_probe_base("localhost", 7437),
+            "http://localhost:7437"
+        );
+        assert_eq!(health_probe_base("::", 7437), "http://127.0.0.1:7437");
+        assert_eq!(health_probe_base("[::]", 7437), "http://127.0.0.1:7437");
+        assert_eq!(health_probe_base("::1", 7437), "http://[::1]:7437");
+        assert_eq!(health_probe_base("[::1]", 7437), "http://[::1]:7437");
     }
 
     #[test]

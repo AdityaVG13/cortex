@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::{ensure_auth_rated, json_response, truncate_chars};
+use super::{client_ip, ensure_auth_rated, ensure_ssrf_protection, json_response, truncate_chars};
 use crate::state::RuntimeState;
 
 const STORAGE_LOG_FILES: &[&str] = &[
@@ -224,7 +224,27 @@ fn collect_embedding_inventory(
 
 // ─── GET /health ─────────────────────────────────────────────────────────────
 
-pub async fn build_health_payload(state: &RuntimeState) -> Value {
+fn include_private_runtime_details(headers: &HeaderMap) -> bool {
+    ensure_ssrf_protection(headers).is_ok() && client_ip(headers).is_loopback()
+}
+
+fn redact_private_runtime_details(payload: &mut Value) {
+    if let Some(runtime) = payload.get_mut("runtime").and_then(Value::as_object_mut) {
+        runtime.remove("db_path");
+        runtime.remove("token_path");
+        runtime.remove("pid_path");
+        runtime.remove("ipc_endpoint");
+        runtime.remove("ipc_kind");
+        runtime.remove("executable");
+        runtime.remove("owner");
+    }
+
+    if let Some(stats) = payload.get_mut("stats").and_then(Value::as_object_mut) {
+        stats.remove("home");
+    }
+}
+
+pub async fn build_health_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let embedding_model = crate::embeddings::selected_model_selection();
     let now_unix_secs = Utc::now().timestamp();
     let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
@@ -373,7 +393,7 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
         .budget_status()
         .to_health_json(state.rate_limiter.recent_budget_denials().await);
 
-    json!({
+    let mut payload = json!({
         "status": if degraded || db_corrupted { "degraded" } else { "ok" },
         "ready": ready,
         "degraded": degraded || db_corrupted,
@@ -470,14 +490,24 @@ pub async fn build_health_payload(state: &RuntimeState) -> Value {
             "executable": executable,
             "owner": daemon_owner
         }
-    })
+    });
+
+    if !include_private_runtime {
+        redact_private_runtime_details(&mut payload);
+    }
+
+    payload
 }
 
-pub async fn handle_health(State(state): State<RuntimeState>) -> Response {
-    json_response(StatusCode::OK, build_health_payload(&state).await)
+pub async fn handle_health(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    let include_private_runtime = include_private_runtime_details(&headers);
+    json_response(
+        StatusCode::OK,
+        build_health_payload(&state, include_private_runtime).await,
+    )
 }
 
-pub async fn build_readiness_payload(state: &RuntimeState) -> Value {
+pub async fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let executable = std::env::current_exe()
         .ok()
         .map(|path| path.display().to_string())
@@ -501,7 +531,7 @@ pub async fn build_readiness_payload(state: &RuntimeState) -> Value {
     };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
 
-    json!({
+    let mut payload = json!({
         "status": if ready { "ready" } else { "starting" },
         "ready": ready,
         "runtime": {
@@ -519,11 +549,18 @@ pub async fn build_readiness_payload(state: &RuntimeState) -> Value {
         "stats": {
             "home": state.home.display().to_string()
         }
-    })
+    });
+
+    if !include_private_runtime {
+        redact_private_runtime_details(&mut payload);
+    }
+
+    payload
 }
 
-pub async fn handle_readiness(State(state): State<RuntimeState>) -> Response {
-    let payload = build_readiness_payload(&state).await;
+pub async fn handle_readiness(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
+    let include_private_runtime = include_private_runtime_details(&headers);
+    let payload = build_readiness_payload(&state, include_private_runtime).await;
     let ready = payload
         .get("ready")
         .and_then(|value| value.as_bool())
@@ -2180,6 +2217,7 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
     use serde_json::json;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2190,6 +2228,66 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("cortex_health_{name}_{unique}"))
+    }
+
+    #[test]
+    fn public_health_payload_redacts_private_runtime_paths() {
+        let mut payload = json!({
+            "runtime": {
+                "version": "0.6.0",
+                "mode": "team",
+                "port": 7437,
+                "db_path": "C:/Users/example/.cortex/cortex.db",
+                "token_path": "C:/Users/example/.cortex/cortex.token",
+                "pid_path": "C:/Users/example/.cortex/cortex.pid",
+                "ipc_endpoint": r"\\.\pipe\cortex-daemon-7437",
+                "ipc_kind": "named-pipe",
+                "executable": "C:/Users/example/cortex.exe",
+                "owner": "control-center"
+            },
+            "stats": {
+                "home": "C:/Users/example/.cortex",
+                "memories": 3
+            }
+        });
+
+        redact_private_runtime_details(&mut payload);
+
+        let runtime = payload["runtime"].as_object().unwrap();
+        assert_eq!(runtime["version"], "0.6.0");
+        assert_eq!(runtime["mode"], "team");
+        assert_eq!(runtime["port"], 7437);
+        for key in [
+            "db_path",
+            "token_path",
+            "pid_path",
+            "ipc_endpoint",
+            "ipc_kind",
+            "executable",
+            "owner",
+        ] {
+            assert!(
+                !runtime.contains_key(key),
+                "public health payload should redact {key}"
+            );
+        }
+        assert!(!payload["stats"].as_object().unwrap().contains_key("home"));
+        assert_eq!(payload["stats"]["memories"], 3);
+    }
+
+    #[test]
+    fn private_runtime_details_require_cortex_header_and_loopback_peer() {
+        let mut headers = HeaderMap::new();
+        assert!(!include_private_runtime_details(&headers));
+
+        headers.insert("x-cortex-request", HeaderValue::from_static("true"));
+        assert!(include_private_runtime_details(&headers));
+
+        headers.insert(
+            crate::handlers::CORTEX_PEER_IP_HEADER,
+            HeaderValue::from_static("203.0.113.9"),
+        );
+        assert!(!include_private_runtime_details(&headers));
     }
 
     #[test]

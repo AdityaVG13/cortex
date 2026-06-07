@@ -708,6 +708,8 @@ fn resolve_socket_activation_listener(
 ) -> Result<Option<tokio::net::TcpListener>, String> {
     use std::os::fd::FromRawFd;
 
+    const SYSTEMD_FIRST_SOCKET_FD: libc::c_int = 3;
+
     let listen_fds = std::env::var("LISTEN_FDS")
         .ok()
         .and_then(|raw| raw.trim().parse::<usize>().ok())
@@ -731,10 +733,13 @@ fn resolve_socket_activation_listener(
         ));
     }
 
+    validate_socket_activation_fd(SYSTEMD_FIRST_SOCKET_FD)?;
+
     // SAFETY: systemd-compatible socket activation passes the first owned
     // listening socket at fd 3 when LISTEN_PID matches this process and
-    // LISTEN_FDS is exactly 1; both conditions are checked above.
-    let std_listener = unsafe { std::net::TcpListener::from_raw_fd(3) };
+    // LISTEN_FDS is exactly 1. The descriptor was also validated as open and
+    // stream-socket-shaped immediately before ownership is adopted here.
+    let std_listener = unsafe { std::net::TcpListener::from_raw_fd(SYSTEMD_FIRST_SOCKET_FD) };
     std_listener
         .set_nonblocking(true)
         .map_err(|e| format!("configure activated socket nonblocking: {e}"))?;
@@ -755,6 +760,48 @@ fn resolve_socket_activation_listener(
     tokio::net::TcpListener::from_std(std_listener)
         .map(Some)
         .map_err(|e| format!("adopt socket-activated listener: {e}"))
+}
+
+#[cfg(unix)]
+fn validate_socket_activation_fd(fd: libc::c_int) -> Result<(), String> {
+    // SAFETY: F_GETFD only probes the integer descriptor. It does not borrow,
+    // duplicate, or take ownership of the descriptor, and invalid descriptors
+    // are reported as EBADF by the OS.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(format!(
+            "activated socket fd {fd} is not open: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let mut socket_type: libc::c_int = 0;
+    let mut socket_type_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: `socket_type` and `socket_type_len` are valid out-pointers for
+    // the duration of the call. `getsockopt` only observes descriptor metadata
+    // and returns an error instead of taking ownership when `fd` is not a socket.
+    if unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut socket_type as *mut libc::c_int).cast(),
+            &mut socket_type_len,
+        )
+    } < 0
+    {
+        return Err(format!(
+            "activated socket fd {fd} is not a socket: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    if socket_type != libc::SOCK_STREAM {
+        return Err(format!(
+            "activated socket fd {fd} has unsupported socket type {socket_type}; expected SOCK_STREAM"
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -1475,5 +1522,31 @@ window_seconds = 60
             ),
             Some(PlainHttpRejectionReason::NonLocalBind)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_activation_fd_validation_rejects_closed_fd() {
+        let err = validate_socket_activation_fd(-1).unwrap_err();
+        assert!(err.contains("not open"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_activation_fd_validation_rejects_regular_file() {
+        use std::os::fd::AsRawFd;
+
+        let file = tempfile::tempfile().unwrap();
+        let err = validate_socket_activation_fd(file.as_raw_fd()).unwrap_err();
+        assert!(err.contains("not a socket"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_activation_fd_validation_accepts_tcp_listener() {
+        use std::os::fd::AsRawFd;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        validate_socket_activation_fd(listener.as_raw_fd()).unwrap();
     }
 }

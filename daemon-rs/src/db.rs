@@ -31,16 +31,20 @@ fn ensure_sqlite_vec_registered() -> Result<(), String> {
                 *mut *mut std::os::raw::c_char,
                 *const rusqlite::ffi::sqlite3_api_routines,
             ) -> std::os::raw::c_int;
-            type UntypedSqliteVecEntryPoint = unsafe extern "C" fn();
-            // SAFETY: `sqlite-vec` exposes `sqlite3_vec_init` as an untyped
-            // C symbol, but SQLite's auto-extension API requires this exact
-            // entry-point ABI. The symbol is statically linked and lives for
-            // the process lifetime.
-            let init = unsafe {
-                std::mem::transmute::<UntypedSqliteVecEntryPoint, SqliteVecEntryPoint>(
-                    sqlite_vec::sqlite3_vec_init,
-                )
-            };
+
+            unsafe extern "C" {
+                #[link_name = "sqlite3_vec_init"]
+                fn sqlite3_vec_init_auto_extension(
+                    db: *mut rusqlite::ffi::sqlite3,
+                    err_msg: *mut *mut std::os::raw::c_char,
+                    api: *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> std::os::raw::c_int;
+            }
+
+            // Keep the `sqlite-vec` crate referenced: its build script supplies
+            // the native `sqlite_vec0` library that defines this symbol.
+            let _sqlite_vec_symbol: unsafe extern "C" fn() = sqlite_vec::sqlite3_vec_init;
+            let init: SqliteVecEntryPoint = sqlite3_vec_init_auto_extension;
             // SAFETY: `init` points to `sqlite3_vec_init` with SQLite's
             // required auto-extension ABI and remains valid for the process.
             let rc = unsafe { rusqlite::ffi::sqlite3_auto_extension(Some(init)) };
@@ -249,12 +253,16 @@ fn migration_error(msg: impl Into<String>) -> rusqlite::Error {
     rusqlite::Error::InvalidParameterName(msg.into())
 }
 
-fn apply_migration(conn: &Connection, version: &str) -> rusqlite::Result<()> {
+fn apply_migration_with_logging(
+    conn: &Connection,
+    version: &str,
+    log_success: bool,
+) -> rusqlite::Result<()> {
     match version {
         // Baseline marker for pre-versioned schemas.
         "001_initial_schema" => Ok(()),
         "002_aging_columns" => {
-            migrate_aging_columns(conn);
+            migrate_aging_columns_with_logging(conn, log_success);
             if table_has_column(conn, "memories", "compressed_text")
                 && table_has_column(conn, "memories", "age_tier")
                 && table_has_column(conn, "decisions", "compressed_text")
@@ -705,6 +713,15 @@ pub fn pending_migration_versions(conn: &Connection) -> rusqlite::Result<Vec<Str
 /// Execute pending schema migrations in-order and record each in
 /// `schema_migrations`. Returns the number of newly-applied migrations.
 pub fn run_pending_migrations(conn: &Connection) -> usize {
+    run_pending_migrations_with_logging(conn, true)
+}
+
+/// Execute pending schema migrations without printing successful ALTERs.
+pub fn run_pending_migrations_quiet(conn: &Connection) -> usize {
+    run_pending_migrations_with_logging(conn, false)
+}
+
+fn run_pending_migrations_with_logging(conn: &Connection, log_success: bool) -> usize {
     if let Err(e) = ensure_schema_migrations_table(conn) {
         eprintln!("[db] schema migration setup failed: {e}");
         return 0;
@@ -733,7 +750,7 @@ pub fn run_pending_migrations(conn: &Connection) -> usize {
                 break;
             }
         };
-        if let Err(e) = apply_migration(&tx, version) {
+        if let Err(e) = apply_migration_with_logging(&tx, version, log_success) {
             eprintln!("[db] migration {version} ({name}) failed: {e}");
             drop(tx);
             break;
@@ -1588,7 +1605,7 @@ pub fn migrate_focus_table(conn: &Connection) {
 
 /// Run schema migrations for progressive aging columns.
 /// Safe to call repeatedly -- ALTER TABLE with IF NOT EXISTS-style error handling.
-pub fn migrate_aging_columns(conn: &Connection) {
+fn migrate_aging_columns_with_logging(conn: &Connection, log_success: bool) {
     let migrations = [
         "ALTER TABLE memories ADD COLUMN compressed_text TEXT",
         "ALTER TABLE memories ADD COLUMN age_tier TEXT DEFAULT 'fresh'",
@@ -1597,7 +1614,8 @@ pub fn migrate_aging_columns(conn: &Connection) {
     ];
     for sql in &migrations {
         match conn.execute(sql, []) {
-            Ok(_) => eprintln!("[db] Migration applied: {sql}"),
+            Ok(_) if log_success => eprintln!("[db] Migration applied: {sql}"),
+            Ok(_) => {}
             Err(e) if e.to_string().contains("duplicate column") => {}
             Err(e) => eprintln!("[db] Migration skipped ({e}): {sql}"),
         }

@@ -657,16 +657,10 @@ mod tests {
     use rusqlite::{params, Connection};
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn env_guard() -> MutexGuard<'static, ()> {
-        match TEST_ENV_LOCK.get_or_init(|| Mutex::new(())).lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock()
     }
 
     const V041_SCHEMA_SQL: &str = r#"
