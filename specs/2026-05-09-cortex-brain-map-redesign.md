@@ -3,7 +3,6 @@
 **Date:** 2026-05-09
 **Status:** Draft (awaiting user review)
 **Component:** `desktop/cortex-control-center/src/BrainVisualizer.jsx`
-**Author:** Aditya + Claude
 
 ## 1. Problem
 

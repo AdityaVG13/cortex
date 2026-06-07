@@ -12,8 +12,8 @@ Top-level GitHub policy file: [`SECURITY.md`](../SECURITY.md)
 
 | Version | Status |
 |---------|--------|
-| 0.6.x | Current release, actively supported |
-| 0.5.x | Security fixes only |
+| 0.6.x | Current source line, actively supported |
+| 0.5.x | Latest tagged release line, still supported during the 0.6.0 publication gap |
 | < 0.5 | Not supported |
 
 ---
@@ -120,6 +120,7 @@ Memories, decisions, events, embeddings (ONNX-generated), recall feedback, team/
 - Default bind: `127.0.0.1` (localhost only)
 - CORS restricted to localhost origins including dynamic daemon port
 - MCP primary transport: stdio
+- Authenticated Control Center browser fallback requests accept only `http`/`https` daemon base URLs and reject URL-embedded credentials; credentials belong in the Bearer token path, not in `cortexBase`.
 
 ### Team mode
 

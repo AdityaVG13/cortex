@@ -2,6 +2,12 @@
   "schema": "cortex.adapter.contract",
   "version": "0.6.0",
   "description": "JSON-compatible YAML contract for Cortex HTTP, MCP-RPC, and SDK adapter conformance.",
+  "conformance": {
+    "specificationSource": "specs/cortex-adapter-contract.yaml",
+    "mustCoverageThreshold": 0.95,
+    "coverageReport": "specs/cortex-adapter-contract/COVERAGE.md",
+    "discrepancies": "specs/cortex-adapter-contract/DISCREPANCIES.md"
+  },
   "protectedHeaders": {
     "X-Cortex-Request": "true",
     "Authorization": "Bearer <token>"
@@ -9,6 +15,9 @@
   "scenarios": [
     {
       "id": "health-public",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "sdkMethod": "health",
       "http": { "method": "GET", "path": "/health", "auth": "none", "xCortexRequest": false },
@@ -16,6 +25,9 @@
     },
     {
       "id": "store-decision",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "sdkMethod": "store",
       "http": { "method": "POST", "path": "/store", "auth": "required", "xCortexRequest": true },
@@ -35,6 +47,9 @@
     },
     {
       "id": "recall-get",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "sdkMethod": "recall",
       "http": { "method": "GET", "path": "/recall", "auth": "required", "xCortexRequest": true },
@@ -43,6 +58,9 @@
     },
     {
       "id": "recall-post",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "http": { "method": "POST", "path": "/recall", "auth": "required", "xCortexRequest": true },
       "request": { "json": { "q": "Adapter conformance sentinel memory", "budget": 200, "k": 5, "agent": "adapter-conformance-sdk" } },
@@ -50,6 +68,9 @@
     },
     {
       "id": "peek",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "sdkMethod": "peek",
       "http": { "method": "GET", "path": "/peek", "auth": "required", "xCortexRequest": true },
@@ -58,6 +79,9 @@
     },
     {
       "id": "boot",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "sdkMethod": "boot",
       "http": { "method": "GET", "path": "/boot", "auth": "required", "xCortexRequest": true },
@@ -66,6 +90,9 @@
     },
     {
       "id": "export-json",
+      "specSection": "HTTP API",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "http",
       "sdkMethod": "export",
       "http": { "method": "GET", "path": "/export", "auth": "required", "xCortexRequest": true },
@@ -74,6 +101,9 @@
     },
     {
       "id": "mcp-initialize",
+      "specSection": "MCP-RPC",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "mcp-rpc",
       "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
       "request": { "jsonrpc": { "method": "initialize" } },
@@ -81,6 +111,9 @@
     },
     {
       "id": "mcp-tools-list",
+      "specSection": "MCP-RPC",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "mcp-rpc",
       "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
       "request": { "jsonrpc": { "method": "tools/list" } },
@@ -88,6 +121,9 @@
     },
     {
       "id": "mcp-health-tool",
+      "specSection": "MCP-RPC",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "mcp-rpc",
       "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
       "request": { "tool": { "name": "cortex_health", "arguments": {} } },
@@ -95,6 +131,9 @@
     },
     {
       "id": "mcp-store-tool",
+      "specSection": "MCP-RPC",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "mcp-rpc",
       "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
       "request": { "tool": { "name": "cortex_store", "arguments": { "decision": "Adapter conformance MCP memory", "context": "C4 MCP contract" } } },
@@ -102,6 +141,9 @@
     },
     {
       "id": "mcp-recall-tool",
+      "specSection": "MCP-RPC",
+      "requirementLevel": "MUST",
+      "coverageStatus": "tested",
       "transport": "mcp-rpc",
       "http": { "method": "POST", "path": "/mcp-rpc", "auth": "required", "xCortexRequest": true },
       "request": { "tool": { "name": "cortex_recall", "arguments": { "query": "Adapter conformance MCP memory", "budget": 120, "k": 5 } } },

@@ -288,10 +288,38 @@ paths:
         - $ref: '#/components/parameters/XCortexRequest'
         - in: query
           name: format
+          description: HTTP export supports JSON pages; SQL export is available through the CLI export command.
           schema:
             type: string
-            enum: [json, sql]
+            enum: [json]
             default: json
+        - in: query
+          name: limit
+          description: Maximum memories and decisions returned per page.
+          schema:
+            type: integer
+            default: 1000
+            minimum: 1
+            maximum: 5000
+        - in: query
+          name: offset
+          description: Shared offset used when memories_offset or decisions_offset is omitted.
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - in: query
+          name: memories_offset
+          description: Offset for memory rows.
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: decisions_offset
+          description: Offset for decision rows.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: Export payload
@@ -299,9 +327,12 @@ paths:
             application/json:
               schema:
                 type: object
-            text/plain:
-              schema:
-                type: string
+        '400':
+          description: Invalid export request or SQL export requested over HTTP
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing SSRF protection header
   /import:
     post:
       summary: Import exported data
@@ -323,6 +354,12 @@ paths:
             application/json:
               schema:
                 type: object
+        '400':
+          description: Import payload is invalid
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing SSRF protection header
 components:
   securitySchemes:
     BearerAuth:

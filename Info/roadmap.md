@@ -4,9 +4,12 @@
 
 > What shipped, what's next, and what's further out. Enough detail to start contributing, without internal planning artifacts.
 
+> Source/package metadata is `0.6.0`. GitHub download links currently resolve to
+> the latest tagged `v0.5.0` release until `v0.6.0` artifacts are published.
+
 ---
 
-## v0.5.0 — Stabilization &nbsp; `shipped`
+## v0.5.0 — Stabilization &nbsp; `latest tagged release`
 
 > Reliable, one-daemon, local-first release. Benchmark-honest and adapter-consistent.
 
@@ -26,7 +29,7 @@
 
 ---
 
-## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `shipped`
+## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `current source baseline`
 
 > Made Cortex more usable day-to-day, more manageable at team scale, and more disciplined about recall measurement.
 
@@ -42,7 +45,7 @@
 | **Foundation carryovers** | Session rollback CLI (`cortex admin rollback`). Boot prompt audit trail. Score-adaptive truncation for boot. `DEFAULT_CORTEX_PORT` consolidation. |
 
 <details>
-<summary>Post-release proof follow-ups</summary>
+<summary>Proof follow-ups before broad release claims</summary>
 
 - Capture manual screen-reader walkthrough evidence for NVDA+Firefox, VoiceOver+Safari, and Narrator+Edge before making formal accessibility conformance claims.
 - Capture browser-harness-based automated accessibility evidence for main flows.

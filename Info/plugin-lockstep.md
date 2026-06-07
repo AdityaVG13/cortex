@@ -58,4 +58,4 @@ the build before any artifacts are produced.
 Automate steps 1-3 via a `scripts/bump-release.sh VERSION` helper that edits
 all three files and runs the guard. Tracked in
 `docs/internal/v060/open-questions.md` Q11 as an advisory follow-up once the
-v0.6.0 release stabilizes.
+v0.6.0 source line stabilizes.

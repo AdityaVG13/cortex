@@ -13,6 +13,7 @@
 ## Versioning
 - DB marker: schema state is tracked with `schema_migrations` and `PRAGMA user_version`; sync changesets use `cursor` timestamps from the DB snapshot.
 - File marker: sync export files contain `version`, `mode`, `exported_at`, `since`, and `cursor`; watch state uses a local `site_id`, cursor file, and seen-file set.
+- Import checks: `cortex sync import` and `sync watch` require `version = 1`, `mode = "changeset"`, a valid RFC3339 `cursor`, and matching `memories_count`/`decisions_count` markers before any DB write. Plain `cortex import` still accepts legacy unversioned full JSON, but rejects unsupported versioned exports and paged fragments.
 
 ## Concurrency
 - Lock file path: daemon process ownership uses `~/.cortex/cortex.lock`; `cortex sync ...` commands serialize through `~/.cortex/sync.lock`.
@@ -22,6 +23,6 @@
 
 ## Failure Handling
 - DB locked: retry through SQLite busy timeout; if still locked, report and exit non-zero.
-- JSON/JSONL parse error: skip or reject the file without advancing cursor/seen state.
+- JSON/JSONL parse or metadata error: skip or reject the file without advancing cursor/seen state.
 - Export interrupted: the old export/cursor/state file remains in place because replacement happens only after temp-file fsync succeeds.
 - DB corruption: run `cortex doctor`; if integrity fails, use the recovery runbook.

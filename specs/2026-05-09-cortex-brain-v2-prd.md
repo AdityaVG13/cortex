@@ -5,7 +5,6 @@
 **Replaces:** `specs/2026-05-09-cortex-brain-map-redesign.md` and its plan
 **Component:** `desktop/cortex-control-center/src/BrainVisualizer.jsx` and a new `desktop/cortex-control-center/src/brain-v2/` tree
 **Daemon:** `daemon-rs/src/handlers/events.rs` (new `/brain/firing` SSE), emit calls in `daemon-rs/src/crystallize.rs` and `daemon-rs/src/handlers/recall.rs`
-**Author:** Aditya + Claude
 
 ---
 

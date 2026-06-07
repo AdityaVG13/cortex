@@ -24,6 +24,8 @@ chmod +x cortex
 
 Safest default. Works for local app/plugin workflows.
 
+If you explicitly bind to IPv6 loopback, `CORTEX_BIND=::1` is accepted and Cortex reports/uses the bracketed URL form `http://[::1]:7437`.
+
 </details>
 
 <details>

@@ -11,7 +11,7 @@
 2. Run `cortex doctor` against the target `CORTEX_DB`.
 3. If the DB is healthy, export a fresh snapshot with `cortex export --format json --out <path>`.
 4. If the DB is unhealthy, restore the newest valid `backups/cortex-*.db` or a prior JSON export, then rerun `cortex doctor`.
-5. For sync directories, validate incoming changesets with `cortex sync import --file <path>` before marking them seen.
+5. For sync directories, validate incoming changesets with `cortex sync import --file <path>` before marking them seen; sync imports reject missing/unsupported version markers, non-changeset modes, invalid cursors, and count mismatches.
 6. Resume `cortex sync watch --dir <path>` and confirm the cursor advances after a successful export/import pass.
 
 ## Commands

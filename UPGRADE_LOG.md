@@ -402,3 +402,176 @@ npm audit --json
 - The root package.json has no direct dependencies.
 - npm latest versions newer than the local minimum-release-age policy were not forced.
 - Vite build reports a chunk-size warning for the visualizer bundle but exits successfully.
+
+---
+
+## 2026-06-04 Continuation
+
+**Mode:** continue existing `library-updater` artifacts from 2026-05-22.
+
+### Summary
+
+| Metric | Count |
+|--------|-------|
+| **Updated groups** | 8 |
+| **Skipped or preserved** | 4 |
+| **Failed and rolled back** | 1 |
+| **Requires attention** | 0 |
+
+### Successfully Updated
+
+#### desktop/cortex-control-center Node dependencies
+
+| Package | From | To |
+|---------|------|----|
+| @tauri-apps/cli | 2.11.1 | 2.11.2 |
+| accessibility-checker-engine | 4.0.17 | 4.0.24 |
+| vite | 8.0.13 | 8.0.14 |
+| vitest | 4.1.6 | 4.1.7 |
+
+**Research notes:**
+- Tauri release notes list `@tauri-apps/cli@2.11.2` as a dependency-only CLI update.
+- Vite 8.0.14 and Vitest 4.1.7 are patch releases; Vitest 4.1.7 lists a runner concurrency bug fix.
+- `accessibility-checker-engine@4.0.26` exists, but npm rejected it under the repo's minimum-release-age policy; `4.0.24` was the newest accepted stable version.
+
+**Files modified:** 2
+- `desktop/cortex-control-center/package.json`
+- `desktop/cortex-control-center/package-lock.json`
+
+**Tests:** Passed after each update with `npm test` (23 files / 186 tests).
+
+#### sdks/typescript Node dependencies
+
+| Package | From | To |
+|---------|------|----|
+| @types/node | 25.8.0 | 25.9.1 |
+
+**Breaking changes:** None expected; type-only patch update.
+
+**Files modified:** 2
+- `sdks/typescript/package.json`
+- `sdks/typescript/package-lock.json`
+
+**Tests:** Passed with `npm test` (build plus 10 node tests).
+
+#### daemon-rs Rust direct dependencies and lockfile
+
+| Package | From | To |
+|---------|------|----|
+| reqwest | 0.13.3 | 0.13.4 |
+| uuid | 1.23.1 | 1.23.2 |
+
+**Lockfile refresh:** Updated 30 additional Cargo.lock entries to latest Cargo-compatible versions.
+
+**Research notes:**
+- `reqwest@0.13.4` includes redirect-sensitive-header handling, TLS/client option fixes, and MSRV 1.85, compatible with local rustc 1.94.1.
+- `uuid@1.23.2` improves ambiguous-format error messages.
+
+**Files modified:** 2
+- `daemon-rs/Cargo.toml`
+- `daemon-rs/Cargo.lock`
+
+**Tests:** Passed with `cargo check --manifest-path daemon-rs/Cargo.toml --all-features`.
+
+#### desktop src-tauri Rust lockfile
+
+**Lockfile refresh:** Updated 31 Cargo.lock entries to latest Cargo-compatible versions, including transitive `reqwest` 0.13.4, `uuid` 1.23.2, and `tao` 0.35.3.
+
+**Files modified:** 1
+- `desktop/cortex-control-center/src-tauri/Cargo.lock`
+
+**Tests:** Passed with `cargo check --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml --all-features`.
+
+#### sdks/python lockfile
+
+| Package | From | To |
+|---------|------|----|
+| idna | 3.16 | 3.18 |
+
+**Python 3.9 note:** `pytest>=8.4.2` and `pytest-httpx>=0.35.0` remain the latest Python 3.9-compatible lower bounds; Python 3.10+ still resolves newer versions through `uv.lock`.
+
+**Files modified:** 1
+- `sdks/python/uv.lock`
+
+**Tests:** Passed with `uv run --extra dev pytest` (8 tests).
+
+### Failed Updates (Rolled Back)
+
+#### rusqlite: 0.39.0 -> 0.40.0
+
+**Reason:** `libsqlite3-sys@0.38.0`, pulled by `rusqlite@0.40.0`, failed to compile on stable rustc 1.94.1 because its build script uses unstable `cfg_select!`.
+
+**Action:** Rolled both Rust manifests back to `rusqlite@0.39.0` and restored daemon lockfile entries to `rusqlite@0.39.0` / `libsqlite3-sys@0.37.0`.
+
+**Tests after rollback:** `cargo check --manifest-path daemon-rs/Cargo.toml --all-features` passed.
+
+### Skipped / Preserved
+
+#### sysinfo: 0.38.4 -> 0.39.3
+**Reason:** crates.io metadata reports newer stable requires Rust 1.95; local toolchain is rustc 1.94.1.
+
+#### sqlite-vec: 0.1.9 -> 0.1.10-alpha.4
+**Reason:** Latest available version is alpha; stable 0.1.9 preserved.
+
+#### ort: 2.0.0-rc.12
+**Reason:** Current dependency is intentionally on a release-candidate line; preserved per version rules.
+
+#### Python dev lower bounds
+**Reason:** Newer `pytest` and `pytest-httpx` resolve for Python 3.10+, but raising manifest lower bounds would drop Python 3.9 compatibility.
+
+### Commands Used
+
+```bash
+npm install --save-dev @tauri-apps/cli@2.11.2
+npm install --save-dev accessibility-checker-engine@4.0.24
+npm install --save-dev vite@8.0.14
+npm install --save-dev vitest@4.1.7
+npm install --save-dev @types/node@25.9.1
+npm test
+cargo update --manifest-path daemon-rs/Cargo.toml -p uuid --precise 1.23.2
+cargo update --manifest-path daemon-rs/Cargo.toml -p reqwest --precise 0.13.4
+cargo update --manifest-path daemon-rs/Cargo.toml
+cargo update --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml
+cargo check --manifest-path daemon-rs/Cargo.toml --all-features
+cargo check --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml --all-features
+uv lock --upgrade
+uv run --extra dev pytest
+```
+
+### Final Verification
+
+| Check | Result |
+|-------|--------|
+| `python -m json.tool claude-upgrade-progress.json` | Passed |
+| `git diff --check` | Passed; Git reported existing CRLF normalization warnings for touched files |
+| `cargo fmt --manifest-path daemon-rs/Cargo.toml -- --check` | Passed |
+| `cargo fmt --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml -- --check` | Passed |
+| `cargo test --manifest-path daemon-rs/Cargo.toml --all-features` | Passed, 548 unit tests plus integration suites |
+| `cargo test --manifest-path desktop/cortex-control-center/src-tauri/Cargo.toml --all-features` | Passed, 29 tests |
+| `npm test` in `desktop/cortex-control-center` | Passed, 23 files / 186 tests |
+| `npm run web:build` in `desktop/cortex-control-center` | Passed; Vite still reports the known large visualizer chunk warning |
+| `npm test` in `sdks/typescript` | Passed, build plus 10 tests |
+| `uv run --extra dev pytest` in `sdks/python` | Passed, 8 tests |
+| `uv lock --check` in `sdks/python` | Passed |
+
+### Audit Notes
+
+- `npm audit --json` passed with 0 vulnerabilities for `desktop/cortex-control-center`.
+- `npm audit --json` passed with 0 vulnerabilities for `sdks/typescript`.
+- `cargo audit --file daemon-rs/Cargo.lock` reported the known `paste` unmaintained warning through `tokenizers`; no direct update is available in this pass.
+- `cargo audit --file desktop/cortex-control-center/src-tauri/Cargo.lock` reported known transitive Tauri/GTK ecosystem warnings; no direct update is available in this pass.
+- `pip-audit` is not installed, so Python security audit was not run; Python verification used `uv lock --check`, `uv lock --upgrade`, and tests.
+
+---
+
+## 2026-06-04 Repair Attempt 1
+
+**Trigger:** Queue-level verification failed after the continuation with `cargo test --manifest-path daemon-rs/Cargo.toml`.
+
+**Root cause:** The plain daemon suite exposed a Windows full-suite scheduling race in the test-only response server used by startup preflight tests. The fixture could stop accepting after 3 seconds before `startup_single_daemon_preflight` reached its readiness probe, leaving the test with the expected bind denial but failed readiness and health probes.
+
+**Repair:** Extended the test response server idle deadline from 3 seconds to 15 seconds in `daemon-rs/src/main.rs`.
+
+**Verification:**
+- `cargo test --manifest-path daemon-rs/Cargo.toml startup_preflight_rejects_canonical_ready_readiness_state --bin cortex -- --nocapture` passed.
+- `cargo test --manifest-path daemon-rs/Cargo.toml` passed: 548 unit tests plus daemon integration suites.

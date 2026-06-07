@@ -52,9 +52,12 @@ Run the checks relevant to the area you changed.
 ```bash
 cd daemon-rs
 cargo fmt
+cargo check --all-features
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+For setup or auth-token changes, include a focused regression check for token persistence failures. Team setup must not report success unless the owner API key was written to the shared `cortex.token` path. Token permission changes need platform proof: Unix mode checks or Windows DACL/ACL regression coverage.
 
 ### Desktop / frontend changes
 
@@ -71,6 +74,7 @@ From the repo root:
 
 ```bash
 npm run daemon:clippy
+npm run daemon:check
 npm run test
 npm run build
 npm run desktop:build
