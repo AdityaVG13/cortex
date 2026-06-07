@@ -85,6 +85,7 @@ run_cortex() {
   USERPROFILE="${SMOKE_HOME}" \
   CORTEX_HOME="${SMOKE_CORTEX_HOME}" \
   CORTEX_PORT="${SMOKE_PORT}" \
+  CORTEX_BIND="127.0.0.1" \
   CORTEX_GLOBAL_LOCK_HOME="${SMOKE_CORTEX_HOME}" \
   "${CORTEX_BIN}" "$@"
 }
@@ -97,6 +98,7 @@ run_cortex_for_home() {
   HOME="${user_home}" \
   USERPROFILE="${user_home}" \
   CORTEX_HOME="${cortex_home}" \
+  CORTEX_BIND="127.0.0.1" \
   CORTEX_GLOBAL_LOCK_HOME="${cortex_home}" \
   "${CORTEX_BIN}" "$@"
 }
