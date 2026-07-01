@@ -2,6 +2,7 @@
 //! MCP permission boundaries only. Wire contracts live in daemon-rs/tests/.
 
 use super::*;
+use crate::handlers::mcp::permissions::permission_satisfies;
 
 #[test]
 fn conflict_tools_require_admin_permission_scope() {
@@ -16,10 +17,14 @@ fn conflict_tools_require_admin_permission_scope() {
 }
 
 #[test]
-fn normalize_permission_client_id_strips_model_suffix() {
+fn normalize_permission_client_id_strips_parenthetical_suffix() {
+    assert_eq!(
+        normalize_permission_client_id("claude(sonnet-4-20250514)"),
+        "claude"
+    );
     assert_eq!(
         normalize_permission_client_id("claude-sonnet-4-20250514"),
-        "claude"
+        "claude-sonnet-4-20250514"
     );
 }
 

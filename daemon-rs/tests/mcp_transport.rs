@@ -6,16 +6,17 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 mod support;
-use support::{terminate_child_tree, SpawnTrackedExt};
+use support::{
+    health_ok, reserve_port, shutdown_daemon, singleton_transport_test_guard, unique_temp_dir,
+    wait_for_exit, wait_for_health, SpawnTrackedExt, STARTUP_TIMEOUT,
+};
 
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
-const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[test]
 fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
@@ -1051,120 +1052,3 @@ fn spawn_stdout_reader(stdout: ChildStdout) -> Receiver<Result<String, String>> 
     rx
 }
 
-fn reserve_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve local port")
-        .local_addr()
-        .expect("local addr")
-        .port()
-}
-
-fn unique_temp_dir(prefix: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("cortex_{prefix}_{unique}"))
-}
-
-fn wait_for_health(port: u16, child: &mut Child) {
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
-    while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("poll child") {
-            let stderr = read_stderr(child);
-            panic!("cortex mcp exited before daemon health check succeeded: {status}\n{stderr}");
-        }
-        if health_ok(port) {
-            return;
-        }
-        thread::sleep(HEALTH_POLL_INTERVAL);
-    }
-
-    terminate_child_tree(child);
-    let stderr = read_stderr(child);
-    panic!("daemon did not become healthy on port {port}\n{stderr}");
-}
-
-fn wait_for_exit(child: &mut Child, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if child.try_wait().expect("poll child exit").is_some() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    terminate_child_tree(child);
-    let stderr = read_stderr(child);
-    panic!("cortex mcp did not exit after stdin closed\n{stderr}");
-}
-
-fn health_ok(port: u16) -> bool {
-    let Ok(body) = http_request(
-        port,
-        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    ) else {
-        return false;
-    };
-    let Some(body) = split_http_body(&body) else {
-        return false;
-    };
-    let Ok(json) = serde_json::from_str::<Value>(body.trim()) else {
-        return false;
-    };
-    matches!(
-        json.get("status").and_then(|value| value.as_str()),
-        Some("ok" | "degraded")
-    )
-}
-
-fn shutdown_daemon(port: u16, home_dir: &std::path::Path) {
-    let token = fs::read_to_string(home_dir.join("cortex.token"))
-        .expect("read daemon token")
-        .trim()
-        .to_string();
-    let request = format!(
-        "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-Cortex-Request: true\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
-    );
-    let _ = http_request(port, &request).expect("shutdown daemon");
-}
-
-fn http_request(port: u16, request: &str) -> Result<String, String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| e.to_string())?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())?;
-
-    let mut buffer = String::new();
-    stream
-        .read_to_string(&mut buffer)
-        .map_err(|e| e.to_string())?;
-    Ok(buffer)
-}
-
-fn split_http_body(response: &str) -> Option<&str> {
-    response.split_once("\r\n\r\n").map(|(_, body)| body)
-}
-
-fn read_stderr(child: &mut Child) -> String {
-    let mut stderr = String::new();
-    if let Some(handle) = child.stderr.as_mut() {
-        let _ = handle.read_to_string(&mut stderr);
-    }
-    stderr
-}
-
-fn singleton_transport_test_guard() -> MutexGuard<'static, ()> {
-    static TRANSPORT_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-    TRANSPORT_TEST_MUTEX
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}

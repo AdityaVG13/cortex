@@ -594,6 +594,7 @@ pub async fn register_agent_presence_from_headers(
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use crate::handlers::{estimate_tokens, estimate_tokens_from_chars};
 
     fn create_sessions_table(conn: &rusqlite::Connection) {
         conn.execute_batch(

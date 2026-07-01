@@ -3,7 +3,9 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::compaction::{
+        prune_expired_entries, prune_old_events, purge_benchmark_artifacts,
+    };
     use rusqlite::Connection;
 
     fn setup() -> Connection {

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
 mod tests {
-    use super::support::*;
-    use super::super::*;
+    use crate::handlers::recall::*;
+    use crate::handlers::recall::tests::support::{
+        solo_ctx, store_decision_with_embedding, team_ctx, test_conn,
+    };
 
     #[test]
     fn search_memories_excludes_temporally_invalid_rows() {

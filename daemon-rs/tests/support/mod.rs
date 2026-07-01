@@ -3,9 +3,12 @@ use std::process::{Child, Command};
 pub mod harness;
 
 pub use harness::{
-    daemon_spawn_test_guard, health_ok, http_status, post_json, post_raw, read_token,
-    reserve_port, shutdown_daemon, spawn_daemon, split_http_body, unique_temp_dir, wait_for_exit,
-    wait_for_health, HEALTH_POLL_INTERVAL, STARTUP_TIMEOUT,
+    adapter_conformance_guard, assert_path_scoped_to_home, daemon_spawn_test_guard, health_ok,
+    http_request, http_status, normalize_path_for_compare, post_json, post_raw, read_token,
+    request_json, request_json_with_headers, reserve_port, shutdown_daemon,
+    shutdown_daemon_best_effort, singleton_transport_test_guard, spawn_daemon, split_http_body,
+    unique_temp_dir, wait_for_exit, wait_for_health, JsonHttpResponse, HEALTH_POLL_INTERVAL,
+    STARTUP_TIMEOUT,
 };
 
 pub trait SpawnTrackedExt {
@@ -72,25 +75,12 @@ mod windows_cleanup_job {
     fn cleanup_job_handle() -> Option<HANDLE> {
         static CLEANUP_JOB: OnceLock<isize> = OnceLock::new();
         let raw = *CLEANUP_JOB.get_or_init(|| {
-            // Keep this handle open for the full test process lifetime:
-            // when the test process exits (including timeout/kill), the handle closes and
-            // Windows terminates all child processes assigned to this job.
-            // SAFETY: null security attributes and null name request a default,
-            // unnamed Windows Job Object. No Rust pointers are handed to the OS.
             let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if job.is_null() || job == INVALID_HANDLE_VALUE {
-                eprintln!(
-                    "[test-support] create cleanup job object failed: {}",
-                    std::io::Error::last_os_error()
-                );
                 return 0;
             }
-
             let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `job` is a valid job handle from CreateJobObjectW, and
-            // `limits` points to a properly sized structure for the duration of
-            // the call.
             let ok = unsafe {
                 SetInformationJobObject(
                     job,
@@ -100,20 +90,12 @@ mod windows_cleanup_job {
                 )
             };
             if ok == 0 {
-                let err = std::io::Error::last_os_error();
-                // SAFETY: `job` is the valid handle created above and has not
-                // been closed yet. This branch owns cleanup after setup failure.
                 unsafe { CloseHandle(job) };
-                eprintln!("[test-support] set cleanup job info failed: {err}");
                 return 0;
             }
             job as isize
         });
-        if raw == 0 {
-            None
-        } else {
-            Some(raw as HANDLE)
-        }
+        if raw == 0 { None } else { Some(raw as HANDLE) }
     }
 
     pub(crate) fn assign_child_to_cleanup_job(child: &Child) {
@@ -121,14 +103,9 @@ mod windows_cleanup_job {
             return;
         };
         let process_handle = child.as_raw_handle() as HANDLE;
-        // SAFETY: `job` is the process-lifetime job handle retained by
-        // `cleanup_job_handle`; `process_handle` is borrowed from a live Child
-        // and is only used for the duration of this Windows API call.
         let ok = unsafe { AssignProcessToJobObject(job, process_handle) };
         if ok == 0 {
             let err = std::io::Error::last_os_error();
-            // Access denied usually means the process is already assigned to an inherited job.
-            // In that case, continue and rely on the inherited job's lifecycle policy.
             if err.raw_os_error() != Some(ERROR_ACCESS_DENIED) {
                 eprintln!(
                     "[test-support] assign process {} to cleanup job failed: {err}",

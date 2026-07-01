@@ -121,7 +121,7 @@ pub(crate) fn is_local_client_base_url(base_url: &str, paths: &auth::CortexPaths
     transport::is_local_http_base_url(base_url, paths)
 }
 
-fn resolve_client_target_inputs(
+pub(crate) fn resolve_client_target_inputs(
     override_url: Option<&str>,
     override_api_key: Option<&str>,
     env_base_url: Option<&str>,

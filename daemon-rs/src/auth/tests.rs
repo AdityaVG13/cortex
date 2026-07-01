@@ -3,7 +3,10 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::auth::{
+        acquire_global_daemon_lock, generate_ctx_api_key, verify_ctx_api_key_checksum,
+    };
+    use crate::auth::paths::CORTEX_GLOBAL_LOCK_HOME_ENV;
     use crate::test_env::{lock, ScopedEnvVar};
 
     fn env_guard() -> tokio::sync::MutexGuard<'static, ()> {

@@ -46,6 +46,7 @@ If a test only documents how an internal function behaves today, it is a **devel
 | CLI / status / setup | `cargo test --test cli_goldens` |
 | Desktop UI / IPC | `npm test` in control center |
 | SDK | `pytest sdks/python/tests/test_client.py`; TS client tests |
+| Release tag | Smoke scripts + golden CLI + platform build (see `release.yml`) |
 
 Full `cargo test --all-features` is optional for most PRs. CI is intentionally lean to preserve GitHub Actions budget; **local smoke + area tests** are the maintainer bar.
 

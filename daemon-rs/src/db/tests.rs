@@ -3,7 +3,10 @@
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::db::{
+        configure, delete_expired_entries, initialize_schema, rebuild_fts_if_needed,
+        run_pending_migrations,
+    };
     use rusqlite::Connection;
 
     #[test]
