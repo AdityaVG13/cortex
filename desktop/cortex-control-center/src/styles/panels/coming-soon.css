@@ -1,0 +1,43 @@
+/* ─── Coming Soon ───────────────────────────────────────────────────────── */
+
+.coming-soon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  text-align: center;
+  gap: 16px;
+}
+
+.coming-icon {
+  font-size: 64px;
+  color: var(--cyan);
+  opacity: 0.2;
+  filter: drop-shadow(0 0 30px var(--cyan-glow));
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.coming-soon h2 {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--cyan);
+  opacity: 0.6;
+}
+
+.coming-soon p {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-3);
+  max-width: 500px;
+  line-height: 1.7;
+}
+
+/* ─── Selection Color ───────────────────────────────────────────────────── */

@@ -1,0 +1,219 @@
+/* ─── Top Status Bar ────────────────────────────────────────────────────── */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 0 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  max-height: 120px;
+  overflow: hidden;
+  transition:
+    opacity 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.topbar-hidden {
+  display: none;
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom-color: transparent;
+  pointer-events: none;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.topbar-path {
+  color: var(--text-3);
+}
+
+.topbar-sep {
+  color: var(--border);
+}
+
+.topbar-current {
+  color: var(--cyan);
+  font-weight: 400;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: flex-end;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.topbar-stat {
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+button.topbar-stat {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.topbar-label {
+  color: var(--text-3);
+  margin-right: 4px;
+  font-size: 10px;
+}
+
+.topbar-status {
+  font-weight: 400;
+  letter-spacing: 0.05em;
+}
+
+.topbar-status.online {
+  color: var(--green);
+}
+
+.topbar-status.warning {
+  color: var(--yellow);
+}
+
+.topbar-status.offline {
+  color: var(--red);
+}
+
+/* ─── System Status Strip ───────────────────────────────────────────────── */
+
+.system-strip {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  overflow: hidden;
+}
+
+.sys-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px;
+  border-radius: var(--radius);
+  transition: background 0.2s;
+}
+
+button.sys-item {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.sys-item:hover {
+  background: var(--surface-2);
+}
+
+.sys-item-disabled {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.sys-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-3);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.sys-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  letter-spacing: 0.03em;
+}
+
+.sys-ok {
+  color: var(--green);
+}
+
+.sys-err {
+  color: var(--red);
+}
+
+.sys-warn {
+  color: var(--yellow);
+}
+
+/* ─── Message Bubbles ───────────────────────────────────────────────────── */
+
+.msg-bubble {
+  border-left: 2px solid var(--border) !important;
+  padding-left: 16px !important;
+  transition: border-color 0.2s;
+}
+
+.msg-bubble:hover {
+  border-left-color: var(--cyan) !important;
+}
+
+.msg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.msg-agent {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.msg-arrow {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.msg-to {
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.msg-body {
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ─── Task Column Headers ───────────────────────────────────────────────── */
+
+.task-columns .card:nth-child(1) .card-header h2 { color: var(--yellow); }
+.task-columns .card:nth-child(2) .card-header h2 { color: var(--cyan); }
+.task-columns .card:nth-child(3) .card-header h2 { color: var(--green); }
+
+.task-columns .card:nth-child(1) { border-top: 2px solid rgba(255, 171, 0, 0.3); }
+.task-columns .card:nth-child(2) { border-top: 2px solid rgba(0, 212, 255, 0.3); }
+.task-columns .card:nth-child(3) { border-top: 2px solid rgba(0, 230, 118, 0.3); }
+
+/* (duplicate feed-summary rules removed — already defined above) */

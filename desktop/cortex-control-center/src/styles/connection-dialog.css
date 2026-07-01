@@ -1,0 +1,186 @@
+/* ─── Connection Dialog ────────────────────────────────────────────────── */
+
+.topbar-connection {
+  cursor: pointer;
+  border-radius: var(--radius);
+  padding: 2px 6px;
+  transition: background 0.15s;
+  color: var(--text-2);
+}
+
+.topbar-connection:hover {
+  background: var(--bg-3);
+}
+
+.connection-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fade-in 0.15s ease-out;
+}
+
+.connection-dialog {
+  background: var(--bg-2);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  width: 380px;
+  max-width: 90vw;
+}
+
+.connection-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-cortex-reduced-motion="full"]) .app,
+  :root:not([data-cortex-reduced-motion="full"]) .sidebar,
+  :root:not([data-cortex-reduced-motion="full"]) .content,
+  :root:not([data-cortex-reduced-motion="full"]) .topbar,
+  :root:not([data-cortex-reduced-motion="full"]) .nav-item,
+  :root:not([data-cortex-reduced-motion="full"]) .btn-ctrl,
+  :root:not([data-cortex-reduced-motion="full"]) .btn-sidebar-collapse,
+  :root:not([data-cortex-reduced-motion="full"]) .task-complete-panel,
+  :root:not([data-cortex-reduced-motion="full"]) .panel-stage[data-panel-direction] > .panel.active,
+  :root:not([data-cortex-reduced-motion="full"]) .analytics-mode-panel,
+  :root:not([data-cortex-reduced-motion="full"]) .coming-soon {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  :root:not([data-cortex-reduced-motion="full"]) .content {
+    scroll-behavior: auto;
+  }
+
+  :root:not([data-cortex-reduced-motion="full"]) *,
+  :root:not([data-cortex-reduced-motion="full"]) *::before,
+  :root:not([data-cortex-reduced-motion="full"]) *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0ms !important;
+    transition-delay: 0ms !important;
+    animation-duration: 0ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+:root[data-cortex-reduced-motion="reduce"] *,
+:root[data-cortex-effective-reduced-motion="reduce"] *,
+:root[data-cortex-reduced-motion="reduce"] *::before,
+:root[data-cortex-effective-reduced-motion="reduce"] *::before,
+:root[data-cortex-effective-reduced-motion="reduce"] *::after,
+:root[data-cortex-reduced-motion="reduce"] *::after {
+  scroll-behavior: auto !important;
+  transition-duration: 0ms !important;
+  transition-delay: 0ms !important;
+  animation-duration: 0ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+}
+
+.connection-dialog h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text);
+}
+
+.connection-dialog-close {
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-2);
+  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  line-height: 1;
+  font-size: 18px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.connection-dialog-close:hover {
+  color: var(--text);
+  border-color: var(--cyan);
+  background: rgba(0, 255, 255, 0.08);
+}
+
+.connection-subtitle {
+  font-size: 12px;
+  color: var(--text-3);
+  margin: 0 0 20px 0;
+}
+
+.connection-field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.connection-field span {
+  display: block;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 5px;
+}
+
+.connection-field input {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.connection-field input:focus {
+  border-color: var(--cyan);
+}
+
+.connection-field input::placeholder {
+  color: var(--text-3);
+}
+
+.connection-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ─── MCP Setup Button ─────────────────────────────────────────────────── */
+
+.sys-item-action {
+  cursor: pointer;
+  transition: background 0.15s;
+  border-radius: var(--radius);
+  padding: 4px 8px;
+}
+
+.sys-item-action:disabled {
+  cursor: not-allowed;
+}
+
+.sys-item-action:hover {
+  background: var(--bg-3);
+}

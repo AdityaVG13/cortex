@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readBundledStyles } from "./test/read-styles.js";
 
-const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const css = readBundledStyles();
 
 const TEXT_TOKENS = ["--text", "--text-2", "--text-3"];
 const NON_TEXT_TOKENS = ["--border", "--border-subtle"];

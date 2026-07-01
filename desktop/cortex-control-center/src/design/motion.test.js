@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MOTION_CSS_VARS, MOTION_EASING, MOTION_MS, easeOutCubic } from "./motion.js";
+import { readBundledStyles } from "../test/read-styles.js";
 
-const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const css = readBundledStyles();
 
 function readRootTokens() {
   const rootStart = css.indexOf(":root {");

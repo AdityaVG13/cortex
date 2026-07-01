@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readBundledStyles } from "./test/read-styles.js";
 
 const wrapper = readFileSync(new URL("./BrainVisualizer.jsx", import.meta.url), "utf8");
 const v2Index = readFileSync(new URL("./brain-v2/index.jsx", import.meta.url), "utf8");
@@ -212,7 +213,7 @@ describe("Brain v2 interaction (P6)", () => {
   const hover = readFileSync(new URL("./brain-v2/Hover.js", import.meta.url), "utf8");
   const cameraSrc = readFileSync(new URL("./brain-v2/Camera.js", import.meta.url), "utf8");
   const hud = readFileSync(new URL("./brain-v2/Hud.jsx", import.meta.url), "utf8");
-  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const css = readBundledStyles();
 
   it("Hover uses ray-vs-sphere against slot positions, rAF-throttled", () => {
     expect(hover).toContain("export function createHover");
