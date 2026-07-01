@@ -5,21 +5,6 @@ use crate::state::{DaemonEvent, RuntimeState}; use serde_json::{json, Value};
 use std::collections::HashMap; use std::path::PathBuf; use std::sync::atomic::{AtomicBool, AtomicU64}; use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
-    use super::{
-        fetch_last_call, handle_mcp_message_with_caller, has_client_permission, mcp_dispatch,
-        mcp_tools, normalize_permission_client_id, required_permission_for_tool, ClientPermission,
-    };
-    use crate::db;
-    use crate::handlers::recall::RecallContext;
-    use crate::handlers::SourceIdentity;
-    use crate::state::{DaemonEvent, RuntimeState};
-    use serde_json::{json, Value};
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
-    use std::sync::Arc;
-    use tokio::sync::{broadcast, Mutex};
-
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         db::configure(&conn).unwrap();
