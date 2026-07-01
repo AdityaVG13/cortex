@@ -1,4 +1,9 @@
-// SPDX-License-Identifier: MIT
+#!/usr/bin/env python3
+from pathlib import Path
+
+MAIN = Path(__file__).resolve().parents[1] / "src" / "main.rs"
+
+MAIN.write_text("""// SPDX-License-Identifier: MIT
 
 /// Default TCP port the Cortex daemon binds to when no `--port` flag or
 /// `CORTEX_PORT` env var is set.
@@ -78,7 +83,7 @@ pub(crate) fn install_daemon_panic_hook(paths: &auth::CortexPaths) {
             .unwrap_or_else(|| "<unknown location>".to_string());
         let backtrace = std::backtrace::Backtrace::force_capture();
         let entry = format!(
-            "[{ts}] PANIC at {location}: {message}\n{backtrace}\n",
+            "[{ts}] PANIC at {location}: {message}\\n{backtrace}\\n",
             ts = Utc::now().to_rfc3339(),
         );
         eprintln!("[cortex] {entry}");
@@ -330,3 +335,6 @@ async fn main() {
         }
     }
 }
+""")
+
+print(f"Wrote {MAIN} ({len(MAIN.read_text().splitlines())} lines)")
