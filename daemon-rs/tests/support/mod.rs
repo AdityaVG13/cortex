@@ -1,5 +1,13 @@
 use std::process::{Child, Command};
 
+pub mod harness;
+
+pub use harness::{
+    daemon_spawn_test_guard, health_ok, http_status, post_json, post_raw, read_token,
+    reserve_port, shutdown_daemon, spawn_daemon, split_http_body, unique_temp_dir, wait_for_exit,
+    wait_for_health, HEALTH_POLL_INTERVAL, STARTUP_TIMEOUT,
+};
+
 pub trait SpawnTrackedExt {
     fn spawn_tracked(&mut self, context: &str) -> Child;
 }

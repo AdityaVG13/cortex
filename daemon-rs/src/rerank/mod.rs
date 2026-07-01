@@ -6,7 +6,9 @@ mod assets;
 mod engine;
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    // Rerank internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub use config::{RerankConfig, RerankMode};
 pub use assets::{

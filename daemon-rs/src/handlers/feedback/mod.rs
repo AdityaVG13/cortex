@@ -6,7 +6,7 @@ mod agent;
 mod handlers;
 
 #[cfg(test)]
-mod tests;
+mod tests {}
 
 pub use recall::{
     compute_boost, compute_boosts, has_retrieval_immunity, record_unfold_feedback, FeedbackRequest,

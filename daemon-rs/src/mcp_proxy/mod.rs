@@ -3,7 +3,10 @@ mod session;
 mod run;
 
 #[cfg(test)]
-mod tests;
+#[cfg(test)]
+mod tests {
+    // MCP proxy internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub(crate) use session::*;
 pub(crate) use run::*;

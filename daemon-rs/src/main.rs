@@ -34,6 +34,8 @@ mod setup;
 mod state;
 #[cfg(test)]
 mod test_env;
+#[cfg(test)]
+mod test_support;
 mod tls;
 mod transport;
 mod workspace;
