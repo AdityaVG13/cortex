@@ -63,15 +63,9 @@ fn apply_hidden_process_flags(command: &mut Command) {
 #[cfg(not(windows))]
 fn apply_hidden_process_flags(_command: &mut Command) {}
 
-#[cfg(windows)]
 fn apply_hidden_daemon_process_flags(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-
-    command.creation_flags(CREATE_NO_WINDOW_FLAG);
+    apply_hidden_process_flags(command);
 }
-
-#[cfg(not(windows))]
-fn apply_hidden_daemon_process_flags(_command: &mut Command) {}
 
 struct DaemonState {
     exe_path: Option<PathBuf>,
@@ -1965,6 +1959,19 @@ fn should_use_partial_response_on_read_timeout(err: &std::io::Error, response_le
     err.raw_os_error() == Some(10060)
 }
 
+fn validate_cortex_request_path(path: &str) -> Result<(), String> {
+    if path.contains('\r') || path.contains('\n') {
+        return Err("Invalid request path".to_string());
+    }
+    if !path.starts_with('/') {
+        return Err("Request path must be origin-form".to_string());
+    }
+    if path.contains("://") || path.contains(' ') {
+        return Err("Invalid request path".to_string());
+    }
+    Ok(())
+}
+
 fn send_cortex_request_with_port(
     port: u16,
     method: &str,
@@ -1975,9 +1982,7 @@ fn send_cortex_request_with_port(
 ) -> Result<FetchCortexResponse, String> {
     use std::io::{Read, Write};
 
-    if path.contains('\r') || path.contains('\n') {
-        return Err("Invalid request path".to_string());
-    }
+    validate_cortex_request_path(path)?;
 
     let mut stream =
         TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect)
@@ -3016,7 +3021,8 @@ mod tests {
         local_app_managed_start_timeout_message, local_probe_allows_starting_retry,
         path_binary_fallback_enabled_from_value, readiness_state_with_identity_fallback,
         should_use_partial_response_on_read_timeout, toml_env_match, validate_budget_draft,
-        workspace_binary_candidates, write_budget_config_file, BudgetConfigDraft,
+        validate_cortex_request_path, workspace_binary_candidates, write_budget_config_file,
+        BudgetConfigDraft,
         BudgetEndpointDraft, CortexReachabilityProbe, DaemonState, FetchCortexResponse,
         LifecycleState, ResolvedCortexPaths, SQLITE_BUSY_TIMEOUT_MS,
     };
@@ -3043,6 +3049,15 @@ mod tests {
                 .spawn()
                 .expect("spawn unix sleep")
         }
+    }
+
+    #[test]
+    fn validate_cortex_request_path_rejects_absolute_urls_and_injection() {
+        assert!(validate_cortex_request_path("/health").is_ok());
+        assert!(validate_cortex_request_path("/sessions?agent=foo").is_ok());
+        assert!(validate_cortex_request_path("http://127.0.0.1:7437/sessions").is_err());
+        assert!(validate_cortex_request_path("/bad path").is_err());
+        assert!(validate_cortex_request_path("/bad\r\nInjected: true").is_err());
     }
 
     #[test]

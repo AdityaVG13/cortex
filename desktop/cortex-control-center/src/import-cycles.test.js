@@ -6,11 +6,22 @@ import { describe, expect, it } from "vitest";
 const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_EXTENSIONS = new Set([".js", ".jsx"]);
 
-function listSourceFiles() {
-  return fs
-    .readdirSync(SRC_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && SOURCE_EXTENSIONS.has(path.extname(entry.name)))
-    .map((entry) => path.resolve(SRC_DIR, entry.name));
+function listSourceFiles(dir = SRC_DIR) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const absolutePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listSourceFiles(absolutePath));
+      continue;
+    }
+    if (entry.isFile() && SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
+      files.push(absolutePath);
+    }
+  }
+
+  return files;
 }
 
 function resolveLocalImport(fromFile, specifier, allFiles) {
@@ -72,7 +83,7 @@ function findCycles(graph) {
       const cycleKey = keyForCycle(cycle);
       if (!seenCycleKeys.has(cycleKey)) {
         seenCycleKeys.add(cycleKey);
-        cycles.push(cycle.map((entry) => path.basename(entry)));
+        cycles.push(cycle.map((entry) => path.relative(SRC_DIR, entry)));
       }
     }
 

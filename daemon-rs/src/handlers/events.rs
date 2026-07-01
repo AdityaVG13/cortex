@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::time::Duration as StdDuration;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream::{self, StreamExt};
@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_stream::wrappers::BroadcastStream;
 
-use super::now_iso;
+use super::{ensure_events_stream_auth, json_response, now_iso, runtime_token_matches};
 use crate::state::{BrainFiringEvent, RuntimeState};
 
 fn scrub_event_payload(event_type: &str) -> Value {
@@ -21,9 +21,24 @@ fn scrub_event_payload(event_type: &str) -> Value {
     })
 }
 
+#[derive(Deserialize)]
+pub struct EventsStreamQuery {
+    pub token: Option<String>,
+}
+
 // ─── GET /events/stream ─────────────────────────────────────────────────────
 
-pub async fn handle_events_stream(State(state): State<RuntimeState>) -> Response {
+pub async fn handle_events_stream(
+    State(state): State<RuntimeState>,
+    headers: HeaderMap,
+    Query(query): Query<EventsStreamQuery>,
+) -> Response {
+    if let Err(resp) =
+        ensure_events_stream_auth(&headers, query.token.as_deref(), &state).await
+    {
+        return resp;
+    }
+
     let initial = stream::once(async move {
         Ok::<Event, Infallible>(
             Event::default()
@@ -88,8 +103,12 @@ pub async fn handle_brain_firing_stream(
     // Auth: token must match runtime token. Browser EventSource cannot send
     // custom headers, so the token rides in the query string.
     let provided = query.token.as_deref().unwrap_or("");
-    if provided.is_empty() || provided != state.token.as_str() {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
+    if provided.is_empty() || !runtime_token_matches(provided, &state) {
+        return json_response(
+            StatusCode::UNAUTHORIZED,
+            json!({ "error": "Unauthorized" }),
+        )
+        .into_response();
     }
 
     // Owner scoping: in single-user mode, the caller is the default owner.

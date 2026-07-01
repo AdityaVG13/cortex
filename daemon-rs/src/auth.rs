@@ -588,6 +588,46 @@ pub fn generate_ctx_api_key() -> String {
     format!("ctx_{body}{checksum}")
 }
 
+const CTX_KEY_BODY_LEN: usize = 43;
+const CTX_KEY_CHECKSUM_LEN: usize = 3;
+
+/// Cheap structural validation for `ctx_` API keys before Argon2 verification.
+pub fn verify_ctx_api_key_checksum(candidate: &str) -> bool {
+    if !candidate.starts_with("ctx_") {
+        return false;
+    }
+    let payload = &candidate[4..];
+    if payload.len() != CTX_KEY_BODY_LEN + CTX_KEY_CHECKSUM_LEN {
+        return false;
+    }
+    if !payload
+        .as_bytes()
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+
+    let (body, checksum) = payload.split_at(CTX_KEY_BODY_LEN);
+    let expected = left_pad_base62(fnv1a16(body.as_bytes()), CTX_KEY_CHECKSUM_LEN);
+    constant_time_eq(checksum, expected.as_str())
+}
+
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut diff = a.len() ^ b.len();
+    let max_len = a.len().max(b.len());
+
+    for idx in 0..max_len {
+        let left = a.get(idx).copied().unwrap_or(0);
+        let right = b.get(idx).copied().unwrap_or(0);
+        diff |= usize::from(left ^ right);
+    }
+
+    diff == 0
+}
+
 /// Hash an API key with Argon2id.
 pub fn hash_api_key_argon2id(api_key: &str) -> Result<String, String> {
     let params = Params::new(64 * 1024, 3, 4, None).map_err(|e| e.to_string())?;
@@ -752,6 +792,14 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("cortex_auth_{name}_{unique}"))
+    }
+
+    #[test]
+    fn verify_ctx_api_key_checksum_accepts_generated_keys() {
+        let key = generate_ctx_api_key();
+        assert!(verify_ctx_api_key_checksum(&key));
+        assert!(!verify_ctx_api_key_checksum("ctx_short"));
+        assert!(!verify_ctx_api_key_checksum(&format!("ctx_{}", "A".repeat(46))));
     }
 
     #[test]

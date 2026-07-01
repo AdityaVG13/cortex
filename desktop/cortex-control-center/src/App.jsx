@@ -3174,7 +3174,10 @@ export function App() {
 
     const connect = () => {
       if (disposed || stream) return;
-      const nextStream = new EventSource(`${cortexBase}/events/stream`);
+      const token = tokenRef.current;
+      if (!token) return;
+      const streamUrl = `${cortexBase}/events/stream?token=${encodeURIComponent(token)}`;
+      const nextStream = new EventSource(streamUrl);
       stream = nextStream;
 
       nextStream.onopen = () => {
@@ -3223,7 +3226,7 @@ export function App() {
       clearReconnectTimer();
       closeStream();
     };
-  }, [cortexBase]);
+  }, [cortexBase, daemonState.authTokenReady]);
 
   const pendingTasks = useMemo(
     () => tasks.filter((task) => task.status === "pending").sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority)),

@@ -82,6 +82,29 @@ function buildHttpFallbackUrl(cortexBase, path) {
   return `${normalizeCortexBaseUrl(cortexBase)}${route}`;
 }
 
+function formatHttpError(path, status, bodyText) {
+  if (!bodyText) {
+    return `${path}: HTTP ${status}`;
+  }
+
+  try {
+    const parsed = JSON.parse(bodyText);
+    if (parsed && typeof parsed.error === "string" && parsed.error.trim()) {
+      return `${path}: HTTP ${status} (${parsed.error.trim()})`;
+    }
+    if (parsed && typeof parsed.message === "string" && parsed.message.trim()) {
+      return `${path}: HTTP ${status} (${parsed.message.trim()})`;
+    }
+  } catch {
+    const trimmed = bodyText.trim().slice(0, 200);
+    if (trimmed) {
+      return `${path}: HTTP ${status} (${trimmed})`;
+    }
+  }
+
+  return `${path}: HTTP ${status}`;
+}
+
 function resolveIpcTimeoutMs(path) {
   const normalized = normalizePathForTimeoutRouting(path);
   if (normalized === "/health" || normalized.startsWith("/health?")) return IPC_ABORT_TIMEOUT_HEALTH_MS;
@@ -209,7 +232,8 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
         }
       }
       if (!response.ok) {
-        throw new Error(`${path}: HTTP ${response.status}`);
+        const bodyText = await response.text().catch(() => "");
+        throw new Error(formatHttpError(path, response.status, bodyText));
       }
       return await response.json();
     };
@@ -234,7 +258,7 @@ export function createApi({ getInvoke, getToken, cortexBase, onTokenRefresh }) {
           }
         }
         if (response.status < 200 || response.status >= 300) {
-          throw new Error(`${path}: HTTP ${response.status}`);
+          throw new Error(formatHttpError(path, response.status, response.body));
         }
         return JSON.parse(response.body);
       } catch (ipcError) {
@@ -297,7 +321,8 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
         }
       }
       if (!response.ok) {
-        throw new Error(`POST ${path}: HTTP ${response.status}`);
+        const bodyText = await response.text().catch(() => "");
+        throw new Error(formatHttpError(`POST ${path}`, response.status, bodyText));
       }
       return await response.json();
     };
@@ -322,7 +347,7 @@ export function createPostApi({ getInvoke, getToken, cortexBase, onTokenRefresh 
           }
         }
         if (response.status < 200 || response.status >= 300) {
-          throw new Error(`POST ${path}: HTTP ${response.status}`);
+          throw new Error(formatHttpError(`POST ${path}`, response.status, response.body));
         }
         return JSON.parse(response.body);
       } catch (ipcError) {

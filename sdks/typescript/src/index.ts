@@ -168,9 +168,9 @@ export class CortexClient {
   }
 
   async recall(query: string, options?: { budget?: number; k?: number; agent?: string }): Promise<RecallResult> {
-    const params: Record<string, string | number> = { q: query };
-    if (options?.budget !== undefined) params.budget = options.budget;
-    if (options?.k !== undefined) params.k = options.k;
+    const budget = options?.budget ?? 200;
+    const k = options?.k ?? 10;
+    const params: Record<string, string | number> = { q: query, budget, k };
     if (options?.agent) params.agent = options.agent;
     return this.get("/recall", params);
   }

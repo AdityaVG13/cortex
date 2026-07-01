@@ -582,14 +582,31 @@ fn parse_auth_token(raw: &str) -> Option<String> {
 }
 
 fn is_well_formed_ctx_api_key(candidate: &str) -> bool {
-    if candidate.len() != CTX_API_KEY_LEN || !candidate.starts_with("ctx_") {
-        return false;
+    candidate.len() == CTX_API_KEY_LEN && crate::auth::verify_ctx_api_key_checksum(candidate)
+}
+
+pub(super) fn runtime_token_matches(candidate: &str, state: &RuntimeState) -> bool {
+    constant_time_eq(candidate, state.token.as_str())
+}
+
+pub(super) async fn ensure_events_stream_auth(
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    state: &RuntimeState,
+) -> Result<(), Response> {
+    if extract_auth_token(headers).is_some() {
+        return ensure_auth_rated(headers, state).await;
     }
-    candidate
-        .as_bytes()
-        .iter()
-        .skip(4)
-        .all(|byte| byte.is_ascii_alphanumeric())
+
+    let provided = query_token.unwrap_or("");
+    if provided.is_empty() || !token_matches_state(provided, state) {
+        return Err(json_response(
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({ "error": "Unauthorized" }),
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn extract_auth_token(headers: &HeaderMap) -> Option<String> {
@@ -1624,9 +1641,10 @@ mod tests {
 
     #[test]
     fn well_formed_ctx_api_key_shape_validation() {
-        let valid = format!("ctx_{}", "A".repeat(46));
+        let valid = crate::auth::generate_ctx_api_key();
         assert!(is_well_formed_ctx_api_key(&valid));
         assert!(!is_well_formed_ctx_api_key("ctx_short"));
         assert!(!is_well_formed_ctx_api_key("ctx_!invalidchars"));
+        assert!(!is_well_formed_ctx_api_key(&format!("ctx_{}", "A".repeat(46))));
     }
 }
