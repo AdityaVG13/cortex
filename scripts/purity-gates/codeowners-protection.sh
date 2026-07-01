@@ -18,7 +18,8 @@ REQUIRED_PATHS=(
   "/benchmarking/adapters/cortex_http_pure_provider.py"
   "/CHANGELOG.md"
   "/scripts/purity-gates/"
-  "/scripts/benchmark-triad.sh"
+  "/scripts/run-longmemeval.sh"
+  "/benchmarking/run_longmemeval.py"
 )
 
 for path in "${REQUIRED_PATHS[@]}"; do

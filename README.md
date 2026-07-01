@@ -263,7 +263,7 @@ Compiled identity + delta capsule. ~300 tokens served instead of ~15,000 raw.
 
 <p align="center">
 <sub><a href="benchmarking/results/raw-recall-no-helper-dev-20260421-224217.json">Raw v0.5.0 JSON</a></sub><br>
-<sub>Note: <code>cortex-http-base</code> ("raw") adapter retains partial adapter-layer helpers and is deprecated for new quality claims. The helper-free <code>cortex-http-pure</code> adapter is the v0.6.0+ canonical measurement floor, enforced by 5 CI purity gates. See <a href="benchmarking/README.md">benchmarking/README.md</a>. Reranking ships default-off behind off/shadow/primary modes; public promotion remains gated on LongMemEval/API-backed validation. Query expansion (HyDE) is targeted for v0.7.0.</sub>
+<sub>Note: Historical v0.5.0 numbers used a helper-augmented adapter. New recall-quality claims use the helper-free <code>cortex-http-pure</code> adapter via <code>bash scripts/run-longmemeval.sh</code>. See <a href="benchmarking/README.md">benchmarking/README.md</a>.</sub>
 </p>
 
 ---
