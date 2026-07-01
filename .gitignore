@@ -80,6 +80,8 @@ desktop/cortex-control-center/runtime-artifacts/
 desktop/cortex-control-center/.codex-dev-baseline.pid
 desktop/cortex-control-center/.devrun-live.pid
 desktop/cortex-control-center/src-tauri/gen/schemas/windows-schema.json
+desktop/cortex-control-center/src-tauri/gen/schemas/linux-schema.json
+desktop/cortex-control-center/src-tauri/binaries/
 
 # TLS certs and private keys
 *.pem
