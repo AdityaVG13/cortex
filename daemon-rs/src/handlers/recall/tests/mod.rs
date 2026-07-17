@@ -4,4 +4,3 @@
 
 mod support;
 mod core;
-mod search;

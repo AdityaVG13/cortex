@@ -9,7 +9,9 @@ mod configure;
 mod steps;
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    // Setup wizard internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub use types::{ConfigMethod, DetectedTool, StepResult};
 pub use team::run_setup_team;

@@ -443,8 +443,8 @@ pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_owner_token, health_probe_base, is_cortex_health_payload,
-        issue_owner_token_for_spawn, load_or_create_owner_signing_key,
+        build_owner_token, daemon_owner_signing_key_path, health_probe_base,
+        is_cortex_health_payload, issue_owner_token_for_spawn, load_or_create_owner_signing_key,
         readiness_state_from_payload, validate_spawned_owner_claim, DAEMON_OWNER_TOKEN_TTL_SECS,
     };
     use crate::auth::CortexPaths;

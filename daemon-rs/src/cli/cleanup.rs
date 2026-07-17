@@ -321,7 +321,7 @@ fn run_bridge_backup_cleanup(home: &Path, schema_version: i32, dry_run: bool) ->
     vec![line]
 }
 
-fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String> {
+pub(crate) fn run_stale_pid_cleanup(paths: &auth::CortexPaths, dry_run: bool) -> Vec<String> {
     let Some(pid) = auth::stale_pid_candidate(paths) else {
         return Vec::new();
     };

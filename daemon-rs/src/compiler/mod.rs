@@ -7,7 +7,10 @@ mod packing;
 mod compile;
 
 #[cfg(test)]
-mod tests;
+#[cfg(test)]
+mod tests {
+    // Compiler internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub(crate) use types::*;
 pub(crate) use cache::*;

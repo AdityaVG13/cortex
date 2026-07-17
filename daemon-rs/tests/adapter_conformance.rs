@@ -5,15 +5,15 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 mod support;
-use support::{terminate_child_tree, SpawnTrackedExt};
-
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
-const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
+use support::{
+    adapter_conformance_guard, read_token, request_json, request_json_with_headers, reserve_port,
+    shutdown_daemon, shutdown_daemon_best_effort, spawn_daemon, unique_temp_dir, wait_for_exit,
+    wait_for_health, JsonHttpResponse, SpawnTrackedExt, STARTUP_TIMEOUT, HEALTH_POLL_INTERVAL,
+};
 const SPEC: &str = include_str!("../../specs/cortex-adapter-contract.yaml");
 const COVERAGE_REPORT: &str = include_str!("../../specs/cortex-adapter-contract/COVERAGE.md");
 const DISCREPANCIES: &str = include_str!("../../specs/cortex-adapter-contract/DISCREPANCIES.md");
@@ -709,11 +709,6 @@ fn mcp_jsonrpc_malformed_envelopes_return_invalid_request_errors() {
     }
 }
 
-#[derive(Debug)]
-struct JsonHttpResponse {
-    status: u16,
-    body: Value,
-}
 
 struct AdapterDaemon {
     child: Child,
@@ -762,81 +757,6 @@ impl Drop for AdapterDaemon {
     }
 }
 
-fn spawn_daemon(home: &str, port: u16) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_cortex"))
-        .args(["serve", "--home", home, "--port", &port.to_string()])
-        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
-        .env("CORTEX_BIND", "127.0.0.1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn_tracked("spawn cortex serve")
-}
-
-fn request_json(
-    port: u16,
-    method: &str,
-    path: &str,
-    token: Option<&str>,
-    body: Option<Value>,
-) -> Result<JsonHttpResponse, String> {
-    let body_text = body.map(|value| value.to_string());
-    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
-    if let Some(token) = token {
-        request.push_str(&format!("Authorization: Bearer {token}\r\n"));
-        request.push_str("X-Cortex-Request: true\r\n");
-        request.push_str("X-Source-Agent: adapter-conformance\r\n");
-    }
-    if let Some(body) = &body_text {
-        request.push_str("Content-Type: application/json\r\n");
-        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    request.push_str("Connection: close\r\n\r\n");
-    if let Some(body) = &body_text {
-        request.push_str(body);
-    }
-
-    let response = http_request(port, &request)?;
-    let status = http_status(&response);
-    let body = split_http_body(&response).ok_or_else(|| "missing HTTP body".to_string())?;
-    let body = serde_json::from_str(body.trim()).map_err(|err| {
-        format!("failed to parse JSON response for {method} {path}: {err}; body={body}")
-    })?;
-    Ok(JsonHttpResponse { status, body })
-}
-
-fn request_json_with_headers(
-    port: u16,
-    method: &str,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: Option<Value>,
-) -> Result<JsonHttpResponse, String> {
-    let body_text = body.map(|value| value.to_string());
-    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
-    for (name, value) in headers {
-        request.push_str(name);
-        request.push_str(": ");
-        request.push_str(value);
-        request.push_str("\r\n");
-    }
-    if let Some(body) = &body_text {
-        request.push_str("Content-Type: application/json\r\n");
-        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
-    }
-    request.push_str("Connection: close\r\n\r\n");
-    if let Some(body) = &body_text {
-        request.push_str(body);
-    }
-
-    let response = http_request(port, &request)?;
-    let status = http_status(&response);
-    let body = split_http_body(&response).ok_or_else(|| "missing HTTP body".to_string())?;
-    let body = serde_json::from_str(body.trim()).map_err(|err| {
-        format!("failed to parse JSON response for {method} {path}: {err}; body={body}")
-    })?;
-    Ok(JsonHttpResponse { status, body })
-}
 
 fn mcp_rpc(port: u16, token: &str, body: Value) -> Result<JsonHttpResponse, String> {
     request_json(port, "POST", "/mcp-rpc", Some(token), Some(body))
@@ -1598,144 +1518,3 @@ fn assert_mcp_tool_ok(payload: &Value) {
     );
 }
 
-fn adapter_conformance_guard() -> MutexGuard<'static, ()> {
-    static ADAPTER_CONFORMANCE_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-    ADAPTER_CONFORMANCE_MUTEX
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn read_token(home_dir: &std::path::Path) -> String {
-    fs::read_to_string(home_dir.join("cortex.token"))
-        .expect("read daemon token")
-        .trim()
-        .to_string()
-}
-
-fn wait_for_health(port: u16, child: &mut Child) {
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
-    while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("poll child") {
-            let stderr = read_stderr(child);
-            panic!("daemon exited before health check succeeded: {status}\n{stderr}");
-        }
-        if health_ok(port) {
-            return;
-        }
-        thread::sleep(HEALTH_POLL_INTERVAL);
-    }
-
-    terminate_child_tree(child);
-    let stderr = read_stderr(child);
-    panic!("daemon did not become healthy on port {port}\n{stderr}");
-}
-
-fn wait_for_exit(child: &mut Child, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if child.try_wait().expect("poll child exit").is_some() {
-            return;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    terminate_child_tree(child);
-    let stderr = read_stderr(child);
-    panic!("daemon did not exit in time\n{stderr}");
-}
-
-fn health_ok(port: u16) -> bool {
-    let Ok(body) = http_request(
-        port,
-        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-    ) else {
-        return false;
-    };
-    let Some(body) = split_http_body(&body) else {
-        return false;
-    };
-    let Ok(json) = serde_json::from_str::<Value>(body.trim()) else {
-        return false;
-    };
-    matches!(
-        json.get("status").and_then(|value| value.as_str()),
-        Some("ok" | "degraded")
-    )
-}
-
-fn shutdown_daemon(port: u16, home_dir: &std::path::Path) {
-    let token = read_token(home_dir);
-    let request = format!(
-        "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-Cortex-Request: true\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
-    );
-    let _ = http_request(port, &request).expect("shutdown daemon");
-}
-
-fn shutdown_daemon_best_effort(port: u16, home_dir: &std::path::Path) {
-    let Ok(token) = fs::read_to_string(home_dir.join("token")) else {
-        return;
-    };
-    let token = token.trim();
-    let request = format!(
-        "POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nX-Cortex-Request: true\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
-    );
-    let _ = http_request(port, &request);
-}
-
-fn http_request(port: u16, request: &str) -> Result<String, String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .map_err(|e| e.to_string())?;
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())?;
-
-    let mut buffer = String::new();
-    stream
-        .read_to_string(&mut buffer)
-        .map_err(|e| e.to_string())?;
-    Ok(buffer)
-}
-
-fn http_status(response: &str) -> u16 {
-    let status_line = response.lines().next().expect("status line");
-    let code = status_line
-        .split_whitespace()
-        .nth(1)
-        .expect("status code field");
-    code.parse::<u16>().expect("parse status code")
-}
-
-fn split_http_body(response: &str) -> Option<&str> {
-    response.split_once("\r\n\r\n").map(|(_, body)| body)
-}
-
-fn reserve_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve local port")
-        .local_addr()
-        .expect("local addr")
-        .port()
-}
-
-fn unique_temp_dir(prefix: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("cortex_{prefix}_{unique}"))
-}
-
-fn read_stderr(child: &mut Child) -> String {
-    let mut stderr = String::new();
-    if let Some(handle) = child.stderr.as_mut() {
-        let _ = handle.read_to_string(&mut stderr);
-    }
-    stderr
-}

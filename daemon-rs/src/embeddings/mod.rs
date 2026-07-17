@@ -7,7 +7,9 @@ mod vectors;
 mod download;
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    // Embedding model internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub use profiles::{
     selected_model_assets_exist, selected_model_key, selected_model_selection, EmbeddingModelSelection,

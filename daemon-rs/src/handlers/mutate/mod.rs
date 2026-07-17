@@ -4,7 +4,9 @@ mod permissions;
 mod conflicts;
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    // Mutate handler internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub(crate) use types::*;
 pub(crate) use permissions::*;

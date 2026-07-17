@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
 mod tests {
-    use super::support::*;
+    use crate::cli::daemon::*;
+    use crate::cli::cleanup::run_stale_pid_cleanup;
+    use crate::cli::tests::support::*;
     use crate::cli::*;
     use crate::*;
+    use std::fs;
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    #[test]
     fn acquire_runtime_lock_rejects_duplicate_serve_startup() {
         let _env_guard = env_guard();
         let home_dir = temp_test_dir("runtime_lock");
@@ -45,7 +53,7 @@ mod tests {
         let current_exe = std::env::current_exe().expect("resolve current test binary path");
         let mut child = Command::new(current_exe)
             .arg("--exact")
-            .arg("tests::control_center_lock_holder_child_process")
+            .arg("cli::tests::locks::tests::control_center_lock_holder_child_process")
             .arg("--nocapture")
             .env(CONTROL_CENTER_LOCK_TEST_CHILD_ENV, "1")
             .env(CONTROL_CENTER_LOCK_TEST_HOME_ENV, &home_str)
@@ -295,4 +303,10 @@ mod tests {
             Duration::from_secs(10 + APP_MANAGED_CRYSTALLIZE_STARTUP_OFFSET_SECS)
         );
         assert_eq!(schedule.storage_governor_initial, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn control_center_lock_holder_child_process() {
+        crate::cli::tests::support::control_center_lock_holder_child_process();
+    }
 }

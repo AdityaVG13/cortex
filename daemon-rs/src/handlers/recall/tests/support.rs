@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
-use super::*;
+use crate::handlers::recall::*;
 use crate::handlers::store::{persist_decision_embedding, store_decision_with_input_embedding};
+use crate::state::RuntimeState;
 use rusqlite::params;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -48,13 +50,13 @@ impl crate::rerank::Reranker for StaticReranker {
 
 // ── is_visible tests ───────────────────────────────────────────
 
-fn solo_ctx() -> RecallContext {
+pub(crate) fn solo_ctx() -> RecallContext {
     RecallContext {
         caller_id: None,
         team_mode: false,
     }
 }
-fn team_ctx(caller: i64) -> RecallContext {
+pub(crate) fn team_ctx(caller: i64) -> RecallContext {
     RecallContext {
         caller_id: Some(caller),
         team_mode: true,
@@ -67,7 +69,7 @@ fn team_ctx_no_caller() -> RecallContext {
     }
 }
 
-fn test_conn() -> rusqlite::Connection {
+pub(crate) fn test_conn() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::db::configure(&conn).unwrap();
     crate::db::initialize_schema(&conn).unwrap();
@@ -259,7 +261,7 @@ fn insert_memory_with_optional_source_and_embedding(
     id
 }
 
-fn store_decision_with_embedding(
+pub(crate) fn store_decision_with_embedding(
     conn: &mut rusqlite::Connection,
     decision: &str,
     context: &str,

@@ -5,7 +5,9 @@ mod teams;
 mod data;
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    // Admin CLI internals are not release-gated; see Info/testing-philosophy.md.
+}
 
 pub use types::*;
 pub use users::{handle_user_add, handle_user_list, handle_user_remove, handle_user_rotate_key};
