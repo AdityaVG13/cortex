@@ -16,7 +16,192 @@ matched_trust_score:Some(candidate.trust_score),similarity_jaccard,similarity_co
 f64{let set_a:HashSet<String>=a.split_whitespace().filter(|w|w.len()>1).map(|w|w.to_lowercase()).collect();let set_b:HashSet<
 String>=b.split_whitespace().filter(|w|w.len()>1).map(|w|w.to_lowercase()).collect();if set_a.is_empty()&&set_b.is_empty(){return
 1.0;}if set_a.is_empty()||set_b.is_empty(){return 0.0;}let intersection=set_a.intersection(&set_b).count()as f64;let union=(set_a.
-len()+set_b.len())as f64-intersection;if union==0.0{return 0.0;}intersection/union}pub fn detect_conflict(conn:&Connection,
+len()+set_b.len())as f64-intersection;if union==0.0{return 0.0;}intersection/union}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RecentDecisionCandidate {
+    pub(crate) id: i64,
+    pub(crate) decision: String,
+    pub(crate) source_agent: String,
+    pub(crate) trust_score: f64,
+    pub(crate) in_conflict_window: bool,
+}
+
+pub(crate) struct RecentDecisionScan {
+    pub(crate) relation: ConflictResult,
+    pub(crate) max_jaccard: f64,
+}
+
+pub(crate) fn jaccard_token_set(text: &str) -> HashSet<String> {
+    text.split_whitespace()
+        .filter(|word| word.len() > 1)
+        .map(|word| word.to_lowercase())
+        .collect()
+}
+
+pub(crate) fn jaccard_similarity_token_sets(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 1.0;
+    }
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let intersection = left.intersection(right).count() as f64;
+    let union = (left.len() + right.len()) as f64 - intersection;
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
+}
+
+fn recent_candidate_to_decision_candidate(candidate: &RecentDecisionCandidate) -> DecisionCandidate {
+    DecisionCandidate {
+        id: candidate.id,
+        decision: candidate.decision.clone(),
+        source_agent: candidate.source_agent.clone(),
+        trust_score: candidate.trust_score,
+    }
+}
+
+pub(crate) fn fetch_recent_decision_candidates(
+    conn: &Connection,
+    owner_id: Option<i64>,
+) -> Result<Vec<RecentDecisionCandidate>, String> {
+    let (sql, has_owner_scope) = if owner_id.is_some() {
+        (
+            "SELECT id, decision, source_agent, trust_score, MAX(in_conflict_window) AS in_conflict_window \
+             FROM ( \
+                 SELECT id, decision, source_agent, trust_score, 1 AS in_conflict_window \
+                 FROM ( \
+                     SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) AS trust_score \
+                     FROM decisions \
+                     WHERE owner_id = ?1 \
+                     AND status = 'active' \
+                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                     ORDER BY id DESC \
+                     LIMIT 50 \
+                 ) \
+                 UNION ALL \
+                 SELECT id, decision, source_agent, trust_score, 0 AS in_conflict_window \
+                 FROM ( \
+                     SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) AS trust_score \
+                     FROM decisions \
+                     WHERE owner_id = ?1 \
+                     AND status = 'active' \
+                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                     ORDER BY created_at DESC \
+                     LIMIT 50 \
+                 ) \
+             ) \
+             GROUP BY id, decision, source_agent, trust_score \
+             ORDER BY in_conflict_window DESC, id DESC",
+            true,
+        )
+    } else {
+        (
+            "SELECT id, decision, source_agent, trust_score, MAX(in_conflict_window) AS in_conflict_window \
+             FROM ( \
+                 SELECT id, decision, source_agent, trust_score, 1 AS in_conflict_window \
+                 FROM ( \
+                     SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) AS trust_score \
+                     FROM decisions \
+                     WHERE status = 'active' \
+                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                     ORDER BY id DESC \
+                     LIMIT 50 \
+                 ) \
+                 UNION ALL \
+                 SELECT id, decision, source_agent, trust_score, 0 AS in_conflict_window \
+                 FROM ( \
+                     SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) AS trust_score \
+                     FROM decisions \
+                     WHERE status = 'active' \
+                     AND (expires_at IS NULL OR expires_at > datetime('now')) \
+                     ORDER BY created_at DESC \
+                     LIMIT 50 \
+                 ) \
+             ) \
+             GROUP BY id, decision, source_agent, trust_score \
+             ORDER BY in_conflict_window DESC, id DESC",
+            false,
+        )
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|error| format!("Failed to prepare recent decision query: {error}"))?;
+    let map_candidate = |row: &rusqlite::Row<'_>| {
+        let in_conflict_window: i64 = row.get(4)?;
+        Ok(RecentDecisionCandidate {
+            id: row.get(0)?,
+            decision: row.get(1)?,
+            source_agent: row.get(2)?,
+            trust_score: row.get(3)?,
+            in_conflict_window: in_conflict_window != 0,
+        })
+    };
+    if has_owner_scope {
+        let candidates = stmt.query_map([owner_id.unwrap_or_default()], map_candidate)
+            .map_err(|error| format!("Failed to query recent decisions: {error}"))?
+            .filter_map(|row| row.ok())
+            .collect::<Vec<_>>();
+        Ok(candidates)
+    } else {
+        let candidates = stmt.query_map([], map_candidate)
+            .map_err(|error| format!("Failed to query recent decisions: {error}"))?
+            .filter_map(|row| row.ok())
+            .collect::<Vec<_>>();
+        Ok(candidates)
+    }
+}
+
+pub(crate) fn scan_recent_decision_candidates(
+    candidates: &[RecentDecisionCandidate],
+    decision: &str,
+    source_agent: &str,
+    decision_tokens: &HashSet<String>,
+) -> RecentDecisionScan {
+    let mut max_jaccard = 0.0_f64;
+    let mut best_conflict_sim = 0.0_f64;
+    let mut best_conflict_candidate: Option<DecisionCandidate> = None;
+
+    for candidate in candidates {
+        let candidate_tokens = jaccard_token_set(&candidate.decision);
+        let similarity = jaccard_similarity_token_sets(decision_tokens, &candidate_tokens);
+        max_jaccard = max_jaccard.max(similarity);
+        if candidate.in_conflict_window && similarity > best_conflict_sim {
+            best_conflict_sim = similarity;
+            best_conflict_candidate = Some(recent_candidate_to_decision_candidate(candidate));
+        }
+    }
+
+    let Some(best_candidate) = best_conflict_candidate else {
+        return RecentDecisionScan {
+            relation: ConflictResult::unrelated(),
+            max_jaccard,
+        };
+    };
+    if best_conflict_sim < RELATED_THRESHOLD {
+        return RecentDecisionScan {
+            relation: ConflictResult::unrelated(),
+            max_jaccard,
+        };
+    }
+    let classification = classify_relation(decision, source_agent, &best_candidate, best_conflict_sim);
+    RecentDecisionScan {
+        relation: ConflictResult::from_candidate(
+            classification,
+            &best_candidate,
+            source_agent,
+            best_conflict_sim,
+            None,
+        ),
+        max_jaccard,
+    }
+}
+
+#[allow(dead_code)]
+pub fn detect_conflict(conn:&Connection,
 decision:&str,source_agent:&str,owner_id:Option<i64>)->Result<ConflictResult,String>{let(sql,has_owner_scope)=if owner_id.is_some(
 ){(
 "SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) \

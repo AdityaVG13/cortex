@@ -47,29 +47,107 @@ crate)fn choose_semantic_dedup_action(candidates:&[SemanticCandidate],incoming_t
 candidates{let jaccard=jaccard_similarity(incoming_text,&candidate.decision);if should_merge_candidate(candidate.similarity,
 jaccard){return SemanticDedupAction::Merge{target_id:candidate.id,similarity:candidate.similarity,jaccard,};}}SemanticDedupAction
 ::Insert}pub(crate)fn should_merge_candidate(similarity:f32,jaccard:f64)->bool{if similarity>HARD_MERGE_THRESHOLD{return true;}(
-REVIEW_MERGE_THRESHOLD..=HARD_MERGE_THRESHOLD).contains(&similarity)&&jaccard>JACCARD_MERGE_THRESHOLD}pub(crate)fn
-fetch_top_semantic_candidates(conn:&Connection,query_vector:&[f32],owner_id:Option<i64>)->Result<Vec<SemanticCandidate>,StoreError
->{let(sql,has_owner_scope)=if owner_id.is_some(){(
-"SELECT d.id, d.decision, d.context, e.vector \
+REVIEW_MERGE_THRESHOLD..=HARD_MERGE_THRESHOLD).contains(&similarity)&&jaccard>JACCARD_MERGE_THRESHOLD}
+
+pub(crate) fn fetch_top_semantic_candidates(
+    conn: &Connection,
+    query_vector: &[f32],
+    owner_id: Option<i64>,
+) -> Result<Vec<SemanticCandidate>, StoreError> {
+    let selected_model = crate::embeddings::selected_model_key().to_ascii_lowercase();
+    let legacy_vector_bytes = std::mem::size_of_val(query_vector) as i64;
+    let pq8_vector_bytes = (crate::embeddings::PQ8_HEADER_BYTES + query_vector.len()) as i64;
+    let (sql, has_owner_scope) = if owner_id.is_some() {
+        (
+            "SELECT d.id, d.decision, e.vector \
              FROM decisions d \
              JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
              WHERE d.owner_id = ?1 \
              AND d.status = 'active' \
-             AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))"
-,true,)}else{(
-"SELECT d.id, d.decision, d.context, e.vector \
+             AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+             AND LOWER(COALESCE(e.model, '')) = ?2 \
+             AND length(e.vector) IN (?3, ?4)",
+            true,
+        )
+    } else {
+        (
+            "SELECT d.id, d.decision, e.vector \
              FROM decisions d \
              JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
              WHERE d.status = 'active' \
-             AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))"
-,false,)};let mut stmt=conn.prepare(sql).map_err(|e|StoreError::Internal(e.to_string()))?;let mut candidates=Vec::new();if
-has_owner_scope{let rows=stmt.query_map([owner_id.unwrap_or_default()],|row|{Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.
-get::<_,Option<String>>(2)?,row.get::<_,Vec<u8>>(3)?))}).map_err(|e|StoreError::Internal(e.to_string()))?;for row in rows.flatten(
-){let(id,decision,_context,blob)=row;let existing_vec=crate::embeddings::blob_to_vector(&blob);if existing_vec.len()!=query_vector
-.len(){continue;}let similarity=crate::embeddings::cosine_similarity(query_vector,&existing_vec);candidates.push(SemanticCandidate
-{id,decision,similarity});}}else{let rows=stmt.query_map([],|row|{Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,
-Option<String>>(2)?,row.get::<_,Vec<u8>>(3)?))}).map_err(|e|StoreError::Internal(e.to_string()))?;for row in rows.flatten(){let(id
-,decision,_context,blob)=row;let existing_vec=crate::embeddings::blob_to_vector(&blob);if existing_vec.len()!=query_vector.len(){
-continue;}let similarity=crate::embeddings::cosine_similarity(query_vector,&existing_vec);candidates.push(SemanticCandidate{id,
-decision,similarity});}}candidates.sort_by(|left,right|right.similarity.partial_cmp(&left.similarity).unwrap_or(std::cmp::Ordering
-::Equal));candidates.truncate(3);Ok(candidates)}
+             AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) \
+             AND LOWER(COALESCE(e.model, '')) = ?1 \
+             AND length(e.vector) IN (?2, ?3)",
+            false,
+        )
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|error| StoreError::Internal(error.to_string()))?;
+    let mut candidates = Vec::new();
+    if has_owner_scope {
+        let rows = stmt
+            .query_map(
+                params![
+                    owner_id.unwrap_or_default(),
+                    selected_model,
+                    legacy_vector_bytes,
+                    pq8_vector_bytes
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .map_err(|error| StoreError::Internal(error.to_string()))?;
+        for row in rows.flatten() {
+            let (id, decision, blob) = row;
+            let existing_vec = crate::embeddings::blob_to_vector(&blob);
+            let similarity = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+            let candidate = SemanticCandidate {
+                id,
+                decision,
+                similarity,
+            };
+            if similarity >= 1.0 {
+                return Ok(vec![candidate]);
+            }
+            candidates.push(candidate);
+        }
+    } else {
+        let rows = stmt
+            .query_map(params![selected_model, legacy_vector_bytes, pq8_vector_bytes], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(|error| StoreError::Internal(error.to_string()))?;
+        for row in rows.flatten() {
+            let (id, decision, blob) = row;
+            let existing_vec = crate::embeddings::blob_to_vector(&blob);
+            let similarity = crate::embeddings::cosine_similarity(query_vector, &existing_vec);
+            let candidate = SemanticCandidate {
+                id,
+                decision,
+                similarity,
+            };
+            if similarity >= 1.0 {
+                return Ok(vec![candidate]);
+            }
+            candidates.push(candidate);
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .similarity
+            .partial_cmp(&left.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    candidates.truncate(3);
+    Ok(candidates)
+}

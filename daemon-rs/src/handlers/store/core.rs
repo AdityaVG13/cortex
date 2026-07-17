@@ -1,6 +1,5 @@
-use super::*;use crate::api_types::RetentionClass;use crate::conflict::{detect_conflict,jaccard_similarity,ConflictClassification}
-;use crate::db::checkpoint_wal_best_effort;use crate::handlers::{log_event,now_iso,truncate_chars};use rusqlite::{params,
-Connection};use serde_json::{json,Value};#[allow(clippy::too_many_arguments,
+use super::*;use crate::api_types::RetentionClass;use crate::conflict::{fetch_recent_decision_candidates,jaccard_token_set,scan_recent_decision_candidates,ConflictClassification}
+;use crate::db::checkpoint_wal_best_effort;use crate::handlers::{log_event,now_iso,truncate_chars};use rusqlite::Connection;use serde_json::{json,Value};#[allow(clippy::too_many_arguments,
 dead_code)]pub fn store_decision_with_ttl(conn:&mut Connection,decision:&str,context:Option<String>,entry_type:Option<String>,
 source_agent:String,confidence:Option<f64>,ttl_seconds:Option<i64>,owner_id:Option<i64>,)->Result<(Value,Option<i64>),String>{let
 provenance=DecisionProvenance::from_fields(&source_agent,None,None);store_decision_internal(conn,decision,context,entry_type,
@@ -44,28 +43,15 @@ source_agent,&provenance,confidence,trust_score,quality.score,retention_class,ex
 confidence,trust_score,quality.score,retention_class,expires_at,&ts,owner_id,)}#[allow(clippy::too_many_arguments)]pub(crate)fn
 store_decision_legacy(conn:&mut Connection,decision:&str,context:Option<String>,entry_type:&str,source_agent:&str,provenance:&
 DecisionProvenance,confidence:f64,trust_score:f64,quality:i32,retention_class:RetentionClass,expires_at:Option<String>,ts:&str,
-owner_id:Option<i64>,)->Result<(Value,Option<i64>),StoreError>{let relation=detect_conflict(conn,decision,source_agent,owner_id).
-map_err(StoreError::Internal)?;match relation.classification{ConflictClassification::Contradicts=>{return
+owner_id:Option<i64>,)->Result<(Value,Option<i64>),StoreError>{let decision_tokens=jaccard_token_set(decision);let recent_candidates=
+fetch_recent_decision_candidates(conn,owner_id).map_err(StoreError::Internal)?;let recent_scan=scan_recent_decision_candidates(
+&recent_candidates,decision,source_agent,&decision_tokens);let relation=recent_scan.relation;match relation.classification{ConflictClassification::Contradicts=>{return
 handle_contradiction_policy(conn,decision,context.as_deref(),entry_type,source_agent,provenance,confidence,trust_score,quality,
 retention_class,expires_at.as_deref(),ts,owner_id,&relation,);}ConflictClassification::Agrees=>{return handle_agreement_policy(
 conn,decision,context.as_deref(),source_agent,quality,ts,&relation);}ConflictClassification::Refines=>{return
 handle_refinement_policy(conn,decision,context.as_deref(),entry_type,source_agent,provenance,confidence,trust_score,quality,
-retention_class,expires_at.as_deref(),ts,owner_id,&relation,);}ConflictClassification::Unrelated=>{}}let existing:Vec<String>=if
-let Some(owner_id)=owner_id{let mut stmt=conn.prepare(
-"SELECT decision FROM decisions \
-                 WHERE owner_id = ?1 \
-                 AND status = 'active' \
-                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
-                 ORDER BY created_at DESC LIMIT 50"
-,).map_err(|e|StoreError::Internal(e.to_string()))?;let rows=stmt.query_map(params![owner_id],|row|row.get(0)).map_err(|e|
-StoreError::Internal(e.to_string()))?;rows.filter_map(|row|row.ok()).collect()}else{let mut stmt=conn.prepare(
-"SELECT decision FROM decisions \
-                 WHERE status = 'active' \
-                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
-                 ORDER BY created_at DESC LIMIT 50"
-,).map_err(|e|StoreError::Internal(e.to_string()))?;let rows=stmt.query_map([],|row|row.get(0)).map_err(|e|StoreError::Internal(e.
-to_string()))?;rows.filter_map(|row|row.ok()).collect()};let max_sim=existing.iter().map(|text|jaccard_similarity(decision,text)).
-fold(0.0_f64,f64::max);let surprise=1.0-max_sim;if surprise<0.25{let _=log_event(conn,"decision_rejected_duplicate",json!({
+retention_class,expires_at.as_deref(),ts,owner_id,&relation,);}ConflictClassification::Unrelated=>{}}let surprise=1.0-
+recent_scan.max_jaccard;if surprise<0.25{let _=log_event(conn,"decision_rejected_duplicate",json!({
 "decision":&decision[..decision.len().min(100)],"surprise":surprise,"source_agent":source_agent,"quality":quality,}),"rust-daemon"
 ,);checkpoint_wal_best_effort(conn);let mut entry=json!({"stored":false,"reason":"duplicate","surprise":surprise,"quality":quality
 ,});decorate_entry_with_relation(&mut entry,&relation,None);return Ok((entry,None));}let(mut entry,new_id)=insert_decision(conn,
