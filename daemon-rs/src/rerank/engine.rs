@@ -21,12 +21,7 @@ pub struct RerankedScore {
 pub trait Reranker: Send + Sync {
     fn name(&self) -> &'static str;
     fn model_size_mb(&self) -> u64;
-    fn rerank(
-        &self,
-        query: &str,
-        candidates: &[RerankCandidate],
-        fusion_alpha: f64,
-    ) -> Result<Vec<RerankedScore>, String>;
+    fn rerank(&self, query: &str, candidates: &[RerankCandidate], fusion_alpha: f64) -> Result<Vec<RerankedScore>, String>;
 }
 #[cfg(test)]
 pub struct NoopReranker;
@@ -38,12 +33,7 @@ impl Reranker for NoopReranker {
     fn model_size_mb(&self) -> u64 {
         0
     }
-    fn rerank(
-        &self,
-        _query: &str,
-        candidates: &[RerankCandidate],
-        fusion_alpha: f64,
-    ) -> Result<Vec<RerankedScore>, String> {
+    fn rerank(&self, _query: &str, candidates: &[RerankCandidate], fusion_alpha: f64) -> Result<Vec<RerankedScore>, String> {
         let scores = candidates
             .iter()
             .map(|candidate| (candidate.id.clone(), candidate.base_score as f32))
@@ -70,24 +60,13 @@ impl MiniLmReranker {
         let profile = selected_profile();
         let missing = profile.missing_assets(models_dir);
         if !missing.is_empty() {
-            let missing = missing
-                .iter()
-                .map(|asset| asset.file)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "model assets missing ({missing}) at {}",
-                models_dir.display()
-            ));
+            let missing = missing.iter().map(|asset| asset.file).collect::<Vec<_>>().join(", ");
+            return Err(format!("model assets missing ({missing}) at {}", models_dir.display()));
         }
         let model_path = models_dir.join(profile.model_file);
         let tokenizer_path = models_dir.join(profile.tokenizer_file);
-        let tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|error| {
-            format!(
-                "failed to load tokenizer {}: {error}",
-                tokenizer_path.display()
-            )
-        })?;
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|error| format!("failed to load tokenizer {}: {error}", tokenizer_path.display()))?;
         let session = build_session(&model_path)?;
         Ok(Self {
             session: Mutex::new(session),
@@ -108,34 +87,13 @@ impl MiniLmReranker {
             return Err("empty tokenized pair".to_string());
         }
         let shape = vec![1i64, len as i64];
-        let ids_tensor = Tensor::from_array((
-            shape.clone(),
-            ids[..len]
-                .iter()
-                .map(|value| *value as i64)
-                .collect::<Vec<_>>(),
-        ))
-        .map_err(|error| format!("input_ids tensor failed: {error}"))?;
-        let mask_tensor = Tensor::from_array((
-            shape.clone(),
-            attention[..len]
-                .iter()
-                .map(|value| *value as i64)
-                .collect::<Vec<_>>(),
-        ))
-        .map_err(|error| format!("attention_mask tensor failed: {error}"))?;
-        let type_tensor = Tensor::from_array((
-            shape,
-            type_ids[..len]
-                .iter()
-                .map(|value| *value as i64)
-                .collect::<Vec<_>>(),
-        ))
-        .map_err(|error| format!("token_type_ids tensor failed: {error}"))?;
-        let mut session = self
-            .session
-            .lock()
-            .map_err(|_| "reranker session lock poisoned".to_string())?;
+        let ids_tensor = Tensor::from_array((shape.clone(), ids[..len].iter().map(|value| *value as i64).collect::<Vec<_>>()))
+            .map_err(|error| format!("input_ids tensor failed: {error}"))?;
+        let mask_tensor = Tensor::from_array((shape.clone(), attention[..len].iter().map(|value| *value as i64).collect::<Vec<_>>()))
+            .map_err(|error| format!("attention_mask tensor failed: {error}"))?;
+        let type_tensor = Tensor::from_array((shape, type_ids[..len].iter().map(|value| *value as i64).collect::<Vec<_>>()))
+            .map_err(|error| format!("token_type_ids tensor failed: {error}"))?;
+        let mut session = self.session.lock().map_err(|_| "reranker session lock poisoned".to_string())?;
         let outputs = session
             .run(ort::inputs!["input_ids"=>
 ids_tensor,"attention_mask"=>mask_tensor,"token_type_ids"=>type_tensor,])
@@ -156,12 +114,7 @@ impl Reranker for MiniLmReranker {
     fn model_size_mb(&self) -> u64 {
         selected_profile().model_size_mb
     }
-    fn rerank(
-        &self,
-        query: &str,
-        candidates: &[RerankCandidate],
-        fusion_alpha: f64,
-    ) -> Result<Vec<RerankedScore>, String> {
+    fn rerank(&self, query: &str, candidates: &[RerankCandidate], fusion_alpha: f64) -> Result<Vec<RerankedScore>, String> {
         let mut raw_scores = Vec::with_capacity(candidates.len());
         for candidate in candidates {
             let score = self.score_pair(query, &candidate.text)?;
@@ -173,18 +126,11 @@ impl Reranker for MiniLmReranker {
 fn build_session(model_path: &Path) -> Result<Session, String> {
     let tuned = Session::builder()
         .map_err(|error| format!("session builder init failed: {error}"))
-        .and_then(|builder| {
-            builder
-                .with_intra_threads(2)
-                .map_err(|error| format!("with_intra_threads(2) failed: {error}"))
-        })
+        .and_then(|builder| builder.with_intra_threads(2).map_err(|error| format!("with_intra_threads(2) failed: {error}")))
         .and_then(|mut builder| {
-            builder.commit_from_file(model_path).map_err(|error| {
-                format!(
-                    "commit_from_file (tuned threads) failed for {}: {error}",
-                    model_path.display()
-                )
-            })
+            builder
+                .commit_from_file(model_path)
+                .map_err(|error| format!("commit_from_file (tuned threads) failed for {}: {error}", model_path.display()))
         });
     match tuned {
         Ok(session) => Ok(session),
@@ -192,31 +138,19 @@ fn build_session(model_path: &Path) -> Result<Session, String> {
             let fallback = Session::builder()
                 .map_err(|error| format!("session builder fallback init failed: {error}"))?
                 .commit_from_file(model_path)
-                .map_err(|error| {
-                    format!(
-                        "commit_from_file (fallback threads) failed for {}: {error}",
-                        model_path.display()
-                    )
-                })?;
+                .map_err(|error| format!("commit_from_file (fallback threads) failed for {}: {error}", model_path.display()))?;
             eprintln!("[rerank] Falling back to default ORT session threading after tuned setup failed: {tuned_error}");
             Ok(fallback)
         }
     }
 }
-pub fn fuse_scores(
-    candidates: &[RerankCandidate],
-    raw_scores: &[(String, f32)],
-    fusion_alpha: f64,
-) -> Vec<RerankedScore> {
+pub fn fuse_scores(candidates: &[RerankCandidate], raw_scores: &[(String, f32)], fusion_alpha: f64) -> Vec<RerankedScore> {
     let alpha = fusion_alpha.clamp(0.0, 1.0);
     let raw_by_id = raw_scores
         .iter()
         .map(|(id, score)| (id.as_str(), *score as f64))
         .collect::<std::collections::HashMap<_, _>>();
-    let base_values = candidates
-        .iter()
-        .map(|candidate| candidate.base_score)
-        .collect::<Vec<_>>();
+    let base_values = candidates.iter().map(|candidate| candidate.base_score).collect::<Vec<_>>();
     let rerank_values = candidates
         .iter()
         .map(|candidate| raw_by_id.get(candidate.id.as_str()).copied().unwrap_or(0.0))

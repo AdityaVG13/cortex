@@ -12,14 +12,8 @@ pub(crate) fn read_usize_env(name: &str, default: usize) -> usize {
 }
 pub(crate) fn boot_source_token_bounds() -> SourceTokenBounds {
     SourceTokenBounds::new(
-        read_usize_env(
-            "CORTEX_BOOT_MIN_SOURCE_TOKENS",
-            DEFAULT_BOOT_MIN_SOURCE_TOKENS,
-        ),
-        read_usize_env(
-            "CORTEX_BOOT_MAX_SOURCE_TOKENS",
-            DEFAULT_BOOT_MAX_SOURCE_TOKENS,
-        ),
+        read_usize_env("CORTEX_BOOT_MIN_SOURCE_TOKENS", DEFAULT_BOOT_MIN_SOURCE_TOKENS),
+        read_usize_env("CORTEX_BOOT_MAX_SOURCE_TOKENS", DEFAULT_BOOT_MAX_SOURCE_TOKENS),
     )
 }
 pub(crate) fn boot_rank_top_n() -> usize {
@@ -36,31 +30,62 @@ pub(crate) fn empty_rank_components() -> RankComponents {
 }
 pub(crate) fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
     let mut candidates = Vec::new();
-    if let Ok(mut stmt)=conn.prepare(
-"SELECT id, text, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, text, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
          FROM memories
          WHERE status = 'active' AND type != 'state'
          ORDER BY updated_at DESC
-         LIMIT 80"
-,){if let Ok(rows)=stmt.query_map([],|row|{Ok(RankedCandidate{source_kind:"memory",source_id:row.get::<_,i64>(0)?,body:row.get::<_
-,String>(1)?,title:row.get::<_,Option<String>>(2)?.unwrap_or_else(||"memory".to_string()),retention_class:row.get::<_,Option<
-String>>(3)?.unwrap_or_else(||"operational".to_string()),relevance:row.get::<_,Option<f64>>(4)?.unwrap_or(0.5),retrievals:row.get
-::<_,Option<i64>>(5)?.unwrap_or(0),last_accessed:row.get::<_,Option<String>>(6)?,updated_at:row.get::<_,Option<String>>(7)?,
-created_at:row.get::<_,Option<String>>(8)?,components:empty_rank_components(),})}){candidates.extend(rows.flatten());}}
-    if let Ok(
-mut stmt)=conn.prepare(
-"SELECT id, decision, context, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
+         LIMIT 80",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok(RankedCandidate {
+                source_kind: "memory",
+                source_id: row.get::<_, i64>(0)?,
+                body: row.get::<_, String>(1)?,
+                title: row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "memory".to_string()),
+                retention_class: row.get::<_, Option<String>>(3)?.unwrap_or_else(|| "operational".to_string()),
+                relevance: row.get::<_, Option<f64>>(4)?.unwrap_or(0.5),
+                retrievals: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                last_accessed: row.get::<_, Option<String>>(6)?,
+                updated_at: row.get::<_, Option<String>>(7)?,
+                created_at: row.get::<_, Option<String>>(8)?,
+                components: empty_rank_components(),
+            })
+        }) {
+            candidates.extend(rows.flatten());
+        }
+    }
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, decision, context, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
          FROM decisions
          WHERE status = 'active'
          ORDER BY updated_at DESC
-         LIMIT 80"
-,){if let Ok(rows)=stmt.query_map([],|row|{let decision:String=row.get(1)?;let context:Option<String>=row.get(2)?;let body=match
-context{Some(context)if!context.trim().is_empty()=>format!("{decision} ({context})"),_=>decision,};Ok(RankedCandidate{source_kind:
-"decision",source_id:row.get::<_,i64>(0)?,body,title:row.get::<_,Option<String>>(3)?.unwrap_or_else(||"decision".to_string()),
-retention_class:row.get::<_,Option<String>>(4)?.unwrap_or_else(||"operational".to_string()),relevance:row.get::<_,Option<f64>>(5)?
-.unwrap_or(0.5),retrievals:row.get::<_,Option<i64>>(6)?.unwrap_or(0),last_accessed:row.get::<_,Option<String>>(7)?,updated_at:row.
-get::<_,Option<String>>(8)?,created_at:row.get::<_,Option<String>>(9)?,components:empty_rank_components(),})}){candidates.extend(
-rows.flatten());}}
+         LIMIT 80",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            let decision: String = row.get(1)?;
+            let context: Option<String> = row.get(2)?;
+            let body = match context {
+                Some(context) if !context.trim().is_empty() => format!("{decision} ({context})"),
+                _ => decision,
+            };
+            Ok(RankedCandidate {
+                source_kind: "decision",
+                source_id: row.get::<_, i64>(0)?,
+                body,
+                title: row.get::<_, Option<String>>(3)?.unwrap_or_else(|| "decision".to_string()),
+                retention_class: row.get::<_, Option<String>>(4)?.unwrap_or_else(|| "operational".to_string()),
+                relevance: row.get::<_, Option<f64>>(5)?.unwrap_or(0.5),
+                retrievals: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                last_accessed: row.get::<_, Option<String>>(7)?,
+                updated_at: row.get::<_, Option<String>>(8)?,
+                created_at: row.get::<_, Option<String>>(9)?,
+                components: empty_rank_components(),
+            })
+        }) {
+            candidates.extend(rows.flatten());
+        }
+    }
     candidates
 }
 pub(crate) fn score_signal_is_flat(items: &[ContextItem]) -> bool {
@@ -90,9 +115,7 @@ pub(crate) fn truncate_to_token_budget(text: &str, token_budget: usize) -> (Stri
         return (String::new(), 0);
     }
     let total_chars = text.chars().count();
-    let mut char_budget = ((token_budget as f64 * 3.5) as usize)
-        .max(1)
-        .min(total_chars);
+    let mut char_budget = ((token_budget as f64 * 3.5) as usize).max(1).min(total_chars);
     loop {
         let prefix: String = text.chars().take(char_budget).collect();
         let candidate = format!("{prefix}...");
@@ -138,34 +161,16 @@ tokens,"priority":item.priority,"reason":"budget_exceeded"}),
             }
         }
     }
-    PackedContext {
-        assembled_parts,
-        admitted,
-        rejected,
-    }
+    PackedContext { assembled_parts, admitted, rejected }
 }
-pub(crate) fn score_adaptive_allocations(
-    items: &[ContextItem],
-    max_tokens: usize,
-    bounds: SourceTokenBounds,
-) -> Vec<usize> {
-    let mut order: Vec<usize> = items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| !item.text.is_empty())
-        .map(|(idx, _)| idx)
-        .collect();
+pub(crate) fn score_adaptive_allocations(items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds) -> Vec<usize> {
+    let mut order: Vec<usize> = items.iter().enumerate().filter(|(_, item)| !item.text.is_empty()).map(|(idx, _)| idx).collect();
     order.sort_by(|left, right| {
         items[*right]
             .priority
             .partial_cmp(&items[*left].priority)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                items[*right]
-                    .utility
-                    .partial_cmp(&items[*left].utility)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .then_with(|| items[*right].utility.partial_cmp(&items[*left].utility).unwrap_or(std::cmp::Ordering::Equal))
     });
     let mut allocations = vec![0usize; items.len()];
     let mut floor_spent = 0usize;
@@ -188,18 +193,13 @@ pub(crate) fn score_adaptive_allocations(
         let eligible: Vec<usize> = allocations
             .iter()
             .enumerate()
-            .filter(|(idx, allocation)| {
-                **allocation > 0 && **allocation < items[*idx].tokens.min(bounds.max)
-            })
+            .filter(|(idx, allocation)| **allocation > 0 && **allocation < items[*idx].tokens.min(bounds.max))
             .map(|(idx, _)| idx)
             .collect();
         if eligible.is_empty() {
             break;
         }
-        let total_score = eligible
-            .iter()
-            .map(|idx| items[*idx].priority.max(0.01))
-            .sum::<f64>();
+        let total_score = eligible.iter().map(|idx| items[*idx].priority.max(0.01)).sum::<f64>();
         let mut allocated_any = false;
         for idx in eligible {
             if remaining == 0 {
@@ -210,8 +210,7 @@ pub(crate) fn score_adaptive_allocations(
             if room == 0 {
                 continue;
             }
-            let share = ((remaining as f64) * (items[idx].priority.max(0.01) / total_score)).ceil()
-                as usize;
+            let share = ((remaining as f64) * (items[idx].priority.max(0.01) / total_score)).ceil() as usize;
             let delta = share.max(1).min(room).min(remaining);
             allocations[idx] += delta;
             remaining -= delta;
@@ -223,11 +222,7 @@ pub(crate) fn score_adaptive_allocations(
     }
     allocations
 }
-pub(crate) fn pack_context_items_score_adaptive(
-    items: &[ContextItem],
-    max_tokens: usize,
-    bounds: SourceTokenBounds,
-) -> PackedContext {
+pub(crate) fn pack_context_items_score_adaptive(items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds) -> PackedContext {
     let allocations = score_adaptive_allocations(items, max_tokens, bounds);
     let mut admitted: Vec<Value> = Vec::new();
     let mut rejected: Vec<Value> = Vec::new();
@@ -239,14 +234,19 @@ pub(crate) fn pack_context_items_score_adaptive(
         let allocation = allocations[idx];
         if allocation == 0 {
             rejected.push(attach_rank_audit(
-json!({"name":item.name,"tokens":item.tokens,"priority":item.priority,"reason":"score_adaptive_budget_exceeded"}),item,));
+                json!({"name":item.name,"tokens":item.tokens,"priority":item.priority,"reason":"score_adaptive_budget_exceeded"}),
+                item,
+            ));
             continue;
         }
         if item.tokens <= allocation {
             assembled_parts.push(item.text.clone());
-            admitted.push(attach_rank_audit(json!({"name":item.name,
+            admitted.push(attach_rank_audit(
+                json!({"name":item.name,
 "tokens":item.tokens,"allocatedTokens":allocation,"priority":item.priority,"utility":(item.utility*10000.0).round()/10000.0,
-"packing":"score_adaptive"}),item,));
+"packing":"score_adaptive"}),
+                item,
+            ));
         } else {
             let (truncated, trunc_tokens) = truncate_to_token_budget(&item.text, allocation);
             assembled_parts.push(truncated);
@@ -257,30 +257,17 @@ allocation,"priority":item.priority,"truncated":true,"packing":"score_adaptive"}
             ));
         }
     }
-    PackedContext {
-        assembled_parts,
-        admitted,
-        rejected,
-    }
+    PackedContext { assembled_parts, admitted, rejected }
 }
-pub(crate) fn pack_context_items(
-    items: &[ContextItem],
-    max_tokens: usize,
-    bounds: SourceTokenBounds,
-) -> PackedContext {
+pub(crate) fn pack_context_items(items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds) -> PackedContext {
     pack_context_items_with_mode(items, max_tokens, bounds, boot_packing_mode())
 }
 pub(crate) fn pack_context_items_with_mode(
-    items: &[ContextItem],
-    max_tokens: usize,
-    bounds: SourceTokenBounds,
-    mode: BootPackingMode,
+    items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds, mode: BootPackingMode,
 ) -> PackedContext {
     match mode {
         BootPackingMode::LegacyGreedy => pack_context_items_greedy(items, max_tokens),
-        BootPackingMode::ScoreAdaptive => {
-            pack_context_items_score_adaptive(items, max_tokens, bounds)
-        }
+        BootPackingMode::ScoreAdaptive => pack_context_items_score_adaptive(items, max_tokens, bounds),
         BootPackingMode::Auto => {
             if score_signal_is_flat(items) {
                 pack_context_items_greedy(items, max_tokens)

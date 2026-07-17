@@ -1,9 +1,7 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 pub(crate) fn value_i64_any(payload: &Value, keys: &[&str]) -> i64 {
-    keys.iter()
-        .find_map(|key| payload.get(*key).and_then(|v| v.as_i64()))
-        .unwrap_or(0)
+    keys.iter().find_map(|key| payload.get(*key).and_then(|v| v.as_i64())).unwrap_or(0)
 }
 pub(crate) fn method_count(payload: &Value, method: &str) -> i64 {
     payload
@@ -18,17 +16,10 @@ pub(crate) fn classify_recall_tier_from_payload(payload: &Value) -> String {
             return tier.to_string();
         }
     }
-    if payload
-        .get("cached")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-    {
+    if payload.get("cached").and_then(|value| value.as_bool()).unwrap_or(false) {
         return "cache_hit".to_string();
     }
-    let mode = payload
-        .get("mode")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
+    let mode = payload.get("mode").and_then(|value| value.as_str()).unwrap_or_default();
     if mode == "headlines" {
         return "headlines".to_string();
     }
@@ -99,9 +90,7 @@ pub(crate) struct ShadowOkMetricAverages {
     top1_match_rate: Option<f64>,
 }
 pub(crate) fn build_shadow_semantic_gate(
-    shadow_status_counts: &BTreeMap<String, i64>,
-    ok_samples: i64,
-    ok_metric_samples: &ShadowOkMetricSamples,
+    shadow_status_counts: &BTreeMap<String, i64>, ok_samples: i64, ok_metric_samples: &ShadowOkMetricSamples,
     ok_metric_averages: &ShadowOkMetricAverages,
 ) -> Value {
     let ok_count = *shadow_status_counts.get("ok").unwrap_or(&0);
@@ -110,16 +99,8 @@ pub(crate) fn build_shadow_semantic_gate(
     let unknown_count = *shadow_status_counts.get("unknown").unwrap_or(&0);
     let skipped_count = *shadow_status_counts.get("skipped").unwrap_or(&0);
     let probed_events = ok_count + unavailable_count + error_count + unknown_count;
-    let unavailable_rate = if probed_events > 0 {
-        round4(unavailable_count as f64 / probed_events as f64)
-    } else {
-        0.0
-    };
-    let error_rate = if probed_events > 0 {
-        round4(error_count as f64 / probed_events as f64)
-    } else {
-        0.0
-    };
+    let unavailable_rate = if probed_events > 0 { round4(unavailable_count as f64 / probed_events as f64) } else { 0.0 };
+    let error_rate = if probed_events > 0 { round4(error_count as f64 / probed_events as f64) } else { 0.0 };
     let mut blockers: Vec<String> = Vec::new();
     if probed_events < SHADOW_GATE_MIN_PROBED_EVENTS {
         blockers.push("insufficient_shadow_samples".to_string());
@@ -133,9 +114,7 @@ pub(crate) fn build_shadow_semantic_gate(
     if error_rate > SHADOW_GATE_MAX_ERROR_RATE {
         blockers.push("error_rate_above_gate".to_string());
     }
-    if ok_metric_samples.overlap_ratio > 0
-        && ok_metric_samples.overlap_ratio < SHADOW_GATE_MIN_OK_SAMPLES
-    {
+    if ok_metric_samples.overlap_ratio > 0 && ok_metric_samples.overlap_ratio < SHADOW_GATE_MIN_OK_SAMPLES {
         blockers.push("insufficient_overlap_ratio_samples".to_string());
     }
     match ok_metric_averages.overlap_ratio {
@@ -155,9 +134,7 @@ pub(crate) fn build_shadow_semantic_gate(
         None => blockers.push("missing_jaccard_signal".to_string()),
         _ => {}
     }
-    if ok_metric_samples.mean_abs_rank_delta > 0
-        && ok_metric_samples.mean_abs_rank_delta < SHADOW_GATE_MIN_OK_SAMPLES
-    {
+    if ok_metric_samples.mean_abs_rank_delta > 0 && ok_metric_samples.mean_abs_rank_delta < SHADOW_GATE_MIN_OK_SAMPLES {
         blockers.push("insufficient_rank_delta_samples".to_string());
     }
     match ok_metric_averages.mean_abs_rank_delta {
@@ -167,8 +144,7 @@ pub(crate) fn build_shadow_semantic_gate(
         None => blockers.push("missing_rank_delta_signal".to_string()),
         _ => {}
     }
-    if ok_metric_samples.top1_match > 0 && ok_metric_samples.top1_match < SHADOW_GATE_MIN_OK_SAMPLES
-    {
+    if ok_metric_samples.top1_match > 0 && ok_metric_samples.top1_match < SHADOW_GATE_MIN_OK_SAMPLES {
         blockers.push("insufficient_top1_match_samples".to_string());
     }
     match ok_metric_averages.top1_match_rate {
@@ -214,11 +190,7 @@ pub(crate) fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) ->
     let mut recent: Vec<Value> = Vec::new();
     for (data_str, created_at) in rows {
         let payload: Value = serde_json::from_str(data_str).unwrap_or_else(|_| json!({}));
-        let mode = payload
-            .get("mode")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let mode = payload.get("mode").and_then(|value| value.as_str()).unwrap_or("unknown").to_string();
         *mode_counts.entry(mode.clone()).or_insert(0) += 1;
         let tier = classify_recall_tier_from_payload(&payload);
         *tier_counts.entry(tier.clone()).or_insert(0) += 1;
@@ -238,10 +210,7 @@ pub(crate) fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) ->
                 *tier_latency_samples.entry(tier.clone()).or_insert(0) += 1;
             }
         }
-        if let Some(shadow_semantic) = payload
-            .get("shadow_semantic")
-            .and_then(|value| value.as_object())
-        {
+        if let Some(shadow_semantic) = payload.get("shadow_semantic").and_then(|value| value.as_object()) {
             let status = shadow_semantic
                 .get("status")
                 .and_then(|value| value.as_str())
@@ -250,31 +219,19 @@ pub(crate) fn build_recall_stats_payload_from_rows(rows: &[(String, String)]) ->
                 .to_string();
             *shadow_status_counts.entry(status.clone()).or_insert(0) += 1;
             if status == "ok" {
-                if let Some(overlap_ratio) = shadow_semantic
-                    .get("overlapRatio")
-                    .and_then(|value| value.as_f64())
-                {
+                if let Some(overlap_ratio) = shadow_semantic.get("overlapRatio").and_then(|value| value.as_f64()) {
                     shadow_ok_overlap_ratio_sum += overlap_ratio;
                     shadow_ok_overlap_ratio_samples += 1;
                 }
-                if let Some(jaccard) = shadow_semantic
-                    .get("jaccard")
-                    .and_then(|value| value.as_f64())
-                {
+                if let Some(jaccard) = shadow_semantic.get("jaccard").and_then(|value| value.as_f64()) {
                     shadow_ok_jaccard_sum += jaccard;
                     shadow_ok_jaccard_samples += 1;
                 }
-                if let Some(mean_abs_rank_delta) = shadow_semantic
-                    .get("meanAbsRankDelta")
-                    .and_then(|value| value.as_f64())
-                {
+                if let Some(mean_abs_rank_delta) = shadow_semantic.get("meanAbsRankDelta").and_then(|value| value.as_f64()) {
                     shadow_ok_rank_delta_sum += mean_abs_rank_delta;
                     shadow_ok_rank_delta_samples += 1;
                 }
-                if let Some(top1_match) = shadow_semantic
-                    .get("top1Match")
-                    .and_then(|value| value.as_bool())
-                {
+                if let Some(top1_match) = shadow_semantic.get("top1Match").and_then(|value| value.as_bool()) {
                     shadow_ok_top1_match_sum += if top1_match { 1.0 } else { 0.0 };
                     shadow_ok_top1_match_samples += 1;
                 }
@@ -285,44 +242,19 @@ budget,"spent":spent,"saved":saved,"hits":hits,"cached":payload.get("cached").an
 "latencyMs":payload.get("latency_ms").and_then(|value|value.as_i64()),}));
     }
     let total_recalls = rows.len() as i64;
-    let avg_latency_ms = if latency_samples > 0 {
-        round1(latency_total as f64 / latency_samples as f64)
-    } else {
-        0.0
-    };
-    let savings_pct_vs_budget = if total_budget > 0 {
-        round1((total_saved as f64 / total_budget as f64) * 100.0)
-    } else {
-        0.0
-    };
+    let avg_latency_ms = if latency_samples > 0 { round1(latency_total as f64 / latency_samples as f64) } else { 0.0 };
+    let savings_pct_vs_budget = if total_budget > 0 { round1((total_saved as f64 / total_budget as f64) * 100.0) } else { 0.0 };
     let shadow_overlap_ratio_avg = if shadow_ok_overlap_ratio_samples > 0 {
-        Some(round4(
-            shadow_ok_overlap_ratio_sum / shadow_ok_overlap_ratio_samples as f64,
-        ))
+        Some(round4(shadow_ok_overlap_ratio_sum / shadow_ok_overlap_ratio_samples as f64))
     } else {
         None
     };
-    let shadow_jaccard_avg = if shadow_ok_jaccard_samples > 0 {
-        Some(round4(
-            shadow_ok_jaccard_sum / shadow_ok_jaccard_samples as f64,
-        ))
-    } else {
-        None
-    };
-    let shadow_mean_abs_rank_delta_avg = if shadow_ok_rank_delta_samples > 0 {
-        Some(round4(
-            shadow_ok_rank_delta_sum / shadow_ok_rank_delta_samples as f64,
-        ))
-    } else {
-        None
-    };
-    let shadow_top1_match_rate = if shadow_ok_top1_match_samples > 0 {
-        Some(round4(
-            shadow_ok_top1_match_sum / shadow_ok_top1_match_samples as f64,
-        ))
-    } else {
-        None
-    };
+    let shadow_jaccard_avg =
+        if shadow_ok_jaccard_samples > 0 { Some(round4(shadow_ok_jaccard_sum / shadow_ok_jaccard_samples as f64)) } else { None };
+    let shadow_mean_abs_rank_delta_avg =
+        if shadow_ok_rank_delta_samples > 0 { Some(round4(shadow_ok_rank_delta_sum / shadow_ok_rank_delta_samples as f64)) } else { None };
+    let shadow_top1_match_rate =
+        if shadow_ok_top1_match_samples > 0 { Some(round4(shadow_ok_top1_match_sum / shadow_ok_top1_match_samples as f64)) } else { None };
     let ok_metric_samples = ShadowOkMetricSamples {
         overlap_ratio: shadow_ok_overlap_ratio_samples,
         jaccard: shadow_ok_jaccard_samples,
@@ -344,24 +276,12 @@ budget,"spent":spent,"saved":saved,"hits":hits,"cached":payload.get("cached").an
     .into_iter()
     .min()
     .unwrap_or(0);
-    let shadow_gate = build_shadow_semantic_gate(
-        &shadow_status_counts,
-        shadow_ok_samples,
-        &ok_metric_samples,
-        &ok_metric_averages,
-    );
+    let shadow_gate = build_shadow_semantic_gate(&shadow_status_counts, shadow_ok_samples, &ok_metric_samples, &ok_metric_averages);
     let tier_distribution: Vec<Value> = tier_counts
         .iter()
         .map(|(tier, count)| {
-            let percent = if total_recalls > 0 {
-                round1((*count as f64 / total_recalls as f64) * 100.0)
-            } else {
-                0.0
-            };
-            let avg_tier_latency = match (
-                tier_latency_sum.get(tier).copied(),
-                tier_latency_samples.get(tier).copied(),
-            ) {
+            let percent = if total_recalls > 0 { round1((*count as f64 / total_recalls as f64) * 100.0) } else { 0.0 };
+            let avg_tier_latency = match (tier_latency_sum.get(tier).copied(), tier_latency_samples.get(tier).copied()) {
                 (Some(sum), Some(samples)) if samples > 0 => round1(sum as f64 / samples as f64),
                 _ => 0.0,
             };
@@ -376,24 +296,15 @@ budget,"spent":spent,"saved":saved,"hits":hits,"cached":payload.get("cached").an
         let mut map = serde_json::Map::new();
         map.insert("overall".to_string(), json!(avg_latency_ms));
         for entry in &tier_distribution {
-            if let (Some(tier), Some(avg)) = (
-                entry.get("tier").and_then(|value| value.as_str()),
-                entry.get("avgLatencyMs"),
-            ) {
+            if let (Some(tier), Some(avg)) = (entry.get("tier").and_then(|value| value.as_str()), entry.get("avgLatencyMs")) {
                 map.insert(tier.to_string(), avg.clone());
             }
         }
         Value::Object(map)
     };
     recent.sort_by(|a, b| {
-        let a_ts = a
-            .get("timestamp")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let b_ts = b
-            .get("timestamp")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
+        let a_ts = a.get("timestamp").and_then(|value| value.as_str()).unwrap_or("");
+        let b_ts = b.get("timestamp").and_then(|value| value.as_str()).unwrap_or("");
         b_ts.cmp(a_ts)
     });
     recent.truncate(30);

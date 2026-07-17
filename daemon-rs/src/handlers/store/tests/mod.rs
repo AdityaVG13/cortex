@@ -8,12 +8,7 @@ fn test_conn() -> Connection {
     crate::db::run_pending_migrations(&conn);
     conn
 }
-fn insert_existing_decision(
-    conn: &Connection,
-    decision: &str,
-    context: Option<&str>,
-    vector: &[f32],
-) -> i64 {
+fn insert_existing_decision(conn: &Connection, decision: &str, context: Option<&str>, vector: &[f32]) -> i64 {
     conn.execute(
         "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
          VALUES (?1, ?2, 'tester', 'active', 1.0, 0, 50, datetime('now'), datetime('now'))",
@@ -24,13 +19,7 @@ fn insert_existing_decision(
     persist_decision_embedding(conn, id, vector, crate::embeddings::selected_model_key()).unwrap();
     id
 }
-fn insert_existing_decision_with_model(
-    conn: &Connection,
-    decision: &str,
-    context: Option<&str>,
-    vector: &[f32],
-    model: &str,
-) -> i64 {
+fn insert_existing_decision_with_model(conn: &Connection, decision: &str, context: Option<&str>, vector: &[f32], model: &str) -> i64 {
     conn.execute(
         "INSERT INTO decisions (decision, context, source_agent, status, score, merged_count, quality, created_at, updated_at)
          VALUES (?1, ?2, 'tester', 'active', 1.0, 0, 50, datetime('now'), datetime('now'))",
@@ -50,12 +39,7 @@ fn insert_existing_decision_with_model(
 #[test]
 fn benchmark_entries_bypass_semantic_merge() {
     let mut conn = test_conn();
-    insert_existing_decision(
-        &conn,
-        "store benchmark messages without dedup collapsing",
-        Some("seed"),
-        &[1.0, 0.0],
-    );
+    insert_existing_decision(&conn, "store benchmark messages without dedup collapsing", Some("seed"), &[1.0, 0.0]);
     let (_entry, new_id) = store_decision_with_input_embedding(
         &mut conn,
         "store benchmark messages without dedup collapsing",
@@ -69,9 +53,7 @@ fn benchmark_entries_bypass_semantic_merge() {
     )
     .unwrap();
     assert!(new_id.is_some());
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
-        .unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 2);
 }
 #[test]
@@ -84,13 +66,7 @@ fn semantic_candidates_filter_model_and_vector_length() {
         &[1.0, 0.0],
         crate::embeddings::selected_model_key(),
     );
-    insert_existing_decision_with_model(
-        &conn,
-        "wrong model embedding candidate",
-        Some("seed"),
-        &[1.0, 0.0],
-        "other-embedding-model",
-    );
+    insert_existing_decision_with_model(&conn, "wrong model embedding candidate", Some("seed"), &[1.0, 0.0], "other-embedding-model");
     insert_existing_decision_with_model(
         &conn,
         "wrong vector length embedding candidate",

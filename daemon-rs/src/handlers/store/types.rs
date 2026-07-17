@@ -12,10 +12,7 @@ pub(crate) fn is_benchmark_entry_type(entry_type: &str) -> bool {
     entry_type.eq_ignore_ascii_case(BENCHMARK_ENTRY_TYPE)
 }
 pub(crate) fn is_benchmark_source_agent(source_agent: &str) -> bool {
-    source_agent
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with(BENCHMARK_SOURCE_AGENT_PREFIX)
+    source_agent.trim().to_ascii_lowercase().starts_with(BENCHMARK_SOURCE_AGENT_PREFIX)
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DecisionProvenance {
@@ -24,15 +21,8 @@ pub(crate) struct DecisionProvenance {
     pub(crate) reasoning_depth: String,
 }
 impl DecisionProvenance {
-    pub(crate) fn from_fields(
-        source_agent: &str,
-        source_model: Option<&str>,
-        reasoning_depth: Option<&str>,
-    ) -> Self {
-        let normalized_model = source_model
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+    pub(crate) fn from_fields(source_agent: &str, source_model: Option<&str>, reasoning_depth: Option<&str>) -> Self {
+        let normalized_model = source_model.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string);
         Self {
             source_client: normalize_source_client(source_agent),
             source_model: normalized_model,
@@ -69,29 +59,19 @@ pub(crate) struct SemanticCandidate {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SemanticDedupAction {
     Insert,
-    Merge {
-        target_id: i64,
-        similarity: f32,
-        jaccard: f64,
-    },
+    Merge { target_id: i64, similarity: f32, jaccard: f64 },
 }
 #[derive(Debug)]
 pub(crate) enum StoreError {
     BadRequest(&'static str),
-    Validation {
-        message: &'static str,
-        quality: i32,
-        factors: QualityFactors,
-    },
+    Validation { message: &'static str, quality: i32, factors: QualityFactors },
     Internal(String),
 }
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StoreError::BadRequest(message) => write!(f, "{message}"),
-            StoreError::Validation {
-                message, quality, ..
-            } => write!(f, "{message} (quality {quality})"),
+            StoreError::Validation { message, quality, .. } => write!(f, "{message} (quality {quality})"),
             StoreError::Internal(message) => write!(f, "{message}"),
         }
     }
@@ -102,16 +82,8 @@ impl From<String> for StoreError {
     }
 }
 pub(crate) fn normalize_source_client(raw: &str) -> String {
-    let before_model = raw
-        .split('(')
-        .next()
-        .unwrap_or(raw)
-        .trim()
-        .to_ascii_lowercase();
-    let normalized: String = before_model
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
-        .collect();
+    let before_model = raw.split('(').next().unwrap_or(raw).trim().to_ascii_lowercase();
+    let normalized: String = before_model.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_').collect();
     if normalized.is_empty() {
         "unknown".to_string()
     } else {
@@ -141,9 +113,7 @@ pub(crate) fn normalize_reasoning_depth(raw: Option<&str>) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "single-shot".to_string());
     match normalized.as_str() {
-        "chain-of-thought" | "single-shot" | "tool-assisted" | "multi-step" | "user-stated" => {
-            normalized
-        }
+        "chain-of-thought" | "single-shot" | "tool-assisted" | "multi-step" | "user-stated" => normalized,
         _ => "single-shot".to_string(),
     }
 }
@@ -170,9 +140,7 @@ pub(crate) fn compute_trust_score(confidence: f64, source_model: Option<&str>) -
     let raw = bounded_confidence * model_weight(source_model);
     ((raw * 10_000.0).round() / 10_000.0).clamp(0.0, 1.0)
 }
-pub(crate) fn validate_explicit_ttl_seconds(
-    ttl_seconds: Option<i64>,
-) -> Result<Option<i64>, StoreError> {
+pub(crate) fn validate_explicit_ttl_seconds(ttl_seconds: Option<i64>) -> Result<Option<i64>, StoreError> {
     let Some(ttl_seconds) = ttl_seconds else {
         return Ok(None);
     };
@@ -180,9 +148,7 @@ pub(crate) fn validate_explicit_ttl_seconds(
         return Err(StoreError::BadRequest("ttl_seconds must be > 0"));
     }
     if ttl_seconds > MAX_EXPLICIT_TTL_SECONDS {
-        return Err(StoreError::BadRequest(
-            "ttl_seconds must be <= 31536000 (365 days)",
-        ));
+        return Err(StoreError::BadRequest("ttl_seconds must be <= 31536000 (365 days)"));
     }
     Ok(Some(ttl_seconds))
 }

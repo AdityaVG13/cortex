@@ -65,10 +65,7 @@ pub(crate) fn read_auth_token_uncached(token_path: &Path) -> Option<String> {
         Ok(token) => {
             let trimmed = token.trim();
             if trimmed.is_empty() {
-                eprintln!(
-                    "[cortex-mcp] Auth token file is empty: {}",
-                    token_path.display()
-                );
+                eprintln!("[cortex-mcp] Auth token file is empty: {}", token_path.display());
                 None
             } else {
                 Some(trimmed.to_string())
@@ -76,10 +73,7 @@ pub(crate) fn read_auth_token_uncached(token_path: &Path) -> Option<String> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
-            eprintln!(
-                "[cortex-mcp] Failed to read auth token {}: {e}",
-                token_path.display()
-            );
+            eprintln!("[cortex-mcp] Failed to read auth token {}: {e}", token_path.display());
             None
         }
     }
@@ -105,10 +99,7 @@ pub(crate) fn startup_idle_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs.max(1))
 }
 pub(crate) fn env_trimmed(key: &str) -> Option<String> {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    std::env::var(key).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
 }
 pub(crate) fn normalize_header_value(raw: &str, max_len: usize) -> Option<String> {
     let trimmed = raw.trim();
@@ -118,11 +109,7 @@ pub(crate) fn normalize_header_value(raw: &str, max_len: usize) -> Option<String
     if !trimmed.is_ascii() {
         return None;
     }
-    if trimmed
-        .as_bytes()
-        .iter()
-        .any(|byte| *byte <= 31 || *byte == 127)
-    {
+    if trimmed.as_bytes().iter().any(|byte| *byte <= 31 || *byte == 127) {
         return None;
     }
     Some(trimmed.to_string())
@@ -162,16 +149,8 @@ pub(crate) fn infer_agent_from_process_tree() -> Option<String> {
         let process = system.process(pid)?;
         let candidates = [
             process.name().to_string_lossy().into_owned(),
-            process
-                .exe()
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            process
-                .cmd()
-                .iter()
-                .map(|part| part.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" "),
+            process.exe().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default(),
+            process.cmd().iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join(" "),
         ];
         for candidate in candidates {
             if let Some(agent) = detect_agent_hint(&candidate) {
@@ -197,28 +176,19 @@ pub(crate) fn current_parent_process() -> Option<ParentProcessRef> {
     let current_pid = sysinfo::get_current_pid().ok()?;
     let parent_pid = system.process(current_pid)?.parent()?;
     let parent = system.process(parent_pid)?;
-    Some(ParentProcessRef {
-        pid: parent_pid,
-        start_time: parent.start_time(),
-    })
+    Some(ParentProcessRef { pid: parent_pid, start_time: parent.start_time() })
 }
 pub(crate) fn process_is_alive(parent: ParentProcessRef) -> bool {
     let mut system = System::new_all();
     system.refresh_processes(ProcessesToUpdate::Some(&[parent.pid]), true);
-    system
-        .process(parent.pid)
-        .is_some_and(|process| process.start_time() == parent.start_time)
+    system.process(parent.pid).is_some_and(|process| process.start_time() == parent.start_time)
 }
 pub(crate) fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option<String>) {
     let model = env_trimmed("CORTEX_AGENT_MODEL")
         .or_else(|| env_trimmed("CORTEX_MODEL"))
         .and_then(|value| normalize_header_value(&value, MAX_MODEL_HEADER_LEN));
     let mut agent = env_trimmed("CORTEX_AGENT_DISPLAY")
-        .or_else(|| {
-            agent_arg
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
+        .or_else(|| agent_arg.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()))
         .or_else(|| env_trimmed("CORTEX_AGENT_NAME"))
         .or_else(infer_agent_from_process_tree)
         .unwrap_or_else(|| "mcp".to_string());
@@ -234,8 +204,7 @@ pub(crate) fn resolve_agent_identity(agent_arg: Option<&str>) -> (String, Option
     let agent = match normalize_header_value(&agent, MAX_AGENT_HEADER_LEN) {
         Some(agent) => agent,
         None => {
-            eprintln!(
-"[cortex-mcp] Invalid source agent label after normalization; falling back to 'mcp'");
+            eprintln!("[cortex-mcp] Invalid source agent label after normalization; falling back to 'mcp'");
             "mcp".to_string()
         }
     };
@@ -274,11 +243,7 @@ pub(crate) fn parse_http_response(raw: &[u8]) -> Result<(reqwest::StatusCode, St
     crate::transport::parse_http_response_bytes(raw, "IPC endpoint")
 }
 pub(crate) async fn send_http_over_stream<S>(
-    stream: &mut S,
-    method: &str,
-    path: &str,
-    headers: &[(String, String)],
-    body: Option<&str>,
+    stream: &mut S, method: &str, path: &str, headers: &[(String, String)], body: Option<&str>,
 ) -> Result<(reqwest::StatusCode, String), String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -299,35 +264,19 @@ where
     request.push_str(&body.len().to_string());
     request.push_str("\r\n\r\n");
     request.push_str(body);
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .map_err(|e| format!("IPC write failed: {e}"))?;
-    stream
-        .flush()
-        .await
-        .map_err(|e| format!("IPC flush failed: {e}"))?;
+    stream.write_all(request.as_bytes()).await.map_err(|e| format!("IPC write failed: {e}"))?;
+    stream.flush().await.map_err(|e| format!("IPC flush failed: {e}"))?;
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .await
-        .map_err(|e| format!("IPC read failed: {e}"))?;
+    stream.read_to_end(&mut response).await.map_err(|e| format!("IPC read failed: {e}"))?;
     parse_http_response(&response)
 }
 pub(crate) async fn ipc_http_request(
-    endpoint: &str,
-    method: &str,
-    path: &str,
-    headers: &[(String, String)],
-    body: Option<&str>,
-    timeout: std::time::Duration,
+    endpoint: &str, method: &str, path: &str, headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     let fut = async {
         #[cfg(unix)]
         {
-            let mut stream = tokio::net::UnixStream::connect(endpoint)
-                .await
-                .map_err(|e| format!("IPC connect failed: {e}"))?;
+            let mut stream = tokio::net::UnixStream::connect(endpoint).await.map_err(|e| format!("IPC connect failed: {e}"))?;
             return send_http_over_stream(&mut stream, method, path, headers, body).await;
         }
         #[cfg(windows)]
@@ -340,21 +289,12 @@ pub(crate) async fn ipc_http_request(
         #[allow(unreachable_code)]
         Err("IPC transport is unsupported on this platform".to_string())
     };
-    tokio::time::timeout(timeout, fut)
-        .await
-        .map_err(|_| "IPC request timed out".to_string())?
+    tokio::time::timeout(timeout, fut).await.map_err(|_| "IPC request timed out".to_string())?
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn transport_request(
-    client: &reqwest::Client,
-    method: &str,
-    base_url: &str,
-    path: &str,
-    api_key: Option<&str>,
-    allow_local_token_fallback: bool,
-    headers: &[(String, String)],
-    body: Option<&str>,
-    timeout: std::time::Duration,
+    client: &reqwest::Client, method: &str, base_url: &str, path: &str, api_key: Option<&str>, allow_local_token_fallback: bool,
+    headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     let mut all_headers = Vec::with_capacity(headers.len() + 1);
     all_headers.extend_from_slice(headers);
@@ -388,12 +328,7 @@ pub(crate) async fn transport_request(
     Ok((status, body))
 }
 pub(crate) async fn transport_request_for_url(
-    client: &reqwest::Client,
-    method: &str,
-    url: &str,
-    headers: &[(String, String)],
-    body: Option<&str>,
-    timeout: std::time::Duration,
+    client: &reqwest::Client, method: &str, url: &str, headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     let Some((base_url, path)) = split_base_and_path(url) else {
         let mut req = match method {
@@ -413,19 +348,12 @@ pub(crate) async fn transport_request_for_url(
         let body = response.text().await.map_err(|e| e.to_string())?;
         return Ok((status, body));
     };
-    transport_request(
-        client, method, &base_url, &path, None, false, headers, body, timeout,
-    )
-    .await
+    transport_request(client, method, &base_url, &path, None, false, headers, body, timeout).await
 }
 pub(crate) fn local_token_fallback_required(base_url: &str, api_key: Option<&str>) -> bool {
     api_key.is_none() && is_local_daemon_base(base_url)
 }
-pub(crate) fn build_auth_header(
-    base_url: &str,
-    api_key: Option<&str>,
-    allow_local_token_fallback: bool,
-) -> Option<String> {
+pub(crate) fn build_auth_header(base_url: &str, api_key: Option<&str>, allow_local_token_fallback: bool) -> Option<String> {
     if let Some(key) = api_key {
         return Some(format!("Bearer {key}"));
     }
@@ -438,174 +366,91 @@ pub(crate) fn requires_explicit_api_key(base_url: &str, api_key: Option<&str>) -
     api_key.is_none() && !is_local_daemon_base(base_url)
 }
 pub(crate) fn validate_target_base_url(base_url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(base_url).map_err(|_| {
-        format!(
-            "Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// base URL."
-        )
-    })?;
+    let parsed = reqwest::Url::parse(base_url)
+        .map_err(|_| format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// base URL."))?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!(
-            "Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.",
-            parsed.scheme()
-        ));
+        return Err(format!("Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.", parsed.scheme()));
     }
     if parsed.host_str().is_none() {
-        return Err(format!(
-            "Invalid Cortex target URL '{base_url}': missing host."
-        ));
+        return Err(format!("Invalid Cortex target URL '{base_url}': missing host."));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(
-            "Cortex target URL must not include embedded credentials; pass --api-key instead."
-                .to_string(),
-        );
+        return Err("Cortex target URL must not include embedded credentials; pass --api-key instead.".to_string());
     }
     if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(
-            "Cortex target URL must not include query parameters or fragments.".to_string(),
-        );
+        return Err("Cortex target URL must not include query parameters or fragments.".to_string());
     }
     Ok(())
 }
 pub(crate) fn expected_port_from_url(url: &str) -> Option<u16> {
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.port_or_known_default())
+    reqwest::Url::parse(url).ok().and_then(|parsed| parsed.port_or_known_default())
 }
 pub(crate) fn fallback_health_probe_url(probe_url: &str) -> Option<String> {
-    probe_url
-        .strip_suffix("/readiness")
-        .map(|base| format!("{base}/health"))
+    probe_url.strip_suffix("/readiness").map(|base| format!("{base}/health"))
 }
 pub(crate) fn internal_health_probe_headers() -> [(String, String); 1] {
     [(String::from("X-Cortex-Request"), String::from("true"))]
 }
-pub(crate) fn is_cortex_health_response(
-    status: reqwest::StatusCode,
-    body: &str,
-    probe_url: &str,
-) -> bool {
-    let local_paths = if is_local_daemon_base(probe_url) {
-        Some(CortexPaths::resolve())
-    } else {
-        None
-    };
-    if let Some(ready) = daemon_lifecycle::readiness_state_from_payload(
-        status.as_u16(),
-        body,
-        expected_port_from_url(probe_url),
-        local_paths.as_ref(),
-    ) {
+pub(crate) fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, probe_url: &str) -> bool {
+    let local_paths = if is_local_daemon_base(probe_url) { Some(CortexPaths::resolve()) } else { None };
+    if let Some(ready) =
+        daemon_lifecycle::readiness_state_from_payload(status.as_u16(), body, expected_port_from_url(probe_url), local_paths.as_ref())
+    {
         return ready;
     }
-    daemon_lifecycle::is_cortex_health_payload(
-        status.as_u16(),
-        body,
-        expected_port_from_url(probe_url),
-        local_paths.as_ref(),
-    )
+    daemon_lifecycle::is_cortex_health_payload(status.as_u16(), body, expected_port_from_url(probe_url), local_paths.as_ref())
 }
 pub(crate) async fn health_check_ready(client: &reqwest::Client, probe_url: &str) -> bool {
     let probe_headers = internal_health_probe_headers();
-    let (status, body) = match transport_request_for_url(
-        client,
-        "GET",
-        probe_url,
-        &probe_headers,
-        None,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(_) => return false,
-    };
+    let (status, body) =
+        match transport_request_for_url(client, "GET", probe_url, &probe_headers, None, std::time::Duration::from_secs(5)).await {
+            Ok(response) => response,
+            Err(_) => return false,
+        };
     if is_cortex_health_response(status, &body, probe_url) {
         return true;
     }
     let Some(health_url) = fallback_health_probe_url(probe_url) else {
         return false;
     };
-    let (status, body) = match transport_request_for_url(
-        client,
-        "GET",
-        &health_url,
-        &probe_headers,
-        None,
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(_) => return false,
-    };
+    let (status, body) =
+        match transport_request_for_url(client, "GET", &health_url, &probe_headers, None, std::time::Duration::from_secs(5)).await {
+            Ok(response) => response,
+            Err(_) => return false,
+        };
     is_cortex_health_response(status, &body, &health_url)
 }
 pub(crate) fn is_auth_recovery_status(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
 }
 pub(crate) async fn recover_solo_auth(
-    client: &reqwest::Client,
-    health_url: &str,
-    base_url: &str,
-    agent: &str,
-    model: Option<&str>,
-    allow_local_token_fallback: &mut bool,
+    client: &reqwest::Client, health_url: &str, base_url: &str, agent: &str, model: Option<&str>, allow_local_token_fallback: &mut bool,
 ) -> bool {
     if !health_check_ready(client, health_url).await {
         *allow_local_token_fallback = false;
         return false;
     }
     *allow_local_token_fallback = true;
-    if !session_start_with_retry(
-        client,
-        base_url,
-        None,
-        agent,
-        model,
-        *allow_local_token_fallback,
-    )
-    .await
-    {
+    if !session_start_with_retry(client, base_url, None, agent, model, *allow_local_token_fallback).await {
         eprintln!("[cortex-mcp] Auth recovered but session re-registration did not succeed yet");
         return false;
     }
     true
 }
 pub(crate) async fn session_start_with_retry(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: &str,
-    model: Option<&str>,
-    allow_local_token_fallback: bool,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, model: Option<&str>, allow_local_token_fallback: bool,
 ) -> bool {
     for attempt in 1..=SESSION_RESTART_ATTEMPTS.max(1) {
-        if session_start(
-            client,
-            base_url,
-            api_key,
-            agent,
-            model,
-            allow_local_token_fallback,
-        )
-        .await
-        {
+        if session_start(client, base_url, api_key, agent, model, allow_local_token_fallback).await {
             return true;
         }
         if attempt < SESSION_RESTART_ATTEMPTS {
-            tokio::time::sleep(std::time::Duration::from_millis(
-                SESSION_RESTART_DELAY_MS * attempt as u64,
-            ))
-            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(SESSION_RESTART_DELAY_MS * attempt as u64)).await;
         }
     }
     false
 }
-pub(crate) fn persist_write_buffer(
-    buffer_path: &std::path::Path,
-    remaining: &[String],
-) -> Result<(), std::io::Error> {
+pub(crate) fn persist_write_buffer(buffer_path: &std::path::Path, remaining: &[String]) -> Result<(), std::io::Error> {
     use std::io::{BufWriter, Write};
     let parent = buffer_path
         .parent()
@@ -634,12 +479,7 @@ pub(crate) fn sync_parent_dir(_parent: &std::path::Path) -> std::io::Result<()> 
     Ok(())
 }
 pub(crate) async fn drain_write_buffer(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: &str,
-    model: Option<&str>,
-    paths: &CortexPaths,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, model: Option<&str>, paths: &CortexPaths,
     allow_local_token_fallback: bool,
 ) {
     let buffer_path = &paths.write_buffer;
@@ -687,30 +527,19 @@ pub(crate) async fn drain_write_buffer(
         }
     }
     if let Err(e) = persist_write_buffer(buffer_path, &remaining) {
-        eprintln!(
-            "[cortex-mcp] Failed to compact write buffer {}: {e}",
-            buffer_path.display()
-        );
+        eprintln!("[cortex-mcp] Failed to compact write buffer {}: {e}", buffer_path.display());
         return;
     }
     if drained > 0 {
-        eprintln!(
-            "[cortex-mcp] Drained {drained} buffered writes and compacted {}",
-            buffer_path.display()
-        );
+        eprintln!("[cortex-mcp] Drained {drained} buffered writes and compacted {}", buffer_path.display());
     }
 }
 pub(crate) async fn session_start(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: &str,
-    model: Option<&str>,
-    allow_local_token_fallback: bool,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, model: Option<&str>, allow_local_token_fallback: bool,
 ) -> bool {
-    let
-payload=serde_json::json!({"agent":agent,"ttl":7200,"description":model.map(|m|format!("MCP session - {m}")).unwrap_or_else(||
-"MCP session".to_string())}).to_string();
+    let payload = serde_json::json!({"agent":agent,"ttl":7200,"description":model.map(|m|format!("MCP session - {m}")).unwrap_or_else(||
+"MCP session".to_string())})
+    .to_string();
     let headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
         ("x-cortex-request".to_string(), "true".to_string()),
@@ -738,17 +567,11 @@ pub(crate) enum SessionHeartbeatOutcome {
     Failed,
 }
 pub(crate) async fn session_heartbeat(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: &str,
-    model: Option<&str>,
-    allow_local_token_fallback: bool,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, model: Option<&str>, allow_local_token_fallback: bool,
 ) -> SessionHeartbeatOutcome {
-    let payload =
-        serde_json::json!({"agent":agent,"description":model.map(|m|format!("MCP session - {m}")).
+    let payload = serde_json::json!({"agent":agent,"description":model.map(|m|format!("MCP session - {m}")).
 unwrap_or_else(||"MCP session".to_string())})
-        .to_string();
+    .to_string();
     let headers = vec![
         ("content-type".to_string(), "application/json".to_string()),
         ("x-cortex-request".to_string(), "true".to_string()),
@@ -767,18 +590,12 @@ unwrap_or_else(||"MCP session".to_string())})
     .await
     {
         Ok((status, _)) if status.is_success() => SessionHeartbeatOutcome::Renewed,
-        Ok((status, _)) if status == reqwest::StatusCode::NOT_FOUND => {
-            SessionHeartbeatOutcome::MissingSession
-        }
+        Ok((status, _)) if status == reqwest::StatusCode::NOT_FOUND => SessionHeartbeatOutcome::MissingSession,
         Ok(_) | Err(_) => SessionHeartbeatOutcome::Failed,
     }
 }
 pub(crate) async fn session_end(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: &str,
-    allow_local_token_fallback: bool,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, allow_local_token_fallback: bool,
 ) -> bool {
     let payload = serde_json::json!
 ({"agent":agent})
@@ -805,11 +622,7 @@ pub(crate) async fn session_end(
     }
 }
 pub(crate) async fn finalize_proxy_session(
-    client: &reqwest::Client,
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: &str,
-    allow_local_token_fallback: bool,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, allow_local_token_fallback: bool,
 ) {
     let _ = session_end(client, base_url, api_key, agent, allow_local_token_fallback).await;
 }

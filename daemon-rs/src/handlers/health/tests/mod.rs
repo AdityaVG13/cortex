@@ -35,9 +35,6 @@ fn private_runtime_details_require_cortex_header_and_loopback_peer() {
     assert!(!include_private_runtime_details(&headers));
     headers.insert("x-cortex-request", HeaderValue::from_static("true"));
     assert!(include_private_runtime_details(&headers));
-    headers.insert(
-        crate::handlers::CORTEX_PEER_IP_HEADER,
-        HeaderValue::from_static("203.0.113.9"),
-    );
+    headers.insert(crate::handlers::CORTEX_PEER_IP_HEADER, HeaderValue::from_static("203.0.113.9"));
     assert!(!include_private_runtime_details(&headers));
 }

@@ -18,11 +18,7 @@ const CTX_API_KEY_LEN: usize = 50;
 pub const CORTEX_PEER_IP_HEADER: &str = "x-cortex-peer-ip";
 #[allow(clippy::result_large_err)]
 pub fn ensure_ssrf_protection(headers: &HeaderMap) -> Result<(), Response> {
-    match headers
-        .get("x-cortex-request")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-    {
+    match headers.get("x-cortex-request").and_then(|v| v.to_str().ok()).map(str::trim) {
         Some(value) if !value.is_empty() => Ok(()),
         _ => Err(json_response(
             StatusCode::FORBIDDEN,
@@ -37,27 +33,18 @@ pub fn ensure_auth(headers: &HeaderMap, state: &RuntimeState) -> Result<(), Resp
     let _candidate = match extract_auth_token(headers) {
         Some(candidate) if token_matches_state(&candidate, state) => candidate,
         _ => {
-            return Err(json_response(
-                StatusCode::UNAUTHORIZED,
-                serde_json::json!({"error":"Unauthorized"}),
-            ));
+            return Err(json_response(StatusCode::UNAUTHORIZED, serde_json::json!({"error":"Unauthorized"})));
         }
     };
     Ok(())
 }
 #[allow(clippy::result_large_err)]
-pub fn ensure_auth_with_caller(
-    headers: &HeaderMap,
-    state: &RuntimeState,
-) -> Result<Option<i64>, Response> {
+pub fn ensure_auth_with_caller(headers: &HeaderMap, state: &RuntimeState) -> Result<Option<i64>, Response> {
     ensure_ssrf_protection(headers)?;
     let candidate = match extract_auth_token(headers) {
         Some(candidate) => candidate,
         None => {
-            return Err(json_response(
-                StatusCode::UNAUTHORIZED,
-                serde_json::json!({"error":"Unauthorized"}),
-            ));
+            return Err(json_response(StatusCode::UNAUTHORIZED, serde_json::json!({"error":"Unauthorized"})));
         }
     };
     let caller = if constant_time_eq(&candidate, state.token.as_str()) {
@@ -88,41 +75,24 @@ pub fn ensure_auth_with_caller(
             }
         }
     } else {
-        return Err(json_response(
-            StatusCode::UNAUTHORIZED,
-            serde_json::json!({"error":"Unauthorized"}),
-        ));
+        return Err(json_response(StatusCode::UNAUTHORIZED, serde_json::json!({"error":"Unauthorized"})));
     };
     Ok(caller)
 }
 #[allow(clippy::result_large_err)]
-pub fn ensure_admin(
-    headers: &HeaderMap,
-    state: &RuntimeState,
-    conn: &rusqlite::Connection,
-) -> Result<i64, Response> {
+pub fn ensure_admin(headers: &HeaderMap, state: &RuntimeState, conn: &rusqlite::Connection) -> Result<i64, Response> {
     let caller = ensure_auth_with_caller(headers, state)?;
     let user_id = match caller {
         Some(id) => id,
         None => {
-            return Err(json_response(
-                StatusCode::FORBIDDEN,
-                serde_json::json!({"error":"Admin endpoints require team mode"}),
-            ));
+            return Err(json_response(StatusCode::FORBIDDEN, serde_json::json!({"error":"Admin endpoints require team mode"})));
         }
     };
     let role: String = conn
-        .query_row(
-            "SELECT role FROM users WHERE id = ?1",
-            rusqlite::params![user_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT role FROM users WHERE id = ?1", rusqlite::params![user_id], |row| row.get(0))
         .unwrap_or_default();
     if role != "owner" && role != "admin" {
-        return Err(json_response(
-            StatusCode::FORBIDDEN,
-            serde_json::json!({"error":"Insufficient permissions"}),
-        ));
+        return Err(json_response(StatusCode::FORBIDDEN, serde_json::json!({"error":"Insufficient permissions"})));
     }
     Ok(user_id)
 }
@@ -138,9 +108,7 @@ pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
     let hashes = match state.team_api_key_hashes.read() {
         Ok(hashes) => hashes,
         Err(poisoned) => {
-            eprintln!(
-                "[cortex] recovering poisoned team_api_key_hashes lock while resolving caller"
-            );
+            eprintln!("[cortex] recovering poisoned team_api_key_hashes lock while resolving caller");
             poisoned.into_inner()
         }
     };
@@ -174,15 +142,11 @@ fn token_matches_state(candidate: &str, state: &RuntimeState) -> bool {
     let hashes = match state.team_api_key_hashes.read() {
         Ok(hashes) => hashes,
         Err(poisoned) => {
-            eprintln!(
-                "[cortex] recovering poisoned team_api_key_hashes lock while matching auth token"
-            );
+            eprintln!("[cortex] recovering poisoned team_api_key_hashes lock while matching auth token");
             poisoned.into_inner()
         }
     };
-    hashes
-        .iter()
-        .any(|(_, hash)| crate::auth::verify_api_key_argon2id(candidate, hash))
+    hashes.iter().any(|(_, hash)| crate::auth::verify_api_key_argon2id(candidate, hash))
 }
 #[allow(dead_code)]
 pub fn client_ip(headers: &HeaderMap) -> IpAddr {
@@ -197,17 +161,10 @@ fn should_apply_auth_failure_bucket(ip: IpAddr) -> bool {
 }
 #[allow(clippy::result_large_err)]
 pub async fn ensure_endpoint_budget(
-    headers: &HeaderMap,
-    state: &RuntimeState,
-    endpoint: BudgetEndpoint,
-    request_source: &str,
+    headers: &HeaderMap, state: &RuntimeState, endpoint: BudgetEndpoint, request_source: &str,
 ) -> Result<(), Response> {
     let ip = client_ip(headers);
-    let Some(decision) = state
-        .rate_limiter
-        .check_budget_for_endpoint(ip, endpoint)
-        .await
-    else {
+    let Some(decision) = state.rate_limiter.check_budget_for_endpoint(ip, endpoint).await else {
         return Ok(());
     };
     if decision.allowed {
@@ -216,27 +173,13 @@ pub async fn ensure_endpoint_budget(
     log_budget_rejection(state, &decision, request_source, &ip).await;
     Err(budget_denial_response(&decision))
 }
-pub async fn log_budget_rejection(
-    state: &RuntimeState,
-    decision: &BudgetDecision,
-    request_source: &str,
-    ip: &IpAddr,
-) {
+pub async fn log_budget_rejection(state: &RuntimeState, decision: &BudgetDecision, request_source: &str, ip: &IpAddr) {
     let conn = state.db.lock().await;
-    let _ = log_event(
-        &conn,
-        "budget_rejected",
-        decision.event_json(request_source, &ip.to_string()),
-        request_source,
-    );
+    let _ = log_event(&conn, "budget_rejected", decision.event_json(request_source, &ip.to_string()), request_source);
 }
 #[allow(dead_code)]
 fn budget_denial_response(decision: &BudgetDecision) -> Response {
-    let mut resp = (
-        StatusCode::TOO_MANY_REQUESTS,
-        Json(decision.http_body_json()),
-    )
-        .into_response();
+    let mut resp = (StatusCode::TOO_MANY_REQUESTS, Json(decision.http_body_json())).into_response();
     let headers = resp.headers_mut();
     if let Ok(v) = HeaderValue::from_str(&decision.retry_after_seconds.to_string()) {
         headers.insert("Retry-After", v);
@@ -249,11 +192,7 @@ pub async fn ensure_auth_rated(headers: &HeaderMap, state: &RuntimeState) -> Res
     ensure_auth_rated_for_class(headers, state, RequestClass::Default).await
 }
 #[allow(dead_code)]
-pub async fn ensure_auth_rated_for_class(
-    headers: &HeaderMap,
-    state: &RuntimeState,
-    class: RequestClass,
-) -> Result<(), Response> {
+pub async fn ensure_auth_rated_for_class(headers: &HeaderMap, state: &RuntimeState, class: RequestClass) -> Result<(), Response> {
     let ip = client_ip(headers);
     let apply_auth_failure_bucket = should_apply_auth_failure_bucket(ip);
     if apply_auth_failure_bucket {
@@ -276,17 +215,12 @@ pub async fn ensure_auth_rated_for_class(
     }
 }
 #[allow(dead_code)]
-pub async fn ensure_auth_with_caller_rated(
-    headers: &HeaderMap,
-    state: &RuntimeState,
-) -> Result<Option<i64>, Response> {
+pub async fn ensure_auth_with_caller_rated(headers: &HeaderMap, state: &RuntimeState) -> Result<Option<i64>, Response> {
     ensure_auth_with_caller_rated_for_class(headers, state, RequestClass::Default).await
 }
 #[allow(dead_code)]
 pub async fn ensure_auth_with_caller_rated_for_class(
-    headers: &HeaderMap,
-    state: &RuntimeState,
-    class: RequestClass,
+    headers: &HeaderMap, state: &RuntimeState, class: RequestClass,
 ) -> Result<Option<i64>, Response> {
     let ip = client_ip(headers);
     let apply_auth_failure_bucket = should_apply_auth_failure_bucket(ip);
@@ -326,10 +260,7 @@ fn rate_limit_response(retry_after: u64, remaining: usize) -> Response {
 }
 fn normalize_agent_label(raw_agent: &str, raw_model: Option<&str>) -> Option<String> {
     let mut agent = raw_agent.trim().to_string();
-    if agent.is_empty()
-        || agent.len() > MAX_SOURCE_LABEL_LEN
-        || agent.chars().any(|ch| ch.is_control())
-    {
+    if agent.is_empty() || agent.len() > MAX_SOURCE_LABEL_LEN || agent.chars().any(|ch| ch.is_control()) {
         return None;
     }
     if !agent.contains('(') {
@@ -348,10 +279,7 @@ fn normalize_agent_label(raw_agent: &str, raw_model: Option<&str>) -> Option<Str
 }
 fn normalize_model_label(raw_model: &str) -> Option<String> {
     let model = raw_model.trim();
-    if model.is_empty()
-        || model.len() > MAX_SOURCE_LABEL_LEN
-        || model.chars().any(|ch| ch.is_control())
-    {
+    if model.is_empty() || model.len() > MAX_SOURCE_LABEL_LEN || model.chars().any(|ch| ch.is_control()) {
         return None;
     }
     Some(model.to_string())
@@ -384,20 +312,13 @@ fn is_well_formed_ctx_api_key(candidate: &str) -> bool {
 pub fn runtime_token_matches(candidate: &str, state: &RuntimeState) -> bool {
     constant_time_eq(candidate, state.token.as_str())
 }
-pub async fn ensure_events_stream_auth(
-    headers: &HeaderMap,
-    query_token: Option<&str>,
-    state: &RuntimeState,
-) -> Result<(), Response> {
+pub async fn ensure_events_stream_auth(headers: &HeaderMap, query_token: Option<&str>, state: &RuntimeState) -> Result<(), Response> {
     if extract_auth_token(headers).is_some() {
         return ensure_auth_rated(headers, state).await;
     }
     let provided = query_token.unwrap_or("");
     if provided.is_empty() || !token_matches_state(provided, state) {
-        return Err(json_response(
-            StatusCode::UNAUTHORIZED,
-            serde_json::json!({"error":"Unauthorized"}),
-        ));
+        return Err(json_response(StatusCode::UNAUTHORIZED, serde_json::json!({"error":"Unauthorized"})));
     }
     Ok(())
 }
@@ -407,11 +328,7 @@ pub fn extract_auth_token(headers: &HeaderMap) -> Option<String> {
 pub fn resolve_source_identity(headers: &HeaderMap, fallback_agent: &str) -> SourceIdentity {
     let model = header_text(headers, "x-source-model").and_then(|raw| normalize_model_label(&raw));
     let fallback = fallback_agent.trim();
-    let fallback = if fallback.is_empty() {
-        "unknown"
-    } else {
-        fallback
-    };
+    let fallback = if fallback.is_empty() { "unknown" } else { fallback };
     let agent = header_text(headers, "x-source-agent")
         .and_then(|raw| normalize_agent_label(&raw, model.as_deref()))
         .or_else(|| normalize_agent_label(fallback, model.as_deref()))
@@ -426,11 +343,7 @@ fn session_presence_description(source: &SourceIdentity, description_prefix: &st
         .unwrap_or_else(|| description_prefix.to_string())
 }
 fn upsert_agent_presence(
-    conn: &rusqlite::Connection,
-    source: &SourceIdentity,
-    owner_id: Option<i64>,
-    project: &str,
-    description_prefix: &str,
+    conn: &rusqlite::Connection, source: &SourceIdentity, owner_id: Option<i64>, project: &str, description_prefix: &str,
 ) -> rusqlite::Result<()> {
     let now = now_iso();
     let expires_at = (Utc::now() + Duration::hours(2)).to_rfc3339();
@@ -438,49 +351,39 @@ fn upsert_agent_presence(
     let description = session_presence_description(source, description_prefix);
     if let Some(owner_id) = owner_id {
         conn.execute(
-"INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+            "INSERT INTO sessions (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
              VALUES (?1, ?2, ?3, ?4, '[]', ?5, ?6, ?6, ?7)
              ON CONFLICT(owner_id, agent) DO UPDATE SET
                description = excluded.description,
                project = excluded.project,
                files_json = excluded.files_json,
                last_heartbeat = excluded.last_heartbeat,
-               expires_at = excluded.expires_at"
-,rusqlite::params![source.agent.as_str(),owner_id,session_id,project,description,now,expires_at],)?;
+               expires_at = excluded.expires_at",
+            rusqlite::params![source.agent.as_str(), owner_id, session_id, project, description, now, expires_at],
+        )?;
     } else {
         conn.execute(
-"INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+            "INSERT INTO sessions (agent, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
              VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?5, ?6)
              ON CONFLICT(agent) DO UPDATE SET
                description = excluded.description,
                project = excluded.project,
                files_json = excluded.files_json,
                last_heartbeat = excluded.last_heartbeat,
-               expires_at = excluded.expires_at"
-,rusqlite::params![source.agent.as_str(),session_id,project,description,now,expires_at],)?;
+               expires_at = excluded.expires_at",
+            rusqlite::params![source.agent.as_str(), session_id, project, description, now, expires_at],
+        )?;
     }
     Ok(())
 }
 pub async fn register_agent_presence(
-    state: &RuntimeState,
-    source: &SourceIdentity,
-    caller_id: Option<i64>,
-    project: &str,
-    description_prefix: &str,
+    state: &RuntimeState, source: &SourceIdentity, caller_id: Option<i64>, project: &str, description_prefix: &str,
 ) {
-    let owner_id = if state.team_mode {
-        caller_id.or(state.default_owner_id)
-    } else {
-        None
-    };
+    let owner_id = if state.team_mode { caller_id.or(state.default_owner_id) } else { None };
     let conn = state.db.lock().await;
     let _ = upsert_agent_presence(&conn, source, owner_id, project, description_prefix);
 }
-pub async fn register_agent_presence_from_headers(
-    state: &RuntimeState,
-    headers: &HeaderMap,
-    caller_id: Option<i64>,
-) {
+pub async fn register_agent_presence_from_headers(state: &RuntimeState, headers: &HeaderMap, caller_id: Option<i64>) {
     if headers.get("x-source-agent").is_none() {
         return;
     }

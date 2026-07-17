@@ -15,10 +15,7 @@ pub(crate) fn step_detect() -> Vec<DetectedTool> {
             name: "Claude Code",
             agent_name: "claude",
             config_path: None,
-            config_method: ConfigMethod::CliCommand {
-                program: "claude",
-                args: &["mcp", "add", "cortex", "-s", "user", "--"],
-            },
+            config_method: ConfigMethod::CliCommand { program: "claude", args: &["mcp", "add", "cortex", "-s", "user", "--"] },
         });
     }
     if let Some(config_path) = find_claude_desktop_config() {
@@ -41,10 +38,7 @@ pub(crate) fn step_detect() -> Vec<DetectedTool> {
             name: "Codex CLI",
             agent_name: "codex",
             config_path: None,
-            config_method: ConfigMethod::CliCommand {
-                program: "codex",
-                args: &["mcp", "add", "cortex", "--"],
-            },
+            config_method: ConfigMethod::CliCommand { program: "codex", args: &["mcp", "add", "cortex", "--"] },
         });
     }
     if let Some(config_path) = find_cursor_config() {
@@ -81,38 +75,21 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            paths.push(
-                PathBuf::from(appdata)
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            );
+            paths.push(PathBuf::from(appdata).join("Claude").join("claude_desktop_config.json"));
         }
     }
     #[cfg(target_os = "macos")]
     {
         if let Some(home) = dirs::home_dir() {
-            paths.push(
-                home.join("Library")
-                    .join("Application Support")
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            );
+            paths.push(home.join("Library").join("Application Support").join("Claude").join("claude_desktop_config.json"));
         }
     }
     #[cfg(target_os = "linux")]
     {
         if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
-            paths.push(
-                PathBuf::from(config)
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            );
+            paths.push(PathBuf::from(config).join("Claude").join("claude_desktop_config.json"));
         } else if let Some(home) = dirs::home_dir() {
-            paths.push(
-                home.join(".config")
-                    .join("Claude")
-                    .join("claude_desktop_config.json"),
-            );
+            paths.push(home.join(".config").join("Claude").join("claude_desktop_config.json"));
         }
     }
     paths
@@ -138,18 +115,10 @@ pub(crate) fn find_existing_config(path: PathBuf) -> Option<PathBuf> {
 fn command_exists(cmd: &str) -> bool {
     #[cfg(windows)]
     {
-        Command::new("where")
-            .arg(cmd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        Command::new("where").arg(cmd).output().map(|o| o.status.success()).unwrap_or(false)
     }
     #[cfg(not(windows))]
     {
-        Command::new("which")
-            .arg(cmd)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        Command::new("which").arg(cmd).output().map(|o| o.status.success()).unwrap_or(false)
     }
 }

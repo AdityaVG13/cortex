@@ -1,6 +1,5 @@
 use super::{
-    ensure_auth_with_caller_rated, json_response, now_iso, parse_duration_to_seconds,
-    parse_json_array, redact_secrets, require_team_caller,
+    ensure_auth_with_caller_rated, json_response, now_iso, parse_duration_to_seconds, parse_json_array, redact_secrets, require_team_caller,
 };
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
@@ -16,10 +15,7 @@ use uuid::Uuid;
 const MAX_FEED: i64 = 200;
 const FEED_TTL_SECONDS: i64 = 4 * 60 * 60;
 #[allow(clippy::result_large_err)]
-fn owner_id_from_request(
-    state: &RuntimeState,
-    caller_id: Option<i64>,
-) -> Result<Option<i64>, Response> {
+fn owner_id_from_request(state: &RuntimeState, caller_id: Option<i64>) -> Result<Option<i64>, Response> {
     require_team_caller(state, caller_id).map(|id| if state.team_mode { id } else { None })
 }
 #[derive(Clone)]
@@ -91,10 +87,7 @@ entry.timestamp,"tokens":entry.tokens})
 fn clean_old_feed(conn: &rusqlite::Connection, owner_id: Option<i64>) -> rusqlite::Result<()> {
     let cutoff = (Utc::now() - Duration::seconds(FEED_TTL_SECONDS)).to_rfc3339();
     if let Some(owner_id) = owner_id {
-        conn.execute(
-            "DELETE FROM feed WHERE owner_id = ?1 AND timestamp < ?2",
-            params![owner_id, cutoff],
-        )?;
+        conn.execute("DELETE FROM feed WHERE owner_id = ?1 AND timestamp < ?2", params![owner_id, cutoff])?;
         conn.execute(
             "DELETE FROM feed
              WHERE owner_id = ?1
@@ -122,26 +115,21 @@ fn clean_old_feed(conn: &rusqlite::Connection, owner_id: Option<i64>) -> rusqlit
     }
     Ok(())
 }
-fn fetch_feed_since(
-    conn: &rusqlite::Connection,
-    cutoff: &str,
-    owner_id: Option<i64>,
-) -> Result<Vec<FeedEntry>, String> {
-    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) =
-        owner_id
-    {
+fn fetch_feed_since(conn: &rusqlite::Connection, cutoff: &str, owner_id: Option<i64>) -> Result<Vec<FeedEntry>, String> {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(owner_id) = owner_id {
         (
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
-             FROM feed WHERE owner_id = ?1 AND timestamp >= ?2 ORDER BY timestamp ASC"
-,vec![Box::new(owner_id),Box::new(cutoff.to_string())],)
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             FROM feed WHERE owner_id = ?1 AND timestamp >= ?2 ORDER BY timestamp ASC",
+            vec![Box::new(owner_id), Box::new(cutoff.to_string())],
+        )
     } else {
         (
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
-             FROM feed WHERE timestamp >= ?1 ORDER BY timestamp ASC"
-,vec![Box::new(cutoff.to_string())],)
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             FROM feed WHERE timestamp >= ?1 ORDER BY timestamp ASC",
+            vec![Box::new(cutoff.to_string())],
+        )
     };
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(param_refs), feed_entry_from_row)
@@ -152,14 +140,10 @@ fn fetch_feed_since(
     }
     Ok(out)
 }
-fn fetch_recent_non_self_feed(
-    conn: &rusqlite::Connection,
-    for_agent: &str,
-    owner_id: Option<i64>,
-) -> Result<Vec<FeedEntry>, String> {
-    let mut
-stmt=if owner_id.is_some(){conn.prepare(
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+fn fetch_recent_non_self_feed(conn: &rusqlite::Connection, for_agent: &str, owner_id: Option<i64>) -> Result<Vec<FeedEntry>, String> {
+    let mut stmt = if owner_id.is_some() {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
              FROM (
                SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
                FROM feed
@@ -167,9 +151,11 @@ stmt=if owner_id.is_some(){conn.prepare(
                ORDER BY timestamp DESC
                LIMIT ?3
              )
-             ORDER BY timestamp ASC"
-,)}else{conn.prepare(
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             ORDER BY timestamp ASC",
+        )
+    } else {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
              FROM (
                SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
                FROM feed
@@ -177,8 +163,10 @@ stmt=if owner_id.is_some(){conn.prepare(
                ORDER BY timestamp DESC
                LIMIT ?2
              )
-             ORDER BY timestamp ASC"
-,)}.map_err(|e|e.to_string())?;
+             ORDER BY timestamp ASC",
+        )
+    }
+    .map_err(|e| e.to_string())?;
     let rows = if let Some(owner_id) = owner_id {
         stmt.query_map(params![owner_id, for_agent, MAX_FEED], feed_entry_from_row)
     } else {
@@ -192,37 +180,31 @@ stmt=if owner_id.is_some(){conn.prepare(
     Ok(out)
 }
 fn fetch_unread_since_anchor(
-    conn: &rusqlite::Connection,
-    for_agent: &str,
-    owner_id: Option<i64>,
-    anchor_timestamp: &str,
-    anchor_id: &str,
+    conn: &rusqlite::Connection, for_agent: &str, owner_id: Option<i64>, anchor_timestamp: &str, anchor_id: &str,
 ) -> Result<Vec<FeedEntry>, String> {
-    let mut stmt=if owner_id.is_some(){conn
-.prepare(
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+    let mut stmt = if owner_id.is_some() {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
              FROM feed
              WHERE owner_id = ?1
                AND agent != ?2
                AND (timestamp > ?3 OR (timestamp = ?3 AND id > ?4))
-             ORDER BY timestamp ASC"
-,)}else{conn.prepare(
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
+             ORDER BY timestamp ASC",
+        )
+    } else {
+        conn.prepare(
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens
              FROM feed
              WHERE agent != ?1
                AND (timestamp > ?2 OR (timestamp = ?2 AND id > ?3))
-             ORDER BY timestamp ASC"
-,)}.map_err(|e|e.to_string())?;
+             ORDER BY timestamp ASC",
+        )
+    }
+    .map_err(|e| e.to_string())?;
     let rows = if let Some(owner_id) = owner_id {
-        stmt.query_map(
-            params![owner_id, for_agent, anchor_timestamp, anchor_id],
-            feed_entry_from_row,
-        )
+        stmt.query_map(params![owner_id, for_agent, anchor_timestamp, anchor_id], feed_entry_from_row)
     } else {
-        stmt.query_map(
-            params![for_agent, anchor_timestamp, anchor_id],
-            feed_entry_from_row,
-        )
+        stmt.query_map(params![for_agent, anchor_timestamp, anchor_id], feed_entry_from_row)
     }
     .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
@@ -231,47 +213,29 @@ fn fetch_unread_since_anchor(
     }
     Ok(out)
 }
-fn get_unread_feed(
-    conn: &rusqlite::Connection,
-    for_agent: &str,
-    owner_id: Option<i64>,
-) -> Result<Vec<FeedEntry>, String> {
+fn get_unread_feed(conn: &rusqlite::Connection, for_agent: &str, owner_id: Option<i64>) -> Result<Vec<FeedEntry>, String> {
     let ack = if let Some(owner_id) = owner_id {
-        conn.query_row(
-            "SELECT last_seen_id FROM feed_acks WHERE owner_id = ?1 AND agent = ?2",
-            params![owner_id, for_agent],
-            |row| row.get::<_, String>(0),
-        )
+        conn.query_row("SELECT last_seen_id FROM feed_acks WHERE owner_id = ?1 AND agent = ?2", params![owner_id, for_agent], |row| {
+            row.get::<_, String>(0)
+        })
         .optional()
         .map_err(|e| e.to_string())?
     } else {
-        conn.query_row(
-            "SELECT last_seen_id FROM feed_acks WHERE agent = ?1",
-            params![for_agent],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
+        conn.query_row("SELECT last_seen_id FROM feed_acks WHERE agent = ?1", params![for_agent], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(|e| e.to_string())?
     };
     let Some(ack_id) = ack else {
         return fetch_recent_non_self_feed(conn, for_agent, owner_id);
     };
     let ack_timestamp: Option<String> = if let Some(owner_id) = owner_id {
-        conn.query_row(
-            "SELECT timestamp FROM feed WHERE owner_id = ?1 AND id = ?2",
-            params![owner_id, ack_id.clone()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
+        conn.query_row("SELECT timestamp FROM feed WHERE owner_id = ?1 AND id = ?2", params![owner_id, ack_id.clone()], |row| row.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
     } else {
-        conn.query_row(
-            "SELECT timestamp FROM feed WHERE id = ?1",
-            params![ack_id.clone()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?
+        conn.query_row("SELECT timestamp FROM feed WHERE id = ?1", params![ack_id.clone()], |row| row.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
     };
     let Some(anchor_timestamp) = ack_timestamp else {
         return fetch_recent_non_self_feed(conn, for_agent, owner_id);
@@ -280,17 +244,26 @@ fn get_unread_feed(
 }
 fn insert_feed_entry(conn: &rusqlite::Connection, entry: &FeedEntry) -> Result<(), String> {
     conn.execute(
-"INSERT INTO feed (id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
-,params![entry.id,entry.agent,entry.kind,entry.summary,entry.content,entry.files.to_string(),entry.task_id,entry.trace_id,entry.
-priority,entry.timestamp,entry.tokens],).map_err(|e|e.to_string())?;
+        "INSERT INTO feed (id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            entry.id,
+            entry.agent,
+            entry.kind,
+            entry.summary,
+            entry.content,
+            entry.files.to_string(),
+            entry.task_id,
+            entry.trace_id,
+            entry.priority,
+            entry.timestamp,
+            entry.tokens
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
-pub async fn handle_post_feed(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FeedRequest>,
-) -> Response {
+pub async fn handle_post_feed(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FeedRequest>) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -298,28 +271,19 @@ pub async fn handle_post_feed(
     let agent = match body.agent {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Missing required fields: agent, kind, summary"}),
-            );
+            return json_response(StatusCode::BAD_REQUEST, json!({"error":"Missing required fields: agent, kind, summary"}));
         }
     };
     let kind = match body.kind {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Missing required fields: agent, kind, summary"}),
-            );
+            return json_response(StatusCode::BAD_REQUEST, json!({"error":"Missing required fields: agent, kind, summary"}));
         }
     };
     let summary = match body.summary {
         Some(v) if !v.trim().is_empty() => v,
         _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Missing required fields: agent, kind, summary"}),
-            );
+            return json_response(StatusCode::BAD_REQUEST, json!({"error":"Missing required fields: agent, kind, summary"}));
         }
     };
     let entry = FeedEntry {
@@ -354,10 +318,7 @@ pub async fn handle_post_feed(
     match inserted {
         Ok(()) => {
             checkpoint_wal_best_effort(&conn);
-            state.emit(
-                "feed",
-                json!({"feedId":entry.id,"agent":agent,"kind":kind,"summary":entry.summary}),
-            );
+            state.emit("feed", json!({"feedId":entry.id,"agent":agent,"kind":kind,"summary":entry.summary}));
             json_response(
                 StatusCode::CREATED,
                 json!(
@@ -371,11 +332,7 @@ pub async fn handle_post_feed(
         ),
     }
 }
-pub async fn handle_get_feed(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Query(query): Query<FeedQuery>,
-) -> Response {
+pub async fn handle_get_feed(State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<FeedQuery>) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -399,17 +356,10 @@ pub async fn handle_get_feed(
     if let Some(kind) = query.kind {
         entries.retain(|e| e.kind == kind);
     }
-    let slim = entries
-        .iter()
-        .map(|e| feed_to_json(e, false))
-        .collect::<Vec<_>>();
+    let slim = entries.iter().map(|e| feed_to_json(e, false)).collect::<Vec<_>>();
     json_response(StatusCode::OK, json!({"entries":slim}))
 }
-pub async fn handle_get_feed_by_id(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Path(feed_id): Path<String>,
-) -> Response {
+pub async fn handle_get_feed_by_id(State(state): State<RuntimeState>, headers: HeaderMap, Path(feed_id): Path<String>) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -427,24 +377,34 @@ get(4)?,files:parse_json_array(&row.get::<_,String>(5)?),task_id:row.get(6)?,tra
 row.get(9)?,tokens:row.get(10)?,})},).optional().ok().flatten()
     } else {
         conn.query_row(
-"SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens FROM feed WHERE id = ?1",
-params![feed_id],|row|{Ok(FeedEntry{id:row.get(0)?,agent:row.get(1)?,kind:row.get(2)?,summary:row.get(3)?,content:row.get(4)?,
-files:parse_json_array(&row.get::<_,String>(5)?),task_id:row.get(6)?,trace_id:row.get(7)?,priority:row.get(8)?,timestamp:row.get(9
-)?,tokens:row.get(10)?,})},).optional().ok().flatten()
+            "SELECT id, agent, kind, summary, content, files_json, task_id, trace_id, priority, timestamp, tokens FROM feed WHERE id = ?1",
+            params![feed_id],
+            |row| {
+                Ok(FeedEntry {
+                    id: row.get(0)?,
+                    agent: row.get(1)?,
+                    kind: row.get(2)?,
+                    summary: row.get(3)?,
+                    content: row.get(4)?,
+                    files: parse_json_array(&row.get::<_, String>(5)?),
+                    task_id: row.get(6)?,
+                    trace_id: row.get(7)?,
+                    priority: row.get(8)?,
+                    timestamp: row.get(9)?,
+                    tokens: row.get(10)?,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
     };
     match entry {
         Some(entry) => json_response(StatusCode::OK, feed_to_json(&entry, true)),
-        None => json_response(
-            StatusCode::NOT_FOUND,
-            json!({"error":"feed_entry_not_found"}),
-        ),
+        None => json_response(StatusCode::NOT_FOUND, json!({"error":"feed_entry_not_found"})),
     }
 }
-pub async fn handle_feed_ack(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FeedAckRequest>,
-) -> Response {
+pub async fn handle_feed_ack(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FeedAckRequest>) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -462,10 +422,7 @@ pub async fn handle_feed_ack(
     let last_seen_id = match body.last_seen_id {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Missing required fields: agent, lastSeenId"}),
-            );
+            return json_response(StatusCode::BAD_REQUEST, json!({"error":"Missing required fields: agent, lastSeenId"}));
         }
     };
     let owner_id = match owner_id_from_request(&state, caller_id) {
@@ -475,14 +432,16 @@ pub async fn handle_feed_ack(
     let conn = state.db.lock().await;
     let acked = if let Some(owner_id) = owner_id {
         conn.execute(
-"INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at"
-,params![owner_id,agent,last_seen_id,now_iso()],)
+            "INSERT INTO feed_acks (owner_id, agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner_id, agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+            params![owner_id, agent, last_seen_id, now_iso()],
+        )
     } else {
         conn.execute(
-"INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at"
-,params![agent,last_seen_id,now_iso()],)
+            "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(agent) DO UPDATE SET last_seen_id = excluded.last_seen_id, updated_at = excluded.updated_at",
+            params![agent, last_seen_id, now_iso()],
+        )
     };
     match acked {
         Ok(_) => {
@@ -493,10 +452,7 @@ pub async fn handle_feed_ack(
 ({"acked":true}),
             )
         }
-        Err(err) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({"error":format!("Feed ack failed: {err}")}),
-        ),
+        Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Feed ack failed: {err}")})),
     }
 }
 #[cfg(test)]

@@ -9,13 +9,7 @@ mod tests {
         assert_eq!(bounded_ttl_seconds(Some(60), 300), 60);
         assert_eq!(bounded_ttl_seconds(Some(0), 300), 1);
         assert_eq!(bounded_ttl_seconds(Some(-60), 300), 1);
-        assert_eq!(
-            bounded_ttl_seconds(Some(MAX_REQUEST_TTL_SECONDS + 1), 300),
-            MAX_REQUEST_TTL_SECONDS
-        );
-        assert_eq!(
-            bounded_ttl_seconds(Some(i64::MAX), SESSION_TTL_SECONDS),
-            MAX_REQUEST_TTL_SECONDS
-        );
+        assert_eq!(bounded_ttl_seconds(Some(MAX_REQUEST_TTL_SECONDS + 1), 300), MAX_REQUEST_TTL_SECONDS);
+        assert_eq!(bounded_ttl_seconds(Some(i64::MAX), SESSION_TTL_SECONDS), MAX_REQUEST_TTL_SECONDS);
     }
 }

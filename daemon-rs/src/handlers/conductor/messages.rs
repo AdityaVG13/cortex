@@ -9,11 +9,7 @@ use axum::Json;
 use rusqlite::params;
 use serde_json::json;
 use uuid::Uuid;
-pub async fn handle_post_message(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<MessageRequest>,
-) -> Response {
+pub async fn handle_post_message(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<MessageRequest>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -28,10 +24,7 @@ pub async fn handle_post_message(
     let message = match body.message {
         Some(v) if !v.trim().is_empty() => v,
         _ => {
-            return json_response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":"Missing required fields: from, to, message"}),
-            );
+            return json_response(StatusCode::BAD_REQUEST, json!({"error":"Missing required fields: from, to, message"}));
         }
     };
     let id = Uuid::new_v4().to_string();
@@ -40,12 +33,14 @@ pub async fn handle_post_message(
     let owner_id = owner_id_from_headers(&headers, &state);
     let insert = if let Some(owner_id) = owner_id {
         conn.execute(
-"INSERT INTO messages (id, sender, recipient, message, timestamp, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",params![id.clone(),
-from,to,message,now_iso(),owner_id],)
+            "INSERT INTO messages (id, sender, recipient, message, timestamp, owner_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id.clone(), from, to, message, now_iso(), owner_id],
+        )
     } else {
         conn.execute(
-"INSERT INTO messages (id, sender, recipient, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",params![id.clone(),from,to,message,
-now_iso()],)
+            "INSERT INTO messages (id, sender, recipient, message, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id.clone(), from, to, message, now_iso()],
+        )
     };
     match insert {
         Ok(_) => {
@@ -56,17 +51,10 @@ now_iso()],)
 id}),
             )
         }
-        Err(err) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({"error":format!("Post message failed: {err}")}),
-        ),
+        Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Post message failed: {err}")})),
     }
 }
-pub async fn handle_get_messages(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Query(query): Query<MessagesQuery>,
-) -> Response {
+pub async fn handle_get_messages(State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<MessagesQuery>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }

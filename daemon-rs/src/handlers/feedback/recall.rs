@@ -20,11 +20,7 @@ pub struct FeedbackRequest {
     pub signal: Option<f64>,
     pub agent: Option<String>,
 }
-pub async fn handle_feedback(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FeedbackRequest>,
-) -> Response {
+pub async fn handle_feedback(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FeedbackRequest>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -35,10 +31,7 @@ pub async fn handle_feedback(
     let agent = body.agent.as_deref().unwrap_or("http");
     let query_text = body.query.as_deref().unwrap_or("");
     let query_embedding = match state.embedding_engine.clone() {
-        Some(engine) => engine
-            .embed_query_async(query_text.to_string())
-            .await
-            .map(|v| embeddings::vector_to_blob(&v)),
+        Some(engine) => engine.embed_query_async(query_text.to_string()).await.map(|v| embeddings::vector_to_blob(&v)),
         None => None,
     };
     let conn = state.db.lock().await;
@@ -46,10 +39,13 @@ pub async fn handle_feedback(
     for source in &body.sources {
         let (result_type, result_id) = parse_source(source);
         match conn.execute(
-"INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-,params![query_text,query_embedding,source,result_type,result_id,signal,agent,],){Ok(_)=>stored+=1,Err(e)=>eprintln!(
-"[feedback] Failed to store for {source}: {e}"),}
+            "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![query_text, query_embedding, source, result_type, result_id, signal, agent,],
+        ) {
+            Ok(_) => stored += 1,
+            Err(e) => eprintln!("[feedback] Failed to store for {source}: {e}"),
+        }
     }
     json_response(
         StatusCode::OK,
@@ -57,56 +53,36 @@ pub async fn handle_feedback(
 body.sources,}),
     )
 }
-pub fn record_unfold_feedback(
-    conn: &Connection,
-    sources: &[String],
-    agent: &str,
-    query_text: &str,
-    query_blob: Option<&[u8]>,
-) {
+pub fn record_unfold_feedback(conn: &Connection, sources: &[String], agent: &str, query_text: &str, query_blob: Option<&[u8]>) {
     for source in sources {
         let (result_type, result_id) = parse_source(source);
-        let _=conn.execute(
-"INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6)"
-,params![query_text,query_blob,source,result_type,result_id,agent],);
+        let _ = conn.execute(
+            "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6)",
+            params![query_text, query_blob, source, result_type, result_id, agent],
+        );
     }
 }
-pub fn compute_boosts(
-    conn: &Connection,
-    sources: &[String],
-    query_vector: Option<&[f32]>,
-) -> std::collections::HashMap<String, f64> {
+pub fn compute_boosts(conn: &Connection, sources: &[String], query_vector: Option<&[f32]>) -> std::collections::HashMap<String, f64> {
     let mut boosts = std::collections::HashMap::new();
     if sources.is_empty() {
         return boosts;
     }
     let decay_lambda = (2.0f64).ln() / DECAY_HALF_LIFE_DAYS;
-    let placeholders = sources
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!("?{}", i + 1))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql=format!(
-"SELECT result_source, signal, query_embedding, julianday('now') - julianday(created_at) AS age_days \
+    let placeholders = sources.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT result_source, signal, query_embedding, julianday('now') - julianday(created_at) AS age_days \
          FROM recall_feedback WHERE result_source IN ({placeholders})"
-);
+    );
     if let Ok(mut stmt) = conn.prepare(&sql) {
-        let params: Vec<&dyn rusqlite::types::ToSql> = sources
-            .iter()
-            .map(|s| s as &dyn rusqlite::types::ToSql)
-            .collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = sources.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
         if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
             let source: String = row.get(0)?;
             let signal: f64 = row.get(1)?;
             let query_blob: Option<Vec<u8>> = row.get(2)?;
             let age_days: f64 = row.get::<_, f64>(3)?.max(0.0);
             let query_weight = query_similarity_weight(query_vector, query_blob.as_deref());
-            Ok((
-                source,
-                signal * query_weight * (-decay_lambda * age_days).exp(),
-            ))
+            Ok((source, signal * query_weight * (-decay_lambda * age_days).exp()))
         }) {
             for row in rows.flatten() {
                 *boosts.entry(row.0).or_insert(0.0) += row.1;
@@ -153,37 +129,20 @@ fn parse_source(source: &str) -> (String, Option<i64>) {
         ("unknown".to_string(), None)
     }
 }
-pub async fn handle_feedback_stats(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_feedback_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0))
-        .unwrap_or(0);
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0)).unwrap_or(0);
     let positive: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM recall_feedback WHERE signal > 0",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal > 0", [], |row| row.get(0))
         .unwrap_or(0);
     let negative: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM recall_feedback WHERE signal < 0",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal < 0", [], |row| row.get(0))
         .unwrap_or(0);
     let unique_sources: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT result_source) FROM recall_feedback",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(DISTINCT result_source) FROM recall_feedback", [], |row| row.get(0))
         .unwrap_or(0);
     let top: Vec<Value> = conn
         .prepare(
@@ -194,10 +153,8 @@ pub async fn handle_feedback_stats(
         )
         .and_then(|mut stmt| {
             let rows = stmt.query_map([], |row| {
-                Ok(
-                    json!({"source":row.get::<_,String>(0)?,"totalSignal":row.get::<_,f64>(
-1)?,"hits":row.get::<_,i64>(2)?,}),
-                )
+                Ok(json!({"source":row.get::<_,String>(0)?,"totalSignal":row.get::<_,f64>(
+1)?,"hits":row.get::<_,i64>(2)?,}))
             })?;
             Ok(rows.flatten().collect())
         })

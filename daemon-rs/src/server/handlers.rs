@@ -3,10 +3,7 @@ use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
-pub(crate) async fn handle_compact(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_compact(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -22,10 +19,7 @@ pub(crate) async fn handle_compact(
 "bytesBefore":result.bytes_before,"bytesAfter":result.bytes_after,"savedKB":(result.bytes_before-result.bytes_after)/1024,}),
     )
 }
-pub(crate) async fn handle_compact_benchmark(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_compact_benchmark(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -40,21 +34,14 @@ pub(crate) async fn handle_compact_benchmark(
 "bytesAfter":result.bytes_after,"savedKB":(result.bytes_before-result.bytes_after)/1024,}),
     )
 }
-pub(crate) async fn handle_storage(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_storage(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
     let breakdown = crate::compaction::storage_breakdown(&conn);
-    let total_bytes: i64 = conn
-        .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(0)
-        * conn
-            .query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0))
-            .unwrap_or(4096);
+    let total_bytes: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0)).unwrap_or(0)
+        * conn.query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0)).unwrap_or(4096);
     let tables: Vec<serde_json::Value> = breakdown
         .iter()
         .map(|(name, count)| {
@@ -68,24 +55,15 @@ pub(crate) async fn handle_storage(
 total_bytes,"totalMB":format!("{:.1}",total_bytes as f64/1_048_576.0),"tables":tables,}),
     )
 }
-pub(crate) async fn handle_crystals(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_crystals(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
     let crystals = crate::crystallize::list_crystals(&conn);
-    handlers::json_response(
-        axum::http::StatusCode::OK,
-        serde_json::json!({"crystals":crystals,"count":crystals.len()}),
-    )
+    handlers::json_response(axum::http::StatusCode::OK, serde_json::json!({"crystals":crystals,"count":crystals.len()}))
 }
-pub(crate) async fn handle_crystallize(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_crystallize(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -109,9 +87,7 @@ pub(crate) struct FocusRequest {
     agent: Option<String>,
 }
 pub(crate) async fn handle_focus_start(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FocusRequest>,
+    State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>,
 ) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
@@ -119,10 +95,7 @@ pub(crate) async fn handle_focus_start(
     let label = match &body.label {
         Some(l) if !l.is_empty() => l.as_str(),
         _ => {
-            return handlers::json_error(
-                axum::http::StatusCode::BAD_REQUEST,
-                "Missing field: label",
-            );
+            return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label");
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
@@ -133,9 +106,7 @@ pub(crate) async fn handle_focus_start(
     }
 }
 pub(crate) async fn handle_focus_end(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FocusRequest>,
+    State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>,
 ) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
@@ -143,10 +114,7 @@ pub(crate) async fn handle_focus_end(
     let label = match &body.label {
         Some(l) if !l.is_empty() => l.as_str(),
         _ => {
-            return handlers::json_error(
-                axum::http::StatusCode::BAD_REQUEST,
-                "Missing field: label",
-            );
+            return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label");
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");

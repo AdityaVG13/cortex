@@ -8,13 +8,7 @@ use std::time::Duration;
 pub(crate) const BACKUP_RETENTION_COUNT: usize = 3;
 const BRIDGE_BACKUP_CLEANUP_SCHEMA_VERSION: i32 = 5;
 const LOG_ROTATION_BYTES: u64 = 1024 * 1024;
-const STARTUP_LOG_FILES: &[&str] = &[
-    "daemon.log",
-    "daemon.err.log",
-    "daemon.out.log",
-    "mcp-crash.log",
-    "rust-daemon.err.log",
-];
+const STARTUP_LOG_FILES: &[&str] = &["daemon.log", "daemon.err.log", "daemon.out.log", "mcp-crash.log", "rust-daemon.err.log"];
 pub(crate) fn should_backup(backup_dir: &Path) -> bool {
     let last_backup_file = backup_dir.join(".last_backup");
     if !last_backup_file.exists() {
@@ -174,12 +168,7 @@ fn path_size_bytes(path: &Path) -> u64 {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_file() => meta.len(),
         Ok(meta) if meta.is_dir() => std::fs::read_dir(path)
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| entry.ok())
-                    .map(|entry| path_size_bytes(&entry.path()))
-                    .sum()
-            })
+            .map(|entries| entries.filter_map(|entry| entry.ok()).map(|entry| path_size_bytes(&entry.path())).sum())
             .unwrap_or(0),
         _ => 0,
     }
@@ -188,12 +177,7 @@ fn run_backup_cleanup(backup_dir: &Path, dry_run: bool) -> Vec<String> {
     let candidates = collect_backup_cleanup_files(backup_dir, BACKUP_RETENTION_COUNT);
     let mut lines = Vec::new();
     for (path, size) in candidates {
-        let target = format!(
-            "backups/{}",
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-        );
+        let target = format!("backups/{}", path.file_name().and_then(|name| name.to_str()).unwrap_or_default());
         lines.push(format!("DELETE {target} ({})", format_cleanup_bytes(size)));
         if !dry_run {
             let _ = std::fs::remove_file(path);
@@ -212,10 +196,7 @@ fn run_log_cleanup(home: &Path, dry_run: bool) -> Vec<String> {
         if metadata.len() <= LOG_ROTATION_BYTES {
             continue;
         }
-        lines.push(format!(
-            "ROTATE {file_name} ({})",
-            format_cleanup_bytes(metadata.len())
-        ));
+        lines.push(format!("ROTATE {file_name} ({})", format_cleanup_bytes(metadata.len())));
         if dry_run {
             continue;
         }
@@ -269,40 +250,23 @@ pub(crate) fn create_backup(db_path: &Path, backup_dir: &Path) -> Result<String,
     Ok(dest.to_string_lossy().to_string())
 }
 pub(crate) fn event_type_count(conn: &rusqlite::Connection, event_type: &str) -> i64 {
-    conn.query_row(
-        "SELECT COUNT(*) FROM events WHERE type = ?1",
-        rusqlite::params![event_type],
-        |row| row.get::<_, i64>(0),
-    )
-    .unwrap_or(0)
+    conn.query_row("SELECT COUNT(*) FROM events WHERE type = ?1", rusqlite::params![event_type], |row| row.get::<_, i64>(0))
+        .unwrap_or(0)
 }
-pub(crate) fn top_event_type_counts(
-    conn: &rusqlite::Connection,
-    limit: usize,
-) -> Vec<(String, i64)> {
-    let mut statement = match conn.prepare(
-        "SELECT type, COUNT(*) AS cnt FROM events GROUP BY type ORDER BY cnt DESC LIMIT ?1",
-    ) {
+pub(crate) fn top_event_type_counts(conn: &rusqlite::Connection, limit: usize) -> Vec<(String, i64)> {
+    let mut statement = match conn.prepare("SELECT type, COUNT(*) AS cnt FROM events GROUP BY type ORDER BY cnt DESC LIMIT ?1") {
         Ok(stmt) => stmt,
         Err(_) => return Vec::new(),
     };
-    let rows = match statement.query_map([limit as i64], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    }) {
+    let rows = match statement.query_map([limit as i64], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))) {
         Ok(rows) => rows,
         Err(_) => return Vec::new(),
     };
     rows.filter_map(Result::ok).collect()
 }
-pub(crate) fn run_event_compaction_cleanup(
-    db_path: &Path,
-    dry_run: bool,
-    max_passes: usize,
-) -> Result<Vec<String>, String> {
+pub(crate) fn run_event_compaction_cleanup(db_path: &Path, dry_run: bool, max_passes: usize) -> Result<Vec<String>, String> {
     if !db_path.exists() {
-        return Ok(vec![
-            "EVENTS skip: database file is missing; nothing to compact".to_string(),
-        ]);
+        return Ok(vec!["EVENTS skip: database file is missing; nothing to compact".to_string()]);
     }
     let conn = db::open(db_path).map_err(|e| format!("events cleanup open db: {e}"))?;
     db::configure(&conn).map_err(|e| format!("events cleanup configure db: {e}"))?;
@@ -324,8 +288,7 @@ pub(crate) fn run_event_compaction_cleanup(
         }
     }
     if dry_run {
-        lines.push(format!(
-"EVENTS dry-run only: rerun with `cortex cleanup --events --max-passes {max_passes}` to apply compaction"));
+        lines.push(format!("EVENTS dry-run only: rerun with `cortex cleanup --events --max-passes {max_passes}` to apply compaction"));
         return Ok(lines);
     }
     for pass in 1..=max_passes.max(1) {
@@ -365,27 +328,13 @@ nonboot_before_pass,nonboot_after_pass,));
     }
     Ok(lines)
 }
-pub(crate) fn run_cleanup_cli(
-    paths: &auth::CortexPaths,
-    dry_run: bool,
-    include_events: bool,
-    max_event_passes: usize,
-) {
-    let schema_version = if paths.db.exists() {
-        db::open(&paths.db)
-            .and_then(|conn| db::current_schema_user_version(&conn))
-            .unwrap_or_default()
-    } else {
-        0
-    };
+pub(crate) fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_events: bool, max_event_passes: usize) {
+    let schema_version =
+        if paths.db.exists() { db::open(&paths.db).and_then(|conn| db::current_schema_user_version(&conn)).unwrap_or_default() } else { 0 };
     let mut lines = Vec::new();
     lines.extend(run_backup_cleanup(&paths.home.join("backups"), dry_run));
     lines.extend(run_log_cleanup(&paths.home, dry_run));
-    lines.extend(run_bridge_backup_cleanup(
-        &paths.home,
-        schema_version,
-        dry_run,
-    ));
+    lines.extend(run_bridge_backup_cleanup(&paths.home, schema_version, dry_run));
     lines.extend(run_stale_pid_cleanup(paths, dry_run));
     if include_events {
         match run_event_compaction_cleanup(&paths.db, dry_run, max_event_passes) {
@@ -445,10 +394,7 @@ pub(crate) fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     let paths_check = auth::CortexPaths::resolve();
     let daemon_running = paths_check.pid.exists();
     if daemon_running {
-        eprintln!(
-            "[cortex] Warning: Daemon PID file exists at {}",
-            paths_check.pid.display()
-        );
+        eprintln!("[cortex] Warning: Daemon PID file exists at {}", paths_check.pid.display());
         eprintln!("[cortex] Please stop the daemon first with: Ctrl+C or kill the daemon process");
         eprintln!("[cortex] Continuing restore anyway...");
         std::thread::sleep(Duration::from_millis(500));
@@ -457,10 +403,7 @@ pub(crate) fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     let home_dir = paths.home.clone();
     let timestamp = chrono::Local::now().format("%Y%m%dT%H%M%S");
     let pre_backup = home_dir.join(format!("cortex.pre-restore.{}.db", timestamp));
-    eprintln!(
-        "[cortex] Creating pre-restore backup at: {}",
-        pre_backup.display()
-    );
+    eprintln!("[cortex] Creating pre-restore backup at: {}", pre_backup.display());
     if let Err(e) = std::fs::copy(&db_path, &pre_backup) {
         eprintln!("[cortex] Error: failed to create pre-restore backup: {e}");
         eprintln!("[cortex] Restore cancelled for safety");
@@ -469,10 +412,7 @@ pub(crate) fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     eprintln!("[cortex] Restoring from: {}", restore_file);
     if let Err(e) = std::fs::copy(&restore_file, &db_path) {
         eprintln!("[cortex] Error: failed to restore backup: {e}");
-        eprintln!(
-            "[cortex] Pre-restore backup preserved at: {}",
-            pre_backup.display()
-        );
+        eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
         std::process::exit(1);
     }
     if !skip_verification {
@@ -503,9 +443,6 @@ pub(crate) fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
             }
         }
     }
-    eprintln!(
-        "[cortex] Restore complete. Pre-restore backup preserved at: {}",
-        pre_backup.display()
-    );
+    eprintln!("[cortex] Restore complete. Pre-restore backup preserved at: {}", pre_backup.display());
     eprintln!("[cortex] You can now restart the daemon with: cortex serve");
 }

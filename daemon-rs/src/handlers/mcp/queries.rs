@@ -10,22 +10,12 @@ pub(crate) fn recall_owner_scope(ctx: &RecallContext) -> String {
         None => "team:none".to_string(),
     }
 }
-pub(crate) async fn clear_served_scope_for_boot(
-    state: &RuntimeState,
-    agent: &str,
-    ctx: &RecallContext,
-) {
+pub(crate) async fn clear_served_scope_for_boot(state: &RuntimeState, agent: &str, ctx: &RecallContext) {
     let scope_prefix = format!("{}::{agent}::", recall_owner_scope(ctx));
     let mut served = state.served_content.lock().await;
-    served.retain(|key, _| {
-        !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != agent
-    });
+    served.retain(|key, _| !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != agent);
 }
-pub(crate) fn can_view_last_call(
-    owner_id: Option<i64>,
-    visibility: Option<&str>,
-    ctx: &RecallContext,
-) -> bool {
+pub(crate) fn can_view_last_call(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode {
         return true;
     }
@@ -52,19 +42,10 @@ pub(crate) fn table_has_column(conn: &rusqlite::Connection, table: &str, column:
     found
 }
 pub(crate) fn fetch_last_call(
-    conn: &rusqlite::Connection,
-    kind: Option<&str>,
-    agent_filter: Option<&str>,
-    ctx: &RecallContext,
+    conn: &rusqlite::Connection, kind: Option<&str>, agent_filter: Option<&str>, ctx: &RecallContext,
 ) -> Result<Value, String> {
-    let normalized_kind = kind
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("any");
-    let agent_filter = agent_filter
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_lowercase);
+    let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("any");
+    let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty()).map(str::to_lowercase);
     let owner_scoped_entries = table_has_column(conn, "memories", "owner_id")
         && table_has_column(conn, "memories", "visibility")
         && table_has_column(conn, "decisions", "owner_id")
@@ -144,10 +125,7 @@ pub(crate) fn fetch_last_call(
     for row in rows.flatten() {
         let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) = row;
         if let Some(filter) = agent_filter.as_deref() {
-            let current = source_agent
-                .as_deref()
-                .map(str::to_lowercase)
-                .unwrap_or_default();
+            let current = source_agent.as_deref().map(str::to_lowercase).unwrap_or_default();
             if current != filter {
                 continue;
             }

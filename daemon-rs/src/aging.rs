@@ -35,11 +35,7 @@ fn age_memories_to_recent(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -51,9 +47,10 @@ fn age_memories_to_recent(conn: &Connection) -> usize {
             }
         }
         let compressed = compress_to_key_points(&text);
-        let _=conn.execute(
-"UPDATE memories SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",params![compressed,id]
-,);
+        let _ = conn.execute(
+            "UPDATE memories SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",
+            params![compressed, id],
+        );
         count += 1;
     }
     count
@@ -69,11 +66,7 @@ fn age_memories_to_old(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -85,20 +78,23 @@ fn age_memories_to_old(conn: &Connection) -> usize {
             }
         }
         let compressed = compress_to_one_liner(&text);
-        let _=conn.
-execute("UPDATE memories SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",params![
-compressed,id],);
+        let _ = conn.execute(
+            "UPDATE memories SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",
+            params![compressed, id],
+        );
         count += 1;
     }
     count
 }
 fn archive_ancient_memories(conn: &Connection) -> usize {
     conn.execute(
-"UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+        "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'old' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1"
-,params![OLD_DAYS],).unwrap_or(0)
+         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+        params![OLD_DAYS],
+    )
+    .unwrap_or(0)
 }
 fn age_decisions_to_recent(conn: &Connection) -> usize {
     let mut count = 0;
@@ -111,11 +107,7 @@ fn age_decisions_to_recent(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -126,9 +118,10 @@ fn age_decisions_to_recent(conn: &Connection) -> usize {
             None => decision,
         };
         let compressed = compress_to_key_points(&full);
-        let _=conn.
-execute("UPDATE decisions SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",params![
-compressed,id],);
+        let _ = conn.execute(
+            "UPDATE decisions SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",
+            params![compressed, id],
+        );
         count += 1;
     }
     count
@@ -144,11 +137,7 @@ fn age_decisions_to_old(conn: &Connection) -> usize {
         )
         .and_then(|mut stmt| {
             let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
             })?;
             Ok(mapped.flatten().collect())
         })
@@ -159,27 +148,26 @@ fn age_decisions_to_old(conn: &Connection) -> usize {
             None => decision,
         };
         let compressed = compress_to_one_liner(&full);
-        let _=conn
-.execute("UPDATE decisions SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",params![
-compressed,id],);
+        let _ = conn.execute(
+            "UPDATE decisions SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",
+            params![compressed, id],
+        );
         count += 1;
     }
     count
 }
 fn archive_ancient_decisions(conn: &Connection) -> usize {
     conn.execute(
-"UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+        "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND age_tier = 'old' \
-         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1"
-,params![OLD_DAYS],).unwrap_or(0)
+         AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
+        params![OLD_DAYS],
+    )
+    .unwrap_or(0)
 }
 fn compress_to_key_points(text: &str) -> String {
-    let sentences: Vec<&str> = text
-        .split(['.', '\n'])
-        .map(|s| s.trim())
-        .filter(|s| s.len() > 5)
-        .collect();
+    let sentences: Vec<&str> = text.split(['.', '\n']).map(|s| s.trim()).filter(|s| s.len() > 5).collect();
     if sentences.len() <= 2 {
         return text.chars().take(300).collect();
     }
@@ -218,28 +206,29 @@ fn compress_to_key_points(text: &str) -> String {
     }
 }
 fn compress_to_one_liner(text: &str) -> String {
-    let first_sentence = text
-        .split(['.', '\n'])
-        .map(|s| s.trim())
-        .find(|s| s.len() > 5)
-        .unwrap_or(text);
+    let first_sentence = text.split(['.', '\n']).map(|s| s.trim()).find(|s| s.len() > 5).unwrap_or(text);
     first_sentence.chars().take(120).collect()
 }
 fn gc_low_score(conn: &Connection) -> usize {
     let mut count = 0usize;
-    count+=conn.execute
-(
-"UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+    count += conn
+        .execute(
+            "UPDATE memories SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND score < ?1 \
-         AND julianday('now') - julianday(COALESCE(last_accessed, created_at)) > ?2"
-,params![GC_SCORE_THRESHOLD,GC_MIN_DAYS],).unwrap_or(0);
-    count+=conn.execute(
-"UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
+         AND julianday('now') - julianday(COALESCE(last_accessed, created_at)) > ?2",
+            params![GC_SCORE_THRESHOLD, GC_MIN_DAYS],
+        )
+        .unwrap_or(0);
+    count += conn
+        .execute(
+            "UPDATE decisions SET status = 'archived', age_tier = 'ancient', updated_at = datetime('now') \
          WHERE status = 'active' AND pinned = 0 \
          AND score < ?1 \
-         AND julianday('now') - julianday(COALESCE(last_accessed, created_at)) > ?2"
-,params![GC_SCORE_THRESHOLD,GC_MIN_DAYS],).unwrap_or(0);
+         AND julianday('now') - julianday(COALESCE(last_accessed, created_at)) > ?2",
+            params![GC_SCORE_THRESHOLD, GC_MIN_DAYS],
+        )
+        .unwrap_or(0);
     if count > 0 {
         eprintln!("[aging] GC archived {count} low-score entries (score < {GC_SCORE_THRESHOLD})");
     }
@@ -247,23 +236,25 @@ fn gc_low_score(conn: &Connection) -> usize {
 }
 fn cleanup_orphaned_embeddings(conn: &Connection) -> usize {
     let mut count = 0usize;
-    count+=conn.execute(
-"DELETE FROM embeddings WHERE target_type = 'memory' \
-         AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = embeddings.target_id AND m.status = 'active')"
-,[],).unwrap_or(0);
-    count+=conn.execute(
-"DELETE FROM embeddings WHERE target_type = 'decision' \
-         AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = embeddings.target_id AND d.status = 'active')"
-,[],).unwrap_or(0);
+    count += conn
+        .execute(
+            "DELETE FROM embeddings WHERE target_type = 'memory' \
+         AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.id = embeddings.target_id AND m.status = 'active')",
+            [],
+        )
+        .unwrap_or(0);
+    count += conn
+        .execute(
+            "DELETE FROM embeddings WHERE target_type = 'decision' \
+         AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = embeddings.target_id AND d.status = 'active')",
+            [],
+        )
+        .unwrap_or(0);
     count
 }
 pub fn get_display_text(text: &str, compressed_text: &Option<String>, age_tier: &str) -> String {
     match age_tier {
         "fresh" => text.to_string(),
-        _ => compressed_text
-            .as_ref()
-            .filter(|c| !c.is_empty())
-            .cloned()
-            .unwrap_or_else(|| text.to_string()),
+        _ => compressed_text.as_ref().filter(|c| !c.is_empty()).cloned().unwrap_or_else(|| text.to_string()),
     }
 }

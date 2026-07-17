@@ -24,12 +24,7 @@ pub fn migration_definitions() -> &'static [MigrationDef] {
     &SCHEMA_MIGRATIONS
 }
 pub(crate) fn migration_user_version(version: &str) -> i32 {
-    version
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .parse::<i32>()
-        .unwrap_or(0)
+    version.chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>().parse::<i32>().unwrap_or(0)
 }
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn latest_schema_user_version() -> i32 {
@@ -46,15 +41,8 @@ pub fn set_schema_user_version(conn: &Connection, version: i32) -> rusqlite::Res
     conn.pragma_update(None, "user_version", version)?;
     Ok(())
 }
-pub(crate) fn sync_schema_user_version(
-    conn: &Connection,
-    applied_versions: &HashSet<String>,
-) -> rusqlite::Result<i32> {
-    let version = applied_versions
-        .iter()
-        .map(|entry| migration_user_version(entry))
-        .max()
-        .unwrap_or(0);
+pub(crate) fn sync_schema_user_version(conn: &Connection, applied_versions: &HashSet<String>) -> rusqlite::Result<i32> {
+    let version = applied_versions.iter().map(|entry| migration_user_version(entry)).max().unwrap_or(0);
     set_schema_user_version(conn, version)?;
     Ok(version)
 }
@@ -74,11 +62,7 @@ pub fn ensure_schema_migrations_table(conn: &Connection) -> rusqlite::Result<()>
 pub(crate) fn migration_error(msg: impl Into<String>) -> rusqlite::Error {
     rusqlite::Error::InvalidParameterName(msg.into())
 }
-pub(crate) fn apply_migration_with_logging(
-    conn: &Connection,
-    version: &str,
-    log_success: bool,
-) -> rusqlite::Result<()> {
+pub(crate) fn apply_migration_with_logging(conn: &Connection, version: &str, log_success: bool) -> rusqlite::Result<()> {
     match version {
         "001_initial_schema" => Ok(()),
         "002_aging_columns" => {
@@ -90,9 +74,7 @@ pub(crate) fn apply_migration_with_logging(
             {
                 Ok(())
             } else {
-                Err(migration_error(
-                    "aging migration did not create expected columns",
-                ))
+                Err(migration_error("aging migration did not create expected columns"))
             }
         }
         "003_focus_table" => {
@@ -100,9 +82,7 @@ pub(crate) fn apply_migration_with_logging(
             if table_exists(conn, "focus_sessions") {
                 Ok(())
             } else {
-                Err(migration_error(
-                    "focus table migration did not create focus_sessions",
-                ))
+                Err(migration_error("focus table migration did not create focus_sessions"))
             }
         }
         "004_crystal_tables" => {
@@ -110,94 +90,34 @@ pub(crate) fn apply_migration_with_logging(
             if table_exists(conn, "memory_clusters") && table_exists(conn, "cluster_members") {
                 Ok(())
             } else {
-                Err(migration_error(
-                    "crystal migration did not create memory_clusters/cluster_members",
-                ))
+                Err(migration_error("crystal migration did not create memory_clusters/cluster_members"))
             }
         }
         "005_quality_dedup_columns" => {
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN merged_count INTEGER DEFAULT 0",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN quality INTEGER DEFAULT 50",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN merged_count INTEGER DEFAULT 0",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN quality INTEGER DEFAULT 50",
-            )?;
-            let _ = conn.execute(
-                "UPDATE memories SET merged_count = 0 WHERE merged_count IS NULL",
-                [],
-            );
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN merged_count INTEGER DEFAULT 0")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN quality INTEGER DEFAULT 50")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN merged_count INTEGER DEFAULT 0")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN quality INTEGER DEFAULT 50")?;
+            let _ = conn.execute("UPDATE memories SET merged_count = 0 WHERE merged_count IS NULL", []);
             let _ = conn.execute("UPDATE memories SET quality = 50 WHERE quality IS NULL", []);
-            let _ = conn.execute(
-                "UPDATE decisions SET merged_count = 0 WHERE merged_count IS NULL",
-                [],
-            );
-            let _ = conn.execute(
-                "UPDATE decisions SET quality = 50 WHERE quality IS NULL",
-                [],
-            );
+            let _ = conn.execute("UPDATE decisions SET merged_count = 0 WHERE merged_count IS NULL", []);
+            let _ = conn.execute("UPDATE decisions SET quality = 50 WHERE quality IS NULL", []);
             Ok(())
         }
         "006" => {
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN expires_at TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN expires_at TEXT",
-            )?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN expires_at TEXT")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN expires_at TEXT")?;
             Ok(())
         }
         "007" => {
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN merged_count INTEGER DEFAULT 0",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN quality INTEGER DEFAULT 50",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN merged_count INTEGER DEFAULT 0",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN quality INTEGER DEFAULT 50",
-            )?;
-            let _ = conn.execute(
-                "UPDATE memories SET merged_count = 0 WHERE merged_count IS NULL",
-                [],
-            );
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN merged_count INTEGER DEFAULT 0")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN quality INTEGER DEFAULT 50")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN merged_count INTEGER DEFAULT 0")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN quality INTEGER DEFAULT 50")?;
+            let _ = conn.execute("UPDATE memories SET merged_count = 0 WHERE merged_count IS NULL", []);
             let _ = conn.execute("UPDATE memories SET quality = 50 WHERE quality IS NULL", []);
-            let _ = conn.execute(
-                "UPDATE decisions SET merged_count = 0 WHERE merged_count IS NULL",
-                [],
-            );
-            let _ = conn.execute(
-                "UPDATE decisions SET quality = 50 WHERE quality IS NULL",
-                [],
-            );
+            let _ = conn.execute("UPDATE decisions SET merged_count = 0 WHERE merged_count IS NULL", []);
+            let _ = conn.execute("UPDATE decisions SET quality = 50 WHERE quality IS NULL", []);
             Ok(())
         }
         "008" => {
@@ -219,46 +139,14 @@ pub(crate) fn apply_migration_with_logging(
             Ok(())
         }
         "009" => {
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN source_client TEXT DEFAULT 'unknown'",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN source_model TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN reasoning_depth TEXT DEFAULT 'single-shot'",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN trust_score REAL DEFAULT 0.8",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN source_client TEXT DEFAULT 'unknown'",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN source_model TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN reasoning_depth TEXT DEFAULT 'single-shot'",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN trust_score REAL DEFAULT 0.8",
-            )?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN source_client TEXT DEFAULT 'unknown'")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN source_model TEXT")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN reasoning_depth TEXT DEFAULT 'single-shot'")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN trust_score REAL DEFAULT 0.8")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN source_client TEXT DEFAULT 'unknown'")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN source_model TEXT")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN reasoning_depth TEXT DEFAULT 'single-shot'")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN trust_score REAL DEFAULT 0.8")?;
             let _ = conn.execute(
                 "UPDATE memories
                  SET source_client = COALESCE(NULLIF(lower(source_agent), ''), 'unknown')
@@ -421,43 +309,17 @@ r#"
             Ok(())
         }
         "014" => {
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN observed_at TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN valid_from TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "memories",
-                "ALTER TABLE memories ADD COLUMN valid_until TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN observed_at TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN valid_from TEXT",
-            )?;
-            ensure_column(
-                conn,
-                "decisions",
-                "ALTER TABLE decisions ADD COLUMN valid_until TEXT",
-            )?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN observed_at TEXT")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN valid_from TEXT")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN valid_until TEXT")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN observed_at TEXT")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN valid_from TEXT")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN valid_until TEXT")?;
             Ok(())
         }
         "016" => {
-            ensure_column(conn,"memories",
-"ALTER TABLE memories ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'")?;
-            ensure_column(conn,"decisions",
-"ALTER TABLE decisions ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'")?;
+            ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'")?;
+            ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'operational'")?;
             let _ = conn.execute(
                 "UPDATE memories SET retention_class = 'operational'
                  WHERE retention_class IS NULL
@@ -499,15 +361,12 @@ r#"
             )?;
             Ok(())
         }
-        other => Err(migration_error(format!(
-            "unknown schema migration: {other}"
-        ))),
+        other => Err(migration_error(format!("unknown schema migration: {other}"))),
     }
 }
 pub fn applied_migration_versions(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     ensure_schema_migrations_table(conn)?;
-    let mut stmt =
-        conn.prepare("SELECT version FROM schema_migrations ORDER BY id ASC, version ASC")?;
+    let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY id ASC, version ASC")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -556,10 +415,7 @@ pub(crate) fn run_pending_migrations_with_logging(conn: &Connection, log_success
             drop(tx);
             break;
         }
-        if let Err(e) = tx.execute(
-            "INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)",
-            params![version, name],
-        ) {
+        if let Err(e) = tx.execute("INSERT INTO schema_migrations (version, name) VALUES (?1, ?2)", params![version, name]) {
             eprintln!("[db] failed to record migration {version} ({name}): {e}");
             drop(tx);
             break;

@@ -14,32 +14,14 @@ pub fn test_conn() -> rusqlite::Connection {
     conn
 }
 pub fn solo_state() -> RuntimeState {
-    runtime_state(
-        test_conn(),
-        test_conn(),
-        false,
-        None,
-        RerankConfig::off(),
-        None,
-    )
+    runtime_state(test_conn(), test_conn(), false, None, RerankConfig::off(), None)
 }
 pub fn team_state(default_owner_id: i64) -> RuntimeState {
-    runtime_state(
-        test_conn(),
-        test_conn(),
-        true,
-        Some(default_owner_id),
-        RerankConfig::off(),
-        None,
-    )
+    runtime_state(test_conn(), test_conn(), true, Some(default_owner_id), RerankConfig::off(), None)
 }
 pub fn runtime_state(
-    write_conn: rusqlite::Connection,
-    read_conn: rusqlite::Connection,
-    team_mode: bool,
-    default_owner_id: Option<i64>,
-    rerank_config: RerankConfig,
-    reranker: Option<Arc<dyn Reranker>>,
+    write_conn: rusqlite::Connection, read_conn: rusqlite::Connection, team_mode: bool, default_owner_id: Option<i64>,
+    rerank_config: RerankConfig, reranker: Option<Arc<dyn Reranker>>,
 ) -> RuntimeState {
     let (events, _) = broadcast::channel(8);
     let (brain_firing, _) = broadcast::channel(8);

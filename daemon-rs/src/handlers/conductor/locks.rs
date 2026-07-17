@@ -10,11 +10,7 @@ use chrono::{Duration, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
 use uuid::Uuid;
-pub async fn handle_lock(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<LockRequest>,
-) -> Response {
+pub async fn handle_lock(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<LockRequest>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -34,29 +30,15 @@ pub async fn handle_lock(
         conn.query_row(
             "SELECT id, agent, expires_at FROM locks WHERE owner_id = ?1 AND path = ?2",
             params![owner_id, path.clone()],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
         )
         .optional()
         .ok()
         .flatten()
     } else {
-        conn.query_row(
-            "SELECT id, agent, expires_at FROM locks WHERE path = ?1",
-            params![path.clone()],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )
+        conn.query_row("SELECT id, agent, expires_at FROM locks WHERE path = ?1", params![path.clone()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })
         .optional()
         .ok()
         .flatten()
@@ -71,10 +53,7 @@ pub async fn handle_lock(
                     params![expires_at.clone(), owner_id, path.clone()],
                 )
             } else {
-                conn.execute(
-                    "UPDATE locks SET expires_at = ?1 WHERE path = ?2",
-                    params![expires_at.clone(), path.clone()],
-                )
+                conn.execute("UPDATE locks SET expires_at = ?1 WHERE path = ?2", params![expires_at.clone(), path.clone()])
             };
             checkpoint_wal_best_effort(&conn);
             return json_response(
@@ -97,12 +76,14 @@ pub async fn handle_lock(
     let lock_id = Uuid::new_v4().to_string();
     let insert = if let Some(owner_id) = owner_id {
         conn.execute(
-"INSERT INTO locks (id, path, agent, owner_id, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",params![lock_id.clone(),
-path.clone(),agent.clone(),owner_id,now_iso(),expires_at.clone()],)
+            "INSERT INTO locks (id, path, agent, owner_id, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![lock_id.clone(), path.clone(), agent.clone(), owner_id, now_iso(), expires_at.clone()],
+        )
     } else {
         conn.execute(
-"INSERT INTO locks (id, path, agent, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",params![lock_id.clone(),path.clone(),
-agent.clone(),now_iso(),expires_at.clone()],)
+            "INSERT INTO locks (id, path, agent, locked_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![lock_id.clone(), path.clone(), agent.clone(), now_iso(), expires_at.clone()],
+        )
     };
     match insert {
         Ok(_) => {
@@ -126,19 +107,12 @@ expires_at}),
 "message":"Another lock was acquired for this path while your request was in flight"}),
                 )
             } else {
-                json_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    json!({"error":format!("Lock failed: {err}")}),
-                )
+                json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Lock failed: {err}")}))
             }
         }
     }
 }
-pub async fn handle_unlock(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<LockRequest>,
-) -> Response {
+pub async fn handle_unlock(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<LockRequest>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -154,23 +128,17 @@ pub async fn handle_unlock(
     let conn = state.db.lock().await;
     let _ = clean_expired_locks(&conn, owner_id);
     let holder = if let Some(owner_id) = owner_id {
-        conn.query_row(
-            "SELECT agent FROM locks WHERE owner_id = ?1 AND path = ?2",
-            params![owner_id, path.clone()],
-            |row| row.get::<_, String>(0),
-        )
+        conn.query_row("SELECT agent FROM locks WHERE owner_id = ?1 AND path = ?2", params![owner_id, path.clone()], |row| {
+            row.get::<_, String>(0)
+        })
         .optional()
         .ok()
         .flatten()
     } else {
-        conn.query_row(
-            "SELECT agent FROM locks WHERE path = ?1",
-            params![path.clone()],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
+        conn.query_row("SELECT agent FROM locks WHERE path = ?1", params![path.clone()], |row| row.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
     };
     let holder = match holder {
         Some(v) => v,
@@ -190,18 +158,12 @@ pub async fn handle_unlock(
         );
     }
     if let Some(owner_id) = owner_id {
-        let _ = conn.execute(
-            "DELETE FROM locks WHERE owner_id = ?1 AND path = ?2",
-            params![owner_id, path.clone()],
-        );
+        let _ = conn.execute("DELETE FROM locks WHERE owner_id = ?1 AND path = ?2", params![owner_id, path.clone()]);
     } else {
         let _ = conn.execute("DELETE FROM locks WHERE path = ?1", params![path.clone()]);
     }
     checkpoint_wal_best_effort(&conn);
-    state.emit(
-        "lock",
-        json!({"action":"released","path":path,"agent":agent}),
-    );
+    state.emit("lock", json!({"action":"released","path":path,"agent":agent}));
     json_response(StatusCode::OK, json!({"unlocked":true}))
 }
 pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
@@ -212,9 +174,6 @@ pub async fn handle_locks(State(state): State<RuntimeState>, headers: HeaderMap)
     let conn = state.db_read.lock().await;
     match fetch_locks(&conn, owner_id) {
         Ok(locks) => json_response(StatusCode::OK, json!({"locks":locks})),
-        Err(err) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({"error":format!("Get locks failed: {err}")}),
-        ),
+        Err(err) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("Get locks failed: {err}")})),
     }
 }

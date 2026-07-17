@@ -22,10 +22,7 @@ window_seconds = 60
 }
 #[test]
 fn missing_file_disables_budgets_without_error() {
-    let path = std::env::temp_dir().join(format!(
-        "cortex-missing-budgets-{}.toml",
-        uuid::Uuid::new_v4()
-    ));
+    let path = std::env::temp_dir().join(format!("cortex-missing-budgets-{}.toml", uuid::Uuid::new_v4()));
     let status = BudgetConfigStatus::load_from_path(path);
     assert!(!status.config_loaded);
     assert!(!status.enabled());
@@ -36,34 +33,10 @@ fn missing_file_disables_budgets_without_error() {
 fn valid_config_parses_all_endpoint_budgets() {
     let config = BudgetConfig::parse_toml_str(valid_config()).unwrap();
     assert!(config.enabled);
-    assert_eq!(
-        config.budget_for(BudgetEndpoint::Store),
-        Some(EndpointBudget {
-            limit: 120,
-            window_seconds: 60
-        })
-    );
-    assert_eq!(
-        config.budget_for(BudgetEndpoint::Recall),
-        Some(EndpointBudget {
-            limit: 300,
-            window_seconds: 60
-        })
-    );
-    assert_eq!(
-        config.budget_for(BudgetEndpoint::Boot),
-        Some(EndpointBudget {
-            limit: 60,
-            window_seconds: 60
-        })
-    );
-    assert_eq!(
-        config.budget_for(BudgetEndpoint::Mcp),
-        Some(EndpointBudget {
-            limit: 240,
-            window_seconds: 60
-        })
-    );
+    assert_eq!(config.budget_for(BudgetEndpoint::Store), Some(EndpointBudget { limit: 120, window_seconds: 60 }));
+    assert_eq!(config.budget_for(BudgetEndpoint::Recall), Some(EndpointBudget { limit: 300, window_seconds: 60 }));
+    assert_eq!(config.budget_for(BudgetEndpoint::Boot), Some(EndpointBudget { limit: 60, window_seconds: 60 }));
+    assert_eq!(config.budget_for(BudgetEndpoint::Mcp), Some(EndpointBudget { limit: 240, window_seconds: 60 }));
 }
 #[test]
 fn disabled_config_validates_but_does_not_enforce() {
@@ -84,10 +57,7 @@ window_seconds = 60
 }
 #[test]
 fn health_json_uses_portable_budget_source_label() {
-    let status = BudgetConfigStatus::from_contents(
-        PathBuf::from("C:/cortex-test/testuser/.cortex/budgets.toml"),
-        valid_config(),
-    );
+    let status = BudgetConfigStatus::from_contents(PathBuf::from("C:/cortex-test/testuser/.cortex/budgets.toml"), valid_config());
     let payload = status.to_health_json(0);
     assert_eq!(payload["source"], BUDGET_SOURCE);
 }

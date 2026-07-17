@@ -23,34 +23,24 @@ pub fn try_load_tls() -> Result<Option<TlsAcceptor>, String> {
         return Ok(None);
     }
     if !cert.exists() {
-        return Err(format!(
-            "TLS key found but cert missing at {}",
-            cert.display()
-        ));
+        return Err(format!("TLS key found but cert missing at {}", cert.display()));
     }
     if !key.exists() {
-        return Err(format!(
-            "TLS cert found but key missing at {}",
-            key.display()
-        ));
+        return Err(format!("TLS cert found but key missing at {}", key.display()));
     }
     let config = load_rustls_config(&cert, &key)?;
     Ok(Some(TlsAcceptor::from(Arc::new(config))))
 }
 fn load_rustls_config(cert_path: &Path, key_path: &Path) -> Result<ServerConfig, String> {
-    let cert_file = std::fs::File::open(cert_path)
-        .map_err(|e| format!("Failed to open cert {}: {e}", cert_path.display()))?;
-    let key_file = std::fs::File::open(key_path)
-        .map_err(|e| format!("Failed to open key {}: {e}", key_path.display()))?;
-    let certs: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_reader_iter(std::io::BufReader::new(cert_file))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to parse certs: {e}"))?;
+    let cert_file = std::fs::File::open(cert_path).map_err(|e| format!("Failed to open cert {}: {e}", cert_path.display()))?;
+    let key_file = std::fs::File::open(key_path).map_err(|e| format!("Failed to open key {}: {e}", key_path.display()))?;
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_reader_iter(std::io::BufReader::new(cert_file))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse certs: {e}"))?;
     if certs.is_empty() {
         return Err("No certificates found in cert file".to_string());
     }
-    let key = PrivateKeyDer::from_pem_reader(std::io::BufReader::new(key_file))
-        .map_err(|e| format!("Failed to parse key: {e}"))?;
+    let key = PrivateKeyDer::from_pem_reader(std::io::BufReader::new(key_file)).map_err(|e| format!("Failed to parse key: {e}"))?;
     ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)

@@ -7,10 +7,7 @@ fn parse_duration_to_seconds_bounds_fuzzed_inputs() {
     assert_eq!(parse_duration_to_seconds("15m"), 15 * 60);
     assert_eq!(parse_duration_to_seconds("2h"), 2 * 60 * 60);
     assert_eq!(parse_duration_to_seconds("3d"), 3 * 24 * 60 * 60);
-    assert_eq!(
-        parse_duration_to_seconds("36500d"),
-        MAX_PARSED_DURATION_SECONDS
-    );
+    assert_eq!(parse_duration_to_seconds("36500d"), MAX_PARSED_DURATION_SECONDS);
     for raw in [
         "",
         "m",

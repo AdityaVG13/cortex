@@ -20,9 +20,7 @@ pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
     if !paths.pid.exists() {
         return None;
     }
-    let pid = fs::read_to_string(&paths.pid)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())?;
+    let pid = fs::read_to_string(&paths.pid).ok().and_then(|value| value.trim().parse::<u32>().ok())?;
     if pid == std::process::id() || process_is_running(pid) {
         return None;
     }
@@ -31,9 +29,7 @@ pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
     use std::process::Command;
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output();
+    let output = Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]).output();
     let Ok(out) = output else {
         return false;
     };
@@ -96,9 +92,5 @@ pub(crate) fn base62_encode_bytes(bytes: &[u8]) -> String {
             carry /= 62;
         }
     }
-    digits
-        .iter()
-        .rev()
-        .map(|d| BASE62[*d as usize] as char)
-        .collect()
+    digits.iter().rev().map(|d| BASE62[*d as usize] as char).collect()
 }

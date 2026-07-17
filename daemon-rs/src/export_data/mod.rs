@@ -21,15 +21,9 @@ fn normalize_memory_entry_type(raw: Option<&str>) -> String {
         raw,
         "fact",
         &[
-            (
-                &["memory", "note", "finding", "observation", "fact"],
-                "fact",
-            ),
+            (&["memory", "note", "finding", "observation", "fact"], "fact"),
             (&["episode", "event"], "episode"),
-            (
-                &["procedure", "playbook", "runbook", "howto", "how-to"],
-                "procedure",
-            ),
+            (&["procedure", "playbook", "runbook", "howto", "how-to"], "procedure"),
             (&["evidence", "citation", "reference"], "evidence"),
             (&["decision", "policy", "rule"], "decision"),
         ],
@@ -59,12 +53,7 @@ pub fn export_json_value(conn: &Connection) -> Value {
     json!({"version":1,"exported_at":now_iso(),"memories":memories,"decisions":decisions,"memories_count":memories.len(),
 "decisions_count":decisions.len(),})
 }
-pub fn export_json_page_value(
-    conn: &Connection,
-    limit: usize,
-    memories_offset: usize,
-    decisions_offset: usize,
-) -> Value {
+pub fn export_json_page_value(conn: &Connection, limit: usize, memories_offset: usize, decisions_offset: usize) -> Value {
     let limit = limit.clamp(1, MAX_EXPORT_PAGE_LIMIT);
     let(memories,memories_has_more)=
 query_table_json_page(conn,
@@ -133,11 +122,7 @@ sql_quote_opt(&valid_from),sql_quote_opt(&valid_until),));}}}
     lines.push("COMMIT;".to_string());
     lines.join("\n")
 }
-pub fn import_payload(
-    conn: &mut Connection,
-    payload: &ImportPayload,
-    options: &ImportOptions,
-) -> Result<ImportCounts, String> {
+pub fn import_payload(conn: &mut Connection, payload: &ImportPayload, options: &ImportOptions) -> Result<ImportCounts, String> {
     let mut counts = ImportCounts::default();
     let visibility = options.visibility.as_deref().unwrap_or("private");
     let fallback = options.source_agent_fallback.as_str();
@@ -145,9 +130,7 @@ pub fn import_payload(
     let memories_has_visibility = column_exists(conn, "memories", "visibility");
     let decisions_has_owner = column_exists(conn, "decisions", "owner_id");
     let decisions_has_visibility = column_exists(conn, "decisions", "visibility");
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("failed to start import transaction: {e}"))?;
+    let tx = conn.transaction().map_err(|e| format!("failed to start import transaction: {e}"))?;
     if let Some(memories) = &payload.memories {
         for (idx, m) in memories.iter().enumerate() {
             let entry_type = normalize_memory_entry_type(m.entry_type.as_deref());
@@ -203,8 +186,7 @@ unwrap_or_default().as_str(),d.observed_at.as_deref(),d.valid_from.as_deref(),d.
             }
         }
     }
-    tx.commit()
-        .map_err(|e| format!("failed to commit import transaction: {e}"))?;
+    tx.commit().map_err(|e| format!("failed to commit import transaction: {e}"))?;
     Ok(counts)
 }
 fn row_to_json(row: &rusqlite::Row<'_>, column_names: &[String]) -> rusqlite::Result<Value> {
@@ -222,18 +204,12 @@ fn row_to_json(row: &rusqlite::Row<'_>, column_names: &[String]) -> rusqlite::Re
     }
     Ok(Value::Object(obj))
 }
-fn query_rows_json(
-    conn: &Connection,
-    sql: &str,
-    bind: &[&dyn rusqlite::types::ToSql],
-) -> Vec<Value> {
+fn query_rows_json(conn: &Connection, sql: &str, bind: &[&dyn rusqlite::types::ToSql]) -> Vec<Value> {
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    let column_names: Vec<String> = (0..stmt.column_count())
-        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
-        .collect();
+    let column_names: Vec<String> = (0..stmt.column_count()).map(|i| stmt.column_name(i).unwrap_or("?").to_string()).collect();
     stmt.query_map(bind, |row| row_to_json(row, &column_names))
         .ok()
         .into_iter()
@@ -244,12 +220,7 @@ fn query_rows_json(
 fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
     query_rows_json(conn, sql, &[])
 }
-fn query_table_json_page(
-    conn: &Connection,
-    sql: &str,
-    limit: usize,
-    offset: usize,
-) -> (Vec<Value>, bool) {
+fn query_table_json_page(conn: &Connection, sql: &str, limit: usize, offset: usize) -> (Vec<Value>, bool) {
     let fetch_limit = limit.saturating_add(1) as i64;
     let offset = offset as i64;
     let mut rows = query_rows_json(conn, sql, &[&fetch_limit, &offset]);
@@ -259,12 +230,7 @@ fn query_table_json_page(
     }
     (rows, has_more)
 }
-fn query_table_json_since(
-    conn: &Connection,
-    sql: &str,
-    since: Option<&str>,
-    cursor: &str,
-) -> Vec<Value> {
+fn query_table_json_since(conn: &Connection, sql: &str, since: Option<&str>, cursor: &str) -> Vec<Value> {
     query_rows_json(conn, sql, &[&since, &cursor])
 }
 fn now_iso() -> String {

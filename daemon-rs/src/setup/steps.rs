@@ -1,9 +1,6 @@
 use super::configure::{step_configure, summarize_configs};
 use super::detect::step_detect;
-use super::helpers::{
-    collect_reembed_backlog_counts, daemon_base_url, daemon_port, daemon_url, print_step,
-    stable_mcp_binary_path,
-};
+use super::helpers::{collect_reembed_backlog_counts, daemon_base_url, daemon_port, daemon_url, print_step, stable_mcp_binary_path};
 use super::types::StepResult;
 use crate::auth;
 use crate::embeddings;
@@ -30,12 +27,7 @@ pub async fn run_setup() {
     let config_results = step_configure(&detected, &cortex_exe);
     print_step(3, "Configure AI tools", &summarize_configs(&config_results));
     for (tool_name, result) in &config_results {
-        eprintln!(
-            "       {} {}: {}",
-            result.icon(),
-            tool_name,
-            result.message()
-        );
+        eprintln!("       {} {}: {}", result.icon(), tool_name, result.message());
     }
     let daemon_result = step_daemon().await;
     print_step(4, "Daemon availability", &daemon_result);
@@ -44,10 +36,7 @@ pub async fn run_setup() {
     eprintln!();
     let token = auth::read_token().unwrap_or_else(|| "???".into());
     let token_preview = if token.len() > 8 { &token[..8] } else { &token };
-    eprintln!(
-        "  Your API token: {}... (full token in ~/.cortex/cortex.token)",
-        token_preview
-    );
+    eprintln!("  Your API token: {}... (full token in ~/.cortex/cortex.token)", token_preview);
     eprintln!("  Daemon:         {}", daemon_base_url());
     eprintln!("  Health check:   curl {}", daemon_url("/health"));
     eprintln!("  Readiness:      curl {}", daemon_url("/readiness"));
@@ -79,23 +68,12 @@ async fn step_init() -> StepResult {
     let models_dir = cortex_dir.join("models");
     let model_exists = embeddings::selected_model_assets_exist(&models_dir);
     if model_exists {
-        notes.push(format!(
-            "Embedding model: ready ({})",
-            embedding_model.display_name
-        ));
+        notes.push(format!("Embedding model: ready ({})", embedding_model.display_name));
     } else {
-        eprintln!(
-            "       Downloading embedding model ({})...",
-            embedding_model.display_name
-        );
+        eprintln!("       Downloading embedding model ({})...", embedding_model.display_name);
         match embeddings::ensure_model_downloaded().await {
-            Some(_) => notes.push(format!(
-                "Embedding model: downloaded ({})",
-                embedding_model.display_name
-            )),
-            None => {
-                notes.push("Embedding model: download failed (will retry on daemon start)".into())
-            }
+            Some(_) => notes.push(format!("Embedding model: downloaded ({})", embedding_model.display_name)),
+            None => notes.push("Embedding model: download failed (will retry on daemon start)".into()),
         }
     }
     notes.push(format!(
@@ -109,33 +87,22 @@ async fn step_init() -> StepResult {
     if rerank_config.is_active() {
         let reranker_exists = crate::rerank::selected_reranker_assets_exist(&models_dir);
         if reranker_exists {
-            notes.push(format!(
-                "Reranker: ready ({} | mode={})",
-                reranker_model.display_name,
-                rerank_config.mode.as_str()
-            ));
+            notes.push(format!("Reranker: ready ({} | mode={})", reranker_model.display_name, rerank_config.mode.as_str()));
         } else {
-            eprintln!(
-                "       Downloading reranker model ({})...",
-                reranker_model.display_name
-            );
+            eprintln!("       Downloading reranker model ({})...", reranker_model.display_name);
             match crate::rerank::ensure_reranker_downloaded().await {
-                Some(_) => notes.push(format!(
-                    "Reranker: downloaded ({} | mode={})",
-                    reranker_model.display_name,
-                    rerank_config.mode.as_str()
-                )),
-                None => {
-                    notes.push("Reranker: download failed (rerank will stay unavailable)".into())
+                Some(_) => {
+                    notes.push(format!("Reranker: downloaded ({} | mode={})", reranker_model.display_name, rerank_config.mode.as_str()))
                 }
+                None => notes.push("Reranker: download failed (rerank will stay unavailable)".into()),
             }
         }
     }
-    if let Some((backlog_memories, backlog_decisions)) =
-        collect_reembed_backlog_counts(&db_path, embedding_model.key)
-    {
+    if let Some((backlog_memories, backlog_decisions)) = collect_reembed_backlog_counts(&db_path, embedding_model.key) {
         notes.push(format!(
-"Re-embed backlog: memories={backlog_memories}, decisions={backlog_decisions}, total={}",backlog_memories+backlog_decisions));
+            "Re-embed backlog: memories={backlog_memories}, decisions={backlog_decisions}, total={}",
+            backlog_memories + backlog_decisions
+        ));
         notes.push(
 "Backfill policy: daemon drains backlog in bounded background passes (batch + interval controlled by CORTEX_EMBED_BACKFILL_* env vars)"
 .into());
@@ -148,7 +115,8 @@ async fn step_daemon() -> StepResult {
         return StepResult::Ok(format!("Daemon already running on :{port}"));
     }
     StepResult::Warn(format!(
-"No daemon is running on :{port}. Start Cortex from Control Center or let your client launch `cortex mcp --agent <name>`."))
+        "No daemon is running on :{port}. Start Cortex from Control Center or let your client launch `cortex mcp --agent <name>`."
+    ))
 }
 async fn is_daemon_healthy() -> bool {
     let paths = auth::CortexPaths::resolve();
@@ -172,17 +140,18 @@ async fn step_verify() -> StepResult {
         Ok(c) => c,
         Err(e) => return StepResult::Fail(format!("HTTP client error: {e}")),
     };
-    let store_resp=client.post(daemon_url(
-"/store")).header("Authorization",format!("Bearer {token}")).header("X-Cortex-Request","true").json(&serde_json::json!({"decision"
-:"Cortex installed and verified","context":"Automated setup verification","type":"memory","source_agent":"cortex-setup"})).send().
-await;
+    let store_resp = client
+        .post(daemon_url("/store"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-Cortex-Request", "true")
+        .json(&serde_json::json!({"decision"
+:"Cortex installed and verified","context":"Automated setup verification","type":"memory","source_agent":"cortex-setup"}))
+        .send()
+        .await;
     match store_resp {
         Ok(r) if r.status().is_success() => {}
         Ok(r) => {
-            return StepResult::Warn(format!(
-                "Store returned {}: daemon is running but store failed",
-                r.status()
-            ));
+            return StepResult::Warn(format!("Store returned {}: daemon is running but store failed", r.status()));
         }
         Err(e) => return StepResult::Fail(format!("Cannot reach daemon: {e}")),
     }
@@ -194,13 +163,8 @@ await;
         .send()
         .await;
     match recall_resp {
-        Ok(r) if r.status().is_success() => {
-            StepResult::Ok("Store + recall round-trip verified".into())
-        }
-        Ok(r) => StepResult::Warn(format!(
-            "Recall returned {}: store worked but recall did not",
-            r.status()
-        )),
+        Ok(r) if r.status().is_success() => StepResult::Ok("Store + recall round-trip verified".into()),
+        Ok(r) => StepResult::Warn(format!("Recall returned {}: store worked but recall did not", r.status())),
         Err(e) => StepResult::Warn(format!("Recall failed: {e}. Store succeeded.")),
     }
 }

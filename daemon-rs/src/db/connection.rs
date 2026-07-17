@@ -26,8 +26,7 @@ pub(crate) fn ensure_sqlite_vec_registered() -> Result<(), String> {
             unsafe extern "C" {
                 #[link_name = "sqlite3_vec_init"]
                 pub(crate) fn sqlite3_vec_init_auto_extension(
-                    db: *mut rusqlite::ffi::sqlite3,
-                    err_msg: *mut *mut std::os::raw::c_char,
+                    db: *mut rusqlite::ffi::sqlite3, err_msg: *mut *mut std::os::raw::c_char,
                     api: *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> std::os::raw::c_int;
             }
@@ -74,39 +73,19 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 }
 pub fn sqlite_vec_status(conn: &Connection) -> SqliteVecStatus {
     if let Err(error) = ensure_sqlite_vec_registered() {
-        return SqliteVecStatus {
-            available: false,
-            version: None,
-            error: Some(error),
-        };
+        return SqliteVecStatus { available: false, version: None, error: Some(error) };
     }
     match conn.query_row("SELECT vec_version()", [], |row| row.get::<_, String>(0)) {
-        Ok(version) => SqliteVecStatus {
-            available: true,
-            version: Some(version),
-            error: None,
-        },
-        Err(error) => SqliteVecStatus {
-            available: false,
-            version: None,
-            error: Some(error.to_string()),
-        },
+        Ok(version) => SqliteVecStatus { available: true, version: Some(version), error: None },
+        Err(error) => SqliteVecStatus { available: false, version: None, error: Some(error.to_string()) },
     }
 }
 pub(crate) fn env_u64_clamped(name: &str, default: u64, min: u64, max: u64) -> u64 {
-    let parsed = std::env::var(name)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .unwrap_or(default);
+    let parsed = std::env::var(name).ok().and_then(|raw| raw.trim().parse::<u64>().ok()).unwrap_or(default);
     parsed.clamp(min, max)
 }
 pub fn configure(conn: &Connection) -> rusqlite::Result<()> {
-    let mmap_size = env_u64_clamped(
-        "CORTEX_DB_MMAP_SIZE_BYTES",
-        268_435_456,
-        64 * 1024 * 1024,
-        4 * 1024 * 1024 * 1024,
-    );
+    let mmap_size = env_u64_clamped("CORTEX_DB_MMAP_SIZE_BYTES", 268_435_456, 64 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
     let cache_size_kib = env_u64_clamped("CORTEX_DB_CACHE_SIZE_KIB", 12_000, 2_000, 131_072);
     let cache_size = -(cache_size_kib as i64);
     let busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS;

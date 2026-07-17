@@ -52,10 +52,7 @@ fn test_synthesize_deduplicates() {
         text: "Python type hints required on all function signatures.".to_string(),
     };
     let result = synthesize_crystal(&vec![&e1, &e2, &e3]);
-    assert!(
-        result.matches('.').count() <= 3,
-        "Should deduplicate similar sentences, got: {result}"
-    );
+    assert!(result.matches('.').count() <= 3, "Should deduplicate similar sentences, got: {result}");
 }
 #[test]
 fn test_cluster_entries_basic() {
@@ -83,7 +80,11 @@ fn test_full_crystallize_pass() {
     crate::db::initialize_schema(&conn).unwrap();
     migrate_crystal_tables(&conn);
     for i in 1..=4 {
-        conn.execute("INSERT INTO memories (id, text, source, type, status) VALUES (?1, ?2, ?3, 'memory', 'active')", params![i, format!("Python requires uv for package management rule {i}"), format!("test::python_{i}")]).unwrap();
+        conn.execute(
+            "INSERT INTO memories (id, text, source, type, status) VALUES (?1, ?2, ?3, 'memory', 'active')",
+            params![i, format!("Python requires uv for package management rule {i}"), format!("test::python_{i}")],
+        )
+        .unwrap();
         let mut vec = vec![0.0f32; 384];
         vec[0] = 1.0;
         vec[1] = 0.01 * i as f32;

@@ -1,7 +1,5 @@
 use super::read_pool::ReadConnectionProvider;
-use super::types::{
-    BrainFiringEvent, DaemonEvent, PreCacheEntry, RecallHistoryEntry, SqliteVecCanaryConfig,
-};
+use super::types::{BrainFiringEvent, DaemonEvent, PreCacheEntry, RecallHistoryEntry, SqliteVecCanaryConfig};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -45,18 +43,14 @@ pub struct RuntimeState {
 }
 impl RuntimeState {
     pub fn emit(&self, event_type: &str, data: Value) {
-        let _ = self.events.send(DaemonEvent {
-            event_type: event_type.to_string(),
-            data,
-        });
+        let _ = self.events.send(DaemonEvent { event_type: event_type.to_string(), data });
     }
     pub fn next_mcp_call(&self) -> u64 {
         use std::sync::atomic::Ordering;
         self.mcp_calls.fetch_add(1, Ordering::SeqCst) + 1
     }
     pub fn mark_activity_now(&self) {
-        self.last_activity_unix_secs
-            .store(current_unix_secs(), Ordering::SeqCst);
+        self.last_activity_unix_secs.store(current_unix_secs(), Ordering::SeqCst);
     }
     pub fn idle_for_secs(&self) -> u64 {
         let last = self.last_activity_unix_secs.load(Ordering::SeqCst);
@@ -64,8 +58,5 @@ impl RuntimeState {
     }
 }
 pub(crate) fn current_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
 }

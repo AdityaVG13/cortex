@@ -2,17 +2,12 @@ use super::*;
 use crate::auth::CortexPaths;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-pub async fn run(
-    base_url: &str,
-    api_key: Option<&str>,
-    agent: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(base_url: &str, api_key: Option<&str>, agent: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let api_key = normalize_api_key(api_key);
     let base_url = base_url.trim_end_matches('/');
     validate_target_base_url(base_url)?;
     if requires_explicit_api_key(base_url, api_key) {
-        return Err(format!("Remote Cortex target '{base_url}' requires an API key. Pass --api-key <key> or set CORTEX_API_KEY.").
-into());
+        return Err(format!("Remote Cortex target '{base_url}' requires an API key. Pass --api-key <key> or set CORTEX_API_KEY.").into());
     }
     let mut rpc_base_url = base_url.to_string();
     let mut health_url = format!("{rpc_base_url}/readiness");
@@ -31,16 +26,7 @@ into());
     let mut healthy = false;
     let health_probe_headers = internal_health_probe_headers();
     for attempt in 1..=HEALTH_CHECK_ATTEMPTS {
-        match transport_request_for_url(
-            &client,
-            "GET",
-            &health_url,
-            &health_probe_headers,
-            None,
-            std::time::Duration::from_secs(5),
-        )
-        .await
-        {
+        match transport_request_for_url(&client, "GET", &health_url, &health_probe_headers, None, std::time::Duration::from_secs(5)).await {
             Ok((status, body)) if is_cortex_health_response(status, &body, &health_url) => {
                 healthy = true;
                 break;
@@ -50,9 +36,7 @@ into());
 "[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: HTTP {status} was not a valid Cortex health payload");
             }
             Err(e) => {
-                eprintln!(
-                    "[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: {e}"
-                );
+                eprintln!("[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: {e}");
             }
         }
         if attempt < HEALTH_CHECK_ATTEMPTS {
@@ -64,34 +48,18 @@ into());
 "[cortex-mcp] Health check failed after {HEALTH_CHECK_ATTEMPTS} attempts; keeping proxy alive and deferring errors to JSON-RPC responses"
 );
     }
-    let mut allow_local_token_fallback =
-        !local_token_fallback_required(&rpc_base_url, api_key) || healthy;
+    let mut allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key) || healthy;
     if local_token_fallback_required(&rpc_base_url, api_key) && !allow_local_token_fallback {
-        eprintln!(
-"[cortex-mcp] Local target is not identity-verified yet; withholding local token auth until health is valid");
+        eprintln!("[cortex-mcp] Local target is not identity-verified yet; withholding local token auth until health is valid");
     } else if healthy {
         let paths = CortexPaths::resolve();
-        drain_write_buffer(
-            &client,
-            &rpc_base_url,
-            api_key,
-            &agent_display,
-            agent_model.as_deref(),
-            &paths,
-            allow_local_token_fallback,
-        )
-        .await;
+        drain_write_buffer(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), &paths, allow_local_token_fallback)
+            .await;
     }
     if allow_local_token_fallback || !local_token_fallback_required(&rpc_base_url, api_key) {
-        let _ = session_start_with_retry(
-            &client,
-            &rpc_base_url,
-            api_key,
-            &agent_display,
-            agent_model.as_deref(),
-            allow_local_token_fallback,
-        )
-        .await;
+        let _ =
+            session_start_with_retry(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), allow_local_token_fallback)
+                .await;
     }
     {
         let heartbeat_base_url = rpc_base_url.clone();
@@ -101,10 +69,7 @@ into());
         let heartbeat_api_key = api_key.map(String::from);
         let mut heartbeat_allow_local_token_fallback = allow_local_token_fallback;
         tokio::spawn(async move {
-            let hb_client = match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-            {
+            let hb_client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(5)).build() {
                 Ok(client) => client,
                 Err(e) => {
                     eprintln!("[cortex-mcp] Heartbeat client init failed: {e}");
@@ -143,10 +108,7 @@ into());
                         )
                         .await;
                         if !restarted
-                            && local_token_fallback_required(
-                                &heartbeat_base_url,
-                                heartbeat_api_key.as_deref(),
-                            )
+                            && local_token_fallback_required(&heartbeat_base_url, heartbeat_api_key.as_deref())
                             && !heartbeat_allow_local_token_fallback
                             && health_check_ready(&hb_client, &heartbeat_health_url).await
                         {
@@ -162,17 +124,13 @@ into());
                             .await;
                         }
                         if !restarted && heartbeat_can_refresh_local {
-                            let refreshed_base =
-                                local_daemon_base_from_paths(&CortexPaths::resolve());
+                            let refreshed_base = local_daemon_base_from_paths(&CortexPaths::resolve());
                             if refreshed_base != heartbeat_base_url {
                                 heartbeat_base_url = refreshed_base;
                                 heartbeat_health_url = format!("{heartbeat_base_url}/readiness");
                                 let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
                                 heartbeat_allow_local_token_fallback =
-                                    !local_token_fallback_required(
-                                        &heartbeat_base_url,
-                                        heartbeat_api_key.as_deref(),
-                                    );
+                                    !local_token_fallback_required(&heartbeat_base_url, heartbeat_api_key.as_deref());
                                 restarted = session_start_with_retry(
                                     &hb_client,
                                     &heartbeat_base_url,
@@ -196,12 +154,10 @@ into());
                         consecutive_heartbeat_failures = 0;
                         if !health_check_ready(&hb_client, &heartbeat_health_url).await {
                             if heartbeat_can_refresh_local {
-                                let refreshed_base =
-                                    local_daemon_base_from_paths(&CortexPaths::resolve());
+                                let refreshed_base = local_daemon_base_from_paths(&CortexPaths::resolve());
                                 if refreshed_base != heartbeat_base_url {
                                     heartbeat_base_url = refreshed_base;
-                                    heartbeat_health_url =
-                                        format!("{heartbeat_base_url}/readiness");
+                                    heartbeat_health_url = format!("{heartbeat_base_url}/readiness");
                                     let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
                                 }
                             }
@@ -220,9 +176,7 @@ into());
                         )
                         .await;
                         if restarted {
-                            eprintln!(
-                                "[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}"
-                            );
+                            eprintln!("[cortex-mcp] Recovered heartbeat session for {heartbeat_agent}");
                         }
                     }
                 }
@@ -232,8 +186,7 @@ into());
     let stdin = tokio::io::stdin();
     let reader = BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();
-    let (stdin_tx, mut stdin_rx) =
-        tokio::sync::mpsc::channel::<Result<Option<String>, String>>(STDIN_CHANNEL_CAPACITY);
+    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Result<Option<String>, String>>(STDIN_CHANNEL_CAPACITY);
     tokio::spawn(async move {
         let mut lines = reader.lines();
         loop {
@@ -290,14 +243,7 @@ into());
                 let err = serde_json::json!({"jsonrpc":
 "2.0","error":{"code":-32700,"message":"Parse error"},"id":null});
                 if !write_value(&mut stdout, &err).await? {
-                    finalize_proxy_session(
-                        &client,
-                        &rpc_base_url,
-                        api_key,
-                        &agent_display,
-                        allow_local_token_fallback,
-                    )
-                    .await;
+                    finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback).await;
                     eprintln!("[cortex-mcp] Stdout closed while returning parse error");
                     return Ok(());
                 }
@@ -378,10 +324,7 @@ into());
                                 eprintln!(
 "[cortex-mcp] Auth still rejected request (attempt {attempt}/{REQUEST_ATTEMPTS}); retrying once more before surfacing the error");
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                150 * attempt as u64,
-                            ))
-                            .await;
+                            tokio::time::sleep(std::time::Duration::from_millis(150 * attempt as u64)).await;
                             continue;
                         }
                     }
@@ -393,12 +336,8 @@ into());
                         };
                         should_count_failure = true;
                         if attempt < REQUEST_ATTEMPTS {
-                            eprintln!(
-"[cortex-mcp] Request failed (attempt {attempt}/{REQUEST_ATTEMPTS}): {last_err}");
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                500 * attempt as u64,
-                            ))
-                            .await;
+                            eprintln!("[cortex-mcp] Request failed (attempt {attempt}/{REQUEST_ATTEMPTS}): {last_err}");
+                            tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
                             continue;
                         }
                         break;
@@ -426,10 +365,7 @@ into());
                             }
                         }
                     } else if !status.is_success() {
-                        eprintln!(
-                            "[cortex-mcp] Notification request returned HTTP {status}: {}",
-                            body.trim()
-                        );
+                        eprintln!("[cortex-mcp] Notification request returned HTTP {status}: {}", body.trim());
                     }
                     if consecutive_failures > 0 && status.is_success() {
                         let paths = CortexPaths::resolve();
@@ -451,10 +387,8 @@ into());
                     last_err = e.to_string();
                     should_count_failure = true;
                     if attempt < REQUEST_ATTEMPTS {
-                        eprintln!(
-"[cortex-mcp] Request failed (attempt {attempt}/{REQUEST_ATTEMPTS}): {e}");
-                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64))
-                            .await;
+                        eprintln!("[cortex-mcp] Request failed (attempt {attempt}/{REQUEST_ATTEMPTS}): {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
                     }
                 }
             }
@@ -469,28 +403,14 @@ into());
             let err_resp = serde_json
 ::json!({"jsonrpc":"2.0","error":{"code":-32603,"message":format!("Daemon unavailable: {last_err}")},"id":id});
             if !write_value(&mut stdout, &err_resp).await? {
-                finalize_proxy_session(
-                    &client,
-                    &rpc_base_url,
-                    api_key,
-                    &agent_display,
-                    allow_local_token_fallback,
-                )
-                .await;
+                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback).await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon error");
                 return Ok(());
             }
         }
         if let Some(body) = response_body {
             if !write_raw_line(&mut stdout, &body).await? {
-                finalize_proxy_session(
-                    &client,
-                    &rpc_base_url,
-                    api_key,
-                    &agent_display,
-                    allow_local_token_fallback,
-                )
-                .await;
+                finalize_proxy_session(&client, &rpc_base_url, api_key, &agent_display, allow_local_token_fallback).await;
                 eprintln!("[cortex-mcp] Stdout closed while returning daemon response");
                 return Ok(());
             }
@@ -498,33 +418,17 @@ into());
     }
 }
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::REQUEST_TIMEOUT
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
+    status == reqwest::StatusCode::REQUEST_TIMEOUT || status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
-async fn write_value(
-    stdout: &mut tokio::io::Stdout,
-    value: &Value,
-) -> Result<bool, std::io::Error> {
+async fn write_value(stdout: &mut tokio::io::Stdout, value: &Value) -> Result<bool, std::io::Error> {
     write_raw_line(stdout, &value.to_string()).await
 }
-async fn write_raw_line(
-    stdout: &mut tokio::io::Stdout,
-    line: &str,
-) -> Result<bool, std::io::Error> {
+async fn write_raw_line(stdout: &mut tokio::io::Stdout, line: &str) -> Result<bool, std::io::Error> {
     if let Err(e) = stdout.write_all(format!("{line}\n").as_bytes()).await {
-        return if e.kind() == std::io::ErrorKind::BrokenPipe {
-            Ok(false)
-        } else {
-            Err(e)
-        };
+        return if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(false) } else { Err(e) };
     }
     if let Err(e) = stdout.flush().await {
-        return if e.kind() == std::io::ErrorKind::BrokenPipe {
-            Ok(false)
-        } else {
-            Err(e)
-        };
+        return if e.kind() == std::io::ErrorKind::BrokenPipe { Ok(false) } else { Err(e) };
     }
     Ok(true)
 }

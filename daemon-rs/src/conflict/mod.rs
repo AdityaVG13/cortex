@@ -54,16 +54,12 @@ impl ConflictResult {
         }
     }
     fn from_candidate(
-        classification: ConflictClassification,
-        candidate: &DecisionCandidate,
-        source_agent: &str,
-        similarity_jaccard: f64,
+        classification: ConflictClassification, candidate: &DecisionCandidate, source_agent: &str, similarity_jaccard: f64,
         similarity_cosine: Option<f64>,
     ) -> Self {
         let is_conflict = matches!(classification, ConflictClassification::Contradicts);
         let is_update = matches!(classification, ConflictClassification::Refines)
-            || (matches!(classification, ConflictClassification::Agrees)
-                && candidate.source_agent == source_agent);
+            || (matches!(classification, ConflictClassification::Agrees) && candidate.source_agent == source_agent);
         Self {
             classification,
             is_conflict,
@@ -78,16 +74,8 @@ impl ConflictResult {
     }
 }
 pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
-    let set_a: HashSet<String> = a
-        .split_whitespace()
-        .filter(|w| w.len() > 1)
-        .map(|w| w.to_lowercase())
-        .collect();
-    let set_b: HashSet<String> = b
-        .split_whitespace()
-        .filter(|w| w.len() > 1)
-        .map(|w| w.to_lowercase())
-        .collect();
+    let set_a: HashSet<String> = a.split_whitespace().filter(|w| w.len() > 1).map(|w| w.to_lowercase()).collect();
+    let set_b: HashSet<String> = b.split_whitespace().filter(|w| w.len() > 1).map(|w| w.to_lowercase()).collect();
     if set_a.is_empty() && set_b.is_empty() {
         return 1.0;
     }
@@ -117,16 +105,10 @@ pub(crate) struct RecentDecisionScan {
 }
 
 pub(crate) fn jaccard_token_set(text: &str) -> HashSet<String> {
-    text.split_whitespace()
-        .filter(|word| word.len() > 1)
-        .map(|word| word.to_lowercase())
-        .collect()
+    text.split_whitespace().filter(|word| word.len() > 1).map(|word| word.to_lowercase()).collect()
 }
 
-pub(crate) fn jaccard_similarity_token_sets(
-    left: &HashSet<String>,
-    right: &HashSet<String>,
-) -> f64 {
+pub(crate) fn jaccard_similarity_token_sets(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
     if left.is_empty() && right.is_empty() {
         return 1.0;
     }
@@ -142,9 +124,7 @@ pub(crate) fn jaccard_similarity_token_sets(
     }
 }
 
-fn recent_candidate_to_decision_candidate(
-    candidate: &RecentDecisionCandidate,
-) -> DecisionCandidate {
+fn recent_candidate_to_decision_candidate(candidate: &RecentDecisionCandidate) -> DecisionCandidate {
     DecisionCandidate {
         id: candidate.id,
         decision: candidate.decision.clone(),
@@ -153,10 +133,7 @@ fn recent_candidate_to_decision_candidate(
     }
 }
 
-pub(crate) fn fetch_recent_decision_candidates(
-    conn: &Connection,
-    owner_id: Option<i64>,
-) -> Result<Vec<RecentDecisionCandidate>, String> {
+pub(crate) fn fetch_recent_decision_candidates(conn: &Connection, owner_id: Option<i64>) -> Result<Vec<RecentDecisionCandidate>, String> {
     let (sql, has_owner_scope) = if owner_id.is_some() {
         (
             "SELECT id, decision, source_agent, trust_score, MAX(in_conflict_window) AS in_conflict_window \
@@ -216,9 +193,7 @@ pub(crate) fn fetch_recent_decision_candidates(
             false,
         )
     };
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|error| format!("Failed to prepare recent decision query: {error}"))?;
+    let mut stmt = conn.prepare(sql).map_err(|error| format!("Failed to prepare recent decision query: {error}"))?;
     let map_candidate = |row: &rusqlite::Row<'_>| {
         let in_conflict_window: i64 = row.get(4)?;
         Ok(RecentDecisionCandidate {
@@ -247,10 +222,7 @@ pub(crate) fn fetch_recent_decision_candidates(
 }
 
 pub(crate) fn scan_recent_decision_candidates(
-    candidates: &[RecentDecisionCandidate],
-    decision: &str,
-    source_agent: &str,
-    decision_tokens: &HashSet<String>,
+    candidates: &[RecentDecisionCandidate], decision: &str, source_agent: &str, decision_tokens: &HashSet<String>,
 ) -> RecentDecisionScan {
     let mut max_jaccard = 0.0_f64;
     let mut best_conflict_sim = 0.0_f64;
@@ -267,38 +239,20 @@ pub(crate) fn scan_recent_decision_candidates(
     }
 
     let Some(best_candidate) = best_conflict_candidate else {
-        return RecentDecisionScan {
-            relation: ConflictResult::unrelated(),
-            max_jaccard,
-        };
+        return RecentDecisionScan { relation: ConflictResult::unrelated(), max_jaccard };
     };
     if best_conflict_sim < RELATED_THRESHOLD {
-        return RecentDecisionScan {
-            relation: ConflictResult::unrelated(),
-            max_jaccard,
-        };
+        return RecentDecisionScan { relation: ConflictResult::unrelated(), max_jaccard };
     }
-    let classification =
-        classify_relation(decision, source_agent, &best_candidate, best_conflict_sim);
+    let classification = classify_relation(decision, source_agent, &best_candidate, best_conflict_sim);
     RecentDecisionScan {
-        relation: ConflictResult::from_candidate(
-            classification,
-            &best_candidate,
-            source_agent,
-            best_conflict_sim,
-            None,
-        ),
+        relation: ConflictResult::from_candidate(classification, &best_candidate, source_agent, best_conflict_sim, None),
         max_jaccard,
     }
 }
 
 #[allow(dead_code)]
-pub fn detect_conflict(
-    conn: &Connection,
-    decision: &str,
-    source_agent: &str,
-    owner_id: Option<i64>,
-) -> Result<ConflictResult, String> {
+pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str, owner_id: Option<i64>) -> Result<ConflictResult, String> {
     let (sql, has_owner_scope) = if owner_id.is_some() {
         (
             "SELECT id, decision, source_agent, COALESCE(trust_score, confidence, 0.8) \
@@ -321,9 +275,7 @@ pub fn detect_conflict(
             false,
         )
     };
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
+    let mut stmt = conn.prepare(sql).map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
     let rows: Vec<DecisionCandidate> = if has_owner_scope {
         stmt.query_map([owner_id.unwrap_or_default()], |row| {
             Ok(DecisionCandidate {
@@ -365,19 +317,10 @@ pub fn detect_conflict(
         return Ok(ConflictResult::unrelated());
     }
     let classification = classify_relation(decision, source_agent, &best_candidate, best_sim);
-    Ok(ConflictResult::from_candidate(
-        classification,
-        &best_candidate,
-        source_agent,
-        best_sim,
-        None,
-    ))
+    Ok(ConflictResult::from_candidate(classification, &best_candidate, source_agent, best_sim, None))
 }
 fn classify_relation(
-    incoming_decision: &str,
-    incoming_agent: &str,
-    candidate: &DecisionCandidate,
-    similarity_jaccard: f64,
+    incoming_decision: &str, incoming_agent: &str, candidate: &DecisionCandidate, similarity_jaccard: f64,
 ) -> ConflictClassification {
     if similarity_jaccard < RELATED_THRESHOLD {
         return ConflictClassification::Unrelated;
@@ -450,24 +393,14 @@ fn strip_negation_tokens(tokens: &HashSet<String>) -> HashSet<String> {
         "forbidden",
         "against",
     ];
-    tokens
-        .iter()
-        .filter(|token| !NEGATION_TOKENS.contains(&token.as_str()))
-        .cloned()
-        .collect()
+    tokens.iter().filter(|token| !NEGATION_TOKENS.contains(&token.as_str())).cloned().collect()
 }
 fn has_polarity_flip(tokens_a: &HashSet<String>, tokens_b: &HashSet<String>) -> bool {
-    const FLIP_PAIRS: &[(&str, &str)] = &[
-        ("always", "never"),
-        ("must", "never"),
-        ("allow", "forbid"),
-        ("enable", "disable"),
-        ("use", "avoid"),
-    ];
-    FLIP_PAIRS.iter().any(|(lhs, rhs)| {
-        (tokens_a.contains(*lhs) && tokens_b.contains(*rhs))
-            || (tokens_a.contains(*rhs) && tokens_b.contains(*lhs))
-    })
+    const FLIP_PAIRS: &[(&str, &str)] =
+        &[("always", "never"), ("must", "never"), ("allow", "forbid"), ("enable", "disable"), ("use", "avoid")];
+    FLIP_PAIRS
+        .iter()
+        .any(|(lhs, rhs)| (tokens_a.contains(*lhs) && tokens_b.contains(*rhs)) || (tokens_a.contains(*rhs) && tokens_b.contains(*lhs)))
 }
 fn jaccard_similarity_sets(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
     if left.is_empty() && right.is_empty() {

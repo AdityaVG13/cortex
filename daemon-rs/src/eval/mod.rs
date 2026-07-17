@@ -52,15 +52,9 @@ first_pass_success(),"medianTimeToValidResultMs":self.median_time_to_valid_resul
     }
 }
 fn is_baseline_task_class(task_class: &str) -> bool {
-    task_class
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("baseline")
+    task_class.trim().to_ascii_lowercase().starts_with("baseline")
 }
-fn collect_task_metrics(
-    conn: &Connection,
-    since_modifier: &str,
-) -> (TaskEvalAggregate, TaskEvalAggregate) {
+fn collect_task_metrics(conn: &Connection, since_modifier: &str) -> (TaskEvalAggregate, TaskEvalAggregate) {
     let mut baseline = TaskEvalAggregate::default();
     let mut assisted = TaskEvalAggregate::default();
     let mut stmt = match conn.prepare(
@@ -72,12 +66,7 @@ fn collect_task_metrics(
         Err(_) => return (baseline, assisted),
     };
     let rows = match stmt.query_map(params![since_modifier], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?, row.get::<_, Option<i64>>(3)?))
     }) {
         Ok(rows) => rows,
         Err(_) => return (baseline, assisted),
@@ -96,50 +85,41 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
     let horizon_days = horizon_days.clamp(1, 180);
     let since_modifier = format!("-{horizon_days} days");
     let open_conflicts: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status = 'disputed' AND disputes_id IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed' AND disputes_id IS NOT NULL", [], |row| row.get(0))
         .unwrap_or(0);
     let active_memories: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'active'",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |row| row.get(0))
         .unwrap_or(0);
     let active_decisions: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |row| row.get(0))
         .unwrap_or(0);
     let decayed_memories: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |row| row.get(0))
         .unwrap_or(0);
     let decayed_decisions: i64 = conn
+        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |row| row.get(0))
+        .unwrap_or(0);
+    let recent_conflicts: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0",
-            [],
+            "SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at >= datetime('now', ?1)",
+            params![since_modifier.as_str()],
             |row| row.get(0),
         )
         .unwrap_or(0);
-    let
-recent_conflicts:i64=conn.query_row(
-"SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at >= datetime('now', ?1)",params![since_modifier.as_str
-()],|row|row.get(0),).unwrap_or(0);
-    let recent_resolutions:i64=conn.query_row(
-"SELECT COUNT(*) FROM events WHERE type = 'decision_resolve' AND created_at >= datetime('now', ?1)",params![since_modifier.as_str(
-)],|row|row.get(0),).unwrap_or(0);
-    let recent_recalls:i64=conn.query_row(
-"SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND created_at >= datetime('now', ?1)",params![since_modifier.as_str()],|
-row|row.get(0),).unwrap_or(0);
+    let recent_resolutions: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE type = 'decision_resolve' AND created_at >= datetime('now', ?1)",
+            params![since_modifier.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let recent_recalls: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND created_at >= datetime('now', ?1)",
+            params![since_modifier.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
     let recent_memory_hits: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memories
@@ -231,32 +211,21 @@ row|row.get(0),).unwrap_or(0);
     let contradiction_rate = ratio(recent_conflicts, recent_recalls);
     let stale_memory_hit_rate = ratio(stale_memory_hits, recent_memory_hits);
     let low_trust_hit_rate = ratio(recent_low_trust_hits, recent_total_hits);
-    let consensus_promotion_precision =
-        ratio(promoted_consensus, promoted_consensus + failed_consensus);
+    let consensus_promotion_precision = ratio(promoted_consensus, promoted_consensus + failed_consensus);
     let success_rate_delta = diff_signal(
         assisted_json.get("taskSuccessRate").and_then(Value::as_f64),
         baseline_json.get("taskSuccessRate").and_then(Value::as_f64),
     );
     let first_pass_delta = diff_signal(
-        assisted_json
-            .get("firstPassSuccess")
-            .and_then(Value::as_f64),
-        baseline_json
-            .get("firstPassSuccess")
-            .and_then(Value::as_f64),
+        assisted_json.get("firstPassSuccess").and_then(Value::as_f64),
+        baseline_json.get("firstPassSuccess").and_then(Value::as_f64),
     );
     let median_latency_delta_ms = diff_signal(
-        assisted_json
-            .get("medianTimeToValidResultMs")
-            .and_then(Value::as_f64),
-        baseline_json
-            .get("medianTimeToValidResultMs")
-            .and_then(Value::as_f64),
+        assisted_json.get("medianTimeToValidResultMs").and_then(Value::as_f64),
+        baseline_json.get("medianTimeToValidResultMs").and_then(Value::as_f64),
     );
-    let retry_delta = diff_signal(
-        assisted_json.get("retryCount").and_then(Value::as_f64),
-        baseline_json.get("retryCount").and_then(Value::as_f64),
-    );
+    let retry_delta =
+        diff_signal(assisted_json.get("retryCount").and_then(Value::as_f64), baseline_json.get("retryCount").and_then(Value::as_f64));
     json!({"ok":true,"windowDays":horizon_days,"snapshotAt":Utc::
 now().to_rfc3339(),"totals":{"activeMemories":active_memories,"activeDecisions":active_decisions,"openConflicts":open_conflicts},
 "window":{"recentConflicts":recent_conflicts,"recentResolutions":recent_resolutions,"recentRecallQueries":recent_recalls,
@@ -274,21 +243,9 @@ pub fn build_eval_regression_gate(current: &Value, baseline: &Value, max_regress
     let mut checks = Vec::new();
     let mut failed = Vec::new();
     for (metric, higher_is_better) in RATE_GATED_METRICS {
-        let current_value = current
-            .get("signals")
-            .and_then(|signals| signals.get(metric))
-            .and_then(Value::as_f64);
-        let baseline_value = baseline
-            .get("signals")
-            .and_then(|signals| signals.get(metric))
-            .and_then(Value::as_f64);
-        let status = evaluate_regression(
-            metric,
-            higher_is_better,
-            current_value,
-            baseline_value,
-            max_regression,
-        );
+        let current_value = current.get("signals").and_then(|signals| signals.get(metric)).and_then(Value::as_f64);
+        let baseline_value = baseline.get("signals").and_then(|signals| signals.get(metric)).and_then(Value::as_f64);
+        let status = evaluate_regression(metric, higher_is_better, current_value, baseline_value, max_regression);
         if status.get("regressed").and_then(Value::as_bool) == Some(true) {
             failed.push(status.clone());
         }
@@ -298,11 +255,7 @@ pub fn build_eval_regression_gate(current: &Value, baseline: &Value, max_regress
 "failedMetrics":failed})
 }
 fn evaluate_regression(
-    metric: &str,
-    higher_is_better: bool,
-    current_value: Option<f64>,
-    baseline_value: Option<f64>,
-    max_regression: f64,
+    metric: &str, higher_is_better: bool, current_value: Option<f64>, baseline_value: Option<f64>, max_regression: f64,
 ) -> Value {
     let (Some(current), Some(baseline)) = (current_value, baseline_value) else {
         return json!({"metric":metric
@@ -310,16 +263,8 @@ fn evaluate_regression(
 current_value,"baseline":baseline_value,"regressed":false});
     };
     let raw_delta = current - baseline;
-    let relative_delta = if baseline.abs() > f64::EPSILON {
-        raw_delta / baseline.abs()
-    } else {
-        raw_delta
-    };
-    let regressed = if higher_is_better {
-        -relative_delta > max_regression
-    } else {
-        relative_delta > max_regression
-    };
+    let relative_delta = if baseline.abs() > f64::EPSILON { raw_delta / baseline.abs() } else { raw_delta };
+    let regressed = if higher_is_better { -relative_delta > max_regression } else { relative_delta > max_regression };
     json!({"metric":metric,"direction":if higher_is_better{"higher_is_better"}else{"lower_is_better"},
 "status":if regressed{"regressed"}else{"ok"},"current":current,"baseline":baseline,"delta":raw_delta,"relativeDelta":
 relative_delta,"regressed":regressed})

@@ -38,23 +38,31 @@ impl RerankerProfile {
         self.missing_assets(models_dir).is_empty()
     }
     pub(crate) fn missing_assets(&self, models_dir: &Path) -> Vec<RerankerAsset> {
-        self.assets
-            .iter()
-            .copied()
-            .filter(|asset| !models_dir.join(asset.file).exists())
-            .collect()
+        self.assets.iter().copied().filter(|asset| !models_dir.join(asset.file).exists()).collect()
     }
 }
-const MINILM_RERANKER_ASSETS:&[RerankerAsset]=&[RerankerAsset{file:
-"rerank/ms-marco-MiniLM-L-6-v2/model_int8.onnx",url:
-"https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/onnx/model_int8.onnx",},RerankerAsset{file:
-"rerank/ms-marco-MiniLM-L-6-v2/tokenizer.json",url:
-"https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer.json",},RerankerAsset{file:
-"rerank/ms-marco-MiniLM-L-6-v2/config.json",url:"https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/config.json",},
-RerankerAsset{file:"rerank/ms-marco-MiniLM-L-6-v2/tokenizer_config.json",url:
-"https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer_config.json",},RerankerAsset{file:
-"rerank/ms-marco-MiniLM-L-6-v2/special_tokens_map.json",url:
-"https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/special_tokens_map.json",},];
+const MINILM_RERANKER_ASSETS: &[RerankerAsset] = &[
+    RerankerAsset {
+        file: "rerank/ms-marco-MiniLM-L-6-v2/model_int8.onnx",
+        url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/onnx/model_int8.onnx",
+    },
+    RerankerAsset {
+        file: "rerank/ms-marco-MiniLM-L-6-v2/tokenizer.json",
+        url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer.json",
+    },
+    RerankerAsset {
+        file: "rerank/ms-marco-MiniLM-L-6-v2/config.json",
+        url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/config.json",
+    },
+    RerankerAsset {
+        file: "rerank/ms-marco-MiniLM-L-6-v2/tokenizer_config.json",
+        url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer_config.json",
+    },
+    RerankerAsset {
+        file: "rerank/ms-marco-MiniLM-L-6-v2/special_tokens_map.json",
+        url: "https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/resolve/main/special_tokens_map.json",
+    },
+];
 const MINILM_RERANKER: RerankerProfile = RerankerProfile {
     key: "ms-marco-MiniLM-L-6-v2",
     display_name: "ms-marco-MiniLM-L-6-v2 int8",
@@ -83,10 +91,7 @@ pub async fn ensure_reranker_downloaded_in(models_dir: &Path) -> Option<PathBuf>
     if profile.assets_exist(models_dir) {
         return Some(models_dir.to_path_buf());
     }
-    eprintln!(
-        "[rerank] Downloading reranker '{}' (first run)...",
-        profile.display_name
-    );
+    eprintln!("[rerank] Downloading reranker '{}' (first run)...", profile.display_name);
     for asset in profile.missing_assets(models_dir) {
         let asset_path = models_dir.join(asset.file);
         match download_file(asset.url, &asset_path).await {
@@ -107,20 +112,11 @@ async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
         .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|error| error.to_string())?;
-    let mut resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+    let mut resp = client.get(url).send().await.map_err(|error| error.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let tmp_dest = dest.with_file_name(format!(
-        "{}.tmp",
-        dest.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("download")
-    ));
+    let tmp_dest = dest.with_file_name(format!("{}.tmp", dest.file_name().and_then(|name| name.to_str()).unwrap_or("download")));
     let mut file = std::fs::File::create(&tmp_dest).map_err(|error| error.to_string())?;
     while let Some(chunk) = resp.chunk().await.map_err(|error| error.to_string())? {
         file.write_all(&chunk).map_err(|error| error.to_string())?;

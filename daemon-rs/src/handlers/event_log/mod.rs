@@ -44,9 +44,7 @@ fn compact_event_payload(kind: &str, data: Value) -> Value {
     let projected = match kind {
         "recall_query" => compact_recall_query_payload(data),
         "merge" => compact_merge_event_payload(data),
-        "store_savings" | "tool_call_savings" | "boot_savings" => {
-            compact_savings_event_payload(data)
-        }
+        "store_savings" | "tool_call_savings" | "boot_savings" => compact_savings_event_payload(data),
         _ => truncate_event_value(data, 0),
     };
     enforce_event_payload_budget(kind, projected)
@@ -88,10 +86,7 @@ fn compact_merge_event_payload(data: Value) -> Value {
     let Some(obj) = data.as_object() else {
         return truncate_event_value(data, 0);
     };
-    let incoming = obj
-        .get("incoming_text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let incoming = obj.get("incoming_text").and_then(Value::as_str).unwrap_or_default();
     let incoming_chars = incoming.chars().count() as i64;
     json!({"source_id":obj.get(
 "source_id").cloned().unwrap_or(Value::Null),"target_id":obj.get("target_id").cloned().unwrap_or(Value::Null),"target_type":obj.
@@ -127,19 +122,9 @@ fn truncate_event_value(value: Value, depth: usize) -> Value {
     }
     match value {
         Value::String(s) => Value::String(truncate_chars(&s, MAX_EVENT_VALUE_CHARS)),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .take(16)
-                .map(|item| truncate_event_value(item, depth + 1))
-                .collect(),
-        ),
+        Value::Array(items) => Value::Array(items.into_iter().take(16).map(|item| truncate_event_value(item, depth + 1)).collect()),
         Value::Object(map) => {
-            let compacted = map
-                .into_iter()
-                .take(24)
-                .map(|(key, val)| (key, truncate_event_value(val, depth + 1)))
-                .collect();
+            let compacted = map.into_iter().take(24).map(|(key, val)| (key, truncate_event_value(val, depth + 1))).collect();
             Value::Object(compacted)
         }
         other => other,
@@ -178,10 +163,7 @@ fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
             "jaccard",
             "incoming_chars",
         ] {
-            if let Some(value) = obj
-                .get(key)
-                .and_then(|value| compact_budget_scalar(value, MAX_EVENT_VALUE_CHARS))
-            {
+            if let Some(value) = obj.get(key).and_then(|value| compact_budget_scalar(value, MAX_EVENT_VALUE_CHARS)) {
                 fallback[key] = value;
             }
         }
@@ -201,14 +183,7 @@ fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
         return fallback;
     }
     if let Some(fallback_obj) = fallback.as_object_mut() {
-        for key in [
-            "query",
-            "semantic_route",
-            "shadow_semantic",
-            "target_type",
-            "tier",
-            "mode",
-        ] {
+        for key in ["query", "semantic_route", "shadow_semantic", "target_type", "tier", "mode"] {
             fallback_obj.remove(key);
         }
     }
@@ -218,10 +193,7 @@ fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
     let mut minimal = json!({"truncated":true,"type":kind,"bytes":encoded.len()});
     if let Some(obj) = payload.as_object() {
         for key in ["agent", "source_agent"] {
-            if let Some(value) = obj
-                .get(key)
-                .and_then(|value| compact_budget_scalar(value, MAX_SOURCE_LABEL_LEN))
-            {
+            if let Some(value) = obj.get(key).and_then(|value| compact_budget_scalar(value, MAX_SOURCE_LABEL_LEN)) {
                 minimal[key] = value;
             }
         }
@@ -246,27 +218,14 @@ fn payload_field_has_benchmark_prefix(payload: &Value, key: &str, lowercase_pref
 }
 fn is_benchmark_event_source(source_agent: &str, payload: &Value) -> bool {
     let benchmark_prefix = crate::compaction::BENCHMARK_SOURCE_AGENT_PREFIX.to_ascii_lowercase();
-    source_agent
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with(&benchmark_prefix)
+    source_agent.trim().to_ascii_lowercase().starts_with(&benchmark_prefix)
         || payload_field_has_benchmark_prefix(payload, "source_agent", &benchmark_prefix)
         || payload_field_has_benchmark_prefix(payload, "agent", &benchmark_prefix)
 }
-fn should_skip_benchmark_event_persistence(
-    kind: &str,
-    payload: &Value,
-    source_agent: &str,
-) -> bool {
-    NON_PERSISTENT_BENCHMARK_EVENT_KINDS.contains(&kind)
-        && is_benchmark_event_source(source_agent, payload)
+fn should_skip_benchmark_event_persistence(kind: &str, payload: &Value, source_agent: &str) -> bool {
+    NON_PERSISTENT_BENCHMARK_EVENT_KINDS.contains(&kind) && is_benchmark_event_source(source_agent, payload)
 }
-pub fn log_event(
-    conn: &rusqlite::Connection,
-    kind: &str,
-    data: Value,
-    source_agent: &str,
-) -> rusqlite::Result<()> {
+pub fn log_event(conn: &rusqlite::Connection, kind: &str, data: Value, source_agent: &str) -> rusqlite::Result<()> {
     let compacted = compact_event_payload(kind, data);
     if should_skip_benchmark_event_persistence(kind, &compacted, source_agent) {
         return Ok(());
@@ -279,10 +238,7 @@ pub fn log_event(
     Ok(())
 }
 fn maybe_prune_high_volume_event(conn: &rusqlite::Connection, kind: &str) -> rusqlite::Result<()> {
-    let Some(keep_rows) = HIGH_VOLUME_EVENT_CAPS
-        .iter()
-        .find_map(|(event_type, keep)| (*event_type == kind).then_some(*keep))
-    else {
+    let Some(keep_rows) = HIGH_VOLUME_EVENT_CAPS.iter().find_map(|(event_type, keep)| (*event_type == kind).then_some(*keep)) else {
         return Ok(());
     };
     let inserted_id = conn.last_insert_rowid();
@@ -291,11 +247,7 @@ fn maybe_prune_high_volume_event(conn: &rusqlite::Connection, kind: &str) -> rus
     }
     prune_event_type_keep_latest(conn, kind, keep_rows)
 }
-fn prune_event_type_keep_latest(
-    conn: &rusqlite::Connection,
-    event_type: &str,
-    keep_rows: i64,
-) -> rusqlite::Result<()> {
+fn prune_event_type_keep_latest(conn: &rusqlite::Connection, event_type: &str, keep_rows: i64) -> rusqlite::Result<()> {
     if keep_rows < 1 {
         return Ok(());
     }

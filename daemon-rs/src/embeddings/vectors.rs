@@ -38,9 +38,7 @@ pub fn blob_to_vector(blob: &[u8]) -> Vec<f32> {
     legacy_f32_blob_to_vector(blob)
 }
 pub fn legacy_f32_blob_to_vector(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    blob.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
 }
 pub const PQ8_MAGIC_BYTE: u8 = 0xC8;
 pub const PQ8_FORMAT_VERSION: u8 = 0x02;
@@ -49,16 +47,8 @@ pub fn vector_to_pq8_blob(vec: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(PQ8_HEADER_BYTES + vec.len());
     out.push(PQ8_MAGIC_BYTE);
     out.push(PQ8_FORMAT_VERSION);
-    let max_abs = vec
-        .iter()
-        .copied()
-        .filter(|v| v.is_finite())
-        .fold(0.0f32, |acc, v| acc.max(v.abs()));
-    let scale = if max_abs > 0.0 {
-        max_abs / i8::MAX as f32
-    } else {
-        0.0
-    };
+    let max_abs = vec.iter().copied().filter(|v| v.is_finite()).fold(0.0f32, |acc, v| acc.max(v.abs()));
+    let scale = if max_abs > 0.0 { max_abs / i8::MAX as f32 } else { 0.0 };
     out.extend_from_slice(&scale.to_le_bytes());
     for &v in vec {
         let q = if scale > 0.0 && v.is_finite() {
@@ -96,8 +86,5 @@ pub fn pq8_blob_to_vector(blob: &[u8]) -> Option<Vec<f32>> {
 }
 #[cfg(test)]
 pub(crate) fn max_abs_error(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max)
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
 }

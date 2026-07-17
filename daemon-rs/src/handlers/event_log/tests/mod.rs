@@ -25,11 +25,7 @@ fn prune_event_type_keep_latest_trims_old_rows() {
     }
     prune_event_type_keep_latest(&conn, "decision_stored", 3).expect("prune rows");
     let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored'", [], |row| row.get(0))
         .expect("count rows");
     assert_eq!(count, 3);
 }
@@ -60,11 +56,7 @@ fn log_event_compacts_large_merge_payload() {
     )
     .expect("log merge event");
     let payload: String = conn
-        .query_row(
-            "SELECT data FROM events WHERE type = 'merge' LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT data FROM events WHERE type = 'merge' LIMIT 1", [], |row| row.get(0))
         .expect("read payload");
     let parsed: Value = serde_json::from_str(&payload).expect("valid json");
     assert!(parsed.get("incoming_text").is_none());
@@ -124,21 +116,14 @@ fn log_event_keeps_recall_analytics_fields_small() {
     )
     .expect("log recall event");
     let (payload, bytes): (String, i64) = conn
-        .query_row(
-            "SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
         .expect("read payload");
     let parsed: Value = serde_json::from_str(&payload).expect("valid json");
     assert_eq!(parsed["saved"].as_i64(), Some(188));
     assert_eq!(parsed["budget"].as_i64(), Some(240));
     assert_eq!(parsed["hits"].as_i64(), Some(3));
     assert_eq!(parsed["semantic_route"]["mode"].as_str(), Some("baseline"));
-    assert_eq!(
-        parsed["shadow_semantic"]["status"].as_str(),
-        Some("unavailable")
-    );
+    assert_eq!(parsed["shadow_semantic"]["status"].as_str(), Some("unavailable"));
     assert!(parsed["shadow_semantic"]["baselineTopSources"].is_null());
     assert!(parsed["shadow_semantic"]["shadowTopSources"].is_null());
     assert!(bytes as usize <= MAX_EVENT_JSON_BYTES);
@@ -201,9 +186,7 @@ fn log_event_skips_non_persistent_benchmark_noise() {
         "rust-daemon",
     )
     .expect("skip benchmark decision_stored noise");
-    let skipped_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
-        .expect("count skipped rows");
+    let skipped_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0)).expect("count skipped rows");
     assert_eq!(skipped_count, 0);
     log_event(
         &conn,
@@ -219,9 +202,7 @@ fn log_event_skips_non_persistent_benchmark_noise() {
         "codex",
     )
     .expect("persist non-benchmark event");
-    let persisted_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
-        .expect("count persisted rows");
+    let persisted_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0)).expect("count persisted rows");
     assert_eq!(persisted_count, 1);
 }
 #[test]
@@ -272,11 +253,7 @@ fn log_event_payload_fallback_keeps_savings_fields_bounded() {
     )
     .expect("log oversized recall event");
     let (payload, bytes): (String, i64) = conn
-        .query_row(
-            "SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
         .expect("read payload");
     let parsed: Value = serde_json::from_str(&payload).expect("valid json");
     assert_eq!(parsed["truncated"].as_bool(), Some(true));
@@ -285,10 +262,7 @@ fn log_event_payload_fallback_keeps_savings_fields_bounded() {
     assert_eq!(parsed["hits"].as_i64(), Some(3));
     assert_eq!(parsed["agent"].as_str(), Some("codex"));
     assert!(
-        parsed["query"]
-            .as_str()
-            .map(|query| query.chars().count() <= 120)
-            .unwrap_or(false),
+        parsed["query"].as_str().map(|query| query.chars().count() <= 120).unwrap_or(false),
         "query should stay bounded in fallback payload"
     );
     assert!(bytes as usize <= MAX_EVENT_JSON_BYTES);

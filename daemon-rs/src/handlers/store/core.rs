@@ -1,51 +1,23 @@
 use super::*;
 use crate::api_types::RetentionClass;
-use crate::conflict::{
-    fetch_recent_decision_candidates, jaccard_token_set, scan_recent_decision_candidates,
-    ConflictClassification,
-};
+use crate::conflict::{fetch_recent_decision_candidates, jaccard_token_set, scan_recent_decision_candidates, ConflictClassification};
 use crate::db::checkpoint_wal_best_effort;
 use crate::handlers::{log_event, now_iso, truncate_chars};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 #[allow(clippy::too_many_arguments, dead_code)]
 pub fn store_decision_with_ttl(
-    conn: &mut Connection,
-    decision: &str,
-    context: Option<String>,
-    entry_type: Option<String>,
-    source_agent: String,
-    confidence: Option<f64>,
-    ttl_seconds: Option<i64>,
-    owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
+    confidence: Option<f64>, ttl_seconds: Option<i64>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
     let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
-    store_decision_internal(
-        conn,
-        decision,
-        context,
-        entry_type,
-        source_agent,
-        provenance,
-        confidence,
-        ttl_seconds,
-        None,
-        None,
-        owner_id,
-    )
-    .map_err(|err| err.to_string())
+    store_decision_internal(conn, decision, context, entry_type, source_agent, provenance, confidence, ttl_seconds, None, None, owner_id)
+        .map_err(|err| err.to_string())
 }
 #[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn store_decision_with_input_embedding(
-    conn: &mut Connection,
-    decision: &str,
-    context: Option<String>,
-    entry_type: Option<String>,
-    source_agent: String,
-    confidence: Option<f64>,
-    ttl_seconds: Option<i64>,
-    query_embedding: Option<&[f32]>,
-    owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
+    confidence: Option<f64>, ttl_seconds: Option<i64>, query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
     store_decision_with_input_embedding_and_provenance(
@@ -63,15 +35,8 @@ pub(crate) fn store_decision_with_input_embedding(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_with_input_embedding_and_provenance(
-    conn: &mut Connection,
-    decision: &str,
-    context: Option<String>,
-    entry_type: Option<String>,
-    source_agent: String,
-    provenance: DecisionProvenance,
-    confidence: Option<f64>,
-    ttl_seconds: Option<i64>,
-    query_embedding: Option<&[f32]>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
+    provenance: DecisionProvenance, confidence: Option<f64>, ttl_seconds: Option<i64>, query_embedding: Option<&[f32]>,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     store_decision_with_input_embedding_and_provenance_retention(
@@ -90,17 +55,9 @@ pub(crate) fn store_decision_with_input_embedding_and_provenance(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_with_input_embedding_and_provenance_retention(
-    conn: &mut Connection,
-    decision: &str,
-    context: Option<String>,
-    entry_type: Option<String>,
-    source_agent: String,
-    provenance: DecisionProvenance,
-    confidence: Option<f64>,
-    ttl_seconds: Option<i64>,
-    retention_class: Option<RetentionClass>,
-    query_embedding: Option<&[f32]>,
-    owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
+    provenance: DecisionProvenance, confidence: Option<f64>, ttl_seconds: Option<i64>, retention_class: Option<RetentionClass>,
+    query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     store_decision_internal(
         conn,
@@ -118,25 +75,15 @@ pub(crate) fn store_decision_with_input_embedding_and_provenance_retention(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_internal(
-    conn: &mut Connection,
-    decision: &str,
-    context: Option<String>,
-    entry_type: Option<String>,
-    source_agent: String,
-    provenance: DecisionProvenance,
-    confidence: Option<f64>,
-    ttl_seconds: Option<i64>,
-    retention_class: Option<RetentionClass>,
-    query_embedding: Option<&[f32]>,
-    owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
+    provenance: DecisionProvenance, confidence: Option<f64>, ttl_seconds: Option<i64>, retention_class: Option<RetentionClass>,
+    query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
-    let suppress_benchmark_events =
-        is_benchmark_entry_type(&entry_type) || is_benchmark_source_agent(&source_agent);
+    let suppress_benchmark_events = is_benchmark_entry_type(&entry_type) || is_benchmark_source_agent(&source_agent);
     let mut decision_text = decision.trim().to_string();
     let decision_chars = decision_text.chars().count();
-    let decision_truncated =
-        !is_benchmark_entry_type(&entry_type) && decision_chars > MAX_DECISION_CHARS;
+    let decision_truncated = !is_benchmark_entry_type(&entry_type) && decision_chars > MAX_DECISION_CHARS;
     if decision_truncated {
         decision_text = truncate_chars(&decision_text, MAX_DECISION_CHARS);
     }
@@ -145,12 +92,10 @@ pub(crate) fn store_decision_internal(
     let confidence = confidence.unwrap_or(0.8);
     let trust_score = provenance.trust_score(confidence);
     let ts = now_iso();
-    let retention_class =
-        RetentionClass::classify(retention_class, &entry_type, decision, context.as_deref());
+    let retention_class = RetentionClass::classify(retention_class, &entry_type, decision, context.as_deref());
     let ttl_seconds = validate_explicit_ttl_seconds(ttl_seconds)?;
     let effective_ttl_seconds = ttl_seconds.or_else(|| retention_class.default_ttl_seconds());
-    let expires_at =
-        compute_expires_at(conn, effective_ttl_seconds).map_err(StoreError::Internal)?;
+    let expires_at = compute_expires_at(conn, effective_ttl_seconds).map_err(StoreError::Internal)?;
     if decision_truncated {
         let _ = log_event(
             conn,
@@ -181,25 +126,13 @@ pub(crate) fn store_decision_internal(
         );
     }
     if quality.score < TOO_VAGUE_THRESHOLD {
-        return Err(StoreError::Validation {
-            message: "Memory too vague",
-            quality: quality.score,
-            factors: quality.factors,
-        });
+        return Err(StoreError::Validation { message: "Memory too vague", quality: quality.score, factors: quality.factors });
     }
     if let Some(query_vector) = query_embedding {
         let candidates = fetch_top_semantic_candidates(conn, query_vector, owner_id)?;
         let dedup_action = choose_semantic_dedup_action(&candidates, decision);
-        let best_similarity = candidates
-            .first()
-            .map(|candidate| candidate.similarity as f64)
-            .unwrap_or(0.0);
-        if let SemanticDedupAction::Merge {
-            target_id,
-            similarity,
-            jaccard,
-        } = dedup_action
-        {
+        let best_similarity = candidates.first().map(|candidate| candidate.similarity as f64).unwrap_or(0.0);
+        if let SemanticDedupAction::Merge { target_id, similarity, jaccard } = dedup_action {
             return merge_into_existing_decision(
                 conn,
                 target_id,
@@ -249,29 +182,13 @@ pub(crate) fn store_decision_internal(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_legacy(
-    conn: &mut Connection,
-    decision: &str,
-    context: Option<String>,
-    entry_type: &str,
-    source_agent: &str,
-    provenance: &DecisionProvenance,
-    confidence: f64,
-    trust_score: f64,
-    quality: i32,
-    retention_class: RetentionClass,
-    expires_at: Option<String>,
-    ts: &str,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance,
+    confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<String>, ts: &str,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let decision_tokens = jaccard_token_set(decision);
-    let recent_candidates =
-        fetch_recent_decision_candidates(conn, owner_id).map_err(StoreError::Internal)?;
-    let recent_scan = scan_recent_decision_candidates(
-        &recent_candidates,
-        decision,
-        source_agent,
-        &decision_tokens,
-    );
+    let recent_candidates = fetch_recent_decision_candidates(conn, owner_id).map_err(StoreError::Internal)?;
+    let recent_scan = scan_recent_decision_candidates(&recent_candidates, decision, source_agent, &decision_tokens);
     let relation = recent_scan.relation;
     match relation.classification {
         ConflictClassification::Contradicts => {
@@ -293,15 +210,7 @@ pub(crate) fn store_decision_legacy(
             );
         }
         ConflictClassification::Agrees => {
-            return handle_agreement_policy(
-                conn,
-                decision,
-                context.as_deref(),
-                source_agent,
-                quality,
-                ts,
-                &relation,
-            );
+            return handle_agreement_policy(conn, decision, context.as_deref(), source_agent, quality, ts, &relation);
         }
         ConflictClassification::Refines => {
             return handle_refinement_policy(

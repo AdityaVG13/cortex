@@ -1,53 +1,24 @@
 pub(crate) fn scale_semantic_similarity(sim: f32) -> f64 {
-    SEMANTIC_SCALE_BASE
-        + (sim as f64 - SEMANTIC_SIM_FLOOR)
-            * ((1.0 - SEMANTIC_SCALE_BASE) / (1.0 - SEMANTIC_SIM_FLOOR))
+    SEMANTIC_SCALE_BASE + (sim as f64 - SEMANTIC_SIM_FLOOR) * ((1.0 - SEMANTIC_SCALE_BASE) / (1.0 - SEMANTIC_SIM_FLOOR))
 }
-pub(crate) fn scale_semantic_similarity_with_keyword_overlap(
-    sim: f32,
-    text: &str,
-    keyword_terms: &[String],
-) -> f64 {
+pub(crate) fn scale_semantic_similarity_with_keyword_overlap(sim: f32, text: &str, keyword_terms: &[String]) -> f64 {
     let mut scaled = scale_semantic_similarity(sim);
     if !keyword_terms.is_empty() {
         let haystack = text.to_lowercase();
-        let overlap = keyword_terms
-            .iter()
-            .filter(|term| haystack.contains(term.as_str()))
-            .count();
-        scaled *= if overlap == 0 {
-            0.82
-        } else {
-            1.0 + (overlap as f64 / keyword_terms.len().max(1) as f64) * 0.08
-        };
+        let overlap = keyword_terms.iter().filter(|term| haystack.contains(term.as_str())).count();
+        scaled *= if overlap == 0 { 0.82 } else { 1.0 + (overlap as f64 / keyword_terms.len().max(1) as f64) * 0.08 };
     }
     scaled
 }
 fn upsert_best_semantic_candidate(
-    candidates: &mut HashMap<String, SemanticCandidate>,
-    source: String,
-    excerpt: String,
-    relevance: f64,
-    importance: f64,
-    ts: i64,
+    candidates: &mut HashMap<String, SemanticCandidate>, source: String, excerpt: String, relevance: f64, importance: f64, ts: i64,
 ) {
-    let entry = candidates
-        .entry(source.clone())
-        .or_insert(SemanticCandidate {
-            source,
-            excerpt: excerpt.clone(),
-            relevance,
-            importance,
-            ts,
-        });
+    let entry =
+        candidates
+            .entry(source.clone())
+            .or_insert(SemanticCandidate { source, excerpt: excerpt.clone(), relevance, importance, ts });
     if relevance > entry.relevance {
-        *entry = SemanticCandidate {
-            source: entry.source.clone(),
-            excerpt,
-            relevance,
-            importance,
-            ts,
-        };
+        *entry = SemanticCandidate { source: entry.source.clone(), excerpt, relevance, importance, ts };
     }
 }
 #[derive(Clone, Copy)]
@@ -76,11 +47,7 @@ impl SemanticEmbedKind {
     }
     fn query_with_acl(self) -> String {
         let table = self.join_table();
-        let alias = if matches!(self, Self::Memory) {
-            "m"
-        } else {
-            "d"
-        };
+        let alias = if matches!(self, Self::Memory) { "m" } else { "d" };
         let cols = match self {
             Self::Memory => {
                 "e.vector, m.text, m.source, m.owner_id, m.visibility, m.score, \
@@ -95,11 +62,7 @@ impl SemanticEmbedKind {
     }
     fn query_without_acl(self) -> String {
         let table = self.join_table();
-        let alias = if matches!(self, Self::Memory) {
-            "m"
-        } else {
-            "d"
-        };
+        let alias = if matches!(self, Self::Memory) { "m" } else { "d" };
         let cols = match self {
             Self::Memory => {
                 "e.vector, m.text, m.source, NULL AS owner_id, NULL AS visibility, m.score, \
@@ -114,11 +77,7 @@ impl SemanticEmbedKind {
     }
     fn shadow_query_with_acl(self) -> String {
         let table = self.join_table();
-        let alias = if matches!(self, Self::Memory) {
-            "m"
-        } else {
-            "d"
-        };
+        let alias = if matches!(self, Self::Memory) { "m" } else { "d" };
         let cols = match self {
             Self::Memory => "e.vector, m.source, m.owner_id, m.visibility",
             Self::Decision => "e.vector, d.decision, d.context, d.owner_id, d.visibility",
@@ -127,16 +86,10 @@ impl SemanticEmbedKind {
     }
     fn shadow_query_without_acl(self) -> String {
         let table = self.join_table();
-        let alias = if matches!(self, Self::Memory) {
-            "m"
-        } else {
-            "d"
-        };
+        let alias = if matches!(self, Self::Memory) { "m" } else { "d" };
         let cols = match self {
             Self::Memory => "e.vector, m.source, NULL AS owner_id, NULL AS visibility",
-            Self::Decision => {
-                "e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility"
-            }
+            Self::Decision => "e.vector, d.decision, d.context, NULL AS owner_id, NULL AS visibility",
         };
         self.query(cols, alias, table)
     }
@@ -174,11 +127,7 @@ impl SemanticEmbedKind {
         )
     }
 }
-fn prepare_acl_stmt<'a>(
-    conn: &'a Connection,
-    with_acl: &str,
-    without_acl: &str,
-) -> Option<rusqlite::Statement<'a>> {
+fn prepare_acl_stmt<'a>(conn: &'a Connection, with_acl: &str, without_acl: &str) -> Option<rusqlite::Statement<'a>> {
     match conn.prepare(with_acl) {
         Ok(stmt) => Some(stmt),
         Err(err) if is_missing_team_visibility_columns(&err) => conn.prepare(without_acl).ok(),
@@ -186,41 +135,22 @@ fn prepare_acl_stmt<'a>(
     }
 }
 fn decision_source_key(context: Option<String>, decision: &str) -> String {
-    context.unwrap_or_else(|| {
-        format!(
-            "decision::{}",
-            decision.chars().take(40).collect::<String>()
-        )
-    })
+    context.unwrap_or_else(|| format!("decision::{}", decision.chars().take(40).collect::<String>()))
 }
 pub(crate) fn collect_semantic_candidates(
-    conn: &Connection,
-    query_vector: &[f32],
-    query_text: &str,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
+    conn: &Connection, query_vector: &[f32], query_text: &str, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Vec<SemanticCandidate> {
     let selected_model = crate::embeddings::selected_model_key();
     let expected_legacy_vector_bytes = std::mem::size_of_val(query_vector) as i64;
-    let expected_pq8_vector_bytes =
-        (query_vector.len() + crate::embeddings::PQ8_HEADER_BYTES) as i64;
-    let pq8_prefix = [
-        crate::embeddings::PQ8_MAGIC_BYTE,
-        crate::embeddings::PQ8_FORMAT_VERSION,
-    ];
+    let expected_pq8_vector_bytes = (query_vector.len() + crate::embeddings::PQ8_HEADER_BYTES) as i64;
+    let pq8_prefix = [crate::embeddings::PQ8_MAGIC_BYTE, crate::embeddings::PQ8_FORMAT_VERSION];
     let candidate_limit = MAX_SEMANTIC_SQL_ROWS_PER_KIND as i64;
     let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let keyword_terms = extract_search_keywords(query_text);
-    let semantic_floor = if keyword_terms.len() >= 3 {
-        SEMANTIC_SIM_FLOOR + 0.12
-    } else {
-        SEMANTIC_SIM_FLOOR
-    };
+    let semantic_floor = if keyword_terms.len() >= 3 { SEMANTIC_SIM_FLOOR + 0.12 } else { SEMANTIC_SIM_FLOOR };
     let mut candidates: HashMap<String, SemanticCandidate> = HashMap::new();
     for kind in [SemanticEmbedKind::Memory, SemanticEmbedKind::Decision] {
-        let Some(mut stmt) =
-            prepare_acl_stmt(conn, &kind.query_with_acl(), &kind.query_without_acl())
-        else {
+        let Some(mut stmt) = prepare_acl_stmt(conn, &kind.query_with_acl(), &kind.query_without_acl()) else {
             continue;
         };
         let Ok(rows) = stmt.query_map(
@@ -248,18 +178,7 @@ pub(crate) fn collect_semantic_candidates(
         ) else {
             continue;
         };
-        for (
-            blob,
-            primary,
-            alt,
-            owner_id,
-            visibility,
-            score,
-            trust_score,
-            last_accessed,
-            created_at,
-        ) in rows.flatten()
-        {
+        for (blob, primary, alt, owner_id, visibility, score, trust_score, last_accessed, created_at) in rows.flatten() {
             if !is_visible(owner_id, visibility.as_deref(), ctx) {
                 continue;
             }
@@ -270,63 +189,34 @@ pub(crate) fn collect_semantic_candidates(
             if !source_matches_prefix(&source, source_prefix) {
                 continue;
             }
-            let sim = crate::embeddings::cosine_similarity(
-                query_vector,
-                &crate::embeddings::blob_to_vector(&blob),
-            );
+            let sim = crate::embeddings::cosine_similarity(query_vector, &crate::embeddings::blob_to_vector(&blob));
             if sim <= semantic_floor as f32 {
                 continue;
             }
-            let scaled =
-                scale_semantic_similarity_with_keyword_overlap(sim, &primary, &keyword_terms);
+            let scaled = scale_semantic_similarity_with_keyword_overlap(sim, &primary, &keyword_terms);
             let excerpt = query_focused_excerpt(&primary, query_text, 280);
             let importance = blend_importance(score, trust_score);
-            let ts = parse_timestamp_ms(
-                last_accessed
-                    .as_deref()
-                    .or(created_at.as_deref())
-                    .unwrap_or_default(),
-            );
-            upsert_best_semantic_candidate(
-                &mut candidates,
-                source,
-                excerpt,
-                scaled,
-                importance,
-                ts,
-            );
+            let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or_default());
+            upsert_best_semantic_candidate(&mut candidates, source, excerpt, scaled, importance, ts);
         }
     }
     let mut sorted: Vec<SemanticCandidate> = candidates.into_values().collect();
-    sorted.sort_by(|a, b| {
-        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-    });
+    sorted.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
     sorted.truncate(MAX_SEMANTIC_RRF_CANDIDATES);
     sorted
 }
 pub(crate) fn collect_shadow_semantic_rows(
-    conn: &Connection,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    expected_dimension: usize,
+    conn: &Connection, ctx: &RecallContext, source_prefix: Option<&str>, expected_dimension: usize,
 ) -> Vec<ShadowSemanticRow> {
     let selected_model = crate::embeddings::selected_model_key();
     let expected_legacy_vector_bytes = (expected_dimension * std::mem::size_of::<f32>()) as i64;
-    let expected_pq8_vector_bytes =
-        (expected_dimension + crate::embeddings::PQ8_HEADER_BYTES) as i64;
-    let pq8_prefix = [
-        crate::embeddings::PQ8_MAGIC_BYTE,
-        crate::embeddings::PQ8_FORMAT_VERSION,
-    ];
+    let expected_pq8_vector_bytes = (expected_dimension + crate::embeddings::PQ8_HEADER_BYTES) as i64;
+    let pq8_prefix = [crate::embeddings::PQ8_MAGIC_BYTE, crate::embeddings::PQ8_FORMAT_VERSION];
     let candidate_limit = MAX_SEMANTIC_SQL_ROWS_PER_KIND as i64;
     let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let mut rows_by_source: HashMap<String, Vec<f32>> = HashMap::new();
     for kind in [SemanticEmbedKind::Memory, SemanticEmbedKind::Decision] {
-        let Some(mut stmt) = prepare_acl_stmt(
-            conn,
-            &kind.shadow_query_with_acl(),
-            &kind.shadow_query_without_acl(),
-        ) else {
+        let Some(mut stmt) = prepare_acl_stmt(conn, &kind.shadow_query_with_acl(), &kind.shadow_query_without_acl()) else {
             continue;
         };
         let Ok(rows) = stmt.query_map(
@@ -361,15 +251,11 @@ pub(crate) fn collect_shadow_semantic_rows(
             if !source_matches_prefix(&source, source_prefix) {
                 continue;
             }
-            rows_by_source
-                .entry(source)
-                .or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
+            rows_by_source.entry(source).or_insert_with(|| crate::embeddings::blob_to_vector(&blob));
         }
     }
-    let mut rows: Vec<ShadowSemanticRow> = rows_by_source
-        .into_iter()
-        .map(|(source, vector)| ShadowSemanticRow { source, vector })
-        .collect();
+    let mut rows: Vec<ShadowSemanticRow> =
+        rows_by_source.into_iter().map(|(source, vector)| ShadowSemanticRow { source, vector }).collect();
     rows.sort_by(|a, b| a.source.cmp(&b.source));
     rows
 }
@@ -380,20 +266,13 @@ pub(crate) fn vector_to_vec0_literal(vector: &[f32]) -> String {
         if idx > 0 {
             literal.push_str(", ");
         }
-        let _ = write!(
-            &mut literal,
-            "{}",
-            if value.is_finite() { *value } else { 0.0 }
-        );
+        let _ = write!(&mut literal, "{}", if value.is_finite() { *value } else { 0.0 });
     }
     literal.push(']');
     literal
 }
 pub(crate) fn run_sqlite_vec_shadow_knn_sources(
-    conn: &Connection,
-    query_vector: &[f32],
-    candidates: &[ShadowSemanticRow],
-    top_k: usize,
+    conn: &Connection, query_vector: &[f32], candidates: &[ShadowSemanticRow], top_k: usize,
 ) -> Result<Vec<String>, String> {
     if query_vector.is_empty() || candidates.is_empty() {
         return Ok(Vec::new());
@@ -404,39 +283,29 @@ pub(crate) fn run_sqlite_vec_shadow_knn_sources(
     let result = (|| -> Result<Vec<String>, String> {
         conn.execute_batch(&format!("DROP TABLE IF EXISTS {SHADOW_TABLE};"))
             .map_err(|err| format!("sqlite-vec shadow drop failed: {err}"))?;
-        conn.execute_batch(&format!("CREATE VIRTUAL TABLE {SHADOW_TABLE} USING vec0(candidate_id INTEGER PRIMARY KEY, embedding FLOAT[{}]);",query_vector.len())).map_err(|err|format!("sqlite-vec shadow create failed: {err}"))?;
-        let insert_sql =
-            format!("INSERT INTO {SHADOW_TABLE}(candidate_id, embedding) VALUES (?1, ?2)");
-        let mut insert_stmt = conn
-            .prepare(&insert_sql)
-            .map_err(|err| format!("sqlite-vec shadow insert prepare failed: {err}"))?;
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE {SHADOW_TABLE} USING vec0(candidate_id INTEGER PRIMARY KEY, embedding FLOAT[{}]);",
+            query_vector.len()
+        ))
+        .map_err(|err| format!("sqlite-vec shadow create failed: {err}"))?;
+        let insert_sql = format!("INSERT INTO {SHADOW_TABLE}(candidate_id, embedding) VALUES (?1, ?2)");
+        let mut insert_stmt = conn.prepare(&insert_sql).map_err(|err| format!("sqlite-vec shadow insert prepare failed: {err}"))?;
         for (candidate_idx, candidate) in candidates.iter().enumerate() {
-            let candidate_id = i64::try_from(candidate_idx + 1)
-                .map_err(|_| "sqlite-vec shadow candidate id overflow".to_string())?;
+            let candidate_id = i64::try_from(candidate_idx + 1).map_err(|_| "sqlite-vec shadow candidate id overflow".to_string())?;
             insert_stmt
-                .execute(params![
-                    candidate_id,
-                    vector_to_vec0_literal(&candidate.vector)
-                ])
+                .execute(params![candidate_id, vector_to_vec0_literal(&candidate.vector)])
                 .map_err(|err| format!("sqlite-vec shadow insert failed: {err}"))?;
         }
         let k_i64 = i64::try_from(k).map_err(|_| "sqlite-vec shadow k overflow".to_string())?;
-        let query_sql = format!(
-            "SELECT candidate_id, distance FROM {SHADOW_TABLE} WHERE embedding MATCH ?1 AND k = ?2"
-        );
-        let mut query_stmt = conn
-            .prepare(&query_sql)
-            .map_err(|err| format!("sqlite-vec shadow query prepare failed: {err}"))?;
+        let query_sql = format!("SELECT candidate_id, distance FROM {SHADOW_TABLE} WHERE embedding MATCH ?1 AND k = ?2");
+        let mut query_stmt = conn.prepare(&query_sql).map_err(|err| format!("sqlite-vec shadow query prepare failed: {err}"))?;
         let rows = query_stmt
-            .query_map(params![query_literal, k_i64], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
-            })
+            .query_map(params![query_literal, k_i64], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)))
             .map_err(|err| format!("sqlite-vec shadow query failed: {err}"))?;
         let mut sources = Vec::new();
         let mut seen = HashSet::new();
         for row in rows {
-            let (candidate_id, _distance) =
-                row.map_err(|err| format!("sqlite-vec shadow row decode failed: {err}"))?;
+            let (candidate_id, _distance) = row.map_err(|err| format!("sqlite-vec shadow row decode failed: {err}"))?;
             if candidate_id <= 0 {
                 continue;
             }
@@ -460,12 +329,7 @@ pub(crate) fn shadow_error_to_unavailable_reason(error: &str) -> Option<&'static
     }
 }
 pub(crate) fn build_shadow_semantic_explain(
-    conn: &Connection,
-    query_vector: Option<&[f32]>,
-    query_text: &str,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    top_k: usize,
+    conn: &Connection, query_vector: Option<&[f32]>, query_text: &str, ctx: &RecallContext, source_prefix: Option<&str>, top_k: usize,
     baseline_override: Option<&ShadowSemanticBaseline>,
 ) -> Value {
     let top_k = top_k.clamp(1, MAX_SEMANTIC_RRF_CANDIDATES);
@@ -475,17 +339,11 @@ pub(crate) fn build_shadow_semantic_explain(
     if query_vector.is_empty() {
         return json!({"enabled":true,"status":"unavailable","reason":"query_embedding_empty","topK":top_k});
     }
-    let (baseline_candidate_count, baseline_top_sources) = if let Some(baseline) = baseline_override
-    {
+    let (baseline_candidate_count, baseline_top_sources) = if let Some(baseline) = baseline_override {
         (baseline.candidate_count, baseline.top_sources(top_k))
     } else {
-        let baseline =
-            collect_semantic_candidates(conn, query_vector, query_text, ctx, source_prefix);
-        let top_sources = baseline
-            .iter()
-            .take(top_k)
-            .map(|candidate| candidate.source.clone())
-            .collect();
+        let baseline = collect_semantic_candidates(conn, query_vector, query_text, ctx, source_prefix);
+        let top_sources = baseline.iter().take(top_k).map(|candidate| candidate.source.clone()).collect();
         (baseline.len(), top_sources)
     };
     let rows = collect_shadow_semantic_rows(conn, ctx, source_prefix, query_vector.len());
@@ -493,20 +351,12 @@ pub(crate) fn build_shadow_semantic_explain(
         return json!({"enabled":true,"status":"unavailable","reason":"no_shadow_candidates","topK":top_k,"baselineCandidateCount":baseline_candidate_count,"baselineTopSources":baseline_top_sources});
     }
     let vector_dim = query_vector.len();
-    let compatible_rows: Vec<ShadowSemanticRow> = rows
-        .into_iter()
-        .filter(|row| row.vector.len() == vector_dim)
-        .collect();
+    let compatible_rows: Vec<ShadowSemanticRow> = rows.into_iter().filter(|row| row.vector.len() == vector_dim).collect();
     if compatible_rows.is_empty() {
         return json!({"enabled":true,"status":"unavailable","reason":"no_dimension_compatible_candidates","topK":top_k,"vectorDimension":vector_dim,"baselineCandidateCount":baseline_candidate_count,"baselineTopSources":baseline_top_sources});
     }
     let compatible_count = compatible_rows.len();
-    let shadow_top_sources = match run_sqlite_vec_shadow_knn_sources(
-        conn,
-        query_vector,
-        &compatible_rows,
-        top_k,
-    ) {
+    let shadow_top_sources = match run_sqlite_vec_shadow_knn_sources(conn, query_vector, &compatible_rows, top_k) {
         Ok(sources) => sources,
         Err(error) => {
             if let Some(reason) = shadow_error_to_unavailable_reason(&error) {
@@ -519,26 +369,11 @@ pub(crate) fn build_shadow_semantic_explain(
     let shadow_set: HashSet<&str> = shadow_top_sources.iter().map(String::as_str).collect();
     let overlap_count = baseline_set.intersection(&shadow_set).count();
     let union_count = baseline_set.union(&shadow_set).count();
-    let overlap_ratio = if top_k == 0 {
-        0.0
-    } else {
-        round4(overlap_count as f64 / top_k as f64)
-    };
-    let jaccard = if union_count == 0 {
-        1.0
-    } else {
-        round4(overlap_count as f64 / union_count as f64)
-    };
-    let baseline_index: HashMap<&str, usize> = baseline_top_sources
-        .iter()
-        .enumerate()
-        .map(|(idx, source)| (source.as_str(), idx))
-        .collect();
-    let shadow_index: HashMap<&str, usize> = shadow_top_sources
-        .iter()
-        .enumerate()
-        .map(|(idx, source)| (source.as_str(), idx))
-        .collect();
+    let overlap_ratio = if top_k == 0 { 0.0 } else { round4(overlap_count as f64 / top_k as f64) };
+    let jaccard = if union_count == 0 { 1.0 } else { round4(overlap_count as f64 / union_count as f64) };
+    let baseline_index: HashMap<&str, usize> =
+        baseline_top_sources.iter().enumerate().map(|(idx, source)| (source.as_str(), idx)).collect();
+    let shadow_index: HashMap<&str, usize> = shadow_top_sources.iter().enumerate().map(|(idx, source)| (source.as_str(), idx)).collect();
     let mut matched_rank_pairs: usize = 0;
     let mut rank_delta_sum: usize = 0;
     for (source, baseline_rank) in &baseline_index {
@@ -547,15 +382,8 @@ pub(crate) fn build_shadow_semantic_explain(
             rank_delta_sum += baseline_rank.abs_diff(*shadow_rank);
         }
     }
-    let mean_abs_rank_delta = if matched_rank_pairs > 0 {
-        Some(round4(rank_delta_sum as f64 / matched_rank_pairs as f64))
-    } else {
-        None
-    };
-    let top1_match = match (
-        baseline_top_sources.first().map(String::as_str),
-        shadow_top_sources.first().map(String::as_str),
-    ) {
+    let mean_abs_rank_delta = if matched_rank_pairs > 0 { Some(round4(rank_delta_sum as f64 / matched_rank_pairs as f64)) } else { None };
+    let top1_match = match (baseline_top_sources.first().map(String::as_str), shadow_top_sources.first().map(String::as_str)) {
         (Some(left), Some(right)) => Some(left == right),
         _ => None,
     };

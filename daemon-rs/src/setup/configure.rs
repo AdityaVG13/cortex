@@ -2,10 +2,7 @@ use super::types::{ConfigMethod, DetectedTool, StepResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-pub(crate) fn step_configure(
-    tools: &[DetectedTool],
-    cortex_exe: &str,
-) -> Vec<(&'static str, StepResult)> {
+pub(crate) fn step_configure(tools: &[DetectedTool], cortex_exe: &str) -> Vec<(&'static str, StepResult)> {
     let mut results = Vec::new();
     for tool in tools {
         let result = configure_tool(tool, cortex_exe);
@@ -33,32 +30,22 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
                 Err(e) => StepResult::Warn(format!("Auto-config failed: {e}. Configure manually.")),
             }
         }
-        ConfigMethod::CliCommand { program, args } => {
-            match run_mcp_add(program, args, cortex_exe, tool.agent_name) {
-                Ok(()) => StepResult::Ok("Registered via CLI".into()),
-                Err(e) => StepResult::Warn(format!(
-                    "CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp --agent {}",
-                    program,
-                    args.join(" "),
-                    tool.agent_name
-                )),
-            }
-        }
-        ConfigMethod::Manual(instructions) => {
-            StepResult::Ok(format!("Manual setup needed: {instructions}"))
-        }
+        ConfigMethod::CliCommand { program, args } => match run_mcp_add(program, args, cortex_exe, tool.agent_name) {
+            Ok(()) => StepResult::Ok("Registered via CLI".into()),
+            Err(e) => StepResult::Warn(format!(
+                "CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp --agent {}",
+                program,
+                args.join(" "),
+                tool.agent_name
+            )),
+        },
+        ConfigMethod::Manual(instructions) => StepResult::Ok(format!("Manual setup needed: {instructions}")),
     }
 }
-pub(crate) fn merge_mcp_config(
-    config_path: &Path,
-    cortex_exe: &str,
-    agent_name: &str,
-) -> Result<String, String> {
+pub(crate) fn merge_mcp_config(config_path: &Path, cortex_exe: &str, agent_name: &str) -> Result<String, String> {
     let original: serde_json::Value = if config_path.exists() {
-        let content = fs::read_to_string(config_path)
-            .map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid JSON in {}: {e}", config_path.display()))?
+        let content = fs::read_to_string(config_path).map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
+        serde_json::from_str(&content).map_err(|e| format!("Invalid JSON in {}: {e}", config_path.display()))?
     } else {
         serde_json::json!({})
     };
@@ -84,42 +71,26 @@ exe_path,"args":["mcp","--agent",agent_name]});
     };
     if config != original {
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
         }
-        let output = serde_json::to_string_pretty(&config)
-            .map_err(|e| format!("JSON serialize failed: {e}"))?;
-        fs::write(config_path, output)
-            .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+        let output = serde_json::to_string_pretty(&config).map_err(|e| format!("JSON serialize failed: {e}"))?;
+        fs::write(config_path, output).map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
     }
     Ok(format!("{action} at {}", config_path.display()))
 }
-pub(crate) fn merge_toml_config(
-    config_path: &Path,
-    cortex_exe: &str,
-    agent_name: &str,
-) -> Result<String, String> {
+pub(crate) fn merge_toml_config(config_path: &Path, cortex_exe: &str, agent_name: &str) -> Result<String, String> {
     let original: toml::Value = if config_path.exists() {
-        let content = fs::read_to_string(config_path)
-            .map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
-        toml::from_str(&content)
-            .map_err(|e| format!("Invalid TOML in {}: {e}", config_path.display()))?
+        let content = fs::read_to_string(config_path).map_err(|e| format!("Cannot read {}: {e}", config_path.display()))?;
+        toml::from_str(&content).map_err(|e| format!("Invalid TOML in {}: {e}", config_path.display()))?
     } else {
         toml::Value::Table(Default::default())
     };
     let mut config = original.clone();
     let root = config.as_table_mut().ok_or("Config is not a TOML table")?;
-    let servers = root
-        .entry("mcp_servers")
-        .or_insert_with(|| toml::Value::Table(Default::default()));
-    let servers_table = servers
-        .as_table_mut()
-        .ok_or("mcp_servers is not a TOML table")?;
+    let servers = root.entry("mcp_servers").or_insert_with(|| toml::Value::Table(Default::default()));
+    let servers_table = servers.as_table_mut().ok_or("mcp_servers is not a TOML table")?;
     let mut server = toml::map::Map::new();
-    server.insert(
-        "command".into(),
-        toml::Value::String(PathBuf::from(cortex_exe).to_string_lossy().to_string()),
-    );
+    server.insert("command".into(), toml::Value::String(PathBuf::from(cortex_exe).to_string_lossy().to_string()));
     server.insert(
         "args".into(),
         toml::Value::Array(
@@ -139,22 +110,14 @@ pub(crate) fn merge_toml_config(
     };
     if config != original {
         if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
         }
-        let output =
-            toml::to_string_pretty(&config).map_err(|e| format!("TOML serialize failed: {e}"))?;
-        fs::write(config_path, output)
-            .map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
+        let output = toml::to_string_pretty(&config).map_err(|e| format!("TOML serialize failed: {e}"))?;
+        fs::write(config_path, output).map_err(|e| format!("Cannot write {}: {e}", config_path.display()))?;
     }
     Ok(format!("{action} at {}", config_path.display()))
 }
-fn run_mcp_add(
-    program: &str,
-    args: &[&str],
-    cortex_exe: &str,
-    agent_name: &str,
-) -> Result<(), String> {
+fn run_mcp_add(program: &str, args: &[&str], cortex_exe: &str, agent_name: &str) -> Result<(), String> {
     let output = Command::new(program)
         .args(args)
         .args([cortex_exe, "mcp", "--agent", agent_name])
@@ -175,26 +138,13 @@ pub(crate) fn summarize_configs(results: &[(&str, StepResult)]) -> StepResult {
     if results.is_empty() {
         return StepResult::Warn("No tools to configure".into());
     }
-    let ok_count = results
-        .iter()
-        .filter(|(_, r)| matches!(r, StepResult::Ok(_)))
-        .count();
-    let warn_count = results
-        .iter()
-        .filter(|(_, r)| matches!(r, StepResult::Warn(_)))
-        .count();
-    let fail_count = results
-        .iter()
-        .filter(|(_, r)| matches!(r, StepResult::Fail(_)))
-        .count();
+    let ok_count = results.iter().filter(|(_, r)| matches!(r, StepResult::Ok(_))).count();
+    let warn_count = results.iter().filter(|(_, r)| matches!(r, StepResult::Warn(_))).count();
+    let fail_count = results.iter().filter(|(_, r)| matches!(r, StepResult::Fail(_))).count();
     if fail_count > 0 {
-        StepResult::Warn(format!(
-            "{ok_count} configured, {warn_count} warnings, {fail_count} failed"
-        ))
+        StepResult::Warn(format!("{ok_count} configured, {warn_count} warnings, {fail_count} failed"))
     } else if warn_count > 0 {
-        StepResult::Warn(format!(
-            "{ok_count} configured, {warn_count} need manual setup"
-        ))
+        StepResult::Warn(format!("{ok_count} configured, {warn_count} need manual setup"))
     } else {
         StepResult::Ok(format!("{ok_count}/{} tools configured", results.len()))
     }

@@ -15,11 +15,10 @@ pub mod recall;
 pub mod redaction;
 pub mod store;
 pub use auth::{
-    client_ip, ensure_admin, ensure_auth_rated, ensure_auth_with_caller_rated,
-    ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, ensure_events_stream_auth,
-    ensure_ssrf_protection, log_budget_rejection, register_agent_presence,
-    register_agent_presence_from_headers, resolve_caller_id, resolve_source_identity,
-    runtime_token_matches, SourceIdentity, CORTEX_PEER_IP_HEADER,
+    client_ip, ensure_admin, ensure_auth_rated, ensure_auth_with_caller_rated, ensure_auth_with_caller_rated_for_class,
+    ensure_endpoint_budget, ensure_events_stream_auth, ensure_ssrf_protection, log_budget_rejection, register_agent_presence,
+    register_agent_presence_from_headers, resolve_caller_id, resolve_source_identity, runtime_token_matches, SourceIdentity,
+    CORTEX_PEER_IP_HEADER,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -41,17 +40,11 @@ pub fn json_response(status: StatusCode, body: Value) -> Response {
 pub fn json_error(status: StatusCode, msg: &str) -> Response {
     json_response(status, serde_json::json!({"error":msg}))
 }
-pub(crate) fn require_team_caller(
-    state: &crate::state::RuntimeState,
-    caller_id: Option<i64>,
-) -> Result<Option<i64>, Response> {
+pub(crate) fn require_team_caller(state: &crate::state::RuntimeState, caller_id: Option<i64>) -> Result<Option<i64>, Response> {
     if !state.team_mode || caller_id.is_some() {
         return Ok(caller_id);
     }
-    Err(json_response(
-        StatusCode::FORBIDDEN,
-        json!({"error":"Team mode requires a caller-scoped ctx_ API key"}),
-    ))
+    Err(json_response(StatusCode::FORBIDDEN, json!({"error":"Team mode requires a caller-scoped ctx_ API key"})))
 }
 fn apply_json_headers(headers: &mut HeaderMap) {
     headers.insert("Cache-Control", HeaderValue::from_static("no-store"));

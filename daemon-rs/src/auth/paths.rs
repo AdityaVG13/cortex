@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const CORTEX_DIR_NAME: &str = ".cortex";
 pub(crate) const CORTEX_GLOBAL_LOCK_NAME: &str = "cortex.global.lock";
 pub(crate) const CORTEX_GLOBAL_LOCK_HOME_ENV: &str = "CORTEX_GLOBAL_LOCK_HOME";
-pub(crate) const BASE62: &[u8; 62] =
-    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+pub(crate) const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 #[derive(Debug, Clone)]
 pub struct CortexPaths {
     pub home: PathBuf,
@@ -26,10 +25,7 @@ impl CortexPaths {
         Self::resolve_with_overrides(None, None, None, None)
     }
     pub fn resolve_with_overrides(
-        home_override: Option<&str>,
-        db_override: Option<&str>,
-        port_override: Option<u16>,
-        bind_override: Option<&str>,
+        home_override: Option<&str>, db_override: Option<&str>, port_override: Option<u16>, bind_override: Option<&str>,
     ) -> Self {
         let home = home_override
             .map(PathBuf::from)
@@ -40,11 +36,7 @@ impl CortexPaths {
             .or_else(|| std::env::var("CORTEX_DB").ok().map(PathBuf::from))
             .unwrap_or_else(|| home.join("cortex.db"));
         let port = port_override
-            .or_else(|| {
-                std::env::var("CORTEX_PORT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-            })
+            .or_else(|| std::env::var("CORTEX_PORT").ok().and_then(|s| s.parse().ok()))
             .unwrap_or(crate::DEFAULT_CORTEX_PORT);
         let env_bind = std::env::var("CORTEX_BIND").ok();
         let bind = resolve_bind(bind_override, env_bind.as_deref());
@@ -70,16 +62,14 @@ impl CortexPaths {
         Self::resolve_with_overrides(home.as_deref(), db.as_deref(), port, bind.as_deref())
     }
     fn find_flag(args: &[String], flag: &str) -> Option<String> {
-        args.iter()
-            .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
+        args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
     }
     pub fn to_json(&self) -> String {
         serde_json::json!({"home":self.home.display().to_string(),"db":self.db.
 display().to_string(),"token":self.token.display().to_string(),"pid":self.pid.display().to_string(),"port":self.port,"bind":&self.
 bind,"ipc_endpoint":self.ipc_endpoint.clone(),"ipc_kind":if self.ipc_endpoint.is_some(){Some(default_ipc_kind())}else{None},
-"models":self.models.display().to_string(),}).to_string()
+"models":self.models.display().to_string(),})
+        .to_string()
     }
 }
 fn normalize_bind(value: &str) -> Option<String> {
@@ -110,12 +100,9 @@ fn default_ipc_kind() -> &'static str {
     }
 }
 fn env_truthy(key: &str) -> bool {
-    std::env::var(key).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    std::env::var(key)
+        .ok()
+        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 fn resolve_ipc_endpoint(home: &std::path::Path, port: u16) -> Option<String> {
     if env_truthy("CORTEX_DISABLE_IPC") {
@@ -180,9 +167,7 @@ fn win32_error(code: u32) -> io::Error {
 fn current_user_sid() -> io::Result<CurrentUserSid> {
     use std::ptr::null_mut;
     use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Security::{
-        GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
-    };
+    use windows_sys::Win32::Security::{GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = null_mut();
     let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
@@ -202,52 +187,32 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let mut token_info = vec![0usize; word_count];
     let mut returned_len = 0u32;
     let filled = unsafe {
-        GetTokenInformation(
-            token.0,
-            TokenUser,
-            token_info.as_mut_ptr().cast(),
-            (token_info.len() * word_size) as u32,
-            &mut returned_len,
-        )
+        GetTokenInformation(token.0, TokenUser, token_info.as_mut_ptr().cast(), (token_info.len() * word_size) as u32, &mut returned_len)
     };
     if filled == 0 {
         return Err(io::Error::last_os_error());
     }
     if returned_len < std::mem::size_of::<TOKEN_USER>() as u32 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Windows token user information is too small",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows token user information is too small"));
     }
     let token_user = unsafe { *token_info.as_ptr().cast::<TOKEN_USER>() };
     if token_user.User.Sid.is_null() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Windows token user SID is missing",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows token user SID is missing"));
     }
     if unsafe { IsValidSid(token_user.User.Sid) } == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Windows token user SID is invalid",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows token user SID is invalid"));
     }
-    Ok(CurrentUserSid {
-        _token_info: token_info,
-        sid: token_user.User.Sid,
-    })
+    Ok(CurrentUserSid { _token_info: token_info, sid: token_user.User.Sid })
 }
 #[cfg(windows)]
 pub(crate) fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::Security::Authorization::{
-        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE,
-        SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+        TRUSTEE_IS_USER, TRUSTEE_W,
     };
-    use windows_sys::Win32::Security::{
-        ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION,
-    };
+    use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION};
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
     let current_user = current_user_sid()?;
     let access = EXPLICIT_ACCESS_W {
@@ -294,12 +259,7 @@ pub(crate) fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result
     {
         use std::io::Write as _;
         use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
+        let mut file = fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(path)?;
         file.write_all(contents)?;
         file.flush()?;
         restrict_file_to_owner(path)?;
@@ -308,13 +268,7 @@ pub(crate) fn write_secret_file(path: &Path, contents: &[u8]) -> std::io::Result
     #[cfg(not(unix))]
     {
         use std::io::Write as _;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(path)?;
-        restrict_file_to_owner(path)
-            .and_then(|_| file.write_all(contents))
-            .and_then(|_| file.flush())
+        let mut file = fs::OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
+        restrict_file_to_owner(path).and_then(|_| file.write_all(contents)).and_then(|_| file.flush())
     }
 }

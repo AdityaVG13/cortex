@@ -1,8 +1,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 const DEFAULT_BUDGET: u32 = 400;
-const USAGE: &str =
-    "Usage: cortex prompt-inject --file <path> [--agent NAME] [--budget N] [--watch]";
+const USAGE: &str = "Usage: cortex prompt-inject --file <path> [--agent NAME] [--budget N] [--watch]";
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PromptInjectConfig {
     file_path: PathBuf,
@@ -37,9 +36,7 @@ fn parse_args(args: &[String]) -> Result<PromptInjectConfig, String> {
                 if i >= args.len() {
                     return Err(format!("{USAGE}\nMissing value for --budget"));
                 }
-                budget = args[i]
-                    .parse()
-                    .map_err(|_| format!("{USAGE}\nInvalid --budget '{}'", args[i]))?;
+                budget = args[i].parse().map_err(|_| format!("{USAGE}\nInvalid --budget '{}'", args[i]))?;
             }
             "--watch" | "-w" => {
                 watch = true;
@@ -53,12 +50,7 @@ fn parse_args(args: &[String]) -> Result<PromptInjectConfig, String> {
     let Some(file_path) = file_path else {
         return Err(format!("{USAGE}\nMissing required --file <path>"));
     };
-    Ok(PromptInjectConfig {
-        file_path,
-        agent,
-        budget,
-        watch,
-    })
+    Ok(PromptInjectConfig { file_path, agent, budget, watch })
 }
 fn compose_injected_prompt(base_prompt: &str, cortex_context: &str) -> String {
     format!("{base_prompt}\n\n{cortex_context}")
@@ -69,10 +61,7 @@ fn output_path_for(file_path: &Path) -> PathBuf {
     PathBuf::from(out)
 }
 pub async fn run(args: &[String]) {
-    if args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--help" | "-h" | "help"))
-    {
+    if args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h" | "help")) {
         println!("{USAGE}");
         return;
     }
@@ -93,25 +82,16 @@ pub async fn run(args: &[String]) {
     }
 }
 async fn inject_once(file_path: &Path, agent: &str, budget: u32) -> Result<(), String> {
-    let base_prompt = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read {}: {e}", file_path.display()))?;
+    let base_prompt = std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read {}: {e}", file_path.display()))?;
     let cortex_context = fetch_boot_context(agent, budget).await;
     let output = compose_injected_prompt(&base_prompt, &cortex_context);
     let out_path = output_path_for(file_path);
-    std::fs::write(&out_path, &output)
-        .map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
-    eprintln!(
-        "[prompt-inject] Wrote {} ({} bytes)",
-        out_path.display(),
-        output.len()
-    );
+    std::fs::write(&out_path, &output).map_err(|e| format!("Failed to write {}: {e}", out_path.display()))?;
+    eprintln!("[prompt-inject] Wrote {} ({} bytes)", out_path.display(), output.len());
     Ok(())
 }
 async fn run_watch_loop(file_path: &Path, agent: &str, budget: u32) {
-    eprintln!(
-        "[prompt-inject] Watching {} for changes (Ctrl+C to stop)",
-        file_path.display()
-    );
+    eprintln!("[prompt-inject] Watching {} for changes (Ctrl+C to stop)", file_path.display());
     let mut last_modified = file_modified(file_path);
     if let Err(e) = inject_once(file_path, agent, budget).await {
         eprintln!("[prompt-inject] Initial inject error: {e}");
@@ -161,18 +141,13 @@ async fn fetch_boot_context(agent: &str, budget: u32) -> String {
         req = req.header("Authorization", format!("Bearer {t}"));
     }
     match req.send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<serde_json::Value>().await {
-                Ok(data) => {
-                    let boot = data
-                        .get("bootPrompt")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(no boot prompt)");
-                    format!("<!-- Cortex context (auto-injected) -->\n{boot}\n<!-- end Cortex context -->")
-                }
-                Err(_) => "<!-- Cortex: boot response parse error -->".to_string(),
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(data) => {
+                let boot = data.get("bootPrompt").and_then(|v| v.as_str()).unwrap_or("(no boot prompt)");
+                format!("<!-- Cortex context (auto-injected) -->\n{boot}\n<!-- end Cortex context -->")
             }
-        }
+            Err(_) => "<!-- Cortex: boot response parse error -->".to_string(),
+        },
         Ok(resp) => format!("<!-- Cortex: boot returned {} -->", resp.status()),
         Err(e) => format!("<!-- Cortex: daemon unreachable ({e}) -->"),
     }

@@ -1,9 +1,4 @@
-pub(crate) async fn emit_recall_query_event(
-    state: &RuntimeState,
-    agent: &str,
-    source_prefix: Option<&str>,
-    payload: Value,
-) {
+pub(crate) async fn emit_recall_query_event(state: &RuntimeState, agent: &str, source_prefix: Option<&str>, payload: Value) {
     if is_benchmark_recall_scope(agent, source_prefix) {
         return;
     }
@@ -67,39 +62,17 @@ pub(crate) fn classify_recall_tier(cached: bool, mode: &str, methods: &Value) ->
     "unknown"
 }
 pub(crate) fn run_budget_recall(
-    conn: &mut Connection,
-    query_text: &str,
-    token_budget: usize,
-    k: usize,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
+    conn: &mut Connection, query_text: &str, token_budget: usize, k: usize, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
-    run_budget_recall_with_engine(
-        conn,
-        query_text,
-        token_budget,
-        k,
-        None,
-        ctx,
-        source_prefix,
-        None,
-    )
+    run_budget_recall_with_engine(conn, query_text, token_budget, k, None, ctx, source_prefix, None)
 }
 pub(crate) fn run_semantic_recall_with_query_vector(
-    conn: &Connection,
-    query_text: &str,
-    k: usize,
-    query_vector: Option<&[f32]>,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    canary: Option<&SqliteVecCanaryConfig>,
-    sqlite_vec_shadow_enabled: bool,
+    conn: &Connection, query_text: &str, k: usize, query_vector: Option<&[f32]>, ctx: &RecallContext, source_prefix: Option<&str>,
+    canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
 ) -> (Vec<RecallItem>, Value) {
     let prefers_recency = query_prefers_recency(query_text);
     let baseline_semantic = query_vector
-        .map(|query_vec| {
-            collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
-        })
+        .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix))
         .unwrap_or_default();
     let (semantic_candidates, semantic_route) = maybe_apply_sqlite_vec_trial(
         conn,
@@ -133,17 +106,11 @@ pub(crate) fn run_semantic_recall_with_query_vector(
         })
         .collect();
     apply_recall_ranking_boosts(&mut ranked, query_text, 0.05, 0.08);
-    ranked.sort_by(|a, b| {
-        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-    });
+    ranked.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
     ranked.truncate(k);
     (ranked, semantic_route)
 }
-pub(crate) fn budget_rank_char_cap(
-    token_budget: usize,
-    rank_idx: usize,
-    query_text: &str,
-) -> usize {
+pub(crate) fn budget_rank_char_cap(token_budget: usize, rank_idx: usize, query_text: &str) -> usize {
     let base = if token_budget <= 220 {
         match rank_idx {
             0 => 180,
@@ -197,11 +164,7 @@ pub(crate) fn semantic_budget_min_relevance(top_relevance: f64, query_text: &str
     };
     (top_relevance * scale).max(floor)
 }
-pub(crate) fn semantic_budget_max_items(
-    token_budget: usize,
-    query_text: &str,
-    hard_cap: usize,
-) -> usize {
+pub(crate) fn semantic_budget_max_items(token_budget: usize, query_text: &str, hard_cap: usize) -> usize {
     let base: usize = if token_budget <= 220 {
         4
     } else if token_budget <= 400 {
@@ -222,11 +185,7 @@ pub(crate) fn semantic_budget_max_items(
     adjusted.clamp(3, 12).min(hard_cap.max(1))
 }
 pub(crate) fn fit_excerpt_to_remaining_budget(
-    source: &str,
-    excerpt: &str,
-    query_text: &str,
-    char_cap: usize,
-    remaining_tokens: usize,
+    source: &str, excerpt: &str, query_text: &str, char_cap: usize, remaining_tokens: usize,
 ) -> Option<(String, usize)> {
     if remaining_tokens <= MIN_BUDGET_HEADROOM_TOKENS {
         return None;
@@ -255,11 +214,7 @@ pub(crate) fn fit_excerpt_to_remaining_budget(
     }
     Some((String::new(), source_only_tokens))
 }
-pub(crate) fn prefer_family_candidate(
-    candidate: &RecallItem,
-    current: &RecallItem,
-    alignment_profile: &QueryAlignmentProfile,
-) -> bool {
+pub(crate) fn prefer_family_candidate(candidate: &RecallItem, current: &RecallItem, alignment_profile: &QueryAlignmentProfile) -> bool {
     let relevance_delta = candidate.relevance - current.relevance;
     if relevance_delta > 0.03 {
         return true;
@@ -284,14 +239,8 @@ pub(crate) fn prefer_family_candidate(
     candidate.source < current.source
 }
 pub(crate) fn compact_budget_family_candidates_with_trace(
-    candidates: Vec<RecallItem>,
-    query_text: &str,
-    token_budget: usize,
-) -> (
-    Vec<RecallItem>,
-    Vec<RecallItem>,
-    Vec<RecallFamilyCompaction>,
-) {
+    candidates: Vec<RecallItem>, query_text: &str, token_budget: usize,
+) -> (Vec<RecallItem>, Vec<RecallItem>, Vec<RecallFamilyCompaction>) {
     if token_budget > 400 || candidates.len() <= 1 {
         return (candidates, Vec::new(), Vec::new());
     }
@@ -301,9 +250,7 @@ pub(crate) fn compact_budget_family_candidates_with_trace(
             continue;
         }
         for member in &item.family_members {
-            family_lookup
-                .entry(member.clone())
-                .or_insert_with(|| item.source.clone());
+            family_lookup.entry(member.clone()).or_insert_with(|| item.source.clone());
         }
     }
     if family_lookup.is_empty() {
@@ -317,25 +264,16 @@ pub(crate) fn compact_budget_family_candidates_with_trace(
         let family_key = if !item.family_members.is_empty() {
             item.source.clone()
         } else {
-            family_lookup
-                .get(&item.source)
-                .cloned()
-                .unwrap_or_else(|| item.source.clone())
+            family_lookup.get(&item.source).cloned().unwrap_or_else(|| item.source.clone())
         };
         match compacted.entry(family_key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 if prefer_family_candidate(&item, entry.get(), &alignment_profile) {
                     let replaced = entry.insert(item);
-                    dropped_by_family
-                        .entry(entry.key().clone())
-                        .or_default()
-                        .push(replaced.source.clone());
+                    dropped_by_family.entry(entry.key().clone()).or_default().push(replaced.source.clone());
                     dropped.push(replaced);
                 } else {
-                    dropped_by_family
-                        .entry(entry.key().clone())
-                        .or_default()
-                        .push(item.source.clone());
+                    dropped_by_family.entry(entry.key().clone()).or_default().push(item.source.clone());
                     dropped.push(item);
                 }
             }
@@ -344,9 +282,7 @@ pub(crate) fn compact_budget_family_candidates_with_trace(
             }
         }
     }
-    dropped.sort_by(|a, b| {
-        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-    });
+    dropped.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
     let mut family_compactions = Vec::new();
     for (family_key, mut dropped_sources) in dropped_by_family {
         if dropped_sources.is_empty() {
@@ -356,31 +292,17 @@ pub(crate) fn compact_budget_family_candidates_with_trace(
         let Some(kept_source) = compacted.get(&family_key).map(|item| item.source.clone()) else {
             continue;
         };
-        family_compactions.push(RecallFamilyCompaction {
-            family_key,
-            kept_source,
-            dropped_sources,
-        });
+        family_compactions.push(RecallFamilyCompaction { family_key, kept_source, dropped_sources });
     }
     family_compactions.sort_by(|a, b| a.family_key.cmp(&b.family_key));
     let mut compacted_items: Vec<RecallItem> = compacted.into_values().collect();
-    compacted_items.sort_by(|a, b| {
-        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-    });
+    compacted_items.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
     (compacted_items, dropped, family_compactions)
 }
-pub(crate) fn compact_budget_family_candidates(
-    candidates: Vec<RecallItem>,
-    query_text: &str,
-    token_budget: usize,
-) -> Vec<RecallItem> {
+pub(crate) fn compact_budget_family_candidates(candidates: Vec<RecallItem>, query_text: &str, token_budget: usize) -> Vec<RecallItem> {
     compact_budget_family_candidates_with_trace(candidates, query_text, token_budget).0
 }
-pub(crate) fn apply_semantic_budget(
-    raw: Vec<RecallItem>,
-    token_budget: usize,
-    query_text: &str,
-) -> Vec<RecallItem> {
+pub(crate) fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize, query_text: &str) -> Vec<RecallItem> {
     if token_budget == 0 {
         return raw
             .into_iter()
@@ -395,18 +317,11 @@ pub(crate) fn apply_semantic_budget(
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = semantic_budget_min_relevance(top_relevance, query_text);
     let max_items = semantic_budget_max_items(token_budget, query_text, raw.len());
-    let mut candidates: Vec<RecallItem> = raw
-        .iter()
-        .filter(|item| item.relevance >= min_relevance)
-        .take(max_items)
-        .cloned()
-        .collect();
+    let mut candidates: Vec<RecallItem> = raw.iter().filter(|item| item.relevance >= min_relevance).take(max_items).cloned().collect();
     if candidates.is_empty() {
         candidates = raw.iter().take(max_items.max(1)).cloned().collect();
     }
-    let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text)
-        .into_iter()
-        .collect();
+    let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text).into_iter().collect();
     let mut covered_terms: HashSet<String> = HashSet::new();
     let mut selected_signatures: Vec<HashSet<String>> = Vec::new();
     let mut spent = 0usize;
@@ -419,16 +334,9 @@ pub(crate) fn apply_semantic_budget(
         let cap = budget_rank_char_cap(token_budget, idx, query_text)
             .min((remaining as f64 * 3.6) as usize)
             .max(MIN_EXCERPT_CHARS);
-        if let Some((excerpt, tokens)) =
-            fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
-        {
+        if let Some((excerpt, tokens)) = fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining) {
             let signature_terms = excerpt_signature_terms(&item.source, &excerpt);
-            if should_skip_redundant_budget_candidate(
-                &signature_terms,
-                &selected_signatures,
-                &query_terms,
-                &covered_terms,
-            ) {
+            if should_skip_redundant_budget_candidate(&signature_terms, &selected_signatures, &query_terms, &covered_terms) {
                 continue;
             }
             item.excerpt = excerpt;
@@ -437,13 +345,7 @@ pub(crate) fn apply_semantic_budget(
             update_query_term_coverage(&signature_terms, &query_terms, &mut covered_terms);
             selected_signatures.push(signature_terms);
             budgeted.push(item);
-            if should_early_stop_budget_selection(
-                token_budget,
-                spent,
-                budgeted.len(),
-                &query_terms,
-                &covered_terms,
-            ) {
+            if should_early_stop_budget_selection(token_budget, spent, budgeted.len(), &query_terms, &covered_terms) {
                 break;
             }
         }
@@ -471,16 +373,8 @@ pub(crate) fn parse_co_occurrence_prediction(entry: &Value) -> Option<(String, i
     Some((source.to_string(), score))
 }
 fn associative_payload_from_row(
-    text: String,
-    compressed_text: Option<String>,
-    age_tier: Option<String>,
-    score: Option<f64>,
-    trust_score: Option<f64>,
-    last_accessed: Option<String>,
-    created_at: Option<String>,
-    owner_id: Option<i64>,
-    visibility: Option<String>,
-    query_text: &str,
+    text: String, compressed_text: Option<String>, age_tier: Option<String>, score: Option<f64>, trust_score: Option<f64>,
+    last_accessed: Option<String>, created_at: Option<String>, owner_id: Option<i64>, visibility: Option<String>, query_text: &str,
     ctx: &RecallContext,
 ) -> Option<(String, f64, i64)> {
     if ctx.team_mode && !is_visible(owner_id, visibility.as_deref(), ctx) {
@@ -498,10 +392,7 @@ fn associative_payload_from_row(
     Some((excerpt, importance, ts))
 }
 pub(crate) fn fetch_associative_source_payloads(
-    conn: &Connection,
-    sources: &[&str],
-    query_text: &str,
-    ctx: &RecallContext,
+    conn: &Connection, sources: &[&str], query_text: &str, ctx: &RecallContext,
 ) -> HashMap<String, (String, f64, i64)> {
     type PayloadRow = (
         String,
@@ -686,8 +577,7 @@ pub(crate) fn fetch_associative_source_payloads(
                 };
                 let replace = match best.get(&source) {
                     Some((_, best_importance, best_ts)) => {
-                        importance > *best_importance
-                            || (importance == *best_importance && ts > *best_ts)
+                        importance > *best_importance || (importance == *best_importance && ts > *best_ts)
                     }
                     None => true,
                 };
@@ -700,12 +590,7 @@ pub(crate) fn fetch_associative_source_payloads(
     best
 }
 pub(crate) fn build_associative_candidates(
-    conn: &Connection,
-    base: &[RecallItem],
-    query_text: &str,
-    token_budget: usize,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
+    conn: &Connection, base: &[RecallItem], query_text: &str, token_budget: usize, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Vec<RecallItem> {
     if token_budget < ASSOCIATIVE_MIN_BUDGET_TOKENS || base.is_empty() {
         return Vec::new();
@@ -735,10 +620,7 @@ pub(crate) fn build_associative_candidates(
     if predictions.is_empty() {
         return Vec::new();
     }
-    let mut parsed = predictions
-        .iter()
-        .filter_map(parse_co_occurrence_prediction)
-        .collect::<Vec<_>>();
+    let mut parsed = predictions.iter().filter_map(parse_co_occurrence_prediction).collect::<Vec<_>>();
     if parsed.is_empty() {
         return Vec::new();
     }
@@ -747,37 +629,25 @@ pub(crate) fn build_associative_candidates(
     let min_required_co_score = ((max_co_score as f64) * 0.35).ceil() as i64;
     let candidates: Vec<(String, i64)> = parsed
         .into_iter()
-        .filter(|(source, co_score)| {
-            *co_score >= 2
-                && *co_score >= min_required_co_score
-                && source_matches_prefix(source, source_prefix)
-        })
+        .filter(|(source, co_score)| *co_score >= 2 && *co_score >= min_required_co_score && source_matches_prefix(source, source_prefix))
         .collect();
     if candidates.is_empty() {
         return Vec::new();
     }
-    let candidate_sources: Vec<&str> = candidates
-        .iter()
-        .map(|(source, _)| source.as_str())
-        .collect();
-    let mut source_payloads =
-        fetch_associative_source_payloads(conn, &candidate_sources, query_text, ctx);
+    let candidate_sources: Vec<&str> = candidates.iter().map(|(source, _)| source.as_str()).collect();
+    let mut source_payloads = fetch_associative_source_payloads(conn, &candidate_sources, query_text, ctx);
     let query_terms = extract_search_keywords(query_text);
     let mut associative = Vec::new();
     for (source, co_score) in candidates {
         let Some((excerpt, importance, ts)) = source_payloads.remove(source.as_str()) else {
             continue;
         };
-        let norm =
-            ((co_score as f64 + 1.0).ln() / (max_co_score as f64 + 1.0).ln()).clamp(0.0, 1.0);
+        let norm = ((co_score as f64 + 1.0).ln() / (max_co_score as f64 + 1.0).ln()).clamp(0.0, 1.0);
         let source_lower = source.to_ascii_lowercase();
         let overlap = if query_terms.is_empty() {
             0.0
         } else {
-            let matched = query_terms
-                .iter()
-                .filter(|term| source_lower.contains(term.as_str()))
-                .count();
+            let matched = query_terms.iter().filter(|term| source_lower.contains(term.as_str())).count();
             matched as f64 / query_terms.len().max(1) as f64
         };
         let recency_days = if ts > 0 {
@@ -788,13 +658,8 @@ pub(crate) fn build_associative_candidates(
         };
         let recency = (1.0 / (1.0 + recency_days / 14.0)).clamp(0.0, 1.0);
         let anchor = (top_relevance * 0.68).clamp(0.24, 0.82);
-        let relevance = round4(
-            ((anchor * (0.76 + 0.24 * norm))
-                + (importance * 0.10)
-                + (overlap * 0.08)
-                + (recency * 0.10))
-                .clamp(0.0, 0.95),
-        );
+        let relevance =
+            round4(((anchor * (0.76 + 0.24 * norm)) + (importance * 0.10) + (overlap * 0.08) + (recency * 0.10)).clamp(0.0, 0.95));
         associative.push(RecallItem {
             source,
             relevance,
@@ -832,15 +697,8 @@ pub(crate) struct RecallFamilyCompaction {
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_budget_recall_trace_with_query_vector(
-    conn: &Connection,
-    query_text: &str,
-    token_budget: usize,
-    k: usize,
-    query_vector: Option<&[f32]>,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    canary: Option<&SqliteVecCanaryConfig>,
-    sqlite_vec_shadow_enabled: bool,
+    conn: &Connection, query_text: &str, token_budget: usize, k: usize, query_vector: Option<&[f32]>, ctx: &RecallContext,
+    source_prefix: Option<&str>, canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
 ) -> Result<RecallBudgetTrace, String> {
     let retrieval_depth = if token_budget <= 220 {
         (k.max(10) * 3).min(30)
@@ -876,15 +734,11 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
             semantic_route,
         });
     }
-    let associative =
-        build_associative_candidates(conn, &raw, query_text, token_budget, ctx, source_prefix);
+    let associative = build_associative_candidates(conn, &raw, query_text, token_budget, ctx, source_prefix);
     let pre_compaction_pool = if associative.is_empty() {
         raw
     } else {
-        let mut merged: HashMap<String, RecallItem> = raw
-            .into_iter()
-            .map(|item| (item.source.clone(), item))
-            .collect();
+        let mut merged: HashMap<String, RecallItem> = raw.into_iter().map(|item| (item.source.clone(), item)).collect();
         for candidate in associative {
             if let Some(existing) = merged.get_mut(&candidate.source) {
                 if candidate.relevance > existing.relevance {
@@ -898,9 +752,7 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
             }
         }
         let mut merged_pool: Vec<RecallItem> = merged.into_values().collect();
-        merged_pool.sort_by(|a, b| {
-            compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-        });
+        merged_pool.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
         merged_pool
     };
     let pre_compaction_candidate_count = pre_compaction_pool.len();
@@ -909,27 +761,18 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = semantic_budget_min_relevance(top_relevance, query_text);
     let max_items = semantic_budget_max_items(token_budget, query_text, k.max(1));
-    let mut candidates: Vec<RecallItem> = raw
-        .iter()
-        .filter(|item| item.relevance >= min_relevance)
-        .take(max_items)
-        .cloned()
-        .collect();
+    let mut candidates: Vec<RecallItem> = raw.iter().filter(|item| item.relevance >= min_relevance).take(max_items).cloned().collect();
     if candidates.is_empty() {
         candidates = raw.iter().take(max_items).cloned().collect();
     }
     if !candidates.iter().any(|item| item.method == "associative") {
         if let Some(best_associative) = raw.iter().find(|item| item.method == "associative") {
             candidates.push(best_associative.clone());
-            candidates.sort_by(|a, b| {
-                compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-            });
+            candidates.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
             candidates.truncate(max_items.max(1));
         }
     }
-    let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text)
-        .into_iter()
-        .collect();
+    let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text).into_iter().collect();
     let mut covered_terms: HashSet<String> = HashSet::new();
     let mut selected_signatures: Vec<HashSet<String>> = Vec::new();
     let mut spent = 0usize;
@@ -942,16 +785,9 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
         let cap = budget_rank_char_cap(token_budget, idx, query_text)
             .min((remaining as f64 * 3.6) as usize)
             .max(MIN_EXCERPT_CHARS);
-        if let Some((excerpt, tokens)) =
-            fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining)
-        {
+        if let Some((excerpt, tokens)) = fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining) {
             let signature_terms = excerpt_signature_terms(&item.source, &excerpt);
-            if should_skip_redundant_budget_candidate(
-                &signature_terms,
-                &selected_signatures,
-                &query_terms,
-                &covered_terms,
-            ) {
+            if should_skip_redundant_budget_candidate(&signature_terms, &selected_signatures, &query_terms, &covered_terms) {
                 continue;
             }
             spent += tokens;
@@ -968,13 +804,7 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
                 collapsed_sources: item.collapsed_sources,
                 collapsed_source_scores: item.collapsed_source_scores,
             });
-            if should_early_stop_budget_selection(
-                token_budget,
-                spent,
-                budgeted.len(),
-                &query_terms,
-                &covered_terms,
-            ) {
+            if should_early_stop_budget_selection(token_budget, spent, budgeted.len(), &query_terms, &covered_terms) {
                 break;
             }
         }
@@ -994,59 +824,26 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_budget_recall_with_engine(
-    conn: &mut Connection,
-    query_text: &str,
-    token_budget: usize,
-    k: usize,
-    engine: Option<&crate::embeddings::EmbeddingEngine>,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    conn: &mut Connection, query_text: &str, token_budget: usize, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>,
+    ctx: &RecallContext, source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
-    let trace = run_budget_recall_trace_with_engine(
-        conn,
-        query_text,
-        token_budget,
-        k,
-        engine,
-        ctx,
-        source_prefix,
-        degraded_flag,
-    )?;
+    let trace = run_budget_recall_trace_with_engine(conn, query_text, token_budget, k, engine, ctx, source_prefix, degraded_flag)?;
     bump_retrievals_batch(conn, &trace.budgeted);
     Ok(trace.budgeted)
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_budget_recall_trace_with_engine(
-    conn: &Connection,
-    query_text: &str,
-    token_budget: usize,
-    k: usize,
-    engine: Option<&crate::embeddings::EmbeddingEngine>,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    conn: &Connection, query_text: &str, token_budget: usize, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>,
+    ctx: &RecallContext, source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<RecallBudgetTrace, String> {
     let query_vector = engine.and_then(|engine| engine.embed_query(query_text));
     if engine.is_some() {
         update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
     }
-    run_budget_recall_trace_with_query_vector(
-        conn,
-        query_text,
-        token_budget,
-        k,
-        query_vector.as_deref(),
-        ctx,
-        source_prefix,
-        None,
-        true,
-    )
+    run_budget_recall_trace_with_query_vector(conn, query_text, token_budget, k, query_vector.as_deref(), ctx, source_prefix, None, true)
 }
 pub(crate) fn update_semantic_search_health(
-    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    semantic_available: bool,
-    log_unavailable: bool,
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>, semantic_available: bool, log_unavailable: bool,
 ) {
     if let Some(flag) = degraded_flag {
         if semantic_available {
@@ -1054,12 +851,7 @@ pub(crate) fn update_semantic_search_health(
             return;
         }
         let transitioned = flag
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-            )
+            .compare_exchange(false, true, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
             .is_ok();
         if log_unavailable && transitioned {
             eprintln!("[recall] Semantic search unavailable, using keyword fallback");
@@ -1067,49 +859,25 @@ pub(crate) fn update_semantic_search_health(
     }
 }
 pub(crate) fn run_recall(
-    conn: &mut Connection,
-    query_text: &str,
-    k: usize,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
+    conn: &mut Connection, query_text: &str, k: usize, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Result<Vec<RecallItem>, String> {
     run_recall_with_engine(conn, query_text, k, None, ctx, source_prefix, None)
 }
 #[allow(clippy::type_complexity)]
 pub(crate) fn run_recall_with_engine(
-    conn: &mut Connection,
-    query_text: &str,
-    k: usize,
-    engine: Option<&crate::embeddings::EmbeddingEngine>,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    conn: &mut Connection, query_text: &str, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>, ctx: &RecallContext,
+    source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
     let query_vector = engine.and_then(|engine| engine.embed_query(query_text));
     if engine.is_some() {
         update_semantic_search_health(degraded_flag, query_vector.is_some(), true);
     }
-    let trace = run_recall_with_query_vector_trace(
-        conn,
-        query_text,
-        k,
-        query_vector.as_deref(),
-        ctx,
-        source_prefix,
-        None,
-        true,
-    )?;
+    let trace = run_recall_with_query_vector_trace(conn, query_text, k, query_vector.as_deref(), ctx, source_prefix, None, true)?;
     bump_retrievals_batch(conn, &trace.ranked);
     Ok(trace.ranked)
 }
 pub async fn execute_unified_recall(
-    state: &RuntimeState,
-    query_text: &str,
-    budget: usize,
-    k: usize,
-    agent: &str,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
+    state: &RuntimeState, query_text: &str, budget: usize, k: usize, agent: &str, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Result<Value, String> {
     let started_at = Instant::now();
     let policy_mode = recall_mode_for_budget(budget);
@@ -1119,8 +887,7 @@ pub async fn execute_unified_recall(
     let predictive_precache_enabled = recall_predictive_precache_enabled();
 
     if predictive_precache_enabled && budget > 0 && !state.rerank_config.is_active() {
-        if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await
-        {
+        if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await {
             let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
             let mode = recall_mode_for_budget(budget);
             let method_breakdown = build_method_breakdown(&deduped_cached);
@@ -1154,11 +921,7 @@ pub async fn execute_unified_recall(
                 }),
             )
             .await;
-            let usage = RecallBudgetUsage {
-                spent: 0,
-                saved: budget as i64,
-                over_budget: false,
-            };
+            let usage = RecallBudgetUsage { spent: 0, saved: budget as i64, over_budget: false };
             return Ok(json!({
                 "results": deduped_cached.into_iter().map(recall_to_json).collect::<Vec<_>>(),
                 "budget": budget,
@@ -1179,11 +942,7 @@ pub async fn execute_unified_recall(
     let engine = state.embedding_engine.clone();
     let dflag = Some(&state.degraded_mode);
     let query_vector = match engine {
-        Some(runtime_engine) => {
-            runtime_engine
-                .embed_query_async(query_text.to_string())
-                .await
-        }
+        Some(runtime_engine) => runtime_engine.embed_query_async(query_text.to_string()).await,
         None => None,
     };
     if state.embedding_engine.is_some() {
@@ -1385,15 +1144,8 @@ pub async fn execute_unified_recall(
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_recall_policy_explain(
-    state: &RuntimeState,
-    query_text: &str,
-    budget: usize,
-    k: usize,
-    agent: &str,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    pool_k: usize,
-    query_vector_override: Option<&[f32]>,
+    state: &RuntimeState, query_text: &str, budget: usize, k: usize, agent: &str, ctx: &RecallContext, source_prefix: Option<&str>,
+    pool_k: usize, query_vector_override: Option<&[f32]>,
 ) -> Result<Value, String> {
     let requested_k = k.max(1);
     let pool_k = pool_k.max(requested_k).min(128);
@@ -1402,11 +1154,7 @@ pub async fn execute_recall_policy_explain(
     let query_vector = match query_vector_override {
         Some(vector) => Some(vector.to_vec()),
         None => match engine {
-            Some(runtime_engine) => {
-                runtime_engine
-                    .embed_query_async(query_text.to_string())
-                    .await
-            }
+            Some(runtime_engine) => runtime_engine.embed_query_async(query_text.to_string()).await,
             None => None,
         },
     };
@@ -1448,18 +1196,7 @@ pub async fn execute_recall_policy_explain(
             })
             .collect::<Vec<_>>();
         let raw_pool_len = raw_pool.len();
-        (
-            budgeted,
-            raw_pool,
-            raw_pool_len,
-            Vec::new(),
-            pool_k,
-            0.0_f64,
-            0.0_f64,
-            requested_k,
-            trace.semantic_baseline,
-            trace.semantic_route,
-        )
+        (budgeted, raw_pool, raw_pool_len, Vec::new(), pool_k, 0.0_f64, 0.0_f64, requested_k, trace.semantic_baseline, trace.semantic_route)
     } else {
         let trace = run_budget_recall_trace_with_query_vector(
             &conn,
@@ -1485,59 +1222,37 @@ pub async fn execute_recall_policy_explain(
             trace.semantic_route,
         )
     };
-    let shadow_semantic = build_shadow_semantic_explain(
-        &conn,
-        query_vector.as_deref(),
-        query_text,
-        ctx,
-        source_prefix,
-        pool_k,
-        semantic_baseline.as_ref(),
-    );
+    let shadow_semantic =
+        build_shadow_semantic_explain(&conn, query_vector.as_deref(), query_text, ctx, source_prefix, pool_k, semantic_baseline.as_ref());
     drop(conn);
     let (budgeted, rerank_route) = maybe_apply_rerank(state, query_text, budgeted, budget);
     let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
     let final_results = enforce_budget_token_invariant(final_results, budget, query_text);
     let usage = compute_recall_budget_usage(&final_results, budget);
     let mode = recall_mode_for_budget(budget);
-    let family_compacted_count: usize = family_compactions
+    let family_compacted_count: usize = family_compactions.iter().map(|entry| entry.dropped_sources.len()).sum();
+    let family_compactions_json: Vec<Value> = family_compactions
         .iter()
-        .map(|entry| entry.dropped_sources.len())
-        .sum();
-    let family_compactions_json:Vec<Value>=family_compactions.iter().map(|entry|{json!({"familyKey":entry.family_key,"keptSource":entry.kept_source,"droppedSources":entry.dropped_sources,})}).collect();
-    let returned_sources: HashSet<&str> = final_results
-        .iter()
-        .map(|item| item.source.as_str())
+        .map(|entry| json!({"familyKey":entry.family_key,"keptSource":entry.kept_source,"droppedSources":entry.dropped_sources,}))
         .collect();
+    let returned_sources: HashSet<&str> = final_results.iter().map(|item| item.source.as_str()).collect();
     let dropped_candidates:Vec<Value>=candidate_pool.iter().filter(|item|!returned_sources.contains(item.source.as_str())).take(24).map(|item|{let estimated_tokens=estimate_tokens(&format!("{}{}",item.source,item.excerpt));json!({"source":item.source,"relevance":item.relevance,"method":item.method,"estimatedTokens":estimated_tokens,"reason":"not_selected_under_current_budget_or_rank_cutoff"})}).collect();
     let query_entities = query_entity_terms(query_text);
     let mut entity_metrics_by_source: HashMap<String, (usize, f64, f64)> = HashMap::new();
     for candidate in &candidate_pool {
         let haystack = format!("{} {}", candidate.source, candidate.excerpt);
-        let (entity_matches, entity_overlap) =
-            entity_alignment_metrics_with_terms(&haystack, &query_entities);
+        let (entity_matches, entity_overlap) = entity_alignment_metrics_with_terms(&haystack, &query_entities);
         let entity_boost = entity_signal_boost(entity_matches, entity_overlap);
-        entity_metrics_by_source.insert(
-            candidate.source.clone(),
-            (entity_matches, round4(entity_overlap), round4(entity_boost)),
-        );
+        entity_metrics_by_source.insert(candidate.source.clone(), (entity_matches, round4(entity_overlap), round4(entity_boost)));
     }
     let final_with_factors:Vec<Value>=final_results.clone().into_iter().enumerate().map(|(idx,item)|{let tokens=item.tokens.unwrap_or_else(||estimate_tokens(&format!("{}{}",item.source,item.excerpt)));let budget_ratio=if budget==0{0.0}else{((tokens as f64)/(budget as f64)).min(1.0)};let(entity_matches,entity_overlap,entity_boost)=entity_metrics_by_source.get(&item.source).copied().unwrap_or_else(||{let haystack=format!("{} {}",item.source,item.excerpt);let(matches,overlap)=entity_alignment_metrics_with_terms(&haystack,&query_entities);(matches,round4(overlap),round4(entity_signal_boost(matches,overlap)),)});json!({"rank":idx+1,"source":item.source,"relevance":item.relevance,"method":item.method,"tokens":tokens,"rankingFactors":{"relevance":item.relevance,"method":item.method,"tokenCost":tokens,"budgetCostRatio":round4(budget_ratio),"entropy":item.entropy,"entityMatches":entity_matches,"entityOverlap":entity_overlap,"entityBoost":entity_boost}})}).collect();
-    let post_compaction_dropped_count = candidate_pool
-        .len()
-        .saturating_sub(final_with_factors.len());
+    let post_compaction_dropped_count = candidate_pool.len().saturating_sub(final_with_factors.len());
     Ok(
         json!({"query":query_text,"results":final_results.into_iter().map(recall_to_json).collect::<Vec<_>>(),"budget":budget,"spent":usage.spent,"saved":usage.saved,"overBudget":usage.over_budget,"tokenUsageLine":format_recall_token_usage_line(budget,usage),"mode":mode.as_str(),"policyMode":mode.as_str(),"policy":{"name":"adaptive-recall-policy","mode":mode.as_str(),"budget":budget,"requestedK":requested_k,"poolK":pool_k,"retrievalDepth":retrieval_depth,"candidateCutoff":{"topRelevance":round4(top_relevance),"minRelevance":round4(min_relevance),"maxItemsBeforeBudget":max_items},"budgetReasoning":{"requestedBudget":budget,"spent":usage.spent,"saved":usage.saved,"budgetPressure":if budget==0{0.0}else{round4((usage.spent as f64)/(budget as f64))},"candidateCountBeforeFamilyCompaction":pre_compaction_candidate_count,"candidateCount":candidate_pool.len(),"candidateCountAfterFamilyCompaction":candidate_pool.len(),"familyCompactedCount":family_compacted_count,"returnedCount":final_with_factors.len(),"droppedCount":post_compaction_dropped_count,"totalPreBudgetDrops":family_compacted_count+post_compaction_dropped_count},"semanticRoute":semantic_route,"rerankRoute":rerank_route.clone()},"explain":{"returned":final_with_factors,"familyCompactions":family_compactions_json,"droppedCandidates":dropped_candidates,"shadowSemantic":shadow_semantic,"rerank":rerank_route}}),
     )
 }
 pub async fn execute_semantic_recall(
-    state: &RuntimeState,
-    query_text: &str,
-    budget: usize,
-    k: usize,
-    agent: &str,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
+    state: &RuntimeState, query_text: &str, budget: usize, k: usize, agent: &str, ctx: &RecallContext, source_prefix: Option<&str>,
 ) -> Result<Value, String> {
     let started_at = Instant::now();
     let query_vector = match state.embedding_engine.clone() {
@@ -1557,10 +1272,7 @@ pub async fn execute_semantic_recall(
             Some(&state.sqlite_vec_canary),
             false,
         );
-        (
-            apply_semantic_budget(results, budget, query_text),
-            semantic_route,
-        )
+        (apply_semantic_budget(results, budget, query_text), semantic_route)
     };
     {
         let conn = state.db.lock().await;
@@ -1579,42 +1291,26 @@ pub async fn execute_semantic_recall(
 }
 #[allow(clippy::type_complexity)]
 pub(crate) fn run_recall_with_query_vector_trace(
-    conn: &Connection,
-    query_text: &str,
-    k: usize,
-    query_vector: Option<&[f32]>,
-    ctx: &RecallContext,
-    source_prefix: Option<&str>,
-    canary: Option<&SqliteVecCanaryConfig>,
-    sqlite_vec_shadow_enabled: bool,
+    conn: &Connection, query_text: &str, k: usize, query_vector: Option<&[f32]>, ctx: &RecallContext, source_prefix: Option<&str>,
+    canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
 ) -> Result<RecallWithVectorTrace, String> {
     let extracted = extract_search_keywords(query_text);
     let prefers_recency = query_prefers_recency(query_text);
     let alignment_profile = QueryAlignmentProfile::from_query(query_text);
-    let keyword_query = if extracted.is_empty() {
-        query_text.to_string()
-    } else {
-        extracted.join(" ")
-    };
+    let keyword_query = if extracted.is_empty() { query_text.to_string() } else { extracted.join(" ") };
     let mut crystal_items: HashMap<String, RecallItem> = HashMap::new();
     let mut crystal_family_lookup: HashMap<String, String> = HashMap::new();
     if let Some(query_vec) = query_vector {
-        for (crystal_id, label, text, relevance) in crate::crystallize::search_crystals_filtered(
-            conn,
-            query_vec,
-            3,
-            ctx.caller_id,
-            ctx.team_mode,
-        ) {
+        for (crystal_id, label, text, relevance) in
+            crate::crystallize::search_crystals_filtered(conn, query_vec, 3, ctx.caller_id, ctx.team_mode)
+        {
             let source = crystal_source(crystal_id, &label);
             if !source_matches_prefix(&source, source_prefix) {
                 continue;
             }
             let family_members = crystal_member_sources(conn, crystal_id, ctx);
             for member_source in &family_members {
-                crystal_family_lookup
-                    .entry(member_source.clone())
-                    .or_insert_with(|| source.clone());
+                crystal_family_lookup.entry(member_source.clone()).or_insert_with(|| source.clone());
             }
             crystal_items.insert(
                 source.clone(),
@@ -1653,9 +1349,7 @@ pub(crate) fn run_recall_with_query_vector_trace(
             {
                 all.push(row);
             }
-            all.sort_by(|a, b| {
-                compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-            });
+            all.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
             if ctx.team_mode && all.len() < k && retry < 2 {
                 fts_limit *= 2;
                 retry += 1;
@@ -1665,19 +1359,10 @@ pub(crate) fn run_recall_with_query_vector_trace(
         }
         all
     };
-    let required_keyword_hits = if extracted.is_empty() {
-        1_i64
-    } else {
-        ((extracted.len() as f64) * 0.6).ceil() as i64
-    };
+    let required_keyword_hits = if extracted.is_empty() { 1_i64 } else { ((extracted.len() as f64) * 0.6).ceil() as i64 };
     let tier2_resolved = if let Some(top) = kw_candidates.first() {
-        let gap = kw_candidates
-            .get(1)
-            .map(|next| top.relevance - next.relevance)
-            .unwrap_or(top.relevance);
-        top.relevance >= TIER2_CONFIDENCE
-            && top.matched_keywords >= required_keyword_hits
-            && gap >= TIER2_GAP
+        let gap = kw_candidates.get(1).map(|next| top.relevance - next.relevance).unwrap_or(top.relevance);
+        top.relevance >= TIER2_CONFIDENCE && top.matched_keywords >= required_keyword_hits && gap >= TIER2_GAP
     } else {
         false
     };
@@ -1689,9 +1374,7 @@ pub(crate) fn run_recall_with_query_vector_trace(
         )
     } else {
         let baseline_semantic = query_vector
-            .map(|query_vec| {
-                collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix)
-            })
+            .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix))
             .unwrap_or_default();
         let semantic_baseline = if baseline_semantic.is_empty() {
             None
@@ -1729,29 +1412,17 @@ pub(crate) fn run_recall_with_query_vector_trace(
         index_source.push(source.to_string());
         idx
     };
-    let kw_list: Vec<(i64, f64)> = kw_candidates
-        .iter()
-        .map(|c| (get_idx(&c.source), c.relevance))
-        .collect();
+    let kw_list: Vec<(i64, f64)> = kw_candidates.iter().map(|c| (get_idx(&c.source), c.relevance)).collect();
     let sem_list: Vec<(i64, f64)> = semantic_candidates
         .iter()
         .map(|candidate| (get_idx(&candidate.source), candidate.relevance))
         .collect();
-    let fusion_weights =
-        adaptive_rrf_weights(query_text, source_prefix, !semantic_candidates.is_empty());
-    let fused = rrf_fuse_weighted(
-        &[kw_list, sem_list],
-        &[fusion_weights.keyword, fusion_weights.semantic],
-        60.0,
-    );
-    let kw_by_source: HashMap<&str, &SearchCandidate> = kw_candidates
-        .iter()
-        .map(|candidate| (candidate.source.as_str(), candidate))
-        .collect();
-    let sem_by_source: HashMap<&str, &SemanticCandidate> = semantic_candidates
-        .iter()
-        .map(|candidate| (candidate.source.as_str(), candidate))
-        .collect();
+    let fusion_weights = adaptive_rrf_weights(query_text, source_prefix, !semantic_candidates.is_empty());
+    let fused = rrf_fuse_weighted(&[kw_list, sem_list], &[fusion_weights.keyword, fusion_weights.semantic], 60.0);
+    let kw_by_source: HashMap<&str, &SearchCandidate> =
+        kw_candidates.iter().map(|candidate| (candidate.source.as_str(), candidate)).collect();
+    let sem_by_source: HashMap<&str, &SemanticCandidate> =
+        semantic_candidates.iter().map(|candidate| (candidate.source.as_str(), candidate)).collect();
     let mut merged: HashMap<String, RecallItem> = HashMap::new();
     for (idx, rrf_score) in &fused {
         let source = match index_source.get(*idx as usize) {
@@ -1760,51 +1431,27 @@ pub(crate) fn run_recall_with_query_vector_trace(
         };
         let source_key = source.as_str();
         let (excerpt, importance, ts_ms, method) = if let Some(kw) = kw_by_source.get(source_key) {
-            let method = if sem_by_source.contains_key(source_key) {
-                "hybrid"
-            } else {
-                "keyword"
-            };
+            let method = if sem_by_source.contains_key(source_key) { "hybrid" } else { "keyword" };
             (kw.excerpt.clone(), kw.score, kw.ts, method)
         } else if let Some(sem) = sem_by_source.get(source_key) {
             (sem.excerpt.clone(), sem.importance, sem.ts, "semantic")
         } else {
             continue;
         };
-        let created_at_str = if ts_ms > 0 {
-            Utc.timestamp_millis_opt(ts_ms)
-                .single()
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let mut relevance = round4(compound_score(
-            *rrf_score,
-            importance * 100.0,
-            &created_at_str,
-        ));
+        let created_at_str =
+            if ts_ms > 0 { Utc.timestamp_millis_opt(ts_ms).single().map(|dt| dt.to_rfc3339()).unwrap_or_default() } else { String::new() };
+        let mut relevance = round4(compound_score(*rrf_score, importance * 100.0, &created_at_str));
         if prefers_recency {
             relevance = round4(relevance * temporal_intent_multiplier(ts_ms));
         }
         if let Some(crystal_source) = crystal_family_lookup.get(&source) {
             if let Some(crystal_item) = crystal_items.get_mut(crystal_source) {
                 crystal_item.relevance = round4(crystal_item.relevance.max(relevance));
-                if !crystal_item
-                    .collapsed_sources
-                    .iter()
-                    .any(|collapsed| collapsed == &source)
-                {
+                if !crystal_item.collapsed_sources.iter().any(|collapsed| collapsed == &source) {
                     crystal_item.collapsed_sources.push(source.clone());
                 }
-                crystal_item
-                    .collapsed_source_scores
-                    .push((source.clone(), relevance));
-                if prefer_query_focused_excerpt_with_profile(
-                    &crystal_item.excerpt,
-                    &excerpt,
-                    &alignment_profile,
-                ) {
+                crystal_item.collapsed_source_scores.push((source.clone(), relevance));
+                if prefer_query_focused_excerpt_with_profile(&crystal_item.excerpt, &excerpt, &alignment_profile) {
                     crystal_item.excerpt = excerpt.clone();
                 }
             }
@@ -1841,21 +1488,13 @@ pub(crate) fn run_recall_with_query_vector_trace(
             }
         }
     }
-    ranked.sort_by(|a, b| {
-        compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source)
-    });
+    ranked.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
     ranked.truncate(k);
-    Ok(RecallWithVectorTrace {
-        ranked,
-        semantic_baseline,
-        semantic_route,
-    })
+    Ok(RecallWithVectorTrace { ranked, semantic_baseline, semantic_route })
 }
 pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Option<Value> {
     if let Some(crystal_id) = parse_crystal_source_id(source) {
-        if let Some((label, consolidated_text, member_count, owner_id, visibility)) =
-            query_crystal_for_unfold(conn, crystal_id)
-        {
+        if let Some((label, consolidated_text, member_count, owner_id, visibility)) = query_crystal_for_unfold(conn, crystal_id) {
             if is_visible(owner_id, visibility.as_deref(), ctx) {
                 let members = crystal_member_sources(conn, crystal_id, ctx);
                 let mut full_text = consolidated_text.clone();
@@ -1886,9 +1525,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
     if let Some(id_str) = source.strip_prefix("decision::") {
         if let Ok(id) = id_str.parse::<i64>() {
-            if let Some((decision, context, owner_id, visibility)) =
-                query_decision_by_id_for_unfold(conn, id)
-            {
+            if let Some((decision, context, owner_id, visibility)) = query_decision_by_id_for_unfold(conn, id) {
                 if is_visible(owner_id, visibility.as_deref(), ctx) {
                     let full = match context {
                         Some(c) => format!("{decision}\n\nContext: {c}"),
@@ -1899,9 +1536,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
             }
         }
     }
-    if let Some((decision, context, owner_id, visibility)) =
-        query_decision_by_context_for_unfold(conn, source)
-    {
+    if let Some((decision, context, owner_id, visibility)) = query_decision_by_context_for_unfold(conn, source) {
         if is_visible(owner_id, visibility.as_deref(), ctx) {
             let full = match context {
                 Some(c) => format!("{decision}\n\nContext: {c}"),
@@ -1924,12 +1559,7 @@ const UNFOLD_ACTIVE:&str="status = 'active' AND (expires_at IS NULL OR expires_a
 pub(crate) type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
 pub(crate) type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
 fn query_acl_row<T, F, G>(
-    conn: &Connection,
-    with_sql: &str,
-    without_sql: &str,
-    bind: &[&dyn rusqlite::types::ToSql],
-    map_with: F,
-    map_without: G,
+    conn: &Connection, with_sql: &str, without_sql: &str, bind: &[&dyn rusqlite::types::ToSql], map_with: F, map_without: G,
 ) -> Option<T>
 where
     F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
@@ -1937,38 +1567,36 @@ where
 {
     match conn.query_row(with_sql, bind, map_with) {
         Ok(row) => Some(row),
-        Err(err) if is_missing_team_visibility_columns(&err) => {
-            conn.query_row(without_sql, bind, map_without).ok()
-        }
+        Err(err) if is_missing_team_visibility_columns(&err) => conn.query_row(without_sql, bind, map_without).ok(),
         Err(_) => None,
     }
 }
 pub(crate) fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfoldRow> {
     let bind: Vec<&dyn rusqlite::types::ToSql> = vec![&source];
-    query_acl_row(conn,&format!("SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),&format!("SELECT text, type FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),&bind,|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),|row|Ok((row.get(0)?,row.get(1)?,None,None)),)
+    query_acl_row(
+        conn,
+        &format!("SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
+        &format!("SELECT text, type FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
+        &bind,
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, None, None)),
+    )
 }
 fn query_decision_for_unfold(
-    conn: &Connection,
-    predicate: &str,
-    bind: &[&dyn rusqlite::types::ToSql],
-    order_limit: &str,
+    conn: &Connection, predicate: &str, bind: &[&dyn rusqlite::types::ToSql], order_limit: &str,
 ) -> Option<DecisionUnfoldRow> {
-    query_acl_row(conn,&format!("SELECT decision, context, owner_id, visibility FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),&format!("SELECT decision, context FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),bind,|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),|row|Ok((row.get(0)?,row.get(1)?,None,None)),)
+    query_acl_row(
+        conn,
+        &format!("SELECT decision, context, owner_id, visibility FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),
+        &format!("SELECT decision, context FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),
+        bind,
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, None, None)),
+    )
 }
-pub(crate) fn query_decision_by_id_for_unfold(
-    conn: &Connection,
-    id: i64,
-) -> Option<DecisionUnfoldRow> {
+pub(crate) fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<DecisionUnfoldRow> {
     query_decision_for_unfold(conn, "id = ?1", &[&id], "")
 }
-pub(crate) fn query_decision_by_context_for_unfold(
-    conn: &Connection,
-    source: &str,
-) -> Option<DecisionUnfoldRow> {
-    query_decision_for_unfold(
-        conn,
-        "context = ?1",
-        &[&source],
-        " ORDER BY score DESC LIMIT 1",
-    )
+pub(crate) fn query_decision_by_context_for_unfold(conn: &Connection, source: &str) -> Option<DecisionUnfoldRow> {
+    query_decision_for_unfold(conn, "context = ?1", &[&source], " ORDER BY score DESC LIMIT 1")
 }

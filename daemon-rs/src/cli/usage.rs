@@ -183,9 +183,7 @@ fn top_level_command_suggestion(command: &str) -> Option<&'static str> {
     let normalized = command.trim().to_ascii_lowercase().replace(['_', '-'], "");
     match normalized.as_str() {
         "capability" | "capabilitiesjson" | "caps" => Some("cortex capabilities --json"),
-        "robotdoc" | "robotdocs" | "agentdoc" | "agentdocs" | "docs" => {
-            Some("cortex robot-docs guide")
-        }
+        "robotdoc" | "robotdocs" | "agentdoc" | "agentdocs" | "docs" => Some("cortex robot-docs guide"),
         "stat" | "statusjson" => Some("cortex status --json"),
         "path" => Some("cortex paths --json"),
         "budget" | "budgets" => Some("cortex admin budgets status --json"),
@@ -194,14 +192,13 @@ fn top_level_command_suggestion(command: &str) -> Option<&'static str> {
     }
 }
 pub(crate) fn unknown_cli_command_message(command: &str) -> String {
-    let prefix = if command.starts_with('-') {
-        format!("Unknown option: {command}")
-    } else {
-        format!("Unknown command: {command}")
-    };
-    match top_level_command_suggestion(command){Some(suggestion)=>format!(
-"{prefix}\nDid you mean: `{suggestion}`?\nRun `cortex help` or `cortex capabilities --json` for supported commands."),None=>format
-!("{prefix}\nRun `cortex help` or `cortex capabilities --json` for supported commands."),}
+    let prefix = if command.starts_with('-') { format!("Unknown option: {command}") } else { format!("Unknown command: {command}") };
+    match top_level_command_suggestion(command) {
+        Some(suggestion) => {
+            format!("{prefix}\nDid you mean: `{suggestion}`?\nRun `cortex help` or `cortex capabilities --json` for supported commands.")
+        }
+        None => format!("{prefix}\nRun `cortex help` or `cortex capabilities --json` for supported commands."),
+    }
 }
 pub(crate) fn unknown_robot_docs_subcommand_message(subcommand: &str) -> String {
     format!("Unknown robot-docs command: {subcommand}\nDid you mean: `cortex robot-docs guide`?")

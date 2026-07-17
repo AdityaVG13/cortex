@@ -10,12 +10,16 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
         return resp;
     }
     let conn = state.db_read.lock().await;
-    let memories:Vec<Value>=conn.prepare(
-"SELECT id, text, source, type, tags, source_agent, confidence, status, score, \
+    let memories: Vec<Value> = conn
+        .prepare(
+            "SELECT id, text, source, type, tags, source_agent, confidence, status, score, \
              retrievals, last_accessed, pinned, disputes_id, supersedes_id, confirmed_by, \
              created_at, updated_at \
-             FROM memories WHERE status = 'active' ORDER BY score DESC"
-,).and_then(|mut stmt|{stmt.query_map([],|row|{Ok(json!({"id":row.get::<_,i64>(0)?,"text":row.get::<_,String>(1).unwrap_or_default
+             FROM memories WHERE status = 'active' ORDER BY score DESC",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| {
+                Ok(json!({"id":row.get::<_,i64>(0)?,"text":row.get::<_,String>(1).unwrap_or_default
 (),"source":row.get::<_,Option<String>>(2).unwrap_or(None),"type":row.get::<_,String>(3).unwrap_or_default(),"tags":row.get::<_,
 Option<String>>(4).unwrap_or(None),"source_agent":row.get::<_,Option<String>>(5).unwrap_or(None),"confidence":row.get::<_,Option<
 f64>>(6).unwrap_or(Some(0.8)),"status":row.get::<_,Option<String>>(7).unwrap_or(Some("active".to_string())),"score":row.get::<_,
@@ -23,13 +27,21 @@ Option<f64>>(8).unwrap_or(Some(1.0)),"retrievals":row.get::<_,Option<i64>>(9).un
 Option<String>>(10).unwrap_or(None),"pinned":row.get::<_,Option<i64>>(11).unwrap_or(Some(0)),"disputes_id":row.get::<_,Option<i64
 >>(12).unwrap_or(None),"supersedes_id":row.get::<_,Option<i64>>(13).unwrap_or(None),"confirmed_by":row.get::<_,Option<String>>(14)
 .unwrap_or(None),"created_at":row.get::<_,Option<String>>(15).unwrap_or(None),"updated_at":row.get::<_,Option<String>>(16).
-unwrap_or(None),}))}).map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
-    let decisions:Vec<Value>=conn.prepare(
-"SELECT id, decision, context, type, source_agent, confidence, surprise, status, \
+unwrap_or(None),}))
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
+    let decisions: Vec<Value> = conn
+        .prepare(
+            "SELECT id, decision, context, type, source_agent, confidence, surprise, status, \
              score, retrievals, last_accessed, pinned, parent_id, disputes_id, supersedes_id, \
              confirmed_by, created_at, updated_at \
-             FROM decisions WHERE status = 'active' ORDER BY score DESC"
-,).and_then(|mut stmt|{stmt.query_map([],|row|{Ok(json!({"id":row.get::<_,i64>(0)?,"decision":row.get::<_,String>(1).
+             FROM decisions WHERE status = 'active' ORDER BY score DESC",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| {
+                Ok(json!({"id":row.get::<_,i64>(0)?,"decision":row.get::<_,String>(1).
 unwrap_or_default(),"context":row.get::<_,Option<String>>(2).unwrap_or(None),"type":row.get::<_,Option<String>>(3).unwrap_or(Some(
 "decision".to_string())),"source_agent":row.get::<_,Option<String>>(4).unwrap_or(None),"confidence":row.get::<_,Option<f64>>(5).
 unwrap_or(Some(0.8)),"surprise":row.get::<_,Option<f64>>(6).unwrap_or(Some(1.0)),"status":row.get::<_,Option<String>>(7).unwrap_or
@@ -37,8 +49,11 @@ unwrap_or(Some(0.8)),"surprise":row.get::<_,Option<f64>>(6).unwrap_or(Some(1.0))
 unwrap_or(Some(0)),"last_accessed":row.get::<_,Option<String>>(10).unwrap_or(None),"pinned":row.get::<_,Option<i64>>(11).unwrap_or
 (Some(0)),"parent_id":row.get::<_,Option<i64>>(12).unwrap_or(None),"disputes_id":row.get::<_,Option<i64>>(13).unwrap_or(None),
 "supersedes_id":row.get::<_,Option<i64>>(14).unwrap_or(None),"confirmed_by":row.get::<_,Option<String>>(15).unwrap_or(None),
-"created_at":row.get::<_,Option<String>>(16).unwrap_or(None),"updated_at":row.get::<_,Option<String>>(17).unwrap_or(None),}))}).
-map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
+"created_at":row.get::<_,Option<String>>(16).unwrap_or(None),"updated_at":row.get::<_,Option<String>>(17).unwrap_or(None),}))
+            })
+            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        })
+        .unwrap_or_default();
     let mut source_nodes: BTreeMap<String, String> = BTreeMap::new();
     for memory in &memories {
         let Some(id) = memory.get("id").and_then(|value| value.as_i64()) else {
@@ -52,9 +67,7 @@ map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
         else {
             continue;
         };
-        source_nodes
-            .entry(source.to_string())
-            .or_insert_with(|| format!("mem-{id}"));
+        source_nodes.entry(source.to_string()).or_insert_with(|| format!("mem-{id}"));
     }
     for decision in &decisions {
         let Some(id) = decision.get("id").and_then(|value| value.as_i64()) else {
@@ -68,9 +81,7 @@ map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
         else {
             continue;
         };
-        source_nodes
-            .entry(source.to_string())
-            .or_insert_with(|| format!("dec-{id}"));
+        source_nodes.entry(source.to_string()).or_insert_with(|| format!("dec-{id}"));
     }
     let mut seen_links: HashSet<String> = HashSet::new();
     let mut graph_links: Vec<Value> = Vec::new();
@@ -81,12 +92,7 @@ map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
          LIMIT 240",
     ) {
         if let Ok(rows) = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?))
         }) {
             for row in rows.flatten() {
                 let (source_a, source_b, count, last_seen) = row;
@@ -99,11 +105,7 @@ map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
                 if node_a == node_b {
                     continue;
                 }
-                let (left, right) = if node_a <= node_b {
-                    (node_a.clone(), node_b.clone())
-                } else {
-                    (node_b.clone(), node_a.clone())
-                };
+                let (left, right) = if node_a <= node_b { (node_a.clone(), node_b.clone()) } else { (node_b.clone(), node_a.clone()) };
                 let key = format!("{left}|{right}|co_occurrence");
                 if !seen_links.insert(key) {
                     continue;
@@ -122,11 +124,7 @@ map(|rows|rows.filter_map(|r|r.ok()).collect())}).unwrap_or_default();
         };
         let left = format!("dec-{id}");
         let right = format!("dec-{disputes_id}");
-        let (source, target) = if left <= right {
-            (left, right)
-        } else {
-            (right, left)
-        };
+        let (source, target) = if left <= right { (left, right) } else { (right, left) };
         let key = format!("{source}|{target}|conflict");
         if !seen_links.insert(key) {
             continue;

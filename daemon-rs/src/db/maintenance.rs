@@ -40,10 +40,7 @@ pub(crate) fn migrate_aging_columns_with_logging(conn: &Connection, log_success:
     }
 }
 pub(crate) fn unix_now_ms() -> i64 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
     i64::try_from(now).unwrap_or(i64::MAX)
 }
 pub(crate) fn should_attempt_best_effort_checkpoint(now_ms: i64, last_checkpoint_ms: i64) -> bool {
@@ -62,12 +59,7 @@ pub fn checkpoint_wal_best_effort(conn: &Connection) {
         return;
     }
     if LAST_BEST_EFFORT_CHECKPOINT_MS
-        .compare_exchange(
-            last_checkpoint_ms,
-            now_ms,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        )
+        .compare_exchange(last_checkpoint_ms, now_ms, Ordering::Relaxed, Ordering::Relaxed)
         .is_err()
     {
         return;
@@ -77,11 +69,7 @@ pub fn checkpoint_wal_best_effort(conn: &Connection) {
         LAST_BEST_EFFORT_TRUNCATE_MS.store(now_ms, Ordering::Relaxed);
         last_truncate_ms = now_ms;
     }
-    if should_attempt_truncate_checkpoint(now_ms, last_truncate_ms)
-        && conn
-            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .is_ok()
-    {
+    if should_attempt_truncate_checkpoint(now_ms, last_truncate_ms) && conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").is_ok() {
         LAST_BEST_EFFORT_TRUNCATE_MS.store(now_ms, Ordering::Relaxed);
         return;
     }
@@ -93,18 +81,9 @@ pub struct ExpiredCleanupCounts {
     pub decisions_deleted: usize,
 }
 pub fn delete_expired_entries(conn: &Connection) -> rusqlite::Result<ExpiredCleanupCounts> {
-    let memories_deleted = conn.execute(
-        "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-        [],
-    )?;
-    let decisions_deleted = conn.execute(
-        "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-        [],
-    )?;
-    Ok(ExpiredCleanupCounts {
-        memories_deleted,
-        decisions_deleted,
-    })
+    let memories_deleted = conn.execute("DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')", [])?;
+    let decisions_deleted = conn.execute("DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')", [])?;
+    Ok(ExpiredCleanupCounts { memories_deleted, decisions_deleted })
 }
 pub fn rebuild_fts(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -124,11 +103,7 @@ pub fn reindex_fts(conn: &Connection) -> rusqlite::Result<()> {
 }
 pub fn rebuild_fts_if_needed(conn: &Connection) -> rusqlite::Result<bool> {
     let already_seeded = conn
-        .query_row(
-            "SELECT 1 FROM schema_migrations WHERE version = 'fts_seeded_v1' LIMIT 1",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
+        .query_row("SELECT 1 FROM schema_migrations WHERE version = 'fts_seeded_v1' LIMIT 1", [], |row| row.get::<_, i64>(0))
         .optional()?;
     if already_seeded.is_some() {
         return Ok(false);
@@ -151,10 +126,7 @@ pub fn quick_check(conn: &Connection) -> bool {
         .unwrap_or(false)
 }
 pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, RepairError> {
-    eprintln!(
-        "[cortex] auto_repair: beginning dump-and-rebuild of {}",
-        db_path.display()
-    );
+    eprintln!("[cortex] auto_repair: beginning dump-and-rebuild of {}", db_path.display());
     let corrupt_conn = Connection::open(db_path).map_err(RepairError::OpenCorrupt)?;
     let busy_timeout_ms = SQLITE_BUSY_TIMEOUT_MS;
     let _ = corrupt_conn.execute_batch(&format!(
@@ -187,19 +159,13 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     let mut decisions_recovered = 0usize;
     for &table in DATA_TABLES {
         let exists: bool = corrupt_conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1",
-                params![table],
-                |_| Ok(()),
-            )
+            .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1", params![table], |_| Ok(()))
             .is_ok();
         if !exists {
             eprintln!("[cortex] auto_repair: table '{table}' not found in corrupt DB, skipping");
             continue;
         }
-        let mut col_stmt = corrupt_conn
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(RepairError::Export)?;
+        let mut col_stmt = corrupt_conn.prepare(&format!("PRAGMA table_info({table})")).map_err(RepairError::Export)?;
         let columns: Vec<String> = col_stmt
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(RepairError::Export)?
@@ -227,8 +193,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
                 continue;
             }
         };
-        let insert_prefix =
-            format!("INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({placeholder_list})");
+        let insert_prefix = format!("INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({placeholder_list})");
         let mut row_values: Vec<Vec<String>> = Vec::new();
         loop {
             match rows.next() {
@@ -245,8 +210,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
                                 format!("'{}'", s.replace('\'', "''"))
                             }
                             Ok(ValueRef::Blob(b)) => {
-                                let hex: String =
-                                    b.iter().map(|byte| format!("{byte:02X}")).collect();
+                                let hex: String = b.iter().map(|byte| format!("{byte:02X}")).collect();
                                 format!("X'{hex}'")
                             }
                             Err(_) => "NULL".to_string(),
@@ -262,10 +226,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
                 }
             }
         }
-        eprintln!(
-            "[cortex] auto_repair: exported {} rows from '{table}'",
-            row_values.len()
-        );
+        eprintln!("[cortex] auto_repair: exported {} rows from '{table}'", row_values.len());
         if table == "memories" {
             memories_recovered = row_values.len();
         } else if table == "decisions" {
@@ -286,9 +247,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     let fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
     configure(&fresh).map_err(RepairError::Import)?;
     initialize_schema(&fresh).map_err(RepairError::Import)?;
-    fresh
-        .execute_batch("PRAGMA foreign_keys = OFF;")
-        .map_err(RepairError::Import)?;
+    fresh.execute_batch("PRAGMA foreign_keys = OFF;").map_err(RepairError::Import)?;
     for (_prefix, inserts) in &table_exports {
         for stmt in inserts {
             if let Err(e) = fresh.execute_batch(stmt) {
@@ -296,9 +255,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
             }
         }
     }
-    fresh
-        .execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(RepairError::Import)?;
+    fresh.execute_batch("PRAGMA foreign_keys = ON;").map_err(RepairError::Import)?;
     fresh
         .execute_batch(
             "INSERT OR IGNORE INTO memories_fts(rowid, text, source, tags) \
@@ -307,9 +264,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
              SELECT id, decision, context FROM decisions;",
         )
         .map_err(RepairError::Import)?;
-    fresh
-        .execute_batch("VACUUM;")
-        .map_err(RepairError::Import)?;
+    fresh.execute_batch("VACUUM;").map_err(RepairError::Import)?;
     let integrity_ok = verify_integrity(&fresh).unwrap_or(false);
     drop(fresh);
     if !integrity_ok {
@@ -330,45 +285,24 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
         decisions_recovered,
         corrupt_archive.display()
     );
-    Ok(RepairResult {
-        memories_recovered,
-        decisions_recovered,
-        corrupt_db_path: corrupt_archive,
-    })
+    Ok(RepairResult { memories_recovered, decisions_recovered, corrupt_db_path: corrupt_archive })
 }
-pub fn archive_entries_scoped(
-    conn: &Connection,
-    table: &str,
-    ids: &[i64],
-    owner_id: Option<i64>,
-) -> rusqlite::Result<usize> {
+pub fn archive_entries_scoped(conn: &Connection, table: &str, ids: &[i64], owner_id: Option<i64>) -> rusqlite::Result<usize> {
     if table != "memories" && table != "decisions" {
-        return Err(rusqlite::Error::InvalidParameterName(format!(
-            "archive_entries: unsupported table '{table}'"
-        )));
+        return Err(rusqlite::Error::InvalidParameterName(format!("archive_entries: unsupported table '{table}'")));
     }
     if ids.is_empty() {
         return Ok(0);
     }
-    let placeholders = ids
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!("?{}", i + 1))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let placeholders = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
     let sql = if owner_id.is_some() {
-        format!(
-"UPDATE {table} SET status = 'archived' WHERE owner_id = ?{} AND id IN ({placeholders})",ids.len()+1)
+        format!("UPDATE {table} SET status = 'archived' WHERE owner_id = ?{} AND id IN ({placeholders})", ids.len() + 1)
     } else {
         format!("UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})")
     };
     let mut stmt = conn.prepare(&sql)?;
     let affected = if let Some(owner_id) = owner_id {
-        let mut values: Vec<rusqlite::types::Value> = ids
-            .iter()
-            .copied()
-            .map(rusqlite::types::Value::Integer)
-            .collect();
+        let mut values: Vec<rusqlite::types::Value> = ids.iter().copied().map(rusqlite::types::Value::Integer).collect();
         values.push(rusqlite::types::Value::Integer(owner_id));
         stmt.execute(rusqlite::params_from_iter(values.iter()))?
     } else {

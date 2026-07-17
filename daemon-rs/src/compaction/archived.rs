@@ -27,16 +27,10 @@ pub(crate) fn strip_archived_text_with_retention(conn: &Connection, retention_da
 }
 pub(crate) fn prune_expired_entries(conn: &Connection) -> usize {
     let memories_deleted = conn
-        .execute(
-            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            [],
-        )
+        .execute("DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < datetime('now')", [])
         .unwrap_or(0);
     let decisions_deleted = conn
-        .execute(
-            "DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-            [],
-        )
+        .execute("DELETE FROM decisions WHERE expires_at IS NOT NULL AND expires_at < datetime('now')", [])
         .unwrap_or(0);
     let count = memories_deleted + decisions_deleted;
     if count > 0 {

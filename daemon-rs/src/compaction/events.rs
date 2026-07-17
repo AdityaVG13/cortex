@@ -3,10 +3,7 @@ use rusqlite::{params, Connection};
 pub(crate) fn rollup_old_boot_savings(conn: &Connection) -> usize {
     rollup_old_boot_savings_with_retention(conn, BOOT_SAVINGS_RETENTION_DAYS)
 }
-pub(crate) fn rollup_old_boot_savings_with_retention(
-    conn: &Connection,
-    retention_days: i64,
-) -> usize {
+pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64) -> usize {
     let retention_window = format!("-{retention_days} days");
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
     let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = conn
@@ -26,13 +23,7 @@ pub(crate) fn rollup_old_boot_savings_with_retention(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
-    let (rollup_saved, rollup_served, rollup_baseline, rollup_boots, rollup_rows): (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-    ) = conn
+    let (rollup_saved, rollup_served, rollup_baseline, rollup_boots, rollup_rows): (i64, i64, i64, i64, i64) = conn
         .query_row(
             "SELECT \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
@@ -43,15 +34,7 @@ pub(crate) fn rollup_old_boot_savings_with_retention(
              FROM events \
              WHERE type = 'boot_savings_rollup'",
             [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .unwrap_or((0, 0, 0, 0, 0));
     if old_boots <= 0 && rollup_rows <= 1 {
@@ -72,13 +55,12 @@ pub(crate) fn rollup_old_boot_savings_with_retention(
             params![retention_window, benchmark_source_pattern],
         )
         .unwrap_or(0);
-    let deleted_rollups = conn
-        .execute("DELETE FROM events WHERE type = 'boot_savings_rollup'", [])
-        .unwrap_or(0);
+    let deleted_rollups = conn.execute("DELETE FROM events WHERE type = 'boot_savings_rollup'", []).unwrap_or(0);
     if merged_boots > 0 {
-        let payload=serde_json::json!({"saved":
+        let payload = serde_json::json!({"saved":
 merged_saved,"served":merged_served,"baseline":merged_baseline,"boots":merged_boots,"retention_days":retention_days,"rolled_up_at"
-:chrono::Utc::now().to_rfc3339(),}).to_string();
+:chrono::Utc::now().to_rfc3339(),})
+        .to_string();
         let _ = conn.execute(
             "INSERT INTO events (type, data, source_agent, created_at) \
              VALUES ('boot_savings_rollup', ?1, 'compaction', datetime('now'))",
@@ -184,15 +166,12 @@ pub(crate) fn prune_old_events(conn: &Connection) -> usize {
 pub(crate) fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
     prune_old_events_with_retention_limit(conn, retention_days, None)
 }
-pub(crate) fn prune_old_events_with_retention_limit(
-    conn: &Connection,
-    retention_days: i64,
-    max_delete_rows: Option<i64>,
-) -> usize {
+pub(crate) fn prune_old_events_with_retention_limit(conn: &Connection, retention_days: i64, max_delete_rows: Option<i64>) -> usize {
     let retention_window = format!("-{retention_days} days");
     if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
-        return conn.execute(
-"DELETE FROM events \
+        return conn
+            .execute(
+                "DELETE FROM events \
                  WHERE id IN ( \
                    SELECT id \
                    FROM events \
@@ -200,8 +179,10 @@ pub(crate) fn prune_old_events_with_retention_limit(
                      AND (created_at IS NULL OR TRIM(created_at) = '' OR created_at < datetime('now', ?1)) \
                    ORDER BY id ASC \
                    LIMIT ?2 \
-                 )"
-,params![retention_window,max_rows],).unwrap_or(0);
+                 )",
+                params![retention_window, max_rows],
+            )
+            .unwrap_or(0);
     }
     conn.execute(
         "DELETE FROM events \
@@ -215,11 +196,7 @@ pub(crate) fn prune_old_events_with_retention_limit(
 pub(crate) fn prune_event_type_caps(conn: &Connection, caps: &[(&str, i64)]) -> usize {
     prune_event_type_caps_with_limit(conn, caps, None)
 }
-pub(crate) fn prune_event_type_caps_with_limit(
-    conn: &Connection,
-    caps: &[(&str, i64)],
-    max_delete_rows: Option<i64>,
-) -> usize {
+pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str, i64)], max_delete_rows: Option<i64>) -> usize {
     let mut total = 0usize;
     for (event_type, keep_rows) in caps.iter().copied() {
         if keep_rows <= 0 {
@@ -265,11 +242,7 @@ pub(crate) fn prune_event_type_caps_with_limit(
 pub(crate) fn prune_nonboot_event_overflow(conn: &Connection, keep_rows: i64) -> usize {
     prune_nonboot_event_overflow_with_limit(conn, keep_rows, None)
 }
-pub(crate) fn prune_nonboot_event_overflow_with_limit(
-    conn: &Connection,
-    keep_rows: i64,
-    max_delete_rows: Option<i64>,
-) -> usize {
+pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_rows: i64, max_delete_rows: Option<i64>) -> usize {
     if keep_rows <= 0 {
         return 0;
     }

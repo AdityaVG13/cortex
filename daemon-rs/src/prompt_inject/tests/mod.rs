@@ -4,10 +4,7 @@ use super::*;
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 fn unique_temp_dir(name: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
     std::env::temp_dir().join(format!("cortex_prompt_inject_{name}_{unique}"))
 }
 #[test]
@@ -35,33 +32,19 @@ fn parse_args_requires_file() {
 }
 #[test]
 fn parse_args_missing_agent_value_errors() {
-    let args = vec![
-        "--file".to_string(),
-        "prompt.txt".to_string(),
-        "--agent".to_string(),
-    ];
+    let args = vec!["--file".to_string(), "prompt.txt".to_string(), "--agent".to_string()];
     let err = parse_args(&args).expect_err("missing agent value should error");
     assert!(err.contains("Missing value for --agent"));
 }
 #[test]
 fn parse_args_invalid_budget_errors() {
-    let args = vec![
-        "--file".to_string(),
-        "prompt.txt".to_string(),
-        "--budget".to_string(),
-        "not-a-number".to_string(),
-    ];
+    let args = vec!["--file".to_string(), "prompt.txt".to_string(), "--budget".to_string(), "not-a-number".to_string()];
     let err = parse_args(&args).expect_err("invalid budget should error");
     assert!(err.contains("Invalid --budget"));
 }
 #[test]
 fn parse_args_rejects_unknown_flags() {
-    let args = vec![
-        "--file".to_string(),
-        "prompt.txt".to_string(),
-        "--budegt".to_string(),
-        "512".to_string(),
-    ];
+    let args = vec!["--file".to_string(), "prompt.txt".to_string(), "--budegt".to_string(), "512".to_string()];
     let err = parse_args(&args).expect_err("unknown flag should error");
     assert!(err.contains("Unknown option: --budegt"));
     assert!(err.contains(USAGE));

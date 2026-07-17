@@ -99,20 +99,17 @@ impl Default for ConflictListOptions {
 impl ConflictListOptions {
     pub(crate) fn from_query(query: ConflictListQuery) -> Result<Self, String> {
         let status = ConflictStatusFilter::parse(query.status.as_deref())?;
-        let classification=match query.classification.as_deref().map(str::
-trim).filter(|value|!value.is_empty()){Some(raw)=>Some(normalize_conflict_classification(raw).ok_or_else(||
-"Invalid classification filter. Expected AGREES, CONTRADICTS, REFINES, or UNRELATED.".to_string())?),None=>None,};
-        let conflict_id = query
-            .conflict_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+        let classification = match query.classification.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(raw) => Some(
+                normalize_conflict_classification(raw)
+                    .ok_or_else(|| "Invalid classification filter. Expected AGREES, CONTRADICTS, REFINES, or UNRELATED.".to_string())?,
+            ),
+            None => None,
+        };
+        let conflict_id = query.conflict_id.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string);
         if let Some(id) = conflict_id.as_deref() {
             if parse_conflict_id(id).is_none() {
-                return Err(
-                    "Invalid conflict id. Expected decision:<id>:<id> or <id>:<id>.".into(),
-                );
+                return Err("Invalid conflict id. Expected decision:<id>:<id> or <id>:<id>.".into());
             }
         }
         Ok(Self {
@@ -132,16 +129,8 @@ pub struct ResolutionMetadata {
     pub similarity: Option<f64>,
 }
 pub(crate) fn normalize_permission_client_id(raw: &str) -> Option<String> {
-    let before_model = raw
-        .split('(')
-        .next()
-        .unwrap_or(raw)
-        .trim()
-        .to_ascii_lowercase();
-    let normalized: String = before_model
-        .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
-        .collect();
+    let before_model = raw.split('(').next().unwrap_or(raw).trim().to_ascii_lowercase();
+    let normalized: String = before_model.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_').collect();
     if normalized.is_empty() {
         None
     } else {

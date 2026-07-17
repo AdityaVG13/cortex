@@ -29,11 +29,7 @@ pub(crate) fn mcp_resources() -> Vec<Value> {
 pub(crate) fn mcp_tool_cluster(tool_name: &str) -> &'static str {
     match tool_name {
         "cortex_boot" | "cortex_boot_audit" | "cortex_reconnect" => "session",
-        "cortex_peek"
-        | "cortex_recall"
-        | "cortex_recall_policy_explain"
-        | "cortex_semantic_recall"
-        | "cortex_unfold" => "recall",
+        "cortex_peek" | "cortex_recall" | "cortex_recall_policy_explain" | "cortex_semantic_recall" | "cortex_unfold" => "recall",
         "cortex_store"
         | "cortex_forget"
         | "cortex_resolve"
@@ -43,38 +39,24 @@ pub(crate) fn mcp_tool_cluster(tool_name: &str) -> &'static str {
         | "cortex_consensus_promote"
         | "cortex_memory_decay_run"
         | "cortex_eval_run" => "memory-governance",
-        "cortex_focus_start" | "cortex_focus_end" | "cortex_focus_status" | "cortex_diary" => {
-            "continuity"
+        "cortex_focus_start" | "cortex_focus_end" | "cortex_focus_status" | "cortex_diary" => "continuity",
+        "cortex_agent_feedback_record" | "cortex_agent_feedback_stats" | "cortex_health" | "cortex_digest" | "cortex_lastCall" => {
+            "observability"
         }
-        "cortex_agent_feedback_record"
-        | "cortex_agent_feedback_stats"
-        | "cortex_health"
-        | "cortex_digest"
-        | "cortex_lastCall" => "observability",
-        "cortex_permissions_list" | "cortex_permissions_grant" | "cortex_permissions_revoke" => {
-            "admin"
-        }
+        "cortex_permissions_list" | "cortex_permissions_grant" | "cortex_permissions_revoke" => "admin",
         _ => "other",
     }
 }
 pub(crate) fn mcp_tool_permission(tool_name: &str) -> &'static str {
-    required_permission_for_tool(tool_name)
-        .map(ClientPermission::as_str)
-        .unwrap_or("unknown")
+    required_permission_for_tool(tool_name).map(ClientPermission::as_str).unwrap_or("unknown")
 }
 pub(crate) fn tooling_capabilities_payload() -> Value {
     let mut clusters: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut permissions: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for tool in mcp_tools() {
         if let Some(name) = tool.get("name").and_then(Value::as_str) {
-            clusters
-                .entry(mcp_tool_cluster(name).to_string())
-                .or_default()
-                .push(name.to_string());
-            permissions
-                .entry(mcp_tool_permission(name).to_string())
-                .or_default()
-                .push(name.to_string());
+            clusters.entry(mcp_tool_cluster(name).to_string()).or_default().push(name.to_string());
+            permissions.entry(mcp_tool_permission(name).to_string()).or_default().push(name.to_string());
         }
     }
     let tool_count = clusters.values().map(Vec::len).sum::<usize>();
@@ -84,12 +66,23 @@ pub(crate) fn tooling_capabilities_payload() -> Value {
 "Use cortex_health before mutation-heavy workflows when daemon state is uncertain."]})
 }
 pub(crate) fn tooling_tools_payload() -> Value {
-    let tools=mcp_tools().into_iter().filter_map(|tool|{let name=tool.get("name").and_then(Value::as_str)?.to_string();let
-description=tool.get("description").and_then(Value::as_str).unwrap_or_default().to_string();let required=tool.pointer(
-"/inputSchema/required").cloned().unwrap_or_else(||json!([]));let mut parameters=tool.pointer("/inputSchema/properties").and_then(
-Value::as_object).map(|properties|properties.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();parameters.sort();Some(json!
+    let tools = mcp_tools()
+        .into_iter()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?.to_string();
+            let description = tool.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+            let required = tool.pointer("/inputSchema/required").cloned().unwrap_or_else(|| json!([]));
+            let mut parameters = tool
+                .pointer("/inputSchema/properties")
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            parameters.sort();
+            Some(json!
 ({"name":name,"cluster":mcp_tool_cluster(&name),"permission":mcp_tool_permission(&name),"description":description,"required":
-required,"parameters":parameters}))}).collect::<Vec<_>>();
+required,"parameters":parameters}))
+        })
+        .collect::<Vec<_>>();
     json!({"tools":tools,"discovery":{"fullSchemas":"Call tools/list.",
 "capabilities":"Read cortex://tooling/capabilities.","health":"Call cortex_health to confirm daemon liveness and database state."}
 ,"commonMistakes":["Use exact tool names from this catalog; aliases are not accepted.",
@@ -108,10 +101,7 @@ pub(crate) fn mcp_resource_read_result(uri: &str, payload: Value) -> Value {
 {"uri":uri,"mimeType":"application/json","text":payload.to_string()}]})
 }
 pub(crate) fn common_prefix_len(left: &str, right: &str) -> usize {
-    left.chars()
-        .zip(right.chars())
-        .take_while(|(left, right)| left == right)
-        .count()
+    left.chars().zip(right.chars()).take_while(|(left, right)| left == right).count()
 }
 pub(crate) fn tool_name_suggestions(provided: &str) -> Vec<String> {
     let needle = provided.trim().to_ascii_lowercase();
@@ -131,8 +121,7 @@ pub(crate) fn tool_name_suggestions(provided: &str) -> Vec<String> {
             } else if lower.contains(&needle) || short.contains(&needle) {
                 80
             } else {
-                let prefix =
-                    common_prefix_len(&lower, &needle).max(common_prefix_len(short, &needle));
+                let prefix = common_prefix_len(&lower, &needle).max(common_prefix_len(short, &needle));
                 if prefix >= 4 {
                     50 + prefix as i32
                 } else {
@@ -154,29 +143,16 @@ pub(crate) fn payload_token_usage(data: &Value) -> (usize, Option<i64>, Option<u
                 .or_else(|| map.get("tokenEstimate").and_then(|value| value.as_u64()))
                 .or_else(|| map.get("totalTokens").and_then(|value| value.as_u64()))
                 .or_else(|| map.get("tokensUsed").and_then(|value| value.as_u64()))
-                .or_else(|| {
-                    map.get("savings")
-                        .and_then(|value| value.get("served"))
-                        .and_then(|value| value.as_u64())
-                })
-                .unwrap_or_else(|| estimate_tokens(&data.to_string()) as u64)
-                as usize;
+                .or_else(|| map.get("savings").and_then(|value| value.get("served")).and_then(|value| value.as_u64()))
+                .unwrap_or_else(|| estimate_tokens(&data.to_string()) as u64) as usize;
             let saved = map
                 .get("saved")
                 .and_then(|value| value.as_i64())
-                .or_else(|| {
-                    map.get("savings")
-                        .and_then(|value| value.get("saved"))
-                        .and_then(|value| value.as_i64())
-                });
+                .or_else(|| map.get("savings").and_then(|value| value.get("saved")).and_then(|value| value.as_i64()));
             let budget = map
                 .get("budget")
                 .and_then(|value| value.as_u64())
-                .or_else(|| {
-                    map.get("policy")
-                        .and_then(|value| value.get("budget"))
-                        .and_then(|value| value.as_u64())
-                })
+                .or_else(|| map.get("policy").and_then(|value| value.get("budget")).and_then(|value| value.as_u64()))
                 .map(|value| value as usize);
             (used, saved, budget)
         }
@@ -189,19 +165,13 @@ pub(crate) fn token_usage_line(used: usize, saved: Option<i64>, budget: Option<u
             format!("Token usage: used {used} tokens, saved {saved} of {budget}.")
         }
         (Some(saved), Some(budget)) => {
-            format!(
-                "Token usage: used {used} tokens ({} over budget {budget}).",
-                saved.abs()
-            )
+            format!("Token usage: used {used} tokens ({} over budget {budget}).", saved.abs())
         }
         (Some(saved), None) if saved >= 0 => {
             format!("Token usage: used {used} tokens, saved {saved}.")
         }
         (Some(saved), None) => {
-            format!(
-                "Token usage: used {used} tokens ({} over budget).",
-                saved.abs()
-            )
+            format!("Token usage: used {used} tokens ({} over budget).", saved.abs())
         }
         (None, Some(budget)) => format!("Token usage: used {used} tokens (budget {budget})."),
         (None, None) => format!("Token usage: used {used} tokens."),
@@ -216,8 +186,7 @@ pub(crate) fn decorate_tool_payload_with_token_usage(data: Value) -> Value {
                 json
 !({"used":used,"saved":saved,"budget":budget})
             });
-            map.entry("tokenUsageLine".to_string())
-                .or_insert_with(|| Value::String(line));
+            map.entry("tokenUsageLine".to_string()).or_insert_with(|| Value::String(line));
             Value::Object(map)
         }
         other => {
@@ -256,12 +225,10 @@ pub(crate) fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 pub(crate) fn arg_f64(args: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter()
-        .find_map(|key| args.get(*key).and_then(|value| value.as_f64()))
+    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_f64()))
 }
 pub(crate) fn arg_i64(args: &Value, keys: &[&str]) -> Option<i64> {
-    keys.iter()
-        .find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
+    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
 }
 pub(crate) fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
     keys.iter()

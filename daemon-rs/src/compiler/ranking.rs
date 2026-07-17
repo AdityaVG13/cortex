@@ -55,11 +55,7 @@ pub(crate) fn parse_timestamp(value: Option<&str>) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|dt| dt.with_timezone(&Utc))
         .ok()
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
-                .ok()
-                .map(|dt| Utc.from_utc_datetime(&dt))
-        })
+        .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok().map(|dt| Utc.from_utc_datetime(&dt)))
 }
 pub(crate) fn recency_score(timestamp: Option<&str>, now: DateTime<Utc>) -> f64 {
     let Some(timestamp) = parse_timestamp(timestamp) else {
@@ -75,48 +71,24 @@ pub(crate) fn recency_score(timestamp: Option<&str>, now: DateTime<Utc>) -> f64 
         _ => 0.05,
     }
 }
-pub(crate) fn activity_score(
-    retrievals: i64,
-    last_accessed: Option<&str>,
-    now: DateTime<Utc>,
-) -> f64 {
+pub(crate) fn activity_score(retrievals: i64, last_accessed: Option<&str>, now: DateTime<Utc>) -> f64 {
     let retrieval_score = (retrievals.max(0) as f64 / 10.0).min(1.0);
     let access_score = recency_score(last_accessed, now);
     (retrieval_score * 0.55) + (access_score * 0.45)
 }
-pub(crate) fn rank_components_for(
-    candidate: &RankedCandidate,
-    now: DateTime<Utc>,
-) -> RankComponents {
-    let timestamp = candidate
-        .updated_at
-        .as_deref()
-        .or(candidate.created_at.as_deref());
+pub(crate) fn rank_components_for(candidate: &RankedCandidate, now: DateTime<Utc>) -> RankComponents {
+    let timestamp = candidate.updated_at.as_deref().or(candidate.created_at.as_deref());
     let class_score = retention_class_score(&candidate.retention_class);
     let recency_score = recency_score(timestamp, now);
     let relevance_score = clamp01(candidate.relevance);
-    let activity_score = activity_score(
-        candidate.retrievals,
-        candidate.last_accessed.as_deref(),
-        now,
-    );
+    let activity_score = activity_score(candidate.retrievals, candidate.last_accessed.as_deref(), now);
     let total_score = (class_score * RANK_WEIGHT_CLASS)
         + (recency_score * RANK_WEIGHT_RECENCY)
         + (relevance_score * RANK_WEIGHT_RELEVANCE)
         + (activity_score * RANK_WEIGHT_ACTIVITY);
-    RankComponents {
-        class_score,
-        recency_score,
-        relevance_score,
-        activity_score,
-        total_score,
-    }
+    RankComponents { class_score, recency_score, relevance_score, activity_score, total_score }
 }
-pub(crate) fn rank_candidates(
-    mut candidates: Vec<RankedCandidate>,
-    top_n: usize,
-    now: DateTime<Utc>,
-) -> Vec<RankedCandidate> {
+pub(crate) fn rank_candidates(mut candidates: Vec<RankedCandidate>, top_n: usize, now: DateTime<Utc>) -> Vec<RankedCandidate> {
     for candidate in &mut candidates {
         candidate.components = rank_components_for(candidate, now);
     }
@@ -150,27 +122,13 @@ pub(crate) struct ContextItem {
 impl ContextItem {
     pub(crate) fn new(name: &str, text: String, priority: f64) -> Self {
         let tokens = estimate_tokens(&text);
-        let utility = if tokens > 0 {
-            priority / (tokens as f64)
-        } else {
-            0.0
-        };
-        Self {
-            name: name.to_string(),
-            text,
-            tokens,
-            priority,
-            utility,
-            rank_audit: None,
-        }
+        let utility = if tokens > 0 { priority / (tokens as f64) } else { 0.0 };
+        Self { name: name.to_string(), text, tokens, priority, utility, rank_audit: None }
     }
     pub(crate) fn from_ranked_candidate(candidate: RankedCandidate) -> Self {
         let title = candidate.title.chars().take(160).collect::<String>();
         let body = candidate.body.chars().take(420).collect::<String>();
-        let text = format!(
-            "## Ranked {} Context\n- {}: {}",
-            candidate.source_kind, title, body
-        );
+        let text = format!("## Ranked {} Context\n- {}: {}", candidate.source_kind, title, body);
         let mut item = Self::new(
             &format!("ranked:{}:{}", candidate.source_kind, candidate.source_id),
             text,
@@ -203,10 +161,7 @@ pub(crate) struct SourceTokenBounds {
 impl SourceTokenBounds {
     pub(crate) fn new(min: usize, max: usize) -> Self {
         let min = min.max(1);
-        Self {
-            min,
-            max: max.max(min),
-        }
+        Self { min, max: max.max(min) }
     }
 }
 pub(crate) struct PackedContext {

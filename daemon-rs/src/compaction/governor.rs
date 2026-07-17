@@ -66,10 +66,7 @@ pub fn should_run_compaction_governor(db_size_bytes: i64, freelist_pages: i64) -
     should_run_compaction_governor_with_pressure(db_size_bytes, freelist_pages, 0, 0)
 }
 pub(crate) fn should_run_compaction_governor_with_pressure(
-    db_size_bytes: i64,
-    freelist_pages: i64,
-    nonboot_event_rows: i64,
-    fts_segment_rows: i64,
+    db_size_bytes: i64, freelist_pages: i64, nonboot_event_rows: i64, fts_segment_rows: i64,
 ) -> bool {
     db_size_bytes >= STORAGE_SOFT_LIMIT_BYTES
         || freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES
@@ -83,11 +80,7 @@ pub fn fts_segment_row_total(conn: &Connection) -> i64 {
         if !table_exists(conn, table) {
             continue;
         }
-        let n: i64 = conn
-            .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
-                row.get(0)
-            })
-            .unwrap_or(0);
+        let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| row.get(0)).unwrap_or(0);
         total += n;
     }
     total
@@ -98,53 +91,28 @@ pub fn run_compaction_governor(conn: &Connection) -> Option<CompactionResult> {
 pub fn run_compaction_governor_startup(conn: &Connection) -> Option<CompactionResult> {
     run_compaction_governor_with_options(conn, false)
 }
-pub(crate) fn run_compaction_governor_with_options(
-    conn: &Connection,
-    allow_vacuum: bool,
-) -> Option<CompactionResult> {
+pub(crate) fn run_compaction_governor_with_options(conn: &Connection, allow_vacuum: bool) -> Option<CompactionResult> {
     let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
     let before = db_size_bytes(conn);
     let freelist_pages = freelist_count(conn);
     let nonboot_event_rows_before = non_boot_event_count(conn);
     let fts_segment_rows_before = fts_segment_row_total(conn);
     let pressure_before = classify_storage_pressure(before);
-    if !should_run_compaction_governor_with_pressure(
-        before,
-        freelist_pages,
-        nonboot_event_rows_before,
-        fts_segment_rows_before,
-    ) {
+    if !should_run_compaction_governor_with_pressure(before, freelist_pages, nonboot_event_rows_before, fts_segment_rows_before) {
         return None;
     }
     let mut result = run_compaction_with_options(conn, allow_vacuum);
-    if before >= STORAGE_HARD_LIMIT_BYTES
-        || nonboot_event_rows_before >= EVENT_NONBOOT_HARD_LIMIT_ROWS
-    {
-        result.events_pruned +=
-            rollup_old_boot_savings_with_retention(conn, AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS);
-        result.events_pruned +=
-            rollup_old_savings_events(conn, AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
-        result.events_pruned +=
-            prune_old_event_savings_rollups(conn, AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
-        result.events_pruned += prune_old_events_with_retention_limit(
-            conn,
-            AGGRESSIVE_EVENT_RETENTION_DAYS,
-            startup_prune_limit,
-        );
-        result.events_pruned +=
-            prune_event_type_caps_with_limit(conn, EVENT_TYPE_HARD_CAPS, startup_prune_limit);
-        result.events_pruned += prune_nonboot_event_overflow_with_limit(
-            conn,
-            EVENT_NONBOOT_HARD_KEEP_ROWS,
-            startup_prune_limit,
-        );
-        result.benchmark_pruned +=
-            prune_old_benchmark_artifacts(conn, AGGRESSIVE_BENCHMARK_RETENTION_DAYS, allow_vacuum);
-        result.archived_text_stripped +=
-            strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
+    if before >= STORAGE_HARD_LIMIT_BYTES || nonboot_event_rows_before >= EVENT_NONBOOT_HARD_LIMIT_ROWS {
+        result.events_pruned += rollup_old_boot_savings_with_retention(conn, AGGRESSIVE_BOOT_SAVINGS_RETENTION_DAYS);
+        result.events_pruned += rollup_old_savings_events(conn, AGGRESSIVE_SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
+        result.events_pruned += prune_old_event_savings_rollups(conn, AGGRESSIVE_EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
+        result.events_pruned += prune_old_events_with_retention_limit(conn, AGGRESSIVE_EVENT_RETENTION_DAYS, startup_prune_limit);
+        result.events_pruned += prune_event_type_caps_with_limit(conn, EVENT_TYPE_HARD_CAPS, startup_prune_limit);
+        result.events_pruned += prune_nonboot_event_overflow_with_limit(conn, EVENT_NONBOOT_HARD_KEEP_ROWS, startup_prune_limit);
+        result.benchmark_pruned += prune_old_benchmark_artifacts(conn, AGGRESSIVE_BENCHMARK_RETENTION_DAYS, allow_vacuum);
+        result.archived_text_stripped += strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
         result.cluster_members_pruned += prune_orphan_cluster_members(conn);
-        result.feedback_aggregated +=
-            aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
+        result.feedback_aggregated += aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
         let _ = if allow_vacuum {
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
         } else {
@@ -155,38 +123,31 @@ pub(crate) fn run_compaction_governor_with_options(
     let pressure_after = classify_storage_pressure(result.bytes_after);
     let fts_segment_rows_after = fts_segment_row_total(conn);
     eprintln!(
-"[compaction] governor: pressure {} -> {}, size {}MB -> {}MB, nonboot_events {} -> {}, fts_segments {} -> {}",pressure_before,
-pressure_after,bytes_to_mb(result.bytes_before),bytes_to_mb(result.bytes_after),nonboot_event_rows_before,non_boot_event_count(
-conn),fts_segment_rows_before,fts_segment_rows_after,);
+        "[compaction] governor: pressure {} -> {}, size {}MB -> {}MB, nonboot_events {} -> {}, fts_segments {} -> {}",
+        pressure_before,
+        pressure_after,
+        bytes_to_mb(result.bytes_before),
+        bytes_to_mb(result.bytes_after),
+        nonboot_event_rows_before,
+        non_boot_event_count(conn),
+        fts_segment_rows_before,
+        fts_segment_rows_after,
+    );
     Some(result)
 }
 pub fn run_compaction(conn: &Connection) -> CompactionResult {
     run_compaction_with_options(conn, true)
 }
-pub(crate) fn run_compaction_with_options(
-    conn: &Connection,
-    allow_vacuum: bool,
-) -> CompactionResult {
+pub(crate) fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool) -> CompactionResult {
     let startup_prune_limit = (!allow_vacuum).then_some(STARTUP_EVENT_PRUNE_BATCH_ROWS);
-    let mut result = CompactionResult {
-        bytes_before: db_size_bytes(conn),
-        ..CompactionResult::default()
-    };
+    let mut result = CompactionResult { bytes_before: db_size_bytes(conn), ..CompactionResult::default() };
     result.events_pruned = rollup_old_boot_savings(conn);
     result.events_pruned += rollup_old_savings_events(conn, SAVINGS_EVENT_ROLLUP_RETENTION_DAYS);
-    result.events_pruned +=
-        prune_old_event_savings_rollups(conn, EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
-    result.events_pruned +=
-        prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, startup_prune_limit);
-    result.events_pruned +=
-        prune_event_type_caps_with_limit(conn, EVENT_TYPE_SOFT_CAPS, startup_prune_limit);
-    result.events_pruned += prune_nonboot_event_overflow_with_limit(
-        conn,
-        EVENT_NONBOOT_SOFT_KEEP_ROWS,
-        startup_prune_limit,
-    );
-    result.benchmark_pruned =
-        prune_old_benchmark_artifacts(conn, BENCHMARK_RETENTION_DAYS, allow_vacuum);
+    result.events_pruned += prune_old_event_savings_rollups(conn, EVENT_SAVINGS_ROLLUP_RETENTION_DAYS);
+    result.events_pruned += prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, startup_prune_limit);
+    result.events_pruned += prune_event_type_caps_with_limit(conn, EVENT_TYPE_SOFT_CAPS, startup_prune_limit);
+    result.events_pruned += prune_nonboot_event_overflow_with_limit(conn, EVENT_NONBOOT_SOFT_KEEP_ROWS, startup_prune_limit);
+    result.benchmark_pruned = prune_old_benchmark_artifacts(conn, BENCHMARK_RETENTION_DAYS, allow_vacuum);
     result.archived_text_stripped = strip_archived_text(conn);
     result.expired_pruned = prune_expired_entries(conn);
     result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
@@ -241,51 +202,33 @@ pub(crate) fn optimize_fts_indexes(conn: &Connection) -> bool {
     any
 }
 pub(crate) fn table_exists(conn: &Connection, name: &str) -> bool {
-    conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1",
-        params![name],
-        |_| Ok(()),
-    )
-    .is_ok()
+    conn.query_row("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1", params![name], |_| Ok(()))
+        .is_ok()
 }
 pub(crate) fn prune_stale_embeddings(conn: &Connection) -> usize {
     let active = crate::embeddings::selected_model_key().to_ascii_lowercase();
     let active_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM embeddings WHERE LOWER(model) = ?1",
-            params![active],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM embeddings WHERE LOWER(model) = ?1", params![active], |row| row.get(0))
         .unwrap_or(0);
     if active_count < 50 {
         return 0;
     }
-    conn.execute(
-        "DELETE FROM embeddings WHERE model IS NULL OR LOWER(model) != ?1",
-        params![active],
-    )
-    .unwrap_or(0)
+    conn.execute("DELETE FROM embeddings WHERE model IS NULL OR LOWER(model) != ?1", params![active])
+        .unwrap_or(0)
 }
 pub(crate) fn prune_singleton_co_occurrence(conn: &Connection) -> usize {
     if !table_exists(conn, "co_occurrence") {
         return 0;
     }
-    conn.execute("DELETE FROM co_occurrence WHERE \"count\" <= 1", [])
-        .unwrap_or(0)
+    conn.execute("DELETE FROM co_occurrence WHERE \"count\" <= 1", []).unwrap_or(0)
 }
 pub(crate) const PQ8_MIGRATION_BATCH: usize = 1024;
 pub(crate) fn migrate_legacy_embeddings_to_pq8(conn: &Connection) -> usize {
     let from_embeddings = migrate_legacy_blob_column_to_pq8(conn, "embeddings", "vector", "id");
-    let from_clusters =
-        migrate_legacy_blob_column_to_pq8(conn, "memory_clusters", "centroid", "id");
+    let from_clusters = migrate_legacy_blob_column_to_pq8(conn, "memory_clusters", "centroid", "id");
     from_embeddings + from_clusters
 }
-pub(crate) fn migrate_legacy_blob_column_to_pq8(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    pk_column: &str,
-) -> usize {
+pub(crate) fn migrate_legacy_blob_column_to_pq8(conn: &Connection, table: &str, column: &str, pk_column: &str) -> usize {
     if !table_exists(conn, table) {
         return 0;
     }
@@ -306,14 +249,10 @@ pub(crate) fn migrate_legacy_blob_column_to_pq8(
             return 0;
         }
     };
-    let magic_signature = vec![
-        crate::embeddings::PQ8_MAGIC_BYTE,
-        crate::embeddings::PQ8_FORMAT_VERSION,
-    ];
-    let candidates: Vec<(i64, Vec<u8>)> = match stmt.query_map(
-        params![magic_signature, PQ8_MIGRATION_BATCH as i64],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
-    ) {
+    let magic_signature = vec![crate::embeddings::PQ8_MAGIC_BYTE, crate::embeddings::PQ8_FORMAT_VERSION];
+    let candidates: Vec<(i64, Vec<u8>)> = match stmt
+        .query_map(params![magic_signature, PQ8_MIGRATION_BATCH as i64], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))
+    {
         Ok(rows) => rows.flatten().collect(),
         Err(err) => {
             eprintln!("[compaction] PQ8 migration query failed for {table}.{column}: {err}");
@@ -324,12 +263,7 @@ pub(crate) fn migrate_legacy_blob_column_to_pq8(
     if candidates.is_empty() {
         return 0;
     }
-    let update_sql = format!(
-        "UPDATE \"{tbl}\" SET \"{col}\" = ?1 WHERE \"{pk}\" = ?2",
-        pk = pk_column,
-        col = column,
-        tbl = table,
-    );
+    let update_sql = format!("UPDATE \"{tbl}\" SET \"{col}\" = ?1 WHERE \"{pk}\" = ?2", pk = pk_column, col = column, tbl = table,);
     let mut migrated = 0usize;
     for (id, blob) in candidates {
         let decoded = crate::embeddings::legacy_f32_blob_to_vector(&blob);
@@ -340,9 +274,7 @@ pub(crate) fn migrate_legacy_blob_column_to_pq8(
         match conn.execute(&update_sql, params![pq8, id]) {
             Ok(_) => migrated += 1,
             Err(err) => {
-                eprintln!(
-                    "[compaction] PQ8 migration update failed for {table}.{column} id={id}: {err}"
-                );
+                eprintln!("[compaction] PQ8 migration update failed for {table}.{column} id={id}: {err}");
             }
         }
     }

@@ -15,21 +15,14 @@ pub(crate) enum BootPackingMode {
     ScoreAdaptive,
 }
 pub(crate) fn boot_packing_mode() -> BootPackingMode {
-    match env::var("CORTEX_BOOT_PACKING_MODE")
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    match env::var("CORTEX_BOOT_PACKING_MODE").unwrap_or_default().trim().to_ascii_lowercase().as_str() {
         "legacy" | "greedy" | "v0.5" | "v0.5.0" => BootPackingMode::LegacyGreedy,
         "adaptive" | "score-adaptive" | "score_adaptive" => BootPackingMode::ScoreAdaptive,
         _ => BootPackingMode::Auto,
     }
 }
 pub(crate) fn detect_identity() -> String {
-    let user = env::var("USERNAME")
-        .or_else(|_| env::var("USER"))
-        .unwrap_or_else(|_| "cortex-user".to_string());
+    let user = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_else(|_| "cortex-user".to_string());
     let platform = match env::consts::OS {
         "windows" => "Windows",
         "macos" => "macOS",

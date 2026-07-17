@@ -5,18 +5,9 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::broadcast;
 pub type BrainFiringSender = Option<broadcast::Sender<BrainFiringEvent>>;
-fn emit_brain(
-    sender: &BrainFiringSender,
-    kind: BrainKind,
-    payload: serde_json::Value,
-    owner_id: Option<i64>,
-) {
+fn emit_brain(sender: &BrainFiringSender, kind: BrainKind, payload: serde_json::Value, owner_id: Option<i64>) {
     if let Some(tx) = sender {
-        let _ = tx.send(BrainFiringEvent {
-            kind,
-            payload,
-            owner_id,
-        });
+        let _ = tx.send(BrainFiringEvent { kind, payload, owner_id });
     }
 }
 const CLUSTER_THRESHOLD: f32 = 0.70;
@@ -27,8 +18,7 @@ const DEDUP_JACCARD: f64 = 0.5;
 pub const CRYSTAL_RELEVANCE_BOOST: f64 = 1.15;
 fn is_missing_team_visibility_columns(err: &rusqlite::Error) -> bool {
     let normalized = err.to_string().to_ascii_lowercase();
-    normalized.contains("no such column")
-        && (normalized.contains("owner_id") || normalized.contains("visibility"))
+    normalized.contains("no such column") && (normalized.contains("owner_id") || normalized.contains("visibility"))
 }
 #[derive(Clone)]
 struct EmbeddedEntry {
@@ -47,10 +37,7 @@ pub struct CrystallizeResult {
     pub entries_consolidated: usize,
 }
 pub fn run_crystallize_pass_with_brain(
-    conn: &Connection,
-    engine: Option<&EmbeddingEngine>,
-    owner_id: Option<i64>,
-    brain: &BrainFiringSender,
+    conn: &Connection, engine: Option<&EmbeddingEngine>, owner_id: Option<i64>, brain: &BrainFiringSender,
 ) -> CrystallizeResult {
     let mut result = CrystallizeResult {
         clusters_found: 0,
@@ -69,17 +56,11 @@ pub fn run_crystallize_pass_with_brain(
         return result;
     }
     for cluster in &clusters {
-        let member_entries: Vec<&EmbeddedEntry> =
-            cluster.iter().map(|&idx| &entries[idx]).collect();
+        let member_entries: Vec<&EmbeddedEntry> = cluster.iter().map(|&idx| &entries[idx]).collect();
         result.entries_consolidated += member_entries.len();
         let label = generate_cluster_label(&member_entries);
         let consolidated_text = synthesize_crystal(&member_entries);
-        let centroid = compute_centroid(
-            &member_entries
-                .iter()
-                .map(|e| e.vector.as_slice())
-                .collect::<Vec<_>>(),
-        );
+        let centroid = compute_centroid(&member_entries.iter().map(|e| e.vector.as_slice()).collect::<Vec<_>>());
         let centroid_blob = embeddings::vector_to_blob(&centroid);
         let existing_id = find_existing_crystal(conn, &label);
         match existing_id {
@@ -87,12 +68,7 @@ pub fn run_crystallize_pass_with_brain(
                 let _ = conn.execute(
                     "UPDATE memory_clusters SET consolidated_text = ?1, centroid = ?2, \
                      member_count = ?3, updated_at = datetime('now') WHERE id = ?4",
-                    params![
-                        consolidated_text,
-                        centroid_blob,
-                        member_entries.len() as i64,
-                        crystal_id
-                    ],
+                    params![consolidated_text, centroid_blob, member_entries.len() as i64, crystal_id],
                 );
                 update_cluster_members(conn, crystal_id, &member_entries);
                 for member in &member_entries {
@@ -115,15 +91,17 @@ format!("{}-{}",member.target_type,member.target_id),}),
             }
             None => {
                 if let Some(oid) = owner_id {
-                    let _=conn.execute(
-"INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, owner_id, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))"
-,params![label,centroid_blob,consolidated_text,member_entries.len()as i64,oid],);
+                    let _ = conn.execute(
+                        "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, owner_id, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), datetime('now'))",
+                        params![label, centroid_blob, consolidated_text, member_entries.len() as i64, oid],
+                    );
                 } else {
-                    let _=conn.execute(
-"INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, created_at, updated_at) \
-                         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))"
-,params![label,centroid_blob,consolidated_text,member_entries.len()as i64],);
+                    let _ = conn.execute(
+                        "INSERT INTO memory_clusters (label, centroid, consolidated_text, member_count, created_at, updated_at) \
+                         VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+                        params![label, centroid_blob, consolidated_text, member_entries.len() as i64],
+                    );
                 }
                 let crystal_id = conn.last_insert_rowid();
                 update_cluster_members(conn, crystal_id, &member_entries);
@@ -146,10 +124,11 @@ format!("{}-{}",member.target_type,member.target_id),}),
                     if let Some(vec) = eng.embed(&consolidated_text) {
                         let blob = embeddings::vector_to_blob(&vec);
                         let model_key = eng.model_key();
-                        let _=conn.execute(
-"INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
-                             VALUES ('crystal', ?1, ?2, ?3)"
-,params![crystal_id,blob,model_key],);
+                        let _ = conn.execute(
+                            "INSERT OR REPLACE INTO embeddings (target_type, target_id, vector, model) \
+                             VALUES ('crystal', ?1, ?2, ?3)",
+                            params![crystal_id, blob, model_key],
+                        );
                     }
                 }
                 result.crystals_created += 1;
@@ -157,8 +136,10 @@ format!("{}-{}",member.target_type,member.target_id),}),
         }
     }
     if result.crystals_created > 0 || result.crystals_updated > 0 {
-        eprintln!("[crystallize] Pass complete: {} clusters, {} created, {} updated, {} entries consolidated",result.clusters_found,result
-.crystals_created,result.crystals_updated,result.entries_consolidated);
+        eprintln!(
+            "[crystallize] Pass complete: {} clusters, {} created, {} updated, {} entries consolidated",
+            result.clusters_found, result.crystals_created, result.crystals_updated, result.entries_consolidated
+        );
     }
     result
 }
@@ -171,9 +152,7 @@ fn load_embedded_entries(conn: &Connection) -> Vec<EmbeddedEntry> {
          WHERE m.status = 'active'",
     ) {
         let rows: Vec<(i64, Vec<u8>, String, Option<String>)> = stmt
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .into_iter()
             .flatten()
             .flatten()
@@ -195,9 +174,7 @@ fn load_embedded_entries(conn: &Connection) -> Vec<EmbeddedEntry> {
          WHERE d.status = 'active'",
     ) {
         let rows: Vec<(i64, Vec<u8>, String, Option<String>)> = stmt
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .into_iter()
             .flatten()
             .flatten()
@@ -292,12 +269,7 @@ const SIGNAL_WORDS: &[&str] = &[
 fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
     let mut candidates: Vec<(String, f64)> = Vec::new();
     for entry in members {
-        let sentences: Vec<&str> = entry
-            .text
-            .split(['.', '\n'])
-            .map(|s| s.trim())
-            .filter(|s| s.len() > 10)
-            .collect();
+        let sentences: Vec<&str> = entry.text.split(['.', '\n']).map(|s| s.trim()).filter(|s| s.len() > 10).collect();
         if sentences.is_empty() {
             let trunc: String = entry.text.chars().take(80).collect();
             candidates.push((trunc, 1.0));
@@ -308,16 +280,8 @@ fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
         for sentence in &sentences {
             let lower = sentence.to_lowercase();
             let word_count = lower.split_whitespace().count().max(1) as f64;
-            let signal_count = SIGNAL_WORDS
-                .iter()
-                .filter(|kw| lower.contains(**kw))
-                .count() as f64;
-            let score = signal_count / word_count
-                + if sentence == sentences.first().unwrap() {
-                    0.1
-                } else {
-                    0.0
-                };
+            let signal_count = SIGNAL_WORDS.iter().filter(|kw| lower.contains(**kw)).count() as f64;
+            let score = signal_count / word_count + if sentence == sentences.first().unwrap() { 0.1 } else { 0.0 };
             if score > best_score {
                 best_score = score;
                 best_sentence = sentence.to_string();
@@ -331,9 +295,7 @@ fn synthesize_crystal(members: &[&EmbeddedEntry]) -> String {
         if kept.len() >= MAX_CRYSTAL_SENTENCES {
             break;
         }
-        let dominated = kept
-            .iter()
-            .any(|existing| jaccard_words(existing, sentence) > DEDUP_JACCARD);
+        let dominated = kept.iter().any(|existing| jaccard_words(existing, sentence) > DEDUP_JACCARD);
         if !dominated {
             kept.push(sentence.clone());
         }
@@ -366,14 +328,11 @@ fn jaccard_words(a: &str, b: &str) -> f64 {
 }
 fn generate_cluster_label(members: &[&EmbeddedEntry]) -> String {
     let stop_words: HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
-        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about", "like",
-        "through", "after", "over", "between", "out", "up", "and", "but", "or", "not", "no", "if",
-        "then", "than", "that", "this", "it", "its", "all", "each", "every", "both", "few", "more",
-        "most", "other", "some", "such", "only", "own", "same", "so", "too", "very", "just",
-        "because", "when", "where", "how", "what", "which", "who", "whom", "why", "use", "using",
-        "used",
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would",
+        "could", "should", "may", "might", "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
+        "about", "like", "through", "after", "over", "between", "out", "up", "and", "but", "or", "not", "no", "if", "then", "than", "that",
+        "this", "it", "its", "all", "each", "every", "both", "few", "more", "most", "other", "some", "such", "only", "own", "same", "so",
+        "too", "very", "just", "because", "when", "where", "how", "what", "which", "who", "whom", "why", "use", "using", "used",
     ]
     .iter()
     .cloned()
@@ -382,11 +341,7 @@ fn generate_cluster_label(members: &[&EmbeddedEntry]) -> String {
     let mut doc_freq: HashMap<String, usize> = HashMap::new();
     for entry in members {
         let mut seen_in_doc: HashSet<String> = HashSet::new();
-        for word in entry
-            .text
-            .to_lowercase()
-            .split(|c: char| !c.is_alphanumeric())
-        {
+        for word in entry.text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
             let w = word.trim();
             if w.len() < 3 || stop_words.contains(w) {
                 continue;
@@ -419,62 +374,39 @@ fn generate_cluster_label(members: &[&EmbeddedEntry]) -> String {
     }
 }
 fn find_existing_crystal(conn: &Connection, label: &str) -> Option<i64> {
-    conn.query_row(
-        "SELECT id FROM memory_clusters WHERE label = ?1",
-        params![label],
-        |row| row.get(0),
-    )
-    .ok()
+    conn.query_row("SELECT id FROM memory_clusters WHERE label = ?1", params![label], |row| row.get(0))
+        .ok()
 }
 fn update_cluster_members(conn: &Connection, crystal_id: i64, members: &[&EmbeddedEntry]) {
-    let _ = conn.execute(
-        "DELETE FROM cluster_members WHERE cluster_id = ?1",
-        params![crystal_id],
-    );
+    let _ = conn.execute("DELETE FROM cluster_members WHERE cluster_id = ?1", params![crystal_id]);
     for entry in members {
-        let _=conn.execute(
-"INSERT OR IGNORE INTO cluster_members (cluster_id, target_type, target_id, similarity) \
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO cluster_members (cluster_id, target_type, target_id, similarity) \
              VALUES (?1, ?2, ?3, ?4)",
-params![crystal_id,entry.target_type,entry.target_id,1.0],);
+            params![crystal_id, entry.target_type, entry.target_id, 1.0],
+        );
     }
 }
 #[allow(clippy::type_complexity)]
 pub fn search_crystals_filtered(
-    conn: &Connection,
-    query_vec: &[f32],
-    limit: usize,
-    caller_id: Option<i64>,
-    team_mode: bool,
+    conn: &Connection, query_vec: &[f32], limit: usize, caller_id: Option<i64>, team_mode: bool,
 ) -> Vec<(i64, String, String, f64)> {
-    let query_rows = |sql: &str,
-                      with_visibility: bool|
-     -> Result<
-        Vec<(i64, Vec<u8>, String, String, Option<i64>, Option<String>)>,
-        rusqlite::Error,
-    > {
-        let mut stmt = conn.prepare(sql)?;
-        let mapped = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                if with_visibility {
-                    row.get::<_, Option<i64>>(4)?
-                } else {
-                    None
-                },
-                if with_visibility {
-                    row.get::<_, Option<String>>(5)?
-                } else {
-                    None
-                },
-            ))
-        })?;
-        Ok(mapped.flatten().collect())
-    };
-    let sql_with_visibility =
-        "SELECT mc.id, e.vector, mc.label, mc.consolidated_text, mc.owner_id, mc.visibility \
+    let query_rows =
+        |sql: &str, with_visibility: bool| -> Result<Vec<(i64, Vec<u8>, String, String, Option<i64>, Option<String>)>, rusqlite::Error> {
+            let mut stmt = conn.prepare(sql)?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    if with_visibility { row.get::<_, Option<i64>>(4)? } else { None },
+                    if with_visibility { row.get::<_, Option<String>>(5)? } else { None },
+                ))
+            })?;
+            Ok(mapped.flatten().collect())
+        };
+    let sql_with_visibility = "SELECT mc.id, e.vector, mc.label, mc.consolidated_text, mc.owner_id, mc.visibility \
          FROM embeddings e \
          JOIN memory_clusters mc ON e.target_type = 'crystal' AND e.target_id = mc.id";
     let sql_legacy = "SELECT mc.id, e.vector, mc.label, mc.consolidated_text \
@@ -482,9 +414,7 @@ pub fn search_crystals_filtered(
          JOIN memory_clusters mc ON e.target_type = 'crystal' AND e.target_id = mc.id";
     let rows = match query_rows(sql_with_visibility, true) {
         Ok(rows) => rows,
-        Err(err) if is_missing_team_visibility_columns(&err) => {
-            query_rows(sql_legacy, false).unwrap_or_default()
-        }
+        Err(err) if is_missing_team_visibility_columns(&err) => query_rows(sql_legacy, false).unwrap_or_default(),
         Err(_) => Vec::new(),
     };
     let mut results: Vec<(i64, String, String, f64)> = rows
@@ -499,9 +429,7 @@ pub fn search_crystals_filtered(
                     Some(o) => o,
                     None => return None,
                 };
-                if owner != caller
-                    && !matches!(visibility.as_deref(), Some("shared") | Some("team"))
-                {
+                if owner != caller && !matches!(visibility.as_deref(), Some("shared") | Some("team")) {
                     return None;
                 }
             }
@@ -536,11 +464,18 @@ pub fn unfold_crystal(conn: &Connection, crystal_id: i64) -> Vec<String> {
 }
 pub fn list_crystals(conn: &Connection) -> Vec<serde_json::Value> {
     conn.prepare(
-"SELECT id, label, consolidated_text, member_count, created_at, updated_at \
-         FROM memory_clusters ORDER BY updated_at DESC"
-,).and_then(|mut stmt|{let rows=stmt.query_map([],|row|{Ok(serde_json::json!({"id":row.get::<_,i64>(0)?,"label":row.get::<_,String
+        "SELECT id, label, consolidated_text, member_count, created_at, updated_at \
+         FROM memory_clusters ORDER BY updated_at DESC",
+    )
+    .and_then(|mut stmt| {
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({"id":row.get::<_,i64>(0)?,"label":row.get::<_,String
 >(1)?,"text":row.get::<_,String>(2)?,"members":row.get::<_,i64>(3)?,"created":row.get::<_,String>(4)?,"updated":row.get::<_,String
->(5)?,}))})?;Ok(rows.flatten().collect())}).unwrap_or_default()
+>(5)?,}))
+        })?;
+        Ok(rows.flatten().collect())
+    })
+    .unwrap_or_default()
 }
 #[cfg(test)]
 mod tests;

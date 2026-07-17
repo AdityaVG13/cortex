@@ -37,8 +37,7 @@ fn status_docs_path() -> &'static str {
 fn status_start_repair() -> StatusRepair {
     StatusRepair {
         kind: "start_local_runtime",
-        label: "Open Cortex Control Center, or run `cortex serve` for CLI-only local mode."
-            .to_string(),
+        label: "Open Cortex Control Center, or run `cortex serve` for CLI-only local mode.".to_string(),
         command: Some("cortex serve".to_string()),
         docs: status_docs_path(),
     }
@@ -54,9 +53,7 @@ fn status_wait_repair() -> StatusRepair {
 fn status_identity_repair() -> StatusRepair {
     StatusRepair {
         kind: "repair_runtime_identity",
-        label:
-            "Stop the other process or switch to the matching CORTEX_HOME/CORTEX_PORT, then retry."
-                .to_string(),
+        label: "Stop the other process or switch to the matching CORTEX_HOME/CORTEX_PORT, then retry.".to_string(),
         command: Some("cortex status --json".to_string()),
         docs: "Info/startup-matrix-troubleshooting.md",
     }
@@ -72,16 +69,19 @@ fn status_doctor_repair() -> StatusRepair {
 fn status_setup_repair() -> StatusRepair {
     StatusRepair {
         kind: "run_setup",
-        label: "Run `cortex setup`, then start Cortex from Control Center or `cortex serve`."
-            .to_string(),
+        label: "Run `cortex setup`, then start Cortex from Control Center or `cortex serve`.".to_string(),
         command: Some("cortex setup".to_string()),
         docs: status_docs_path(),
     }
 }
 fn status_connect_next_action() -> StatusRepair {
-    StatusRepair{kind:"connect_tool_or_smoke",label:
-"Connect an AI tool, then store and recall one memory; CLI users can start with `cortex boot --agent smoke-test --json`.".
-to_string(),command:Some("cortex boot --agent smoke-test --json".to_string()),docs:status_docs_path(),}
+    StatusRepair {
+        kind: "connect_tool_or_smoke",
+        label: "Connect an AI tool, then store and recall one memory; CLI users can start with `cortex boot --agent smoke-test --json`."
+            .to_string(),
+        command: Some("cortex boot --agent smoke-test --json".to_string()),
+        docs: status_docs_path(),
+    }
 }
 fn status_repair_json(repair: &StatusRepair) -> Value {
     json!({"kind":repair.kind,"label":repair.label,"command":repair.command,"docs":repair.docs})
@@ -102,10 +102,7 @@ fn compact_status_detail(value: &str) -> String {
     out
 }
 pub(crate) fn build_status_report(
-    paths: &auth::CortexPaths,
-    runtime_probe: StatusRuntimeProbe,
-    token_exists: bool,
-    db_exists: bool,
+    paths: &auth::CortexPaths, runtime_probe: StatusRuntimeProbe, token_exists: bool, db_exists: bool,
 ) -> StatusReport {
     let runtime_base_url = transport::local_http_base_url(paths);
     let (mut status, summary, runtime_check, mut next_action) = match runtime_probe {
@@ -114,12 +111,7 @@ pub(crate) fn build_status_report(
             (
                 "ready",
                 "Cortex memory is ready for local AI tools.".to_string(),
-                StatusCheck {
-                    name: "runtime_identity",
-                    status: "ok",
-                    detail,
-                    repair: None,
-                },
+                StatusCheck { name: "runtime_identity", status: "ok", detail, repair: None },
                 next,
             )
         }
@@ -128,12 +120,7 @@ pub(crate) fn build_status_report(
             (
                 "needs_action",
                 "Cortex is starting but is not ready yet.".to_string(),
-                StatusCheck {
-                    name: "runtime_identity",
-                    status: "warn",
-                    detail,
-                    repair: Some(repair.clone()),
-                },
+                StatusCheck { name: "runtime_identity", status: "warn", detail, repair: Some(repair.clone()) },
                 repair,
             )
         }
@@ -141,14 +128,8 @@ pub(crate) fn build_status_report(
             let repair = status_identity_repair();
             (
                 "error",
-                "A Cortex-like service answered, but it is not the expected local runtime."
-                    .to_string(),
-                StatusCheck {
-                    name: "runtime_identity",
-                    status: "fail",
-                    detail,
-                    repair: Some(repair.clone()),
-                },
+                "A Cortex-like service answered, but it is not the expected local runtime.".to_string(),
+                StatusCheck { name: "runtime_identity", status: "fail", detail, repair: Some(repair.clone()) },
                 repair,
             )
         }
@@ -157,12 +138,7 @@ pub(crate) fn build_status_report(
             (
                 "needs_action",
                 "No ready Cortex runtime answered the local readiness probe.".to_string(),
-                StatusCheck {
-                    name: "runtime_identity",
-                    status: "warn",
-                    detail,
-                    repair: Some(repair.clone()),
-                },
+                StatusCheck { name: "runtime_identity", status: "warn", detail, repair: Some(repair.clone()) },
                 repair,
             )
         }
@@ -171,12 +147,7 @@ pub(crate) fn build_status_report(
             (
                 "error",
                 "The local runtime probe returned an unexpected response.".to_string(),
-                StatusCheck {
-                    name: "runtime_identity",
-                    status: "fail",
-                    detail,
-                    repair: Some(repair.clone()),
-                },
+                StatusCheck { name: "runtime_identity", status: "fail", detail, repair: Some(repair.clone()) },
                 repair,
             )
         }
@@ -208,23 +179,12 @@ pub(crate) fn build_status_report(
         detail: if db_exists {
             format!("Database exists at {}", paths.db.display())
         } else {
-            format!(
-                "Database not found at {}; it is created during first setup/start.",
-                paths.db.display()
-            )
+            format!("Database not found at {}; it is created during first setup/start.", paths.db.display())
         },
-        repair: if db_exists {
-            None
-        } else {
-            Some(status_setup_repair())
-        },
+        repair: if db_exists { None } else { Some(status_setup_repair()) },
     });
     let exit_code = if status == "ready" { 0 } else { 1 };
-    let repair = if status == "ready" {
-        None
-    } else {
-        Some(status_repair_json(&next_action))
-    };
+    let repair = if status == "ready" { None } else { Some(status_repair_json(&next_action)) };
     let payload = json!({"schemaVersion":STATUS_SCHEMA_VERSION,"status":status,"summary":summary,
 "version":env!("CARGO_PKG_VERSION"),"runtime":{"baseUrl":runtime_base_url,"port":paths.port,"bind":paths.bind,"home":paths.home.
 display().to_string(),"dbPath":paths.db.display().to_string(),"tokenPath":paths.token.display().to_string(),"pidPath":paths.pid.
@@ -233,10 +193,7 @@ display().to_string()},"nextAction":status_repair_json(&next_action),"repair":re
     StatusReport { payload, exit_code }
 }
 async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(2)).build() {
         Ok(client) => client,
         Err(err) => {
             return StatusRuntimeProbe::Error(format!("Could not create HTTP client: {err}"));
@@ -259,27 +216,21 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
     {
         Ok((status, body)) => {
             let status_code = status.as_u16();
-            if let Some(ready) =
-                readiness_state_from_payload(status_code, &body, Some(paths.port), Some(paths))
-            {
+            if let Some(ready) = readiness_state_from_payload(status_code, &body, Some(paths.port), Some(paths)) {
                 return if ready {
-                    StatusRuntimeProbe::Ready(format!(
-                        "Readiness endpoint reports ready at {base_url}/readiness."
-                    ))
+                    StatusRuntimeProbe::Ready(format!("Readiness endpoint reports ready at {base_url}/readiness."))
                 } else {
-                    StatusRuntimeProbe::Starting(format!(
-                        "Readiness endpoint reports startup in progress at {base_url}/readiness."
-                    ))
+                    StatusRuntimeProbe::Starting(format!("Readiness endpoint reports startup in progress at {base_url}/readiness."))
                 };
             }
             if readiness_state_from_payload(status_code, &body, Some(paths.port), None).is_some() {
                 return StatusRuntimeProbe::WrongIdentity(format!(
-"Readiness endpoint answered on port {}, but home/db/token paths do not match {}.",paths.port,paths.home.display()));
+                    "Readiness endpoint answered on port {}, but home/db/token paths do not match {}.",
+                    paths.port,
+                    paths.home.display()
+                ));
             }
-            probe_errors.push(format!(
-                "readiness HTTP {status}: {}",
-                compact_status_detail(&body)
-            ));
+            probe_errors.push(format!("readiness HTTP {status}: {}", compact_status_detail(&body)));
         }
         Err(err) => probe_errors.push(format!("readiness failed: {err}")),
     }
@@ -298,9 +249,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
         Ok((status, body)) => {
             let status_code = status.as_u16();
             if is_cortex_health_payload(status_code, &body, Some(paths.port), Some(paths)) {
-                return StatusRuntimeProbe::Ready(format!(
-                    "Health endpoint reports canonical Cortex runtime at {base_url}/health."
-                ));
+                return StatusRuntimeProbe::Ready(format!("Health endpoint reports canonical Cortex runtime at {base_url}/health."));
             }
             if is_cortex_health_payload(status_code, &body, Some(paths.port), None) {
                 return StatusRuntimeProbe::WrongIdentity(format!(
@@ -309,10 +258,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
                     paths.home.display()
                 ));
             }
-            probe_errors.push(format!(
-                "health HTTP {status}: {}",
-                compact_status_detail(&body)
-            ));
+            probe_errors.push(format!("health HTTP {status}: {}", compact_status_detail(&body)));
             StatusRuntimeProbe::Error(probe_errors.join("; "))
         }
         Err(err) => {
@@ -323,12 +269,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
 }
 pub(crate) async fn run_status_cli(paths: &auth::CortexPaths, json_output: bool) -> i32 {
     let runtime_probe = probe_status_runtime(paths).await;
-    let report = build_status_report(
-        paths,
-        runtime_probe,
-        paths.token.exists(),
-        paths.db.exists(),
-    );
+    let report = build_status_report(paths, runtime_probe, paths.token.exists(), paths.db.exists());
     if json_output {
         println!("{}", serde_json::to_string_pretty(&report.payload).unwrap());
     } else {
@@ -342,29 +283,11 @@ fn print_status_human(payload: &Value) {
     println!("Status: {}", json_str(payload, "status"));
     println!("Summary: {}", json_str(payload, "summary"));
     if let Some(runtime) = payload.get("runtime").and_then(Value::as_object) {
-        println!(
-            "Runtime: {}",
-            runtime
-                .get("baseUrl")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-        );
-        println!(
-            "Home: {}",
-            runtime
-                .get("home")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-        );
+        println!("Runtime: {}", runtime.get("baseUrl").and_then(Value::as_str).unwrap_or("unknown"));
+        println!("Home: {}", runtime.get("home").and_then(Value::as_str).unwrap_or("unknown"));
     }
     if let Some(next_action) = payload.get("nextAction").and_then(Value::as_object) {
-        println!(
-            "Next action: {}",
-            next_action
-                .get("label")
-                .and_then(Value::as_str)
-                .unwrap_or("Run cortex status --json")
-        );
+        println!("Next action: {}", next_action.get("label").and_then(Value::as_str).unwrap_or("Run cortex status --json"));
         if let Some(command) = next_action.get("command").and_then(Value::as_str) {
             println!("Command: {command}");
         }
@@ -373,10 +296,7 @@ fn print_status_human(payload: &Value) {
     println!("Checks:");
     if let Some(checks) = payload.get("checks").and_then(Value::as_array) {
         for check in checks {
-            let status = check
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
+            let status = check.get("status").and_then(Value::as_str).unwrap_or("unknown");
             let marker = match status {
                 "ok" => "[OK]",
                 "warn" => "[!!]",

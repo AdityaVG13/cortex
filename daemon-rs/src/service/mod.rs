@@ -1,7 +1,6 @@
 const SERVICE_NAME: &str = "CortexDaemon";
 const DISPLAY_NAME: &str = "Cortex Memory Daemon";
-const DESCRIPTION:&str=
-"Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
+const DESCRIPTION: &str = "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";
 const DEFAULT_START_MODE: &str = "demand";
 const HEALTH_PROBE_TIMEOUT_SECS: u64 = 2;
 #[cfg(windows)]
@@ -20,25 +19,11 @@ fn daemon_base_url() -> String {
 fn daemon_health_url() -> String {
     format!("{}/health", daemon_base_url())
 }
-fn daemon_ready_from_payload(
-    status: u16,
-    body: &str,
-    paths: &crate::auth::CortexPaths,
-) -> Option<bool> {
-    if let Some(ready) = crate::daemon_lifecycle::readiness_state_from_payload(
-        status,
-        body,
-        Some(paths.port),
-        Some(paths),
-    ) {
+fn daemon_ready_from_payload(status: u16, body: &str, paths: &crate::auth::CortexPaths) -> Option<bool> {
+    if let Some(ready) = crate::daemon_lifecycle::readiness_state_from_payload(status, body, Some(paths.port), Some(paths)) {
         return Some(ready);
     }
-    if crate::daemon_lifecycle::is_cortex_health_payload(
-        status,
-        body,
-        Some(paths.port),
-        Some(paths),
-    ) {
+    if crate::daemon_lifecycle::is_cortex_health_payload(status, body, Some(paths.port), Some(paths)) {
         return Some(true);
     }
     None
@@ -49,14 +34,13 @@ fn escape_cmd_quoted_fragment(value: &str) -> String {
 fn build_sc_create_command(exe_path: &str, username: &str) -> String {
     let exe_path = escape_cmd_quoted_fragment(exe_path);
     let username = escape_cmd_quoted_fragment(username);
-    format!("sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= {} DisplayName= \"{}\" obj= \".\\{}\"",SERVICE_NAME
-,exe_path,DEFAULT_START_MODE,DISPLAY_NAME,username)
+    format!(
+        "sc.exe create {} binPath= \"\\\"{}\\\" service-run\" start= {} DisplayName= \"{}\" obj= \".\\{}\"",
+        SERVICE_NAME, exe_path, DEFAULT_START_MODE, DISPLAY_NAME, username
+    )
 }
 fn username_is_safe_for_cmd_fragment(value: &str) -> bool {
-    !value.trim().is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '.' | '_' | '-'))
+    !value.trim().is_empty() && value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '.' | '_' | '-'))
 }
 fn resolve_service_username_from_env() -> String {
     match std::env::var("USERNAME") {
@@ -71,9 +55,7 @@ fn resolve_service_username_from_env() -> String {
         Err(_) => "cortex-user".to_string(),
     }
 }
-fn service_exe_path_from_result(
-    result: std::io::Result<std::path::PathBuf>,
-) -> Result<String, String> {
+fn service_exe_path_from_result(result: std::io::Result<std::path::PathBuf>) -> Result<String, String> {
     result
         .map(|exe| exe.to_string_lossy().to_string())
         .map_err(|err| format!("Failed to get exe path: {err}"))
@@ -138,9 +120,7 @@ fn query_service_state() -> Result<ServiceState, String> {
     let mut command = std::process::Command::new("sc.exe");
     command.args(["query", SERVICE_NAME]);
     apply_hidden_process_flags(&mut command);
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to run sc.exe query: {e}"))?;
+    let output = command.output().map_err(|e| format!("Failed to run sc.exe query: {e}"))?;
     if output.status.success() {
         let text = output_text(&output);
         return Ok(parse_service_state(&text));
@@ -157,11 +137,7 @@ fn parse_http_probe_response(raw: &[u8]) -> Result<(u16, String), String> {
     Ok((status.as_u16(), body))
 }
 fn should_use_partial_probe_response(err: &std::io::Error, response_len: usize) -> bool {
-    response_len > 0
-        && matches!(
-            err.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        )
+    response_len > 0 && matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
 }
 fn daemon_probe(path: &str) -> Result<(u16, String), String> {
     use std::io::{Read, Write};
@@ -172,20 +148,13 @@ fn daemon_probe(path: &str) -> Result<(u16, String), String> {
     )
     .map_err(|e| format!("connect failed: {e}"))?;
     stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(
-            HEALTH_PROBE_TIMEOUT_SECS,
-        )))
+        .set_read_timeout(Some(std::time::Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS)))
         .map_err(|e| format!("read timeout failed: {e}"))?;
     stream
-        .set_write_timeout(Some(std::time::Duration::from_secs(
-            HEALTH_PROBE_TIMEOUT_SECS,
-        )))
+        .set_write_timeout(Some(std::time::Duration::from_secs(HEALTH_PROBE_TIMEOUT_SECS)))
         .map_err(|e| format!("write timeout failed: {e}"))?;
-    let request=format!(
-"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\nConnection: close\r\n\r\n");
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("write failed: {e}"))?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
     let mut response = Vec::new();
     if let Err(err) = stream.read_to_end(&mut response) {
         if !should_use_partial_probe_response(&err, response.len()) {
@@ -229,9 +198,7 @@ fn start_service_once() -> Result<(), String> {
     let mut command = std::process::Command::new("sc.exe");
     command.args(["start", SERVICE_NAME]);
     apply_hidden_process_flags(&mut command);
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to run sc.exe start: {e}"))?;
+    let output = command.output().map_err(|e| format!("Failed to run sc.exe start: {e}"))?;
     if output.status.success() {
         return Ok(());
     }
@@ -247,9 +214,7 @@ fn stop_service_once() -> Result<(), String> {
     let mut command = std::process::Command::new("sc.exe");
     command.args(["stop", SERVICE_NAME]);
     apply_hidden_process_flags(&mut command);
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to run sc.exe stop: {e}"))?;
+    let output = command.output().map_err(|e| format!("Failed to run sc.exe stop: {e}"))?;
     if output.status.success() {
         return Ok(());
     }
@@ -325,10 +290,7 @@ pub fn install() -> bool {
     if let Some(raw) = username_env {
         let trimmed = raw.trim();
         if !trimmed.is_empty() && trimmed != username {
-            eprintln!(
-                "[cortex] Warning: USERNAME contains unsupported characters; falling back to '{}'",
-                username
-            );
+            eprintln!("[cortex] Warning: USERNAME contains unsupported characters; falling back to '{}'", username);
         }
     }
     let sc_cmd = build_sc_create_command(&exe_path, &username);
@@ -345,8 +307,10 @@ pub fn install() -> bool {
             apply_hidden_process_flags(&mut description_cmd);
             let _ = description_cmd.output();
             let mut failure_cmd = std::process::Command::new("cmd");
-            failure_cmd.args(["/C",&
-format!("sc.exe failure {} reset= 86400 actions= restart/5000/restart/10000/restart/30000",SERVICE_NAME)]);
+            failure_cmd.args([
+                "/C",
+                &format!("sc.exe failure {} reset= 86400 actions= restart/5000/restart/10000/restart/30000", SERVICE_NAME),
+            ]);
             apply_hidden_process_flags(&mut failure_cmd);
             let _ = failure_cmd.output();
             eprintln!("[cortex] Auto-start on boot: disabled (manual start mode)");
@@ -521,10 +485,7 @@ pub fn ensure_ready() -> bool {
 mod scm {
     use std::ffi::OsString;
     use std::sync::mpsc;
-    use windows_service::service::{
-        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-        ServiceType,
-    };
+    use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::{define_windows_service, service_dispatcher};
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -547,14 +508,13 @@ mod scm {
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         };
-        let status_handle =
-            match service_control_handler::register(super::SERVICE_NAME, event_handler) {
-                Ok(handle) => handle,
-                Err(err) => {
-                    eprintln!("[cortex-service] Failed to register service control handler: {err}");
-                    return;
-                }
-            };
+        let status_handle = match service_control_handler::register(super::SERVICE_NAME, event_handler) {
+            Ok(handle) => handle,
+            Err(err) => {
+                eprintln!("[cortex-service] Failed to register service control handler: {err}");
+                return;
+            }
+        };
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: SERVICE_TYPE,
             current_state: ServiceState::StartPending,

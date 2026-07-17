@@ -32,9 +32,7 @@ struct SlidingWindow {
 }
 impl SlidingWindow {
     fn new() -> Self {
-        Self {
-            timestamps: VecDeque::new(),
-        }
+        Self { timestamps: VecDeque::new() }
     }
     fn prune(&mut self, now: Instant, window: Duration) {
         while let Some(oldest) = self.timestamps.front().copied() {
@@ -91,32 +89,13 @@ impl RateLimiter {
         Self::new_with_budget_status(BudgetConfigStatus::missing_for_tests())
     }
     pub fn new_with_budget_status(budget_config_status: BudgetConfigStatus) -> Self {
-        let auth_fail_limit =
-            read_limit_env("CORTEX_RATE_LIMIT_AUTH_FAILS_PER_MIN", AUTH_FAIL_LIMIT);
-        let request_limit_non_loopback = read_limit_env(
-            "CORTEX_RATE_LIMIT_REQUESTS_PER_MIN",
-            REQUEST_LIMIT_NON_LOOPBACK,
-        );
-        let request_limit_loopback = read_limit_env(
-            "CORTEX_RATE_LIMIT_LOOPBACK_REQUESTS_PER_MIN",
-            REQUEST_LIMIT_LOOPBACK,
-        );
-        let recall_request_limit_non_loopback = read_limit_env(
-            "CORTEX_RATE_LIMIT_RECALL_REQUESTS_PER_MIN",
-            request_limit_non_loopback,
-        );
-        let recall_request_limit_loopback = read_limit_env(
-            "CORTEX_RATE_LIMIT_RECALL_LOOPBACK_REQUESTS_PER_MIN",
-            request_limit_loopback,
-        );
-        let store_request_limit_non_loopback = read_limit_env(
-            "CORTEX_RATE_LIMIT_STORE_REQUESTS_PER_MIN",
-            request_limit_non_loopback,
-        );
-        let store_request_limit_loopback = read_limit_env(
-            "CORTEX_RATE_LIMIT_STORE_LOOPBACK_REQUESTS_PER_MIN",
-            request_limit_loopback,
-        );
+        let auth_fail_limit = read_limit_env("CORTEX_RATE_LIMIT_AUTH_FAILS_PER_MIN", AUTH_FAIL_LIMIT);
+        let request_limit_non_loopback = read_limit_env("CORTEX_RATE_LIMIT_REQUESTS_PER_MIN", REQUEST_LIMIT_NON_LOOPBACK);
+        let request_limit_loopback = read_limit_env("CORTEX_RATE_LIMIT_LOOPBACK_REQUESTS_PER_MIN", REQUEST_LIMIT_LOOPBACK);
+        let recall_request_limit_non_loopback = read_limit_env("CORTEX_RATE_LIMIT_RECALL_REQUESTS_PER_MIN", request_limit_non_loopback);
+        let recall_request_limit_loopback = read_limit_env("CORTEX_RATE_LIMIT_RECALL_LOOPBACK_REQUESTS_PER_MIN", request_limit_loopback);
+        let store_request_limit_non_loopback = read_limit_env("CORTEX_RATE_LIMIT_STORE_REQUESTS_PER_MIN", request_limit_non_loopback);
+        let store_request_limit_loopback = read_limit_env("CORTEX_RATE_LIMIT_STORE_LOOPBACK_REQUESTS_PER_MIN", request_limit_loopback);
         if auth_fail_limit != AUTH_FAIL_LIMIT
             || request_limit_non_loopback != REQUEST_LIMIT_NON_LOOPBACK
             || request_limit_loopback != REQUEST_LIMIT_LOOPBACK
@@ -175,9 +154,7 @@ impl RateLimiter {
         let mut map = self.auth_failures.lock().await;
         let window = map.entry(ip).or_insert_with(SlidingWindow::new);
         let now = Instant::now();
-        window
-            .try_record(now, self.auth_fail_limit, WINDOW)
-            .map(|_| ())
+        window.try_record(now, self.auth_fail_limit, WINDOW).map(|_| ())
     }
     pub async fn is_auth_blocked(&self, ip: &IpAddr) -> Option<u64> {
         let mut map = self.auth_failures.lock().await;
@@ -191,14 +168,9 @@ impl RateLimiter {
         None
     }
     pub async fn check_request(&self, ip: IpAddr) -> Result<usize, u64> {
-        self.check_request_for_class(ip, RequestClass::Default)
-            .await
+        self.check_request_for_class(ip, RequestClass::Default).await
     }
-    pub async fn check_request_for_class(
-        &self,
-        ip: IpAddr,
-        class: RequestClass,
-    ) -> Result<usize, u64> {
+    pub async fn check_request_for_class(&self, ip: IpAddr, class: RequestClass) -> Result<usize, u64> {
         let mut map = self.requests.lock().await;
         let window = map.entry((ip, class)).or_insert_with(SlidingWindow::new);
         let request_limit = self.request_limit_for_ip_class(ip, class);
@@ -211,11 +183,7 @@ impl RateLimiter {
     pub fn budget_for_endpoint(&self, endpoint: BudgetEndpoint) -> Option<EndpointBudget> {
         self.budget_config_status.budget_for(endpoint)
     }
-    pub async fn check_budget_for_endpoint(
-        &self,
-        ip: IpAddr,
-        endpoint: BudgetEndpoint,
-    ) -> Option<BudgetDecision> {
+    pub async fn check_budget_for_endpoint(&self, ip: IpAddr, endpoint: BudgetEndpoint) -> Option<BudgetDecision> {
         let budget = self.budget_for_endpoint(endpoint)?;
         let window_duration = Duration::from_secs(budget.window_seconds);
         let mut map = self.budget_requests.lock().await;

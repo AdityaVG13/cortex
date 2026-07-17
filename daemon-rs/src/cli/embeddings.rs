@@ -1,7 +1,7 @@
 use super::common::{parse_env_usize, parse_flag_usize};
 use super::daemon::{
-    background_db_lock_max_wait, build_embeddings_async, count_unembedded_targets_for_model,
-    DEFAULT_EMBED_BACKFILL_BATCH_SIZE, DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS,
+    background_db_lock_max_wait, build_embeddings_async, count_unembedded_targets_for_model, DEFAULT_EMBED_BACKFILL_BATCH_SIZE,
+    DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS,
 };
 use crate::auth;
 use crate::state;
@@ -34,8 +34,7 @@ pub(crate) async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_ou
         }
     };
     let Some(engine) = state.embedding_engine.clone() else {
-        eprintln!(
-"[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry.");
+        eprintln!("[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry.");
         std::process::exit(1);
     };
     let model_key = engine.model_key().to_string();
@@ -53,20 +52,13 @@ pub(crate) async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_ou
     } else {
         println!("Embeddings status");
         println!("model: {model_key}");
-        println!(
-            "backlog: memories={}, decisions={}, total={}",
-            backlog_memories, backlog_decisions, backlog_total
-        );
+        println!("backlog: memories={}, decisions={}, total={}", backlog_memories, backlog_decisions, backlog_total);
     }
 }
 pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
     let batch_size = match parse_flag_usize(args, "--batch-size") {
         Ok(Some(value)) => value.clamp(1, 10_000),
-        Ok(None) => parse_env_usize(
-            "CORTEX_EMBED_BACKFILL_BATCH_SIZE",
-            DEFAULT_EMBED_BACKFILL_BATCH_SIZE,
-        )
-        .clamp(1, 10_000),
+        Ok(None) => parse_env_usize("CORTEX_EMBED_BACKFILL_BATCH_SIZE", DEFAULT_EMBED_BACKFILL_BATCH_SIZE).clamp(1, 10_000),
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
@@ -74,11 +66,9 @@ pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[
     };
     let max_batches_per_pass = match parse_flag_usize(args, "--max-batches") {
         Ok(Some(value)) => value.clamp(1, 10_000),
-        Ok(None) => parse_env_usize(
-            "CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS",
-            DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS,
-        )
-        .clamp(1, 10_000),
+        Ok(None) => {
+            parse_env_usize("CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS", DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS).clamp(1, 10_000)
+        }
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
@@ -111,8 +101,7 @@ pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[
         }
     };
     let Some(engine) = state.embedding_engine.clone() else {
-        eprintln!(
-"[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry.");
+        eprintln!("[embeddings] No embedding model is currently loaded. Run `cortex serve` once to trigger model download, then retry.");
         std::process::exit(1);
     };
     let model_key = engine.model_key().to_string();
@@ -123,14 +112,7 @@ pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[
     let mut exhausted = false;
     while iterations_ran < max_iterations {
         iterations_ran += 1;
-        let pass = build_embeddings_async(
-            engine.clone(),
-            &state.db,
-            batch_size,
-            max_batches_per_pass,
-            lock_wait,
-        )
-        .await;
+        let pass = build_embeddings_async(engine.clone(), &state.db, batch_size, max_batches_per_pass, lock_wait).await;
         queued_total += pass.queued_total;
         computed_total += pass.computed_total;
         passes_ran += pass.passes_ran;
@@ -156,19 +138,15 @@ pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[
     } else {
         println!("Embeddings drain");
         println!("model: {model_key}");
-        println!(
-            "drain: queued={}, built={}, passes={}, iterations={}",
-            queued_total, computed_total, passes_ran, iterations_ran
-        );
-        println!(
-            "remaining: memories={}, decisions={}, total={}",
-            remaining_memories, remaining_decisions, remaining_total
-        );
+        println!("drain: queued={}, built={}, passes={}, iterations={}", queued_total, computed_total, passes_ran, iterations_ran);
+        println!("remaining: memories={}, decisions={}, total={}", remaining_memories, remaining_decisions, remaining_total);
         println!("exhausted: {exhausted}");
     }
     if until_exhausted && !exhausted {
         eprintln!(
-"[embeddings] backlog still pending after {} iteration(s); rerun with higher --max-iterations or --max-batches",iterations_ran);
+            "[embeddings] backlog still pending after {} iteration(s); rerun with higher --max-iterations or --max-batches",
+            iterations_ran
+        );
         std::process::exit(2);
     }
 }

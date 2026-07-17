@@ -1,7 +1,6 @@
 use super::common::{
-    admin_request, api_key_output_masked, confirm_action, format_api_key_for_output, json_field,
-    json_str, json_str_or, parse_flag_value, required_cli_positional_or_exit,
-    validate_cli_options_or_exit,
+    admin_request, api_key_output_masked, confirm_action, format_api_key_for_output, json_field, json_str, json_str_or, parse_flag_value,
+    required_cli_positional_or_exit, validate_cli_options_or_exit,
 };
 use crate::auth;
 use crate::budgets;
@@ -57,14 +56,8 @@ fn print_budget_status_human(payload: &Value) {
     if let Some(error) = payload.get("error").and_then(Value::as_object) {
         println!(
             "Error: {} ({})",
-            error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown error"),
-            error
-                .get("code")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
+            error.get("message").and_then(Value::as_str).unwrap_or("unknown error"),
+            error.get("code").and_then(Value::as_str).unwrap_or("unknown")
         );
         return;
     }
@@ -81,20 +74,13 @@ fn print_budget_status_human(payload: &Value) {
                 "{:<12} {:<10} {}s",
                 endpoint,
                 budget.get("limit").and_then(Value::as_u64).unwrap_or(0),
-                budget
-                    .get("windowSeconds")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
+                budget.get("windowSeconds").and_then(Value::as_u64).unwrap_or(0)
             );
         }
     }
 }
 pub(crate) fn run_admin_rollback_cli(paths: &auth::CortexPaths, args: &[String]) {
-    validate_cli_options_or_exit(
-        args,
-        &["--session-id", "--session"],
-        &["--apply", "--json", "--help", "-h"],
-    );
+    validate_cli_options_or_exit(args, &["--session-id", "--session"], &["--apply", "--json", "--help", "-h"]);
     let mut session_id: Option<String> = None;
     let mut apply = false;
     let mut json_output = false;
@@ -179,14 +165,8 @@ session_id,"agent":stats.agent,"session_started_at":stats.session_started_at,"me
         std::process::exit(1);
     } else {
         let label = if stats.applied { "applied" } else { "dry-run" };
-        println!(
-            "[rollback {label}] session={} agent={} started_at={}",
-            stats.session_id, stats.agent, stats.session_started_at
-        );
-        println!(
-            "  memories to flip: {}    decisions to flip: {}",
-            stats.memories_affected, stats.decisions_affected
-        );
+        println!("[rollback {label}] session={} agent={} started_at={}", stats.session_id, stats.agent, stats.session_started_at);
+        println!("  memories to flip: {}    decisions to flip: {}", stats.memories_affected, stats.decisions_affected);
         if stats.already_rolled_back {
             println!("  note: session already rolled back previously; nothing to do.");
         }
@@ -242,9 +222,7 @@ pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
                     println!("  API Key:   {}", format_api_key_for_output(&api_key));
                     if key_masked {
                         println!("  NOTE: API key is masked because stdout is non-interactive.");
-                        println!(
-                            "        Re-run this command in a terminal to display the full key."
-                        );
+                        println!("        Re-run this command in a terminal to display the full key.");
                     }
                     println!();
                     println!("Save the API key -- it cannot be retrieved later.");
@@ -256,11 +234,7 @@ pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
             }
         }
         "rotate-key" => {
-            let username = required_cli_positional_or_exit(
-                &args,
-                3,
-                "Usage: cortex user rotate-key <username>",
-            );
+            let username = required_cli_positional_or_exit(&args, 3, "Usage: cortex user rotate-key <username>");
             validate_cli_options_or_exit(&args[4..], &[], &[]);
             let body = serde_json::json!({"username":username});
             match admin_request(&paths, "POST", "/admin/user/rotate-key", Some(body)).await {
@@ -271,9 +245,7 @@ pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
                     println!("  New API Key: {}", format_api_key_for_output(&api_key));
                     if key_masked {
                         println!("  NOTE: API key is masked because stdout is non-interactive.");
-                        println!(
-                            "        Re-run this command in a terminal to display the full key."
-                        );
+                        println!("        Re-run this command in a terminal to display the full key.");
                     }
                     println!();
                     println!("Save the API key -- it cannot be retrieved later.");
@@ -285,8 +257,7 @@ pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
             }
         }
         "remove" => {
-            let username =
-                required_cli_positional_or_exit(&args, 3, "Usage: cortex user remove <username>");
+            let username = required_cli_positional_or_exit(&args, 3, "Usage: cortex user remove <username>");
             validate_cli_options_or_exit(&args[4..], &[], &[]);
             if !confirm_action(&format!("Remove user '{username}'?")) {
                 eprintln!("Cancelled.");
@@ -310,10 +281,7 @@ pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
                     let users = json["users"].as_array();
                     match users {
                         Some(arr) if !arr.is_empty() => {
-                            println!(
-                                "{:<6} {:<20} {:<20} {:<10} CREATED",
-                                "ID", "USERNAME", "DISPLAY NAME", "ROLE"
-                            );
+                            println!("{:<6} {:<20} {:<20} {:<10} CREATED", "ID", "USERNAME", "DISPLAY NAME", "ROLE");
                             println!("{}", "-".repeat(80));
                             for u in arr {
                                 println!(
@@ -347,8 +315,7 @@ pub(crate) async fn run_team_cli(paths: &auth::CortexPaths, args: &[String]) {
     let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("");
     match subcmd {
         "create" => {
-            let name =
-                required_cli_positional_or_exit(&args, 3, "Usage: cortex team create <name>");
+            let name = required_cli_positional_or_exit(&args, 3, "Usage: cortex team create <name>");
             validate_cli_options_or_exit(&args[4..], &[], &[]);
             let body = serde_json::json!({"name":name});
             match admin_request(&paths, "POST", "/admin/team/create", Some(body)).await {
@@ -409,11 +376,7 @@ pub(crate) async fn run_team_cli(paths: &auth::CortexPaths, args: &[String]) {
             match admin_request(&paths, "POST", "/admin/team/remove-member", Some(body)).await {
                 Ok(json) => {
                     let removed = &json["removed"];
-                    println!(
-                        "Removed '{}' from team '{}'",
-                        json_str(removed, "username"),
-                        json_str(removed, "team"),
-                    );
+                    println!("Removed '{}' from team '{}'", json_str(removed, "username"), json_str(removed, "team"),);
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -518,8 +481,7 @@ pub(crate) async fn run_admin_cli(paths: &auth::CortexPaths, args: &[String]) {
                 i += 1;
             }
             let Some(to) = to_user else {
-                eprintln!(
-"Usage: cortex admin assign-owner [--from <user>] --to <user> [--table <table>]");
+                eprintln!("Usage: cortex admin assign-owner [--from <user>] --to <user> [--table <table>]");
                 std::process::exit(1);
             };
             let mut body = serde_json
@@ -580,10 +542,7 @@ pub(crate) async fn run_admin_cli(paths: &auth::CortexPaths, args: &[String]) {
                         if !per_user.is_empty() {
                             println!();
                             println!("Per-User Breakdown:");
-                            println!(
-                                "  {:<20} {:<10} {:<10} CRYSTALS",
-                                "USERNAME", "MEMORIES", "DECISIONS"
-                            );
+                            println!("  {:<20} {:<10} {:<10} CRYSTALS", "USERNAME", "MEMORIES", "DECISIONS");
                             println!("  {}", "-".repeat(55));
                             for u in per_user {
                                 println!(

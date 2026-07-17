@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
 mod tests {
-    use crate::handlers::recall::tests::support::{
-        solo_ctx, store_decision_with_embedding, team_ctx, test_conn,
-    };
+    use crate::handlers::recall::tests::support::{solo_ctx, store_decision_with_embedding, team_ctx, test_conn};
     use crate::handlers::recall::*;
 
     #[test]
@@ -60,8 +58,7 @@ mod tests {
             &[0.0, 0.0, 0.0, 0.0, 1.0],
         );
 
-        let results =
-            run_budget_recall(&mut conn, "write buffer", 400, 5, &solo_ctx(), None).unwrap();
+        let results = run_budget_recall(&mut conn, "write buffer", 400, 5, &solo_ctx(), None).unwrap();
         assert_eq!(results[0].source, "decision::write-buffer");
     }
 
@@ -76,17 +73,9 @@ mod tests {
             &vector,
         );
 
-        let candidates = collect_semantic_candidates(
-            &conn,
-            &vector,
-            "semantic recall pq8",
-            &solo_ctx(),
-            Some("decision::semantic"),
-        );
+        let candidates = collect_semantic_candidates(&conn, &vector, "semantic recall pq8", &solo_ctx(), Some("decision::semantic"));
 
-        assert!(candidates
-            .iter()
-            .any(|candidate| candidate.source == "decision::semantic-pq8"));
+        assert!(candidates.iter().any(|candidate| candidate.source == "decision::semantic-pq8"));
     }
 
     #[test]

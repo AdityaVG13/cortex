@@ -42,23 +42,16 @@ fn load_or_create_owner_signing_key(paths: &CortexPaths) -> Result<Vec<u8>, Stri
         .truncate(false)
         .open(&key_path)
         .map_err(|e| format!("open daemon owner signing key: {e}"))?;
-    crate::auth::restrict_file_to_owner(&key_path)
-        .map_err(|e| format!("restrict daemon owner signing key permissions: {e}"))?;
-    file.lock_exclusive()
-        .map_err(|e| format!("lock daemon owner signing key: {e}"))?;
+    crate::auth::restrict_file_to_owner(&key_path).map_err(|e| format!("restrict daemon owner signing key permissions: {e}"))?;
+    file.lock_exclusive().map_err(|e| format!("lock daemon owner signing key: {e}"))?;
     let mut key_bytes = Vec::new();
-    file.read_to_end(&mut key_bytes)
-        .map_err(|e| format!("read daemon owner signing key: {e}"))?;
+    file.read_to_end(&mut key_bytes).map_err(|e| format!("read daemon owner signing key: {e}"))?;
     if key_bytes.len() != 32 {
         key_bytes = generate_owner_signing_key().to_vec();
-        file.set_len(0)
-            .map_err(|e| format!("truncate daemon owner signing key: {e}"))?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|e| format!("seek daemon owner signing key: {e}"))?;
-        file.write_all(&key_bytes)
-            .map_err(|e| format!("write daemon owner signing key: {e}"))?;
-        file.flush()
-            .map_err(|e| format!("flush daemon owner signing key: {e}"))?;
+        file.set_len(0).map_err(|e| format!("truncate daemon owner signing key: {e}"))?;
+        file.seek(SeekFrom::Start(0)).map_err(|e| format!("seek daemon owner signing key: {e}"))?;
+        file.write_all(&key_bytes).map_err(|e| format!("write daemon owner signing key: {e}"))?;
+        file.flush().map_err(|e| format!("flush daemon owner signing key: {e}"))?;
     }
     let _ = file.unlock();
     Ok(key_bytes)
@@ -94,40 +87,17 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     }
     Ok(out)
 }
-fn sign_owner_token_claim(
-    key: &[u8],
-    owner_tag: &str,
-    parent_pid: u32,
-    issued_at: u64,
-    nonce: &str,
-) -> Result<Vec<u8>, String> {
+fn sign_owner_token_claim(key: &[u8], owner_tag: &str, parent_pid: u32, issued_at: u64, nonce: &str) -> Result<Vec<u8>, String> {
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac =
-        HmacSha256::new_from_slice(key).map_err(|e| format!("init owner token signer: {e}"))?;
-    let payload = format!(
-        "{}|{}|{}|{}|{}",
-        DAEMON_OWNER_TOKEN_VERSION, owner_tag, parent_pid, issued_at, nonce
-    );
+    let mut mac = HmacSha256::new_from_slice(key).map_err(|e| format!("init owner token signer: {e}"))?;
+    let payload = format!("{}|{}|{}|{}|{}", DAEMON_OWNER_TOKEN_VERSION, owner_tag, parent_pid, issued_at, nonce);
     mac.update(payload.as_bytes());
     Ok(mac.finalize().into_bytes().to_vec())
 }
 #[cfg(any(test, not(windows)))]
-fn build_owner_token(
-    key: &[u8],
-    owner_tag: &str,
-    parent_pid: u32,
-    issued_at: u64,
-    nonce: &str,
-) -> Result<String, String> {
+fn build_owner_token(key: &[u8], owner_tag: &str, parent_pid: u32, issued_at: u64, nonce: &str) -> Result<String, String> {
     let signature = sign_owner_token_claim(key, owner_tag, parent_pid, issued_at, nonce)?;
-    Ok(format!(
-        "{}.{}.{}.{}.{}",
-        DAEMON_OWNER_TOKEN_VERSION,
-        issued_at,
-        parent_pid,
-        nonce,
-        encode_hex(&signature)
-    ))
+    Ok(format!("{}.{}.{}.{}.{}", DAEMON_OWNER_TOKEN_VERSION, issued_at, parent_pid, nonce, encode_hex(&signature)))
 }
 fn parse_owner_token(token: &str) -> Result<ParsedOwnerToken, String> {
     let parts: Vec<&str> = token.trim().split('.').collect();
@@ -137,43 +107,24 @@ fn parse_owner_token(token: &str) -> Result<ParsedOwnerToken, String> {
     if parts[0] != DAEMON_OWNER_TOKEN_VERSION {
         return Err("owner token version is unsupported".to_string());
     }
-    let issued_at = parts[1]
-        .parse::<u64>()
-        .map_err(|_| "owner token issued timestamp is invalid".to_string())?;
-    let parent_pid = parts[2]
-        .parse::<u32>()
-        .map_err(|_| "owner token parent pid is invalid".to_string())?;
+    let issued_at = parts[1].parse::<u64>().map_err(|_| "owner token issued timestamp is invalid".to_string())?;
+    let parent_pid = parts[2].parse::<u32>().map_err(|_| "owner token parent pid is invalid".to_string())?;
     let nonce = parts[3].trim().to_string();
     if nonce.is_empty() {
         return Err("owner token nonce is missing".to_string());
     }
     let signature = decode_hex(parts[4])?;
-    Ok(ParsedOwnerToken {
-        issued_at,
-        parent_pid,
-        nonce,
-        signature,
-    })
+    Ok(ParsedOwnerToken { issued_at, parent_pid, nonce, signature })
 }
 #[cfg(any(test, not(windows)))]
-pub fn issue_owner_token_for_spawn(
-    paths: &CortexPaths,
-    owner_tag: &str,
-    parent_pid: u32,
-) -> Result<String, String> {
+pub fn issue_owner_token_for_spawn(paths: &CortexPaths, owner_tag: &str, parent_pid: u32) -> Result<String, String> {
     let key = load_or_create_owner_signing_key(paths)?;
-    let issued_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
+    let issued_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or_default();
     let nonce = Uuid::new_v4().simple().to_string();
     build_owner_token(&key, owner_tag, parent_pid, issued_at, &nonce)
 }
 pub fn validate_spawned_owner_claim(
-    paths: &CortexPaths,
-    owner_tag: Option<&str>,
-    parent_pid: Option<u32>,
-    owner_token: Option<&str>,
+    paths: &CortexPaths, owner_tag: Option<&str>, parent_pid: Option<u32>, owner_token: Option<&str>,
 ) -> Result<(), String> {
     let Some(owner_tag) = owner_tag.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(());
@@ -187,26 +138,14 @@ pub fn validate_spawned_owner_claim(
         .ok_or_else(|| "spawned owner claim is missing ownership token".to_string())?;
     let parsed = parse_owner_token(token)?;
     if parsed.parent_pid != parent_pid {
-        return Err(format!(
-            "owner token parent mismatch (token={}, env={})",
-            parsed.parent_pid, parent_pid
-        ));
+        return Err(format!("owner token parent mismatch (token={}, env={})", parsed.parent_pid, parent_pid));
     }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or_default();
     if now.saturating_sub(parsed.issued_at) > DAEMON_OWNER_TOKEN_TTL_SECS {
         return Err("owner token is stale".to_string());
     }
     let key = load_or_create_owner_signing_key(paths)?;
-    let expected_signature = sign_owner_token_claim(
-        &key,
-        owner_tag,
-        parsed.parent_pid,
-        parsed.issued_at,
-        &parsed.nonce,
-    )?;
+    let expected_signature = sign_owner_token_claim(&key, owner_tag, parsed.parent_pid, parsed.issued_at, &parsed.nonce)?;
     if expected_signature != parsed.signature {
         return Err("owner token signature mismatch".to_string());
     }
@@ -217,10 +156,7 @@ fn health_probe_base(bind: &str, port: u16) -> String {
     format!("http://{host}:{port}")
 }
 async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&CortexPaths>) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(Duration::from_secs(2)).build() {
         Ok(client) => client,
         Err(_) => return false,
     };
@@ -240,9 +176,7 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
     )
     .await
     {
-        if let Some(ready) =
-            readiness_state_from_payload(status.as_u16(), &body, Some(port), expected_paths)
-        {
+        if let Some(ready) = readiness_state_from_payload(status.as_u16(), &body, Some(port), expected_paths) {
             return ready;
         }
     }
@@ -284,12 +218,7 @@ fn path_field_matches(value: Option<&serde_json::Value>, expected: &Path) -> boo
         .map(normalize_runtime_path)
         .is_some_and(|actual| actual == expected)
 }
-pub(crate) fn is_cortex_health_payload(
-    status: u16,
-    body: &str,
-    expected_port: Option<u16>,
-    expected_paths: Option<&CortexPaths>,
-) -> bool {
+pub(crate) fn is_cortex_health_payload(status: u16, body: &str, expected_port: Option<u16>, expected_paths: Option<&CortexPaths>) -> bool {
     if !(200..300).contains(&status) {
         return false;
     }
@@ -325,10 +254,7 @@ pub(crate) fn is_cortex_health_payload(
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
 pub(crate) fn readiness_state_from_payload(
-    status: u16,
-    body: &str,
-    expected_port: Option<u16>,
-    expected_paths: Option<&CortexPaths>,
+    status: u16, body: &str, expected_port: Option<u16>, expected_paths: Option<&CortexPaths>,
 ) -> Option<bool> {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
         return None;
@@ -336,10 +262,7 @@ pub(crate) fn readiness_state_from_payload(
     let ready = json.get("ready").and_then(|value| value.as_bool())?;
     let runtime = json.get("runtime").and_then(|value| value.as_object())?;
     let stats = json.get("stats").and_then(|value| value.as_object())?;
-    let runtime_port = runtime
-        .get("port")
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u16::try_from(value).ok());
+    let runtime_port = runtime.get("port").and_then(|value| value.as_u64()).and_then(|value| u16::try_from(value).ok());
     if let Some(expected_port) = expected_port {
         if runtime_port != Some(expected_port) {
             return None;

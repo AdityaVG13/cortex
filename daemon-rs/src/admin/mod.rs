@@ -11,15 +11,8 @@ pub struct RollbackStats {
     pub applied: bool,
     pub already_rolled_back: bool,
 }
-pub fn rollback_session_by_id(
-    conn: &Connection,
-    session_id: &str,
-    apply: bool,
-) -> rusqlite::Result<RollbackStats> {
-    let mut stats = RollbackStats {
-        session_id: session_id.to_string(),
-        ..Default::default()
-    };
+pub fn rollback_session_by_id(conn: &Connection, session_id: &str, apply: bool) -> rusqlite::Result<RollbackStats> {
+    let mut stats = RollbackStats { session_id: session_id.to_string(), ..Default::default() };
     let session_row: Option<(String, String)> = conn
         .query_row(
             "SELECT agent, started_at FROM sessions
@@ -70,9 +63,7 @@ pub fn rollback_session_by_id(
     )?;
     stats.memories_affected = active_memories;
     stats.decisions_affected = active_decisions;
-    stats.already_rolled_back = active_memories == 0
-        && active_decisions == 0
-        && (prior_rolled_memories > 0 || prior_rolled_decisions > 0);
+    stats.already_rolled_back = active_memories == 0 && active_decisions == 0 && (prior_rolled_memories > 0 || prior_rolled_decisions > 0);
     if !apply {
         return Ok(stats);
     }

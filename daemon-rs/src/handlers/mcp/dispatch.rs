@@ -4,32 +4,28 @@ use std::time::Instant;
 
 use crate::api_types::RetentionClass;
 use crate::handlers::diary::{write_diary_entry, DiaryRequest};
-use crate::handlers::feedback::{
-    build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value,
-};
+use crate::handlers::feedback::{build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value};
 use crate::handlers::health::{build_digest, build_health_payload};
 use crate::handlers::mutate::{
-    forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision,
-    resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
+    forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision, resolve_decision_with_metadata,
+    ConflictListOptions, ConflictStatusFilter, ResolutionMetadata,
 };
 use crate::handlers::recall::{
-    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
-    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext,
-    RecallPolicyMode,
+    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, parse_recall_policy_mode, resolve_recall_budget_k,
+    unfold_source, RecallContext, RecallPolicyMode,
 };
 use crate::handlers::store::{
-    persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention,
-    validate_explicit_ttl_seconds, DecisionProvenance,
+    persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention, validate_explicit_ttl_seconds,
+    DecisionProvenance,
 };
 use crate::handlers::{estimate_tokens, SourceIdentity};
 use crate::state::RuntimeState;
 use crate::{aging, db, indexer};
 
 use super::{
-    arg_f64, arg_i64, arg_str, arg_usize, clear_served_scope_for_boot, enforce_client_permission,
-    fetch_last_call, normalize_permission_client_id, parse_client_permission,
-    refresh_mcp_session_presence, source_agent_for_tool, source_client_for_permissions,
-    source_model_for_tool, upsert_mcp_session, McpPresenceDisposition,
+    arg_f64, arg_i64, arg_str, arg_usize, clear_served_scope_for_boot, enforce_client_permission, fetch_last_call,
+    normalize_permission_client_id, parse_client_permission, refresh_mcp_session_presence, source_agent_for_tool,
+    source_client_for_permissions, source_model_for_tool, upsert_mcp_session, McpPresenceDisposition,
 };
 
 struct RecallPolicyBudget {
@@ -45,14 +41,11 @@ struct SemanticRecallBudget {
 }
 
 fn recall_agent<'a>(args: &'a Value, source: Option<&'a SourceIdentity>) -> &'a str {
-    arg_str(args, &["agent", "source_agent"])
-        .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"))
+    arg_str(args, &["agent", "source_agent"]).unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"))
 }
 
 fn recall_source_prefix(args: &Value) -> Option<&str> {
-    arg_str(args, &["source_prefix", "sourcePrefix"])
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    arg_str(args, &["source_prefix", "sourcePrefix"]).map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn parse_recall_query(args: &Value) -> Result<&str, String> {
@@ -61,17 +54,8 @@ fn parse_recall_query(args: &Value) -> Result<&str, String> {
 
 fn parse_recall_policy_budget(args: &Value) -> Result<RecallPolicyBudget, String> {
     let requested = parse_recall_policy_mode(arg_str(args, &["policyMode", "policy_mode"]))?;
-    let (budget, k, resolved) = resolve_recall_budget_k(
-        requested,
-        arg_usize(args, &["budget", "b"]),
-        arg_usize(args, &["k", "limit"]),
-    );
-    Ok(RecallPolicyBudget {
-        requested,
-        budget,
-        k,
-        resolved,
-    })
+    let (budget, k, resolved) = resolve_recall_budget_k(requested, arg_usize(args, &["budget", "b"]), arg_usize(args, &["k", "limit"]));
+    Ok(RecallPolicyBudget { requested, budget, k, resolved })
 }
 
 fn parse_semantic_recall_budget(args: &Value) -> SemanticRecallBudget {
@@ -80,50 +64,28 @@ fn parse_semantic_recall_budget(args: &Value) -> SemanticRecallBudget {
     SemanticRecallBudget { budget, k }
 }
 
-fn attach_recall_policy_modes(
-    payload: &mut Value,
-    resolved: RecallPolicyMode,
-    requested: Option<RecallPolicyMode>,
-) {
+fn attach_recall_policy_modes(payload: &mut Value, resolved: RecallPolicyMode, requested: Option<RecallPolicyMode>) {
     if let Value::Object(map) = payload {
-        map.insert(
-            "policyMode".to_string(),
-            Value::String(resolved.as_str().to_string()),
-        );
+        map.insert("policyMode".to_string(), Value::String(resolved.as_str().to_string()));
         if let Some(mode) = requested {
-            map.insert(
-                "requestedPolicyMode".to_string(),
-                Value::String(mode.as_str().to_string()),
-            );
+            map.insert("requestedPolicyMode".to_string(), Value::String(mode.as_str().to_string()));
         }
     }
 }
 
 async fn active_mcp_recall_ctx(
-    state: &RuntimeState,
-    caller_id: Option<i64>,
-    agent: &str,
-    args: &Value,
-    source: Option<&SourceIdentity>,
+    state: &RuntimeState, caller_id: Option<i64>, agent: &str, args: &Value, source: Option<&SourceIdentity>,
 ) -> Result<RecallContext, String> {
     let model = source_model_for_tool(source, args);
-    let (display_agent, _, disposition) =
-        refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session").await?;
+    let (display_agent, _, disposition) = refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session").await?;
     if disposition == McpPresenceDisposition::Started {
-        state.emit(
-            "session",
-            json!({ "action": "started", "agent": display_agent }),
-        );
+        state.emit("session", json!({ "action": "started", "agent": display_agent }));
     }
     Ok(RecallContext::from_caller(caller_id, state))
 }
 
 pub(crate) async fn mcp_dispatch(
-    state: &RuntimeState,
-    caller_id: Option<i64>,
-    tool_name: &str,
-    args: &Value,
-    source: Option<&SourceIdentity>,
+    state: &RuntimeState, caller_id: Option<i64>, tool_name: &str, args: &Value, source: Option<&SourceIdentity>,
 ) -> Result<Value, String> {
     if state.team_mode && caller_id.is_none() {
         return Err("Team mode MCP calls require a caller-scoped ctx_ API key".to_string());
@@ -132,18 +94,14 @@ pub(crate) async fn mcp_dispatch(
 
     match tool_name {
         "cortex_boot" => {
-            let profile = args
-                .get("profile")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
+            let profile = args.get("profile").and_then(|v| v.as_str()).map(str::to_string);
             let raw_agent = arg_str(args, &["agent", "source_agent"])
                 .map(str::to_string)
                 .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
             let model = source_model_for_tool(source, args);
             let budget = args.get("budget").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
             let profile_str = profile.unwrap_or_else(|| "full".to_string());
-            let (agent, _expires_at) =
-                upsert_mcp_session(state, caller_id, &raw_agent, model, "MCP boot session").await?;
+            let (agent, _expires_at) = upsert_mcp_session(state, caller_id, &raw_agent, model, "MCP boot session").await?;
             let ctx = RecallContext::from_caller(caller_id, state);
 
             // Clear served content for this agent on boot
@@ -164,11 +122,8 @@ pub(crate) async fn mcp_dispatch(
             );
 
             // Auto-ack feed on boot: advance last_seen_id to latest feed entry.
-            if let Ok(latest_id) = conn.query_row(
-                "SELECT id FROM feed ORDER BY timestamp DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            ) {
+            if let Ok(latest_id) = conn.query_row("SELECT id FROM feed ORDER BY timestamp DESC LIMIT 1", [], |row| row.get::<_, String>(0))
+            {
                 if state.team_mode {
                     if let Some(owner_id) = ctx.caller_id {
                         let _ = conn.execute(
@@ -188,19 +143,9 @@ pub(crate) async fn mcp_dispatch(
 
             crate::db::checkpoint_wal_best_effort(&conn);
 
-            state.emit(
-                "session",
-                json!({ "action": "started", "agent": agent.clone() }),
-            );
-            state.emit(
-                "agent_boot",
-                json!({"agent": agent.clone(), "profile": profile_str.clone()}),
-            );
-            let saved = result
-                .savings
-                .get("saved")
-                .and_then(|value| value.as_i64())
-                .unwrap_or(0);
+            state.emit("session", json!({ "action": "started", "agent": agent.clone() }));
+            state.emit("agent_boot", json!({"agent": agent.clone(), "profile": profile_str.clone()}));
+            let saved = result.savings.get("saved").and_then(|value| value.as_i64()).unwrap_or(0);
 
             Ok(json!({
                 "bootPrompt": result.boot_prompt,
@@ -227,8 +172,7 @@ pub(crate) async fn mcp_dispatch(
             let agent = arg_str(args, &["agent", "source_agent"]).map(str::trim);
             let agent = agent.filter(|value| !value.is_empty());
             let conn = state.db_read.lock().await;
-            crate::handlers::boot::query_boot_audits(&conn, agent, limit)
-                .map_err(|err| format!("boot_audits query failed: {err}"))
+            crate::handlers::boot::query_boot_audits(&conn, agent, limit).map_err(|err| format!("boot_audits query failed: {err}"))
         }
 
         "cortex_reconnect" => {
@@ -236,12 +180,8 @@ pub(crate) async fn mcp_dispatch(
                 .map(str::to_string)
                 .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
             let model = source_model_for_tool(source, args);
-            let (display_agent, expires_at) =
-                upsert_mcp_session(state, caller_id, &agent, model, "MCP reconnect").await?;
-            state.emit(
-                "session",
-                json!({"action": "reconnected", "agent": display_agent}),
-            );
+            let (display_agent, expires_at) = upsert_mcp_session(state, caller_id, &agent, model, "MCP reconnect").await?;
+            state.emit("session", json!({"action": "reconnected", "agent": display_agent}));
             Ok(json!({
                 "reconnected": true,
                 "agent": display_agent,
@@ -257,16 +197,7 @@ pub(crate) async fn mcp_dispatch(
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let agent = source_agent_for_tool(source, "mcp");
             let ctx = active_mcp_recall_ctx(state, caller_id, &agent, args, source).await?;
-            let results = execute_unified_recall(
-                state,
-                query,
-                0,
-                limit,
-                "mcp",
-                &ctx,
-                recall_source_prefix(args),
-            )
-            .await?;
+            let results = execute_unified_recall(state, query, 0, limit, "mcp", &ctx, recall_source_prefix(args)).await?;
             Ok(results)
         }
 
@@ -276,24 +207,13 @@ pub(crate) async fn mcp_dispatch(
             let mut k = policy.k;
             let agent = recall_agent(args, source);
             let task_class = arg_str(args, &["taskClass", "task_class"]);
-            let adaptive = args
-                .get("adaptive")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
+            let adaptive = args.get("adaptive").and_then(|value| value.as_bool()).unwrap_or(false);
             let mut adaptive_policy: Option<Value> = None;
             if adaptive {
-                let owner_id = if state.team_mode {
-                    caller_id.unwrap_or_default()
-                } else {
-                    0
-                };
+                let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
                 let conn = state.db_read.lock().await;
-                if let Some(policy_val) = recommend_recall_k(&conn, owner_id, agent, task_class, k)?
-                {
-                    if let Some(recommended_k) = policy_val
-                        .get("recommendedK")
-                        .and_then(|value| value.as_u64())
-                    {
+                if let Some(policy_val) = recommend_recall_k(&conn, owner_id, agent, task_class, k)? {
+                    if let Some(recommended_k) = policy_val.get("recommendedK").and_then(|value| value.as_u64()) {
                         k = recommended_k as usize;
                     }
                     adaptive_policy = Some(policy_val);
@@ -301,9 +221,7 @@ pub(crate) async fn mcp_dispatch(
             }
             let source_prefix = recall_source_prefix(args);
             let ctx = active_mcp_recall_ctx(state, caller_id, agent, args, source).await?;
-            let mut payload =
-                execute_unified_recall(state, query, policy.budget, k, agent, &ctx, source_prefix)
-                    .await?;
+            let mut payload = execute_unified_recall(state, query, policy.budget, k, agent, &ctx, source_prefix).await?;
             attach_recall_policy_modes(&mut payload, policy.resolved, policy.requested);
             if let (Some(policy_val), Value::Object(map)) = (adaptive_policy, &mut payload) {
                 map.insert("adaptivePolicy".to_string(), policy_val);
@@ -314,23 +232,12 @@ pub(crate) async fn mcp_dispatch(
         "cortex_recall_policy_explain" => {
             let query = parse_recall_query(args)?;
             let policy = parse_recall_policy_budget(args)?;
-            let pool_k = arg_usize(args, &["pool_k", "poolK", "candidate_pool"])
-                .unwrap_or((policy.k.max(8) * 3).min(64));
+            let pool_k = arg_usize(args, &["pool_k", "poolK", "candidate_pool"]).unwrap_or((policy.k.max(8) * 3).min(64));
             let agent = recall_agent(args, source);
             let source_prefix = recall_source_prefix(args);
             let ctx = active_mcp_recall_ctx(state, caller_id, agent, args, source).await?;
-            let mut payload = execute_recall_policy_explain(
-                state,
-                query,
-                policy.budget,
-                policy.k,
-                agent,
-                &ctx,
-                source_prefix,
-                pool_k,
-                None,
-            )
-            .await?;
+            let mut payload =
+                execute_recall_policy_explain(state, query, policy.budget, policy.k, agent, &ctx, source_prefix, pool_k, None).await?;
             attach_recall_policy_modes(&mut payload, policy.resolved, policy.requested);
             Ok(payload)
         }
@@ -341,36 +248,21 @@ pub(crate) async fn mcp_dispatch(
             let agent = recall_agent(args, source);
             let source_prefix = recall_source_prefix(args);
             let ctx = active_mcp_recall_ctx(state, caller_id, agent, args, source).await?;
-            execute_semantic_recall(
-                state,
-                query,
-                budget_k.budget,
-                budget_k.k,
-                agent,
-                &ctx,
-                source_prefix,
-            )
-            .await
+            execute_semantic_recall(state, query, budget_k.budget, budget_k.k, agent, &ctx, source_prefix).await
         }
 
         "cortex_store" => {
-            let decision = arg_str(args, &["decision", "d"])
-                .ok_or_else(|| "Missing required argument: decision".to_string())?;
+            let decision = arg_str(args, &["decision", "d"]).ok_or_else(|| "Missing required argument: decision".to_string())?;
             let context = arg_str(args, &["context", "c"]).map(str::to_string);
             let entry_type = arg_str(args, &["type", "t"]).map(str::to_string);
-            let source_agent =
-                source_agent_for_tool(source, arg_str(args, &["source_agent"]).unwrap_or("mcp"));
+            let source_agent = source_agent_for_tool(source, arg_str(args, &["source_agent"]).unwrap_or("mcp"));
             let source_model = source_model_for_tool(source, args);
             let reasoning_depth = arg_str(args, &["reasoning_depth", "reasoningDepth"]);
-            let provenance =
-                DecisionProvenance::from_fields(&source_agent, source_model, reasoning_depth);
+            let provenance = DecisionProvenance::from_fields(&source_agent, source_model, reasoning_depth);
             let confidence = arg_f64(args, &["confidence", "conf"]);
             let ttl_seconds = arg_i64(args, &["ttl_seconds", "ttl"]);
             let retention_class = match arg_str(args, &["retention_class", "retentionClass"]) {
-                Some(raw) => Some(
-                    RetentionClass::parse(raw)
-                        .ok_or_else(|| format!("Invalid retention_class: {raw}"))?,
-                ),
+                Some(raw) => Some(RetentionClass::parse(raw).ok_or_else(|| format!("Invalid retention_class: {raw}"))?),
                 None => None,
             };
             validate_explicit_ttl_seconds(ttl_seconds).map_err(|err| err.to_string())?;
@@ -418,38 +310,20 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_agent_feedback_record" => {
-            let owner_id = if state.team_mode {
-                caller_id.unwrap_or_default()
-            } else {
-                0
-            };
-            let fallback_agent = source
-                .as_ref()
-                .map(|identity| identity.agent.as_str())
-                .unwrap_or("mcp");
+            let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
+            let fallback_agent = source.as_ref().map(|identity| identity.agent.as_str()).unwrap_or("mcp");
             let conn = state.db.lock().await;
             record_agent_feedback_from_value(&conn, owner_id, args, fallback_agent)
         }
 
         "cortex_agent_feedback_stats" => {
-            let owner_id = if state.team_mode {
-                caller_id.unwrap_or_default()
-            } else {
-                0
-            };
+            let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
             let horizon_days = arg_i64(args, &["horizonDays", "horizon_days"]).unwrap_or(30);
             let limit = arg_usize(args, &["limit"]).unwrap_or(400);
             let task_class = arg_str(args, &["taskClass", "task_class"]);
             let agent = arg_str(args, &["agent", "source_agent"]);
             let conn = state.db_read.lock().await;
-            build_agent_feedback_stats_payload(
-                &conn,
-                owner_id,
-                horizon_days,
-                limit,
-                task_class,
-                agent,
-            )
+            build_agent_feedback_stats_payload(&conn, owner_id, horizon_days, limit, task_class, agent)
         }
 
         "cortex_health" => Ok(build_health_payload(state, false).await),
@@ -462,19 +336,10 @@ pub(crate) async fn mcp_dispatch(
         "cortex_unfold" => {
             const MAX_UNFOLD_SOURCES: usize = 50;
             let sources: Vec<String> = match args.get("sources") {
-                Some(Value::Array(arr)) => arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect(),
-                Some(Value::String(s)) => s
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect(),
+                Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+                Some(Value::String(s)) => s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
                 _ => {
-                    return Err(
-                        "Missing required argument: sources (array of source strings)".to_string(),
-                    );
+                    return Err("Missing required argument: sources (array of source strings)".to_string());
                 }
             };
             if sources.is_empty() {
@@ -548,13 +413,7 @@ pub(crate) async fn mcp_dispatch(
                     None => None,
                 };
                 let conn = state.db.lock().await;
-                crate::handlers::feedback::record_unfold_feedback(
-                    &conn,
-                    &found_sources,
-                    agent,
-                    query_text,
-                    query_blob.as_deref(),
-                );
+                crate::handlers::feedback::record_unfold_feedback(&conn, &found_sources, agent, query_text, query_blob.as_deref());
             }
 
             Ok(json!({
@@ -593,21 +452,14 @@ pub(crate) async fn mcp_dispatch(
 
         "cortex_conflicts_list" => {
             let status = ConflictStatusFilter::parse(arg_str(args, &["status"]))?;
-            let classification = arg_str(args, &["classification"])
-                .map(str::trim)
-                .map(str::to_string);
+            let classification = arg_str(args, &["classification"]).map(str::trim).map(str::to_string);
             let conflict_id = arg_str(args, &["conflictId", "conflict_id", "id"])
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
             let limit = arg_usize(args, &["limit"]).unwrap_or(100).clamp(1, 500);
 
-            let options = ConflictListOptions {
-                status,
-                classification,
-                conflict_id,
-                limit,
-            };
+            let options = ConflictListOptions { status, classification, conflict_id, limit };
             let conn = state.db_read.lock().await;
             list_conflicts_payload(&conn, &options)
         }
@@ -625,11 +477,7 @@ pub(crate) async fn mcp_dispatch(
             };
             let conn = state.db_read.lock().await;
             let payload = list_conflicts_payload(&conn, &options)?;
-            let found = payload
-                .get("count")
-                .and_then(|value| value.as_u64())
-                .map(|value| value > 0)
-                .unwrap_or(false);
+            let found = payload.get("count").and_then(|value| value.as_u64()).map(|value| value > 0).unwrap_or(false);
             Ok(json!({
                 "found": found,
                 "conflictId": conflict_id,
@@ -638,8 +486,7 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_conflicts_resolve" => {
-            let action = arg_str(args, &["action"])
-                .ok_or_else(|| "Missing required argument: action".to_string())?;
+            let action = arg_str(args, &["action"]).ok_or_else(|| "Missing required argument: action".to_string())?;
             let mut winner_id = arg_i64(args, &["winnerId", "keepId"]);
             let mut superseded_id = arg_i64(args, &["supersededId", "loserId"]);
             let conflict_id = arg_str(args, &["conflictId", "conflict_id", "id"])
@@ -664,8 +511,7 @@ pub(crate) async fn mcp_dispatch(
                 }
             }
 
-            let winner_id = winner_id
-                .ok_or_else(|| "Missing required argument: winnerId (or keepId)".to_string())?;
+            let winner_id = winner_id.ok_or_else(|| "Missing required argument: winnerId (or keepId)".to_string())?;
             let resolved_by = arg_str(args, &["resolvedBy", "resolved_by"])
                 .map(str::to_string)
                 .unwrap_or_else(|| source_agent_for_tool(source, "mcp"));
@@ -683,13 +529,8 @@ pub(crate) async fn mcp_dispatch(
 
         "cortex_consensus_promote" => {
             let limit = arg_usize(args, &["limit"]).unwrap_or(50).clamp(1, 500);
-            let min_margin = arg_f64(args, &["minMargin", "min_margin"])
-                .unwrap_or(0.1)
-                .clamp(0.0, 1.0);
-            let dry_run = args
-                .get("dryRun")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
+            let min_margin = arg_f64(args, &["minMargin", "min_margin"]).unwrap_or(0.1).clamp(0.0, 1.0);
+            let dry_run = args.get("dryRun").and_then(|value| value.as_bool()).unwrap_or(false);
             let resolved_by = source_agent_for_tool(source, "mcp");
 
             let mut conn = state.db.lock().await;
@@ -702,11 +543,7 @@ pub(crate) async fn mcp_dispatch(
                     limit,
                 },
             )?;
-            let conflicts = list_payload
-                .get("conflicts")
-                .and_then(|value| value.as_array())
-                .cloned()
-                .unwrap_or_default();
+            let conflicts = list_payload.get("conflicts").and_then(|value| value.as_array()).cloned().unwrap_or_default();
 
             let mut promoted = Vec::new();
             let mut skipped = Vec::new();
@@ -787,24 +624,13 @@ pub(crate) async fn mcp_dispatch(
 
                 let metadata = ResolutionMetadata {
                     conflict_id: Some(conflict_id.to_string()),
-                    classification: conflict
-                        .get("classification")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string),
-                    notes: Some(format!(
-                        "Auto-promoted by cortex_consensus_promote (margin {margin:.3})"
-                    )),
+                    classification: conflict.get("classification").and_then(|value| value.as_str()).map(str::to_string),
+                    notes: Some(format!("Auto-promoted by cortex_consensus_promote (margin {margin:.3})")),
                     resolved_by: Some(resolved_by.clone()),
                     similarity: conflict.get("similarity").and_then(|value| value.as_f64()),
                 };
 
-                match resolve_decision_with_metadata(
-                    &mut conn,
-                    winner_id,
-                    "keep",
-                    Some(loser_id),
-                    metadata,
-                ) {
+                match resolve_decision_with_metadata(&mut conn, winner_id, "keep", Some(loser_id), metadata) {
                     Ok(payload) => promoted.push(payload),
                     Err(err) => failed.push(json!({
                         "conflictId": conflict_id,
@@ -842,34 +668,17 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_memory_decay_run" => {
-            let include_aging = args
-                .get("includeAging")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true);
-            let cleanup_expired = args
-                .get("cleanupExpired")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true);
+            let include_aging = args.get("includeAging").and_then(|value| value.as_bool()).unwrap_or(true);
+            let cleanup_expired = args.get("cleanupExpired").and_then(|value| value.as_bool()).unwrap_or(true);
 
             let conn = state.db.lock().await;
             let decayed = indexer::decay_pass(&conn);
-            let (compressed, archived) = if include_aging {
-                aging::run_aging_pass(&conn)
-            } else {
-                (0, 0)
-            };
-            let expired_cleanup = if cleanup_expired {
-                Some(db::delete_expired_entries(&conn).map_err(|err| err.to_string())?)
-            } else {
-                None
-            };
+            let (compressed, archived) = if include_aging { aging::run_aging_pass(&conn) } else { (0, 0) };
+            let expired_cleanup =
+                if cleanup_expired { Some(db::delete_expired_entries(&conn).map_err(|err| err.to_string())?) } else { None };
 
-            let expired_memories = expired_cleanup
-                .map(|counts| counts.memories_deleted)
-                .unwrap_or(0);
-            let expired_decisions = expired_cleanup
-                .map(|counts| counts.decisions_deleted)
-                .unwrap_or(0);
+            let expired_memories = expired_cleanup.map(|counts| counts.memories_deleted).unwrap_or(0);
+            let expired_decisions = expired_cleanup.map(|counts| counts.decisions_deleted).unwrap_or(0);
 
             state.emit(
                 "maintenance",
@@ -900,9 +709,7 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_eval_run" => {
-            let horizon_days = arg_i64(args, &["horizonDays", "horizon_days"])
-                .unwrap_or(30)
-                .clamp(1, 180);
+            let horizon_days = arg_i64(args, &["horizonDays", "horizon_days"]).unwrap_or(30).clamp(1, 180);
             let conn = state.db_read.lock().await;
             Ok(crate::eval::build_eval_snapshot(&conn, horizon_days))
         }
@@ -912,8 +719,7 @@ pub(crate) async fn mcp_dispatch(
                 .get("label")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
-            let agent = arg_str(args, &["agent"])
-                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let agent = arg_str(args, &["agent"]).unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let conn = state.db.lock().await;
             crate::focus::focus_start(&conn, label, agent)
         }
@@ -923,15 +729,13 @@ pub(crate) async fn mcp_dispatch(
                 .get("label")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required argument: label".to_string())?;
-            let agent = arg_str(args, &["agent"])
-                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let agent = arg_str(args, &["agent"]).unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let conn = state.db.lock().await;
             crate::focus::focus_end(&conn, label, agent, caller_id)
         }
 
         "cortex_focus_status" => {
-            let agent = arg_str(args, &["agent"])
-                .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
+            let agent = arg_str(args, &["agent"]).unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
             let conn = state.db_read.lock().await;
 
             let current = crate::focus::focus_current(&conn, agent);
@@ -974,8 +778,7 @@ pub(crate) async fn mcp_dispatch(
                 decisions: arg_str(args, &["decisions", "dec"]).map(str::to_string),
                 key_decisions: arg_str(args, &["keyDecisions"]).map(str::to_string),
                 pending: arg_str(args, &["pending", "pend"]).map(str::to_string),
-                known_issues: arg_str(args, &["knownIssues", "known_issues", "issues"])
-                    .map(str::to_string),
+                known_issues: arg_str(args, &["knownIssues", "known_issues", "issues"]).map(str::to_string),
             };
             let source_agent = source_agent_for_tool(source, "mcp");
             let path = write_diary_entry(state, &body, &source_agent).await?;
@@ -992,11 +795,7 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_permissions_list" => {
-            let owner_id = if state.team_mode {
-                caller_id.unwrap_or_default()
-            } else {
-                0
-            };
+            let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
             let conn = state.db_read.lock().await;
             let mut stmt = conn
                 .prepare(
@@ -1026,25 +825,13 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_permissions_grant" => {
-            let owner_id = if state.team_mode {
-                caller_id.unwrap_or_default()
-            } else {
-                0
-            };
-            let client = arg_str(args, &["client", "client_id"])
-                .ok_or_else(|| "Missing required argument: client".to_string())?;
-            let client = if client.trim() == "*" {
-                "*".to_string()
-            } else {
-                normalize_permission_client_id(client)
-            };
-            let permission_raw = arg_str(args, &["permission"])
-                .ok_or_else(|| "Missing required argument: permission".to_string())?;
-            let permission = parse_client_permission(permission_raw)
-                .ok_or_else(|| "Invalid permission; expected read, write, or admin".to_string())?;
-            let scope = arg_str(args, &["scope"])
-                .map(str::to_string)
-                .unwrap_or_else(|| "*".to_string());
+            let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
+            let client = arg_str(args, &["client", "client_id"]).ok_or_else(|| "Missing required argument: client".to_string())?;
+            let client = if client.trim() == "*" { "*".to_string() } else { normalize_permission_client_id(client) };
+            let permission_raw = arg_str(args, &["permission"]).ok_or_else(|| "Missing required argument: permission".to_string())?;
+            let permission =
+                parse_client_permission(permission_raw).ok_or_else(|| "Invalid permission; expected read, write, or admin".to_string())?;
+            let scope = arg_str(args, &["scope"]).map(str::to_string).unwrap_or_else(|| "*".to_string());
             let granted_by = source_client_for_permissions(source, args);
 
             let conn = state.db.lock().await;
@@ -1067,25 +854,13 @@ pub(crate) async fn mcp_dispatch(
         }
 
         "cortex_permissions_revoke" => {
-            let owner_id = if state.team_mode {
-                caller_id.unwrap_or_default()
-            } else {
-                0
-            };
-            let client = arg_str(args, &["client", "client_id"])
-                .ok_or_else(|| "Missing required argument: client".to_string())?;
-            let client = if client.trim() == "*" {
-                "*".to_string()
-            } else {
-                normalize_permission_client_id(client)
-            };
-            let permission_raw = arg_str(args, &["permission"])
-                .ok_or_else(|| "Missing required argument: permission".to_string())?;
-            let permission = parse_client_permission(permission_raw)
-                .ok_or_else(|| "Invalid permission; expected read, write, or admin".to_string())?;
-            let scope = arg_str(args, &["scope"])
-                .map(str::to_string)
-                .unwrap_or_else(|| "*".to_string());
+            let owner_id = if state.team_mode { caller_id.unwrap_or_default() } else { 0 };
+            let client = arg_str(args, &["client", "client_id"]).ok_or_else(|| "Missing required argument: client".to_string())?;
+            let client = if client.trim() == "*" { "*".to_string() } else { normalize_permission_client_id(client) };
+            let permission_raw = arg_str(args, &["permission"]).ok_or_else(|| "Missing required argument: permission".to_string())?;
+            let permission =
+                parse_client_permission(permission_raw).ok_or_else(|| "Invalid permission; expected read, write, or admin".to_string())?;
+            let scope = arg_str(args, &["scope"]).map(str::to_string).unwrap_or_else(|| "*".to_string());
 
             let conn = state.db.lock().await;
             let deleted = conn

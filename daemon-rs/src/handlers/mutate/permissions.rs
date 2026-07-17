@@ -11,34 +11,29 @@ pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, 
              ORDER BY client_id ASC, permission ASC, scope ASC",
         )
         .map_err(|err| err.to_string())?;
-    let rows=stmt.query_map(params![owner_id],|row|{Ok(json!({"client":row.get::<_,String>(0)?,
+    let rows = stmt
+        .query_map(params![owner_id], |row| {
+            Ok(json!({"client":row.get::<_,String>(0)?,
 "permission":row.get::<_,String>(1)?,"scope":row.get::<_,String>(2)?,"grantedBy":row.get::<_,String>(3)?,"grantedAt":row.get::<_,
-String>(4)?,}))}).map_err(|err|err.to_string())?;
+String>(4)?,}))
+        })
+        .map_err(|err| err.to_string())?;
     Ok(rows.filter_map(Result::ok).collect())
 }
 pub fn grant_permission(
-    conn: &Connection,
-    owner_id: i64,
-    client: &str,
-    permission: &str,
-    scope: &str,
-    granted_by: &str,
+    conn: &Connection, owner_id: i64, client: &str, permission: &str, scope: &str, granted_by: &str,
 ) -> Result<(), String> {
     conn.execute(
-"INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
+        "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
          VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
          ON CONFLICT(owner_id, client_id, permission, scope)
-         DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at"
-,params![owner_id,client,permission,scope,granted_by],).map_err(|err|err.to_string())?;
+         DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at",
+        params![owner_id, client, permission, scope, granted_by],
+    )
+    .map_err(|err| err.to_string())?;
     Ok(())
 }
-pub fn revoke_permission(
-    conn: &Connection,
-    owner_id: i64,
-    client: &str,
-    permission: &str,
-    scope: &str,
-) -> Result<usize, String> {
+pub fn revoke_permission(conn: &Connection, owner_id: i64, client: &str, permission: &str, scope: &str) -> Result<usize, String> {
     conn.execute(
         "DELETE FROM client_permissions
          WHERE owner_id = ?1 AND client_id = ?2 AND permission = ?3 AND scope = ?4",
@@ -109,10 +104,7 @@ pub(crate) fn decision_node_missing(id: i64) -> Value {
     json!({"id":id,
 "missing":true})
 }
-pub(crate) fn fetch_decision_nodes_by_ids(
-    conn: &Connection,
-    ids: &[i64],
-) -> Result<HashMap<i64, Value>, String> {
+pub(crate) fn fetch_decision_nodes_by_ids(conn: &Connection, ids: &[i64]) -> Result<HashMap<i64, Value>, String> {
     let mut unique_ids = ids.to_vec();
     unique_ids.sort_unstable();
     unique_ids.dedup();
@@ -223,8 +215,9 @@ right.get("source_agent").cloned().or_else(||right.get("sourceAgent").cloned()).
 cloned()).unwrap_or(Value::Null),},})
 }
 pub(crate) fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, String> {
-    let mut stmt=conn.prepare(
-"SELECT
+    let mut stmt = conn
+        .prepare(
+            "SELECT
                 d1.id, d1.decision, d1.context, d1.source_agent, d1.source_client, d1.source_model, d1.reasoning_depth,
                 d1.confidence, d1.trust_score, d1.status, d1.created_at, d1.updated_at,
                 d2.id, d2.decision, d2.context, d2.source_agent, d2.source_client, d2.source_model, d2.reasoning_depth,
@@ -233,29 +226,54 @@ pub(crate) fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec
              JOIN decisions d2 ON d1.disputes_id = d2.id
              WHERE d1.status = 'disputed' AND d1.id > d2.id
              ORDER BY d1.created_at DESC
-             LIMIT ?1"
-,).map_err(|err|err.to_string())?;
-    let rows=stmt.query_map(params![limit as i64],|row|{let left_id=row.get::<_,i64>(0)?;let
-left_decision=row.get::<_,String>(1)?;let right_id=row.get::<_,i64>(12)?;let right_decision=row.get::<_,String>(13)?;let left=
-build_decision_node(DecisionNodeRecord{id:left_id,decision:left_decision.clone(),context:row.get::<_,Option<String>>(2)?,
-source_agent:row.get::<_,Option<String>>(3)?,source_client:row.get::<_,Option<String>>(4)?,source_model:row.get::<_,Option<String
->>(5)?,reasoning_depth:row.get::<_,Option<String>>(6)?,confidence:row.get::<_,Option<f64>>(7)?,trust_score:row.get::<_,Option<f64
->>(8)?,status:row.get::<_,Option<String>>(9)?,created_at:row.get::<_,Option<String>>(10)?,updated_at:row.get::<_,Option<String>>(
-11)?,});let right=build_decision_node(DecisionNodeRecord{id:right_id,decision:right_decision.clone(),context:row.get::<_,Option<
-String>>(14)?,source_agent:row.get::<_,Option<String>>(15)?,source_client:row.get::<_,Option<String>>(16)?,source_model:row.get::<
-_,Option<String>>(17)?,reasoning_depth:row.get::<_,Option<String>>(18)?,confidence:row.get::<_,Option<f64>>(19)?,trust_score:row.
-get::<_,Option<f64>>(20)?,status:row.get::<_,Option<String>>(21)?,created_at:row.get::<_,Option<String>>(22)?,updated_at:row.get::
-<_,Option<String>>(23)?,});let similarity=crate::conflict::jaccard_similarity(&left_decision,&right_decision);let classification=
-"CONTRADICTS".to_string();let conflict_id=conflict_id_from_pair(left_id,right_id);Ok(json!({"id":conflict_id,"status":"open",
+             LIMIT ?1",
+        )
+        .map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            let left_id = row.get::<_, i64>(0)?;
+            let left_decision = row.get::<_, String>(1)?;
+            let right_id = row.get::<_, i64>(12)?;
+            let right_decision = row.get::<_, String>(13)?;
+            let left = build_decision_node(DecisionNodeRecord {
+                id: left_id,
+                decision: left_decision.clone(),
+                context: row.get::<_, Option<String>>(2)?,
+                source_agent: row.get::<_, Option<String>>(3)?,
+                source_client: row.get::<_, Option<String>>(4)?,
+                source_model: row.get::<_, Option<String>>(5)?,
+                reasoning_depth: row.get::<_, Option<String>>(6)?,
+                confidence: row.get::<_, Option<f64>>(7)?,
+                trust_score: row.get::<_, Option<f64>>(8)?,
+                status: row.get::<_, Option<String>>(9)?,
+                created_at: row.get::<_, Option<String>>(10)?,
+                updated_at: row.get::<_, Option<String>>(11)?,
+            });
+            let right = build_decision_node(DecisionNodeRecord {
+                id: right_id,
+                decision: right_decision.clone(),
+                context: row.get::<_, Option<String>>(14)?,
+                source_agent: row.get::<_, Option<String>>(15)?,
+                source_client: row.get::<_, Option<String>>(16)?,
+                source_model: row.get::<_, Option<String>>(17)?,
+                reasoning_depth: row.get::<_, Option<String>>(18)?,
+                confidence: row.get::<_, Option<f64>>(19)?,
+                trust_score: row.get::<_, Option<f64>>(20)?,
+                status: row.get::<_, Option<String>>(21)?,
+                created_at: row.get::<_, Option<String>>(22)?,
+                updated_at: row.get::<_, Option<String>>(23)?,
+            });
+            let similarity = crate::conflict::jaccard_similarity(&left_decision, &right_decision);
+            let classification = "CONTRADICTS".to_string();
+            let conflict_id = conflict_id_from_pair(left_id, right_id);
+            Ok(json!({"id":conflict_id,"status":"open",
 "classification":classification,"similarity":similarity,"left":left,"right":right,"trustContext":{"left":trust_snapshot(&left),
-"right":trust_snapshot(&right),"recommendedWinnerId":preferred_winner_id(&left,&right),},"resolution":Value::Null}))}).map_err(|
-err|err.to_string())?;
+"right":trust_snapshot(&right),"recommendedWinnerId":preferred_winner_id(&left,&right),},"resolution":Value::Null}))
+        })
+        .map_err(|err| err.to_string())?;
     Ok(rows.filter_map(Result::ok).collect())
 }
-pub(crate) fn list_resolved_conflicts(
-    conn: &Connection,
-    limit: usize,
-) -> Result<Vec<Value>, String> {
+pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, String> {
     #[derive(Debug)]
     pub(crate) struct ResolvedConflictSeed {
         conflict_id: String,
@@ -307,32 +325,16 @@ pub(crate) fn list_resolved_conflicts(
             .map(str::to_string)
             .or_else(|| superseded_id.map(|other| conflict_id_from_pair(winner_id, other)))
             .unwrap_or_else(|| conflict_id_from_pair(winner_id, winner_id));
-        let (left_id, right_id) = parse_conflict_id(&conflict_id).unwrap_or_else(|| {
-            (
-                winner_id.min(superseded_id.unwrap_or(winner_id)),
-                winner_id.max(superseded_id.unwrap_or(winner_id)),
-            )
-        });
-        let action = data
-            .get("action")
-            .and_then(|value| value.as_str())
-            .unwrap_or("keep")
-            .to_string();
+        let (left_id, right_id) = parse_conflict_id(&conflict_id)
+            .unwrap_or_else(|| (winner_id.min(superseded_id.unwrap_or(winner_id)), winner_id.max(superseded_id.unwrap_or(winner_id))));
+        let action = data.get("action").and_then(|value| value.as_str()).unwrap_or("keep").to_string();
         let classification = data
             .get("classification")
             .and_then(|value| value.as_str())
             .and_then(normalize_conflict_classification)
             .unwrap_or_else(|| default_classification_for_action(&action).to_string());
-        let resolved_by = data
-            .get("resolvedBy")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .or(source_agent.clone());
-        let resolved_at = data
-            .get("resolvedAt")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .unwrap_or(created_at);
+        let resolved_by = data.get("resolvedBy").and_then(|value| value.as_str()).map(str::to_string).or(source_agent.clone());
+        let resolved_at = data.get("resolvedAt").and_then(|value| value.as_str()).map(str::to_string).unwrap_or(created_at);
         decision_ids.push(left_id);
         decision_ids.push(right_id);
         seeds.push(ResolvedConflictSeed {
@@ -353,14 +355,8 @@ pub(crate) fn list_resolved_conflicts(
     let decision_nodes = fetch_decision_nodes_by_ids(conn, &decision_ids)?;
     let mut conflicts = Vec::with_capacity(seeds.len());
     for seed in seeds {
-        let left = decision_nodes
-            .get(&seed.left_id)
-            .cloned()
-            .unwrap_or_else(|| decision_node_missing(seed.left_id));
-        let right = decision_nodes
-            .get(&seed.right_id)
-            .cloned()
-            .unwrap_or_else(|| decision_node_missing(seed.right_id));
+        let left = decision_nodes.get(&seed.left_id).cloned().unwrap_or_else(|| decision_node_missing(seed.left_id));
+        let right = decision_nodes.get(&seed.right_id).cloned().unwrap_or_else(|| decision_node_missing(seed.right_id));
         let similarity = seed.similarity.or_else(|| {
             let left_text = decision_text(&left)?;
             let right_text = decision_text(&right)?;

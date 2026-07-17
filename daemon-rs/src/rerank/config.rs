@@ -40,19 +40,11 @@ impl RerankConfig {
             .filter(|value| value.is_finite())
             .unwrap_or(DEFAULT_FUSION_ALPHA)
             .clamp(0.0, 1.0);
-        Self {
-            mode,
-            top_n,
-            fusion_alpha,
-        }
+        Self { mode, top_n, fusion_alpha }
     }
     #[cfg(test)]
     pub fn off() -> Self {
-        Self {
-            mode: RerankMode::Off,
-            top_n: DEFAULT_TOP_N,
-            fusion_alpha: DEFAULT_FUSION_ALPHA,
-        }
+        Self { mode: RerankMode::Off, top_n: DEFAULT_TOP_N, fusion_alpha: DEFAULT_FUSION_ALPHA }
     }
     pub fn is_active(&self) -> bool {
         !matches!(self.mode, RerankMode::Off)

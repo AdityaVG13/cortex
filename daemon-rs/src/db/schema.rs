@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
-r#"
+        r#"
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
         CREATE TABLE IF NOT EXISTS memories (
@@ -316,7 +316,7 @@ r#"
           INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
           INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
         END;
-        "#
-,)?;
+        "#,
+    )?;
     Ok(())
 }

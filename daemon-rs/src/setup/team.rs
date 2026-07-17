@@ -1,6 +1,4 @@
-use super::helpers::{
-    arg_value, persist_team_owner_token, restore_previous_token, rollback_team_setup,
-};
+use super::helpers::{arg_value, persist_team_owner_token, restore_previous_token, rollback_team_setup};
 use crate::auth;
 use crate::db;
 use std::fs;
@@ -32,9 +30,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         eprintln!();
         return;
     }
-    let default_owner = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "owner".to_string());
+    let default_owner = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "owner".to_string());
     let owner = if let Some(v) = arg_value(args, "--owner") {
         v
     } else {
@@ -145,28 +141,13 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     let label_width = 22;
     for (table, count) in &counts {
         if dry_run {
-            eprintln!(
-                "    {:<width$} {:>6} rows would be assigned",
-                format!("{table}:"),
-                count,
-                width = label_width,
-            );
+            eprintln!("    {:<width$} {:>6} rows would be assigned", format!("{table}:"), count, width = label_width,);
         } else {
-            eprintln!(
-                "    {:<width$} {:>6} rows",
-                format!("{table}:"),
-                count,
-                width = label_width,
-            );
+            eprintln!("    {:<width$} {:>6} rows", format!("{table}:"), count, width = label_width,);
         }
     }
     if dry_run {
-        eprintln!(
-            "    {:<width$} {:>6} rows",
-            "Total:",
-            total,
-            width = label_width
-        );
+        eprintln!("    {:<width$} {:>6} rows", "Total:", total, width = label_width);
         eprintln!();
         rollback_team_setup(&conn);
         eprintln!("  No changes made.");
@@ -185,9 +166,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     let previous_token = fs::read(&paths.token).ok();
     if let Err(e) = persist_team_owner_token(&paths, &owner_key) {
         rollback_team_setup(&conn);
-        eprintln!(
-            "  [FAIL] Team migration rolled back because owner token persistence failed: {e}"
-        );
+        eprintln!("  [FAIL] Team migration rolled back because owner token persistence failed: {e}");
         return;
     }
     if let Err(e) = conn.execute_batch("COMMIT") {
@@ -198,12 +177,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
     let key_preview: String = owner_key.chars().take(8).collect();
     eprintln!("    ────────────────────────────");
-    eprintln!(
-        "    {:<width$} {:>6} rows -> owner \"{owner}\" (id: {owner_id})",
-        "Total:",
-        total,
-        width = label_width,
-    );
+    eprintln!("    {:<width$} {:>6} rows -> owner \"{owner}\" (id: {owner_id})", "Total:", total, width = label_width,);
     eprintln!();
     eprintln!("  All rows set to visibility: private");
     eprintln!();

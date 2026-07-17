@@ -13,8 +13,7 @@ pub(crate) use events::*;
 pub(crate) use feedback::*;
 pub(crate) use governor::*;
 pub use governor::{
-    purge_benchmark_artifacts, run_compaction, run_compaction_governor,
-    run_compaction_governor_startup, BenchmarkPurgeResult,
+    purge_benchmark_artifacts, run_compaction, run_compaction_governor, run_compaction_governor_startup, BenchmarkPurgeResult,
 };
 pub use helpers::storage_breakdown;
 pub(crate) use helpers::*;

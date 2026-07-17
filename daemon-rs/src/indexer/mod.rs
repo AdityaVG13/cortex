@@ -4,12 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-const STATE_SECTIONS: &[&str] = &[
-    "## What Was Done",
-    "## Next Session",
-    "## Pending",
-    "## Known Issues",
-];
+const STATE_SECTIONS: &[&str] = &["## What Was Done", "## Next Session", "## Pending", "## Known Issues"];
 pub fn index_all(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize {
     let mut total = 0;
     total += index_state_file(conn, home, owner_id);
@@ -17,38 +12,22 @@ pub fn index_all(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize
     total += index_custom_sources(conn, home, owner_id);
     total
 }
-fn upsert_memory(
-    conn: &Connection,
-    text: &str,
-    source: &str,
-    mem_type: &str,
-    agent: &str,
-    owner_id: Option<i64>,
-) -> bool {
+fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, agent: &str, owner_id: Option<i64>) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return false;
     }
     let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM memories WHERE source = ? AND status = 'active'",
-            [source],
-            |row| row.get(0),
-        )
+        .query_row("SELECT id FROM memories WHERE source = ? AND status = 'active'", [source], |row| row.get(0))
         .ok();
     if let Some(id) = existing {
-        let _ = conn.execute(
-            "UPDATE memories SET text = ?, updated_at = datetime('now') WHERE id = ?",
-            rusqlite::params![text, id],
-        );
-        let _ = conn.execute(
-            "DELETE FROM embeddings WHERE target_type = 'memory' AND target_id = ?",
-            [id],
-        );
+        let _ = conn.execute("UPDATE memories SET text = ?, updated_at = datetime('now') WHERE id = ?", rusqlite::params![text, id]);
+        let _ = conn.execute("DELETE FROM embeddings WHERE target_type = 'memory' AND target_id = ?", [id]);
     } else if let Some(oid) = owner_id {
-        let _=conn.
-execute("INSERT INTO memories (text, source, type, source_agent, owner_id) VALUES (?, ?, ?, ?, ?)",rusqlite::params![text,source,
-mem_type,agent,oid],);
+        let _ = conn.execute(
+            "INSERT INTO memories (text, source, type, source_agent, owner_id) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![text, source, mem_type, agent, oid],
+        );
     } else {
         let _ = conn.execute(
             "INSERT INTO memories (text, source, type, source_agent) VALUES (?, ?, ?, ?)",
@@ -94,11 +73,7 @@ fn index_memory_files(conn: &Connection, home: &Path, owner_id: Option<i64>) -> 
         Some(s) => s,
         None => return 0,
     };
-    let mem_dir = home
-        .join(".claude")
-        .join("projects")
-        .join(slug)
-        .join("memory");
+    let mem_dir = home.join(".claude").join("projects").join(slug).join("memory");
     if !mem_dir.exists() {
         return 0;
     }
@@ -117,16 +92,11 @@ fn index_memory_files(conn: &Connection, home: &Path, owner_id: Option<i64>) -> 
         }
         if let Ok(raw) = fs::read_to_string(&path) {
             let (fm, body) = parse_frontmatter(&raw);
-            let name = fm.get("name").cloned().unwrap_or_else(|| {
-                path.file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            });
-            let mem_type = fm
-                .get("type")
+            let name = fm
+                .get("name")
                 .cloned()
-                .unwrap_or_else(|| "memory".to_string());
+                .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+            let mem_type = fm.get("type").cloned().unwrap_or_else(|| "memory".to_string());
             let desc = fm.get("description").cloned().unwrap_or_default();
             let body_preview: String = body.chars().take(500).collect();
             let text = if !desc.is_empty() {
@@ -134,10 +104,7 @@ fn index_memory_files(conn: &Connection, home: &Path, owner_id: Option<i64>) -> 
             } else {
                 format!("[{name}] ({mem_type})\n{body_preview}")
             };
-            let source = format!(
-                "memory::{}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            );
+            let source = format!("memory::{}", path.file_name().unwrap_or_default().to_string_lossy());
             if upsert_memory(conn, &text, &source, &mem_type, "indexer", owner_id) {
                 count += 1;
             }
@@ -214,11 +181,7 @@ fn load_custom_sources(home: &Path) -> Vec<CustomSource> {
             .split(';')
             .filter(|s| !s.is_empty())
             .map(|p| CustomSource {
-                name: Path::new(p)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
+                name: Path::new(p).file_name().unwrap_or_default().to_string_lossy().to_string(),
                 path: p.to_string(),
                 mem_type: "custom".to_string(),
                 glob: "*".to_string(),
@@ -243,10 +206,7 @@ fn index_custom_sources(conn: &Connection, home: &Path, owner_id: Option<i64>) -
                 continue;
             };
             if !canonical.starts_with(root) {
-                eprintln!(
-                    "[cortex] skipping custom source outside Cortex home: {}",
-                    resolved.display()
-                );
+                eprintln!("[cortex] skipping custom source outside Cortex home: {}", resolved.display());
                 continue;
             }
         }
@@ -258,12 +218,7 @@ fn index_custom_sources(conn: &Connection, home: &Path, owner_id: Option<i64>) -
     }
     total
 }
-fn index_directory(
-    conn: &Connection,
-    dir: &Path,
-    src: &CustomSource,
-    owner_id: Option<i64>,
-) -> usize {
+fn index_directory(conn: &Connection, dir: &Path, src: &CustomSource, owner_id: Option<i64>) -> usize {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return 0,
@@ -284,26 +239,13 @@ fn index_directory(
     }
     count
 }
-fn index_single_file(
-    conn: &Connection,
-    path: &Path,
-    src: &CustomSource,
-    owner_id: Option<i64>,
-) -> usize {
+fn index_single_file(conn: &Connection, path: &Path, src: &CustomSource, owner_id: Option<i64>) -> usize {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return 0,
     };
-    let file_stem = path
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let text = if src.truncate > 0 {
-        content.chars().take(src.truncate).collect()
-    } else {
-        content
-    };
+    let file_stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let text = if src.truncate > 0 { content.chars().take(src.truncate).collect() } else { content };
     let source = format!("{}::{}", src.name, file_stem);
     if upsert_memory(conn, &text, &source, &src.mem_type, "indexer", owner_id) {
         1

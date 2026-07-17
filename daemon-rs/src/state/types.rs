@@ -53,8 +53,7 @@ impl SqliteVecRouteMode {
                 "trial" | "canary" | "sampled" => Self::Trial,
                 "primary" | "vec0" | "production" | "on" => Self::Primary,
                 unknown => {
-                    eprintln!(
-"[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using primary");
+                    eprintln!("[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using primary");
                     Self::Primary
                 }
             },
@@ -88,8 +87,7 @@ impl SqliteVecCanaryConfig {
                 match trimmed.parse::<u8>() {
                     Ok(percent) => Some(percent.min(100)),
                     Err(_) => {
-                        eprintln!(
-"[cortex] WARNING: invalid CORTEX_SQLITE_VEC_TRIAL_PERCENT={trimmed:?}; using 0");
+                        eprintln!("[cortex] WARNING: invalid CORTEX_SQLITE_VEC_TRIAL_PERCENT={trimmed:?}; using 0");
                         Some(0)
                     }
                 }
@@ -97,17 +95,8 @@ impl SqliteVecCanaryConfig {
             .unwrap_or(0);
         let force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF")
             .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            });
-        Self {
-            trial_percent,
-            force_off,
-            route_mode,
-        }
+            .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+        Self { trial_percent, force_off, route_mode }
     }
     pub fn effective_route_mode(&self) -> SqliteVecRouteMode {
         if self.force_off {

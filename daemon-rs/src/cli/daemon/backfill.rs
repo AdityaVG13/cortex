@@ -10,18 +10,10 @@ pub(crate) struct EmbeddingBackfillPassResult {
     pub(crate) passes_ran: usize,
     pub(crate) exhausted: bool,
 }
-pub(crate) fn backfill_batch_may_have_more(
-    memory_count: usize,
-    decision_count: usize,
-    batch_size: usize,
-) -> bool {
+pub(crate) fn backfill_batch_may_have_more(memory_count: usize, decision_count: usize, batch_size: usize) -> bool {
     memory_count >= batch_size || decision_count >= batch_size
 }
-pub(crate) fn collect_unembedded_targets_for_model(
-    conn: &rusqlite::Connection,
-    model_key: &str,
-    limit: usize,
-) -> EmbeddingBackfillTargets {
+pub(crate) fn collect_unembedded_targets_for_model(conn: &rusqlite::Connection, model_key: &str, limit: usize) -> EmbeddingBackfillTargets {
     let mem: EmbeddingBackfillRows = conn
         .prepare(
             "SELECT m.id, m.text FROM memories m \
@@ -36,10 +28,8 @@ pub(crate) fn collect_unembedded_targets_for_model(
              LIMIT ?2",
         )
         .and_then(|mut stmt| {
-            stmt.query_map(rusqlite::params![model_key, limit as i64], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            stmt.query_map(rusqlite::params![model_key, limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
         })
         .unwrap_or_default();
     let dec: EmbeddingBackfillRows = conn
@@ -56,18 +46,13 @@ pub(crate) fn collect_unembedded_targets_for_model(
              LIMIT ?2",
         )
         .and_then(|mut stmt| {
-            stmt.query_map(rusqlite::params![model_key, limit as i64], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            stmt.query_map(rusqlite::params![model_key, limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
         })
         .unwrap_or_default();
     (mem, dec)
 }
-pub(crate) fn count_unembedded_targets_for_model(
-    conn: &rusqlite::Connection,
-    model_key: &str,
-) -> (usize, usize) {
+pub(crate) fn count_unembedded_targets_for_model(conn: &rusqlite::Connection, model_key: &str) -> (usize, usize) {
     let memory_count = conn
         .query_row(
             "SELECT COUNT(*) FROM memories m \
@@ -101,19 +86,14 @@ pub(crate) fn count_unembedded_targets_for_model(
     (memory_count, decision_count)
 }
 pub(crate) async fn build_embeddings_async(
-    engine: std::sync::Arc<embeddings::EmbeddingEngine>,
-    db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>,
-    batch_size: usize,
-    max_batches_per_pass: usize,
-    lock_wait: Duration,
+    engine: std::sync::Arc<embeddings::EmbeddingEngine>, db: &std::sync::Arc<tokio::sync::Mutex<rusqlite::Connection>>, batch_size: usize,
+    max_batches_per_pass: usize, lock_wait: Duration,
 ) -> EmbeddingBackfillPassResult {
     let model_key = engine.model_key();
     let mut result = EmbeddingBackfillPassResult::default();
     for _ in 0..max_batches_per_pass {
         let (unembedded_mem, unembedded_dec) = {
-            let Some(conn) =
-                acquire_background_db_lock(db, "embedding backfill scan", lock_wait).await
-            else {
+            let Some(conn) = acquire_background_db_lock(db, "embedding backfill scan", lock_wait).await else {
                 break;
             };
             collect_unembedded_targets_for_model(&conn, model_key, batch_size)
@@ -143,9 +123,7 @@ pub(crate) async fn build_embeddings_async(
             }
         }
         {
-            let Some(conn) =
-                acquire_background_db_lock(db, "embedding backfill persist", lock_wait).await
-            else {
+            let Some(conn) = acquire_background_db_lock(db, "embedding backfill persist", lock_wait).await else {
                 break;
             };
             for (id, blob) in &mem_results {
@@ -171,8 +149,9 @@ pub(crate) async fn build_embeddings_async(
     }
     if result.queued_total > 0 {
         eprintln!(
-"[embeddings] Built {}/{} embeddings this pass (passes={}, batch_size={}, max_batches={}, exhausted={})",result.computed_total,
-result.queued_total,result.passes_ran,batch_size,max_batches_per_pass,result.exhausted);
+            "[embeddings] Built {}/{} embeddings this pass (passes={}, batch_size={}, max_batches={}, exhausted={})",
+            result.computed_total, result.queued_total, result.passes_ran, batch_size, max_batches_per_pass, result.exhausted
+        );
     }
     result
 }

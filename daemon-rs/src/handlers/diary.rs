@@ -1,6 +1,4 @@
-use super::{
-    ensure_auth_rated, json_error, json_response, log_event, now_iso, resolve_source_identity,
-};
+use super::{ensure_auth_rated, json_error, json_response, log_event, now_iso, resolve_source_identity};
 use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -26,28 +24,17 @@ impl DiaryRequest {
         self.decisions.as_deref().or(self.key_decisions.as_deref())
     }
 }
-pub async fn handle_diary(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<DiaryRequest>,
-) -> Response {
+pub async fn handle_diary(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<DiaryRequest>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let source = resolve_source_identity(&headers, "http");
     match write_diary_entry(&state, &body, &source.agent).await {
-        Ok(path) => json_response(
-            StatusCode::OK,
-            json!({"written":true,"agent":source.agent,"path":path}),
-        ),
+        Ok(path) => json_response(StatusCode::OK, json!({"written":true,"agent":source.agent,"path":path})),
         Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, &err),
     }
 }
-pub(crate) async fn write_diary_entry(
-    state: &RuntimeState,
-    body: &DiaryRequest,
-    agent: &str,
-) -> Result<String, String> {
+pub(crate) async fn write_diary_entry(state: &RuntimeState, body: &DiaryRequest, agent: &str) -> Result<String, String> {
     let state_path = state.home.join(".claude").join("state.md");
     if let Some(parent) = state_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {e}"))?;
@@ -74,11 +61,7 @@ fn build_diary_content(existing: &str, body: &DiaryRequest) -> String {
         lines.push(permanent);
         lines.push(String::new());
     }
-    append_section(
-        &mut lines,
-        "## What Was Done This Session",
-        body.accomplished.as_deref(),
-    );
+    append_section(&mut lines, "## What Was Done This Session", body.accomplished.as_deref());
     append_section(&mut lines, "## Next Session", body.next_steps.as_deref());
     append_section(&mut lines, "## Pending", body.pending.as_deref());
     append_section(&mut lines, "## Known Issues", body.known_issues.as_deref());

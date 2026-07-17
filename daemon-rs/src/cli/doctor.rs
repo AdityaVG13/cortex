@@ -39,22 +39,11 @@ pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
         "memories_fts",
         "decisions_fts",
     ];
-    let missing_tables: Vec<&str> = expected_tables
-        .iter()
-        .copied()
-        .filter(|table| !db::table_exists(&conn, table))
-        .collect();
+    let missing_tables: Vec<&str> = expected_tables.iter().copied().filter(|table| !db::table_exists(&conn, table)).collect();
     if missing_tables.is_empty() {
-        println!(
-            "[doctor] OK tables: {}/{}",
-            expected_tables.len(),
-            expected_tables.len()
-        );
+        println!("[doctor] OK tables: {}/{}", expected_tables.len(), expected_tables.len());
     } else {
-        println!(
-            "[doctor] FAIL tables missing: {}",
-            missing_tables.join(", ")
-        );
+        println!("[doctor] FAIL tables missing: {}", missing_tables.join(", "));
     }
     let (schema_current, pending_versions) = match db::pending_migration_versions(&conn) {
         Ok(pending) => (pending.is_empty(), pending),
@@ -64,32 +53,20 @@ pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
         }
     };
     if schema_current {
-        let expected_versions: HashSet<&'static str> = db::migration_definitions()
-            .iter()
-            .map(|(version, _)| *version)
-            .collect();
+        let expected_versions: HashSet<&'static str> = db::migration_definitions().iter().map(|(version, _)| *version).collect();
         let (applied, marker_rows) = db::applied_migration_versions(&conn)
             .map(|versions| {
-                let schema_applied = versions
-                    .iter()
-                    .filter(|version| expected_versions.contains(version.as_str()))
-                    .count();
+                let schema_applied = versions.iter().filter(|version| expected_versions.contains(version.as_str())).count();
                 let non_schema_markers = versions.len().saturating_sub(schema_applied);
                 (schema_applied, non_schema_markers)
             })
             .unwrap_or((0, 0));
-        println!(
-            "[doctor] OK schema current: {applied}/{} migrations applied",
-            db::migration_definitions().len()
-        );
+        println!("[doctor] OK schema current: {applied}/{} migrations applied", db::migration_definitions().len());
         if marker_rows > 0 {
             println!("[doctor] INFO schema markers: {marker_rows} non-schema row(s) ignored");
         }
     } else if !pending_versions.is_empty() {
-        println!(
-            "[doctor] FAIL schema pending: {}",
-            pending_versions.join(", ")
-        );
+        println!("[doctor] FAIL schema pending: {}", pending_versions.join(", "));
     }
     let integrity_ok = match db::verify_integrity(&conn) {
         Ok(true) => {
@@ -113,25 +90,12 @@ pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
         "decisions_fts_ad",
         "decisions_fts_au",
     ];
-    let fts_tables_ok =
-        db::table_exists(&conn, "memories_fts") && db::table_exists(&conn, "decisions_fts");
-    let fts_queries_ok = conn
-        .query_row("SELECT COUNT(*) FROM memories_fts", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .is_ok()
-        && conn
-            .query_row("SELECT COUNT(*) FROM decisions_fts", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .is_ok();
+    let fts_tables_ok = db::table_exists(&conn, "memories_fts") && db::table_exists(&conn, "decisions_fts");
+    let fts_queries_ok = conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get::<_, i64>(0)).is_ok()
+        && conn.query_row("SELECT COUNT(*) FROM decisions_fts", [], |row| row.get::<_, i64>(0)).is_ok();
     let fts_triggers_ok = fts_trigger_names.iter().all(|name| {
-        conn.query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1 LIMIT 1",
-            rusqlite::params![name],
-            |_| Ok(()),
-        )
-        .is_ok()
+        conn.query_row("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1 LIMIT 1", rusqlite::params![name], |_| Ok(()))
+            .is_ok()
     });
     let fts_ok = fts_tables_ok && fts_queries_ok && fts_triggers_ok;
     if fts_ok {
@@ -159,7 +123,8 @@ pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
     }
     if event_pressure != "normal" {
         println!(
-"[doctor] WARN elevated event pressure detected; run `cortex cleanup --events --dry-run` to preview one-time remediation.");
+            "[doctor] WARN elevated event pressure detected; run `cortex cleanup --events --dry-run` to preview one-time remediation."
+        );
     }
     let all_ok = missing_tables.is_empty() && schema_current && integrity_ok && fts_ok;
     if all_ok {

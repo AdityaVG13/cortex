@@ -11,10 +11,7 @@ pub async fn ensure_model_downloaded_in(models_dir: &Path) -> Option<PathBuf> {
     if profile.assets_exist(models_dir) {
         return Some(models_dir.to_path_buf());
     }
-    eprintln!(
-        "[embeddings] Downloading embedding model '{}' (first run)...",
-        profile.display_name
-    );
+    eprintln!("[embeddings] Downloading embedding model '{}' (first run)...", profile.display_name);
     for asset in profile.missing_assets(models_dir) {
         let asset_path = models_dir.join(asset.file);
         match download_file(asset.url, &asset_path).await {
@@ -39,12 +36,7 @@ async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let tmp_dest = dest.with_file_name(format!(
-        "{}.tmp",
-        dest.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("download")
-    ));
+    let tmp_dest = dest.with_file_name(format!("{}.tmp", dest.file_name().and_then(|name| name.to_str()).unwrap_or("download")));
     let mut file = std::fs::File::create(&tmp_dest).map_err(|e| e.to_string())?;
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         file.write_all(&chunk).map_err(|e| e.to_string())?;

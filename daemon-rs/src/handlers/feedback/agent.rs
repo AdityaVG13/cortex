@@ -51,13 +51,7 @@ struct FeedbackAggregate {
 impl FeedbackAggregate {
     #[allow(clippy::too_many_arguments)]
     fn observe(
-        &mut self,
-        outcome: &str,
-        outcome_score: f64,
-        quality_score: f64,
-        age_days: f64,
-        latency_ms: Option<i64>,
-        retries: Option<i64>,
+        &mut self, outcome: &str, outcome_score: f64, quality_score: f64, age_days: f64, latency_ms: Option<i64>, retries: Option<i64>,
         tokens_used: Option<i64>,
     ) {
         self.count += 1;
@@ -108,28 +102,16 @@ fn default_outcome_score(outcome: &str) -> f64 {
     }
 }
 fn normalize_task_class(value: Option<&str>) -> String {
-    value
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or("general")
-        .to_ascii_lowercase()
+    value.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("general").to_ascii_lowercase()
 }
 fn normalize_agent(value: Option<&str>, fallback_agent: &str) -> String {
-    value
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .unwrap_or(fallback_agent)
-        .to_string()
+    value.map(str::trim).filter(|v| !v.is_empty()).unwrap_or(fallback_agent).to_string()
 }
 pub(crate) fn normalize_horizon_days(value: Option<i64>) -> i64 {
-    value
-        .unwrap_or(AGENT_FEEDBACK_DEFAULT_HORIZON_DAYS)
-        .clamp(1, 180)
+    value.unwrap_or(AGENT_FEEDBACK_DEFAULT_HORIZON_DAYS).clamp(1, 180)
 }
 pub(crate) fn normalize_limit(value: Option<usize>) -> usize {
-    value
-        .unwrap_or(AGENT_FEEDBACK_DEFAULT_LIMIT)
-        .clamp(10, 2_000)
+    value.unwrap_or(AGENT_FEEDBACK_DEFAULT_LIMIT).clamp(10, 2_000)
 }
 fn arg_value_string(args: &Value, keys: &[&str]) -> Option<String> {
     keys.iter()
@@ -139,12 +121,10 @@ fn arg_value_string(args: &Value, keys: &[&str]) -> Option<String> {
         .map(str::to_string)
 }
 fn arg_value_f64(args: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter()
-        .find_map(|key| args.get(*key).and_then(|value| value.as_f64()))
+    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_f64()))
 }
 fn arg_value_i64(args: &Value, keys: &[&str]) -> Option<i64> {
-    keys.iter()
-        .find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
+    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
 }
 fn arg_value_string_array(args: &Value, keys: &[&str]) -> Vec<String> {
     keys.iter()
@@ -162,37 +142,25 @@ fn arg_value_string_array(args: &Value, keys: &[&str]) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-pub fn record_agent_feedback_from_value(
-    conn: &Connection,
-    owner_id: i64,
-    args: &Value,
-    fallback_agent: &str,
-) -> Result<Value, String> {
+pub fn record_agent_feedback_from_value(conn: &Connection, owner_id: i64, args: &Value, fallback_agent: &str) -> Result<Value, String> {
     let outcome = normalize_outcome(
         arg_value_string(args, &["outcome"])
             .as_deref()
             .or_else(|| args.get("outcome").and_then(|value| value.as_str())),
     )
     .ok_or_else(|| "Missing or invalid outcome (expected success|partial|failure)".to_string())?;
-    let agent = normalize_agent(
-        arg_value_string(args, &["agent", "source_agent", "sourceAgent"]).as_deref(),
-        fallback_agent,
-    );
-    let task_class =
-        normalize_task_class(arg_value_string(args, &["task_class", "taskClass"]).as_deref());
+    let agent = normalize_agent(arg_value_string(args, &["agent", "source_agent", "sourceAgent"]).as_deref(), fallback_agent);
+    let task_class = normalize_task_class(arg_value_string(args, &["task_class", "taskClass"]).as_deref());
     let outcome_score = arg_value_f64(args, &["outcome_score", "outcomeScore"])
         .unwrap_or_else(|| default_outcome_score(outcome))
         .clamp(0.0, 1.0);
-    let quality_score = arg_value_f64(args, &["quality_score", "qualityScore"])
-        .unwrap_or(0.7)
-        .clamp(0.0, 1.0);
+    let quality_score = arg_value_f64(args, &["quality_score", "qualityScore"]).unwrap_or(0.7).clamp(0.0, 1.0);
     let latency_ms = arg_value_i64(args, &["latency_ms", "latencyMs"]).map(|value| value.max(0));
     let retries = arg_value_i64(args, &["retries"]).map(|value| value.max(0));
     let tokens_used = arg_value_i64(args, &["tokens_used", "tokensUsed"]).map(|value| value.max(0));
     let memory_sources = arg_value_string_array(args, &["memory_sources", "memorySources"]);
     let notes = arg_value_string(args, &["notes"]);
-    let memory_sources_json =
-        serde_json::to_string(&memory_sources).map_err(|err| err.to_string())?;
+    let memory_sources_json = serde_json::to_string(&memory_sources).map_err(|err| err.to_string())?;
     conn.execute(
         "INSERT INTO agent_feedback (
             owner_id, agent, task_class, outcome, outcome_score, quality_score,
@@ -213,10 +181,8 @@ pub fn record_agent_feedback_from_value(
         ],
     )
     .map_err(|err| err.to_string())?;
-    Ok(
-        json!({"stored":true,"ownerId":owner_id,"agent":agent,"taskClass":task_class,"outcome":outcome,
-"outcomeScore":outcome_score,"qualityScore":quality_score,"memorySources":memory_sources,}),
-    )
+    Ok(json!({"stored":true,"ownerId":owner_id,"agent":agent,"taskClass":task_class,"outcome":outcome,
+"outcomeScore":outcome_score,"qualityScore":quality_score,"memorySources":memory_sources,}))
 }
 fn aggregate_summary_json(name: &str, agg: &FeedbackAggregate) -> Value {
     json!({"name":name,"count":agg.count,"reliability":agg.reliability(),"success":agg.success,
@@ -225,23 +191,12 @@ as f64)}else{None},"avgRetries":if agg.retries_count>0{Some(agg.retries_total as
 "avgTokensUsed":if agg.tokens_count>0{Some(agg.tokens_total as f64/agg.tokens_count as f64)}else{None},})
 }
 pub fn build_agent_feedback_stats_payload(
-    conn: &Connection,
-    owner_id: i64,
-    horizon_days: i64,
-    limit: usize,
-    task_class_filter: Option<&str>,
-    agent_filter: Option<&str>,
+    conn: &Connection, owner_id: i64, horizon_days: i64, limit: usize, task_class_filter: Option<&str>, agent_filter: Option<&str>,
 ) -> Result<Value, String> {
     let horizon_days = normalize_horizon_days(Some(horizon_days));
     let limit = normalize_limit(Some(limit));
-    let task_filter = task_class_filter
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase);
-    let agent_filter = agent_filter
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
+    let task_filter = task_class_filter.map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase);
+    let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string);
     let mut stmt = conn
         .prepare(
             "SELECT agent, task_class, outcome, outcome_score, quality_score,
@@ -257,29 +212,20 @@ pub fn build_agent_feedback_stats_payload(
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(
-            params![
-                owner_id,
-                horizon_days,
-                task_filter,
-                agent_filter,
-                limit as i64
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, f64>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, f64>(9)?,
-                ))
-            },
-        )
+        .query_map(params![owner_id, horizon_days, task_filter, agent_filter, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, f64>(9)?,
+            ))
+        })
         .map_err(|err| err.to_string())?;
     let mut overall = FeedbackAggregate::default();
     let mut by_agent: HashMap<String, FeedbackAggregate> = HashMap::new();
@@ -287,45 +233,17 @@ pub fn build_agent_feedback_stats_payload(
     let mut source_counts: HashMap<String, i64> = HashMap::new();
     let mut rows_with_sources = 0i64;
     for row in rows.flatten() {
-        let (
-            agent,
-            task_class,
-            outcome,
-            outcome_score,
-            quality_score,
-            latency_ms,
-            retries,
-            tokens_used,
-            memory_sources_json,
-            age_days,
-        ) = row;
-        overall.observe(
-            &outcome,
-            outcome_score,
-            quality_score,
-            age_days,
-            latency_ms,
-            retries,
-            tokens_used,
-        );
-        by_agent.entry(agent).or_default().observe(
-            &outcome,
-            outcome_score,
-            quality_score,
-            age_days,
-            latency_ms,
-            retries,
-            tokens_used,
-        );
-        by_task.entry(task_class).or_default().observe(
-            &outcome,
-            outcome_score,
-            quality_score,
-            age_days,
-            latency_ms,
-            retries,
-            tokens_used,
-        );
+        let (agent, task_class, outcome, outcome_score, quality_score, latency_ms, retries, tokens_used, memory_sources_json, age_days) =
+            row;
+        overall.observe(&outcome, outcome_score, quality_score, age_days, latency_ms, retries, tokens_used);
+        by_agent
+            .entry(agent)
+            .or_default()
+            .observe(&outcome, outcome_score, quality_score, age_days, latency_ms, retries, tokens_used);
+        by_task
+            .entry(task_class)
+            .or_default()
+            .observe(&outcome, outcome_score, quality_score, age_days, latency_ms, retries, tokens_used);
         let parsed_sources = memory_sources_json
             .as_deref()
             .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
@@ -337,36 +255,16 @@ pub fn build_agent_feedback_stats_payload(
             }
         }
     }
-    let mut by_agent_vec: Vec<Value> = by_agent
-        .iter()
-        .map(|(name, agg)| aggregate_summary_json(name, agg))
-        .collect();
+    let mut by_agent_vec: Vec<Value> = by_agent.iter().map(|(name, agg)| aggregate_summary_json(name, agg)).collect();
     by_agent_vec.sort_by(|left, right| {
-        let left_rel = left
-            .get("reliability")
-            .and_then(|value| value.as_f64())
-            .unwrap_or(0.0);
-        let right_rel = right
-            .get("reliability")
-            .and_then(|value| value.as_f64())
-            .unwrap_or(0.0);
-        right_rel
-            .partial_cmp(&left_rel)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let left_rel = left.get("reliability").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        let right_rel = right.get("reliability").and_then(|value| value.as_f64()).unwrap_or(0.0);
+        right_rel.partial_cmp(&left_rel).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let mut by_task_vec: Vec<Value> = by_task
-        .iter()
-        .map(|(name, agg)| aggregate_summary_json(name, agg))
-        .collect();
+    let mut by_task_vec: Vec<Value> = by_task.iter().map(|(name, agg)| aggregate_summary_json(name, agg)).collect();
     by_task_vec.sort_by(|left, right| {
-        let left_count = left
-            .get("count")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(0);
-        let right_count = right
-            .get("count")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(0);
+        let left_count = left.get("count").and_then(|value| value.as_i64()).unwrap_or(0);
+        let right_count = right.get("count").and_then(|value| value.as_i64()).unwrap_or(0);
         right_count.cmp(&left_count)
     });
     let mut top_sources: Vec<(String, i64)> = source_counts.into_iter().collect();
@@ -399,11 +297,7 @@ rows_with_sources as f64/overall.count as f64}else{0.0},},"byAgent":by_agent_vec
 top_sources,"recommendation":recommendation,}))
 }
 pub fn recommend_recall_k(
-    conn: &Connection,
-    owner_id: i64,
-    agent: &str,
-    task_class: Option<&str>,
-    base_k: usize,
+    conn: &Connection, owner_id: i64, agent: &str, task_class: Option<&str>, base_k: usize,
 ) -> Result<Option<Value>, String> {
     let task_class = normalize_task_class(task_class).to_string();
     let mut stmt = conn
@@ -419,9 +313,7 @@ pub fn recommend_recall_k(
         )
         .map_err(|err| err.to_string())?;
     let rows = stmt
-        .query_map(params![owner_id, agent, task_class], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-        })
+        .query_map(params![owner_id, agent, task_class], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)))
         .map_err(|err| err.to_string())?;
     let mut success = 0usize;
     let mut partial = 0usize;

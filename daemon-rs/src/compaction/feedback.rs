@@ -3,10 +3,7 @@ use rusqlite::{params, Connection};
 pub(crate) fn aggregate_old_feedback(conn: &Connection) -> usize {
     aggregate_old_feedback_with_window(conn, FEEDBACK_AGGREGATION_DAYS)
 }
-pub(crate) fn aggregate_old_feedback_with_window(
-    conn: &Connection,
-    aggregation_days: i64,
-) -> usize {
+pub(crate) fn aggregate_old_feedback_with_window(conn: &Connection, aggregation_days: i64) -> usize {
     let sources: Vec<(String, f64, i64)> = conn
         .prepare(
             "SELECT result_source, SUM(signal), COUNT(*) \
@@ -15,13 +12,8 @@ pub(crate) fn aggregate_old_feedback_with_window(
              GROUP BY result_source HAVING COUNT(*) > 1",
         )
         .and_then(|mut stmt| {
-            let rows = stmt.query_map(params![aggregation_days], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, f64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?;
+            let rows = stmt
+                .query_map(params![aggregation_days], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?)))?;
             Ok(rows.flatten().collect())
         })
         .unwrap_or_default();
@@ -39,32 +31,23 @@ pub(crate) fn aggregate_old_feedback_with_window(
             )
             .unwrap_or(0);
         if deleted > 0 {
-            let _=conn.execute(
-"INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent, created_at) \
-                 VALUES ('[aggregated]', ?1, 'aggregated', ?2, 'compaction', datetime('now'))"
-,params![source,net_signal],);
+            let _ = conn.execute(
+                "INSERT INTO recall_feedback (query_text, result_source, result_type, signal, agent, created_at) \
+                 VALUES ('[aggregated]', ?1, 'aggregated', ?2, 'compaction', datetime('now'))",
+                params![source, net_signal],
+            );
             aggregated += deleted;
         }
     }
     aggregated
 }
-pub(crate) fn prune_old_benchmark_artifacts(
-    conn: &Connection,
-    retention_days: i64,
-    allow_vacuum: bool,
-) -> usize {
-    purge_benchmark_artifacts_with_retention(conn, Some(retention_days), allow_vacuum)
-        .total_deleted()
+pub(crate) fn prune_old_benchmark_artifacts(conn: &Connection, retention_days: i64, allow_vacuum: bool) -> usize {
+    purge_benchmark_artifacts_with_retention(conn, Some(retention_days), allow_vacuum).total_deleted()
 }
 pub(crate) fn purge_benchmark_artifacts_with_retention(
-    conn: &Connection,
-    retention_days: Option<i64>,
-    allow_vacuum: bool,
+    conn: &Connection, retention_days: Option<i64>, allow_vacuum: bool,
 ) -> BenchmarkPurgeResult {
-    let mut result = BenchmarkPurgeResult {
-        bytes_before: db_size_bytes(conn),
-        ..BenchmarkPurgeResult::default()
-    };
+    let mut result = BenchmarkPurgeResult { bytes_before: db_size_bytes(conn), ..BenchmarkPurgeResult::default() };
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
     let retention_window = retention_days.map(|days| format!("-{days} days"));
     let _ = conn.execute_batch(
@@ -139,16 +122,16 @@ pub(crate) fn purge_benchmark_artifacts_with_retention(
         )
         .unwrap_or(0);
     result.decisions_deleted = conn
+        .execute("DELETE FROM decisions WHERE id IN (SELECT id FROM _benchmark_decision_ids)", [])
+        .unwrap_or(0);
+    result.events_deleted += conn
         .execute(
-            "DELETE FROM decisions WHERE id IN (SELECT id FROM _benchmark_decision_ids)",
+            "DELETE FROM events \
+             WHERE type = 'decision_stored' \
+               AND CAST(COALESCE(json_extract(data, '$.id'), 0) AS INTEGER) IN (SELECT id FROM _benchmark_decision_ids)",
             [],
         )
         .unwrap_or(0);
-    result.events_deleted+=conn.execute(
-"DELETE FROM events \
-             WHERE type = 'decision_stored' \
-               AND CAST(COALESCE(json_extract(data, '$.id'), 0) AS INTEGER) IN (SELECT id FROM _benchmark_decision_ids)"
-,[],).unwrap_or(0);
     match retention_window.as_deref() {
         Some(window) => {
             result.recall_feedback_deleted += conn
@@ -160,14 +143,17 @@ pub(crate) fn purge_benchmark_artifacts_with_retention(
                     params![benchmark_source_pattern.clone(), window],
                 )
                 .unwrap_or(0);
-            result.events_deleted+=conn.execute(
-"DELETE FROM events \
+            result.events_deleted += conn
+                .execute(
+                    "DELETE FROM events \
                      WHERE (LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) \
                             OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
                             OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
                             OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark') \
-                       AND created_at < datetime('now', ?2)"
-,params![benchmark_source_pattern.clone(),window],).unwrap_or(0);
+                       AND created_at < datetime('now', ?2)",
+                    params![benchmark_source_pattern.clone(), window],
+                )
+                .unwrap_or(0);
         }
         None => {
             result.recall_feedback_deleted += conn
@@ -178,13 +164,16 @@ pub(crate) fn purge_benchmark_artifacts_with_retention(
                     params![benchmark_source_pattern.clone()],
                 )
                 .unwrap_or(0);
-            result.events_deleted+=conn.execute(
-"DELETE FROM events \
+            result.events_deleted += conn
+                .execute(
+                    "DELETE FROM events \
                      WHERE LOWER(COALESCE(source_agent, '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) LIKE LOWER(?1) \
                         OR LOWER(COALESCE(json_extract(data, '$.agent'), '')) LIKE LOWER(?1) \
-                        OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark'"
-,params![benchmark_source_pattern.clone()],).unwrap_or(0);
+                        OR LOWER(COALESCE(json_extract(data, '$.entry_type'), '')) = 'benchmark'",
+                    params![benchmark_source_pattern.clone()],
+                )
+                .unwrap_or(0);
         }
     }
     let _ = conn.execute_batch("DROP TABLE IF EXISTS temp._benchmark_decision_ids;");

@@ -82,13 +82,7 @@ fn dry_run_counts_without_writing() {
     assert_eq!(stats.memories_affected, 2);
     assert_eq!(stats.decisions_affected, 1);
     assert!(!stats.applied);
-    let active: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'active'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let active: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0)).unwrap();
     assert_eq!(active, 2);
 }
 #[test]
@@ -96,50 +90,21 @@ fn apply_flips_statuses_and_excludes_older_rows() {
     let conn = setup();
     seed_session(&conn, "claude", "sess-1", "2026-04-24T00:00:00Z");
     seed_memory(&conn, "claude", "old", "2026-04-23T23:59:00Z", "active");
-    seed_memory(
-        &conn,
-        "codex",
-        "other-agent",
-        "2026-04-24T00:05:00Z",
-        "active",
-    );
+    seed_memory(&conn, "codex", "other-agent", "2026-04-24T00:05:00Z", "active");
     seed_memory(&conn, "claude", "m1", "2026-04-24T00:05:00Z", "active");
     seed_memory(&conn, "claude", "m2", "2026-04-24T00:10:00Z", "active");
-    seed_memory(
-        &conn,
-        "claude",
-        "pre-rolled",
-        "2026-04-24T00:07:00Z",
-        ROLLED_BACK_STATUS,
-    );
+    seed_memory(&conn, "claude", "pre-rolled", "2026-04-24T00:07:00Z", ROLLED_BACK_STATUS);
     seed_decision(&conn, "claude", "d1", "2026-04-24T00:06:00Z");
     let stats = rollback_session_by_id(&conn, "sess-1", true).unwrap();
-    assert_eq!(
-        stats.memories_affected, 2,
-        "only the 2 active in-session memories"
-    );
+    assert_eq!(stats.memories_affected, 2, "only the 2 active in-session memories");
     assert_eq!(stats.decisions_affected, 1);
     assert!(stats.applied);
-    let old_status: String = conn
-        .query_row("SELECT status FROM memories WHERE text = 'old'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
+    let old_status: String = conn.query_row("SELECT status FROM memories WHERE text = 'old'", [], |r| r.get(0)).unwrap();
     assert_eq!(old_status, "active");
-    let other_status: String = conn
-        .query_row(
-            "SELECT status FROM memories WHERE text = 'other-agent'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let other_status: String = conn.query_row("SELECT status FROM memories WHERE text = 'other-agent'", [], |r| r.get(0)).unwrap();
     assert_eq!(other_status, "active");
     let rolled: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE source_agent = 'claude' AND status = ?1",
-            params![ROLLED_BACK_STATUS],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM memories WHERE source_agent = 'claude' AND status = ?1", params![ROLLED_BACK_STATUS], |r| r.get(0))
         .unwrap();
     assert_eq!(rolled, 3); // pre-rolled + 2 freshly rolled
 }

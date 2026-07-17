@@ -10,14 +10,8 @@ fn local_bind_detection_is_strict() {
 }
 #[test]
 fn plain_http_policy_rejects_team_mode_and_non_local_binds() {
-    assert_eq!(
-        plain_http_rejection_reason("127.0.0.1", true, false),
-        Some(PlainHttpRejectionReason::TeamMode)
-    );
-    assert_eq!(
-        plain_http_rejection_reason("0.0.0.0", false, false),
-        Some(PlainHttpRejectionReason::NonLocalBind)
-    );
+    assert_eq!(plain_http_rejection_reason("127.0.0.1", true, false), Some(PlainHttpRejectionReason::TeamMode));
+    assert_eq!(plain_http_rejection_reason("0.0.0.0", false, false), Some(PlainHttpRejectionReason::NonLocalBind));
     assert_eq!(plain_http_rejection_reason("127.0.0.1", false, false), None);
 }
 #[cfg(unix)]

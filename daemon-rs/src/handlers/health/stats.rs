@@ -10,15 +10,10 @@ pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap)
         return resp;
     }
     let conn = state.db_read.lock().await;
-    let mut stmt = match conn.prepare(
-        "SELECT data, created_at FROM events WHERE type = 'recall_query' ORDER BY created_at ASC",
-    ) {
+    let mut stmt = match conn.prepare("SELECT data, created_at FROM events WHERE type = 'recall_query' ORDER BY created_at ASC") {
         Ok(stmt) => stmt,
         Err(e) => {
-            return json_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({"error":e.to_string()}),
-            );
+            return json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":e.to_string()}));
         }
     };
     let rows: Vec<(String, String)> = stmt

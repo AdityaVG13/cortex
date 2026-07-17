@@ -25,11 +25,7 @@ fn read_auth_token() -> Option<String> {
         Err(_) => None,
     }
 }
-async fn fetch_boot(
-    agent: &str,
-    budget: u32,
-    paths: &crate::auth::CortexPaths,
-) -> Option<BootResult> {
+async fn fetch_boot(agent: &str, budget: u32, paths: &crate::auth::CortexPaths) -> Option<BootResult> {
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(3))
         .timeout(std::time::Duration::from_secs(7))
@@ -37,9 +33,7 @@ async fn fetch_boot(
         .ok()?;
     let base_url = crate::transport::local_http_base_url(paths);
     let mut url = reqwest::Url::parse(&format!("{}/boot", base_url.trim_end_matches('/'))).ok()?;
-    url.query_pairs_mut()
-        .append_pair("agent", agent)
-        .append_pair("budget", &budget.to_string());
+    url.query_pairs_mut().append_pair("agent", agent).append_pair("budget", &budget.to_string());
     let mut headers = vec![("x-cortex-request".to_string(), "true".to_string())];
     if let Some(token) = read_auth_token() {
         headers.push(("authorization".to_string(), format!("Bearer {token}")));
@@ -84,12 +78,7 @@ async fn fetch_health(paths: &crate::auth::CortexPaths) -> Option<HealthResult> 
     )
     .await
     .ok()?;
-    match crate::daemon_lifecycle::readiness_state_from_payload(
-        readiness_status.as_u16(),
-        &readiness_body,
-        Some(paths.port),
-        None,
-    ) {
+    match crate::daemon_lifecycle::readiness_state_from_payload(readiness_status.as_u16(), &readiness_body, Some(paths.port), None) {
         Some(true) => {}
         Some(false) | None => return None,
     }
@@ -113,17 +102,11 @@ async fn fetch_health(paths: &crate::auth::CortexPaths) -> Option<HealthResult> 
     Some(HealthResult {
         memories: stats.get("memories")?.as_i64()?,
         decisions: stats.get("decisions")?.as_i64()?,
-        embeddings: stats
-            .get("embeddings")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0),
+        embeddings: stats.get("embeddings").and_then(|v| v.as_i64()).unwrap_or(0),
     })
 }
 fn status_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude")
-        .join("brain-status.json")
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude").join("brain-status.json")
 }
 async fn register_session(agent: &str, paths: &crate::auth::CortexPaths) {
     let client = match reqwest::Client::builder()
@@ -157,29 +140,16 @@ async fn register_session(agent: &str, paths: &crate::auth::CortexPaths) {
 }
 pub async fn run_boot(agent: &str) {
     let paths = crate::auth::CortexPaths::resolve();
-    let (boot, health) = tokio::join!(
-        fetch_boot(agent, DEFAULT_BUDGET, &paths),
-        fetch_health(&paths)
-    );
-    let (total, memories, decisions) = health
-        .as_ref()
-        .map(|h| (h.memories + h.decisions, h.memories, h.decisions))
-        .unwrap_or((0, 0, 0));
+    let (boot, health) = tokio::join!(fetch_boot(agent, DEFAULT_BUDGET, &paths), fetch_health(&paths));
+    let (total, memories, decisions) = health.as_ref().map(|h| (h.memories + h.decisions, h.memories, h.decisions)).unwrap_or((0, 0, 0));
     let cortex_connected = boot.is_some() || health.is_some();
     let cortex_booted = boot.is_some();
     if cortex_booted {
         register_session(agent, &paths).await;
     }
-    let overall = if cortex_connected {
-        "ONLINE"
-    } else {
-        "DEGRADED"
-    };
+    let overall = if cortex_connected { "ONLINE" } else { "DEGRADED" };
     let cortex_part = if cortex_booted {
-        format!(
-            "Cortex \u{2713} ({} nodes: {} mem + {} dec)",
-            total, memories, decisions
-        )
+        format!("Cortex \u{2713} ({} nodes: {} mem + {} dec)", total, memories, decisions)
     } else if cortex_connected {
         "Cortex \u{2713} (boot failed)".to_string()
     } else {
@@ -189,37 +159,25 @@ pub async fn run_boot(agent: &str) {
     let status = json!({"timestamp":chrono::Utc::now().to_rfc3339(),"overall":overall,"cortex":{"connected":
 cortex_connected,"booted":cortex_booted,"total":total,"memories":memories,"decisions":decisions,"tokenEstimate":boot.as_ref().
 and_then(|b|b.token_estimate),"savings":boot.as_ref().and_then(|b|b.savings.clone()),},"oneliner":oneliner,});
-    let _ = std::fs::write(
-        status_path(),
-        serde_json::to_string_pretty(&status).unwrap_or_default(),
-    );
-    let mut parts=vec![
-"BRAIN BOOT STATUS \u{2014} You MUST include this line at the very start of your first reply:".to_string(),oneliner.clone(),
-"Do not ask the user about brain status. Do not explain this line. Just print it.".to_string(),];
+    let _ = std::fs::write(status_path(), serde_json::to_string_pretty(&status).unwrap_or_default());
+    let mut parts = vec![
+        "BRAIN BOOT STATUS \u{2014} You MUST include this line at the very start of your first reply:".to_string(),
+        oneliner.clone(),
+        "Do not ask the user about brain status. Do not explain this line. Just print it.".to_string(),
+    ];
     if let Some(b) = &boot {
         parts.push(String::new());
         parts.push("CORTEX BOOT PROMPT (auto-injected by SessionStart hook):".to_string());
         parts.push(b.boot_prompt.clone());
         parts.push(String::new());
-        parts.push(
-            "cortex_boot() was already called mechanically by the hook. Do NOT call it again."
-                .to_string(),
-        );
-        parts.push(
-            "You still use cortex_recall, cortex_store, and cortex_diary as normal MCP tools."
-                .to_string(),
-        );
+        parts.push("cortex_boot() was already called mechanically by the hook. Do NOT call it again.".to_string());
+        parts.push("You still use cortex_recall, cortex_store, and cortex_diary as normal MCP tools.".to_string());
     } else if cortex_connected {
         parts.push(String::new());
-        parts.push(
-            "WARNING: Cortex is running but boot failed. Call cortex_boot() manually as fallback."
-                .to_string(),
-        );
+        parts.push("WARNING: Cortex is running but boot failed. Call cortex_boot() manually as fallback.".to_string());
     } else {
         parts.push(String::new());
-        parts.push(
-            "WARNING: Cortex daemon is not running. Advise user to run cortex-start.".to_string(),
-        );
+        parts.push("WARNING: Cortex daemon is not running. Advise user to run cortex-start.".to_string());
         parts.push("cortex_boot() will fail until the daemon is started.".to_string());
     }
     let output = json!({"hookSpecificOutput":{"hookEventName":
@@ -230,10 +188,7 @@ pub async fn run_status() {
     let paths = crate::auth::CortexPaths::resolve();
     match fetch_health(&paths).await {
         Some(h) => {
-            println!(
-                "ONLINE | {} mem | {} dec | {} emb",
-                h.memories, h.decisions, h.embeddings
-            );
+            println!("ONLINE | {} mem | {} dec | {} emb", h.memories, h.decisions, h.embeddings);
         }
         None => {
             println!("OFFLINE");

@@ -1,6 +1,4 @@
-use super::profiles::{
-    resolve_profile, resolved_pool_size, EmbeddingInputKind, PoolingStrategy, TEXT_TRUNCATE_BYTES,
-};
+use super::profiles::{resolve_profile, resolved_pool_size, EmbeddingInputKind, PoolingStrategy, TEXT_TRUNCATE_BYTES};
 use ort::session::Session;
 use ort::value::Tensor;
 use std::borrow::Cow;
@@ -36,28 +34,17 @@ impl EmbeddingEngine {
         let tok_path = models_dir.join(profile.tokenizer_file);
         let missing_assets = profile.missing_assets(models_dir);
         if !missing_assets.is_empty() {
-            let missing = missing_assets
-                .iter()
-                .map(|asset| asset.file)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "model assets missing ({missing}) at {}",
-                models_dir.display()
-            ));
+            let missing = missing_assets.iter().map(|asset| asset.file).collect::<Vec<_>>().join(", ");
+            return Err(format!("model assets missing ({missing}) at {}", models_dir.display()));
         }
-        let tokenizer = Tokenizer::from_file(&tok_path)
-            .map_err(|error| format!("failed to load tokenizer {}: {error}", tok_path.display()))?;
+        let tokenizer =
+            Tokenizer::from_file(&tok_path).map_err(|error| format!("failed to load tokenizer {}: {error}", tok_path.display()))?;
         let mut sessions = Vec::with_capacity(pool_size);
         for index in 0..pool_size {
-            let session = Self::build_session(&model_path)
-                .map_err(|error| format!("session {} failed: {error}", index + 1))?;
+            let session = Self::build_session(&model_path).map_err(|error| format!("session {} failed: {error}", index + 1))?;
             sessions.push(std::sync::Mutex::new(session));
         }
-        eprintln!(
-            "[embeddings] Session pool: {pool_size} sessions loaded for {}",
-            profile.display_name,
-        );
+        eprintln!("[embeddings] Session pool: {pool_size} sessions loaded for {}", profile.display_name,);
         Ok(Self {
             sessions,
             next: std::sync::atomic::AtomicUsize::new(0),
@@ -75,18 +62,11 @@ impl EmbeddingEngine {
     fn build_session(model_path: &Path) -> Result<Session, String> {
         let tuned = Session::builder()
             .map_err(|error| format!("session builder init failed: {error}"))
-            .and_then(|builder| {
-                builder
-                    .with_intra_threads(2)
-                    .map_err(|error| format!("with_intra_threads(2) failed: {error}"))
-            })
+            .and_then(|builder| builder.with_intra_threads(2).map_err(|error| format!("with_intra_threads(2) failed: {error}")))
             .and_then(|mut builder| {
-                builder.commit_from_file(model_path).map_err(|error| {
-                    format!(
-                        "commit_from_file (tuned threads) failed for {}: {error}",
-                        model_path.display()
-                    )
-                })
+                builder
+                    .commit_from_file(model_path)
+                    .map_err(|error| format!("commit_from_file (tuned threads) failed for {}: {error}", model_path.display()))
             });
         match tuned {
             Ok(session) => Ok(session),
@@ -94,14 +74,8 @@ impl EmbeddingEngine {
                 let fallback = Session::builder()
                     .map_err(|error| format!("session builder fallback init failed: {error}"))?
                     .commit_from_file(model_path)
-                    .map_err(|error| {
-                        format!(
-                            "commit_from_file (fallback threads) failed for {}: {error}",
-                            model_path.display()
-                        )
-                    })?;
-                eprintln!(
-"[embeddings] Falling back to default ORT session threading after tuned setup failed: {tuned_error}");
+                    .map_err(|error| format!("commit_from_file (fallback threads) failed for {}: {error}", model_path.display()))?;
+                eprintln!("[embeddings] Falling back to default ORT session threading after tuned setup failed: {tuned_error}");
                 Ok(fallback)
             }
         }
@@ -148,14 +122,11 @@ impl EmbeddingEngine {
         let ids_tensor = Tensor::from_array((shape.clone(), ids_vec)).ok()?;
         let mask_tensor = Tensor::from_array((shape.clone(), mask_vec)).ok()?;
         let type_tensor = Tensor::from_array((shape, type_vec)).ok()?;
-        let idx =
-            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.sessions.len();
+        let idx = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.sessions.len();
         let mut session = self.sessions[idx].lock().ok()?;
         let outputs = if self.include_token_type_ids {
-            session.run(
-                ort::inputs!["input_ids"=>ids_tensor,"attention_mask"=>mask_tensor,
-"token_type_ids"=>type_tensor,],
-            )
+            session.run(ort::inputs!["input_ids"=>ids_tensor,"attention_mask"=>mask_tensor,
+"token_type_ids"=>type_tensor,])
         } else {
             session.run(ort::inputs!["input_ids"=>ids_tensor,"attention_mask"=>mask_tensor,])
         }
@@ -167,22 +138,10 @@ impl EmbeddingEngine {
             return None;
         }
         let seq_len_out = dims[1] as usize;
-        Self::pool_output(
-            data,
-            self.dimension,
-            seq_len_out,
-            attention,
-            self.pooling,
-            self.normalize,
-        )
+        Self::pool_output(data, self.dimension, seq_len_out, attention, self.pooling, self.normalize)
     }
     fn pool_output(
-        data: &[f32],
-        dimension: usize,
-        seq_len_out: usize,
-        attention: &[u32],
-        pooling: PoolingStrategy,
-        normalize: bool,
+        data: &[f32], dimension: usize, seq_len_out: usize, attention: &[u32], pooling: PoolingStrategy, normalize: bool,
     ) -> Option<Vec<f32>> {
         if dimension == 0 || seq_len_out == 0 || data.len() < seq_len_out * dimension {
             return None;
@@ -193,11 +152,7 @@ impl EmbeddingEngine {
                 let mut mask_sum = 0.0f32;
                 let attention_fallback_index = attention.len().saturating_sub(1);
                 for seq_idx in 0..seq_len_out {
-                    let mask_val = attention
-                        .get(seq_idx)
-                        .or_else(|| attention.get(attention_fallback_index))
-                        .copied()
-                        .unwrap_or(1) as f32;
+                    let mask_val = attention.get(seq_idx).or_else(|| attention.get(attention_fallback_index)).copied().unwrap_or(1) as f32;
                     mask_sum += mask_val;
                     let offset = seq_idx * dimension;
                     for dim in 0..dimension {
@@ -215,11 +170,7 @@ impl EmbeddingEngine {
             }
             PoolingStrategy::LastToken => {
                 let attention_limit = seq_len_out.min(attention.len());
-                let last_idx = attention
-                    .iter()
-                    .take(attention_limit)
-                    .rposition(|mask| *mask != 0)
-                    .unwrap_or(seq_len_out - 1);
+                let last_idx = attention.iter().take(attention_limit).rposition(|mask| *mask != 0).unwrap_or(seq_len_out - 1);
                 let offset = last_idx * dimension;
                 pooled.copy_from_slice(data.get(offset..offset + dimension)?);
             }
@@ -241,16 +192,10 @@ impl EmbeddingEngine {
         self.embed_with_kind(text, EmbeddingInputKind::Query)
     }
     pub async fn embed_async(self: std::sync::Arc<Self>, text: String) -> Option<Vec<f32>> {
-        tokio::task::spawn_blocking(move || self.embed(&text))
-            .await
-            .ok()
-            .flatten()
+        tokio::task::spawn_blocking(move || self.embed(&text)).await.ok().flatten()
     }
     pub async fn embed_query_async(self: std::sync::Arc<Self>, text: String) -> Option<Vec<f32>> {
-        tokio::task::spawn_blocking(move || self.embed_query(&text))
-            .await
-            .ok()
-            .flatten()
+        tokio::task::spawn_blocking(move || self.embed_query(&text)).await.ok().flatten()
     }
     pub fn dimension(&self) -> usize {
         self.dimension

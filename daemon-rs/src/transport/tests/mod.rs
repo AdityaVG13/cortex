@@ -20,14 +20,8 @@ fn test_paths(bind: &str, port: u16, ipc_endpoint: Option<&str>) -> CortexPaths 
 #[test]
 fn local_ipc_endpoint_only_resolves_for_local_targets() {
     let paths = test_paths("127.0.0.1", 7437, Some(r"\\.\pipe\cortex-daemon-7437"));
-    assert_eq!(
-        local_ipc_endpoint_for_base_url("http://127.0.0.1:7437", &paths),
-        Some(r"\\.\pipe\cortex-daemon-7437".to_string())
-    );
-    assert_eq!(
-        local_ipc_endpoint_for_base_url("https://api.example.com:443", &paths),
-        None
-    );
+    assert_eq!(local_ipc_endpoint_for_base_url("http://127.0.0.1:7437", &paths), Some(r"\\.\pipe\cortex-daemon-7437".to_string()));
+    assert_eq!(local_ipc_endpoint_for_base_url("https://api.example.com:443", &paths), None);
 }
 #[test]
 fn local_http_base_url_uses_loopback_for_wildcard_bind() {
@@ -36,26 +30,11 @@ fn local_http_base_url_uses_loopback_for_wildcard_bind() {
 }
 #[test]
 fn local_http_base_url_formats_wildcard_and_ipv6_hosts() {
-    assert_eq!(
-        local_http_base_url(&test_paths("", 7437, None)),
-        "http://127.0.0.1:7437"
-    );
-    assert_eq!(
-        local_http_base_url(&test_paths("::", 7437, None)),
-        "http://127.0.0.1:7437"
-    );
-    assert_eq!(
-        local_http_base_url(&test_paths("[::]", 7437, None)),
-        "http://127.0.0.1:7437"
-    );
-    assert_eq!(
-        local_http_base_url(&test_paths("::1", 7437, None)),
-        "http://[::1]:7437"
-    );
-    assert_eq!(
-        local_http_base_url(&test_paths("[::1]", 7437, None)),
-        "http://[::1]:7437"
-    );
+    assert_eq!(local_http_base_url(&test_paths("", 7437, None)), "http://127.0.0.1:7437");
+    assert_eq!(local_http_base_url(&test_paths("::", 7437, None)), "http://127.0.0.1:7437");
+    assert_eq!(local_http_base_url(&test_paths("[::]", 7437, None)), "http://127.0.0.1:7437");
+    assert_eq!(local_http_base_url(&test_paths("::1", 7437, None)), "http://[::1]:7437");
+    assert_eq!(local_http_base_url(&test_paths("[::1]", 7437, None)), "http://[::1]:7437");
 }
 #[test]
 fn parse_http_response_rejects_malformed_status_lines() {
@@ -67,10 +46,6 @@ fn parse_http_response_rejects_malformed_status_lines() {
         b"HTTP/1.1 abc Nope\r\n\r\n{}",
     ];
     for raw in malformed {
-        assert!(
-            parse_http_response(raw).is_err(),
-            "malformed response should be rejected: {:?}",
-            String::from_utf8_lossy(raw)
-        );
+        assert!(parse_http_response(raw).is_err(), "malformed response should be rejected: {:?}", String::from_utf8_lossy(raw));
     }
 }

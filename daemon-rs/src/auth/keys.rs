@@ -20,20 +20,15 @@ pub fn try_generate_token_for(paths: &CortexPaths) -> Result<String, String> {
 }
 pub fn try_write_token_for(paths: &CortexPaths, token: &str) -> Result<(), String> {
     let token_dir = paths.token.parent().unwrap_or(&paths.home);
-    fs::create_dir_all(token_dir)
-        .map_err(|e| format!("cannot create token directory {}: {e}", token_dir.display()))?;
-    write_secret_file(&paths.token, token.as_bytes())
-        .map_err(|e| format!("cannot write token file {}: {e}", paths.token.display()))?;
+    fs::create_dir_all(token_dir).map_err(|e| format!("cannot create token directory {}: {e}", token_dir.display()))?;
+    write_secret_file(&paths.token, token.as_bytes()).map_err(|e| format!("cannot write token file {}: {e}", paths.token.display()))?;
     Ok(())
 }
 pub fn try_generate_token() -> Result<String, String> {
     try_generate_token_for(&CortexPaths::resolve())
 }
 pub fn read_token_from(paths: &CortexPaths) -> Option<String> {
-    fs::read_to_string(&paths.token)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
+    fs::read_to_string(&paths.token).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 pub fn read_token() -> Option<String> {
     read_token_from(&CortexPaths::resolve())
@@ -65,11 +60,7 @@ pub fn verify_ctx_api_key_checksum(candidate: &str) -> bool {
     if payload.len() != CTX_KEY_BODY_LEN + CTX_KEY_CHECKSUM_LEN {
         return false;
     }
-    if !payload
-        .as_bytes()
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric())
-    {
+    if !payload.as_bytes().iter().all(|byte| byte.is_ascii_alphanumeric()) {
         return false;
     }
     let (body, checksum) = payload.split_at(CTX_KEY_BODY_LEN);
@@ -92,17 +83,12 @@ pub fn hash_api_key_argon2id(api_key: &str) -> Result<String, String> {
     let params = Params::new(64 * 1024, 3, 4, None).map_err(|e| e.to_string())?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let salt = SaltString::encode_b64(Uuid::new_v4().as_bytes()).map_err(|e| e.to_string())?;
-    argon2
-        .hash_password(api_key.as_bytes(), &salt)
-        .map(|p| p.to_string())
-        .map_err(|e| e.to_string())
+    argon2.hash_password(api_key.as_bytes(), &salt).map(|p| p.to_string()).map_err(|e| e.to_string())
 }
 pub fn verify_api_key_argon2id(api_key: &str, hash: &str) -> bool {
     let parsed = match PasswordHash::new(hash) {
         Ok(v) => v,
         Err(_) => return false,
     };
-    Argon2::default()
-        .verify_password(api_key.as_bytes(), &parsed)
-        .is_ok()
+    Argon2::default().verify_password(api_key.as_bytes(), &parsed).is_ok()
 }
