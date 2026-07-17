@@ -45,7 +45,6 @@ fn process_is_running(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
-    // SAFETY: `pid` has been range-checked for the platform `pid_t`.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 pub fn db_path() -> PathBuf {

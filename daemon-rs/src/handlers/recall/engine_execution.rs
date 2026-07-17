@@ -1082,7 +1082,6 @@ pub async fn execute_unified_recall(
     let latency_budget_ms = recall_latency_budget_ms_for_mode(policy_mode);
     let recall_scope = recall_scope_key(agent, ctx);
     let scope_prefix = recall_owner_scope(ctx);
-    // Check pre-cache
     if budget > 0 && !state.rerank_config.is_active() {
         if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await
         {
@@ -1239,7 +1238,6 @@ pub async fn execute_unified_recall(
     };
     let (reranked_results, rerank_route) = maybe_apply_rerank(state, query_text, results, budget);
     results = reranked_results;
-    // Co-occurrence tracking (recording only -- predictions excluded from response)
     let sources: Vec<String> = results.iter().map(|item| item.source.clone()).collect();
     if sources.len() >= 2 {
         if co_occurrence::record(&conn, &sources).is_ok() {
@@ -1249,9 +1247,7 @@ pub async fn execute_unified_recall(
         }
     }
     drop(conn);
-    // Record recall pattern for prediction
     record_recall_pattern(state, &recall_scope, query_text).await;
-    // Fire-and-forget pre-cache warming
     let state_clone = state.clone();
     let scope_owned = recall_scope.clone();
     let query_owned = query_text.to_string();
@@ -1259,7 +1255,6 @@ pub async fn execute_unified_recall(
     tokio::spawn(async move {
         let _ = predict_and_cache(state_clone, &scope_owned, &query_owned, ctx_owned).await;
     });
-    // Headlines mode (budget == 0)
     if budget == 0 {
         let method_breakdown = build_method_breakdown(&results);
         let tier = classify_recall_tier(false, "headlines", &method_breakdown);
@@ -1317,7 +1312,6 @@ pub async fn execute_unified_recall(
             "rerankRoute": rerank_route
         }));
     }
-    // Dedup and budget accounting
     let results = dedup_and_mark_served(state, agent, query_text, ctx, results).await;
     let results = enforce_budget_token_invariant(results, budget, query_text);
     let usage = compute_recall_budget_usage(&results, budget);
@@ -1715,10 +1709,6 @@ pub(crate) fn run_recall_with_query_vector_trace(
     } else {
         extracted.join(" ")
     };
-    // This function is the retrieval engine; caching is the caller's responsibility.
-    // and should always surface regardless of FTS confidence.
-    // Crystal results keyed by source. Their member sources are tracked so the
-    // final merge can collapse near-duplicate family members under the crystal.
     let mut crystal_items: HashMap<String, RecallItem> = HashMap::new();
     let mut crystal_family_lookup: HashMap<String, String> = HashMap::new();
     if let Some(query_vec) = query_vector {
@@ -1755,9 +1745,6 @@ pub(crate) fn run_recall_with_query_vector_trace(
             );
         }
     }
-    // Run FTS5 first. If the top result is confident (score >= 0.93) with a
-    // meaningful gap from #2 (delta >= 0.08), return immediately without
-    // spending cycles on embedding inference. Target: 40%+ queries resolved here.
     const TIER2_CONFIDENCE: f64 = 0.78;
     const TIER2_GAP: f64 = 0.10;
     let raw_k = if ctx.team_mode { k.max(10) * 5 } else { 20 };
@@ -1807,8 +1794,6 @@ pub(crate) fn run_recall_with_query_vector_trace(
     } else {
         false
     };
-    // Produces a ranked list of (source, score) pairs for RRF.
-    // Also accumulates per-source metadata (score, ts) for compound scoring.
     let (semantic_candidates, semantic_route, semantic_baseline) = if tier2_resolved {
         (
             Vec::new(),
@@ -1861,10 +1846,6 @@ pub(crate) fn run_recall_with_query_vector_trace(
         );
         (semantic_candidates, semantic_route, semantic_baseline)
     };
-    // Assign stable integer indices to each unique source across both lists,
-    // then fuse ranks. rrf_fuse() works on (i64, f64) so we map source → index.
-    //
-    // ranking (correct behavior -- no fusion penalty).
     let mut source_index: HashMap<String, i64> = HashMap::new();
     let mut index_source: Vec<String> = Vec::new();
     let mut get_idx = |source: &str| -> i64 {
@@ -1876,12 +1857,10 @@ pub(crate) fn run_recall_with_query_vector_trace(
         index_source.push(source.to_string());
         idx
     };
-    // Build ranked list for keyword results (sorted by relevance desc)
     let kw_list: Vec<(i64, f64)> = kw_candidates
         .iter()
         .map(|c| (get_idx(&c.source), c.relevance))
         .collect();
-    // Build ranked list for semantic results (sorted by relevance desc)
     let sem_list: Vec<(i64, f64)> = semantic_candidates
         .iter()
         .map(|candidate| (get_idx(&candidate.source), candidate.relevance))
@@ -1893,15 +1872,12 @@ pub(crate) fn run_recall_with_query_vector_trace(
         &[fusion_weights.keyword, fusion_weights.semantic],
         60.0,
     );
-    // For each fused entry: look up metadata from keyword or semantic candidates,
-    // determine method label, then apply compound_score().
     let mut merged: HashMap<String, RecallItem> = HashMap::new();
     for (idx, rrf_score) in &fused {
         let source = match index_source.get(*idx as usize) {
             Some(s) => s.clone(),
             None => continue,
         };
-        // Prefer keyword candidate metadata (has score + ts); fall back to sem
         let (excerpt, importance, ts_ms, method) =
             if let Some(kw) = kw_candidates.iter().find(|c| c.source == source) {
                 let in_sem = semantic_candidates.iter().any(|sem| sem.source == source);
@@ -1912,7 +1888,6 @@ pub(crate) fn run_recall_with_query_vector_trace(
             } else {
                 continue;
             };
-        // Convert ts (Unix-ms) to ISO 8601 for compound_score()
         let created_at_str = if ts_ms > 0 {
             Utc.timestamp_millis_opt(ts_ms)
                 .single()
@@ -1921,7 +1896,6 @@ pub(crate) fn run_recall_with_query_vector_trace(
         } else {
             String::new()
         };
-        // importance is 0-1 in DB; normalize() expects 0-100 range
         let mut relevance = round4(compound_score(
             *rrf_score,
             importance * 100.0,
@@ -1964,21 +1938,13 @@ pub(crate) fn run_recall_with_query_vector_trace(
             },
         );
     }
-    // Crystal items bypass RRF (they're already fused/consolidated knowledge);
-    // insert after -- they will not be overwritten since crystal:: keys don't appear in kw/sem
     for (src, mut item) in crystal_items {
         dedup_preserve_order(&mut item.family_members);
         normalize_collapsed_source_rank(&mut item);
         merged.entry(src).or_insert(item);
     }
-    // High-entropy (information-dense) excerpts get a relevance boost (+/-15%
-    // around midpoint H=3.5). Applied after compound scoring so entropy acts as
-    // a diversity signal on top of the RRF+compound base.
     let mut ranked: Vec<RecallItem> = merged.into_values().collect();
     apply_recall_ranking_boosts(&mut ranked, query_text, 0.08, 0.12);
-    // Boost results that have been useful in past recalls (unfolded),
-    // penalize results that were consistently ignored. Graceful no-op when
-    // no feedback data exists (cold start).
     let sources: Vec<String> = ranked.iter().map(|r| r.source.clone()).collect();
     let boosts = crate::handlers::feedback::compute_boosts(conn, &sources, query_vector);
     if !boosts.is_empty() {
@@ -2074,117 +2040,44 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
     }
     None
 }
+const UNFOLD_ACTIVE: &str = "status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))";
 pub(crate) type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
 pub(crate) type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
-pub(crate) fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfoldRow> {
-    let sql_with_visibility =
-        "SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 \
-         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now')) \
-         ORDER BY score DESC LIMIT 1";
-    match conn.query_row(sql_with_visibility, params![source], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<String>>(3)?,
-        ))
-    }) {
+fn query_acl_row<T, F, G>(conn: &Connection, with_sql: &str, without_sql: &str, bind: &[&dyn rusqlite::types::ToSql], map_with: F, map_without: G) -> Option<T>
+where
+    F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    G: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+{
+    match conn.query_row(with_sql, bind, map_with) {
         Ok(row) => Some(row),
-        Err(err) if is_missing_team_visibility_columns(&err) => conn
-            .query_row(
-                "SELECT text, type FROM memories WHERE source = ?1 \
-                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now')) \
-                 ORDER BY score DESC LIMIT 1",
-                params![source],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        None,
-                        None,
-                    ))
-                },
-            )
-            .ok(),
+        Err(err) if is_missing_team_visibility_columns(&err) => conn.query_row(without_sql, bind, map_without).ok(),
         Err(_) => None,
     }
+}
+pub(crate) fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option<MemoryUnfoldRow> {
+    let bind: Vec<&dyn rusqlite::types::ToSql> = vec![&source];
+    query_acl_row(
+        conn,
+        &format!("SELECT text, type, owner_id, visibility FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
+        &format!("SELECT text, type FROM memories WHERE source = ?1 AND {UNFOLD_ACTIVE} ORDER BY score DESC LIMIT 1"),
+        &bind,
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, None, None)),
+    )
+}
+fn query_decision_for_unfold(conn: &Connection, predicate: &str, bind: &[&dyn rusqlite::types::ToSql], order_limit: &str) -> Option<DecisionUnfoldRow> {
+    query_acl_row(
+        conn,
+        &format!("SELECT decision, context, owner_id, visibility FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),
+        &format!("SELECT decision, context FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),
+        bind,
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, None, None)),
+    )
 }
 pub(crate) fn query_decision_by_id_for_unfold(conn: &Connection, id: i64) -> Option<DecisionUnfoldRow> {
-    let sql_with_visibility =
-        "SELECT decision, context, owner_id, visibility FROM decisions WHERE id = ?1 \
-         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))";
-    match conn.query_row(sql_with_visibility, params![id], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<String>>(3)?,
-        ))
-    }) {
-        Ok(row) => Some(row),
-        Err(err) if is_missing_team_visibility_columns(&err) => conn
-            .query_row(
-                "SELECT decision, context FROM decisions WHERE id = ?1 \
-                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))",
-                params![id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        None,
-                        None,
-                    ))
-                },
-            )
-            .ok(),
-        Err(_) => None,
-    }
+    query_decision_for_unfold(conn, "id = ?1", &[&id], "")
 }
-pub(crate) fn query_decision_by_context_for_unfold(
-    conn: &Connection,
-    source: &str,
-) -> Option<DecisionUnfoldRow> {
-    let sql_with_visibility =
-        "SELECT decision, context, owner_id, visibility FROM decisions WHERE context = ?1 \
-         AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now')) \
-         ORDER BY score DESC LIMIT 1";
-    match conn.query_row(sql_with_visibility, params![source], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<String>>(3)?,
-        ))
-    }) {
-        Ok(row) => Some(row),
-        Err(err) if is_missing_team_visibility_columns(&err) => conn
-            .query_row(
-                "SELECT decision, context FROM decisions WHERE context = ?1 \
-                 AND status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now')) \
-                 ORDER BY score DESC LIMIT 1",
-                params![source],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        None,
-                        None,
-                    ))
-                },
-            )
-            .ok(),
-        Err(_) => None,
-    }
+pub(crate) fn query_decision_by_context_for_unfold(conn: &Connection, source: &str) -> Option<DecisionUnfoldRow> {
+    query_decision_for_unfold(conn, "context = ?1", &[&source], " ORDER BY score DESC LIMIT 1")
 }

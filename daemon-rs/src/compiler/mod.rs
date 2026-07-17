@@ -7,8 +7,7 @@ mod ranking;
 mod types;
 #[cfg(test)]
 #[cfg(test)]
-mod tests {
-}
+mod tests;
 pub(crate) use cache::*;
 pub(crate) use capsules::*;
 pub use compile::compile;

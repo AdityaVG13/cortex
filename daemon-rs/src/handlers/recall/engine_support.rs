@@ -4,97 +4,27 @@ pub(crate) fn round4(value: f64) -> f64 {
     }
     (value * 10000.0).round() / 10000.0
 }
-pub(crate) fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
-    if items.is_empty() {
-        return;
-    }
-    let now = now_iso();
-    let sources: Vec<&str> = items.iter().map(|i| i.source.as_str()).collect();
-    // Batch boost memories -- single UPDATE with IN clause
-    let placeholders: String = sources
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!("?{}", i + 2))
-        .collect::<Vec<_>>()
-        .join(",");
+fn bump_retrievals_keys(conn: &Connection, table: &str, key_col: &str, now: &str, keys: &[String]) {
+    if keys.is_empty() { return; }
+    let placeholders: String = (2..=keys.len() + 1).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let sql = format!(
-        "UPDATE memories SET \
-           retrievals = retrievals + 1, \
-           last_accessed = ?1, \
-           score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
-         WHERE source IN ({})",
-        placeholders
+        "UPDATE {table} SET retrievals = retrievals + 1, last_accessed = ?1, score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) WHERE {key_col} IN ({placeholders})"
     );
-    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
-        Vec::with_capacity(sources.len() + 1);
-    params_vec.push(Box::new(now.clone()));
-    for s in &sources {
-        params_vec.push(Box::new(s.to_string()));
-    }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        params_vec.iter().map(|p| p.as_ref()).collect();
-    let _ = conn.execute(&sql, param_refs.as_slice());
-    // Batch boost decisions by id
-    let decision_ids: Vec<i64> = sources
-        .iter()
-        .filter_map(|s| s.strip_prefix("decision::").and_then(|id| id.parse().ok()))
-        .collect();
-    if !decision_ids.is_empty() {
-        let d_placeholders: String = decision_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
-            .collect::<Vec<_>>()
-            .join(",");
-        let d_sql = format!(
-            "UPDATE decisions SET \
-               retrievals = retrievals + 1, \
-               last_accessed = ?1, \
-               score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
-             WHERE id IN ({})",
-            d_placeholders
-        );
-        let mut d_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(decision_ids.len() + 1);
-        d_params.push(Box::new(now.clone()));
-        for id in &decision_ids {
-            d_params.push(Box::new(*id));
-        }
-        let d_refs: Vec<&dyn rusqlite::types::ToSql> =
-            d_params.iter().map(|p| p.as_ref()).collect();
-        let _ = conn.execute(&d_sql, d_refs.as_slice());
-    }
-    // Batch boost decisions by context (non-id sources)
-    let context_sources: Vec<&str> = sources
-        .iter()
-        .filter(|s| !s.starts_with("decision::"))
-        .copied()
-        .collect();
-    if !context_sources.is_empty() {
-        let c_placeholders: String = context_sources
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
-            .collect::<Vec<_>>()
-            .join(",");
-        let c_sql = format!(
-            "UPDATE decisions SET \
-               retrievals = retrievals + 1, \
-               last_accessed = ?1, \
-               score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) \
-             WHERE context IN ({})",
-            c_placeholders
-        );
-        let mut c_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(context_sources.len() + 1);
-        c_params.push(Box::new(now));
-        for s in &context_sources {
-            c_params.push(Box::new(s.to_string()));
-        }
-        let c_refs: Vec<&dyn rusqlite::types::ToSql> =
-            c_params.iter().map(|p| p.as_ref()).collect();
-        let _ = conn.execute(&c_sql, c_refs.as_slice());
-    }
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(keys.len() + 1);
+    params.push(Box::new(now.to_string()));
+    for key in keys { params.push(Box::new(key.clone())); }
+    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let _ = conn.execute(&sql, refs.as_slice());
+}
+pub(crate) fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
+    if items.is_empty() { return; }
+    let now = now_iso();
+    let sources: Vec<String> = items.iter().map(|i| i.source.clone()).collect();
+    bump_retrievals_keys(conn, "memories", "source", &now, &sources);
+    let decision_ids: Vec<String> = sources.iter().filter_map(|s| s.strip_prefix("decision::").and_then(|id| id.parse::<i64>().ok()).map(|id| id.to_string())).collect();
+    bump_retrievals_keys(conn, "decisions", "id", &now, &decision_ids);
+    let context_sources: Vec<String> = sources.iter().filter(|s| !s.starts_with("decision::")).cloned().collect();
+    bump_retrievals_keys(conn, "decisions", "context", &now, &context_sources);
 }
 pub(crate) fn recall_to_json(item: RecallItem) -> Value {
     let mut payload = json!({
@@ -458,7 +388,6 @@ pub(crate) async fn get_pre_cached(
             return deserialize_cache_entry(&entry.results);
         }
     }
-    // Evict expired entry for this agent
     if cache
         .get(scope_key)
         .map(|e| e.expires_at <= now)
@@ -595,14 +524,10 @@ pub(crate) async fn predict_and_cache(
     if results.is_empty() {
         return Ok(());
     }
-    // Serialize results as JSON Value for storage in the pre-cache
     let results_json: Value = results.into_iter().map(recall_to_json).collect();
     let now_ms = Utc::now().timestamp_millis();
     let mut cache = state.pre_cache.lock().await;
-    // Evict all expired entries first (TTL cleanup)
     cache.retain(|_, entry| entry.expires_at > now_ms);
-    // LRU eviction: if still at capacity, remove the entry with the oldest expiry
-    // (soonest to expire = was cached longest ago, approximates LRU without a linked list)
     const MAX_CACHE_ENTRIES: usize = 100;
     if cache.len() >= MAX_CACHE_ENTRIES {
         if let Some(oldest_key) = cache
@@ -869,139 +794,32 @@ pub(crate) fn shadow_guard_failure_reason(shadow_semantic: &Value) -> Option<&'s
     }
     None
 }
-pub(crate) fn sqlite_vec_source_fallback_candidate(
-    conn: &Connection,
-    source: &str,
-    query_text: &str,
-    fallback_relevance: f64,
-) -> Option<SemanticCandidate> {
-    let build_candidate = |excerpt_text: String,
-                           score: Option<f64>,
-                           trust_score: Option<f64>,
-                           last_accessed: Option<String>,
-                           created_at: Option<String>| {
-        let ts_source = last_accessed
-            .as_deref()
-            .or(created_at.as_deref())
-            .unwrap_or_default();
-        SemanticCandidate {
-            source: source.to_string(),
-            excerpt: query_focused_excerpt(&excerpt_text, query_text, 280),
-            relevance: fallback_relevance,
-            importance: blend_importance(score, trust_score),
-            ts: parse_timestamp_ms(ts_source),
-        }
+pub(crate) fn sqlite_vec_source_fallback_candidate(conn: &Connection, source: &str, query_text: &str, fallback_relevance: f64) -> Option<SemanticCandidate> {
+    const ACTIVE: &str = "status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))";
+    let build = |text: String, score: Option<f64>, trust_score: Option<f64>, last_accessed: Option<String>, created_at: Option<String>| SemanticCandidate {
+        source: source.to_string(),
+        excerpt: query_focused_excerpt(&text, query_text, 280),
+        relevance: fallback_relevance,
+        importance: blend_importance(score, trust_score),
+        ts: parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or_default()),
     };
-    let memory_by_id = source
-        .strip_prefix("memory::")
-        .and_then(|raw| raw.parse::<i64>().ok())
-        .and_then(|id| {
-            conn.query_row(
-                "SELECT text, score, trust_score, last_accessed, created_at
-                 FROM memories
-                 WHERE id = ?1 AND status = 'active'
-                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-                 LIMIT 1",
-                params![id],
-                |row| {
-                    Ok(build_candidate(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<f64>>(1)?,
-                        row.get::<_, Option<f64>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .ok()
-            .flatten()
-        });
-    if let Some(candidate) = memory_by_id {
+    let query_text_row = |sql: &str, bind: &[&dyn rusqlite::types::ToSql]| {
+        conn.query_row(sql, bind, |row| Ok(build(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional().ok().flatten()
+    };
+    if let Some(id) = source.strip_prefix("memory::").and_then(|raw| raw.parse::<i64>().ok()) {
+        if let Some(candidate) = query_text_row(&format!("SELECT text, score, trust_score, last_accessed, created_at FROM memories WHERE id = ?1 AND {ACTIVE} LIMIT 1"), &[&id]) {
+            return Some(candidate);
+        }
+    }
+    if let Some(candidate) = query_text_row(&format!("SELECT text, score, trust_score, last_accessed, created_at FROM memories WHERE source = ?1 AND {ACTIVE} ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT 1"), &[&source]) {
         return Some(candidate);
     }
-    let memory_by_source = conn
-        .query_row(
-            "SELECT text, score, trust_score, last_accessed, created_at
-             FROM memories
-             WHERE source = ?1 AND status = 'active'
-             AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",
-            params![source],
-            |row| {
-                Ok(build_candidate(
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<f64>>(1)?,
-                    row.get::<_, Option<f64>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            },
-        )
-        .optional()
-        .ok()
-        .flatten();
-    if let Some(candidate) = memory_by_source {
-        return Some(candidate);
+    if let Some(id) = source.strip_prefix("decision::").and_then(|raw| raw.parse::<i64>().ok()) {
+        if let Some(candidate) = query_text_row(&format!("SELECT decision, score, trust_score, last_accessed, created_at FROM decisions WHERE id = ?1 AND {ACTIVE} LIMIT 1"), &[&id]) {
+            return Some(candidate);
+        }
     }
-    let decision_by_id = source
-        .strip_prefix("decision::")
-        .and_then(|raw| raw.parse::<i64>().ok())
-        .and_then(|id| {
-            conn.query_row(
-                "SELECT decision, score, trust_score, last_accessed, created_at
-                 FROM decisions
-                 WHERE id = ?1 AND status = 'active'
-                 AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-                 LIMIT 1",
-                params![id],
-                |row| {
-                    Ok(build_candidate(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<f64>>(1)?,
-                        row.get::<_, Option<f64>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .ok()
-            .flatten()
-        });
-    if let Some(candidate) = decision_by_id {
-        return Some(candidate);
-    }
-    conn.query_row(
-        "SELECT decision, score, trust_score, last_accessed, created_at
-         FROM decisions
-         WHERE context = ?1 AND status = 'active'
-         AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-         ORDER BY COALESCE(last_accessed, created_at) DESC
-         LIMIT 1",
-        params![source],
-        |row| {
-            Ok(build_candidate(
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<f64>>(1)?,
-                row.get::<_, Option<f64>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        },
-    )
-    .optional()
-    .ok()
-    .flatten()
+    query_text_row(&format!("SELECT decision, score, trust_score, last_accessed, created_at FROM decisions WHERE context = ?1 AND {ACTIVE} ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT 1"), &[&source])
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn maybe_apply_sqlite_vec_trial(

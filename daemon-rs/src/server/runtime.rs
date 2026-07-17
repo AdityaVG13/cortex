@@ -119,7 +119,6 @@ pub(crate) fn resolve_socket_activation_listener(expected_port: u16) -> Result<O
         return Err(format!("Expected exactly one activated socket (LISTEN_FDS=1), got {listen_fds}"));
     }
     validate_socket_activation_fd(SYSTEMD_FIRST_SOCKET_FD)?;
-    // SAFETY: systemd-compatible socket activation passes the first owned
     let std_listener = unsafe { std::net::TcpListener::from_raw_fd(SYSTEMD_FIRST_SOCKET_FD) };
     std_listener.set_nonblocking(true).map_err(|e| format!("configure activated socket nonblocking: {e}"))?;
     if let Ok(addr) = std_listener.local_addr() {
@@ -136,13 +135,11 @@ pub(crate) fn resolve_socket_activation_listener(expected_port: u16) -> Result<O
 }
 #[cfg(unix)]
 pub(crate) fn validate_socket_activation_fd(fd: libc::c_int) -> Result<(), String> {
-    // SAFETY: F_GETFD only probes the integer descriptor. It does not borrow,
     if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
         return Err(format!("activated socket fd {fd} is not open: {}", std::io::Error::last_os_error()));
     }
     let mut socket_type: libc::c_int = 0;
     let mut socket_type_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    // SAFETY: `socket_type` and `socket_type_len` are valid out-pointers for
     if unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&mut socket_type as *mut libc::c_int).cast(), &mut socket_type_len) } < 0 {
         return Err(format!("activated socket fd {fd} is not a socket: {}", std::io::Error::last_os_error()));
     }

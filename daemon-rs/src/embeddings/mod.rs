@@ -4,8 +4,7 @@ mod engine;
 mod profiles;
 mod vectors;
 #[cfg(test)]
-mod tests {
-}
+mod tests;
 pub use download::{ensure_model_downloaded, ensure_model_downloaded_in};
 pub use engine::EmbeddingEngine;
 pub use profiles::{selected_model_assets_exist, selected_model_key, selected_model_selection};

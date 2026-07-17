@@ -141,7 +141,6 @@ struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            // SAFETY: this guard owns the token handle returned by OpenProcessToken.
             unsafe {
                 let _ = windows_sys::Win32::Foundation::CloseHandle(self.0);
             }
@@ -154,7 +153,6 @@ struct LocalMemory(*mut std::ffi::c_void);
 impl Drop for LocalMemory {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            // SAFETY: this guard owns memory allocated by a Win32 local allocator.
             unsafe {
                 let _ = windows_sys::Win32::Foundation::LocalFree(self.0);
             }
@@ -182,14 +180,12 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     use windows_sys::Win32::Security::{GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let mut token: HANDLE = null_mut();
-    // SAFETY: GetCurrentProcess returns a pseudo-handle for this process, and
     let opened = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
     if opened == 0 {
         return Err(io::Error::last_os_error());
     }
     let token = OwnedHandle(token);
     let mut required_len = 0u32;
-    // SAFETY: this size query intentionally passes a null output buffer and
     unsafe {
         let _ = GetTokenInformation(token.0, TokenUser, null_mut(), 0, &mut required_len);
     }
@@ -200,7 +196,6 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let word_count = (required_len as usize).div_ceil(word_size);
     let mut token_info = vec![0usize; word_count];
     let mut returned_len = 0u32;
-    // SAFETY: `token_info` is a writable, word-aligned buffer large enough for
     let filled = unsafe { GetTokenInformation(token.0, TokenUser, token_info.as_mut_ptr().cast(), (token_info.len() * word_size) as u32, &mut returned_len) };
     if filled == 0 {
         return Err(io::Error::last_os_error());
@@ -208,12 +203,10 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     if returned_len < std::mem::size_of::<TOKEN_USER>() as u32 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows token user information is too small"));
     }
-    // SAFETY: the buffer was populated by GetTokenInformation(TokenUser) and
     let token_user = unsafe { *token_info.as_ptr().cast::<TOKEN_USER>() };
     if token_user.User.Sid.is_null() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows token user SID is missing"));
     }
-    // SAFETY: token_user.User.Sid came from the validated TOKEN_USER buffer.
     if unsafe { IsValidSid(token_user.User.Sid) } == 0 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Windows token user SID is invalid"));
     }
@@ -245,14 +238,12 @@ pub(crate) fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
         },
     };
     let mut acl: *mut ACL = null_mut();
-    // SAFETY: `access` references the current-user SID buffer, which remains
     let result = unsafe { SetEntriesInAclW(1, &access, null(), &mut acl) };
     if result != ERROR_SUCCESS {
         return Err(win32_error(result));
     }
     let _acl_guard = LocalMemory(acl.cast());
     let wide_path = windows_path_to_wide(path);
-    // SAFETY: `wide_path` is null-terminated, `acl` is a valid ACL produced by
     let result = unsafe {
         SetNamedSecurityInfoW(
             wide_path.as_ptr(),

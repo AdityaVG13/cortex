@@ -6,7 +6,6 @@ mod steps;
 mod team;
 mod types;
 #[cfg(test)]
-mod tests {
-}
+mod tests;
 pub use steps::run_setup;
 pub use team::run_setup_team;

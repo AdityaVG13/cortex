@@ -30,7 +30,6 @@ pub(crate) fn ensure_sqlite_vec_registered() -> Result<(), String> {
             }
             let _sqlite_vec_symbol: unsafe extern "C" fn() = sqlite_vec::sqlite3_vec_init;
             let init: SqliteVecEntryPoint = sqlite3_vec_init_auto_extension;
-            // SAFETY: `init` points to `sqlite3_vec_init` with SQLite's
             let rc = unsafe { rusqlite::ffi::sqlite3_auto_extension(Some(init)) };
             if rc == 0 {
                 Ok(())

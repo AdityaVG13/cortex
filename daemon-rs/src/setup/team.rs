@@ -92,7 +92,6 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
     db::migrate_focus_table(&conn);
     crate::crystallize::migrate_crystal_tables(&conn);
-    // SAFETY: team setup is a write transaction; take SQLite's writer lock
     if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
         eprintln!("  [FAIL] Cannot begin transaction: {e}");
         return;
