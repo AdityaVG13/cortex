@@ -5,15 +5,15 @@ import { AppIcon } from "../ui-icons.jsx";
 import { PANEL_SEQUENCE } from "./constants.js";
 import { PanelStage } from "./panels/panel-stage.jsx";
 import { useDashboard } from "./DashboardContext.jsx";
-function AppShell({ DEFAULT_CORTEX_BASE, persistBrowserAuthToken }) { const d = useDashboard();
+function AppShell({ DEFAULT_CORTEX_BASE: defaultCortexBase, persistBrowserAuthToken: persistAuthToken }) { const d = useDashboard();
   const { effectiveSidebarCollapsed, panel, changePanel, pill, utilityPill, sidebarUtilityStats, activePanelLabel,
     daemonState, daemonRecoveryHint, handleRestartDaemon, restartingDaemon, invokeRef, handleStartDaemon, handleStopDaemon, canStartDaemon,
     canStopDaemon, restartError, availableUpdate, updateInstalling, setUpdateInstalling, setFeedbackMessage, feedbackMessage, setSidebarCollapsed,
     topbarRef, stats, normalizedSessions, openConnectionDialog, hostLabel, daemonStatusBadge, showEditorSetupWizard, isSettingUpEditors,
     closeEditorSetupWizard, editorSetupDialogRef, editorDetectionSummary, selectedEditorIds,
     toggleEditorSelection, manualMcpSnippet, applyEditorSetup, showConnectionDialog,
-    dismissConnectionDialog, connectionDialogRef, isTauriRuntime, connectionEndpoint, closeConnectionDialog, setCortexBase, tokenRef, persistBrowserAuthToken,
-    readAuthToken, refreshAllRef, DEFAULT_CORTEX_BASE, trapFocusInContainer, } = d;
+    dismissConnectionDialog, connectionDialogRef, isTauriRuntime, connectionEndpoint, closeConnectionDialog, setCortexBase, tokenRef,
+    readAuthToken, refreshAllRef, trapFocusInContainer, } = d;
   return ( useEffect(() => { if (!(!showConnectionDialog || !connectionDialogRef.current))
         return trapFocusInContainer(connectionDialogRef.current);
     }, [showConnectionDialog]), useEffect(() => { if (!(!showEditorSetupWizard || !editorSetupDialogRef.current))
@@ -126,13 +126,13 @@ function AppShell({ DEFAULT_CORTEX_BASE, persistBrowserAuthToken }) { const d = 
                   }, "\xD7", ), ), React.createElement( "p", { className: "connection-subtitle", id: "connection-dialog-description", }, isTauriRuntime
                   ? "Desktop app mode uses the local app-managed Cortex daemon only."
                   : "Connect to a local or remote Cortex daemon", ), React.createElement( "form",
-                { onSubmit: (e) => { if ((e.preventDefault(), isTauriRuntime)) { (setCortexBase(DEFAULT_CORTEX_BASE),
-                        (tokenRef.current = ""), persistBrowserAuthToken(""), closeConnectionDialog(), queueMicrotask(() => refreshAllRef.current()));
+                { onSubmit: (e) => { if ((e.preventDefault(), isTauriRuntime)) { (setCortexBase(defaultCortexBase),
+                        (tokenRef.current = ""), persistAuthToken(""), closeConnectionDialog(), queueMicrotask(() => refreshAllRef.current()));
                       return;
                     }
                     const fd = new FormData(e.target), host = fd.get("host")?.toString().trim() || "127.0.0.1",
                       port = fd.get("port")?.toString().trim() || "7437", token = fd.get("token")?.toString().trim();
-                    (setCortexBase(`http://${host}:${port}`), (tokenRef.current = token || ""), persistBrowserAuthToken(token || ""), closeConnectionDialog(),
+                    (setCortexBase(`http://${host}:${port}`), (tokenRef.current = token || ""), persistAuthToken(token || ""), closeConnectionDialog(),
                       queueMicrotask(() => refreshAllRef.current())); }, }, React.createElement(
                   "label", { className: "connection-field" }, React.createElement("span", null, "Host"), React.createElement("input", {
                     name: "host", defaultValue: connectionEndpoint.host, placeholder: "127.0.0.1", disabled: isTauriRuntime,
@@ -144,7 +144,7 @@ function AppShell({ DEFAULT_CORTEX_BASE, persistBrowserAuthToken }) { const d = 
                       ? "Managed by desktop app token flow"
                       : "Leave blank for local (auto-read)", disabled: isTauriRuntime, }), ),
                 React.createElement( "div", { className: "connection-actions" }, React.createElement( "button", { type: "button", className: "btn-sm",
-                      onClick: () => { (setCortexBase(DEFAULT_CORTEX_BASE), (tokenRef.current = ""), persistBrowserAuthToken(""),
+                      onClick: () => { (setCortexBase(defaultCortexBase), (tokenRef.current = ""), persistAuthToken(""),
                           closeConnectionDialog(), readAuthToken({ suppressFeedback: !0 }), queueMicrotask(() => refreshAllRef.current())); },
                     }, "Reset to Local", ), React.createElement("button", { type: "submit", className: "btn-sm btn-primary" }, "Connect"), ), ), ), ),
         React.createElement(PanelStage), ), ) );
