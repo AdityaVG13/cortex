@@ -1,9 +1,5 @@
 import { useEffect } from "react";
-import {
-  SSE_RECONNECT_BASE_MS,
-  SSE_RECONNECT_MAX_MS,
-  SSE_REFRESH_THROTTLE_MS,
-} from "../constants.js";
+import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS, SSE_REFRESH_THROTTLE_MS } from "../constants.js";
 function useSseStream(ctx) {
   const {
     daemonState,
@@ -25,19 +21,15 @@ function useSseStream(ctx) {
         refreshQueued = !1,
         disposed = !1;
       const clearRefreshTimer = () => {
-          refreshTimer &&
-            (window.clearTimeout(refreshTimer), (refreshTimer = null));
+          refreshTimer && (window.clearTimeout(refreshTimer), (refreshTimer = null));
         },
         clearReconnectTimer = () => {
-          reconnectTimer &&
-            (window.clearTimeout(reconnectTimer), (reconnectTimer = null));
+          reconnectTimer && (window.clearTimeout(reconnectTimer), (reconnectTimer = null));
         },
         scheduleRefresh = (immediate = !1) => {
           if (disposed || refreshTimer) return;
           const elapsed = Date.now() - lastRefreshAt,
-            delay = immediate
-              ? 0
-              : Math.max(SSE_REFRESH_THROTTLE_MS - elapsed, 0);
+            delay = immediate ? 0 : Math.max(SSE_REFRESH_THROTTLE_MS - elapsed, 0);
           refreshTimer = window.setTimeout(() => {
             if (((refreshTimer = null), refreshInFlight)) {
               refreshQueued = !0;
@@ -47,9 +39,7 @@ function useSseStream(ctx) {
               Promise.resolve(refreshAllRef.current()).finally(() => {
                 ((lastRefreshAt = Date.now()),
                   (refreshInFlight = !1),
-                  refreshQueued &&
-                    !disposed &&
-                    ((refreshQueued = !1), scheduleRefresh()));
+                  refreshQueued && !disposed && ((refreshQueued = !1), scheduleRefresh()));
               }));
           }, delay);
         },
@@ -61,10 +51,7 @@ function useSseStream(ctx) {
         },
         scheduleReconnect = () => {
           if (disposed) return;
-          const exponentialDelay = Math.min(
-              SSE_RECONNECT_MAX_MS,
-              SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt,
-            ),
+          const exponentialDelay = Math.min(SSE_RECONNECT_MAX_MS, SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt),
             jitter = Math.floor(Math.random() * 250);
           ((reconnectAttempt += 1),
             clearReconnectTimer(),
@@ -80,16 +67,13 @@ function useSseStream(ctx) {
             nextStream = new EventSource(streamUrl);
           ((stream = nextStream),
             (nextStream.onopen = () => {
-              ((reconnectAttempt = 0),
-                (streamConnectedAtRef.current = Date.now()),
-                scheduleRefresh(!0));
+              ((reconnectAttempt = 0), (streamConnectedAtRef.current = Date.now()), scheduleRefresh(!0));
             }),
             (nextStream.onmessage = handleRealtimeEvent),
             nextStream.addEventListener("connected", handleRealtimeEvent),
             nextStream.addEventListener("task", handleRealtimeEvent),
             nextStream.addEventListener("session", () => {
-              ((streamSessionEventCountRef.current += 1),
-                handleRealtimeEvent());
+              ((streamSessionEventCountRef.current += 1), handleRealtimeEvent());
             }),
             nextStream.addEventListener("lock", handleRealtimeEvent),
             nextStream.addEventListener("feed", handleRealtimeEvent),
@@ -105,12 +89,7 @@ function useSseStream(ctx) {
             }));
         },
         handleOnline = () => {
-          disposed ||
-            ((reconnectAttempt = 0),
-            clearReconnectTimer(),
-            closeStream(),
-            connect(),
-            scheduleRefresh(!0));
+          disposed || ((reconnectAttempt = 0), clearReconnectTimer(), closeStream(), connect(), scheduleRefresh(!0));
         };
       return (
         connect(),

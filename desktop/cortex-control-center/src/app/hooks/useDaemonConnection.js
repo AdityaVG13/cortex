@@ -9,10 +9,7 @@ import {
 } from "../constants.js";
 import { persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
-import {
-  isDaemonOfflineErrorMessage,
-  isReachableHealthPayload,
-} from "../utils/daemon.js";
+import { isDaemonOfflineErrorMessage, isReachableHealthPayload } from "../utils/daemon.js";
 function useDaemonConnection(ctx) {
   const {
       cortexBase,
@@ -53,9 +50,7 @@ function useDaemonConnection(ctx) {
               if (isReachableHealthPayload(health)) return !0;
             }
           } catch {}
-          await new Promise((resolve) =>
-            setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS),
-          );
+          await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
         }
         return !1;
       },
@@ -72,9 +67,7 @@ function useDaemonConnection(ctx) {
         } catch (error) {
           if (isDaemonOfflineErrorMessage(error?.message || error)) return !0;
         }
-        await new Promise((resolve) =>
-          setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS),
-        );
+        await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
       }
       return !1;
     }, [api, call]),
@@ -95,35 +88,21 @@ function useDaemonConnection(ctx) {
             })),
           stopResult = await Promise.race([
             stopPromise,
-            new Promise((resolve) =>
-              setTimeout(
-                () => resolve({ timedOut: !0 }),
-                DAEMON_STOP_HANG_TIMEOUT_MS,
-              ),
-            ),
+            new Promise((resolve) => setTimeout(() => resolve({ timedOut: !0 }), DAEMON_STOP_HANG_TIMEOUT_MS)),
           ]);
         let stopFailure = "";
         stopResult?.timedOut
-          ? setFeedbackMessage(
-              "Shutdown is taking longer than expected. Waiting for daemon to go offline...",
-            )
-          : stopResult?.ok ||
-            (stopFailure =
-              stopResult?.error || "Existing daemon rejected shutdown.");
+          ? setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...")
+          : stopResult?.ok || (stopFailure = stopResult?.error || "Existing daemon rejected shutdown.");
         const stopState = stopResult?.ok ? stopResult.result : null,
-          unmanagedStillReachable = !!(
-            stopState?.reachable && !stopState?.managed
-          );
+          unmanagedStillReachable = !!(stopState?.reachable && !stopState?.managed);
         if (!(unmanagedStillReachable ? !1 : await waitForDaemonOffline()))
           if (unmanagedStillReachable && !managedBefore)
             ((restartSkippedExternal = !0),
               setFeedbackMessage(
                 "Daemon is externally managed and remained online. Continuing without forced shutdown.",
               ));
-          else
-            throw new Error(
-              stopFailure || "Existing daemon did not stop cleanly.",
-            );
+          else throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
         restartSkippedExternal ||
           ((tokenRef.current = ""),
           persistBrowserAuthToken(""),
@@ -153,9 +132,7 @@ function useDaemonConnection(ctx) {
         !(await waitForDaemonReachable({ shortCircuitIfStarting: !0 })))
       )
         if (startResult?.running && !startResult?.reachable)
-          scheduleStartupRecoveryRetry(
-            "Daemon is still starting. Reconnect will continue automatically.",
-          );
+          scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.");
         else throw new Error("Daemon did not become reachable after restart.");
       return (
         (daemonTransitionRef.current = !1),

@@ -12,63 +12,45 @@ function ConflictsPanel(p) {
     refreshConflicts,
     reportSurfaceError,
   } = p;
-  return React.createElement(
-    React.Fragment,
-    null,
-    panel === "conflicts"
-      ? React.createElement(
-          "section",
-          { className: "panel active" },
-          React.createElement(
-            "div",
-            { className: "panel-header" },
-            React.createElement("h1", null, "Conflict Resolution"),
-            React.createElement(
-              "div",
-              { className: "panel-header-actions" },
-              React.createElement(
-                "span",
-                { className: "badge" },
-                conflictPairs.length,
-                " dispute",
-                conflictPairs.length !== 1 ? "s" : "",
-              ),
-              React.createElement(
-                "button",
-                {
-                  type: "button",
-                  className: "btn-sm",
-                  onClick: () => refreshConflicts().catch(reportSurfaceError),
-                },
-                "Refresh",
-              ),
-            ),
-          ),
-          conflictPairs.length === 0
-            ? React.createElement(
-                "div",
-                { className: "card full" },
-                React.createElement(
-                  "ul",
-                  null,
-                  React.createElement(EmptyItem, {
-                    text: "No active conflicts -- all decisions are in harmony",
-                  }),
-                ),
-              )
-            : conflictPairs.map((pair) =>
-                React.createElement(ConflictPairCard, {
-                  key: pair.key,
-                  pair,
-                  conflictLoading,
-                  onResolveQuick: handleResolveConflict,
-                  onResolveDraft: handleResolveConflict,
-                  resolveDraft: resolveDrafts[pair.key],
-                  onResolveDraftChange: handleResolveDraftChange,
-                }),
-              ),
-        )
-      : null,
+  return (
+    <React.Fragment>
+      {panel === "conflicts" ? (
+        <section className="panel active">
+          <div className="panel-header">
+            <h1>Conflict Resolution</h1>
+            <div className="panel-header-actions">
+              <span className="badge">
+                {conflictPairs.length}
+                {" dispute"}
+                {conflictPairs.length !== 1 ? "s" : ""}
+              </span>
+              <button type="button" className="btn-sm" onClick={() => refreshConflicts().catch(reportSurfaceError)}>
+                Refresh
+              </button>
+            </div>
+          </div>
+          {conflictPairs.length === 0 ? (
+            <div className="card full">
+              <ul>
+                <EmptyItem text="No active conflicts -- all decisions are in harmony" />
+              </ul>
+            </div>
+          ) : (
+            conflictPairs.map((pair) => (
+              <ConflictPairCard
+                key={pair.key}
+                pair={pair}
+                conflictLoading={conflictLoading}
+                onResolveQuick={handleResolveConflict}
+                onResolveDraft={handleResolveConflict}
+                resolveDraft={resolveDrafts[pair.key]}
+                onResolveDraftChange={handleResolveDraftChange}
+              />
+            ))
+          )}
+        </section>
+      ) : null}
+    </React.Fragment>
   );
 }
 export { ConflictsPanel };

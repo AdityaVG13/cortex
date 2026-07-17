@@ -1,4 +1,4 @@
-export function clampNumber(value, min, max) {
+function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 function buildLineGeometry(data, width, height, padding = 8) {

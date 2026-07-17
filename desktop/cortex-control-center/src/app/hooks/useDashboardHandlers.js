@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { buildFirstRunReadiness } from "../../daemon-startup.js";
-import {
-  shouldIgnoreGlobalShortcut,
-  trapFocusInContainer,
-} from "../../keyboard-access.js";
+import { shouldIgnoreGlobalShortcut, trapFocusInContainer } from "../../keyboard-access.js";
 import {
   CONTROL_CENTER_VERSION,
   DEFAULT_CORTEX_BASE,
@@ -13,15 +10,9 @@ import {
   PANEL_SEQUENCE_LABEL,
   panelIndex,
 } from "../constants.js";
-import {
-  readTauriInvoke,
-  persistBrowserAuthToken,
-} from "../browser-bootstrap.js";
+import { readTauriInvoke, persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
-import {
-  normalizeSession,
-  sessionMatchesAgent,
-} from "../normalize/sessions.js";
+import { normalizeSession, sessionMatchesAgent } from "../normalize/sessions.js";
 import { setElementInert } from "../utils/daemon.js";
 function useDashboardHandlers(ctx) {
   const {
@@ -80,10 +71,7 @@ function useDashboardHandlers(ctx) {
     if ((e?.preventDefault(), !!memoryQuery.trim())) {
       setMemorySearching(!0);
       try {
-        const peekResult = await api(
-          `/peek?q=${encodeURIComponent(memoryQuery.trim())}&k=15`,
-          !0,
-        );
+        const peekResult = await api(`/peek?q=${encodeURIComponent(memoryQuery.trim())}&k=15`, !0);
         setMemoryResults(peekResult?.matches || []);
       } catch {
         setMemoryResults([]);
@@ -93,16 +81,12 @@ function useDashboardHandlers(ctx) {
   }
   async function handleMemoryExpand(source) {
     try {
-      const match = (
-        await api(`/recall?q=${encodeURIComponent(source)}&k=3`, !0)
-      )?.results?.find((r) => r.source === source);
+      const match = (await api(`/recall?q=${encodeURIComponent(source)}&k=3`, !0))?.results?.find(
+        (r) => r.source === source,
+      );
       match &&
         setMemoryResults((prev) =>
-          prev.map((m) =>
-            m.source === source
-              ? { ...m, excerpt: match.excerpt, expanded: !0 }
-              : m,
-          ),
+          prev.map((m) => (m.source === source ? { ...m, excerpt: match.excerpt, expanded: !0 } : m)),
         );
     } catch (err) {
       setFeedbackMessage(`Memory expand failed: ${err.message || err}`);
@@ -115,9 +99,7 @@ function useDashboardHandlers(ctx) {
         const result = await call("start_daemon");
         (setFeedbackMessage(result.message || "Daemon start requested."),
           (await waitForDaemonReachable({ shortCircuitIfStarting: !0 })) ||
-            scheduleStartupRecoveryRetry(
-              "Daemon is still starting. Reconnect will continue automatically.",
-            ),
+            scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically."),
           (daemonTransitionRef.current = !1),
           await readAuthToken({ suppressFeedback: !0 }),
           await runRefreshAll());
@@ -148,9 +130,7 @@ function useDashboardHandlers(ctx) {
                 message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
               }),
               setFeedbackMessage(result.message || "Stopped Cortex daemon."))
-            : (setFeedbackMessage(
-                "Shutdown is taking longer than expected. Waiting for daemon to go offline...",
-              ),
+            : (setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline..."),
               await runRefreshAll()));
       } catch (error) {
         setFeedbackMessage(`Stop failed: ${error.message || error}`);
@@ -163,52 +143,38 @@ function useDashboardHandlers(ctx) {
     if (!(!invokeRef.current || restartingDaemon)) {
       (setRestartingDaemon(!0), setRestartError(""));
       try {
-        (await runRestartDaemonSequence(),
-          setFeedbackMessage("Daemon restarted successfully."));
+        (await runRestartDaemonSequence(), setFeedbackMessage("Daemon restarted successfully."));
       } catch (error) {
         const message = error?.message || String(error);
-        (setRestartError(message),
-          setFeedbackMessage(`Restart failed: ${message}`));
+        (setRestartError(message), setFeedbackMessage(`Restart failed: ${message}`));
       } finally {
         ((daemonTransitionRef.current = !1), setRestartingDaemon(!1));
       }
     }
   }
   (useEffect(() => {
-    if (!DEV_RESTART_VERIFY_ENABLED || devVerificationStartedRef.current)
-      return;
+    if (!DEV_RESTART_VERIFY_ENABLED || devVerificationStartedRef.current) return;
     devVerificationStartedRef.current = !0;
     let cancelled = !1,
       completed = !1;
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      waitForCondition = async (
-        label,
-        check,
-        timeoutMs = DEV_RESTART_VERIFY_TIMEOUT_MS,
-        intervalMs = 200,
-      ) => {
+      waitForCondition = async (label, check, timeoutMs = DEV_RESTART_VERIFY_TIMEOUT_MS, intervalMs = 200) => {
         const started = Date.now();
         for (; !cancelled && Date.now() - started < timeoutMs;) {
           const value = check();
           if (value) return value;
           await sleep(intervalMs);
         }
-        throw cancelled
-          ? new Error("Dev verification cancelled.")
-          : new Error(`Timed out waiting for ${label}.`);
+        throw cancelled ? new Error("Dev verification cancelled.") : new Error(`Timed out waiting for ${label}.`);
       },
       findSessionByAgent = (agent) =>
-        sessionsRef.current.find((session) =>
-          sessionMatchesAgent(session, agent),
-        ) || null,
+        sessionsRef.current.find((session) => sessionMatchesAgent(session, agent)) || null,
       sessionSnapshot = (session) =>
         session
           ? {
               agent: String(session.agent || ""),
               description: String(session.description || ""),
-              lastHeartbeat: String(
-                session.lastHeartbeat || session.last_heartbeat || "",
-              ),
+              lastHeartbeat: String(session.lastHeartbeat || session.last_heartbeat || ""),
               expiresAt: String(session.expiresAt || session.expires_at || ""),
             }
           : null;
@@ -230,12 +196,9 @@ function useDashboardHandlers(ctx) {
             });
           };
         try {
-          if (
-            ((invokeRef.current = await readTauriInvoke()), !invokeRef.current)
-          )
+          if (((invokeRef.current = await readTauriInvoke()), !invokeRef.current))
             throw new Error("Tauri IPC is not available for dev verification.");
-          (setFeedbackMessage("Running dev restart/reconnect verification..."),
-            await runRefreshAll());
+          (setFeedbackMessage("Running dev restart/reconnect verification..."), await runRefreshAll());
           let streamAvailable = streamConnectedAtRef.current > 0;
           if (!streamAvailable)
             try {
@@ -249,17 +212,14 @@ function useDashboardHandlers(ctx) {
               ((streamAvailable = !1),
                 recordStep("stream", {
                   mode: "polling-fallback",
-                  warning:
-                    "Event stream did not connect during startup window; continuing with polling checks.",
+                  warning: "Event stream did not connect during startup window; continuing with polling checks.",
                 }));
             }
           if (
             (streamAvailable &&
               recordStep("stream", {
                 mode: "event-stream",
-                connectedAt: new Date(
-                  streamConnectedAtRef.current,
-                ).toISOString(),
+                connectedAt: new Date(streamConnectedAtRef.current).toISOString(),
               }),
             daemonStateRef.current?.reachable)
           )
@@ -274,18 +234,14 @@ function useDashboardHandlers(ctx) {
               }),
               !(await waitForDaemonReachable()))
             )
-              throw new Error(
-                "Daemon did not become reachable during verification startup.",
-              );
-            (await readAuthToken({ suppressFeedback: !0 }),
-              await runRefreshAll());
+              throw new Error("Daemon did not become reachable during verification startup.");
+            (await readAuthToken({ suppressFeedback: !0 }), await runRefreshAll());
           }
           if (!(await readAuthToken({ suppressFeedback: !0 })))
             throw new Error("Daemon auth token did not become available.");
           const verificationAgent = `cortex-dev-verify-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
           report.agent = verificationAgent;
-          const sessionEventCountBeforeBoot =
-              streamSessionEventCountRef.current,
+          const sessionEventCountBeforeBoot = streamSessionEventCountRef.current,
             bootResult = await callMcpTool("cortex_boot", {
               agent: verificationAgent,
               model: "desktop-dev-verify",
@@ -294,13 +250,10 @@ function useDashboardHandlers(ctx) {
           streamAvailable &&
             (await waitForCondition(
               "the boot session event",
-              () =>
-                streamSessionEventCountRef.current >
-                sessionEventCountBeforeBoot,
+              () => streamSessionEventCountRef.current > sessionEventCountBeforeBoot,
             ));
-          const bootSession = await waitForCondition(
-              "the boot session in the Agents surface",
-              () => findSessionByAgent(verificationAgent),
+          const bootSession = await waitForCondition("the boot session in the Agents surface", () =>
+              findSessionByAgent(verificationAgent),
             ),
             bootSnapshot = sessionSnapshot(bootSession);
           recordStep("boot", {
@@ -309,39 +262,30 @@ function useDashboardHandlers(ctx) {
           });
           const connectedBeforeRestart = streamConnectedAtRef.current,
             disconnectedBeforeRestart = streamDisconnectedAtRef.current,
-            sessionEventCountBeforeReconnect =
-              streamSessionEventCountRef.current,
+            sessionEventCountBeforeReconnect = streamSessionEventCountRef.current,
             restartResult = await runRestartDaemonSequence();
           restartResult?.restartSkippedExternal
             ? recordStep("restart", {
                 skipped: !0,
-                reason:
-                  restartResult?.message ||
-                  "Daemon remained online (externally managed).",
+                reason: restartResult?.message || "Daemon remained online (externally managed).",
               })
             : streamAvailable
               ? (await waitForCondition(
                   "the event stream disconnect during restart",
-                  () =>
-                    streamDisconnectedAtRef.current > disconnectedBeforeRestart,
+                  () => streamDisconnectedAtRef.current > disconnectedBeforeRestart,
                 ),
                 await waitForCondition(
                   "the event stream reconnect after restart",
                   () => streamConnectedAtRef.current > connectedBeforeRestart,
                 ),
                 recordStep("restart", {
-                  disconnectedAt: new Date(
-                    streamDisconnectedAtRef.current,
-                  ).toISOString(),
-                  reconnectedAt: new Date(
-                    streamConnectedAtRef.current,
-                  ).toISOString(),
+                  disconnectedAt: new Date(streamDisconnectedAtRef.current).toISOString(),
+                  reconnectedAt: new Date(streamConnectedAtRef.current).toISOString(),
                 }))
               : recordStep("restart", {
                   mode: "polling-fallback",
                   skippedStreamChecks: !0,
-                  message:
-                    "Restart completed without stream lifecycle checks; polling verification continued.",
+                  message: "Restart completed without stream lifecycle checks; polling verification continued.",
                 });
           const reconnectResult = await callMcpTool("cortex_reconnect", {
             agent: verificationAgent,
@@ -350,22 +294,14 @@ function useDashboardHandlers(ctx) {
           streamAvailable &&
             (await waitForCondition(
               "the reconnect session event",
-              () =>
-                streamSessionEventCountRef.current >
-                sessionEventCountBeforeReconnect,
+              () => streamSessionEventCountRef.current > sessionEventCountBeforeReconnect,
             ));
-          const reconnectSession = await waitForCondition(
-              "the reconnected session in the Agents surface",
-              () => findSessionByAgent(verificationAgent),
+          const reconnectSession = await waitForCondition("the reconnected session in the Agents surface", () =>
+              findSessionByAgent(verificationAgent),
             ),
             reconnectSnapshot = sessionSnapshot(reconnectSession);
-          if (
-            bootSnapshot?.description &&
-            reconnectSnapshot?.description !== bootSnapshot.description
-          )
-            throw new Error(
-              "Reconnect changed the session description shown in the Agents surface.",
-            );
+          if (bootSnapshot?.description && reconnectSnapshot?.description !== bootSnapshot.description)
+            throw new Error("Reconnect changed the session description shown in the Agents surface.");
           recordStep("reconnect", {
             expiresAt: reconnectResult?.expiresAt || "",
             session: reconnectSnapshot,
@@ -378,38 +314,22 @@ function useDashboardHandlers(ctx) {
             }),
             recallSessionsPayload = await api("/sessions", !0),
             recallSession =
-              (Array.isArray(recallSessionsPayload?.sessions)
-                ? recallSessionsPayload.sessions
-                : []
-              )
+              (Array.isArray(recallSessionsPayload?.sessions) ? recallSessionsPayload.sessions : [])
                 .map((session, index) => normalizeSession(session, index))
-                .find((session) =>
-                  sessionMatchesAgent(session, verificationAgent),
-                ) || null,
+                .find((session) => sessionMatchesAgent(session, verificationAgent)) || null,
             recallSnapshot = sessionSnapshot(recallSession);
-          if (!recallSnapshot)
-            throw new Error(
-              "Session disappeared after read-path recall refresh.",
-            );
-          if (
-            bootSnapshot?.description &&
-            recallSnapshot.description !== bootSnapshot.description
-          )
-            throw new Error(
-              "Read-path recall refresh downgraded the session description.",
-            );
+          if (!recallSnapshot) throw new Error("Session disappeared after read-path recall refresh.");
+          if (bootSnapshot?.description && recallSnapshot.description !== bootSnapshot.description)
+            throw new Error("Read-path recall refresh downgraded the session description.");
           (recordStep("read-path-refresh", {
-            resultCount: Array.isArray(recallResult?.results)
-              ? recallResult.results.length
-              : 0,
+            resultCount: Array.isArray(recallResult?.results) ? recallResult.results.length : 0,
             session: recallSnapshot,
           }),
             (report.success = !0),
             setFeedbackMessage("Dev restart/reconnect verification passed."));
         } catch (error) {
           const message = error?.message || String(error);
-          ((report.error = message),
-            setFeedbackMessage(`Dev verification failed: ${message}`));
+          ((report.error = message), setFeedbackMessage(`Dev verification failed: ${message}`));
         } finally {
           if (cancelled && !completed) return;
           ((report.completedAt = new Date().toISOString()),
@@ -432,8 +352,7 @@ function useDashboardHandlers(ctx) {
         }
       })(),
       () => {
-        ((cancelled = !0),
-          completed || (devVerificationStartedRef.current = !1));
+        ((cancelled = !0), completed || (devVerificationStartedRef.current = !1));
       }
     );
   }, [
@@ -451,9 +370,7 @@ function useDashboardHandlers(ctx) {
       if (!showConnectionDialog && !showEditorSetupWizard) return;
       function handleDialogKey(event) {
         if (event.key === "Tab") {
-          const dialog = showEditorSetupWizard
-            ? editorSetupDialogRef.current
-            : connectionDialogRef.current;
+          const dialog = showEditorSetupWizard ? editorSetupDialogRef.current : connectionDialogRef.current;
           trapFocusInContainer(event, dialog);
           return;
         }
@@ -462,8 +379,7 @@ function useDashboardHandlers(ctx) {
             (event.preventDefault(), closeEditorSetupWizard());
             return;
           }
-          showConnectionDialog &&
-            (event.preventDefault(), dismissConnectionDialog());
+          showConnectionDialog && (event.preventDefault(), dismissConnectionDialog());
         }
       }
       return (
@@ -498,47 +414,23 @@ function useDashboardHandlers(ctx) {
     }, [panel]),
     useEffect(() => {
       function handleKey(e) {
-        if (
-          shouldIgnoreGlobalShortcut(
-            e,
-            showConnectionDialog || showEditorSetupWizard,
-          )
-        )
-          return;
+        if (shouldIgnoreGlobalShortcut(e, showConnectionDialog || showEditorSetupWizard)) return;
         const idx = panelIndex(panel);
         if (e.key === "ArrowDown" || e.key === "j")
-          (e.preventDefault(),
-            changePanel(PANEL_SEQUENCE[(idx + 1) % PANEL_SEQUENCE.length].key));
+          (e.preventDefault(), changePanel(PANEL_SEQUENCE[(idx + 1) % PANEL_SEQUENCE.length].key));
         else if (e.key === "ArrowUp" || e.key === "k")
           (e.preventDefault(),
-            changePanel(
-              PANEL_SEQUENCE[
-                (idx - 1 + PANEL_SEQUENCE.length) % PANEL_SEQUENCE.length
-              ].key,
-            ));
+            changePanel(PANEL_SEQUENCE[(idx - 1 + PANEL_SEQUENCE.length) % PANEL_SEQUENCE.length].key));
         else {
           const num = parseInt(e.key);
-          num >= 1 &&
-            num <= PANEL_SEQUENCE.length &&
-            (e.preventDefault(), changePanel(PANEL_SEQUENCE[num - 1].key));
+          num >= 1 && num <= PANEL_SEQUENCE.length && (e.preventDefault(), changePanel(PANEL_SEQUENCE[num - 1].key));
         }
       }
-      return (
-        window.addEventListener("keydown", handleKey),
-        () => window.removeEventListener("keydown", handleKey)
-      );
+      return (window.addEventListener("keydown", handleKey), () => window.removeEventListener("keydown", handleKey));
     }, [changePanel, panel, showConnectionDialog, showEditorSetupWizard]));
   const effectiveSidebarCollapsed = sidebarCollapsed || isNarrowViewport,
-    canStartDaemon = !!(
-      invokeRef.current &&
-      !restartingDaemon &&
-      !daemonState.running
-    ),
-    canStopDaemon = !!(
-      invokeRef.current &&
-      !restartingDaemon &&
-      (daemonState.reachable || daemonState.running)
-    ),
+    canStartDaemon = !!(invokeRef.current && !restartingDaemon && !daemonState.running),
+    canStopDaemon = !!(invokeRef.current && !restartingDaemon && (daemonState.reachable || daemonState.running)),
     canSetupEditors = !!(invokeRef.current && !isSettingUpEditors),
     firstRunReadiness = useMemo(
       () =>
@@ -598,8 +490,7 @@ function useDashboardHandlers(ctx) {
         return {
           host: url.hostname || fallback.host,
           port: url.port || fallback.port,
-          hostLabel:
-            cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : url.hostname || "?",
+          hostLabel: cortexBase === DEFAULT_CORTEX_BASE ? "LOCAL" : url.hostname || "?",
         };
       } catch {
         return fallback;

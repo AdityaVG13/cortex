@@ -3,10 +3,7 @@ function createSeededRng(seed) {
   return () => {
     state = (state + 1831565813) >>> 0;
     let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    return (
-      (t ^= t + Math.imul(t ^ (t >>> 7), 61 | t)),
-      ((t ^ (t >>> 14)) >>> 0) / 4294967296
-    );
+    return ((t ^= t + Math.imul(t ^ (t >>> 7), 61 | t)), ((t ^ (t >>> 14)) >>> 0) / 4294967296);
   };
 }
 function gaussianRandom(rng) {
@@ -50,27 +47,13 @@ function sanitizeProjectionBasis(basis) {
     lowerLimit = Math.max(median * 0.02, 1);
   return finite.map((value) => clampNumber(value, lowerLimit, upperLimit));
 }
-function buildMonteCarloProjection(
-  dailySeries,
-  cumulativeSeries,
-  horizonDays = 30,
-  simulationCount = 64,
-) {
-  const safeHorizonDays = Math.max(
-      1,
-      Math.min(90, Math.floor(Number(horizonDays) || 30)),
-    ),
-    safeSimulationCount = Math.max(
-      20,
-      Math.min(1e3, Math.floor(Number(simulationCount) || 64)),
-    ),
-    basis = sanitizeProjectionBasis(
-      projectionBasisFromSeries(dailySeries, cumulativeSeries),
-    );
+function buildMonteCarloProjection(dailySeries, cumulativeSeries, horizonDays = 30, simulationCount = 64) {
+  const safeHorizonDays = Math.max(1, Math.min(90, Math.floor(Number(horizonDays) || 30))),
+    safeSimulationCount = Math.max(20, Math.min(1e3, Math.floor(Number(simulationCount) || 64))),
+    basis = sanitizeProjectionBasis(projectionBasisFromSeries(dailySeries, cumulativeSeries));
   if (basis.length < 2) return null;
   const recent = basis.slice(-14),
-    recentAverage =
-      recent.reduce((sum, value) => sum + value, 0) / recent.length,
+    recentAverage = recent.reduce((sum, value) => sum + value, 0) / recent.length,
     recentMedian = percentileFromSorted(
       [...recent].sort((left, right) => left - right),
       0.5,
@@ -82,60 +65,40 @@ function buildMonteCarloProjection(
       current = Math.max(recent[index], 1);
     logReturns.push(clampNumber(Math.log(current / previous), -0.6, 0.6));
   }
-  const rawDrift = logReturns.length
-      ? logReturns.reduce((sum, value) => sum + value, 0) / logReturns.length
-      : 0.012,
+  const rawDrift = logReturns.length ? logReturns.reduce((sum, value) => sum + value, 0) / logReturns.length : 0.012,
     shortHistory = recent.length < 4,
     drift = clampNumber(rawDrift, -0.08, shortHistory ? 0.05 : 0.12),
     variance = logReturns.length
-      ? logReturns.reduce((sum, value) => sum + (value - rawDrift) ** 2, 0) /
-        logReturns.length
+      ? logReturns.reduce((sum, value) => sum + (value - rawDrift) ** 2, 0) / logReturns.length
       : 0.05,
     volatilityFloor = shortHistory ? 0.06 : 0.08,
     volatilityCeiling = shortHistory ? 0.22 : 0.35,
-    volatility = clampNumber(
-      Math.max(Math.sqrt(variance), volatilityFloor),
-      volatilityFloor,
-      volatilityCeiling,
-    ),
+    volatility = clampNumber(Math.max(Math.sqrt(variance), volatilityFloor), volatilityFloor, volatilityCeiling),
     lastDaily = Math.max(recent[recent.length - 1], 1),
     startTotal = Number(
       cumulativeSeries?.at?.(-1)?.savedTotal ||
         cumulativeSeries?.at?.(-1)?.saved ||
         basis.reduce((sum, value) => sum + value, 0),
     ),
-    boundedSeedBase = Number.isFinite(startTotal)
-      ? Math.abs(startTotal % 1e9)
-      : 0,
-    rng = createSeededRng(
-      Math.round(boundedSeedBase + lastDaily + recent.length * 13),
-    ),
+    boundedSeedBase = Number.isFinite(startTotal) ? Math.abs(startTotal % 1e9) : 0,
+    rng = createSeededRng(Math.round(boundedSeedBase + lastDaily + recent.length * 13)),
     meanReversionStrength = shortHistory ? 0.03 : 0.04,
     dailyCeiling = Math.min(
       Math.max(recentPeak * 4, recentAverage * 6, recentMedian * 10, 1),
       ABSOLUTE_DAILY_BASIS_CAP,
     ),
-    maxProjectedGain = Math.min(
-      dailyCeiling * safeHorizonDays * 2,
-      ABSOLUTE_PROJECTED_GAIN_CAP,
-    ),
+    maxProjectedGain = Math.min(dailyCeiling * safeHorizonDays * 2, ABSOLUTE_PROJECTED_GAIN_CAP),
     runs = Array.from({ length: safeSimulationCount }, (_, simIndex) => {
       let dailyValue = lastDaily,
         gainValue = 0;
       const series = [];
       for (let day = 0; day < safeHorizonDays; day += 1) {
         const shock = gaussianRandom(rng) * volatility,
-          meanReversion =
-            ((recentAverage - dailyValue) / Math.max(dailyValue, 1)) *
-            meanReversionStrength,
+          meanReversion = ((recentAverage - dailyValue) / Math.max(dailyValue, 1)) * meanReversionStrength,
           step = clampNumber(drift + meanReversion + shock, -0.6, 0.6),
           growth = Math.exp(step);
         ((dailyValue = clampNumber(dailyValue * growth, 0, dailyCeiling)),
-          (gainValue = clampNumber(
-            gainValue + dailyValue,
-            0,
-            maxProjectedGain,
-          )),
+          (gainValue = clampNumber(gainValue + dailyValue, 0, maxProjectedGain)),
           series.push({
             day: day + 1,
             daily: dailyValue,
@@ -150,9 +113,7 @@ function buildMonteCarloProjection(
       };
     }),
     bandSeries = Array.from({ length: safeHorizonDays }, (_, dayIndex) => {
-      const values = runs
-        .map((run) => run.series[dayIndex]?.gain || 0)
-        .sort((left, right) => left - right);
+      const values = runs.map((run) => run.series[dayIndex]?.gain || 0).sort((left, right) => left - right);
       return {
         day: dayIndex + 1,
         p10: percentileFromSorted(values, 0.1),
@@ -166,9 +127,7 @@ function buildMonteCarloProjection(
       .filter((_, index) => index % Math.ceil(safeSimulationCount / 14) === 0)
       .slice(0, 14)
       .map((run) => run.series.map((point) => point.gain)),
-    endingValues = runs
-      .map((run) => run.final)
-      .sort((left, right) => left - right),
+    endingValues = runs.map((run) => run.final).sort((left, right) => left - right),
     summary = {
       startTotal,
       p10Gain: percentileFromSorted(endingValues, 0.1),

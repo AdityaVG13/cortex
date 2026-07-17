@@ -1,11 +1,7 @@
 import React from "react";
 import { useEffect, useRef, useState } from "react";
 import { MOTION_MS, easeOutCubic } from "../../design/motion.js";
-function AnimatedNumber({
-  value,
-  duration = MOTION_MS.number,
-  reducedMotion = !1,
-}) {
+function AnimatedNumber({ value, duration = MOTION_MS.number, reducedMotion = !1 }) {
   const [display, setDisplay] = useState(value),
     prevRef = useRef(value);
   return (
@@ -28,8 +24,7 @@ function AnimatedNumber({
         const elapsed = now - start,
           progress = Math.min(elapsed / duration, 1),
           eased = easeOutCubic(progress);
-        (setDisplay(Math.round(from + diff * eased)),
-          progress < 1 && requestAnimationFrame(tick));
+        (setDisplay(Math.round(from + diff * eased)), progress < 1 && requestAnimationFrame(tick));
       }
       return (
         requestAnimationFrame(tick),
@@ -39,11 +34,7 @@ function AnimatedNumber({
         }
       );
     }, [value, duration, reducedMotion]),
-    React.createElement(
-      React.Fragment,
-      null,
-      typeof display == "number" ? display.toLocaleString() : display,
-    )
+    React.createElement(React.Fragment, null, typeof display == "number" ? display.toLocaleString() : display)
   );
 }
 export { AnimatedNumber };

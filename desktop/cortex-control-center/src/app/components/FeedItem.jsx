@@ -7,54 +7,30 @@ function FeedItem({ entry }) {
   return (
     entry.priority && metaBits.push(entry.priority),
     typeof entry.tokens == "number" && metaBits.push(`${entry.tokens} tok`),
-    React.createElement(
-      "li",
-      null,
-      React.createElement(
-        "div",
-        { className: "item-meta" },
-        React.createElement(
-          "span",
-          { className: "feed-kind" },
-          feedKindLabel(entry.kind),
-        ),
-        React.createElement(
-          "span",
-          { className: "item-name" },
-          entry.agent || "unknown",
-        ),
-        React.createElement(
-          "span",
-          { className: "muted-inline" },
-          metaBits.join(" - "),
-        ),
-      ),
-      React.createElement(
-        "div",
-        { className: "feed-summary" },
-        entry.summary || "(no summary)",
-      ),
-      entry.taskId
-        ? React.createElement(
-            "div",
-            { className: "item-detail" },
-            "task: ",
-            entry.taskId,
-          )
-        : null,
-      files.length
-        ? React.createElement(
-            "div",
-            { className: "feed-files" },
-            files.map((file) =>
-              React.createElement(
-                "span",
-                { key: `${entry.id}-${file}`, className: "lock-path" },
-                file,
-              ),
-            ),
-          )
-        : null,
+    (
+      <li>
+        <div className="item-meta">
+          <span className="feed-kind">{feedKindLabel(entry.kind)}</span>
+          <span className="item-name">{entry.agent || "unknown"}</span>
+          <span className="muted-inline">{metaBits.join(" - ")}</span>
+        </div>
+        <div className="feed-summary">{entry.summary || "(no summary)"}</div>
+        {entry.taskId ? (
+          <div className="item-detail">
+            {"task: "}
+            {entry.taskId}
+          </div>
+        ) : null}
+        {files.length ? (
+          <div className="feed-files">
+            {files.map((file) => (
+              <span key={`${entry.id}-${file}`} className="lock-path">
+                {file}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </li>
     )
   );
 }

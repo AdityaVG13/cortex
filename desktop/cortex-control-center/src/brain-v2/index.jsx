@@ -11,11 +11,7 @@ import { createEventDispatcher } from "./EventDispatcher.js";
 import { createHover } from "./Hover.js";
 import { CAMERA_SPOTLIGHT_DURATION_MS, createCamera } from "./Camera.js";
 import { Hud } from "./Hud.jsx";
-import {
-  brainKeyboardHelpText,
-  isBrainNavigationKey,
-  nextBrainNodeIndex,
-} from "./Keyboard.js";
+import { brainKeyboardHelpText, isBrainNavigationKey, nextBrainNodeIndex } from "./Keyboard.js";
 import { brainBudgetForQuality, detectBrainQualityTier } from "./Quality.js";
 const TICKER_MAX = 5;
 function BrainV2({
@@ -77,10 +73,7 @@ function BrainV2({
         height: Math.max(window.innerHeight - 20, 300),
       });
     }
-    return (
-      window.addEventListener("resize", onResize),
-      () => window.removeEventListener("resize", onResize)
-    );
+    return (window.addEventListener("resize", onResize), () => window.removeEventListener("resize", onResize));
   }, [active]),
     useEffect(() => {
       if (!active || !containerRef.current) return;
@@ -91,8 +84,7 @@ function BrainV2({
         animated: !reducedMotion,
         pixelRatio: quality.pixelRatio,
       });
-      ((sceneRef.current = sceneHandle),
-        (sceneHandle.scene._camera = sceneHandle.camera));
+      ((sceneRef.current = sceneHandle), (sceneHandle.scene._camera = sceneHandle.camera));
       const core = createCore();
       ((coreRef.current = core), sceneHandle.scene.add(core));
       const satellites = createSatellites({
@@ -108,10 +100,7 @@ function BrainV2({
         autoRotate: !reducedMotion,
       });
       ((cameraHandleRef.current = cameraHandle),
-        sceneHandle.controls.addEventListener(
-          "start",
-          cameraHandle.pauseAutoRotate,
-        ));
+        sceneHandle.controls.addEventListener("start", cameraHandle.pauseAutoRotate));
       const hover = createHover({
         camera: sceneHandle.camera,
         slotsRef: slotsAccessor,
@@ -127,12 +116,8 @@ function BrainV2({
           label,
           ts: performance.now(),
         };
-        ((tickerEntriesRef.current = [entry, ...tickerEntriesRef.current].slice(
-          0,
-          TICKER_MAX,
-        )),
-          tickerRef.current &&
-            renderTicker(tickerRef.current, tickerEntriesRef.current));
+        ((tickerEntriesRef.current = [entry, ...tickerEntriesRef.current].slice(0, TICKER_MAX)),
+          tickerRef.current && renderTicker(tickerRef.current, tickerEntriesRef.current));
       }
       const dispatcher = createEventDispatcher({
         satellites,
@@ -147,11 +132,9 @@ function BrainV2({
           const cameraHandle2 = cameraHandleRef.current;
           cameraHandle2 &&
             (cameraHandle2.spotlight(slot),
-            spotlightReturnTimerRef.current &&
-              window.clearTimeout(spotlightReturnTimerRef.current),
+            spotlightReturnTimerRef.current && window.clearTimeout(spotlightReturnTimerRef.current),
             (spotlightReturnTimerRef.current = window.setTimeout(() => {
-              (cameraHandleRef.current?.returnToOrigin(),
-                (spotlightReturnTimerRef.current = null));
+              (cameraHandleRef.current?.returnToOrigin(), (spotlightReturnTimerRef.current = null));
             }, CAMERA_SPOTLIGHT_DURATION_MS)));
         },
       });
@@ -172,37 +155,15 @@ function BrainV2({
             onEvent: (event) => {
               (idleSim?.noteRealEvent(), dispatcher.dispatch(event));
             },
-          })),
-        typeof window < "u" &&
-          (window.__brainFire = (fromId, toId, color) => {
-            if (reducedMotion) return;
-            const sats = satellitesRef.current;
-            if (!sats) return;
-            const a = sats.getSlotById(fromId),
-              b = sats.getSlotById(toId) || { x: 0, y: 0, z: 0 };
-            a &&
-              (beamsRef.current?.fire({
-                from: a,
-                to: b,
-                color: color || "#22d3ee",
-              }),
-              sats.pulseSlot(fromId));
-          }));
+          })));
       const unregister = sceneHandle.registerTick((t, now) => {
         if (
-          (reducedMotion ||
-            (tickCore(core, t, now),
-            satellites.tick(t, now),
-            beams.tick(now),
-            cameraHandle.tick(now)),
+          (reducedMotion || (tickCore(core, t, now), satellites.tick(t, now), beams.tick(now), cameraHandle.tick(now)),
           hover.tick(),
           now - lastStatsAtRef.current >= 1e3)
         ) {
           lastStatsAtRef.current = now;
-          const next = brainStatsForSlots(
-              slotsAccessor.current || [],
-              beams.activeCount(),
-            ),
+          const next = brainStatsForSlots(slotsAccessor.current || [], beams.activeCount()),
             prev = lastStatsRef.current;
           (next.nodes !== prev.nodes ||
             next.clusters !== prev.clusters ||
@@ -213,39 +174,24 @@ function BrainV2({
       });
       return () => {
         (unregister(),
-          typeof window < "u" &&
-            window.__brainFire &&
-            delete window.__brainFire,
           spotlightReturnTimerRef.current &&
-            (window.clearTimeout(spotlightReturnTimerRef.current),
-            (spotlightReturnTimerRef.current = null)),
-          sceneHandle.controls.removeEventListener(
-            "start",
-            cameraHandle.pauseAutoRotate,
-          ),
-          firingClientRef.current &&
-            (firingClientRef.current.disconnect(),
-            (firingClientRef.current = null)),
-          idleSimRef.current &&
-            (idleSimRef.current.dispose(), (idleSimRef.current = null)),
+            (window.clearTimeout(spotlightReturnTimerRef.current), (spotlightReturnTimerRef.current = null)),
+          sceneHandle.controls.removeEventListener("start", cameraHandle.pauseAutoRotate),
+          firingClientRef.current && (firingClientRef.current.disconnect(), (firingClientRef.current = null)),
+          idleSimRef.current && (idleSimRef.current.dispose(), (idleSimRef.current = null)),
           (hoverRef.current = null),
           (cameraHandleRef.current = null),
           (dispatcherRef.current = null),
-          beamsRef.current &&
-            (beamsRef.current.dispose(), (beamsRef.current = null)),
-          satellitesRef.current &&
-            (satellitesRef.current.dispose(), (satellitesRef.current = null)),
+          beamsRef.current && (beamsRef.current.dispose(), (beamsRef.current = null)),
+          satellitesRef.current && (satellitesRef.current.dispose(), (satellitesRef.current = null)),
           coreRef.current &&
-            (sceneHandle.scene.remove(coreRef.current),
-            disposeCore(coreRef.current),
-            (coreRef.current = null)),
+            (sceneHandle.scene.remove(coreRef.current), disposeCore(coreRef.current), (coreRef.current = null)),
           sceneHandle.dispose(),
           (sceneRef.current = null));
       };
     }, [active, reducedMotion, quality]),
     useEffect(() => {
-      sceneRef.current &&
-        sceneRef.current.resize(dimensions.width, dimensions.height);
+      sceneRef.current && sceneRef.current.resize(dimensions.width, dimensions.height);
     }, [dimensions.width, dimensions.height]),
     useEffect(() => {
       if (!active) return;
@@ -278,20 +224,9 @@ function BrainV2({
       for (const c of tiers.clusters || []) flat.push(c);
       for (const m of tiers.looseMemories || []) flat.push(m);
       ((slotsAccessor.current = flat),
-        setKeyboardSlotIndex((current) =>
-          current >= flat.length
-            ? flat.length
-              ? flat.length - 1
-              : -1
-            : current,
-        ));
-      const nextStats = brainStatsForSlots(
-        flat,
-        beamsRef.current?.activeCount() || 0,
-      );
-      ((lastStatsRef.current = nextStats),
-        writeStats(statRefs.current, nextStats),
-        sceneRef.current?.requestFrame());
+        setKeyboardSlotIndex((current) => (current >= flat.length ? (flat.length ? flat.length - 1 : -1) : current)));
+      const nextStats = brainStatsForSlots(flat, beamsRef.current?.activeCount() || 0);
+      ((lastStatsRef.current = nextStats), writeStats(statRefs.current, nextStats), sceneRef.current?.requestFrame());
     }, [tiers]));
   function selectSlot(slot) {
     (satellitesRef.current?.setSelected(slot?.id || null),
@@ -302,23 +237,15 @@ function BrainV2({
   function handlePointerMove(e) {
     if (!hoverRef.current || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    (hoverRef.current.setCursor(e.clientX, e.clientY, rect),
-      reducedMotion && hoverRef.current.tick());
+    (hoverRef.current.setCursor(e.clientX, e.clientY, rect), reducedMotion && hoverRef.current.tick());
   }
   function handlePointerLeave() {
     hoverRef.current?.clearCursor();
   }
   function handleClick(e) {
-    if (
-      e.button === 2 ||
-      !hoverRef.current ||
-      !satellitesRef.current ||
-      !containerRef.current
-    )
-      return;
+    if (e.button === 2 || !hoverRef.current || !satellitesRef.current || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    (hoverRef.current.setCursor(e.clientX, e.clientY, rect),
-      hoverRef.current.tick());
+    (hoverRef.current.setCursor(e.clientX, e.clientY, rect), hoverRef.current.tick());
     const slot = hoveredSlotRef.current;
     if (!slot) {
       (selectSlot(null), setKeyboardSlotIndex(-1));
@@ -328,9 +255,7 @@ function BrainV2({
       (selectSlot(null), setKeyboardSlotIndex(-1));
       return;
     }
-    const index = (slotsAccessor.current || []).findIndex(
-      (candidate) => candidate?.id === slot.id,
-    );
+    const index = (slotsAccessor.current || []).findIndex((candidate) => candidate?.id === slot.id);
     (setKeyboardSlotIndex(index), selectSlot(slot));
   }
   function handleContextMenu(e) {
@@ -341,10 +266,7 @@ function BrainV2({
     const nodes = slotsAccessor.current || [];
     if (!nodes.length) return;
     if ((e.preventDefault(), e.key === "Escape")) {
-      ((hoveredSlotRef.current = null),
-        setHoverSlot(null),
-        selectSlot(null),
-        setKeyboardSlotIndex(-1));
+      ((hoveredSlotRef.current = null), setHoverSlot(null), selectSlot(null), setKeyboardSlotIndex(-1));
       return;
     }
     const nextIndex = nextBrainNodeIndex({
@@ -355,15 +277,10 @@ function BrainV2({
     });
     if (nextIndex < 0) return;
     const slot = nodes[nextIndex];
-    ((hoveredSlotRef.current = slot),
-      setHoverSlot(slot),
-      setKeyboardSlotIndex(nextIndex),
-      selectSlot(slot));
+    ((hoveredSlotRef.current = slot), setHoverSlot(slot), setKeyboardSlotIndex(nextIndex), selectSlot(slot));
   }
   const brainNodeCount =
-      (tiers.decisions?.length || 0) +
-      (tiers.clusters?.length || 0) +
-      (tiers.looseMemories?.length || 0),
+      (tiers.decisions?.length || 0) + (tiers.clusters?.length || 0) + (tiers.looseMemories?.length || 0),
     brainHelpId = "brain-v2-keyboard-help",
     selectedAnnouncement = selectedSlot
       ? `Selected ${selectedSlot.label || selectedSlot.id}.`
@@ -390,30 +307,16 @@ function BrainV2({
       onContextMenu: handleContextMenu,
       onKeyDown: handleKeyDown,
     },
-    React.createElement(
-      "p",
-      { id: brainHelpId, className: "sr-only" },
-      brainKeyboardHelpText(brainNodeCount),
-    ),
-    React.createElement(
-      "p",
-      { className: "sr-only", "aria-live": "polite" },
-      selectedAnnouncement,
-    ),
-    error
-      ? React.createElement("div", { className: "brain-v2-error" }, error)
-      : null,
+    React.createElement("p", { id: brainHelpId, className: "sr-only" }, brainKeyboardHelpText(brainNodeCount)),
+    React.createElement("p", { className: "sr-only", "aria-live": "polite" }, selectedAnnouncement),
+    error ? React.createElement("div", { className: "brain-v2-error" }, error) : null,
     React.createElement(
       "div",
       { className: "brain-v2-hud-strip" },
       React.createElement(
         "span",
         { className: "brain-v2-hud-stat" },
-        React.createElement(
-          "span",
-          { className: "brain-v2-hud-label" },
-          "NODES",
-        ),
+        React.createElement("span", { className: "brain-v2-hud-label" }, "NODES"),
         React.createElement(
           "span",
           {
@@ -427,11 +330,7 @@ function BrainV2({
       React.createElement(
         "span",
         { className: "brain-v2-hud-stat" },
-        React.createElement(
-          "span",
-          { className: "brain-v2-hud-label" },
-          "CLUSTERS",
-        ),
+        React.createElement("span", { className: "brain-v2-hud-label" }, "CLUSTERS"),
         React.createElement(
           "span",
           {
@@ -445,11 +344,7 @@ function BrainV2({
       React.createElement(
         "span",
         { className: "brain-v2-hud-stat" },
-        React.createElement(
-          "span",
-          { className: "brain-v2-hud-label" },
-          "DECISIONS",
-        ),
+        React.createElement("span", { className: "brain-v2-hud-label" }, "DECISIONS"),
         React.createElement(
           "span",
           {
@@ -463,11 +358,7 @@ function BrainV2({
       React.createElement(
         "span",
         { className: "brain-v2-hud-stat" },
-        React.createElement(
-          "span",
-          { className: "brain-v2-hud-label" },
-          "FIRING",
-        ),
+        React.createElement("span", { className: "brain-v2-hud-label" }, "FIRING"),
         React.createElement(
           "span",
           {
@@ -502,10 +393,7 @@ function writeStats(refs, stats) {
 function brainStatsForSlots(slots, activeBeams = 0) {
   let clusters = 0,
     decisions = 0;
-  for (const slot of slots)
-    slot.tier === "cluster"
-      ? (clusters += 1)
-      : slot.tier === "decision" && (decisions += 1);
+  for (const slot of slots) slot.tier === "cluster" ? (clusters += 1) : slot.tier === "decision" && (decisions += 1);
   return { nodes: slots.length, clusters, decisions, activeBeams };
 }
 function renderTicker(host, entries) {
@@ -513,9 +401,7 @@ function renderTicker(host, entries) {
     for (; host.firstChild;) host.removeChild(host.firstChild);
     for (const entry of entries) {
       const div = document.createElement("div");
-      ((div.className = "brain-v2-ticker-line"),
-        (div.textContent = entry.label),
-        host.appendChild(div));
+      ((div.className = "brain-v2-ticker-line"), (div.textContent = entry.label), host.appendChild(div));
     }
   }
 }

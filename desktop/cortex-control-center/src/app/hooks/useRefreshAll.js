@@ -1,15 +1,9 @@
 import { useCallback } from "react";
 import { isAuthFailure, summarizeDashboardErrors } from "../../api-client.js";
 import { shouldContinueStartupRecovery } from "../../daemon-startup.js";
-import {
-  readTauriInvoke,
-  persistBrowserAuthToken,
-} from "../browser-bootstrap.js";
+import { readTauriInvoke, persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
-import {
-  isDaemonOfflineErrorMessage,
-  isDaemonTimeoutErrorMessage,
-} from "../utils/daemon.js";
+import { isDaemonOfflineErrorMessage, isDaemonTimeoutErrorMessage } from "../utils/daemon.js";
 function useRefreshAll(ctx) {
   const {
       cortexBase,
@@ -56,18 +50,10 @@ function useRefreshAll(ctx) {
         nextDaemonState?.managed &&
         !nextDaemonState?.reachable &&
         !healthReady &&
-        ((readinessReady = await probeReadiness()),
-        readinessReady && (healthReady = !0));
-      const reachableViaHealthFallback =
-          !!invokeRef.current && !!healthReady && !nextDaemonState?.reachable,
-        reachableViaReadinessFallback =
-          !!invokeRef.current &&
-          !!readinessReady &&
-          !nextDaemonState?.reachable,
-        daemonReachable =
-          !!nextDaemonState?.reachable ||
-          reachableViaHealthFallback ||
-          reachableViaReadinessFallback;
+        ((readinessReady = await probeReadiness()), readinessReady && (healthReady = !0));
+      const reachableViaHealthFallback = !!invokeRef.current && !!healthReady && !nextDaemonState?.reachable,
+        reachableViaReadinessFallback = !!invokeRef.current && !!readinessReady && !nextDaemonState?.reachable,
+        daemonReachable = !!nextDaemonState?.reachable || reachableViaHealthFallback || reachableViaReadinessFallback;
       if (daemonTransitionRef.current) return;
       if (
         ((reachableViaHealthFallback || reachableViaReadinessFallback) &&
@@ -89,19 +75,15 @@ function useRefreshAll(ctx) {
         if (
           (setDaemonTimeoutStaleSummary(""),
           clearStartupCoreReady(),
-          !scheduleStartupRecoveryRetry(
-            "Daemon is still starting. Reconnect will continue automatically.",
-          ))
+          !scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically."))
         ) {
           let timeoutMessage = `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`;
           try {
             const stopResult = await call("stop_daemon");
-            stopResult?.message &&
-              (timeoutMessage = `${timeoutMessage}. ${stopResult.message}`);
+            stopResult?.message && (timeoutMessage = `${timeoutMessage}. ${stopResult.message}`);
           } catch (error) {
             const detail = error?.message || String(error || "");
-            detail &&
-              (timeoutMessage = `${timeoutMessage}. Startup recovery cleanup failed: ${detail}`);
+            detail && (timeoutMessage = `${timeoutMessage}. Startup recovery cleanup failed: ${detail}`);
           }
           ((tokenRef.current = ""),
             persistBrowserAuthToken(""),
@@ -122,42 +104,34 @@ function useRefreshAll(ctx) {
           setDaemonTimeoutStaleSummary(""),
           clearStartupCoreReady(),
           clearRecoveryRetry(),
-          invokeRef.current &&
-            ((tokenRef.current = ""), persistBrowserAuthToken("")),
+          invokeRef.current && ((tokenRef.current = ""), persistBrowserAuthToken("")),
           clearDisconnectedData(),
           clearTransientFeedback(
-            nextDaemonState?.message ||
-              `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+            nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
           ));
         return;
       }
       if (invokeRef.current && !healthReady) {
         (setDaemonTimeoutStaleSummary(""),
           clearStartupCoreReady(),
-          scheduleStartupRecoveryRetry(
-            "Daemon is reachable but still warming up. Retrying shortly...",
-          ));
+          scheduleStartupRecoveryRetry("Daemon is reachable but still warming up. Retrying shortly..."));
         return;
       }
       const authToken = await readAuthToken({ suppressFeedback: !0 });
       if (invokeRef.current && !authToken) {
         (setDaemonTimeoutStaleSummary(""),
           clearStartupCoreReady(),
-          scheduleStartupRecoveryRetry(
-            "Waiting for daemon auth token to finish rotating...",
-          ));
+          scheduleStartupRecoveryRetry("Waiting for daemon auth token to finish rotating..."));
         return;
       }
       resetStartupRetryState();
-      let { coreErrors, secondaryErrors, coreSuccessCount, coreTotalCount } =
-        await refreshProtectedDataForStartup();
+      let { coreErrors, secondaryErrors, coreSuccessCount, coreTotalCount } = await refreshProtectedDataForStartup();
       if (
         (invokeRef.current &&
           coreErrors.length &&
           coreErrors.every((error) => isAuthFailure(error)) &&
           (await readAuthToken({ suppressFeedback: !0 })) &&
-          ({ coreErrors, secondaryErrors, coreSuccessCount, coreTotalCount } =
-            await refreshProtectedDataForStartup()),
+          ({ coreErrors, secondaryErrors, coreSuccessCount, coreTotalCount } = await refreshProtectedDataForStartup()),
         !invokeRef.current &&
           coreErrors.length > 0 &&
           coreErrors.every((error) => isAuthFailure(error)) &&
@@ -165,37 +139,20 @@ function useRefreshAll(ctx) {
         coreErrors.length)
       ) {
         const unique = [...new Set(coreErrors)],
-          timeoutErrors = unique.filter((error) =>
-            isDaemonTimeoutErrorMessage(error),
-          ),
-          warmupErrorsOnly = unique.every(
-            (error) =>
-              isDaemonTimeoutErrorMessage(error) || isAuthFailure(error),
-          );
+          timeoutErrors = unique.filter((error) => isDaemonTimeoutErrorMessage(error)),
+          warmupErrorsOnly = unique.every((error) => isDaemonTimeoutErrorMessage(error) || isAuthFailure(error));
         if (daemonReachable && coreSuccessCount > 0 && warmupErrorsOnly) {
-          ((startupCoreReadyRef.current = !0),
-            setStartupCoreReadyState(!0),
-            refreshSecondaryDataInBackground());
+          ((startupCoreReadyRef.current = !0), setStartupCoreReadyState(!0), refreshSecondaryDataInBackground());
           const timeoutSummary = timeoutErrors.length
-            ? summarizeDashboardErrors(timeoutErrors) ||
-              "IPC request timeouts detected."
+            ? summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected."
             : "";
           setDaemonTimeoutStaleSummary(timeoutSummary || "");
-          const partialSummary =
-            summarizeDashboardErrors(unique) ||
-            "Protected endpoints are still warming up.";
-          (setFeedbackMessage(
-            `Connected (core ${coreSuccessCount}/${coreTotalCount || 3} ready). ${partialSummary}`,
-          ),
+          const partialSummary = summarizeDashboardErrors(unique) || "Protected endpoints are still warming up.";
+          (setFeedbackMessage(`Connected (core ${coreSuccessCount}/${coreTotalCount || 3} ready). ${partialSummary}`),
             scheduleRecoveryRetry(1e3));
-        } else if (
-          daemonReachable &&
-          unique.every((error) => isDaemonTimeoutErrorMessage(error))
-        ) {
+        } else if (daemonReachable && unique.every((error) => isDaemonTimeoutErrorMessage(error))) {
           (clearStartupCoreReady(), clearRecoveryRetry());
-          const summary =
-            summarizeDashboardErrors(unique) ||
-            "IPC request timeouts detected.";
+          const summary = summarizeDashboardErrors(unique) || "IPC request timeouts detected.";
           (setDaemonTimeoutStaleSummary(summary),
             setFeedbackMessage(
               summary
@@ -209,16 +166,13 @@ function useRefreshAll(ctx) {
               setDaemonTimeoutStaleSummary(""),
               clearDisconnectedData(),
               clearTransientFeedback(
-                nextDaemonState?.message ||
-                  `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+                nextDaemonState?.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
               ),
               scheduleRecoveryRetry(1e3))
             : invokeRef.current && unique.every((error) => isAuthFailure(error))
               ? (clearStartupCoreReady(),
                 setDaemonTimeoutStaleSummary(""),
-                setFeedbackMessage(
-                  "Waiting for daemon auth token to finish rotating...",
-                ),
+                setFeedbackMessage("Waiting for daemon auth token to finish rotating..."),
                 scheduleRecoveryRetry(1e3))
               : (clearStartupCoreReady(),
                 setDaemonTimeoutStaleSummary(""),
@@ -229,18 +183,12 @@ function useRefreshAll(ctx) {
                   !connectionDialogAutoPromptSuppressedRef.current &&
                   setShowConnectionDialog(!0));
       } else {
-        ((connectionDialogAutoPromptSuppressedRef.current = !1),
-          clearRecoveryRetry());
+        ((connectionDialogAutoPromptSuppressedRef.current = !1), clearRecoveryRetry());
         const uniqueSecondary = [...new Set(secondaryErrors)];
         if (uniqueSecondary.length) {
-          const timeoutErrors = uniqueSecondary.filter((error) =>
-            isDaemonTimeoutErrorMessage(error),
-          );
+          const timeoutErrors = uniqueSecondary.filter((error) => isDaemonTimeoutErrorMessage(error));
           (timeoutErrors.length
-            ? setDaemonTimeoutStaleSummary(
-                summarizeDashboardErrors(timeoutErrors) ||
-                  "IPC request timeouts detected.",
-              )
+            ? setDaemonTimeoutStaleSummary(summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected.")
             : setDaemonTimeoutStaleSummary(""),
             setSecondaryAvailabilityFeedback(uniqueSecondary));
         } else (setDaemonTimeoutStaleSummary(""), clearTransientFeedback());
@@ -264,19 +212,14 @@ function useRefreshAll(ctx) {
       setSecondaryAvailabilityFeedback,
     ]),
     runRefreshAll = useCallback(() => {
-      if (refreshAllInFlightRef.current)
-        return (
-          (refreshAllQueuedRef.current = !0),
-          refreshAllInFlightRef.current
-        );
+      if (refreshAllInFlightRef.current) return ((refreshAllQueuedRef.current = !0), refreshAllInFlightRef.current);
       let pendingRefresh = null;
       return (
         (pendingRefresh = (async () => {
           do ((refreshAllQueuedRef.current = !1), await refreshAll());
           while (refreshAllQueuedRef.current);
         })().finally(() => {
-          refreshAllInFlightRef.current === pendingRefresh &&
-            (refreshAllInFlightRef.current = null);
+          refreshAllInFlightRef.current === pendingRefresh && (refreshAllInFlightRef.current = null);
         })),
         (refreshAllInFlightRef.current = pendingRefresh),
         pendingRefresh

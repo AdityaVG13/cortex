@@ -1,10 +1,5 @@
 import { useCallback } from "react";
-import {
-  createApi,
-  createPostApi,
-  settledCollectErrors,
-  summarizeDashboardErrors,
-} from "../../api-client.js";
+import { createApi, createPostApi, settledCollectErrors, summarizeDashboardErrors } from "../../api-client.js";
 import { filterFeedEntries, normalizeTask } from "../../live-surface.js";
 import {
   createBudgetDraftFromStatus,
@@ -18,15 +13,9 @@ import {
   EMPTY_HEALTH_META,
   SECONDARY_REFRESH_MIN_INTERVAL_MS,
 } from "../constants.js";
-import {
-  readPersistedBrowserAuthToken,
-  persistBrowserAuthToken,
-} from "../browser-bootstrap.js";
+import { readPersistedBrowserAuthToken, persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
-import {
-  isRouteMissingError,
-  normalizeConflictPairsPayload,
-} from "../normalize/conflicts.js";
+import { isRouteMissingError, normalizeConflictPairsPayload } from "../normalize/conflicts.js";
 import { normalizePermissionPayload } from "../normalize/permissions.js";
 import {
   extractMcpToolError,
@@ -74,15 +63,10 @@ function useRefreshOrchestration(ctx) {
       budgetConfigLoadAttemptedRef,
     } = ctx,
     refreshTokenForApi = useCallback(async () => {
-      if (!invokeRef.current)
-        return (
-          (tokenRef.current = readPersistedBrowserAuthToken()),
-          tokenRef.current
-        );
+      if (!invokeRef.current) return ((tokenRef.current = readPersistedBrowserAuthToken()), tokenRef.current);
       try {
         const token = await invokeRef.current("read_auth_token");
-        ((tokenRef.current = token || ""),
-          persistBrowserAuthToken(tokenRef.current));
+        ((tokenRef.current = token || ""), persistBrowserAuthToken(tokenRef.current));
       } catch {}
       return tokenRef.current;
     }, []),
@@ -133,25 +117,16 @@ function useRefreshOrchestration(ctx) {
     ),
     readAuthToken = useCallback(
       async ({ suppressFeedback = !1 } = {}) => {
-        if (!invokeRef.current)
-          return (
-            (tokenRef.current = readPersistedBrowserAuthToken()),
-            tokenRef.current
-          );
+        if (!invokeRef.current) return ((tokenRef.current = readPersistedBrowserAuthToken()), tokenRef.current);
         if (invokeRef.current)
           try {
             const token = await call("read_auth_token");
-            return (
-              (tokenRef.current = token || ""),
-              persistBrowserAuthToken(tokenRef.current),
-              tokenRef.current
-            );
+            return ((tokenRef.current = token || ""), persistBrowserAuthToken(tokenRef.current), tokenRef.current);
           } catch (err) {
             ((tokenRef.current = ""), persistBrowserAuthToken(""));
             const message = err?.message || String(err);
             !suppressFeedback &&
-              (!daemonTransitionRef.current ||
-                !isDaemonSuppressibleErrorMessage(message)) &&
+              (!daemonTransitionRef.current || !isDaemonSuppressibleErrorMessage(message)) &&
               setFeedbackMessage(`Auth token read failed: ${message}`);
           }
         return tokenRef.current;
@@ -162,16 +137,11 @@ function useRefreshOrchestration(ctx) {
       if (invokeRef.current)
         try {
           const state = { ...EMPTY_DAEMON, ...(await call("daemon_status")) };
-          return (
-            (browserHealthProbeRef.current = null),
-            setDaemonState(state),
-            state
-          );
+          return ((browserHealthProbeRef.current = null), setDaemonState(state), state);
         } catch {}
       let health;
       try {
-        ((health = await api("/health")),
-          (browserHealthProbeRef.current = health || null));
+        ((health = await api("/health")), (browserHealthProbeRef.current = health || null));
       } catch {
         browserHealthProbeRef.current = null;
       }
@@ -231,10 +201,7 @@ function useRefreshOrchestration(ctx) {
         }),
         !health?.stats)
       )
-        return (
-          setStats({ memories: "--", decisions: "--", events: "--" }),
-          isReachableHealthPayload(health)
-        );
+        return (setStats({ memories: "--", decisions: "--", events: "--" }), isReachableHealthPayload(health));
       const next = health.stats;
       return (
         setStats({
@@ -251,8 +218,7 @@ function useRefreshOrchestration(ctx) {
           jobs = [
             {
               fn: () => api("/sessions", !0),
-              apply: (v) =>
-                setSessions(Array.isArray(v?.sessions) ? v.sessions : []),
+              apply: (v) => setSessions(Array.isArray(v?.sessions) ? v.sessions : []),
             },
             {
               fn: () => api("/locks", !0),
@@ -260,10 +226,7 @@ function useRefreshOrchestration(ctx) {
             },
             {
               fn: () => api("/tasks?status=all", !0),
-              apply: (v) =>
-                setTasks(
-                  Array.isArray(v?.tasks) ? v.tasks.map(normalizeTask) : [],
-                ),
+              apply: (v) => setTasks(Array.isArray(v?.tasks) ? v.tasks.map(normalizeTask) : []),
             },
           ],
           results = await Promise.allSettled(jobs.map((job) => job.fn())),
@@ -282,8 +245,7 @@ function useRefreshOrchestration(ctx) {
           successCount,
           totalCount: jobs.length,
         };
-        if (throwOnError && summary.errors.length)
-          throw new Error(summary.errors.join("; "));
+        if (throwOnError && summary.errors.length) throw new Error(summary.errors.join("; "));
         return summary;
       },
       [api, clearTransientFeedback],
@@ -294,14 +256,10 @@ function useRefreshOrchestration(ctx) {
         feedFilters.kind !== "all" && query.set("kind", feedFilters.kind),
         feedFilters.unread &&
           selectedOperatorName &&
-          (query.set("agent", selectedOperatorName),
-          query.set("unread", "true")));
+          (query.set("agent", selectedOperatorName), query.set("unread", "true")));
       const feedResult = await api(`/feed?${query.toString()}`, !0),
-        entries = Array.isArray(feedResult?.entries)
-          ? [...feedResult.entries].reverse()
-          : [];
-      (setFeedEntries(filterFeedEntries(entries, feedFilters.agent)),
-        clearTransientFeedback());
+        entries = Array.isArray(feedResult?.entries) ? [...feedResult.entries].reverse() : [];
+      (setFeedEntries(filterFeedEntries(entries, feedFilters.agent)), clearTransientFeedback());
     }, [api, clearTransientFeedback, feedFilters, selectedOperatorName]),
     refreshMessages = useCallback(async () => {
       const operator = selectedOperatorName;
@@ -312,18 +270,14 @@ function useRefreshOrchestration(ctx) {
       const query = new URLSearchParams();
       query.set("agent", operator);
       const result = await api(`/messages?${query.toString()}`, !0),
-        entries = Array.isArray(result?.messages)
-          ? [...result.messages].reverse()
-          : [];
+        entries = Array.isArray(result?.messages) ? [...result.messages].reverse() : [];
       (setMessageEntries(entries), clearTransientFeedback());
     }, [api, clearTransientFeedback, selectedOperatorName]),
     refreshActivity = useCallback(async () => {
       const query = new URLSearchParams();
       query.set("since", activitySince);
       const result = await api(`/activity?${query.toString()}`, !0),
-        entries = Array.isArray(result?.activities)
-          ? [...result.activities].reverse()
-          : [];
+        entries = Array.isArray(result?.activities) ? [...result.activities].reverse() : [];
       (setActivityEntries(entries), clearTransientFeedback());
     }, [activitySince, api, clearTransientFeedback]),
     refreshSavings = useCallback(async () => {
@@ -338,17 +292,14 @@ function useRefreshOrchestration(ctx) {
           if (!current || typeof current != "object") return {};
           const next = {},
             validKeys = new Set(normalizedPairs.map((pair) => pair.key));
-          for (const [key, value] of Object.entries(current))
-            validKeys.has(key) && (next[key] = value);
+          for (const [key, value] of Object.entries(current)) validKeys.has(key) && (next[key] = value);
           return next;
         }),
         clearTransientFeedback());
     }, [api, clearTransientFeedback]),
     refreshPermissions = useCallback(
       async (options = {}) => {
-        if (!(
-          !(options?.force === !0) && !permissionsEndpointAvailableRef.current
-        ))
+        if (!(!(options?.force === !0) && !permissionsEndpointAvailableRef.current))
           try {
             const result = await api("/permissions", !0);
             ((permissionsEndpointAvailableRef.current = !0),
@@ -384,21 +335,13 @@ function useRefreshOrchestration(ctx) {
           wantsMemoryAdmin = panel === "memory",
           jobs = [];
         return (
-          wantsWorkStreams &&
-            jobs.push(refreshFeed, refreshMessages, refreshActivity),
+          wantsWorkStreams && jobs.push(refreshFeed, refreshMessages, refreshActivity),
           (wantsWorkStreams || wantsMemoryAdmin) && jobs.push(refreshConflicts),
           wantsMemoryAdmin && jobs.push(() => refreshPermissions({ force })),
           jobs.length ? settledCollectErrors(jobs) : []
         );
       },
-      [
-        panel,
-        refreshFeed,
-        refreshMessages,
-        refreshActivity,
-        refreshConflicts,
-        refreshPermissions,
-      ],
+      [panel, refreshFeed, refreshMessages, refreshActivity, refreshConflicts, refreshPermissions],
     ),
     refreshProtectedData = useCallback(
       async (options = {}) => {
@@ -406,9 +349,7 @@ function useRefreshOrchestration(ctx) {
           forceCore = options?.forceCore === !0,
           forceSecondary = options?.forceSecondary === !0,
           now = Date.now(),
-          shouldRefreshCore =
-            forceCore ||
-            now - lastCoreRefreshAtRef.current >= CORE_REFRESH_MIN_INTERVAL_MS;
+          shouldRefreshCore = forceCore || now - lastCoreRefreshAtRef.current >= CORE_REFRESH_MIN_INTERVAL_MS;
         let coreErrors = [],
           coreSuccessCount = 0,
           coreTotalCount = 0;
@@ -426,11 +367,7 @@ function useRefreshOrchestration(ctx) {
             coreSuccessCount,
             coreTotalCount,
           };
-        if (!(
-          forceSecondary ||
-          now - lastSecondaryRefreshAtRef.current >=
-            SECONDARY_REFRESH_MIN_INTERVAL_MS
-        ))
+        if (!(forceSecondary || now - lastSecondaryRefreshAtRef.current >= SECONDARY_REFRESH_MIN_INTERVAL_MS))
           return {
             coreErrors: [],
             secondaryErrors: [],
@@ -441,8 +378,7 @@ function useRefreshOrchestration(ctx) {
           force: forceSecondary,
         });
         return (
-          secondaryErrors.length ||
-            (lastSecondaryRefreshAtRef.current = Date.now()),
+          secondaryErrors.length || (lastSecondaryRefreshAtRef.current = Date.now()),
           { coreErrors: [], secondaryErrors, coreSuccessCount, coreTotalCount }
         );
       },
@@ -458,18 +394,14 @@ function useRefreshOrchestration(ctx) {
             const secondaryErrors = await refreshSecondaryData({ force: !0 });
             if (
               (secondaryErrors.length ||
-                (setDaemonTimeoutStaleSummary(""),
-                (lastSecondaryRefreshAtRef.current = Date.now())),
+                (setDaemonTimeoutStaleSummary(""), (lastSecondaryRefreshAtRef.current = Date.now())),
               !secondaryErrors.length || !daemonStateRef.current?.reachable)
             )
               return;
-            const timeoutErrors = secondaryErrors.filter((error) =>
-              isDaemonTimeoutErrorMessage(error),
-            );
+            const timeoutErrors = secondaryErrors.filter((error) => isDaemonTimeoutErrorMessage(error));
             (timeoutErrors.length
               ? setDaemonTimeoutStaleSummary(
-                  summarizeDashboardErrors(timeoutErrors) ||
-                    "IPC request timeouts detected.",
+                  summarizeDashboardErrors(timeoutErrors) || "IPC request timeouts detected.",
                 )
               : setDaemonTimeoutStaleSummary(""),
               setSecondaryAvailabilityFeedback(secondaryErrors));
@@ -502,9 +434,7 @@ function useRefreshOrchestration(ctx) {
     }, []),
     handleResolveConflict = useCallback(
       async (keepId, action, supersededId, pair = null) => {
-        const resolver = selectedOperatorName
-            ? `user:${selectedOperatorName}`
-            : "user:control-center",
+        const resolver = selectedOperatorName ? `user:${selectedOperatorName}` : "user:control-center",
           resolutionBody = {
             keepId,
             action,
@@ -540,9 +470,7 @@ function useRefreshOrchestration(ctx) {
     }, []),
     handleGrantPermission = useCallback(async () => {
       if (!permissionsEndpointAvailable) {
-        setFeedbackMessage(
-          "Permission endpoint unavailable on this daemon build.",
-        );
+        setFeedbackMessage("Permission endpoint unavailable on this daemon build.");
         return;
       }
       const client = String(permissionDraft.client || "").trim();
@@ -556,9 +484,7 @@ function useRefreshOrchestration(ctx) {
           client,
           permission: permissionDraft.permission || "read",
           scope: String(permissionDraft.scope || "*").trim() || "*",
-          grantedBy: selectedOperatorName
-            ? `user:${selectedOperatorName}`
-            : "user:control-center",
+          grantedBy: selectedOperatorName ? `user:${selectedOperatorName}` : "user:control-center",
         }),
           setPermissionDraft((current) => ({ ...current, client: "" })),
           await refreshPermissions({ force: !0 }));
@@ -567,19 +493,11 @@ function useRefreshOrchestration(ctx) {
       } finally {
         setPermissionLoading(!1);
       }
-    }, [
-      permissionDraft,
-      permissionsEndpointAvailable,
-      postApi,
-      refreshPermissions,
-      selectedOperatorName,
-    ]),
+    }, [permissionDraft, permissionsEndpointAvailable, postApi, refreshPermissions, selectedOperatorName]),
     handleRevokePermission = useCallback(
       async (grant) => {
         if (!permissionsEndpointAvailable) {
-          setFeedbackMessage(
-            "Permission endpoint unavailable on this daemon build.",
-          );
+          setFeedbackMessage("Permission endpoint unavailable on this daemon build.");
           return;
         }
         if (!(!grant?.client || !grant?.permission)) {
@@ -592,9 +510,7 @@ function useRefreshOrchestration(ctx) {
             }),
               await refreshPermissions({ force: !0 }));
           } catch (err) {
-            setFeedbackMessage(
-              `Permission revoke failed: ${err.message || err}`,
-            );
+            setFeedbackMessage(`Permission revoke failed: ${err.message || err}`);
           } finally {
             setPermissionLoading(!1);
           }
@@ -604,15 +520,11 @@ function useRefreshOrchestration(ctx) {
     ),
     openEditorSetupWizard = useCallback(
       async (event) => {
-        ((editorSetupTriggerRef.current =
-          event?.currentTarget || document.activeElement),
-          setIsSettingUpEditors(!0));
+        ((editorSetupTriggerRef.current = event?.currentTarget || document.activeElement), setIsSettingUpEditors(!0));
         try {
           const result = await call("detect_editors");
           (setEditorDetections(result),
-            setSelectedEditorIds(
-              result.filter((entry) => entry.detected).map((entry) => entry.id),
-            ),
+            setSelectedEditorIds(result.filter((entry) => entry.detected).map((entry) => entry.id)),
             setShowEditorSetupWizard(!0));
           const detected = result.filter((entry) => entry.detected).length;
           setFeedbackMessage(
@@ -630,16 +542,12 @@ function useRefreshOrchestration(ctx) {
     ),
     toggleEditorSelection = useCallback((editorId) => {
       setSelectedEditorIds((current) =>
-        current.includes(editorId)
-          ? current.filter((id) => id !== editorId)
-          : [...current, editorId],
+        current.includes(editorId) ? current.filter((id) => id !== editorId) : [...current, editorId],
       );
     }, []),
     applyEditorSetup = useCallback(async () => {
       if (!selectedEditorIds.length) {
-        setFeedbackMessage(
-          "Select at least one detected client before applying MCP setup.",
-        );
+        setFeedbackMessage("Select at least one detected client before applying MCP setup.");
         return;
       }
       setIsSettingUpEditors(!0);
@@ -650,9 +558,7 @@ function useRefreshOrchestration(ctx) {
         (setEditorSetup(result), closeEditorSetupWizard());
         const detected = result.filter((entry) => entry.detected).length,
           registered = result.filter((entry) => entry.registered).length,
-          failed = result.filter(
-            (entry) => entry.detected && !entry.registered,
-          ).length;
+          failed = result.filter((entry) => entry.detected && !entry.registered).length;
         setFeedbackMessage(
           detected
             ? failed
@@ -678,9 +584,7 @@ function useRefreshOrchestration(ctx) {
       (setBudgetDraftDirty(!0),
         setBudgetConfigMessage(""),
         setBudgetDraft((current) => {
-          const base = current?.endpoints
-            ? current
-            : createBudgetDraftFromStatus(null);
+          const base = current?.endpoints ? current : createBudgetDraftFromStatus(null);
           return {
             ...base,
             endpoints: {
@@ -693,8 +597,7 @@ function useRefreshOrchestration(ctx) {
     reloadBudgetConfigDraft = useCallback(
       async ({ silent = !1 } = {}) => {
         if (!invokeRef.current) {
-          silent ||
-            setBudgetConfigMessage("Budget editing requires the desktop app.");
+          silent || setBudgetConfigMessage("Budget editing requires the desktop app.");
           return;
         }
         ((budgetConfigLoadAttemptedRef.current = !0), setBudgetConfigBusy(!0));
@@ -704,16 +607,9 @@ function useRefreshOrchestration(ctx) {
             setHealthMeta((current) => ({ ...current, budgets: status })),
             setBudgetDraft(createBudgetDraftFromStatus(status)),
             setBudgetDraftDirty(!1),
-            silent ||
-              setBudgetConfigMessage(
-                status?.source
-                  ? `Loaded ${status.source}`
-                  : "Loaded budget config.",
-              ));
+            silent || setBudgetConfigMessage(status?.source ? `Loaded ${status.source}` : "Loaded budget config."));
         } catch (err) {
-          setBudgetConfigMessage(
-            `Budget load failed: ${err?.message || String(err)}`,
-          );
+          setBudgetConfigMessage(`Budget load failed: ${err?.message || String(err)}`);
         } finally {
           setBudgetConfigBusy(!1);
         }
@@ -740,14 +636,10 @@ function useRefreshOrchestration(ctx) {
             setHealthMeta((current) => ({ ...current, budgets: status })),
             setBudgetDraft(createBudgetDraftFromStatus(status)),
             setBudgetDraftDirty(!1),
-            setBudgetConfigMessage(
-              "Saved budgets.toml. Restart daemon to apply enforcement.",
-            ),
+            setBudgetConfigMessage("Saved budgets.toml. Restart daemon to apply enforcement."),
             setFeedbackMessage("Budget config saved."));
         } catch (err) {
-          setBudgetConfigMessage(
-            `Budget save failed: ${err?.message || String(err)}`,
-          );
+          setBudgetConfigMessage(`Budget save failed: ${err?.message || String(err)}`);
         } finally {
           setBudgetConfigBusy(!1);
         }

@@ -72,11 +72,7 @@ function AppShell(d) {
       {
         className: `app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`,
       },
-      React.createElement(
-        "a",
-        { className: "skip-link", href: "#main-content" },
-        "Skip to main content",
-      ),
+      React.createElement("a", { className: "skip-link", href: "#main-content" }, "Skip to main content"),
       React.createElement(
         "aside",
         {
@@ -122,11 +118,7 @@ function AppShell(d) {
           React.createElement(
             "div",
             { className: "sidebar-utility-header" },
-            React.createElement(
-              "span",
-              { className: "sidebar-utility-kicker" },
-              "Mission status",
-            ),
+            React.createElement("span", { className: "sidebar-utility-kicker" }, "Mission status"),
             React.createElement(
               "span",
               { className: `sidebar-utility-pill ${utilityPill.className}` },
@@ -143,35 +135,19 @@ function AppShell(d) {
                   key: item.label,
                   className: `sidebar-utility-card tone-${item.tone}`,
                 },
-                React.createElement(
-                  "span",
-                  { className: "sidebar-utility-label" },
-                  item.label,
-                ),
-                React.createElement(
-                  "strong",
-                  { className: "sidebar-utility-value" },
-                  item.value,
-                ),
+                React.createElement("span", { className: "sidebar-utility-label" }, item.label),
+                React.createElement("strong", { className: "sidebar-utility-value" }, item.value),
               ),
             ),
           ),
           React.createElement(
             "div",
             { className: "sidebar-utility-note" },
-            React.createElement(
-              "span",
-              { className: "sidebar-utility-note-label" },
-              "Focus",
-            ),
+            React.createElement("span", { className: "sidebar-utility-note-label" }, "Focus"),
             React.createElement("strong", null, activePanelLabel),
             React.createElement("p", null, daemonState.message),
             daemonRecoveryHint
-              ? React.createElement(
-                  "p",
-                  { className: "sidebar-utility-alert" },
-                  daemonRecoveryHint,
-                )
+              ? React.createElement("p", { className: "sidebar-utility-alert" }, daemonRecoveryHint)
               : null,
           ),
         ),
@@ -245,13 +221,7 @@ function AppShell(d) {
             React.createElement(
               "div",
               { className: "update-banner" },
-              React.createElement(
-                "span",
-                null,
-                "v",
-                availableUpdate.version,
-                " available",
-              ),
+              React.createElement("span", null, "v", availableUpdate.version, " available"),
               React.createElement(
                 "button",
                 {
@@ -259,41 +229,29 @@ function AppShell(d) {
                   className: "btn-sm btn-primary",
                   disabled: updateInstalling,
                   onClick: async () => {
-                    (setUpdateInstalling(!0),
-                      setFeedbackMessage("Downloading update..."));
+                    (setUpdateInstalling(!0), setFeedbackMessage("Downloading update..."));
                     try {
                       await installUpdate(availableUpdate);
                     } catch (err) {
-                      (setFeedbackMessage(`Update failed: ${String(err)}`),
-                        setUpdateInstalling(!1));
+                      (setFeedbackMessage(`Update failed: ${String(err)}`), setUpdateInstalling(!1));
                     }
                   },
                 },
                 updateInstalling ? "Installing..." : "Update",
               ),
             ),
-          React.createElement(
-            "p",
-            { className: "sidebar-status", "aria-hidden": "true" },
-            feedbackMessage,
-          ),
+          React.createElement("p", { className: "sidebar-status", "aria-hidden": "true" }, feedbackMessage),
           React.createElement(
             "button",
             {
               type: "button",
               className: "btn-sidebar-collapse",
-              "aria-label": effectiveSidebarCollapsed
-                ? "Expand sidebar"
-                : "Collapse sidebar",
-              title: effectiveSidebarCollapsed
-                ? "Expand sidebar"
-                : "Collapse sidebar",
+              "aria-label": effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
+              title: effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
               onClick: () => setSidebarCollapsed((c) => !c),
             },
             React.createElement(AppIcon, {
-              name: effectiveSidebarCollapsed
-                ? "chevron-right"
-                : "chevron-left",
+              name: effectiveSidebarCollapsed ? "chevron-right" : "chevron-left",
               size: 16,
             }),
           ),
@@ -324,11 +282,7 @@ function AppShell(d) {
             { className: "topbar-left" },
             React.createElement("span", { className: "topbar-path" }, "CORTEX"),
             React.createElement("span", { className: "topbar-sep" }, "/"),
-            React.createElement(
-              "span",
-              { className: "topbar-current" },
-              activePanelLabel.toUpperCase(),
-            ),
+            React.createElement("span", { className: "topbar-current" }, activePanelLabel.toUpperCase()),
           ),
           React.createElement(
             "div",
@@ -357,11 +311,7 @@ function AppShell(d) {
             React.createElement(
               "span",
               { className: "topbar-stat" },
-              React.createElement(
-                "span",
-                { className: "topbar-label" },
-                "AGENTS",
-              ),
+              React.createElement("span", { className: "topbar-label" }, "AGENTS"),
               " ",
               normalizedSessions.length,
             ),
@@ -375,11 +325,7 @@ function AppShell(d) {
                 title: "Click to change connection",
                 "aria-label": `Connection host ${hostLabel}. Open connection settings.`,
               },
-              React.createElement(
-                "span",
-                { className: "topbar-label" },
-                "HOST",
-              ),
+              React.createElement("span", { className: "topbar-label" }, "HOST"),
               hostLabel,
             ),
             React.createElement(
@@ -419,16 +365,8 @@ function AppShell(d) {
                 React.createElement(
                   "div",
                   null,
-                  React.createElement(
-                    "span",
-                    { className: "editor-setup-kicker" },
-                    "Shared MCP Registration",
-                  ),
-                  React.createElement(
-                    "h2",
-                    { id: "editor-setup-title" },
-                    "Setup MCP",
-                  ),
+                  React.createElement("span", { className: "editor-setup-kicker" }, "Shared MCP Registration"),
+                  React.createElement("h2", { id: "editor-setup-title" }, "Setup MCP"),
                 ),
                 React.createElement(
                   "span",
@@ -450,16 +388,8 @@ function AppShell(d) {
                 "div",
                 { className: "editor-setup-choice-list" },
                 editorDetectionSummary.results.map((entry) => {
-                  const tone = entry.detected
-                      ? entry.registered
-                        ? "ok"
-                        : "warn"
-                      : "idle",
-                    stateLabel = entry.detected
-                      ? entry.registered
-                        ? "Configured"
-                        : "Detected"
-                      : "Not detected",
+                  const tone = entry.detected ? (entry.registered ? "ok" : "warn") : "idle",
+                    stateLabel = entry.detected ? (entry.registered ? "Configured" : "Detected") : "Not detected",
                     selected = selectedEditorIds.includes(entry.id);
                   return React.createElement(
                     "label",
@@ -479,25 +409,11 @@ function AppShell(d) {
                       React.createElement(
                         "div",
                         { className: "editor-setup-item-head" },
-                        React.createElement(
-                          "span",
-                          { className: "editor-setup-name" },
-                          entry.name,
-                        ),
-                        React.createElement(
-                          "span",
-                          { className: "editor-setup-state" },
-                          stateLabel,
-                        ),
+                        React.createElement("span", { className: "editor-setup-name" }, entry.name),
+                        React.createElement("span", { className: "editor-setup-state" }, stateLabel),
                       ),
-                      entry.configPath
-                        ? React.createElement("code", null, entry.configPath)
-                        : null,
-                      React.createElement(
-                        "p",
-                        null,
-                        entry.message || "No detail provided.",
-                      ),
+                      entry.configPath ? React.createElement("code", null, entry.configPath) : null,
+                      React.createElement("p", null, entry.message || "No detail provided."),
                     ),
                   );
                 }),
@@ -505,11 +421,7 @@ function AppShell(d) {
               React.createElement(
                 "div",
                 { className: "editor-setup-manual" },
-                React.createElement(
-                  "span",
-                  { className: "editor-setup-kicker" },
-                  "Manual Fallback",
-                ),
+                React.createElement("span", { className: "editor-setup-kicker" }, "Manual Fallback"),
                 React.createElement(
                   "p",
                   null,
@@ -581,11 +493,7 @@ function AppShell(d) {
               React.createElement(
                 "div",
                 { className: "connection-dialog-header" },
-                React.createElement(
-                  "h2",
-                  { id: "connection-dialog-title" },
-                  "Connection Settings",
-                ),
+                React.createElement("h2", { id: "connection-dialog-title" }, "Connection Settings"),
                 React.createElement(
                   "button",
                   {
@@ -684,11 +592,7 @@ function AppShell(d) {
                     },
                     "Reset to Local",
                   ),
-                  React.createElement(
-                    "button",
-                    { type: "submit", className: "btn-sm btn-primary" },
-                    "Connect",
-                  ),
+                  React.createElement("button", { type: "submit", className: "btn-sm btn-primary" }, "Connect"),
                 ),
               ),
             ),

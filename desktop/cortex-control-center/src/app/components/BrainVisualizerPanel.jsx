@@ -23,12 +23,7 @@ class BrainErrorBoundary extends Component {
             { className: "coming-icon" },
             React.createElement(AppIcon, { name: "brain", size: 48 }),
           ),
-          React.createElement(
-            "p",
-            null,
-            "Brain visualizer crashed: ",
-            this.state.error,
-          ),
+          React.createElement("p", null, "Brain visualizer crashed: ", this.state.error),
           React.createElement(
             "button",
             {
@@ -73,11 +68,7 @@ function BrainVisualizerPanel({
                   { className: "coming-icon" },
                   React.createElement(AppIcon, { name: "brain", size: 48 }),
                 ),
-                React.createElement(
-                  "p",
-                  null,
-                  "Loading brain visualizer\u2026",
-                ),
+                React.createElement("p", null, "Loading brain visualizer\u2026"),
               ),
             },
             React.createElement(LazyBrainVisualizer, {

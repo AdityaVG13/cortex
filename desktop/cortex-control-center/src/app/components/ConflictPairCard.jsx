@@ -22,370 +22,190 @@ function ConflictPairCard({
     canResolve = leftId != null && rightId !== null && rightId !== void 0,
     winner = draftWinner === "right" ? pair.right : pair.left,
     loser = draftWinner === "right" ? pair.left : pair.right;
-  return React.createElement(
-    "div",
-    { key: pair.key, className: "conflict-pair" },
-    React.createElement(
-      "div",
-      { className: "conflict-topline" },
-      React.createElement(
-        "div",
-        { className: "conflict-topline-left" },
-        React.createElement(
-          "span",
-          { className: "conflict-id" },
-          "Conflict #",
-          pair.conflictId || pair.key,
-        ),
-        React.createElement(
-          "span",
-          {
-            className: conflictBadgeClass(
-              "conflict-pill conflict-class",
-              pair.classification,
-            ),
-          },
-          pair.classification,
-        ),
-        React.createElement(
-          "span",
-          {
-            className: conflictBadgeClass(
-              "conflict-pill conflict-status",
-              pair.status,
-            ),
-          },
-          pair.status,
-        ),
-      ),
-      React.createElement(
-        "div",
-        { className: "conflict-timestamps" },
-        React.createElement(
-          "span",
-          null,
-          "Created ",
-          formatTimestamp(pair.createdAt),
-        ),
-        pair.resolvedAt
-          ? React.createElement(
-              "span",
-              null,
-              "Resolved ",
-              formatTimestamp(pair.resolvedAt),
-            )
-          : null,
-      ),
-    ),
-    React.createElement(
-      "div",
-      { className: "conflict-cards" },
-      React.createElement(
-        "div",
-        { className: "card conflict-card" },
-        React.createElement(
-          "div",
-          { className: "conflict-card-header" },
-          React.createElement(
-            "span",
-            { className: "conflict-id" },
-            "#",
-            pair.left.id ?? "?",
-          ),
-          React.createElement("span", {
-            className: "agent-indicator",
-            style: {
-              background: agentColor(pair.left.sourceAgent),
-              boxShadow: `0 0 8px ${agentColor(pair.left.sourceAgent)}`,
-            },
-          }),
-          React.createElement(
-            "span",
-            { className: "item-name" },
-            pair.left.sourceAgent || "unknown",
-          ),
-          React.createElement(
-            "span",
-            { className: "muted-inline" },
-            timeAgo(pair.left.createdAt),
-          ),
-        ),
-        React.createElement(
-          "p",
-          { className: "conflict-text" },
-          pair.left.decision,
-        ),
-        pair.left.context
-          ? React.createElement(
-              "p",
-              { className: "conflict-context" },
-              pair.left.context,
-            )
-          : null,
-        React.createElement(
-          "div",
-          { className: "conflict-meta" },
-          React.createElement(
-            "span",
-            null,
-            "Confidence: ",
-            formatConfidencePercent(pair.left.confidence),
-          ),
-          React.createElement(
-            "span",
-            null,
-            "Trust: ",
-            formatTrustScore(pair.left.trustScore),
-          ),
-        ),
-      ),
-      React.createElement("div", { className: "conflict-vs" }, "VS"),
-      React.createElement(
-        "div",
-        { className: "card conflict-card" },
-        React.createElement(
-          "div",
-          { className: "conflict-card-header" },
-          React.createElement(
-            "span",
-            { className: "conflict-id" },
-            "#",
-            pair.right.id ?? "?",
-          ),
-          React.createElement("span", {
-            className: "agent-indicator",
-            style: {
-              background: agentColor(pair.right.sourceAgent),
-              boxShadow: `0 0 8px ${agentColor(pair.right.sourceAgent)}`,
-            },
-          }),
-          React.createElement(
-            "span",
-            { className: "item-name" },
-            pair.right.sourceAgent || "unknown",
-          ),
-          React.createElement(
-            "span",
-            { className: "muted-inline" },
-            timeAgo(pair.right.createdAt),
-          ),
-        ),
-        React.createElement(
-          "p",
-          { className: "conflict-text" },
-          pair.right.decision,
-        ),
-        pair.right.context
-          ? React.createElement(
-              "p",
-              { className: "conflict-context" },
-              pair.right.context,
-            )
-          : null,
-        React.createElement(
-          "div",
-          { className: "conflict-meta" },
-          React.createElement(
-            "span",
-            null,
-            "Confidence: ",
-            formatConfidencePercent(pair.right.confidence),
-          ),
-          React.createElement(
-            "span",
-            null,
-            "Trust: ",
-            formatTrustScore(pair.right.trustScore),
-          ),
-        ),
-      ),
-    ),
-    pair.resolution
-      ? React.createElement(
-          "div",
-          { className: "conflict-resolution-summary" },
-          React.createElement(
-            "div",
-            { className: "conflict-resolution-grid" },
-            React.createElement(
-              "span",
-              null,
-              React.createElement("strong", null, "Winner:"),
-              " ",
-              pair.resolution.winnerId !== null &&
-                pair.resolution.winnerId !== void 0
+  return (
+    <div key={pair.key} className="conflict-pair">
+      <div className="conflict-topline">
+        <div className="conflict-topline-left">
+          <span className="conflict-id">Conflict #{pair.conflictId || pair.key}</span>
+          <span className={conflictBadgeClass("conflict-pill conflict-class", pair.classification)}>
+            {pair.classification}
+          </span>
+          <span className={conflictBadgeClass("conflict-pill conflict-status", pair.status)}>{pair.status}</span>
+        </div>
+        <div className="conflict-timestamps">
+          <span>
+            {"Created "}
+            {formatTimestamp(pair.createdAt)}
+          </span>
+          {pair.resolvedAt ? (
+            <span>
+              {"Resolved "}
+              {formatTimestamp(pair.resolvedAt)}
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <div className="conflict-cards">
+        <div className="card conflict-card">
+          <div className="conflict-card-header">
+            <span className="conflict-id">#{pair.left.id ?? "?"}</span>
+            <span
+              className="agent-indicator"
+              style={{
+                background: agentColor(pair.left.sourceAgent),
+                boxShadow: `0 0 8px ${agentColor(pair.left.sourceAgent)}`,
+              }}
+            />
+            <span className="item-name">{pair.left.sourceAgent || "unknown"}</span>
+            <span className="muted-inline">{timeAgo(pair.left.createdAt)}</span>
+          </div>
+          <p className="conflict-text">{pair.left.decision}</p>
+          {pair.left.context ? <p className="conflict-context">{pair.left.context}</p> : null}
+          <div className="conflict-meta">
+            <span>
+              {"Confidence: "}
+              {formatConfidencePercent(pair.left.confidence)}
+            </span>
+            <span>
+              {"Trust: "}
+              {formatTrustScore(pair.left.trustScore)}
+            </span>
+          </div>
+        </div>
+        <div className="conflict-vs">VS</div>
+        <div className="card conflict-card">
+          <div className="conflict-card-header">
+            <span className="conflict-id">#{pair.right.id ?? "?"}</span>
+            <span
+              className="agent-indicator"
+              style={{
+                background: agentColor(pair.right.sourceAgent),
+                boxShadow: `0 0 8px ${agentColor(pair.right.sourceAgent)}`,
+              }}
+            />
+            <span className="item-name">{pair.right.sourceAgent || "unknown"}</span>
+            <span className="muted-inline">{timeAgo(pair.right.createdAt)}</span>
+          </div>
+          <p className="conflict-text">{pair.right.decision}</p>
+          {pair.right.context ? <p className="conflict-context">{pair.right.context}</p> : null}
+          <div className="conflict-meta">
+            <span>
+              {"Confidence: "}
+              {formatConfidencePercent(pair.right.confidence)}
+            </span>
+            <span>
+              {"Trust: "}
+              {formatTrustScore(pair.right.trustScore)}
+            </span>
+          </div>
+        </div>
+      </div>
+      {pair.resolution ? (
+        <div className="conflict-resolution-summary">
+          <div className="conflict-resolution-grid">
+            <span>
+              <strong>Winner:</strong>{" "}
+              {pair.resolution.winnerId !== null && pair.resolution.winnerId !== void 0
                 ? `#${pair.resolution.winnerId}`
-                : "n/a",
-              pair.resolution.winnerAgent
-                ? ` (${pair.resolution.winnerAgent})`
-                : "",
-            ),
-            React.createElement(
-              "span",
-              null,
-              React.createElement("strong", null, "Loser:"),
-              " ",
-              pair.resolution.loserId !== null &&
-                pair.resolution.loserId !== void 0
+                : "n/a"}
+              {pair.resolution.winnerAgent ? ` (${pair.resolution.winnerAgent})` : ""}
+            </span>
+            <span>
+              <strong>Loser:</strong>{" "}
+              {pair.resolution.loserId !== null && pair.resolution.loserId !== void 0
                 ? `#${pair.resolution.loserId}`
-                : "n/a",
-              pair.resolution.loserAgent
-                ? ` (${pair.resolution.loserAgent})`
-                : "",
-            ),
-            pair.resolution.action
-              ? React.createElement(
-                  "span",
-                  null,
-                  React.createElement("strong", null, "Action:"),
-                  " ",
-                  pair.resolution.action,
-                )
-              : null,
-            pair.resolution.method
-              ? React.createElement(
-                  "span",
-                  null,
-                  React.createElement("strong", null, "Method:"),
-                  " ",
-                  pair.resolution.method,
-                )
-              : null,
-            pair.resolution.resolvedBy
-              ? React.createElement(
-                  "span",
-                  null,
-                  React.createElement("strong", null, "Resolved by:"),
-                  " ",
-                  pair.resolution.resolvedBy,
-                )
-              : null,
-            pair.resolution.trustDelta !== null
-              ? React.createElement(
-                  "span",
-                  { className: "conflict-trust-highlight" },
-                  React.createElement("strong", null, "Trust delta:"),
-                  " ",
-                  pair.resolution.trustDelta.toFixed(3),
-                )
-              : null,
-          ),
-          pair.resolution.notes
-            ? React.createElement(
-                "div",
-                { className: "conflict-resolution-notes" },
-                pair.resolution.notes,
-              )
-            : null,
-        )
-      : null,
-    React.createElement(
-      "div",
-      { className: "conflict-actions" },
-      React.createElement(
-        "button",
-        {
-          className: "btn-sm btn-primary",
-          disabled: conflictLoading || !canResolve,
-          onClick: () =>
-            onResolveQuick?.(pair.left.id, "keep", pair.right.id, pair),
-        },
-        "Keep Left",
-      ),
-      React.createElement(
-        "button",
-        {
-          className: "btn-sm btn-primary",
-          disabled: conflictLoading || !canResolve,
-          onClick: () =>
-            onResolveQuick?.(pair.right.id, "keep", pair.left.id, pair),
-        },
-        "Keep Right",
-      ),
-      React.createElement(
-        "button",
-        {
-          className: "btn-sm",
-          disabled: conflictLoading || !canResolve,
-          onClick: () =>
-            onResolveQuick?.(pair.left.id, "merge", pair.right.id, pair),
-        },
-        "Merge Both",
-      ),
-      React.createElement(
-        "button",
-        {
-          className: "btn-sm btn-danger",
-          disabled: conflictLoading || !canResolve,
-          onClick: () =>
-            onResolveQuick?.(pair.left.id, "archive", pair.right.id, pair),
-        },
-        "Archive Both",
-      ),
-    ),
-    React.createElement(
-      "div",
-      { className: "conflict-manual-controls" },
-      React.createElement(
-        "span",
-        { className: "conflict-manual-label" },
-        "Manual resolve",
-      ),
-      React.createElement(
-        "label",
-        { className: "conflict-control-group" },
-        React.createElement("span", null, "Action"),
-        React.createElement(
-          "select",
-          {
-            className: "conflict-select",
-            value: draftAction,
-            onChange: (event) =>
-              onResolveDraftChange?.(pair.key, { action: event.target.value }),
-          },
-          React.createElement("option", { value: "keep" }, "Keep"),
-          React.createElement("option", { value: "merge" }, "Merge"),
-          React.createElement("option", { value: "archive" }, "Archive"),
-        ),
-      ),
-      draftAction === "keep"
-        ? React.createElement(
-            "label",
-            { className: "conflict-control-group" },
-            React.createElement("span", null, "Winner"),
-            React.createElement(
-              "select",
-              {
-                className: "conflict-select",
-                value: draftWinner,
-                onChange: (event) =>
-                  onResolveDraftChange?.(pair.key, {
-                    winner: event.target.value,
-                  }),
-              },
-              React.createElement(
-                "option",
-                { value: "left" },
-                "Left (",
-                pair.left.sourceAgent || "unknown",
-                ")",
-              ),
-              React.createElement(
-                "option",
-                { value: "right" },
-                "Right (",
-                pair.right.sourceAgent || "unknown",
-                ")",
-              ),
-            ),
-          )
-        : null,
-      React.createElement(
-        "button",
-        {
-          className: "btn-sm btn-primary",
-          disabled: conflictLoading || !canResolve,
-          onClick: () => {
+                : "n/a"}
+              {pair.resolution.loserAgent ? ` (${pair.resolution.loserAgent})` : ""}
+            </span>
+            {pair.resolution.action ? (
+              <span>
+                <strong>Action:</strong> {pair.resolution.action}
+              </span>
+            ) : null}
+            {pair.resolution.method ? (
+              <span>
+                <strong>Method:</strong> {pair.resolution.method}
+              </span>
+            ) : null}
+            {pair.resolution.resolvedBy ? (
+              <span>
+                <strong>Resolved by:</strong> {pair.resolution.resolvedBy}
+              </span>
+            ) : null}
+            {pair.resolution.trustDelta !== null ? (
+              <span className="conflict-trust-highlight">
+                <strong>Trust delta:</strong> {pair.resolution.trustDelta.toFixed(3)}
+              </span>
+            ) : null}
+          </div>
+          {pair.resolution.notes ? <div className="conflict-resolution-notes">{pair.resolution.notes}</div> : null}
+        </div>
+      ) : null}
+      <div className="conflict-actions">
+        <button
+          className="btn-sm btn-primary"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.left.id, "keep", pair.right.id, pair)}
+        >
+          Keep Left
+        </button>
+        <button
+          className="btn-sm btn-primary"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.right.id, "keep", pair.left.id, pair)}
+        >
+          Keep Right
+        </button>
+        <button
+          className="btn-sm"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.left.id, "merge", pair.right.id, pair)}
+        >
+          Merge Both
+        </button>
+        <button
+          className="btn-sm btn-danger"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => onResolveQuick?.(pair.left.id, "archive", pair.right.id, pair)}
+        >
+          Archive Both
+        </button>
+      </div>
+      <div className="conflict-manual-controls">
+        <span className="conflict-manual-label">Manual resolve</span>
+        <label className="conflict-control-group">
+          <span>Action</span>
+          <select
+            className="conflict-select"
+            value={draftAction}
+            onChange={(event) => onResolveDraftChange?.(pair.key, { action: event.target.value })}
+          >
+            <option value="keep">Keep</option>
+            <option value="merge">Merge</option>
+            <option value="archive">Archive</option>
+          </select>
+        </label>
+        {draftAction === "keep" ? (
+          <label className="conflict-control-group">
+            <span>Winner</span>
+            <select
+              className="conflict-select"
+              value={draftWinner}
+              onChange={(event) =>
+                onResolveDraftChange?.(pair.key, {
+                  winner: event.target.value,
+                })
+              }
+            >
+              <option value="left">Left ({pair.left.sourceAgent || "unknown"})</option>
+              <option value="right">Right ({pair.right.sourceAgent || "unknown"})</option>
+            </select>
+          </label>
+        ) : null}
+        <button
+          className="btn-sm btn-primary"
+          disabled={conflictLoading || !canResolve}
+          onClick={() => {
             if (draftAction === "keep") {
               onResolveDraft?.(winner.id, "keep", loser.id, pair);
               return;
@@ -395,11 +215,12 @@ function ConflictPairCard({
               return;
             }
             onResolveDraft?.(pair.left.id, "archive", pair.right.id, pair);
-          },
-        },
-        "Apply",
-      ),
-    ),
+          }}
+        >
+          Apply
+        </button>
+      </div>
+    </div>
   );
 }
 export { ConflictPairCard };

@@ -1,12 +1,6 @@
 import React from "react";
 import { useId } from "react";
-function OperatorSelector({
-  value,
-  knownAgents,
-  onChange,
-  label = "Operator",
-  placeholder = "codex",
-}) {
+function OperatorSelector({ value, knownAgents, onChange, label = "Operator", placeholder = "codex" }) {
   const datalistId = useId();
   return React.createElement(
     "label",
@@ -22,9 +16,7 @@ function OperatorSelector({
     React.createElement(
       "datalist",
       { id: datalistId },
-      knownAgents.map((agent) =>
-        React.createElement("option", { key: agent, value: agent }),
-      ),
+      knownAgents.map((agent) => React.createElement("option", { key: agent, value: agent })),
     ),
   );
 }

@@ -1,19 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { summarizeDashboardErrors } from "../../api-client.js";
 import { USD_TO_CURRENCY_RATE } from "../../constants.js";
-import {
-  buildKnownAgents,
-  isTransportSession,
-  resolveAgentName,
-} from "../../live-surface.js";
-import {
-  computeStartupRetryStep,
-  isTransientDaemonFeedback,
-} from "../../daemon-startup.js";
-import {
-  formatCompactNumber,
-  formatSignedCompactNumber,
-} from "../../number-format.js";
+import { buildKnownAgents, isTransportSession, resolveAgentName } from "../../live-surface.js";
+import { computeStartupRetryStep, isTransientDaemonFeedback } from "../../daemon-startup.js";
+import { formatCompactNumber, formatSignedCompactNumber } from "../../number-format.js";
 import {
   createBudgetDraftFromStatus,
   readControlCenterSettings,
@@ -31,22 +21,14 @@ import {
   SIDEBAR_COLLAPSE_BREAKPOINT_PX,
   panelIndex,
 } from "../constants.js";
-import {
-  readBrowserBootstrap,
-  readLocalStorageValue,
-} from "../browser-bootstrap.js";
-import {
-  normalizeCurrencyCode,
-  getOsReducedMotionPreference,
-} from "../utils/format.js";
+import { readBrowserBootstrap, readLocalStorageValue } from "../browser-bootstrap.js";
+import { normalizeCurrencyCode, getOsReducedMotionPreference } from "../utils/format.js";
 import { normalizeSession } from "../normalize/sessions.js";
 function useDashboardState() {
   const browserBootstrap = useMemo(() => readBrowserBootstrap(), []),
     isTauriRuntime = typeof window < "u" && !!window.__TAURI_INTERNALS__,
     [panel, setPanel] = useState(() => browserBootstrap.panel || "overview"),
-    [brainPanelMounted, setBrainPanelMounted] = useState(
-      () => (browserBootstrap.panel || "overview") === "brain",
-    ),
+    [brainPanelMounted, setBrainPanelMounted] = useState(() => (browserBootstrap.panel || "overview") === "brain"),
     [panelMotionDirection, setPanelMotionDirection] = useState("forward"),
     [daemonState, setDaemonState] = useState(EMPTY_DAEMON),
     [healthMeta, setHealthMeta] = useState(EMPTY_HEALTH_META),
@@ -62,14 +44,10 @@ function useDashboardState() {
     [messageEntries, setMessageEntries] = useState([]),
     [activityEntries, setActivityEntries] = useState([]),
     [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
-      typeof window > "u"
-        ? !1
-        : window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX,
+      typeof window > "u" ? !1 : window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX,
     ),
     [isNarrowViewport, setIsNarrowViewport] = useState(() =>
-      typeof window > "u"
-        ? !1
-        : window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX,
+      typeof window > "u" ? !1 : window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX,
     ),
     [savings, setSavings] = useState(null),
     [memoryQuery, setMemoryQuery] = useState(""),
@@ -103,8 +81,7 @@ function useDashboardState() {
     [permissionGrants, setPermissionGrants] = useState([]),
     [permissionLoading, setPermissionLoading] = useState(!1),
     [permissionAccessDenied, setPermissionAccessDenied] = useState(!1),
-    [permissionsEndpointAvailable, setPermissionsEndpointAvailable] =
-      useState(!0),
+    [permissionsEndpointAvailable, setPermissionsEndpointAvailable] = useState(!0),
     [permissionDraft, setPermissionDraft] = useState({
       client: "",
       permission: "read",
@@ -113,9 +90,7 @@ function useDashboardState() {
     [editorSetup, setEditorSetup] = useState(null),
     [editorDetections, setEditorDetections] = useState([]),
     [selectedEditorIds, setSelectedEditorIds] = useState([]),
-    [cortexBase, setCortexBase] = useState(
-      () => browserBootstrap.cortexBase || DEFAULT_CORTEX_BASE,
-    ),
+    [cortexBase, setCortexBase] = useState(() => browserBootstrap.cortexBase || DEFAULT_CORTEX_BASE),
     [showConnectionDialog, setShowConnectionDialog] = useState(!1),
     [showEditorSetupWizard, setShowEditorSetupWizard] = useState(!1),
     [availableUpdate, setAvailableUpdate] = useState(null),
@@ -124,43 +99,24 @@ function useDashboardState() {
     [restartError, setRestartError] = useState(""),
     [showMissionMetricLegend, setShowMissionMetricLegend] = useState(!1),
     [showMissionCompactUnits, setShowMissionCompactUnits] = useState(!0),
-    [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(
-      () => browserBootstrap.panel === "analytics",
-    ),
-    [analyticsReady, setAnalyticsReady] = useState(
-      () => browserBootstrap.panel === "analytics",
-    ),
+    [hasVisitedAnalytics, setHasVisitedAnalytics] = useState(() => browserBootstrap.panel === "analytics"),
+    [analyticsReady, setAnalyticsReady] = useState(() => browserBootstrap.panel === "analytics"),
     [startupCoreReadyState, setStartupCoreReadyState] = useState(!1),
     [isSettingUpEditors, setIsSettingUpEditors] = useState(!1),
-    [controlSettings, setControlSettings] = useState(() =>
-      readControlCenterSettings(),
-    ),
+    [controlSettings, setControlSettings] = useState(() => readControlCenterSettings()),
     [budgetConfigStatus, setBudgetConfigStatus] = useState(null),
-    [budgetDraft, setBudgetDraft] = useState(() =>
-      createBudgetDraftFromStatus(null),
-    ),
+    [budgetDraft, setBudgetDraft] = useState(() => createBudgetDraftFromStatus(null)),
     [budgetDraftDirty, setBudgetDraftDirty] = useState(!1),
     [budgetConfigBusy, setBudgetConfigBusy] = useState(!1),
     [budgetConfigMessage, setBudgetConfigMessage] = useState(""),
     [ipcAvailable, setIpcAvailable] = useState(!1),
-    [osReducedMotion, setOsReducedMotion] = useState(() =>
-      getOsReducedMotionPreference(),
-    ),
-    [currency, setCurrency] = useState(() =>
-      normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD")),
-    ),
+    [osReducedMotion, setOsReducedMotion] = useState(() => getOsReducedMotionPreference()),
+    [currency, setCurrency] = useState(() => normalizeCurrencyCode(readLocalStorageValue("cortex_currency", "USD"))),
     [analyticsMode, setAnalyticsMode] = useState(() =>
-      readLocalStorageValue("cortex_analytics_mode", "aggregate") ===
-      "operations"
-        ? "operations"
-        : "aggregate",
+      readLocalStorageValue("cortex_analytics_mode", "aggregate") === "operations" ? "operations" : "aggregate",
     ),
     effectiveReducedMotion = useMemo(
-      () =>
-        resolveEffectiveReducedMotion(
-          controlSettings.reducedMotion,
-          osReducedMotion,
-        ),
+      () => resolveEffectiveReducedMotion(controlSettings.reducedMotion, osReducedMotion),
       [controlSettings.reducedMotion, osReducedMotion],
     ),
     invokeRef = useRef(null),
@@ -201,15 +157,11 @@ function useDashboardState() {
         window.requestAnimationFrame(() => {
           const target = triggerRef.current;
           ((triggerRef.current = null),
-            target &&
-              typeof target.focus == "function" &&
-              document.contains(target) &&
-              target.focus());
+            target && typeof target.focus == "function" && document.contains(target) && target.focus());
         });
     }, []),
     openConnectionDialog = useCallback((event) => {
-      ((connectionDialogTriggerRef.current =
-        event?.currentTarget || document.activeElement),
+      ((connectionDialogTriggerRef.current = event?.currentTarget || document.activeElement),
         (connectionDialogAutoPromptSuppressedRef.current = !1),
         setShowConnectionDialog(!0));
     }, []),
@@ -224,8 +176,7 @@ function useDashboardState() {
         restoreFocusToTrigger(connectionDialogTriggerRef));
     }, [restoreFocusToTrigger]),
     closeEditorSetupWizard = useCallback(() => {
-      (setShowEditorSetupWizard(!1),
-        restoreFocusToTrigger(editorSetupTriggerRef));
+      (setShowEditorSetupWizard(!1), restoreFocusToTrigger(editorSetupTriggerRef));
     }, [restoreFocusToTrigger]),
     updateControlSetting = useCallback((key, value) => {
       setControlSettings((current) => ({ ...current, [key]: value }));
@@ -237,9 +188,7 @@ function useDashboardState() {
         const currentIndex = panelIndex(panel),
           nextIndex = panelIndex(nextPanel);
         (setPanelMotionDirection(
-          currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex
-            ? "backward"
-            : "forward",
+          currentIndex >= 0 && nextIndex >= 0 && nextIndex < currentIndex ? "backward" : "forward",
         ),
           setPanel(nextPanel));
       },
@@ -270,13 +219,9 @@ function useDashboardState() {
           continue;
         }
         const existingHasModel = /\([^)]+\)/.test(String(existing.agent || ""));
-        /\([^)]+\)/.test(agentRaw) &&
-          !existingHasModel &&
-          deduped.set(key, session);
+        /\([^)]+\)/.test(agentRaw) && !existingHasModel && deduped.set(key, session);
       }
-      return Array.from(deduped.values()).filter(
-        (session) => !isTransportSession(session),
-      );
+      return Array.from(deduped.values()).filter((session) => !isTransportSession(session));
     }, [sessions]);
   (useEffect(() => {
     sessionsRef.current = normalizedSessions;
@@ -294,23 +239,14 @@ function useDashboardState() {
         ...messageEntries.flatMap((entry) => [entry?.from, entry?.to]),
       ].filter(Boolean);
       return buildKnownAgents(normalizedSessions, extras);
-    }, [
-      feedEntries,
-      locks,
-      messageEntries,
-      messageTarget,
-      normalizedSessions,
-      selectedOperator,
-      tasks,
-    ]),
+    }, [feedEntries, locks, messageEntries, messageTarget, normalizedSessions, selectedOperator, tasks]),
     editorSetupSummary = useMemo(() => {
       const results = Array.isArray(editorSetup) ? editorSetup : [];
       return {
         results,
         detected: results.filter((entry) => entry.detected).length,
         registered: results.filter((entry) => entry.registered).length,
-        failed: results.filter((entry) => entry.detected && !entry.registered)
-          .length,
+        failed: results.filter((entry) => entry.detected && !entry.registered).length,
       };
     }, [editorSetup]),
     editorDetectionSummary = useMemo(() => {
@@ -322,15 +258,9 @@ function useDashboardState() {
       };
     }, [editorDetections]),
     setupCommandPath = useMemo(() => {
-      const current = editorDetectionSummary.results.find(
-          (entry) => entry.commandPath,
-        )?.commandPath,
-        previous = editorSetupSummary.results.find(
-          (entry) => entry.commandPath,
-        )?.commandPath;
-      return (
-        current || previous || "C:\\Users\\<you>\\.cortex\\bin\\cortex.exe"
-      );
+      const current = editorDetectionSummary.results.find((entry) => entry.commandPath)?.commandPath,
+        previous = editorSetupSummary.results.find((entry) => entry.commandPath)?.commandPath;
+      return current || previous || "C:\\Users\\<you>\\.cortex\\bin\\cortex.exe";
     }, [editorDetectionSummary.results, editorSetupSummary.results]),
     manualMcpSnippet = useMemo(
       () =>
@@ -357,24 +287,13 @@ function useDashboardState() {
       () => resolveAgentName(selectedOperator, knownAgents),
       [knownAgents, selectedOperator],
     ),
-    messageTargetName = useMemo(
-      () => resolveAgentName(messageTarget, knownAgents),
-      [knownAgents, messageTarget],
-    ),
+    messageTargetName = useMemo(() => resolveAgentName(messageTarget, knownAgents), [knownAgents, messageTarget]),
     safeCurrency = normalizeCurrencyCode(currency),
-    currencyRate =
-      USD_TO_CURRENCY_RATE[safeCurrency] ?? USD_TO_CURRENCY_RATE.USD,
+    currencyRate = USD_TO_CURRENCY_RATE[safeCurrency] ?? USD_TO_CURRENCY_RATE.USD,
     activeBudgetStatus = budgetConfigStatus || healthMeta.budgets,
-    budgetSummary = useMemo(
-      () => summarizeBudgetStatus(activeBudgetStatus),
-      [activeBudgetStatus],
-    ),
-    budgetDraftError = useMemo(
-      () => validateBudgetDraft(budgetDraft),
-      [budgetDraft],
-    ),
-    budgetDraftEndpoints =
-      budgetDraft?.endpoints || createBudgetDraftFromStatus(null).endpoints,
+    budgetSummary = useMemo(() => summarizeBudgetStatus(activeBudgetStatus), [activeBudgetStatus]),
+    budgetDraftError = useMemo(() => validateBudgetDraft(budgetDraft), [budgetDraft]),
+    budgetDraftEndpoints = budgetDraft?.endpoints || createBudgetDraftFromStatus(null).endpoints,
     memoryLoad = useMemo(
       () =>
         (typeof stats.memories == "number" ? stats.memories : 0) +
@@ -386,8 +305,7 @@ function useDashboardState() {
         return new Intl.NumberFormat(void 0, {
           style: "currency",
           currency: safeCurrency,
-          maximumFractionDigits:
-            safeCurrency === "JPY" || safeCurrency === "KRW" ? 0 : 2,
+          maximumFractionDigits: safeCurrency === "JPY" || safeCurrency === "KRW" ? 0 : 2,
         });
       } catch {
         return new Intl.NumberFormat(void 0, {
@@ -398,39 +316,28 @@ function useDashboardState() {
       }
     }, [safeCurrency]),
     formatCurrency = useCallback(
-      (usdAmount) =>
-        currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
+      (usdAmount) => currencyFormatter.format((Number(usdAmount) || 0) * currencyRate),
       [currencyFormatter, currencyRate],
     ),
     savingsEstimateLegend = useMemo(() => {
       const base = `Assumption: $${SAVINGS_USD_PER_MILLION} USD per 1M tokens saved`;
-      return safeCurrency === "USD"
-        ? base
-        : `${base}, converted to ${safeCurrency}`;
+      return safeCurrency === "USD" ? base : `${base}, converted to ${safeCurrency}`;
     }, [safeCurrency]),
     formatMissionTokenValue = useCallback(
       (value, { signed = !1, perDay = !1 } = {}) => {
         const numeric = Number(value || 0);
-        if (!Number.isFinite(numeric))
-          return perDay ? "0 tokens/day" : "0 tokens";
+        if (!Number.isFinite(numeric)) return perDay ? "0 tokens/day" : "0 tokens";
         if (showMissionCompactUnits)
           return `${signed ? formatSignedCompactNumber(numeric) : formatCompactNumber(numeric)}t${perDay ? "/day" : ""}`;
         const absRounded = Math.round(Math.abs(numeric)).toLocaleString(),
           valueWithSign = `${signed && numeric > 0 ? "+" : numeric < 0 ? "-" : ""}${absRounded}`;
-        return perDay
-          ? `${valueWithSign} tokens/day`
-          : `${valueWithSign} tokens`;
+        return perDay ? `${valueWithSign} tokens/day` : `${valueWithSign} tokens`;
       },
       [showMissionCompactUnits],
     ),
-    clearTransientFeedback = useCallback(
-      (fallback = "Connected to daemon.") => {
-        setFeedbackMessage((current) =>
-          isTransientDaemonFeedback(current) ? fallback : current,
-        );
-      },
-      [],
-    ),
+    clearTransientFeedback = useCallback((fallback = "Connected to daemon.") => {
+      setFeedbackMessage((current) => (isTransientDaemonFeedback(current) ? fallback : current));
+    }, []),
     setSecondaryAvailabilityFeedback = useCallback((errors) => {
       const summary = summarizeDashboardErrors(errors),
         message = summary
@@ -449,8 +356,7 @@ function useDashboardState() {
     clearRecoveryRetry = useCallback(() => {
       typeof window > "u" ||
         !recoveryRetryTimerRef.current ||
-        (window.clearTimeout(recoveryRetryTimerRef.current),
-        (recoveryRetryTimerRef.current = null));
+        (window.clearTimeout(recoveryRetryTimerRef.current), (recoveryRetryTimerRef.current = null));
     }, []),
     scheduleRecoveryRetry = useCallback((delay = 1e3) => {
       typeof window > "u" ||
@@ -481,11 +387,7 @@ function useDashboardState() {
             !1
           );
         }
-        return (
-          setFeedbackMessage(message),
-          scheduleRecoveryRetry(step.nextDelayMs),
-          !0
-        );
+        return (setFeedbackMessage(message), scheduleRecoveryRetry(step.nextDelayMs), !0);
       },
       [clearRecoveryRetry, scheduleRecoveryRetry],
     ),

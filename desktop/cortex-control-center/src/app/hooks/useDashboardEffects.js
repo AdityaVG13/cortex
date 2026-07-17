@@ -11,10 +11,7 @@ import {
 } from "../../daemon-startup.js";
 import { buildMonteCarloProjection } from "../../analytics-projection.js";
 import { summarizeBootThroughput } from "../../analytics-metrics.js";
-import {
-  createBudgetDraftFromStatus,
-  writeControlCenterSettings,
-} from "../../settings/settings-state.js";
+import { createBudgetDraftFromStatus, writeControlCenterSettings } from "../../settings/settings-state.js";
 import {
   ANALYTICS_REFRESH_MS,
   CONTROL_CENTER_VERSION,
@@ -91,22 +88,18 @@ function useDashboardEffects(ctx) {
     refreshCoreData,
   } = ctx;
   (useEffect(() => {
-    (localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase),
-      refreshAllRef.current());
+    (localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase), refreshAllRef.current());
   }, [cortexBase]),
     useEffect(() => {
       isTauriRuntime &&
-        (cortexBase !== DEFAULT_CORTEX_BASE &&
-          setCortexBase(DEFAULT_CORTEX_BASE),
-        tokenRef.current &&
-          ((tokenRef.current = ""), persistBrowserAuthToken("")));
+        (cortexBase !== DEFAULT_CORTEX_BASE && setCortexBase(DEFAULT_CORTEX_BASE),
+        tokenRef.current && ((tokenRef.current = ""), persistBrowserAuthToken("")));
     }, [cortexBase, isTauriRuntime]),
     useEffect(() => {
       localStorage.setItem("cortex_currency", safeCurrency);
     }, [safeCurrency]),
     useEffect(() => {
-      budgetDraftDirty ||
-        setBudgetDraft(createBudgetDraftFromStatus(activeBudgetStatus));
+      budgetDraftDirty || setBudgetDraft(createBudgetDraftFromStatus(activeBudgetStatus));
     }, [activeBudgetStatus, budgetDraftDirty]),
     useEffect(() => {
       if (
@@ -126,27 +119,17 @@ function useDashboardEffects(ctx) {
       return () => {
         window.clearTimeout(budgetReloadTimer);
       };
-    }, [
-      budgetConfigBusy,
-      budgetConfigStatus,
-      effectiveReducedMotion,
-      ipcAvailable,
-      panel,
-      reloadBudgetConfigDraft,
-    ]),
+    }, [budgetConfigBusy, budgetConfigStatus, effectiveReducedMotion, ipcAvailable, panel, reloadBudgetConfigDraft]),
     useEffect(() => {
       (writeControlCenterSettings(controlSettings),
         !(typeof document > "u") &&
-          ((document.documentElement.dataset.cortexReducedMotion =
-            controlSettings.reducedMotion),
-          (document.documentElement.dataset.cortexEffectiveReducedMotion =
-            effectiveReducedMotion ? "reduce" : "full"),
-          (document.documentElement.dataset.cortexContrast =
-            controlSettings.highContrast ? "high" : "standard"),
-          (document.documentElement.dataset.cortexKeyboardHints =
-            controlSettings.keyboardHints ? "on" : "off"),
-          (document.documentElement.dataset.cortexCompactNavigation =
-            controlSettings.compactNavigation ? "on" : "off")));
+          ((document.documentElement.dataset.cortexReducedMotion = controlSettings.reducedMotion),
+          (document.documentElement.dataset.cortexEffectiveReducedMotion = effectiveReducedMotion ? "reduce" : "full"),
+          (document.documentElement.dataset.cortexContrast = controlSettings.highContrast ? "high" : "standard"),
+          (document.documentElement.dataset.cortexKeyboardHints = controlSettings.keyboardHints ? "on" : "off"),
+          (document.documentElement.dataset.cortexCompactNavigation = controlSettings.compactNavigation
+            ? "on"
+            : "off")));
     }, [controlSettings, effectiveReducedMotion]),
     useEffect(() => {
       if (typeof window > "u" || typeof window.matchMedia != "function") return;
@@ -157,8 +140,7 @@ function useDashboardEffects(ctx) {
         typeof query.addEventListener == "function"
           ? (query.addEventListener("change", syncReducedMotion),
             () => query.removeEventListener("change", syncReducedMotion))
-          : (query.addListener?.(syncReducedMotion),
-            () => query.removeListener?.(syncReducedMotion))
+          : (query.addListener?.(syncReducedMotion), () => query.removeListener?.(syncReducedMotion))
       );
     }, []),
     useEffect(() => {
@@ -167,9 +149,7 @@ function useDashboardEffects(ctx) {
     useEffect(() => {
       if (typeof window > "u") return;
       const syncViewport = () => {
-        setIsNarrowViewport(
-          window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX,
-        );
+        setIsNarrowViewport(window.innerWidth <= SIDEBAR_COLLAPSE_BREAKPOINT_PX);
       };
       return (
         syncViewport(),
@@ -180,10 +160,7 @@ function useDashboardEffects(ctx) {
     useEffect(() => {
       try {
         selectedOperatorName
-          ? localStorage.setItem(
-              CORTEX_OPERATOR_STORAGE_KEY,
-              selectedOperatorName,
-            )
+          ? localStorage.setItem(CORTEX_OPERATOR_STORAGE_KEY, selectedOperatorName)
           : localStorage.removeItem(CORTEX_OPERATOR_STORAGE_KEY);
       } catch {}
     }, [selectedOperatorName]),
@@ -249,9 +226,7 @@ function useDashboardEffects(ctx) {
     }, [knownAgents, selectedOperator]),
     useEffect(() => {
       if (messageTarget.trim()) return;
-      const fallbackTarget = knownAgents.find(
-        (agent) => !sameAgent(agent, selectedOperator),
-      );
+      const fallbackTarget = knownAgents.find((agent) => !sameAgent(agent, selectedOperator));
       fallbackTarget && setMessageTarget(fallbackTarget);
     }, [knownAgents, messageTarget, selectedOperator]),
     useEffect(() => {
@@ -329,74 +304,36 @@ function useDashboardEffects(ctx) {
           .sort((a, b) => priorityRank(b.priority) - priorityRank(a.priority)),
       [tasks],
     ),
-    claimedTasks = useMemo(
-      () => tasks.filter((task) => task.status === "claimed"),
-      [tasks],
-    ),
-    completedTasks = useMemo(
-      () => tasks.filter((task) => task.status === "completed"),
-      [tasks],
-    ),
-    recentOverviewTasks = useMemo(
-      () => [...claimedTasks, ...pendingTasks].slice(0, 5),
-      [claimedTasks, pendingTasks],
-    ),
+    claimedTasks = useMemo(() => tasks.filter((task) => task.status === "claimed"), [tasks]),
+    completedTasks = useMemo(() => tasks.filter((task) => task.status === "completed"), [tasks]),
+    recentOverviewTasks = useMemo(() => [...claimedTasks, ...pendingTasks].slice(0, 5), [claimedTasks, pendingTasks]),
     pill = daemonStatusPill(daemonState),
-    utilityPill = useMemo(
-      () => daemonUtilityPill(daemonState),
-      [daemonState.reachable, daemonState.running],
-    ),
-    daemonSysStatus = useMemo(
-      () => daemonSystemStatus(daemonState),
-      [daemonState.reachable, daemonState.running],
-    ),
-    operationRows = useMemo(
-      () => (Array.isArray(savings?.byOperation) ? savings.byOperation : []),
-      [savings],
-    ),
+    utilityPill = useMemo(() => daemonUtilityPill(daemonState), [daemonState.reachable, daemonState.running]),
+    daemonSysStatus = useMemo(() => daemonSystemStatus(daemonState), [daemonState.reachable, daemonState.running]),
+    operationRows = useMemo(() => (Array.isArray(savings?.byOperation) ? savings.byOperation : []), [savings]),
     operationMaxSaved = useMemo(
       () => Math.max(...operationRows.map((row) => Number(row.saved || 0)), 1),
       [operationRows],
     ),
-    dailySeries = useMemo(
-      () => (Array.isArray(savings?.daily) ? savings.daily : []),
-      [savings],
-    ),
-    cumulativeSeries = useMemo(
-      () => (Array.isArray(savings?.cumulative) ? savings.cumulative : []),
-      [savings],
-    ),
-    cumulativeLatestTotal = useMemo(
-      () => Number(cumulativeSeries.at(-1)?.savedTotal || 0),
-      [cumulativeSeries],
-    ),
-    recallTrendSeries = useMemo(
-      () => (Array.isArray(savings?.recallTrend) ? savings.recallTrend : []),
-      [savings],
-    ),
+    dailySeries = useMemo(() => (Array.isArray(savings?.daily) ? savings.daily : []), [savings]),
+    cumulativeSeries = useMemo(() => (Array.isArray(savings?.cumulative) ? savings.cumulative : []), [savings]),
+    cumulativeLatestTotal = useMemo(() => Number(cumulativeSeries.at(-1)?.savedTotal || 0), [cumulativeSeries]),
+    recallTrendSeries = useMemo(() => (Array.isArray(savings?.recallTrend) ? savings.recallTrend : []), [savings]),
     activityHeatmap = useMemo(
-      () =>
-        Array.isArray(savings?.activityHeatmap) ? savings.activityHeatmap : [],
+      () => (Array.isArray(savings?.activityHeatmap) ? savings.activityHeatmap : []),
       [savings],
     ),
     activityHeatmapLookup = useMemo(() => {
       const map = new Map();
       return (
         activityHeatmap.forEach((entry) => {
-          map.set(
-            `${entry.day}:${Number(entry.hour)}`,
-            Number(entry.count || 0),
-          );
+          map.set(`${entry.day}:${Number(entry.hour)}`, Number(entry.count || 0));
         }),
         map
       );
     }, [activityHeatmap]),
     activityHeatmapMax = useMemo(
-      () =>
-        Math.max(
-          ...activityHeatmap.map((entry) => Number(entry.count || 0)),
-          1,
-        ),
+      () => Math.max(...activityHeatmap.map((entry) => Number(entry.count || 0)), 1),
       [activityHeatmap],
     ),
     bootSavingsMomentum = useMemo(() => {
@@ -404,66 +341,32 @@ function useDashboardEffects(ctx) {
       const recent = dailySeries.slice(-4),
         previous = dailySeries.slice(-8, -4);
       if (!previous.length) return null;
-      const recentAverage =
-          recent.reduce((sum, point) => sum + Number(point.saved || 0), 0) /
-          recent.length,
-        previousAverage =
-          previous.reduce((sum, point) => sum + Number(point.saved || 0), 0) /
-          previous.length;
-      return previousAverage <= 0
-        ? null
-        : Math.round(
-            ((recentAverage - previousAverage) / previousAverage) * 100,
-          );
+      const recentAverage = recent.reduce((sum, point) => sum + Number(point.saved || 0), 0) / recent.length,
+        previousAverage = previous.reduce((sum, point) => sum + Number(point.saved || 0), 0) / previous.length;
+      return previousAverage <= 0 ? null : Math.round(((recentAverage - previousAverage) / previousAverage) * 100);
     }, [dailySeries]),
-    throughputSummary = useMemo(
-      () => summarizeBootThroughput(dailySeries, 7),
-      [dailySeries],
-    ),
+    throughputSummary = useMemo(() => summarizeBootThroughput(dailySeries, 7), [dailySeries]),
     throughputBoots7d = throughputSummary.boots,
     throughputAvgPerDay7d = throughputSummary.avgPerDay,
-    throughputBoots30d = useMemo(
-      () => Number(savings?.summary?.totalBoots || 0),
-      [savings],
-    ),
-    recentRecallWindow = useMemo(
-      () => recallTrendSeries.slice(-7),
-      [recallTrendSeries],
-    ),
-    latestRecallPoint = useMemo(
-      () => recallTrendSeries.at(-1) || null,
-      [recallTrendSeries],
-    ),
+    throughputBoots30d = useMemo(() => Number(savings?.summary?.totalBoots || 0), [savings]),
+    recentRecallWindow = useMemo(() => recallTrendSeries.slice(-7), [recallTrendSeries]),
+    latestRecallPoint = useMemo(() => recallTrendSeries.at(-1) || null, [recallTrendSeries]),
     stableRecallHeadlinePoint = useMemo(
       () =>
         latestRecallPoint
-          ? Number(latestRecallPoint.queries || 0) >=
-            RECALL_HEADLINE_MIN_QUERIES
+          ? Number(latestRecallPoint.queries || 0) >= RECALL_HEADLINE_MIN_QUERIES
             ? latestRecallPoint
             : [...recentRecallWindow]
                 .reverse()
-                .find(
-                  (point) =>
-                    Number(point?.queries || 0) >= RECALL_HEADLINE_MIN_QUERIES,
-                ) || latestRecallPoint
+                .find((point) => Number(point?.queries || 0) >= RECALL_HEADLINE_MIN_QUERIES) || latestRecallPoint
           : null,
       [latestRecallPoint, recentRecallWindow],
     ),
     latestRecallHitRate = useMemo(
-      () =>
-        Math.round(
-          Number(
-            stableRecallHeadlinePoint?.hitRatePct ||
-              latestRecallPoint?.hitRatePct ||
-              0,
-          ),
-        ),
+      () => Math.round(Number(stableRecallHeadlinePoint?.hitRatePct || latestRecallPoint?.hitRatePct || 0)),
       [latestRecallPoint, stableRecallHeadlinePoint],
     ),
-    latestRecallSampleSize = useMemo(
-      () => Number(latestRecallPoint?.queries || 0),
-      [latestRecallPoint],
-    ),
+    latestRecallSampleSize = useMemo(() => Number(latestRecallPoint?.queries || 0), [latestRecallPoint]),
     recallHeadlineUsesFallback = useMemo(
       () =>
         !!(
@@ -478,19 +381,15 @@ function useDashboardEffects(ctx) {
       () =>
         recentRecallWindow.length
           ? Math.round(
-              recentRecallWindow.reduce(
-                (sum, point) => sum + Number(point.hitRatePct || 0),
-                0,
-              ) / recentRecallWindow.length,
+              recentRecallWindow.reduce((sum, point) => sum + Number(point.hitRatePct || 0), 0) /
+                recentRecallWindow.length,
             )
           : 0,
       [recentRecallWindow],
     ),
     recallWindowSpread = useMemo(() => {
       if (!recentRecallWindow.length) return 0;
-      const values = recentRecallWindow.map((point) =>
-        Number(point.hitRatePct || 0),
-      );
+      const values = recentRecallWindow.map((point) => Number(point.hitRatePct || 0));
       return Math.round(Math.max(...values) - Math.min(...values));
     }, [recentRecallWindow]),
     monteCarloProjection = useMemo(
@@ -498,10 +397,7 @@ function useDashboardEffects(ctx) {
       [dailySeries, cumulativeSeries],
     ),
     topFeedEntries = useMemo(() => feedEntries.slice(0, 5), [feedEntries]),
-    topActivityEntries = useMemo(
-      () => activityEntries.slice(0, 5),
-      [activityEntries],
-    ),
+    topActivityEntries = useMemo(() => activityEntries.slice(0, 5), [activityEntries]),
     topSavingsByAgent = useMemo(
       () =>
         [...(Array.isArray(savings?.byAgent) ? savings.byAgent : [])]
@@ -532,40 +428,27 @@ function useDashboardEffects(ctx) {
           tone: normalizedSessions.length ? "cyan" : "calm",
         },
       ],
-      [
-        pendingTasks.length,
-        locks.length,
-        latestRecallHitRate,
-        normalizedSessions.length,
-      ],
+      [pendingTasks.length, locks.length, latestRecallHitRate, normalizedSessions.length],
     ),
     runtimeVersionMismatch = useMemo(
-      () =>
-        !!healthMeta.runtimeVersion &&
-        healthMeta.runtimeVersion !== CONTROL_CENTER_VERSION,
+      () => !!healthMeta.runtimeVersion && healthMeta.runtimeVersion !== CONTROL_CENTER_VERSION,
       [healthMeta.runtimeVersion],
     ),
-    daemonStarting = useMemo(
-      () => isDaemonStartingState(daemonState),
-      [daemonState.reachable, daemonState.running],
-    ),
+    daemonStarting = useMemo(() => isDaemonStartingState(daemonState), [daemonState.reachable, daemonState.running]),
     daemonStatusBadge = useMemo(
       () =>
         daemonStarting
           ? {
               className: "warning",
               label: "\u25CC STARTING",
-              title:
-                daemonState.message ||
-                "Cortex daemon process is running but not reachable yet.",
+              title: daemonState.message || "Cortex daemon process is running but not reachable yet.",
             }
           : daemonState.reachable
             ? healthMeta.dbCorrupted
               ? {
                   className: "warning",
                   label: "\u25B2 DB WARN",
-                  title:
-                    "Database integrity checks are failing. Restart Cortex to trigger repair.",
+                  title: "Database integrity checks are failing. Restart Cortex to trigger repair.",
                 }
               : daemonTimeoutStaleSummary
                 ? {
@@ -577,8 +460,7 @@ function useDashboardEffects(ctx) {
                   ? {
                       className: "warning",
                       label: "\u25B2 DEGRADED",
-                      title:
-                        "Semantic search is in fallback mode. Restart Cortex if this persists.",
+                      title: "Semantic search is in fallback mode. Restart Cortex if this persists.",
                     }
                   : {
                       className: "online",
@@ -588,9 +470,7 @@ function useDashboardEffects(ctx) {
             : {
                 className: "offline",
                 label: "\u25CB OFFLINE",
-                title:
-                  daemonState.message ||
-                  `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
+                title: daemonState.message || `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
               },
       [
         cortexBase,
@@ -707,13 +587,7 @@ function useDashboardEffects(ctx) {
           setBusyActionKey("");
         }
       },
-      [
-        postApi,
-        refreshCoreData,
-        refreshFeed,
-        reportSurfaceError,
-        selectedOperatorName,
-      ],
+      [postApi, refreshCoreData, refreshFeed, reportSurfaceError, selectedOperatorName],
     ),
     handleTaskDelete = useCallback(
       async (task) => {
@@ -776,9 +650,7 @@ function useDashboardEffects(ctx) {
             message,
           }),
             setMessageDraft(""),
-            setFeedbackMessage(
-              `Sent message from ${operator} to ${recipient}.`,
-            ),
+            setFeedbackMessage(`Sent message from ${operator} to ${recipient}.`),
             await refreshMessages());
         } catch (error) {
           reportSurfaceError(error);
@@ -786,22 +658,13 @@ function useDashboardEffects(ctx) {
           setBusyActionKey("");
         }
       },
-      [
-        messageDraft,
-        messageTargetName,
-        postApi,
-        refreshMessages,
-        reportSurfaceError,
-        selectedOperatorName,
-      ],
+      [messageDraft, messageTargetName, postApi, refreshMessages, reportSurfaceError, selectedOperatorName],
     ),
     handleFeedAck = useCallback(async () => {
       const operator = selectedOperatorName,
         lastSeenId = nextFeedAckId(feedEntries, operator);
       if (!operator) {
-        setFeedbackMessage(
-          "Select an operator before acknowledging feed entries.",
-        );
+        setFeedbackMessage("Select an operator before acknowledging feed entries.");
         return;
       }
       if (!lastSeenId) {
@@ -818,13 +681,7 @@ function useDashboardEffects(ctx) {
       } finally {
         setBusyActionKey("");
       }
-    }, [
-      feedEntries,
-      postApi,
-      refreshFeed,
-      reportSurfaceError,
-      selectedOperatorName,
-    ]);
+    }, [feedEntries, postApi, refreshFeed, reportSurfaceError, selectedOperatorName]);
   return {
     ...ctx,
     pendingTasks,

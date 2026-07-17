@@ -20,17 +20,8 @@ class GraphErrorBoundary extends Component {
               { className: "coming-icon" },
               React.createElement(AppIcon, { name: "brain", size: 48 }),
             ),
-            React.createElement(
-              "p",
-              null,
-              "3D renderer crashed: ",
-              this.state.error,
-            ),
-            React.createElement(
-              "p",
-              { className: "brain-fallback-reason" },
-              "Showing 2D fallback instead.",
-            ),
+            React.createElement("p", null, "3D renderer crashed: ", this.state.error),
+            React.createElement("p", { className: "brain-fallback-reason" }, "Showing 2D fallback instead."),
           )
       : this.props.children;
   }
@@ -39,11 +30,7 @@ function hasWebGLSupport() {
   if (typeof document > "u") return !1;
   try {
     const canvas = document.createElement("canvas");
-    return !!(
-      canvas.getContext("webgl2") ||
-      canvas.getContext("webgl") ||
-      canvas.getContext("experimental-webgl")
-    );
+    return !!(canvas.getContext("webgl2") || canvas.getContext("webgl") || canvas.getContext("experimental-webgl"));
   } catch {
     return !1;
   }
@@ -66,21 +53,9 @@ function BrainVisualizerComponent({
           React.createElement(
             "div",
             { className: "brain-hud-copy" },
-            React.createElement(
-              "span",
-              { className: "brain-mode" },
-              "Neural topology",
-            ),
-            React.createElement(
-              "strong",
-              { className: "brain-title" },
-              "Cortex Brain Map",
-            ),
-            React.createElement(
-              "p",
-              null,
-              "Living constellation. Select satellites to inspect.",
-            ),
+            React.createElement("span", { className: "brain-mode" }, "Neural topology"),
+            React.createElement("strong", { className: "brain-title" }, "Cortex Brain Map"),
+            React.createElement("p", null, "Living constellation. Select satellites to inspect."),
           ),
         ),
         React.createElement(
@@ -101,11 +76,7 @@ function BrainVisualizerComponent({
         React.createElement(
           "div",
           { className: "brain-hud brain-hud-fallback" },
-          React.createElement(
-            "span",
-            { className: "brain-fallback-reason" },
-            "2D fallback: WebGL unavailable",
-          ),
+          React.createElement("span", { className: "brain-fallback-reason" }, "2D fallback: WebGL unavailable"),
         ),
         React.createElement(
           "div",
@@ -115,11 +86,7 @@ function BrainVisualizerComponent({
             { className: "coming-icon" },
             React.createElement(AppIcon, { name: "brain", size: 48 }),
           ),
-          React.createElement(
-            "p",
-            null,
-            "WebGL is required for the Brain map.",
-          ),
+          React.createElement("p", null, "WebGL is required for the Brain map."),
         ),
       );
 }
