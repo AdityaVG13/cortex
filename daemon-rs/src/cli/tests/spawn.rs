@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
 mod tests {
-    use crate::cli::daemon::{background_db_lock_max_wait, validate_spawned_owner_runtime_claim, BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, SPAWN_PARENT_PID_ENV};
+    use crate::cli::daemon::{
+        background_db_lock_max_wait, validate_spawned_owner_runtime_claim,
+        BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, SPAWN_PARENT_PID_ENV,
+    };
     use crate::cli::tests::support::*;
     use crate::cli::*;
     use crate::*;
@@ -20,8 +23,11 @@ mod tests {
         let home_dir = temp_test_dir("owner_runtime_parent");
         std::fs::create_dir_all(&home_dir).unwrap();
         let home_str = home_dir.to_string_lossy().to_string();
-        let paths = auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
-        let err = validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), None, None, None).unwrap_err();
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        let err =
+            validate_spawned_owner_runtime_claim(&paths, Some("plugin-claude"), None, None, None)
+                .unwrap_err();
         assert!(err.contains(SPAWN_PARENT_PID_ENV));
         let _ = std::fs::remove_dir_all(&home_dir);
     }
@@ -30,8 +36,10 @@ mod tests {
         let home_dir = temp_test_dir("owner_runtime_unspawned");
         std::fs::create_dir_all(&home_dir).unwrap();
         let home_str = home_dir.to_string_lossy().to_string();
-        let paths = auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
-        validate_spawned_owner_runtime_claim(&paths, Some("control-center"), None, None, None).expect("direct control-center owner mode should remain compatible");
+        let paths =
+            auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
+        validate_spawned_owner_runtime_claim(&paths, Some("control-center"), None, None, None)
+            .expect("direct control-center owner mode should remain compatible");
         let _ = std::fs::remove_dir_all(&home_dir);
     }
 }

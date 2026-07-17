@@ -43,6 +43,7 @@ pub(crate) fn store_decision_with_embedding(
     )
     .unwrap();
     if let Some(id) = new_id {
-        persist_decision_embedding(conn, id, vector, crate::embeddings::selected_model_key()).unwrap();
+        persist_decision_embedding(conn, id, vector, crate::embeddings::selected_model_key())
+            .unwrap();
     }
 }

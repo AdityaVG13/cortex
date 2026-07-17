@@ -15,7 +15,11 @@ mod tests {
         let conn = setup();
         conn.execute("INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now', '-40 days'))", [])
             .unwrap();
-        conn.execute("INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now'))", []).unwrap();
+        conn.execute(
+            "INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now'))",
+            [],
+        )
+        .unwrap();
         let removed = prune_old_events(&conn);
         assert_eq!(removed, 1);
     }

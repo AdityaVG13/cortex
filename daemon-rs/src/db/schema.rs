@@ -1,4 +1,6 @@
-use rusqlite::Connection;pub fn initialize_schema(conn:&Connection)->rusqlite::Result<()>{conn.execute_batch(
+use rusqlite::Connection;
+pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
 r#"
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
@@ -306,4 +308,6 @@ r#"
           INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
         END;
         "#
-,)?;Ok(())}
+,)?;
+    Ok(())
+}

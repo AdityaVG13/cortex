@@ -14,7 +14,8 @@ use crate::handlers::mutate::{
 };
 use crate::handlers::recall::{
     execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall,
-    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext, RecallPolicyMode,
+    parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext,
+    RecallPolicyMode,
 };
 use crate::handlers::store::{
     persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention,
@@ -55,8 +56,7 @@ fn recall_source_prefix(args: &Value) -> Option<&str> {
 }
 
 fn parse_recall_query(args: &Value) -> Result<&str, String> {
-    arg_str(args, &["query", "q"])
-        .ok_or_else(|| "Missing required argument: query".to_string())
+    arg_str(args, &["query", "q"]).ok_or_else(|| "Missing required argument: query".to_string())
 }
 
 fn parse_recall_policy_budget(args: &Value) -> Result<RecallPolicyBudget, String> {
@@ -107,14 +107,8 @@ async fn active_mcp_recall_ctx(
     source: Option<&SourceIdentity>,
 ) -> Result<RecallContext, String> {
     let model = source_model_for_tool(source, args);
-    let (display_agent, _, disposition) = refresh_mcp_session_presence(
-        state,
-        caller_id,
-        agent,
-        model,
-        "MCP active session",
-    )
-    .await?;
+    let (display_agent, _, disposition) =
+        refresh_mcp_session_presence(state, caller_id, agent, model, "MCP active session").await?;
     if disposition == McpPresenceDisposition::Started {
         state.emit(
             "session",
@@ -123,7 +117,6 @@ async fn active_mcp_recall_ctx(
     }
     Ok(RecallContext::from_caller(caller_id, state))
 }
-
 
 pub(crate) async fn mcp_dispatch(
     state: &RuntimeState,
@@ -295,11 +288,11 @@ pub(crate) async fn mcp_dispatch(
                     0
                 };
                 let conn = state.db.lock().await;
-                if let Some(policy_val) =
-                    recommend_recall_k(&conn, owner_id, agent, task_class, k)?
+                if let Some(policy_val) = recommend_recall_k(&conn, owner_id, agent, task_class, k)?
                 {
-                    if let Some(recommended_k) =
-                        policy_val.get("recommendedK").and_then(|value| value.as_u64())
+                    if let Some(recommended_k) = policy_val
+                        .get("recommendedK")
+                        .and_then(|value| value.as_u64())
                     {
                         k = recommended_k as usize;
                     }
@@ -308,16 +301,9 @@ pub(crate) async fn mcp_dispatch(
             }
             let source_prefix = recall_source_prefix(args);
             let ctx = active_mcp_recall_ctx(state, caller_id, agent, args, source).await?;
-            let mut payload = execute_unified_recall(
-                state,
-                query,
-                policy.budget,
-                k,
-                agent,
-                &ctx,
-                source_prefix,
-            )
-            .await?;
+            let mut payload =
+                execute_unified_recall(state, query, policy.budget, k, agent, &ctx, source_prefix)
+                    .await?;
             attach_recall_policy_modes(&mut payload, policy.resolved, policy.requested);
             if let (Some(policy_val), Value::Object(map)) = (adaptive_policy, &mut payload) {
                 map.insert("adaptivePolicy".to_string(), policy_val);

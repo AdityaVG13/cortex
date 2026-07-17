@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
 mod tests {
-    use crate::db::{configure, delete_expired_entries, initialize_schema, rebuild_fts_if_needed, run_pending_migrations};
+    use crate::db::{
+        configure, delete_expired_entries, initialize_schema, rebuild_fts_if_needed,
+        run_pending_migrations,
+    };
     use rusqlite::Connection;
     #[test]
     fn open_configure_schema_roundtrip() {
@@ -20,15 +23,26 @@ mod tests {
     fn run_pending_migrations_is_idempotent() {
         let path = std::env::temp_dir().join(format!(
             "cortex-db-migrate-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
         ));
         let conn = Connection::open(&path).expect("open file db");
         configure(&conn).expect("configure");
         initialize_schema(&conn).expect("schema");
         run_pending_migrations(&conn);
-        let first: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap_or(0);
+        let first: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         run_pending_migrations(&conn);
-        let second: i64 = conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0)).unwrap_or(0);
+        let second: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         assert_eq!(first, second);
         drop(conn);
         let _ = std::fs::remove_file(path);
@@ -53,7 +67,9 @@ mod tests {
         .unwrap();
         let removed = delete_expired_entries(&conn).expect("delete expired");
         assert_eq!(removed.decisions_deleted, 1);
-        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0)).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decisions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(remaining, 1);
     }
     #[test]
@@ -70,7 +86,11 @@ mod tests {
         .unwrap();
         rebuild_fts_if_needed(&conn).expect("fts seed");
         let hits: i64 = conn
-            .query_row("SELECT COUNT(*) FROM decisions_fts WHERE decisions_fts MATCH 'smoke'", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM decisions_fts WHERE decisions_fts MATCH 'smoke'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap_or(0);
         assert!(hits >= 1);
     }
