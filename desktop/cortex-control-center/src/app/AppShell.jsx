@@ -47,7 +47,6 @@ export function AppShell(d) {
     showConnectionDialog,
     dismissConnectionDialog,
     connectionDialogRef,
-    connectionDialogTriggerRef,
     isTauriRuntime,
     connectionEndpoint,
     closeConnectionDialog,
@@ -58,7 +57,6 @@ export function AppShell(d) {
     refreshAllRef,
     DEFAULT_CORTEX_BASE,
     trapFocusInContainer,
-    restoreFocusToTrigger,
   } = d;
 
   useEffect(() => {

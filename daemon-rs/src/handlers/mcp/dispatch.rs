@@ -264,7 +264,7 @@ pub(crate) async fn mcp_dispatch(
 
             let ctx = RecallContext::from_caller(caller_id, state);
             let mut payload =
-                execute_recall_policy_explain(state, query, budget, k, agent, &ctx, None, pool_k)
+                execute_recall_policy_explain(state, query, budget, k, agent, &ctx, None, pool_k, None)
                     .await?;
             if let Value::Object(map) = &mut payload {
                 map.insert(

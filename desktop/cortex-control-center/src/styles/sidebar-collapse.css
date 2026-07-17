@@ -128,7 +128,6 @@
   .sys-item,
   .btn-sm,
   .btn-ctrl,
-  .brain-toggle,
   .connection-dialog-close {
     min-height: 44px;
   }
@@ -276,23 +275,5 @@
     align-items: stretch;
     flex-direction: column;
     gap: 10px;
-  }
-
-  .brain-hud-secondary .brain-toggle {
-    margin-left: 0;
-    width: 100%;
-  }
-
-  .brain-detail,
-  .brain-tooltip {
-    left: 10px;
-    right: 10px;
-    width: auto;
-    max-width: none;
-  }
-
-  .brain-legend {
-    left: 10px;
-    right: 10px;
   }
 }

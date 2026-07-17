@@ -51,8 +51,7 @@
   :root:not([data-cortex-reduced-motion="full"]) .btn-sidebar-collapse,
   :root:not([data-cortex-reduced-motion="full"]) .task-complete-panel,
   :root:not([data-cortex-reduced-motion="full"]) .panel-stage[data-panel-direction] > .panel.active,
-  :root:not([data-cortex-reduced-motion="full"]) .analytics-mode-panel,
-  :root:not([data-cortex-reduced-motion="full"]) .coming-soon {
+  :root:not([data-cortex-reduced-motion="full"]) .analytics-mode-panel {
     animation: none !important;
     transition: none !important;
   }

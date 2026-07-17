@@ -1,116 +1,17 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { checkForUpdates, installUpdate } from "../../updater.js";
-import { MOTION_MS } from "../../design/motion.js";
-import {
-  createApi,
-  createPostApi,
-  isAuthFailure,
-  settledCollectErrors,
-  summarizeDashboardErrors,
-} from "../../api-client.js";
-import {
-  CURRENCY_OPTIONS,
-  USD_TO_CURRENCY_RATE,
-  SAVINGS_OPERATION_LABELS,
-  timeAgo,
-} from "../../constants.js";
-import {
-  buildKnownAgents,
-  filterFeedEntries,
-  isTransportSession,
-  nextFeedAckId,
-  normalizeTask,
-  resolveAgentName,
-  sameAgent,
-} from "../../live-surface.js";
-import {
-  buildFirstRunReadiness,
-  computeStartupRetryStep,
-  daemonStatusPill,
-  daemonSystemStatus,
-  daemonUtilityPill,
-  isDaemonStartingState,
-  shouldContinueStartupRecovery,
-  isTransientDaemonFeedback,
-} from "../../daemon-startup.js";
-import { buildMonteCarloProjection } from "../../analytics-projection.js";
-import { summarizeBootThroughput } from "../../analytics-metrics.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { summarizeDashboardErrors } from "../../api-client.js";
+import { USD_TO_CURRENCY_RATE } from "../../constants.js";
+import { buildKnownAgents, isTransportSession, resolveAgentName } from "../../live-surface.js";
+import { computeStartupRetryStep, isTransientDaemonFeedback } from "../../daemon-startup.js";
 import { formatCompactNumber, formatSignedCompactNumber } from "../../number-format.js";
-import { handleKeyboardActivation, shouldIgnoreGlobalShortcut, trapFocusInContainer } from "../../keyboard-access.js";
-import {
-  BUDGET_ENDPOINT_DEFINITIONS,
-  createBudgetDraftFromStatus,
-  readControlCenterSettings,
-  resolveEffectiveReducedMotion,
-  serializeBudgetDraftForSave,
-  summarizeBudgetStatus,
-  validateBudgetDraft,
-  writeControlCenterSettings,
-} from "../../settings/settings-state.js";
-import {
-  ANALYTICS_METRIC_LEGEND,
-  ANALYTICS_REFRESH_MS,
-  CONTROL_CENTER_VERSION,
-  CORE_REFRESH_MIN_INTERVAL_MS,
-  CORTEX_BASE_STORAGE_KEY,
-  CORTEX_OPERATOR_STORAGE_KEY,
-  CORTEX_PANEL_STORAGE_KEY,
-  DAEMON_START_POLL_INTERVAL_MS,
-  DAEMON_START_STILL_STARTING_GRACE_MS,
-  DAEMON_START_WAIT_TIMEOUT_MS,
-  DAEMON_STOP_HANG_TIMEOUT_MS,
-  DAEMON_STOP_WAIT_TIMEOUT_MS,
-  DEFAULT_CORTEX_BASE,
-  DEV_RESTART_VERIFY_ENABLED,
-  DEV_RESTART_VERIFY_TIMEOUT_MS,
-  EMPTY_DAEMON,
-  EMPTY_HEALTH_META,
-  FALLBACK_REFRESH_MS,
-  MISSION_METRIC_LEGEND,
-  PANEL_SEQUENCE,
-  PANEL_SEQUENCE_KEYS,
-  PANEL_SEQUENCE_LABEL,
-  RECALL_HEADLINE_MIN_QUERIES,
-  SAVINGS_HISTORY_DAYS,
-  SAVINGS_USD_PER_MILLION,
-  SECONDARY_REFRESH_MIN_INTERVAL_MS,
-  SIDEBAR_COLLAPSE_BREAKPOINT_PX,
-  SSE_RECONNECT_BASE_MS,
-  SSE_RECONNECT_MAX_MS,
-  SSE_REFRESH_THROTTLE_MS,
-  panelIndex,
-} from "../constants.js";
-import {
-  readBrowserBootstrap,
-  readLocalStorageValue,
-  readPersistedBrowserAuthToken,
-  readTauriInvoke,
-  persistBrowserAuthToken,
-} from "../browser-bootstrap.js";
-import { normalizeCurrencyCode, formatDaemonEndpoint, getOsReducedMotionPreference, priorityRank } from "../utils/format.js";
-import {
-  isRouteMissingError,
-  normalizeConflictPairsPayload,
-} from "../normalize/conflicts.js";
-import {
-  normalizePermissionPayload,
-} from "../normalize/permissions.js";
-import {
-  normalizeSession,
-  sessionMatchesAgent,
-} from "../normalize/sessions.js";
-import {
-  extractMcpToolError,
-  isDaemonOfflineErrorMessage,
-  isDaemonSuppressibleErrorMessage,
-  isDaemonTimeoutErrorMessage,
-  isReadyReadinessPayload,
-  isReachableHealthPayload,
-  parseMcpToolResult,
-  setElementInert,
-} from "../utils/daemon.js";
+import { createBudgetDraftFromStatus, readControlCenterSettings, resolveEffectiveReducedMotion, summarizeBudgetStatus, validateBudgetDraft } from "../../settings/settings-state.js";
+import { CORTEX_OPERATOR_STORAGE_KEY, DEFAULT_CORTEX_BASE, EMPTY_DAEMON, EMPTY_HEALTH_META, PANEL_SEQUENCE_KEYS, SAVINGS_USD_PER_MILLION, SIDEBAR_COLLAPSE_BREAKPOINT_PX, panelIndex } from "../constants.js";
+import { readBrowserBootstrap, readLocalStorageValue } from "../browser-bootstrap.js";
+import { normalizeCurrencyCode, getOsReducedMotionPreference } from "../utils/format.js";
+import { normalizeSession } from "../normalize/sessions.js";
 
 export function useDashboardState() {
+
   const browserBootstrap = useMemo(() => readBrowserBootstrap(), []);
   const isTauriRuntime = typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__);
   const [panel, setPanel] = useState(() => browserBootstrap.panel || "overview");

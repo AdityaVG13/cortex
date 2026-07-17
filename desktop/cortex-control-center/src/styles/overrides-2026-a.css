@@ -513,32 +513,6 @@
   opacity: 0.34;
 }
 
-.brain-orbital-ring {
-  position: absolute;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.brain-orbital-ring {
-  left: 50%;
-  top: 50%;
-  width: min(76vw, 860px);
-  aspect-ratio: 1;
-  border: 1px solid rgba(64, 224, 255, 0.2);
-  border-radius: 50%;
-  box-shadow:
-    inset 0 0 24px rgba(64, 224, 255, 0.08),
-    0 0 26px rgba(64, 224, 255, 0.06);
-  transform: translate(-50%, -50%) rotateX(64deg) rotateZ(8deg);
-  opacity: 0.58;
-}
-
-.brain-orbital-ring-b {
-  width: min(58vw, 640px);
-  border-color: rgba(255, 171, 0, 0.16);
-  transform: translate(-50%, -50%) rotateX(68deg) rotateZ(-18deg);
-}
-
 .brain-hud {
   border-color: rgba(0, 212, 255, 0.22);
   box-shadow:
@@ -593,36 +567,4 @@
   color: var(--text-2);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.brain-hud-secondary .brain-toggle {
-  margin-left: auto;
-}
-
-.brain-tooltip,
-.brain-detail {
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
-}
-
-.brain-flow-panel {
-  margin: 14px 0 12px;
-  padding: 12px;
-  border: 1px solid rgba(64, 224, 255, 0.18);
-  border-radius: var(--radius);
-  background:
-    linear-gradient(180deg, rgba(64, 224, 255, 0.06), rgba(4, 8, 18, 0.52)),
-    rgba(6, 10, 18, 0.72);
-}
-
-.brain-flow-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-3);
 }

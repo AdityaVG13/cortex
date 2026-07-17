@@ -391,8 +391,7 @@
 
 .btn-sm:disabled,
 .btn-ctrl:disabled,
-.sys-item-action:disabled,
-.brain-toggle:disabled {
+.sys-item-action:disabled {
   cursor: not-allowed;
   opacity: 0.52;
   box-shadow: none;

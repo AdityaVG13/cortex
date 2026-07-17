@@ -12,7 +12,6 @@ const CSS_FILES = [
   "styles/animations.css",
   "styles/charts.css",
   "styles/panels/analytics.css",
-  "styles/panels/coming-soon.css",
   "styles/panels/brain.css",
   "styles/overrides-2026-a.css",
   "styles/overrides-2026-b.css",

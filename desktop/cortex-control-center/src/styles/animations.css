@@ -44,9 +44,7 @@
 :root[data-cortex-reduced-motion="reduce"] .item-list li,
 :root[data-cortex-effective-reduced-motion="reduce"] .item-list li,
 :root[data-cortex-reduced-motion="reduce"] .activity-feed li,
-:root[data-cortex-effective-reduced-motion="reduce"] .activity-feed li,
-:root[data-cortex-effective-reduced-motion="reduce"] .coming-soon,
-:root[data-cortex-reduced-motion="reduce"] .coming-soon {
+:root[data-cortex-effective-reduced-motion="reduce"] .activity-feed li {
   animation: none !important;
 }
 
@@ -232,11 +230,6 @@
 @keyframes shimmer {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 0.6; }
-}
-
-/* Coming soon floating icon */
-.coming-soon {
-  animation: panel-enter 0.4s ease-out;
 }
 
 /* Feed left-border transition */
