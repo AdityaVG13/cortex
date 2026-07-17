@@ -493,190 +493,30 @@ pub(crate) fn parse_co_occurrence_prediction(entry: &Value) -> Option<(String, i
     }
     Some((source.to_string(), score))
 }
-pub(crate) fn fetch_associative_source_payload(
-    conn: &Connection,
-    source: &str,
-    query_text: &str,
-    ctx: &RecallContext,
-) -> Option<(String, f64, i64)> {
-    type PayloadRow = (
-        String,
-        Option<String>,
-        Option<String>,
-        Option<f64>,
-        Option<f64>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-    );
-    let mut best: Option<(String, f64, i64)> = None;
-    let memory_row: Option<PayloadRow> = if ctx.team_mode {
-        conn.query_row(
-            "SELECT text, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
-             FROM memories
-             WHERE status = 'active'
-               AND source = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",
-            params![source],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<f64>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            },
-        )
-        .ok()
-    } else {
-        conn.query_row(
-            "SELECT text, compressed_text, age_tier, score, trust_score, last_accessed, created_at
-             FROM memories
-             WHERE status = 'active'
-               AND source = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",
-            params![source],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<f64>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    None,
-                    None,
-                ))
-            },
-        )
-        .ok()
-    };
-    if let Some((
-        text,
-        compressed_text,
-        age_tier,
-        score,
-        trust_score,
-        last_accessed,
-        created_at,
-        owner_id,
-        visibility,
-    )) = memory_row
-    {
-        if !ctx.team_mode || is_visible(owner_id, visibility.as_deref(), ctx) {
-            let display = crate::aging::get_display_text(
-                &text,
-                &compressed_text,
-                &age_tier.unwrap_or_else(|| "fresh".to_string()),
-            );
-            let excerpt = query_focused_excerpt(&display, query_text, 220);
-            let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso));
-            best = Some((excerpt, importance, ts));
-        }
-    }
-    let decision_row: Option<PayloadRow> = if ctx.team_mode {
-        conn.query_row(
-            "SELECT decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
-             FROM decisions
-             WHERE status = 'active'
-               AND context = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",
-            params![source],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<f64>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                ))
-            },
-        )
-        .ok()
-    } else {
-        conn.query_row(
-            "SELECT decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at
-             FROM decisions
-             WHERE status = 'active'
-               AND context = ?1
-               AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             AND (valid_from IS NULL OR valid_from <= datetime('now')) \
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",
-            params![source],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<f64>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    None,
-                    None,
-                ))
-            },
-        )
-        .ok()
-    };
-    if let Some((
-        decision,
-        compressed_text,
-        age_tier,
-        score,
-        trust_score,
-        last_accessed,
-        created_at,
-        owner_id,
-        visibility,
-    )) = decision_row
-    {
-        if !ctx.team_mode || is_visible(owner_id, visibility.as_deref(), ctx) {
-            let display = crate::aging::get_display_text(
-                &decision,
-                &compressed_text,
-                &age_tier.unwrap_or_else(|| "fresh".to_string()),
-            );
-            let excerpt = query_focused_excerpt(&display, query_text, 220);
-            let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso));
-            let replace = match &best {
-                Some((_, best_importance, best_ts)) => {
-                    importance > *best_importance
-                        || (importance == *best_importance && ts > *best_ts)
-                }
-                None => true,
-            };
-            if replace {
-                best = Some((excerpt, importance, ts));
-            }
-        }
+type AssociativePayloadRow = (String, Option<String>, Option<String>, Option<f64>, Option<f64>, Option<String>, Option<String>, Option<i64>, Option<String>);
+fn query_associative_payload_row(conn: &Connection, source: &str, kind: SearchTableKind) -> Option<AssociativePayloadRow> {
+    let (table, text_col, key_col) = match kind { SearchTableKind::Memories => ("memories", "text", "source"), SearchTableKind::Decisions => ("decisions", "decision", "context") };
+    query_acl_row(
+        conn,
+        &format!("SELECT {text_col}, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility FROM {table} WHERE {ACTIVE_TEMPORAL} AND {key_col} = ?1 ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT 1"),
+        &format!("SELECT {text_col}, compressed_text, age_tier, score, trust_score, last_accessed, created_at FROM {table} WHERE {ACTIVE_TEMPORAL} AND {key_col} = ?1 ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT 1"),
+        &[&source],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, None, None)),
+    )
+}
+fn associative_payload_from_row(row: AssociativePayloadRow, query_text: &str) -> (String, f64, i64) {
+    let (text, compressed_text, age_tier, score, trust_score, last_accessed, created_at, _, _) = row;
+    let display = crate::aging::get_display_text(&text, &compressed_text, &age_tier.unwrap_or_else(|| "fresh".to_string()));
+    (query_focused_excerpt(&display, query_text, 220), blend_importance(score, trust_score).clamp(0.0, 1.0), parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso)))
+}
+pub(crate) fn fetch_associative_source_payload(conn: &Connection, source: &str, query_text: &str, ctx: &RecallContext) -> Option<(String, f64, i64)> {
+    let mut best = None;
+    for kind in [SearchTableKind::Memories, SearchTableKind::Decisions] {
+        let Some(row) = query_associative_payload_row(conn, source, kind) else { continue };
+        if ctx.team_mode && !is_visible(row.7, row.8.as_deref(), ctx) { continue; }
+        let payload = associative_payload_from_row(row, query_text);
+        if best.as_ref().map(|(_, best_importance, best_ts)| payload.1 > *best_importance || (payload.1 == *best_importance && payload.2 > *best_ts)).unwrap_or(true) { best = Some(payload); }
     }
     best
 }
