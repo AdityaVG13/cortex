@@ -9,14 +9,10 @@ pub(crate) fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     let baseline_file = parse_flag_value(args, "--baseline-file");
     let max_regression = match parse_flag_value(args, "--max-regression") {
         Some(raw) => {
-            let parsed = raw
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| format!("invalid value for --max-regression: '{raw}'"))
-                .unwrap_or_else(|err| {
-                    eprintln!("{err}");
-                    std::process::exit(1);
-                });
+            let parsed = raw.trim().parse::<f64>().map_err(|_| format!("invalid value for --max-regression: '{raw}'")).unwrap_or_else(|err| {
+                eprintln!("{err}");
+                std::process::exit(1);
+            });
             if !(0.0..=1.0).contains(&parsed) {
                 eprintln!("--max-regression must be between 0.0 and 1.0");
                 std::process::exit(1);

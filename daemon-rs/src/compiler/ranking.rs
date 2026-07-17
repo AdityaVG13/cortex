@@ -129,11 +129,7 @@ impl ContextItem {
         let title = candidate.title.chars().take(160).collect::<String>();
         let body = candidate.body.chars().take(420).collect::<String>();
         let text = format!("## Ranked {} Context\n- {}: {}", candidate.source_kind, title, body);
-        let mut item = Self::new(
-            &format!("ranked:{}:{}", candidate.source_kind, candidate.source_id),
-            text,
-            candidate.components.total_score.max(0.01),
-        );
+        let mut item = Self::new(&format!("ranked:{}:{}", candidate.source_kind, candidate.source_id), text, candidate.components.total_score.max(0.01));
         item.rank_audit = Some(RankAudit {
             source_kind: candidate.source_kind,
             source_id: candidate.source_id,

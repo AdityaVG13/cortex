@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
 mod tests {
-    use crate::cli::daemon::{
-        background_db_lock_max_wait, validate_spawned_owner_runtime_claim, BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, SPAWN_PARENT_PID_ENV,
-    };
+    use crate::cli::daemon::{background_db_lock_max_wait, validate_spawned_owner_runtime_claim, BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, SPAWN_PARENT_PID_ENV};
     use crate::cli::tests::support::*;
     use crate::cli::*;
     use crate::*;

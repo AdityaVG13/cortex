@@ -19,15 +19,9 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let today_like = format!("{today}%");
     let benchmark_source_pattern = format!("{}%", crate::compaction::BENCHMARK_SOURCE_AGENT_PREFIX);
-    let total_memories: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0))
-        .unwrap_or(0);
-    let total_decisions: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |r| r.get(0))
-        .unwrap_or(0);
-    let total_conflicts: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed'", [], |r| r.get(0))
-        .unwrap_or(0);
+    let total_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |r| r.get(0)).unwrap_or(0);
+    let total_decisions: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |r| r.get(0)).unwrap_or(0);
+    let total_conflicts: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed'", [], |r| r.get(0)).unwrap_or(0);
     let new_memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM memories WHERE created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
         .unwrap_or(0);
@@ -35,16 +29,10 @@ pub fn build_digest(conn: &rusqlite::Connection) -> Result<Value, String> {
         .query_row("SELECT COUNT(*) FROM decisions WHERE created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
         .unwrap_or(0);
     let stores_today: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored' AND created_at LIKE ?1", params![today_like.clone()], |r| {
-            r.get(0)
-        })
+        .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored' AND created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
         .unwrap_or(0);
     let conflicts_today: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at LIKE ?1",
-            params![today_like.clone()],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_conflict' AND created_at LIKE ?1", params![today_like.clone()], |r| r.get(0))
         .unwrap_or(0);
     let decayed_memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |r| r.get(0))
@@ -80,9 +68,9 @@ get::<_,Option<String>>(0)?.unwrap_or_else(||"unknown".to_string()),"cnt":row.ge
         })
         .map_err(|e| e.to_string())?;
     let agent_boots: Vec<Value> = boots_rows.filter_map(|r| r.ok()).collect();
-    let(raw_total_saved,raw_total_served,raw_boot_count,today_saved,
-today_served,today_boots):(i64,i64,i64,i64,i64,i64)=conn.query_row(
-"SELECT \
+    let (raw_total_saved, raw_total_served, raw_boot_count, today_saved, today_served, today_boots): (i64, i64, i64, i64, i64, i64) = conn
+        .query_row(
+            "SELECT \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.served') AS INTEGER), 0)), 0), \
                  COUNT(*), \
@@ -93,9 +81,11 @@ today_served,today_boots):(i64,i64,i64,i64,i64,i64)=conn.query_row(
              WHERE type = 'boot_savings' \
                AND LOWER(COALESCE(source_agent, '')) NOT LIKE LOWER(?2) \
                AND LOWER(COALESCE(json_extract(data, '$.source_agent'), '')) NOT LIKE LOWER(?2) \
-               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)"
-,params![today_like.clone(),benchmark_source_pattern.clone()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?
-,row.get(5)?)),).map_err(|e|e.to_string())?;
+               AND LOWER(COALESCE(json_extract(data, '$.agent'), '')) NOT LIKE LOWER(?2)",
+            params![today_like.clone(), benchmark_source_pattern.clone()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
+        .map_err(|e| e.to_string())?;
     let (rollup_saved, rollup_served, rollup_boots): (i64, i64, i64) = conn
         .query_row(
             "SELECT \
@@ -117,11 +107,7 @@ today_served,today_boots):(i64,i64,i64,i64,i64,i64)=conn.query_row(
         agent_boots
             .iter()
             .map(|row| {
-                format!(
-                    "{} ({})",
-                    row.get("source_agent").and_then(|v| v.as_str()).unwrap_or("unknown"),
-                    row.get("cnt").and_then(|v| v.as_i64()).unwrap_or(0)
-                )
+                format!("{} ({})", row.get("source_agent").and_then(|v| v.as_str()).unwrap_or("unknown"), row.get("cnt").and_then(|v| v.as_i64()).unwrap_or(0))
             })
             .collect::<Vec<_>>()
             .join(", ")

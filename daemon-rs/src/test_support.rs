@@ -20,8 +20,8 @@ pub fn team_state(default_owner_id: i64) -> RuntimeState {
     runtime_state(test_conn(), test_conn(), true, Some(default_owner_id), RerankConfig::off(), None)
 }
 pub fn runtime_state(
-    write_conn: rusqlite::Connection, read_conn: rusqlite::Connection, team_mode: bool, default_owner_id: Option<i64>,
-    rerank_config: RerankConfig, reranker: Option<Arc<dyn Reranker>>,
+    write_conn: rusqlite::Connection, read_conn: rusqlite::Connection, team_mode: bool, default_owner_id: Option<i64>, rerank_config: RerankConfig,
+    reranker: Option<Arc<dyn Reranker>>,
 ) -> RuntimeState {
     let (events, _) = broadcast::channel(8);
     let (brain_firing, _) = broadcast::channel(8);
@@ -33,8 +33,6 @@ pub fn runtime_state(
         brain_firing,
         mcp_calls: Arc::new(AtomicU64::new(0)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
-        recall_history: Arc::new(Mutex::new(HashMap::new())),
-        pre_cache: Arc::new(Mutex::new(HashMap::new())),
         served_content: Arc::new(Mutex::new(HashMap::new())),
         shutdown_tx: Arc::new(Mutex::new(None)),
         home: PathBuf::from("."),
@@ -52,11 +50,7 @@ pub fn runtime_state(
         readiness: Arc::new(AtomicBool::new(true)),
         last_activity_unix_secs: Arc::new(AtomicU64::new(0)),
         write_buffer_path: PathBuf::from("write_buffer.jsonl"),
-        sqlite_vec_canary: crate::state::SqliteVecCanaryConfig {
-            trial_percent: 0,
-            force_off: false,
-            route_mode: crate::state::SqliteVecRouteMode::Trial,
-        },
+        sqlite_vec_canary: crate::state::SqliteVecCanaryConfig { trial_percent: 0, force_off: false, route_mode: crate::state::SqliteVecRouteMode::Trial },
         rerank_config,
         reranker,
     }

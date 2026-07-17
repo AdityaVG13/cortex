@@ -54,8 +54,7 @@ impl ConflictResult {
         }
     }
     fn from_candidate(
-        classification: ConflictClassification, candidate: &DecisionCandidate, source_agent: &str, similarity_jaccard: f64,
-        similarity_cosine: Option<f64>,
+        classification: ConflictClassification, candidate: &DecisionCandidate, source_agent: &str, similarity_jaccard: f64, similarity_cosine: Option<f64>,
     ) -> Self {
         let is_conflict = matches!(classification, ConflictClassification::Contradicts);
         let is_update = matches!(classification, ConflictClassification::Refines)
@@ -278,28 +277,16 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str, ow
     let mut stmt = conn.prepare(sql).map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
     let rows: Vec<DecisionCandidate> = if has_owner_scope {
         stmt.query_map([owner_id.unwrap_or_default()], |row| {
-            Ok(DecisionCandidate {
-                id: row.get(0)?,
-                decision: row.get(1)?,
-                source_agent: row.get(2)?,
-                trust_score: row.get(3)?,
-            })
+            Ok(DecisionCandidate { id: row.get(0)?, decision: row.get(1)?, source_agent: row.get(2)?, trust_score: row.get(3)? })
         })
         .map_err(|e| format!("Failed to query decisions: {e}"))?
         .filter_map(|r| r.ok())
         .collect()
     } else {
-        stmt.query_map([], |row| {
-            Ok(DecisionCandidate {
-                id: row.get(0)?,
-                decision: row.get(1)?,
-                source_agent: row.get(2)?,
-                trust_score: row.get(3)?,
-            })
-        })
-        .map_err(|e| format!("Failed to query decisions: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect()
+        stmt.query_map([], |row| Ok(DecisionCandidate { id: row.get(0)?, decision: row.get(1)?, source_agent: row.get(2)?, trust_score: row.get(3)? }))
+            .map_err(|e| format!("Failed to query decisions: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect()
     };
     let mut best_sim = 0.0_f64;
     let mut best_candidate: Option<DecisionCandidate> = None;
@@ -319,9 +306,7 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str, ow
     let classification = classify_relation(decision, source_agent, &best_candidate, best_sim);
     Ok(ConflictResult::from_candidate(classification, &best_candidate, source_agent, best_sim, None))
 }
-fn classify_relation(
-    incoming_decision: &str, incoming_agent: &str, candidate: &DecisionCandidate, similarity_jaccard: f64,
-) -> ConflictClassification {
+fn classify_relation(incoming_decision: &str, incoming_agent: &str, candidate: &DecisionCandidate, similarity_jaccard: f64) -> ConflictClassification {
     if similarity_jaccard < RELATED_THRESHOLD {
         return ConflictClassification::Unrelated;
     }
@@ -396,8 +381,7 @@ fn strip_negation_tokens(tokens: &HashSet<String>) -> HashSet<String> {
     tokens.iter().filter(|token| !NEGATION_TOKENS.contains(&token.as_str())).cloned().collect()
 }
 fn has_polarity_flip(tokens_a: &HashSet<String>, tokens_b: &HashSet<String>) -> bool {
-    const FLIP_PAIRS: &[(&str, &str)] =
-        &[("always", "never"), ("must", "never"), ("allow", "forbid"), ("enable", "disable"), ("use", "avoid")];
+    const FLIP_PAIRS: &[(&str, &str)] = &[("always", "never"), ("must", "never"), ("allow", "forbid"), ("enable", "disable"), ("use", "avoid")];
     FLIP_PAIRS
         .iter()
         .any(|(lhs, rhs)| (tokens_a.contains(*lhs) && tokens_b.contains(*rhs)) || (tokens_a.contains(*rhs) && tokens_b.contains(*lhs)))

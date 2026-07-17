@@ -1,13 +1,11 @@
 use super::{
-    mcp_dispatch, mcp_error, mcp_error_with_data, mcp_resource_payload, mcp_resource_read_result, mcp_resource_uris, mcp_resources,
-    mcp_success, mcp_tools, required_permission_for_tool, tool_name_suggestions, wrap_mcp_tool_result, wrap_mcp_tool_result_verbose,
+    mcp_dispatch, mcp_error, mcp_error_with_data, mcp_resource_payload, mcp_resource_read_result, mcp_resource_uris, mcp_resources, mcp_success, mcp_tools,
+    required_permission_for_tool, tool_name_suggestions, wrap_mcp_tool_result, wrap_mcp_tool_result_verbose,
 };
 use crate::handlers::SourceIdentity;
 use crate::state::RuntimeState;
 use serde_json::{json, Value};
-pub async fn handle_mcp_message_with_caller(
-    state: &RuntimeState, msg: &Value, caller_id: Option<i64>, source: Option<&SourceIdentity>,
-) -> Option<Value> {
+pub async fn handle_mcp_message_with_caller(state: &RuntimeState, msg: &Value, caller_id: Option<i64>, source: Option<&SourceIdentity>) -> Option<Value> {
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
     if !msg.is_object() {
         return Some(mcp_error(id, -32600, "Invalid JSON-RPC request"));

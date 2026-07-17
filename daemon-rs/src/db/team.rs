@@ -88,59 +88,23 @@ pub fn upsert_owner_user(conn: &Connection, username: &str, display_name: Option
 pub fn migrate_to_team_mode(conn: &Connection, owner_id: i64) -> rusqlite::Result<()> {
     create_team_mode_tables(conn)?;
     ensure_column(conn, "memories", &format!("ALTER TABLE memories ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
-    ensure_column(
-        conn,
-        "memories",
-        "ALTER TABLE memories ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))",
-    )?;
-    ensure_column(
-        conn,
-        "decisions",
-        &format!("ALTER TABLE decisions ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"),
-    )?;
-    ensure_column(
-        conn,
-        "decisions",
-        "ALTER TABLE decisions ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))",
-    )?;
-    ensure_column(
-        conn,
-        "memory_clusters",
-        &format!("ALTER TABLE memory_clusters ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"),
-    )?;
+    ensure_column(conn, "memories", "ALTER TABLE memories ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))")?;
+    ensure_column(conn, "decisions", &format!("ALTER TABLE decisions ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
+    ensure_column(conn, "decisions", "ALTER TABLE decisions ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))")?;
+    ensure_column(conn, "memory_clusters", &format!("ALTER TABLE memory_clusters ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
     ensure_column(
         conn,
         "memory_clusters",
         "ALTER TABLE memory_clusters ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))",
     )?;
-    ensure_column(
-        conn,
-        "recall_feedback",
-        &format!("ALTER TABLE recall_feedback ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"),
-    )?;
+    ensure_column(conn, "recall_feedback", &format!("ALTER TABLE recall_feedback ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
     ensure_column(conn, "tasks", &format!("ALTER TABLE tasks ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
-    ensure_column(
-        conn,
-        "tasks",
-        "ALTER TABLE tasks ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))",
-    )?;
+    ensure_column(conn, "tasks", "ALTER TABLE tasks ADD COLUMN visibility TEXT DEFAULT 'private' CHECK (visibility IN ('private', 'team', 'shared'))")?;
     ensure_column(conn, "messages", &format!("ALTER TABLE messages ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
     ensure_column(conn, "feed", &format!("ALTER TABLE feed ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
-    ensure_column(
-        conn,
-        "feed",
-        "ALTER TABLE feed ADD COLUMN visibility TEXT DEFAULT 'team' CHECK (visibility IN ('private', 'team', 'shared'))",
-    )?;
-    ensure_column(
-        conn,
-        "focus_sessions",
-        &format!("ALTER TABLE focus_sessions ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"),
-    )?;
-    ensure_column(
-        conn,
-        "activities",
-        &format!("ALTER TABLE activities ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"),
-    )?;
+    ensure_column(conn, "feed", "ALTER TABLE feed ADD COLUMN visibility TEXT DEFAULT 'team' CHECK (visibility IN ('private', 'team', 'shared'))")?;
+    ensure_column(conn, "focus_sessions", &format!("ALTER TABLE focus_sessions ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
+    ensure_column(conn, "activities", &format!("ALTER TABLE activities ADD COLUMN owner_id INTEGER DEFAULT {owner_id} REFERENCES users(id)"))?;
     if !table_has_column(conn, "sessions", "id") || !table_has_column(conn, "sessions", "owner_id") {
         conn.execute_batch("DROP TABLE IF EXISTS sessions_new;")?;
         conn.execute_batch(&format!(
@@ -160,9 +124,10 @@ pub fn migrate_to_team_mode(conn: &Connection, owner_id: i64) -> rusqlite::Resul
         ))?;
         if table_exists(conn, "sessions") {
             conn.execute(
-"INSERT INTO sessions_new (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
-                 SELECT agent, ?1, session_id, project, files_json, description, started_at, last_heartbeat, expires_at FROM sessions"
-,params![owner_id],)?;
+                "INSERT INTO sessions_new (agent, owner_id, session_id, project, files_json, description, started_at, last_heartbeat, expires_at)
+                 SELECT agent, ?1, session_id, project, files_json, description, started_at, last_heartbeat, expires_at FROM sessions",
+                params![owner_id],
+            )?;
             conn.execute_batch("DROP TABLE sessions;")?;
         }
         conn.execute_batch("ALTER TABLE sessions_new RENAME TO sessions;")?;
@@ -263,10 +228,7 @@ pub fn migrate_to_team_mode(conn: &Connection, owner_id: i64) -> rusqlite::Resul
     )?;
     conn.execute("INSERT OR IGNORE INTO teams (name) VALUES ('default')", [])?;
     let default_team_id: i64 = conn.query_row("SELECT id FROM teams WHERE name = 'default' LIMIT 1", [], |row| row.get(0))?;
-    conn.execute(
-        "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?1, ?2, 'admin')",
-        params![default_team_id, owner_id],
-    )?;
+    conn.execute("INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?1, ?2, 'admin')", params![default_team_id, owner_id])?;
     conn.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('mode', 'solo')", [])?;
     conn.execute("UPDATE config SET value = 'team' WHERE key = 'mode'", [])?;
     conn.execute(

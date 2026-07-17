@@ -38,17 +38,10 @@ async fn fetch_boot(agent: &str, budget: u32, paths: &crate::auth::CortexPaths) 
     if let Some(token) = read_auth_token() {
         headers.push(("authorization".to_string(), format!("Bearer {token}")));
     }
-    let (status, body) = crate::transport::request_url_with_local_ipc_fallback(
-        &client,
-        "GET",
-        url.as_ref(),
-        paths,
-        &headers,
-        None,
-        std::time::Duration::from_secs(7),
-    )
-    .await
-    .ok()?;
+    let (status, body) =
+        crate::transport::request_url_with_local_ipc_fallback(&client, "GET", url.as_ref(), paths, &headers, None, std::time::Duration::from_secs(7))
+            .await
+            .ok()?;
     if !status.is_success() {
         return None;
     }
@@ -67,33 +60,19 @@ async fn fetch_health(paths: &crate::auth::CortexPaths) -> Option<HealthResult> 
         .ok()?;
     let base_url = crate::transport::local_http_base_url(paths);
     let readiness_url = format!("{base_url}/readiness");
-    let (readiness_status, readiness_body) = crate::transport::request_url_with_local_ipc_fallback(
-        &client,
-        "GET",
-        &readiness_url,
-        paths,
-        &[],
-        None,
-        std::time::Duration::from_secs(2),
-    )
-    .await
-    .ok()?;
+    let (readiness_status, readiness_body) =
+        crate::transport::request_url_with_local_ipc_fallback(&client, "GET", &readiness_url, paths, &[], None, std::time::Duration::from_secs(2))
+            .await
+            .ok()?;
     match crate::daemon_lifecycle::readiness_state_from_payload(readiness_status.as_u16(), &readiness_body, Some(paths.port), None) {
         Some(true) => {}
         Some(false) | None => return None,
     }
     let health_url = format!("{base_url}/health");
-    let (status, body) = crate::transport::request_url_with_local_ipc_fallback(
-        &client,
-        "GET",
-        &health_url,
-        paths,
-        &[],
-        None,
-        std::time::Duration::from_secs(2),
-    )
-    .await
-    .ok()?;
+    let (status, body) =
+        crate::transport::request_url_with_local_ipc_fallback(&client, "GET", &health_url, paths, &[], None, std::time::Duration::from_secs(2))
+            .await
+            .ok()?;
     if !status.is_success() {
         return None;
     }
@@ -119,10 +98,7 @@ async fn register_session(agent: &str, paths: &crate::auth::CortexPaths) {
     };
     let base_url = crate::transport::local_http_base_url(paths);
     let body = json!({"agent":agent,"ttl":7200,"description":"Active coding session"}).to_string();
-    let mut headers = vec![
-        ("content-type".to_string(), "application/json".to_string()),
-        ("x-cortex-request".to_string(), "true".to_string()),
-    ];
+    let mut headers = vec![("content-type".to_string(), "application/json".to_string()), ("x-cortex-request".to_string(), "true".to_string())];
     if let Some(token) = read_auth_token() {
         headers.push(("authorization".to_string(), format!("Bearer {token}")));
     }

@@ -12,8 +12,7 @@ pub(crate) fn aggregate_old_feedback_with_window(conn: &Connection, aggregation_
              GROUP BY result_source HAVING COUNT(*) > 1",
         )
         .and_then(|mut stmt| {
-            let rows = stmt
-                .query_map(params![aggregation_days], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?)))?;
+            let rows = stmt.query_map(params![aggregation_days], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?)))?;
             Ok(rows.flatten().collect())
         })
         .unwrap_or_default();
@@ -44,9 +43,7 @@ pub(crate) fn aggregate_old_feedback_with_window(conn: &Connection, aggregation_
 pub(crate) fn prune_old_benchmark_artifacts(conn: &Connection, retention_days: i64, allow_vacuum: bool) -> usize {
     purge_benchmark_artifacts_with_retention(conn, Some(retention_days), allow_vacuum).total_deleted()
 }
-pub(crate) fn purge_benchmark_artifacts_with_retention(
-    conn: &Connection, retention_days: Option<i64>, allow_vacuum: bool,
-) -> BenchmarkPurgeResult {
+pub(crate) fn purge_benchmark_artifacts_with_retention(conn: &Connection, retention_days: Option<i64>, allow_vacuum: bool) -> BenchmarkPurgeResult {
     let mut result = BenchmarkPurgeResult { bytes_before: db_size_bytes(conn), ..BenchmarkPurgeResult::default() };
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
     let retention_window = retention_days.map(|days| format!("-{days} days"));
@@ -121,9 +118,7 @@ pub(crate) fn purge_benchmark_artifacts_with_retention(
             [],
         )
         .unwrap_or(0);
-    result.decisions_deleted = conn
-        .execute("DELETE FROM decisions WHERE id IN (SELECT id FROM _benchmark_decision_ids)", [])
-        .unwrap_or(0);
+    result.decisions_deleted = conn.execute("DELETE FROM decisions WHERE id IN (SELECT id FROM _benchmark_decision_ids)", []).unwrap_or(0);
     result.events_deleted += conn
         .execute(
             "DELETE FROM events \

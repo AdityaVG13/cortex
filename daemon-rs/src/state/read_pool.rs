@@ -28,10 +28,7 @@ pub(crate) struct ReadConnectionPool {
 impl ReadConnectionPool {
     pub(crate) fn new(connections: Vec<Connection>) -> Self {
         assert!(!connections.is_empty(), "read connection pool requires at least one connection");
-        Self {
-            connections: connections.into_iter().map(Mutex::new).collect(),
-            next_index: AtomicUsize::new(0),
-        }
+        Self { connections: connections.into_iter().map(Mutex::new).collect(), next_index: AtomicUsize::new(0) }
     }
 }
 impl ReadConnectionProvider for ReadConnectionPool {

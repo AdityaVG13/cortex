@@ -68,23 +68,13 @@ pub(crate) fn run_budget_recall(
 }
 pub(crate) fn run_semantic_recall_with_query_vector(
     conn: &Connection, query_text: &str, k: usize, query_vector: Option<&[f32]>, ctx: &RecallContext, source_prefix: Option<&str>,
-    canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
+    _canary: Option<&SqliteVecCanaryConfig>, _sqlite_vec_shadow_enabled: bool,
 ) -> (Vec<RecallItem>, Value) {
     let prefers_recency = query_prefers_recency(query_text);
-    let baseline_semantic = query_vector
+    let semantic_candidates = query_vector
         .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix))
         .unwrap_or_default();
-    let (semantic_candidates, semantic_route) = maybe_apply_sqlite_vec_trial(
-        conn,
-        query_text,
-        query_vector,
-        baseline_semantic,
-        ctx,
-        source_prefix,
-        k,
-        canary,
-        sqlite_vec_shadow_enabled,
-    );
+    let semantic_route = json!({"mode":"baseline","reason":"sqlite_vec_shadow_removed","sampled":false,"trialPercent":0,"routeMode":"baseline"});
     let mut ranked: Vec<RecallItem> = semantic_candidates
         .into_iter()
         .map(|candidate| {
@@ -261,11 +251,8 @@ pub(crate) fn compact_budget_family_candidates_with_trace(
     let mut dropped_by_family: HashMap<String, Vec<String>> = HashMap::new();
     let alignment_profile = QueryAlignmentProfile::from_query(query_text);
     for item in candidates {
-        let family_key = if !item.family_members.is_empty() {
-            item.source.clone()
-        } else {
-            family_lookup.get(&item.source).cloned().unwrap_or_else(|| item.source.clone())
-        };
+        let family_key =
+            if !item.family_members.is_empty() { item.source.clone() } else { family_lookup.get(&item.source).cloned().unwrap_or_else(|| item.source.clone()) };
         match compacted.entry(family_key) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 if prefer_family_candidate(&item, entry.get(), &alignment_profile) {
@@ -331,9 +318,7 @@ pub(crate) fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize, q
         if remaining <= 10 {
             break;
         }
-        let cap = budget_rank_char_cap(token_budget, idx, query_text)
-            .min((remaining as f64 * 3.6) as usize)
-            .max(MIN_EXCERPT_CHARS);
+        let cap = budget_rank_char_cap(token_budget, idx, query_text).min((remaining as f64 * 3.6) as usize).max(MIN_EXCERPT_CHARS);
         if let Some((excerpt, tokens)) = fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining) {
             let signature_terms = excerpt_signature_terms(&item.source, &excerpt);
             if should_skip_redundant_budget_candidate(&signature_terms, &selected_signatures, &query_terms, &covered_terms) {
@@ -352,331 +337,6 @@ pub(crate) fn apply_semantic_budget(raw: Vec<RecallItem>, token_budget: usize, q
     }
     budgeted
 }
-pub(crate) fn associative_item_limit(token_budget: usize) -> usize {
-    if token_budget <= 420 {
-        1
-    } else if token_budget <= 900 {
-        2
-    } else {
-        3
-    }
-}
-pub(crate) fn parse_co_occurrence_prediction(entry: &Value) -> Option<(String, i64)> {
-    let source = entry.get("source")?.as_str()?.trim();
-    if source.is_empty() {
-        return None;
-    }
-    let score = entry.get("coScore")?.as_i64()?;
-    if score <= 0 {
-        return None;
-    }
-    Some((source.to_string(), score))
-}
-fn associative_payload_from_row(
-    text: String, compressed_text: Option<String>, age_tier: Option<String>, score: Option<f64>, trust_score: Option<f64>,
-    last_accessed: Option<String>, created_at: Option<String>, owner_id: Option<i64>, visibility: Option<String>, query_text: &str,
-    ctx: &RecallContext,
-) -> Option<(String, f64, i64)> {
-    if ctx.team_mode && !is_visible(owner_id, visibility.as_deref(), ctx) {
-        return None;
-    }
-    let age_tier = age_tier.as_deref().unwrap_or("fresh");
-    let display = crate::aging::get_display_text(&text, &compressed_text, age_tier);
-    let excerpt = query_focused_excerpt(&display, query_text, 220);
-    let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-    let ts = last_accessed
-        .as_deref()
-        .or(created_at.as_deref())
-        .map(parse_timestamp_ms)
-        .unwrap_or_else(|| parse_timestamp_ms(&now_iso()));
-    Some((excerpt, importance, ts))
-}
-pub(crate) fn fetch_associative_source_payloads(
-    conn: &Connection, sources: &[&str], query_text: &str, ctx: &RecallContext,
-) -> HashMap<String, (String, f64, i64)> {
-    type PayloadRow = (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<f64>,
-        Option<f64>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-    );
-    let mut best = HashMap::new();
-    if sources.is_empty() {
-        return best;
-    }
-    let placeholders = numbered_placeholders(1, sources.len());
-    let mut source_params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(sources.len());
-    for source in sources {
-        source_params.push(source);
-    }
-    let memory_sql = if ctx.team_mode {
-        format!(
-            "SELECT source, text, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
-             FROM memories
-             WHERE status = 'active'
-               AND source IN ({placeholders})
-               AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY source ASC, COALESCE(last_accessed, created_at) DESC"
-        )
-    } else {
-        format!(
-            "SELECT source, text, compressed_text, age_tier, score, trust_score, last_accessed, created_at
-             FROM memories
-             WHERE status = 'active'
-               AND source IN ({placeholders})
-               AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY source ASC, COALESCE(last_accessed, created_at) DESC"
-        )
-    };
-    if let Ok(mut stmt) = conn.prepare(&memory_sql) {
-        if let Ok(rows) = stmt.query_map(source_params.as_slice(), |row| {
-            if ctx.team_mode {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<f64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                ))
-            } else {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<f64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    None,
-                    None,
-                ))
-            }
-        }) {
-            for row in rows.flatten() {
-                let (
-                    source,
-                    text,
-                    compressed_text,
-                    age_tier,
-                    score,
-                    trust_score,
-                    last_accessed,
-                    created_at,
-                    owner_id,
-                    visibility,
-                ): PayloadRow = row;
-                if best.contains_key(&source) {
-                    continue;
-                }
-                if let Some(payload) = associative_payload_from_row(
-                    text,
-                    compressed_text,
-                    age_tier,
-                    score,
-                    trust_score,
-                    last_accessed,
-                    created_at,
-                    owner_id,
-                    visibility,
-                    query_text,
-                    ctx,
-                ) {
-                    best.insert(source, payload);
-                }
-            }
-        }
-    }
-    let decision_sql = if ctx.team_mode {
-        format!(
-            "SELECT context, decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
-             FROM decisions
-             WHERE status = 'active'
-               AND context IN ({placeholders})
-               AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY context ASC, COALESCE(last_accessed, created_at) DESC"
-        )
-    } else {
-        format!(
-            "SELECT context, decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at
-             FROM decisions
-             WHERE status = 'active'
-               AND context IN ({placeholders})
-               AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY context ASC, COALESCE(last_accessed, created_at) DESC"
-        )
-    };
-    if let Ok(mut stmt) = conn.prepare(&decision_sql) {
-        if let Ok(rows) = stmt.query_map(source_params.as_slice(), |row| {
-            if ctx.team_mode {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<f64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<i64>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                ))
-            } else {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<f64>>(4)?,
-                    row.get::<_, Option<f64>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    None,
-                    None,
-                ))
-            }
-        }) {
-            for row in rows.flatten() {
-                let (
-                    source,
-                    decision,
-                    compressed_text,
-                    age_tier,
-                    score,
-                    trust_score,
-                    last_accessed,
-                    created_at,
-                    owner_id,
-                    visibility,
-                ): PayloadRow = row;
-                let Some((excerpt, importance, ts)) = associative_payload_from_row(
-                    decision,
-                    compressed_text,
-                    age_tier,
-                    score,
-                    trust_score,
-                    last_accessed,
-                    created_at,
-                    owner_id,
-                    visibility,
-                    query_text,
-                    ctx,
-                ) else {
-                    continue;
-                };
-                let replace = match best.get(&source) {
-                    Some((_, best_importance, best_ts)) => {
-                        importance > *best_importance || (importance == *best_importance && ts > *best_ts)
-                    }
-                    None => true,
-                };
-                if replace {
-                    best.insert(source, (excerpt, importance, ts));
-                }
-            }
-        }
-    }
-    best
-}
-pub(crate) fn build_associative_candidates(
-    conn: &Connection, base: &[RecallItem], query_text: &str, token_budget: usize, ctx: &RecallContext, source_prefix: Option<&str>,
-) -> Vec<RecallItem> {
-    if token_budget < ASSOCIATIVE_MIN_BUDGET_TOKENS || base.is_empty() {
-        return Vec::new();
-    }
-    let top_relevance = base.first().map(|item| item.relevance).unwrap_or(0.0);
-    if top_relevance < 0.28 {
-        return Vec::new();
-    }
-    let min_anchor_relevance = (top_relevance * 0.45).max(0.18);
-    let anchors: Vec<String> = base
-        .iter()
-        .filter(|item| item.relevance >= min_anchor_relevance)
-        .take(4)
-        .map(|item| item.source.clone())
-        .collect();
-    if anchors.is_empty() {
-        return Vec::new();
-    }
-    let max_associative = associative_item_limit(token_budget);
-    if max_associative == 0 {
-        return Vec::new();
-    }
-    let predictions = match co_occurrence::predict(conn, &anchors, max_associative * 4) {
-        Ok(rows) => rows,
-        Err(_) => return Vec::new(),
-    };
-    if predictions.is_empty() {
-        return Vec::new();
-    }
-    let mut parsed = predictions.iter().filter_map(parse_co_occurrence_prediction).collect::<Vec<_>>();
-    if parsed.is_empty() {
-        return Vec::new();
-    }
-    parsed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let max_co_score = parsed[0].1.max(1);
-    let min_required_co_score = ((max_co_score as f64) * 0.35).ceil() as i64;
-    let candidates: Vec<(String, i64)> = parsed
-        .into_iter()
-        .filter(|(source, co_score)| *co_score >= 2 && *co_score >= min_required_co_score && source_matches_prefix(source, source_prefix))
-        .collect();
-    if candidates.is_empty() {
-        return Vec::new();
-    }
-    let candidate_sources: Vec<&str> = candidates.iter().map(|(source, _)| source.as_str()).collect();
-    let mut source_payloads = fetch_associative_source_payloads(conn, &candidate_sources, query_text, ctx);
-    let query_terms = extract_search_keywords(query_text);
-    let mut associative = Vec::new();
-    for (source, co_score) in candidates {
-        let Some((excerpt, importance, ts)) = source_payloads.remove(source.as_str()) else {
-            continue;
-        };
-        let norm = ((co_score as f64 + 1.0).ln() / (max_co_score as f64 + 1.0).ln()).clamp(0.0, 1.0);
-        let source_lower = source.to_ascii_lowercase();
-        let overlap = if query_terms.is_empty() {
-            0.0
-        } else {
-            let matched = query_terms.iter().filter(|term| source_lower.contains(term.as_str())).count();
-            matched as f64 / query_terms.len().max(1) as f64
-        };
-        let recency_days = if ts > 0 {
-            let now = Utc::now().timestamp_millis();
-            ((now - ts).max(0) as f64) / (1000.0 * 60.0 * 60.0 * 24.0)
-        } else {
-            30.0
-        };
-        let recency = (1.0 / (1.0 + recency_days / 14.0)).clamp(0.0, 1.0);
-        let anchor = (top_relevance * 0.68).clamp(0.24, 0.82);
-        let relevance =
-            round4(((anchor * (0.76 + 0.24 * norm)) + (importance * 0.10) + (overlap * 0.08) + (recency * 0.10)).clamp(0.0, 0.95));
-        associative.push(RecallItem {
-            source,
-            relevance,
-            excerpt,
-            method: "associative".to_string(),
-            tokens: None,
-            entropy: None,
-            family_members: Vec::new(),
-            collapsed_sources: Vec::new(),
-            collapsed_source_scores: Vec::new(),
-        });
-        if associative.len() >= max_associative {
-            break;
-        }
-    }
-    associative
-}
 pub(crate) struct RecallBudgetTrace {
     pub(crate) budgeted: Vec<RecallItem>,
     pub(crate) candidate_pool: Vec<RecallItem>,
@@ -686,7 +346,6 @@ pub(crate) struct RecallBudgetTrace {
     pub(crate) top_relevance: f64,
     pub(crate) min_relevance: f64,
     pub(crate) max_items: usize,
-    pub(crate) semantic_baseline: Option<ShadowSemanticBaseline>,
     pub(crate) semantic_route: Value,
 }
 #[derive(Clone)]
@@ -697,8 +356,8 @@ pub(crate) struct RecallFamilyCompaction {
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_budget_recall_trace_with_query_vector(
-    conn: &Connection, query_text: &str, token_budget: usize, k: usize, query_vector: Option<&[f32]>, ctx: &RecallContext,
-    source_prefix: Option<&str>, canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
+    conn: &Connection, query_text: &str, token_budget: usize, k: usize, query_vector: Option<&[f32]>, ctx: &RecallContext, source_prefix: Option<&str>,
+    canary: Option<&SqliteVecCanaryConfig>, sqlite_vec_shadow_enabled: bool,
 ) -> Result<RecallBudgetTrace, String> {
     let retrieval_depth = if token_budget <= 220 {
         (k.max(10) * 3).min(30)
@@ -707,18 +366,9 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
     } else {
         k.max(12)
     };
-    let recall_trace = run_recall_with_query_vector_trace(
-        conn,
-        query_text,
-        retrieval_depth,
-        query_vector,
-        ctx,
-        source_prefix,
-        canary,
-        sqlite_vec_shadow_enabled,
-    )?;
+    let recall_trace =
+        run_recall_with_query_vector_trace(conn, query_text, retrieval_depth, query_vector, ctx, source_prefix, canary, sqlite_vec_shadow_enabled)?;
     let raw = recall_trace.ranked;
-    let semantic_baseline = recall_trace.semantic_baseline;
     let semantic_route = recall_trace.semantic_route;
     if raw.is_empty() {
         return Ok(RecallBudgetTrace {
@@ -730,47 +380,18 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
             top_relevance: 0.0,
             min_relevance: 0.0,
             max_items: 0,
-            semantic_baseline,
             semantic_route,
         });
     }
-    let associative = build_associative_candidates(conn, &raw, query_text, token_budget, ctx, source_prefix);
-    let pre_compaction_pool = if associative.is_empty() {
-        raw
-    } else {
-        let mut merged: HashMap<String, RecallItem> = raw.into_iter().map(|item| (item.source.clone(), item)).collect();
-        for candidate in associative {
-            if let Some(existing) = merged.get_mut(&candidate.source) {
-                if candidate.relevance > existing.relevance {
-                    existing.relevance = candidate.relevance;
-                    existing.excerpt = candidate.excerpt;
-                }
-                existing.method = "associative".to_string();
-                existing.tokens = None;
-            } else {
-                merged.insert(candidate.source.clone(), candidate);
-            }
-        }
-        let mut merged_pool: Vec<RecallItem> = merged.into_values().collect();
-        merged_pool.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
-        merged_pool
-    };
+    let pre_compaction_pool = raw;
     let pre_compaction_candidate_count = pre_compaction_pool.len();
-    let (raw, _family_compaction_dropped, family_compactions) =
-        compact_budget_family_candidates_with_trace(pre_compaction_pool, query_text, token_budget);
+    let (raw, _family_compaction_dropped, family_compactions) = compact_budget_family_candidates_with_trace(pre_compaction_pool, query_text, token_budget);
     let top_relevance = raw.first().map(|item| item.relevance).unwrap_or(0.0);
     let min_relevance = semantic_budget_min_relevance(top_relevance, query_text);
     let max_items = semantic_budget_max_items(token_budget, query_text, k.max(1));
     let mut candidates: Vec<RecallItem> = raw.iter().filter(|item| item.relevance >= min_relevance).take(max_items).cloned().collect();
     if candidates.is_empty() {
         candidates = raw.iter().take(max_items).cloned().collect();
-    }
-    if !candidates.iter().any(|item| item.method == "associative") {
-        if let Some(best_associative) = raw.iter().find(|item| item.method == "associative") {
-            candidates.push(best_associative.clone());
-            candidates.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
-            candidates.truncate(max_items.max(1));
-        }
     }
     let query_terms: HashSet<String> = query_focus_terms_for_excerpt(query_text).into_iter().collect();
     let mut covered_terms: HashSet<String> = HashSet::new();
@@ -782,9 +403,7 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
         if remaining <= 10 {
             break;
         }
-        let cap = budget_rank_char_cap(token_budget, idx, query_text)
-            .min((remaining as f64 * 3.6) as usize)
-            .max(MIN_EXCERPT_CHARS);
+        let cap = budget_rank_char_cap(token_budget, idx, query_text).min((remaining as f64 * 3.6) as usize).max(MIN_EXCERPT_CHARS);
         if let Some((excerpt, tokens)) = fit_excerpt_to_remaining_budget(&item.source, &item.excerpt, query_text, cap, remaining) {
             let signature_terms = excerpt_signature_terms(&item.source, &excerpt);
             if should_skip_redundant_budget_candidate(&signature_terms, &selected_signatures, &query_terms, &covered_terms) {
@@ -818,14 +437,13 @@ pub(crate) fn run_budget_recall_trace_with_query_vector(
         top_relevance,
         min_relevance,
         max_items,
-        semantic_baseline,
         semantic_route,
     })
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_budget_recall_with_engine(
-    conn: &mut Connection, query_text: &str, token_budget: usize, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>,
-    ctx: &RecallContext, source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    conn: &mut Connection, query_text: &str, token_budget: usize, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>, ctx: &RecallContext,
+    source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
     let trace = run_budget_recall_trace_with_engine(conn, query_text, token_budget, k, engine, ctx, source_prefix, degraded_flag)?;
     bump_retrievals_batch(conn, &trace.budgeted);
@@ -833,8 +451,8 @@ pub(crate) fn run_budget_recall_with_engine(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_budget_recall_trace_with_engine(
-    conn: &Connection, query_text: &str, token_budget: usize, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>,
-    ctx: &RecallContext, source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    conn: &Connection, query_text: &str, token_budget: usize, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>, ctx: &RecallContext,
+    source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<RecallBudgetTrace, String> {
     let query_vector = engine.and_then(|engine| engine.embed_query(query_text));
     if engine.is_some() {
@@ -850,9 +468,7 @@ pub(crate) fn update_semantic_search_health(
             flag.store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let transitioned = flag
-            .compare_exchange(false, true, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
-            .is_ok();
+        let transitioned = flag.compare_exchange(false, true, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed).is_ok();
         if log_unavailable && transitioned {
             eprintln!("[recall] Semantic search unavailable, using keyword fallback");
         }
@@ -865,8 +481,8 @@ pub(crate) fn run_recall(
 }
 #[allow(clippy::type_complexity)]
 pub(crate) fn run_recall_with_engine(
-    conn: &mut Connection, query_text: &str, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>, ctx: &RecallContext,
-    source_prefix: Option<&str>, degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    conn: &mut Connection, query_text: &str, k: usize, engine: Option<&crate::embeddings::EmbeddingEngine>, ctx: &RecallContext, source_prefix: Option<&str>,
+    degraded_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<Vec<RecallItem>, String> {
     let query_vector = engine.and_then(|engine| engine.embed_query(query_text));
     if engine.is_some() {
@@ -882,62 +498,6 @@ pub async fn execute_unified_recall(
     let started_at = Instant::now();
     let policy_mode = recall_mode_for_budget(budget);
     let latency_budget_ms = recall_latency_budget_ms_for_mode(policy_mode);
-    let recall_scope = recall_scope_key(agent, ctx);
-    let scope_prefix = recall_owner_scope(ctx);
-    let predictive_precache_enabled = recall_predictive_precache_enabled();
-
-    if predictive_precache_enabled && budget > 0 && !state.rerank_config.is_active() {
-        if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await {
-            let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
-            let mode = recall_mode_for_budget(budget);
-            let method_breakdown = build_method_breakdown(&deduped_cached);
-            let tier = classify_recall_tier(true, mode.as_str(), &method_breakdown);
-            let latency_ms = started_at.elapsed().as_millis() as i64;
-            let semantic_route = json!({
-                "mode": "baseline",
-                "reason": "cache_hit",
-                "sampled": false,
-                "trialPercent": if matches!(state.sqlite_vec_canary.effective_route_mode(), SqliteVecRouteMode::Primary) { 100 } else { state.sqlite_vec_canary.trial_percent },
-                "routeMode": state.sqlite_vec_canary.effective_route_mode().as_str()
-            });
-            emit_recall_query_event(
-                state,
-                agent,
-                source_prefix,
-                json!({
-                    "agent": agent,
-                    "query": truncate_chars(query_text, 120),
-                    "budget": budget,
-                    "spent": 0,
-                    "saved": budget as i64,
-                    "hits": deduped_cached.len(),
-                    "mode": mode.as_str(),
-                    "cached": true,
-                    "method_breakdown": method_breakdown,
-                    "tier": tier,
-                    "latency_ms": latency_ms,
-                    "semantic_route": semantic_route.clone(),
-                    "shadow_semantic": {"status": "skipped", "reason": "cache_hit"}
-                }),
-            )
-            .await;
-            let usage = RecallBudgetUsage { spent: 0, saved: budget as i64, over_budget: false };
-            return Ok(json!({
-                "results": deduped_cached.into_iter().map(recall_to_json).collect::<Vec<_>>(),
-                "budget": budget,
-                "spent": usage.spent,
-                "saved": usage.saved,
-                "overBudget": usage.over_budget,
-                "tokenUsageLine": format_recall_token_usage_line(budget, usage),
-                "mode": mode.as_str(),
-                "policyMode": mode.as_str(),
-                "cached": true,
-                "tier": tier,
-                "latencyMs": latency_ms,
-                "semanticRoute": semantic_route
-            }));
-        }
-    }
 
     let engine = state.embedding_engine.clone();
     let dflag = Some(&state.degraded_mode);
@@ -952,16 +512,8 @@ pub async fn execute_unified_recall(
     let (mut results, semantic_route, fail_closed) = {
         let conn = state.db_read.lock().await;
         let (mut results, mut semantic_route) = if budget == 0 {
-            let trace = run_recall_with_query_vector_trace(
-                &conn,
-                query_text,
-                k,
-                query_vector.as_deref(),
-                ctx,
-                source_prefix,
-                Some(&state.sqlite_vec_canary),
-                false,
-            )?;
+            let trace =
+                run_recall_with_query_vector_trace(&conn, query_text, k, query_vector.as_deref(), ctx, source_prefix, Some(&state.sqlite_vec_canary), false)?;
             (trace.ranked, trace.semantic_route)
         } else {
             let trace = run_budget_recall_trace_with_query_vector(
@@ -982,17 +534,8 @@ pub async fn execute_unified_recall(
         if budget > 0 {
             let elapsed_before_fallback = started_at.elapsed().as_millis();
             if elapsed_before_fallback >= latency_budget_ms {
-                let fallback_trace = run_budget_recall_trace_with_query_vector(
-                    &conn,
-                    query_text,
-                    budget,
-                    k,
-                    None,
-                    ctx,
-                    source_prefix,
-                    Some(&state.sqlite_vec_canary),
-                    false,
-                )?;
+                let fallback_trace =
+                    run_budget_recall_trace_with_query_vector(&conn, query_text, budget, k, None, ctx, source_prefix, Some(&state.sqlite_vec_canary), false)?;
                 results = fallback_trace.budgeted;
                 semantic_route = json!({
                     "mode": "baseline",
@@ -1013,32 +556,13 @@ pub async fn execute_unified_recall(
         (results, semantic_route, fail_closed)
     };
 
-    let shadow_semantic = json!({"status": "skipped", "reason": "hot_path"});
-    let (reranked_results, rerank_route) = maybe_apply_rerank(state, query_text, results, budget);
+    let shadow_semantic = json!({"status": "skipped", "reason": "shadow_removed"});
+    let (reranked_results, rerank_route) = maybe_apply_rerank(state, results, budget);
     results = reranked_results;
 
     {
         let conn = state.db.lock().await;
         bump_retrievals_batch(&conn, &results);
-        let sources: Vec<String> = results.iter().map(|item| item.source.clone()).collect();
-        if sources.len() >= 2 {
-            if co_occurrence::record(&conn, &sources).is_ok() {
-                checkpoint_wal_best_effort(&conn);
-            } else {
-                let _ = co_occurrence::reset(&conn);
-            }
-        }
-    }
-
-    if predictive_precache_enabled {
-        record_recall_pattern(state, &recall_scope, query_text).await;
-        let state_clone = state.clone();
-        let scope_owned = recall_scope.clone();
-        let query_owned = query_text.to_string();
-        let ctx_owned = *ctx;
-        tokio::spawn(async move {
-            let _ = predict_and_cache(state_clone, &scope_owned, &query_owned, ctx_owned).await;
-        });
     }
 
     if budget == 0 {
@@ -1144,8 +668,8 @@ pub async fn execute_unified_recall(
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_recall_policy_explain(
-    state: &RuntimeState, query_text: &str, budget: usize, k: usize, agent: &str, ctx: &RecallContext, source_prefix: Option<&str>,
-    pool_k: usize, query_vector_override: Option<&[f32]>,
+    state: &RuntimeState, query_text: &str, budget: usize, k: usize, agent: &str, ctx: &RecallContext, source_prefix: Option<&str>, pool_k: usize,
+    query_vector_override: Option<&[f32]>,
 ) -> Result<Value, String> {
     let requested_k = k.max(1);
     let pool_k = pool_k.max(requested_k).min(128);
@@ -1171,19 +695,10 @@ pub async fn execute_recall_policy_explain(
         min_relevance,
         top_relevance,
         max_items,
-        semantic_baseline,
         semantic_route,
     ) = if budget == 0 {
-        let trace = run_recall_with_query_vector_trace(
-            &conn,
-            query_text,
-            pool_k,
-            query_vector.as_deref(),
-            ctx,
-            source_prefix,
-            Some(&state.sqlite_vec_canary),
-            true,
-        )?;
+        let trace =
+            run_recall_with_query_vector_trace(&conn, query_text, pool_k, query_vector.as_deref(), ctx, source_prefix, Some(&state.sqlite_vec_canary), true)?;
         let raw_pool = trace.ranked;
         let budgeted = raw_pool
             .iter()
@@ -1196,7 +711,7 @@ pub async fn execute_recall_policy_explain(
             })
             .collect::<Vec<_>>();
         let raw_pool_len = raw_pool.len();
-        (budgeted, raw_pool, raw_pool_len, Vec::new(), pool_k, 0.0_f64, 0.0_f64, requested_k, trace.semantic_baseline, trace.semantic_route)
+        (budgeted, raw_pool, raw_pool_len, Vec::new(), pool_k, 0.0_f64, 0.0_f64, requested_k, trace.semantic_route)
     } else {
         let trace = run_budget_recall_trace_with_query_vector(
             &conn,
@@ -1218,14 +733,12 @@ pub async fn execute_recall_policy_explain(
             trace.min_relevance,
             trace.top_relevance,
             trace.max_items,
-            trace.semantic_baseline,
             trace.semantic_route,
         )
     };
-    let shadow_semantic =
-        build_shadow_semantic_explain(&conn, query_vector.as_deref(), query_text, ctx, source_prefix, pool_k, semantic_baseline.as_ref());
+    let shadow_semantic = json!({"enabled":false,"status":"skipped","reason":"shadow_removed","topK":pool_k});
     drop(conn);
-    let (budgeted, rerank_route) = maybe_apply_rerank(state, query_text, budgeted, budget);
+    let (budgeted, rerank_route) = maybe_apply_rerank(state, budgeted, budget);
     let final_results = dedup_and_mark_served(state, agent, query_text, ctx, budgeted).await;
     let final_results = enforce_budget_token_invariant(final_results, budget, query_text);
     let usage = compute_recall_budget_usage(&final_results, budget);
@@ -1262,16 +775,8 @@ pub async fn execute_semantic_recall(
     let semantic_available = query_vector.is_some();
     let (budgeted, semantic_route) = {
         let conn = state.db_read.lock().await;
-        let (results, semantic_route) = run_semantic_recall_with_query_vector(
-            &conn,
-            query_text,
-            k,
-            query_vector.as_deref(),
-            ctx,
-            source_prefix,
-            Some(&state.sqlite_vec_canary),
-            false,
-        );
+        let (results, semantic_route) =
+            run_semantic_recall_with_query_vector(&conn, query_text, k, query_vector.as_deref(), ctx, source_prefix, Some(&state.sqlite_vec_canary), false);
         (apply_semantic_budget(results, budget, query_text), semantic_route)
     };
     {
@@ -1301,9 +806,7 @@ pub(crate) fn run_recall_with_query_vector_trace(
     let mut crystal_items: HashMap<String, RecallItem> = HashMap::new();
     let mut crystal_family_lookup: HashMap<String, String> = HashMap::new();
     if let Some(query_vec) = query_vector {
-        for (crystal_id, label, text, relevance) in
-            crate::crystallize::search_crystals_filtered(conn, query_vec, 3, ctx.caller_id, ctx.team_mode)
-        {
+        for (crystal_id, label, text, relevance) in crate::crystallize::search_crystals_filtered(conn, query_vec, 3, ctx.caller_id, ctx.team_mode) {
             let source = crystal_source(crystal_id, &label);
             if !source_matches_prefix(&source, source_prefix) {
                 continue;
@@ -1366,40 +869,17 @@ pub(crate) fn run_recall_with_query_vector_trace(
     } else {
         false
     };
-    let (semantic_candidates, semantic_route, semantic_baseline) = if tier2_resolved {
+    let (semantic_candidates, semantic_route) = if tier2_resolved {
         (
             Vec::new(),
-            json!({"mode":"baseline","reason":"tier2_keyword_resolved","sampled":false,"trialPercent":canary.map(|config|{if matches!(config.effective_route_mode(),SqliteVecRouteMode::Primary){100}else{config.trial_percent}}).unwrap_or(0),"routeMode":canary.map(|config|config.effective_route_mode().as_str()).unwrap_or("baseline")}),
-            None,
+            json!({"mode":"baseline","reason":"tier2_keyword_resolved","sampled":false,"trialPercent":canary.map(|config|config.trial_percent).unwrap_or(0),"routeMode":canary.map(|config|config.effective_route_mode().as_str()).unwrap_or("baseline")}),
         )
     } else {
         let baseline_semantic = query_vector
             .map(|query_vec| collect_semantic_candidates(conn, query_vec, query_text, ctx, source_prefix))
             .unwrap_or_default();
-        let semantic_baseline = if baseline_semantic.is_empty() {
-            None
-        } else {
-            Some(ShadowSemanticBaseline {
-                candidate_count: baseline_semantic.len(),
-                ranked_sources: baseline_semantic
-                    .iter()
-                    .take(MAX_SEMANTIC_RRF_CANDIDATES)
-                    .map(|candidate| candidate.source.clone())
-                    .collect(),
-            })
-        };
-        let (semantic_candidates, semantic_route) = maybe_apply_sqlite_vec_trial(
-            conn,
-            query_text,
-            query_vector,
-            baseline_semantic,
-            ctx,
-            source_prefix,
-            k,
-            canary,
-            sqlite_vec_shadow_enabled,
-        );
-        (semantic_candidates, semantic_route, semantic_baseline)
+        let semantic_route = json!({"mode":"baseline","reason":if sqlite_vec_shadow_enabled{"shadow_removed"}else{"hot_path_shadow_skipped"},"sampled":false,"trialPercent":canary.map(|config|config.trial_percent).unwrap_or(0),"routeMode":canary.map(|config|config.effective_route_mode().as_str()).unwrap_or("baseline")});
+        (baseline_semantic, semantic_route)
     };
     let mut source_index: HashMap<String, i64> = HashMap::new();
     let mut index_source: Vec<String> = Vec::new();
@@ -1413,16 +893,11 @@ pub(crate) fn run_recall_with_query_vector_trace(
         idx
     };
     let kw_list: Vec<(i64, f64)> = kw_candidates.iter().map(|c| (get_idx(&c.source), c.relevance)).collect();
-    let sem_list: Vec<(i64, f64)> = semantic_candidates
-        .iter()
-        .map(|candidate| (get_idx(&candidate.source), candidate.relevance))
-        .collect();
+    let sem_list: Vec<(i64, f64)> = semantic_candidates.iter().map(|candidate| (get_idx(&candidate.source), candidate.relevance)).collect();
     let fusion_weights = adaptive_rrf_weights(query_text, source_prefix, !semantic_candidates.is_empty());
     let fused = rrf_fuse_weighted(&[kw_list, sem_list], &[fusion_weights.keyword, fusion_weights.semantic], 60.0);
-    let kw_by_source: HashMap<&str, &SearchCandidate> =
-        kw_candidates.iter().map(|candidate| (candidate.source.as_str(), candidate)).collect();
-    let sem_by_source: HashMap<&str, &SemanticCandidate> =
-        semantic_candidates.iter().map(|candidate| (candidate.source.as_str(), candidate)).collect();
+    let kw_by_source: HashMap<&str, &SearchCandidate> = kw_candidates.iter().map(|candidate| (candidate.source.as_str(), candidate)).collect();
+    let sem_by_source: HashMap<&str, &SemanticCandidate> = semantic_candidates.iter().map(|candidate| (candidate.source.as_str(), candidate)).collect();
     let mut merged: HashMap<String, RecallItem> = HashMap::new();
     for (idx, rrf_score) in &fused {
         let source = match index_source.get(*idx as usize) {
@@ -1438,8 +913,7 @@ pub(crate) fn run_recall_with_query_vector_trace(
         } else {
             continue;
         };
-        let created_at_str =
-            if ts_ms > 0 { Utc.timestamp_millis_opt(ts_ms).single().map(|dt| dt.to_rfc3339()).unwrap_or_default() } else { String::new() };
+        let created_at_str = if ts_ms > 0 { Utc.timestamp_millis_opt(ts_ms).single().map(|dt| dt.to_rfc3339()).unwrap_or_default() } else { String::new() };
         let mut relevance = round4(compound_score(*rrf_score, importance * 100.0, &created_at_str));
         if prefers_recency {
             relevance = round4(relevance * temporal_intent_multiplier(ts_ms));
@@ -1490,7 +964,7 @@ pub(crate) fn run_recall_with_query_vector_trace(
     }
     ranked.sort_by(|a, b| compare_relevance_desc_source_asc(a.relevance, &a.source, b.relevance, &b.source));
     ranked.truncate(k);
-    Ok(RecallWithVectorTrace { ranked, semantic_baseline, semantic_route })
+    Ok(RecallWithVectorTrace { ranked, semantic_route })
 }
 pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Option<Value> {
     if let Some(crystal_id) = parse_crystal_source_id(source) {
@@ -1506,10 +980,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
                         full_text.push('\n');
                     }
                     if member_count as usize > members.len() {
-                        full_text.push_str(&format!(
-                            "... plus {} more hidden or archived member(s)",
-                            (member_count as usize).saturating_sub(members.len())
-                        ));
+                        full_text.push_str(&format!("... plus {} more hidden or archived member(s)", (member_count as usize).saturating_sub(members.len())));
                     }
                 }
                 return Some(
@@ -1558,9 +1029,7 @@ pub fn unfold_source(conn: &Connection, source: &str, ctx: &RecallContext) -> Op
 const UNFOLD_ACTIVE:&str="status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))";
 pub(crate) type MemoryUnfoldRow = (String, String, Option<i64>, Option<String>);
 pub(crate) type DecisionUnfoldRow = (String, Option<String>, Option<i64>, Option<String>);
-fn query_acl_row<T, F, G>(
-    conn: &Connection, with_sql: &str, without_sql: &str, bind: &[&dyn rusqlite::types::ToSql], map_with: F, map_without: G,
-) -> Option<T>
+fn query_acl_row<T, F, G>(conn: &Connection, with_sql: &str, without_sql: &str, bind: &[&dyn rusqlite::types::ToSql], map_with: F, map_without: G) -> Option<T>
 where
     F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
     G: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
@@ -1582,9 +1051,7 @@ pub(crate) fn query_memory_for_unfold(conn: &Connection, source: &str) -> Option
         |row| Ok((row.get(0)?, row.get(1)?, None, None)),
     )
 }
-fn query_decision_for_unfold(
-    conn: &Connection, predicate: &str, bind: &[&dyn rusqlite::types::ToSql], order_limit: &str,
-) -> Option<DecisionUnfoldRow> {
+fn query_decision_for_unfold(conn: &Connection, predicate: &str, bind: &[&dyn rusqlite::types::ToSql], order_limit: &str) -> Option<DecisionUnfoldRow> {
     query_acl_row(
         conn,
         &format!("SELECT decision, context, owner_id, visibility FROM decisions WHERE {predicate} AND {UNFOLD_ACTIVE}{order_limit}"),

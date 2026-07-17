@@ -153,8 +153,5 @@ fn eval_regression_gate_flags_rate_regressions() {
     let gate = build_eval_regression_gate(&current, &baseline, 0.20);
     assert_eq!(gate["ok"].as_bool(), Some(false));
     let failed = gate["failedMetrics"].as_array().expect("failed metrics list should be present");
-    assert!(
-        failed.iter().any(|entry| entry.get("metric").and_then(Value::as_str) == Some("taskSuccessRate")),
-        "taskSuccessRate regression should be reported"
-    );
+    assert!(failed.iter().any(|entry| entry.get("metric").and_then(Value::as_str) == Some("taskSuccessRate")), "taskSuccessRate regression should be reported");
 }

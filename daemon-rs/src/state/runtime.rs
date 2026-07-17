@@ -1,5 +1,5 @@
 use super::read_pool::ReadConnectionProvider;
-use super::types::{BrainFiringEvent, DaemonEvent, PreCacheEntry, RecallHistoryEntry, SqliteVecCanaryConfig};
+use super::types::{BrainFiringEvent, DaemonEvent, SqliteVecCanaryConfig};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -16,8 +16,6 @@ pub struct RuntimeState {
     pub mcp_calls: Arc<AtomicU64>,
     #[allow(dead_code)]
     pub mcp_sessions: Arc<Mutex<HashMap<String, i64>>>,
-    pub recall_history: Arc<Mutex<HashMap<String, Vec<RecallHistoryEntry>>>>,
-    pub pre_cache: Arc<Mutex<HashMap<String, PreCacheEntry>>>,
     pub served_content: Arc<Mutex<HashMap<String, HashMap<u32, i64>>>>,
     pub shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     pub home: std::path::PathBuf,

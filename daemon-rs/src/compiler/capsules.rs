@@ -4,11 +4,9 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
 pub(crate) fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT data FROM events WHERE type = 'agent_boot' AND source_agent = ?1 ORDER BY created_at DESC LIMIT 1",
-        params![agent],
-        |r| r.get::<_, String>(0),
-    )
+    conn.query_row("SELECT data FROM events WHERE type = 'agent_boot' AND source_agent = ?1 ORDER BY created_at DESC LIMIT 1", params![agent], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
     .and_then(|data| serde_json::from_str::<Value>(&data).ok()?.get("timestamp")?.as_str().map(|s| s.to_string()))
 }
@@ -63,9 +61,7 @@ pub(crate) fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
         .flatten();
     let mut all: Vec<(String, String, String, String)> = Vec::new();
     if let Ok(mut stmt) = conn.prepare("SELECT id, agent, kind, summary FROM feed ORDER BY timestamp ASC") {
-        if let Ok(rows) =
-            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))
-        {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))) {
             for row in rows.flatten() {
                 all.push(row);
             }
@@ -96,8 +92,8 @@ entry_agent,"summary":summary})
 }
 pub(crate) fn fetch_pending_tasks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Ok(mut stmt) = conn
-        .prepare("SELECT task_id, title, priority, project, files_json FROM tasks WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5")
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT task_id, title, priority, project, files_json FROM tasks WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5")
     {
         if let Ok(rows) = stmt.query_map([], |r| {
             let files_json: String = r.get(4)?;
@@ -114,9 +110,9 @@ unwrap_or(json!([]))}))
 }
 pub(crate) fn fetch_claimed_tasks_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1 ORDER BY claimed_at ASC",
-    ) {
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1 ORDER BY claimed_at ASC")
+    {
         if let Ok(rows) = stmt.query_map(params![agent], |r| {
             Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"priority":r.get
 ::<_,String>(2)?,"claimedAt":r.get::<_,Option<String>>(3)?}))
@@ -210,12 +206,10 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
             .collect();
         parts.push(format!("## Your Active Tasks\n{}", lines.join("\n")));
     }
-    if let Ok(mut stmt) = conn
-        .prepare("SELECT id, decision, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6")
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT id, decision, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6")
     {
-        if let Ok(rows) =
-            stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?)))
-        {
+        if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?))) {
             let mut seen = HashSet::new();
             let mut lines: Vec<String> = Vec::new();
             for (id, decision, source_agent, disputes_id) in rows.flatten() {
@@ -228,11 +222,9 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
                 }
                 let mut line = format!("#{id} ({source_agent}): {decision}");
                 if let Some(did) = disputes_id {
-                    if let Ok((partner_dec, partner_agent)) =
-                        conn.query_row("SELECT decision, source_agent FROM decisions WHERE id = ?1", params![did], |r| {
-                            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                        })
-                    {
+                    if let Ok((partner_dec, partner_agent)) = conn.query_row("SELECT decision, source_agent FROM decisions WHERE id = ?1", params![did], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    }) {
                         line.push_str(&format!(" vs #{did} ({partner_agent}): {partner_dec}"));
                     }
                 }
@@ -249,26 +241,50 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
         parts.push(format!("## Active Focus\n- {label} ({entries} entries)"));
     }
     if let Some(ref lb) = last_boot {
-        if let Ok(mut stmt)=conn.prepare(
-"SELECT decision, context, source_agent FROM decisions WHERE status = 'active' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 5"
-){if let Ok(rows)=stmt.query_map(params![lb],|r|Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?))){
-let lines:Vec<String>=rows.flatten().map(|(dec,ctx,ag)|{let c=ctx.map(|c|format!(" ({c})")).unwrap_or_default();format!(
-"- [{ag}] {dec}{c}")}).collect();if!lines.is_empty(){parts.push(format!("New decisions:\n{}",lines.join("\n")));}}}
-        if let Ok(mut
-stmt)=conn.prepare(
-"SELECT text, type FROM memories WHERE status = 'active' AND updated_at >= ?1 AND type != 'state' ORDER BY updated_at DESC LIMIT 3"
-){if let Ok(rows)=stmt.query_map(params![lb],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))){let lines:Vec<String>=rows.
-flatten().map(|(text,mtype)|{let truncated:String=text.chars().take(100).collect();format!("- [{mtype}] {truncated}")}).collect();
-if!lines.is_empty(){parts.push(format!("New knowledge:\n{}",lines.join("\n")));}}}
-        if let Ok(mut stmt)=conn.prepare(
-"SELECT type, COUNT(*) as cnt FROM events WHERE created_at > ?1 AND type NOT IN ('brain_init', 'index_all', 'agent_boot') GROUP BY type"
-){if let Ok(rows)=stmt.query_map(params![lb],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))){let entries:Vec<String>=rows.
-flatten().map(|(etype,cnt)|format!("{cnt} {}",etype.replace('_'," "))).collect();if!entries.is_empty(){parts.push(format!(
-"Activity since last boot: {}",entries.join(", ")));}}}
-    } else {
         if let Ok(mut stmt) =
-            conn.prepare("SELECT decision, context FROM decisions WHERE status = 'active' ORDER BY created_at DESC LIMIT 5")
+            conn.prepare("SELECT decision, context, source_agent FROM decisions WHERE status = 'active' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 5")
         {
+            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))) {
+                let lines: Vec<String> = rows
+                    .flatten()
+                    .map(|(dec, ctx, ag)| {
+                        let c = ctx.map(|c| format!(" ({c})")).unwrap_or_default();
+                        format!("- [{ag}] {dec}{c}")
+                    })
+                    .collect();
+                if !lines.is_empty() {
+                    parts.push(format!("New decisions:\n{}", lines.join("\n")));
+                }
+            }
+        }
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT text, type FROM memories WHERE status = 'active' AND updated_at >= ?1 AND type != 'state' ORDER BY updated_at DESC LIMIT 3")
+        {
+            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+                let lines: Vec<String> = rows
+                    .flatten()
+                    .map(|(text, mtype)| {
+                        let truncated: String = text.chars().take(100).collect();
+                        format!("- [{mtype}] {truncated}")
+                    })
+                    .collect();
+                if !lines.is_empty() {
+                    parts.push(format!("New knowledge:\n{}", lines.join("\n")));
+                }
+            }
+        }
+        if let Ok(mut stmt) = conn
+            .prepare("SELECT type, COUNT(*) as cnt FROM events WHERE created_at > ?1 AND type NOT IN ('brain_init', 'index_all', 'agent_boot') GROUP BY type")
+        {
+            if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+                let entries: Vec<String> = rows.flatten().map(|(etype, cnt)| format!("{cnt} {}", etype.replace('_', " "))).collect();
+                if !entries.is_empty() {
+                    parts.push(format!("Activity since last boot: {}", entries.join(", ")));
+                }
+            }
+        }
+    } else {
+        if let Ok(mut stmt) = conn.prepare("SELECT decision, context FROM decisions WHERE status = 'active' ORDER BY created_at DESC LIMIT 5") {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
                 let lines: Vec<String> = rows
                     .flatten()

@@ -1,14 +1,10 @@
-pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
+pub use crate::api_types::{ImportCounts, ImportOptions, ImportPayload};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 pub const DEFAULT_EXPORT_PAGE_LIMIT: usize = 1000;
 pub const MAX_EXPORT_PAGE_LIMIT: usize = 5000;
 fn normalize_entry_type(raw: Option<&str>, default: &str, aliases: &[(&[&str], &str)]) -> String {
-    let normalized = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| default.to_string());
+    let normalized = raw.map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase).unwrap_or_else(|| default.to_string());
     for (keys, mapped) in aliases {
         if keys.contains(&normalized.as_str()) {
             return (*mapped).to_string();
@@ -41,18 +37,6 @@ fn normalize_decision_entry_type(raw: Option<&str>) -> String {
         ],
     )
 }
-pub fn export_json_value(conn: &Connection) -> Value {
-    let memories=query_table_json(conn,
-"SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
-         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM memories WHERE status = 'active'"
-,);
-    let decisions=query_table_json(conn,
-"SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
-         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active'"
-,);
-    json!({"version":1,"exported_at":now_iso(),"memories":memories,"decisions":decisions,"memories_count":memories.len(),
-"decisions_count":decisions.len(),})
-}
 pub fn export_json_page_value(conn: &Connection, limit: usize, memories_offset: usize, decisions_offset: usize) -> Value {
     let limit = limit.clamp(1, MAX_EXPORT_PAGE_LIMIT);
     let(memories,memories_has_more)=
@@ -72,55 +56,18 @@ memories.len(),"decisions_count":decisions.len(),})
 }
 pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Value {
     let cursor = now_iso();
-    let memories=query_table_json_since(conn,
-"SELECT id, text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
-         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM memories WHERE status = 'active' \
-         AND (?1 IS NULL OR COALESCE(updated_at, created_at) > ?1) \
-         AND COALESCE(updated_at, created_at) <= ?2"
-,since,&cursor,);
-    let decisions=query_table_json_since(conn,
-"SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
-         retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active' \
-         AND (?1 IS NULL OR COALESCE(updated_at, created_at) > ?1) \
-         AND COALESCE(updated_at, created_at) <= ?2"
-,since,&cursor,);
-    json!({"version":1,"mode":"changeset","exported_at":cursor,"since":since,"cursor":cursor,"memories":memories,
-"decisions":decisions,"memories_count":memories.len(),"decisions_count":decisions.len(),})
-}
-pub fn export_sql_text(conn: &Connection) -> String {
-    let mut lines: Vec<String> = vec![
-        "-- Cortex export".to_string(),
-        format!("-- Exported at {}", now_iso()),
-        "BEGIN TRANSACTION;".to_string(),
-    ];
-    if let Ok(mut stmt)=conn.prepare(
-"SELECT text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, observed_at, valid_from, valid_until FROM memories WHERE status = 'active'"
-,){let rows=stmt.query_map([],|row|{Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,
-row.get::<_,Option<String>>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?,
-row.get::<_,Option<f64>>(7)?,row.get::<_,Option<String>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<f64>>(10)?,row.get::<
-_,Option<String>>(11)?,row.get::<_,Option<String>>(12)?,row.get::<_,Option<String>>(13)?,row.get::<_,Option<String>>(14)?,))});if
-let Ok(rows)=rows{for row in rows.flatten(){let(text,source,typ,tags,agent,source_client,source_model,confidence,reasoning_depth,
-trust_score,score,retention_class,observed_at,valid_from,valid_until,)=row;lines.push(format!(
-"INSERT INTO memories (text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, observed_at, valid_from, valid_until, status) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 'active');"
-,sql_quote(&text),sql_quote_opt(&source),sql_quote_opt(&typ),sql_quote_opt(&tags),sql_quote_opt(&agent),sql_quote_opt(&
-source_client),sql_quote_opt(&source_model),confidence.unwrap_or(0.8),sql_quote_opt(&reasoning_depth),trust_score.unwrap_or(
-confidence.unwrap_or(0.8)),score.unwrap_or(1.0),sql_quote(&retention_class.unwrap_or_else(||"operational".to_string())),
-sql_quote_opt(&observed_at),sql_quote_opt(&valid_from),sql_quote_opt(&valid_until),));}}}
-    if let Ok(mut stmt)=conn.prepare(
-"SELECT decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, observed_at, valid_from, valid_until FROM decisions WHERE status = 'active'"
-,){let rows=stmt.query_map([],|row|{Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,
-row.get::<_,Option<String>>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<f64>>(6)?,row.
-get::<_,Option<String>>(7)?,row.get::<_,Option<f64>>(8)?,row.get::<_,Option<f64>>(9)?,row.get::<_,Option<String>>(10)?,row.get::<_
-,Option<String>>(11)?,row.get::<_,Option<String>>(12)?,row.get::<_,Option<String>>(13)?,))});if let Ok(rows)=rows{for row in rows.
-flatten(){let(decision,context,typ,agent,source_client,source_model,confidence,reasoning_depth,trust_score,score,retention_class,
-observed_at,valid_from,valid_until,)=row;lines.push(format!(
-"INSERT INTO decisions (decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, observed_at, valid_from, valid_until, status) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 'active');"
-,sql_quote(&decision),sql_quote_opt(&context),sql_quote_opt(&typ),sql_quote_opt(&agent),sql_quote_opt(&source_client),
-sql_quote_opt(&source_model),confidence.unwrap_or(0.8),sql_quote_opt(&reasoning_depth),trust_score.unwrap_or(confidence.unwrap_or(
-0.8)),score.unwrap_or(1.0),sql_quote(&retention_class.unwrap_or_else(||"operational".to_string())),sql_quote_opt(&observed_at),
-sql_quote_opt(&valid_from),sql_quote_opt(&valid_until),));}}}
-    lines.push("COMMIT;".to_string());
-    lines.join("\n")
+    let lower = since.unwrap_or("0000-00-00T00:00:00Z");
+    let memories = query_rows_json(
+        conn,
+        "SELECT id, text, source, type, status, created_at, updated_at FROM memories WHERE status = 'active' AND updated_at > ?1 AND updated_at <= ?2 ORDER BY id",
+        &[&lower, &cursor],
+    );
+    let decisions = query_rows_json(
+        conn,
+        "SELECT id, decision, context, type, status, created_at, updated_at FROM decisions WHERE status = 'active' AND updated_at > ?1 AND updated_at <= ?2 ORDER BY id",
+        &[&lower, &cursor],
+    );
+    json!({"version":1,"mode":"changeset","cursor":cursor,"since":since,"memories":memories,"decisions":decisions})
 }
 pub fn import_payload(conn: &mut Connection, payload: &ImportPayload, options: &ImportOptions) -> Result<ImportCounts, String> {
     let mut counts = ImportCounts::default();
@@ -210,15 +157,7 @@ fn query_rows_json(conn: &Connection, sql: &str, bind: &[&dyn rusqlite::types::T
         Err(_) => return vec![],
     };
     let column_names: Vec<String> = (0..stmt.column_count()).map(|i| stmt.column_name(i).unwrap_or("?").to_string()).collect();
-    stmt.query_map(bind, |row| row_to_json(row, &column_names))
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|r| r.ok())
-        .collect()
-}
-fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
-    query_rows_json(conn, sql, &[])
+    stmt.query_map(bind, |row| row_to_json(row, &column_names)).ok().into_iter().flatten().filter_map(|r| r.ok()).collect()
 }
 fn query_table_json_page(conn: &Connection, sql: &str, limit: usize, offset: usize) -> (Vec<Value>, bool) {
     let fetch_limit = limit.saturating_add(1) as i64;
@@ -230,20 +169,8 @@ fn query_table_json_page(conn: &Connection, sql: &str, limit: usize, offset: usi
     }
     (rows, has_more)
 }
-fn query_table_json_since(conn: &Connection, sql: &str, since: Option<&str>, cursor: &str) -> Vec<Value> {
-    query_rows_json(conn, sql, &[&since, &cursor])
-}
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-fn sql_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
-fn sql_quote_opt(s: &Option<String>) -> String {
-    match s {
-        Some(v) => sql_quote(v),
-        None => "NULL".to_string(),
-    }
 }
 fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
     let mut stmt = match conn.prepare(&format!("PRAGMA table_info({table})")) {

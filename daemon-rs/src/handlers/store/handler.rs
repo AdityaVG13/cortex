@@ -1,9 +1,7 @@
 use super::*;
 use crate::api_types::StoreRequest;
 use crate::budgets::BudgetEndpoint;
-use crate::handlers::{
-    ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, require_team_caller, resolve_source_identity,
-};
+use crate::handlers::{ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, require_team_caller, resolve_source_identity};
 use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
 use axum::extract::State;
@@ -28,22 +26,14 @@ pub async fn handle_store(State(state): State<RuntimeState>, headers: HeaderMap,
     if let Err(resp) = ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Store, &source_agent).await {
         return resp;
     }
-    let benchmark_store =
-        body.entry_type.as_deref().map(is_benchmark_entry_type).unwrap_or(false) || is_benchmark_source_agent(&source_agent);
-    let provenance = DecisionProvenance::from_fields(
-        &source_agent,
-        body.source_model.as_deref().or(source_identity.model.as_deref()),
-        body.reasoning_depth.as_deref(),
-    );
+    let benchmark_store = body.entry_type.as_deref().map(is_benchmark_entry_type).unwrap_or(false) || is_benchmark_source_agent(&source_agent);
+    let provenance =
+        DecisionProvenance::from_fields(&source_agent, body.source_model.as_deref().or(source_identity.model.as_deref()), body.reasoning_depth.as_deref());
     if let Err(StoreError::BadRequest(message)) = validate_explicit_ttl_seconds(body.ttl_seconds) {
         return json_response(StatusCode::BAD_REQUEST, json!({"error":message}));
     }
     let decision_text = decision.trim().to_string();
-    let embedding_model_key = state
-        .embedding_engine
-        .as_ref()
-        .map(|engine| engine.model_key())
-        .unwrap_or(crate::embeddings::selected_model_key());
+    let embedding_model_key = state.embedding_engine.as_ref().map(|engine| engine.model_key()).unwrap_or(crate::embeddings::selected_model_key());
     let decision_embedding = match state.embedding_engine.clone() {
         Some(engine) => engine.embed_async(decision_text.clone()).await,
         None => None,

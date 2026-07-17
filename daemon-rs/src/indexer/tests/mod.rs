@@ -60,17 +60,11 @@ mem_type = "config"
     crate::db::initialize_schema(&conn).unwrap();
     let n = super::index_custom_sources(&conn, &tmp, None);
     assert_eq!(n, 3, "expected 3 indexed entries (2 md + 1 json)");
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'notes::%'", [], |r| r.get(0))
-        .unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'notes::%'", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 2, "expected 2 note memories");
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'config::%'", [], |r| r.get(0))
-        .unwrap();
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE source LIKE 'config::%'", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1, "expected 1 config memory");
-    let mem_type: String = conn
-        .query_row("SELECT type FROM memories WHERE source LIKE 'notes::%' LIMIT 1", [], |r| r.get(0))
-        .unwrap();
+    let mem_type: String = conn.query_row("SELECT type FROM memories WHERE source LIKE 'notes::%' LIMIT 1", [], |r| r.get(0)).unwrap();
     assert_eq!(mem_type, "note");
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -77,8 +77,7 @@ fn status_setup_repair() -> StatusRepair {
 fn status_connect_next_action() -> StatusRepair {
     StatusRepair {
         kind: "connect_tool_or_smoke",
-        label: "Connect an AI tool, then store and recall one memory; CLI users can start with `cortex boot --agent smoke-test --json`."
-            .to_string(),
+        label: "Connect an AI tool, then store and recall one memory; CLI users can start with `cortex boot --agent smoke-test --json`.".to_string(),
         command: Some("cortex boot --agent smoke-test --json".to_string()),
         docs: status_docs_path(),
     }
@@ -101,9 +100,7 @@ fn compact_status_detail(value: &str) -> String {
     out.push_str("...");
     out
 }
-pub(crate) fn build_status_report(
-    paths: &auth::CortexPaths, runtime_probe: StatusRuntimeProbe, token_exists: bool, db_exists: bool,
-) -> StatusReport {
+pub(crate) fn build_status_report(paths: &auth::CortexPaths, runtime_probe: StatusRuntimeProbe, token_exists: bool, db_exists: bool) -> StatusReport {
     let runtime_base_url = transport::local_http_base_url(paths);
     let (mut status, summary, runtime_check, mut next_action) = match runtime_probe {
         StatusRuntimeProbe::Ready(detail) => {
@@ -202,18 +199,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
     let base_url = transport::local_http_base_url(paths);
     let mut probe_errors = Vec::new();
     let probe_headers = [(String::from("X-Cortex-Request"), String::from("true"))];
-    match transport::request_with_local_ipc_fallback(
-        &client,
-        "GET",
-        &base_url,
-        "/readiness",
-        paths,
-        &probe_headers,
-        None,
-        Duration::from_secs(2),
-    )
-    .await
-    {
+    match transport::request_with_local_ipc_fallback(&client, "GET", &base_url, "/readiness", paths, &probe_headers, None, Duration::from_secs(2)).await {
         Ok((status, body)) => {
             let status_code = status.as_u16();
             if let Some(ready) = readiness_state_from_payload(status_code, &body, Some(paths.port), Some(paths)) {
@@ -234,18 +220,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
         }
         Err(err) => probe_errors.push(format!("readiness failed: {err}")),
     }
-    match transport::request_with_local_ipc_fallback(
-        &client,
-        "GET",
-        &base_url,
-        "/health",
-        paths,
-        &probe_headers,
-        None,
-        Duration::from_secs(2),
-    )
-    .await
-    {
+    match transport::request_with_local_ipc_fallback(&client, "GET", &base_url, "/health", paths, &probe_headers, None, Duration::from_secs(2)).await {
         Ok((status, body)) => {
             let status_code = status.as_u16();
             if is_cortex_health_payload(status_code, &body, Some(paths.port), Some(paths)) {

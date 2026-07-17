@@ -166,11 +166,7 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
             continue;
         }
         let mut col_stmt = corrupt_conn.prepare(&format!("PRAGMA table_info({table})")).map_err(RepairError::Export)?;
-        let columns: Vec<String> = col_stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(RepairError::Export)?
-            .filter_map(|r| r.ok())
-            .collect();
+        let columns: Vec<String> = col_stmt.query_map([], |row| row.get::<_, String>(1)).map_err(RepairError::Export)?.filter_map(|r| r.ok()).collect();
         if columns.is_empty() {
             eprintln!("[cortex] auto_repair: table '{table}' has no columns, skipping");
             continue;
@@ -286,27 +282,4 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
         corrupt_archive.display()
     );
     Ok(RepairResult { memories_recovered, decisions_recovered, corrupt_db_path: corrupt_archive })
-}
-pub fn archive_entries_scoped(conn: &Connection, table: &str, ids: &[i64], owner_id: Option<i64>) -> rusqlite::Result<usize> {
-    if table != "memories" && table != "decisions" {
-        return Err(rusqlite::Error::InvalidParameterName(format!("archive_entries: unsupported table '{table}'")));
-    }
-    if ids.is_empty() {
-        return Ok(0);
-    }
-    let placeholders = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
-    let sql = if owner_id.is_some() {
-        format!("UPDATE {table} SET status = 'archived' WHERE owner_id = ?{} AND id IN ({placeholders})", ids.len() + 1)
-    } else {
-        format!("UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})")
-    };
-    let mut stmt = conn.prepare(&sql)?;
-    let affected = if let Some(owner_id) = owner_id {
-        let mut values: Vec<rusqlite::types::Value> = ids.iter().copied().map(rusqlite::types::Value::Integer).collect();
-        values.push(rusqlite::types::Value::Integer(owner_id));
-        stmt.execute(rusqlite::params_from_iter(values.iter()))?
-    } else {
-        stmt.execute(rusqlite::params_from_iter(ids.iter()))?
-    };
-    Ok(affected)
 }

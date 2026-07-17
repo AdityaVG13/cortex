@@ -1,16 +1,5 @@
 use serde_json::Value;
 #[derive(Clone, Debug)]
-pub struct RecallHistoryEntry {
-    pub query: String,
-    pub timestamp: i64,
-}
-#[derive(Clone, Debug)]
-pub struct PreCacheEntry {
-    pub query: String,
-    pub results: Value,
-    pub expires_at: i64,
-}
-#[derive(Clone, Debug)]
 pub struct DaemonEvent {
     pub event_type: String,
     #[allow(dead_code)]

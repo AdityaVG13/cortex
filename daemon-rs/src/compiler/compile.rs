@@ -32,10 +32,7 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             if let Some(start) = remaining_delta.find(header) {
                 let content_start = start;
                 let after_header = start + header.len();
-                let end = remaining_delta[after_header..]
-                    .find("\n\n")
-                    .map(|p| after_header + p)
-                    .unwrap_or(remaining_delta.len());
+                let end = remaining_delta[after_header..].find("\n\n").map(|p| after_header + p).unwrap_or(remaining_delta.len());
                 let section_text = remaining_delta[content_start..end].trim().to_string();
                 if !section_text.is_empty() {
                     items.push(ContextItem::new(header, section_text, *priority));
@@ -66,10 +63,8 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
             "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
             params![
                 "boot_savings",
-                serde_json::to_string(
-                    &json!({"agent":agent,"served":token_estimate,"baseline":raw_baseline,"saved":saved,"percent":percent,
-"admitted":admitted.len(),"rejected":rejected.len()})
-                )
+                serde_json::to_string(&json!({"agent":agent,"served":token_estimate,"baseline":raw_baseline,"saved":saved,"percent":percent,
+"admitted":admitted.len(),"rejected":rejected.len()}))
                 .unwrap_or_default(),
                 "rust-daemon"
             ],

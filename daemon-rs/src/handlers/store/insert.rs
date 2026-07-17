@@ -4,10 +4,9 @@ use crate::conflict::{jaccard_similarity, ConflictClassification, ConflictResult
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 pub(crate) fn insert_decision_with_state(
-    tx: &rusqlite::Transaction<'_>, decision: &str, context: Option<&str>, entry_type: &str, source_agent: &str,
-    provenance: &DecisionProvenance, confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass,
-    expires_at: Option<&str>, ts: &str, owner_id: Option<i64>, status: &str, disputes_id: Option<i64>, supersedes_id: Option<i64>,
-    surprise: Option<f64>,
+    tx: &rusqlite::Transaction<'_>, decision: &str, context: Option<&str>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance,
+    confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<&str>, ts: &str, owner_id: Option<i64>, status: &str,
+    disputes_id: Option<i64>, supersedes_id: Option<i64>, surprise: Option<f64>,
 ) -> Result<i64, StoreError> {
     let surprise = surprise.map(round4);
     if let Some
@@ -28,9 +27,8 @@ trust_score,],)}.map_err(|e|StoreError::Internal(e.to_string()))?;
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_conflict_record(
-    tx: &rusqlite::Transaction<'_>, source_decision_id: Option<i64>, target_decision_id: i64, classification: ConflictClassification,
-    similarity_jaccard: f64, similarity_cosine: Option<f64>, status: &str, resolution_strategy: Option<&str>, resolved_by: Option<&str>,
-    ts: &str,
+    tx: &rusqlite::Transaction<'_>, source_decision_id: Option<i64>, target_decision_id: i64, classification: ConflictClassification, similarity_jaccard: f64,
+    similarity_cosine: Option<f64>, status: &str, resolution_strategy: Option<&str>, resolved_by: Option<&str>, ts: &str,
 ) -> Result<i64, StoreError> {
     let resolved_at = if status == "open" { None } else { Some(ts) };
     tx.execute(
@@ -56,8 +54,7 @@ pub(crate) fn relation_to_json(relation: &ConflictResult) -> Value {
 round4(relation.similarity_jaccard),"cosine":relation.similarity_cosine.map(round4),},})
 }
 pub(crate) fn conflict_record_json(
-    record_id: i64, source_decision_id: Option<i64>, target_decision_id: i64, classification: ConflictClassification, status: &str,
-    strategy: Option<&str>,
+    record_id: i64, source_decision_id: Option<i64>, target_decision_id: i64, classification: ConflictClassification, status: &str, strategy: Option<&str>,
 ) -> Value {
     json!({"id":record_id,"source_decision_id":source_decision_id,"target_decision_id":target_decision_id,
 "classification":classification.as_str(),"status":status,"resolution_strategy":strategy,})
@@ -80,10 +77,7 @@ pub(crate) fn assess_quality(text: &str) -> QualityAssessment {
     let specificity_bonus = if has_specificity_markers(trimmed) { 20 } else { 0 };
     let question_penalty = if trimmed.ends_with('?') { -30 } else { 0 };
     let score = (length_score + specificity_bonus + question_penalty).clamp(0, 100);
-    QualityAssessment {
-        score,
-        factors: QualityFactors { length_score, specificity_bonus, question_penalty },
-    }
+    QualityAssessment { score, factors: QualityFactors { length_score, specificity_bonus, question_penalty } }
 }
 pub(crate) fn has_specificity_markers(text: &str) -> bool {
     let lower = text.to_lowercase();
@@ -91,11 +85,8 @@ pub(crate) fn has_specificity_markers(text: &str) -> bool {
     let code_prefixes = ["fn ", "func ", "def ", "class ", "struct ", "impl ", "select ", "insert ", "update ", "delete "];
     let has_path = text.contains('/') || text.contains('\\');
     let has_extension = file_extensions.iter().any(|ext| lower.contains(ext));
-    let has_function =
-        text.contains("::") || text.contains("()") || text.contains("->") || code_prefixes.iter().any(|needle| lower.contains(needle));
-    let has_identifier = text
-        .split_whitespace()
-        .any(|token| token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic()));
+    let has_function = text.contains("::") || text.contains("()") || text.contains("->") || code_prefixes.iter().any(|needle| lower.contains(needle));
+    let has_identifier = text.split_whitespace().any(|token| token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic()));
     has_path || has_extension || has_function || has_identifier
 }
 pub(crate) fn choose_semantic_dedup_action(candidates: &[SemanticCandidate], incoming_text: &str) -> SemanticDedupAction {
@@ -114,9 +105,7 @@ pub(crate) fn should_merge_candidate(similarity: f32, jaccard: f64) -> bool {
     (REVIEW_MERGE_THRESHOLD..=HARD_MERGE_THRESHOLD).contains(&similarity) && jaccard > JACCARD_MERGE_THRESHOLD
 }
 
-pub(crate) fn fetch_top_semantic_candidates(
-    conn: &Connection, query_vector: &[f32], owner_id: Option<i64>,
-) -> Result<Vec<SemanticCandidate>, StoreError> {
+pub(crate) fn fetch_top_semantic_candidates(conn: &Connection, query_vector: &[f32], owner_id: Option<i64>) -> Result<Vec<SemanticCandidate>, StoreError> {
     let selected_model = crate::embeddings::selected_model_key().to_ascii_lowercase();
     let legacy_vector_bytes = std::mem::size_of_val(query_vector) as i64;
     let pq8_vector_bytes = (crate::embeddings::PQ8_HEADER_BYTES + query_vector.len()) as i64;

@@ -51,21 +51,15 @@ pub struct BudgetConfig {
 }
 impl BudgetConfig {
     pub fn parse_toml_str(contents: &str) -> Result<Self, BudgetConfigError> {
-        let raw: RawBudgetFile = toml::from_str(contents)
-            .map_err(|error| BudgetConfigError::new("parse_error", format!("failed to parse budgets.toml: {error}"), None, None))?;
+        let raw: RawBudgetFile =
+            toml::from_str(contents).map_err(|error| BudgetConfigError::new("parse_error", format!("failed to parse budgets.toml: {error}"), None, None))?;
         let enabled = raw.defaults.and_then(|defaults| defaults.enabled).unwrap_or(true);
         let mut endpoints = BTreeMap::new();
         for (name, raw_budget) in raw.endpoints.unwrap_or_default() {
-            let endpoint = BudgetEndpoint::parse(&name).ok_or_else(|| {
-                BudgetConfigError::new("unknown_endpoint", format!("unknown budget endpoint: {name}"), Some(name.clone()), None)
-            })?;
+            let endpoint = BudgetEndpoint::parse(&name)
+                .ok_or_else(|| BudgetConfigError::new("unknown_endpoint", format!("unknown budget endpoint: {name}"), Some(name.clone()), None))?;
             let limit = raw_budget.limit.ok_or_else(|| {
-                BudgetConfigError::new(
-                    "missing_limit",
-                    format!("budget endpoint {name} is missing limit"),
-                    Some(name.clone()),
-                    Some("limit"),
-                )
+                BudgetConfigError::new("missing_limit", format!("budget endpoint {name} is missing limit"), Some(name.clone()), Some("limit"))
             })?;
             if limit <= 0 {
                 return Err(BudgetConfigError::new(
@@ -117,12 +111,7 @@ pub struct BudgetConfigError {
 }
 impl BudgetConfigError {
     fn new(code: impl Into<String>, message: impl Into<String>, endpoint: Option<String>, field: Option<&str>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            endpoint,
-            field: field.map(str::to_string),
-        }
+        Self { code: code.into(), message: message.into(), endpoint, field: field.map(str::to_string) }
     }
     fn to_json(&self) -> Value {
         json!({"code":self.code,"message":self.message,"endpoint":self.endpoint,
@@ -144,9 +133,7 @@ impl BudgetConfigStatus {
         let path = path.into();
         match std::fs::read_to_string(&path) {
             Ok(contents) => Self::from_contents(path, &contents),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Self { config_loaded: false, source: path, config: None, error: None }
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self { config_loaded: false, source: path, config: None, error: None },
             Err(error) => Self {
                 config_loaded: true,
                 source: path,
@@ -156,12 +143,7 @@ impl BudgetConfigStatus {
         }
     }
     pub fn missing_for_tests() -> Self {
-        Self {
-            config_loaded: false,
-            source: PathBuf::from(BUDGETS_FILE_NAME),
-            config: None,
-            error: None,
-        }
+        Self { config_loaded: false, source: PathBuf::from(BUDGETS_FILE_NAME), config: None, error: None }
     }
     fn from_contents(source: PathBuf, contents: &str) -> Self {
         match BudgetConfig::parse_toml_str(contents) {

@@ -1,9 +1,7 @@
 use super::*;
 use crate::aging;
 use crate::auth;
-use crate::cli::cleanup::{
-    cleanup_backup_retention, cleanup_bridge_backups, cleanup_expired_rows, create_backup, rotate_startup_logs, should_backup,
-};
+use crate::cli::cleanup::{cleanup_backup_retention, cleanup_bridge_backups, cleanup_expired_rows, create_backup, rotate_startup_logs, should_backup};
 use crate::cli::common::{parse_env_u64, parse_env_usize, parse_truthy_flag};
 use crate::compaction;
 use crate::crystallize;
@@ -36,9 +34,7 @@ pub(crate) async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl st
     let parent_pid = spawn_parent_pid_from_env();
     let parent_start_time = spawn_parent_start_time_from_env();
     let owner_token = daemon_owner_token_from_env();
-    if let Err(reason) =
-        validate_spawned_owner_runtime_claim(&paths, daemon_owner.as_deref(), parent_pid, parent_start_time, owner_token.as_deref())
-    {
+    if let Err(reason) = validate_spawned_owner_runtime_claim(&paths, daemon_owner.as_deref(), parent_pid, parent_start_time, owner_token.as_deref()) {
         eprintln!("[cortex] FATAL: invalid spawned owner claim ({reason}); refusing startup");
         std::process::exit(1);
     }
@@ -120,30 +116,21 @@ pub(crate) async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl st
             if let Some(conn) = acquire_background_db_lock(&db_index, "startup indexing", lock_wait).await {
                 let indexed = indexer::index_all(&conn, &home, owner_id);
                 let decayed = indexer::decay_pass(&conn);
-                eprintln!(
-                    "[cortex] Startup indexing complete: indexed {indexed}, decayed {decayed} scores in {}ms",
-                    started.elapsed().as_millis()
-                );
+                eprintln!("[cortex] Startup indexing complete: indexed {indexed}, decayed {decayed} scores in {}ms", started.elapsed().as_millis());
             }
         });
     }
     if let Some(engine) = state.embedding_engine.clone() {
         let db = state.db.clone();
         let batch_size = parse_env_usize("CORTEX_EMBED_BACKFILL_BATCH_SIZE", DEFAULT_EMBED_BACKFILL_BATCH_SIZE).clamp(1, 10_000);
-        let max_batches_per_pass =
-            parse_env_usize("CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS", DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS).clamp(1, 1000);
+        let max_batches_per_pass = parse_env_usize("CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS", DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS).clamp(1, 1000);
         let interval_secs = parse_env_u64("CORTEX_EMBED_BACKFILL_INTERVAL_SECS", DEFAULT_EMBED_BACKFILL_INTERVAL_SECS).clamp(5, 86_400);
-        let drain_on_startup = std::env::var(EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV)
-            .ok()
-            .map(|value| parse_truthy_flag(&value))
-            .unwrap_or(false);
+        let drain_on_startup = std::env::var(EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV).ok().map(|value| parse_truthy_flag(&value)).unwrap_or(false);
         let startup_drain_max_batches =
-            parse_env_usize(EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES_ENV, DEFAULT_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES)
-                .clamp(1, 10_000);
+            parse_env_usize(EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES_ENV, DEFAULT_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES).clamp(1, 10_000);
         let startup_delay = startup_schedule.embed;
         let lock_wait = background_lock_wait;
-        let startup_max_batches_per_pass =
-            if startup_delay > Duration::from_secs(0) { max_batches_per_pass.min(2) } else { max_batches_per_pass };
+        let startup_max_batches_per_pass = if startup_delay > Duration::from_secs(0) { max_batches_per_pass.min(2) } else { max_batches_per_pass };
         tokio::spawn(async move {
             if startup_delay > Duration::from_secs(0) {
                 tokio::time::sleep(startup_delay).await;
@@ -161,10 +148,7 @@ pub(crate) async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl st
                         );
                     }
                 } else {
-                    eprintln!(
-                        "[embeddings] Startup pass left backlog pending; set {}=1 to run a one-time extended drain",
-                        EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV
-                    );
+                    eprintln!("[embeddings] Startup pass left backlog pending; set {}=1 to run a one-time extended drain", EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV);
                 }
             }
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -294,8 +278,7 @@ pub(crate) async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl st
         tokio::spawn(async move {
             tokio::time::sleep(initial_delay).await;
             if let Some(conn) = acquire_background_db_lock(&db_crystal, "initial crystallization", lock_wait).await {
-                let result =
-                    crystallize::run_crystallize_pass_with_brain(&conn, engine_crystal.as_deref(), crystal_owner_id, &brain_crystal);
+                let result = crystallize::run_crystallize_pass_with_brain(&conn, engine_crystal.as_deref(), crystal_owner_id, &brain_crystal);
                 if result.crystals_created > 0 || result.crystals_updated > 0 {
                     eprintln!("[cortex] Initial crystallization: {} created, {} updated", result.crystals_created, result.crystals_updated);
                 }
@@ -321,10 +304,7 @@ pub(crate) async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl st
             }
         });
     }
-    let idle_shutdown_secs = std::env::var(IDLE_SHUTDOWN_SECS_ENV)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .unwrap_or(0);
+    let idle_shutdown_secs = std::env::var(IDLE_SHUTDOWN_SECS_ENV).ok().and_then(|raw| raw.trim().parse::<u64>().ok()).unwrap_or(0);
     let idle_min_uptime_secs = parse_env_u64(IDLE_SHUTDOWN_MIN_UPTIME_SECS_ENV, DEFAULT_IDLE_SHUTDOWN_MIN_UPTIME_SECS).clamp(1, 86_400);
     if idle_shutdown_secs > 0 {
         eprintln!("[cortex] Idle shutdown enabled (timeout={}s, min_uptime={}s)", idle_shutdown_secs, idle_min_uptime_secs);

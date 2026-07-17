@@ -23,9 +23,7 @@ pub fn migrate_legacy_db(paths: &CortexPaths) -> Result<bool, String> {
     let busy_timeout_ms = crate::db::SQLITE_BUSY_TIMEOUT_MS;
     conn.execute_batch(&format!("PRAGMA busy_timeout = {busy_timeout_ms};"))
         .map_err(|e| format!("configure migrated db busy timeout: {e}"))?;
-    let check: String = conn
-        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
-        .map_err(|e| format!("integrity check: {e}"))?;
+    let check: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0)).map_err(|e| format!("integrity check: {e}"))?;
     if check != "ok" {
         let _ = fs::remove_file(&paths.db);
         return Err(format!("integrity check failed on migrated db: {check}"));

@@ -231,10 +231,7 @@ impl RateLimiter {
             let budget_status = self.budget_status();
             let mut map = self.budget_requests.lock().await;
             map.retain(|(_, endpoint), w| {
-                let window = budget_status
-                    .budget_for(*endpoint)
-                    .map(|budget| Duration::from_secs(budget.window_seconds))
-                    .unwrap_or(WINDOW);
+                let window = budget_status.budget_for(*endpoint).map(|budget| Duration::from_secs(budget.window_seconds)).unwrap_or(WINDOW);
                 w.prune(now, window);
                 !w.timestamps.is_empty()
             });

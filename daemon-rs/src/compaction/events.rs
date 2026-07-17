@@ -302,9 +302,5 @@ pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_ro
     .unwrap_or(0)
 }
 pub(crate) fn checkpoint_after_compaction(conn: &Connection, allow_vacuum: bool) {
-    let _ = if allow_vacuum {
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-    } else {
-        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
-    };
+    let _ = if allow_vacuum { conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") } else { conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);") };
 }

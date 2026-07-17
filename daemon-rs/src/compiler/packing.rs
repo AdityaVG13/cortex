@@ -4,11 +4,7 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::env;
 pub(crate) fn read_usize_env(name: &str, default: usize) -> usize {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
+    env::var(name).ok().and_then(|value| value.trim().parse::<usize>().ok()).filter(|value| *value > 0).unwrap_or(default)
 }
 pub(crate) fn boot_source_token_bounds() -> SourceTokenBounds {
     SourceTokenBounds::new(
@@ -20,13 +16,7 @@ pub(crate) fn boot_rank_top_n() -> usize {
     read_usize_env("CORTEX_BOOT_RANK_TOP_N", DEFAULT_BOOT_RANK_TOP_N).min(20)
 }
 pub(crate) fn empty_rank_components() -> RankComponents {
-    RankComponents {
-        class_score: 0.0,
-        recency_score: 0.0,
-        relevance_score: 0.0,
-        activity_score: 0.0,
-        total_score: 0.0,
-    }
+    RankComponents { class_score: 0.0, recency_score: 0.0, relevance_score: 0.0, activity_score: 0.0, total_score: 0.0 }
 }
 pub(crate) fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
     let mut candidates = Vec::new();
@@ -262,9 +252,7 @@ allocation,"priority":item.priority,"truncated":true,"packing":"score_adaptive"}
 pub(crate) fn pack_context_items(items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds) -> PackedContext {
     pack_context_items_with_mode(items, max_tokens, bounds, boot_packing_mode())
 }
-pub(crate) fn pack_context_items_with_mode(
-    items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds, mode: BootPackingMode,
-) -> PackedContext {
+pub(crate) fn pack_context_items_with_mode(items: &[ContextItem], max_tokens: usize, bounds: SourceTokenBounds, mode: BootPackingMode) -> PackedContext {
     match mode {
         BootPackingMode::LegacyGreedy => pack_context_items_greedy(items, max_tokens),
         BootPackingMode::ScoreAdaptive => pack_context_items_score_adaptive(items, max_tokens, bounds),

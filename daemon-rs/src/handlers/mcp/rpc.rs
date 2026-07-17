@@ -40,9 +40,7 @@ pub(crate) fn mcp_tool_cluster(tool_name: &str) -> &'static str {
         | "cortex_memory_decay_run"
         | "cortex_eval_run" => "memory-governance",
         "cortex_focus_start" | "cortex_focus_end" | "cortex_focus_status" | "cortex_diary" => "continuity",
-        "cortex_agent_feedback_record" | "cortex_agent_feedback_stats" | "cortex_health" | "cortex_digest" | "cortex_lastCall" => {
-            "observability"
-        }
+        "cortex_agent_feedback_record" | "cortex_agent_feedback_stats" | "cortex_health" | "cortex_digest" | "cortex_lastCall" => "observability",
         "cortex_permissions_list" | "cortex_permissions_grant" | "cortex_permissions_revoke" => "admin",
         _ => "other",
     }
@@ -224,14 +222,9 @@ pub(crate) fn arg_str<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }
-pub(crate) fn arg_f64(args: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_f64()))
-}
 pub(crate) fn arg_i64(args: &Value, keys: &[&str]) -> Option<i64> {
     keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_i64()))
 }
 pub(crate) fn arg_usize(args: &Value, keys: &[&str]) -> Option<usize> {
-    keys.iter()
-        .find_map(|key| args.get(*key).and_then(|value| value.as_u64()))
-        .map(|value| value as usize)
+    keys.iter().find_map(|key| args.get(*key).and_then(|value| value.as_u64())).map(|value| value as usize)
 }

@@ -28,10 +28,8 @@ pub async fn handle_user_add(State(state): State<RuntimeState>, headers: HeaderM
         Ok(h) => h,
         Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
-    let result = conn.execute(
-        "INSERT INTO users (username, display_name, api_key_hash, role) VALUES (?1, ?2, ?3, ?4)",
-        params![username, body.display_name, hash, role],
-    );
+    let result = conn
+        .execute("INSERT INTO users (username, display_name, api_key_hash, role) VALUES (?1, ?2, ?3, ?4)", params![username, body.display_name, hash, role]);
     match result {
         Ok(_) => {}
         Err(e) => {

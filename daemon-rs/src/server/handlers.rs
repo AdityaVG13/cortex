@@ -69,12 +69,7 @@ pub(crate) async fn handle_crystallize(State(state): State<RuntimeState>, header
     }
     let conn = state.db.lock().await;
     let brain_sender = Some(state.brain_firing.clone());
-    let result = crate::crystallize::run_crystallize_pass_with_brain(
-        &conn,
-        state.embedding_engine.as_deref(),
-        state.default_owner_id,
-        &brain_sender,
-    );
+    let result = crate::crystallize::run_crystallize_pass_with_brain(&conn, state.embedding_engine.as_deref(), state.default_owner_id, &brain_sender);
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({"clusters":result.
@@ -86,9 +81,7 @@ pub(crate) struct FocusRequest {
     label: Option<String>,
     agent: Option<String>,
 }
-pub(crate) async fn handle_focus_start(
-    State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>,
-) -> axum::response::Response {
+pub(crate) async fn handle_focus_start(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -105,9 +98,7 @@ pub(crate) async fn handle_focus_start(
         Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
-pub(crate) async fn handle_focus_end(
-    State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>,
-) -> axum::response::Response {
+pub(crate) async fn handle_focus_end(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }

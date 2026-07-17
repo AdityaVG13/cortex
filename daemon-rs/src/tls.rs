@@ -7,14 +7,10 @@ fn default_tls_dir() -> PathBuf {
     crate::auth::cortex_dir().join("tls")
 }
 fn cert_path() -> PathBuf {
-    std::env::var("CORTEX_TLS_CERT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| default_tls_dir().join("cert.pem"))
+    std::env::var("CORTEX_TLS_CERT").map(PathBuf::from).unwrap_or_else(|_| default_tls_dir().join("cert.pem"))
 }
 fn key_path() -> PathBuf {
-    std::env::var("CORTEX_TLS_KEY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| default_tls_dir().join("key.pem"))
+    std::env::var("CORTEX_TLS_KEY").map(PathBuf::from).unwrap_or_else(|_| default_tls_dir().join("key.pem"))
 }
 pub fn try_load_tls() -> Result<Option<TlsAcceptor>, String> {
     let cert = cert_path();

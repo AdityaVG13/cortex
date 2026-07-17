@@ -109,11 +109,7 @@ cloned().unwrap_or(Value::Null),"tier":obj.get("tier").cloned().unwrap_or(Value:
 }
 fn extract_i64(value: Option<&Value>) -> i64 {
     value
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_u64().and_then(|x| i64::try_from(x).ok()))
-                .or_else(|| v.as_f64().map(|x| x.round() as i64))
-        })
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().and_then(|x| i64::try_from(x).ok())).or_else(|| v.as_f64().map(|x| x.round() as i64)))
         .unwrap_or(0)
 }
 fn truncate_event_value(value: Value, depth: usize) -> Value {
@@ -230,10 +226,7 @@ pub fn log_event(conn: &rusqlite::Connection, kind: &str, data: Value, source_ag
     if should_skip_benchmark_event_persistence(kind, &compacted, source_agent) {
         return Ok(());
     }
-    conn.execute(
-        "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
-        rusqlite::params![kind, compacted.to_string(), source_agent],
-    )?;
+    conn.execute("INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)", rusqlite::params![kind, compacted.to_string(), source_agent])?;
     maybe_prune_high_volume_event(conn, kind)?;
     Ok(())
 }

@@ -28,11 +28,7 @@ pub(crate) fn migration_user_version(version: &str) -> i32 {
 }
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn latest_schema_user_version() -> i32 {
-    migration_definitions()
-        .iter()
-        .map(|(version, _)| migration_user_version(version))
-        .max()
-        .unwrap_or(0)
+    migration_definitions().iter().map(|(version, _)| migration_user_version(version)).max().unwrap_or(0)
 }
 pub fn current_schema_user_version(conn: &Connection) -> rusqlite::Result<i32> {
     conn.query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -228,7 +224,7 @@ pub(crate) fn apply_migration_with_logging(conn: &Connection, version: &str, log
         }
         "012" => {
             conn.execute_batch(
-r#"
+                r#"
                 DROP TRIGGER IF EXISTS memories_fts_ai;
                 DROP TRIGGER IF EXISTS memories_fts_ad;
                 DROP TRIGGER IF EXISTS memories_fts_au;
@@ -269,8 +265,8 @@ r#"
                   INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
                   INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
                 END;
-                "#
-,)?;
+                "#,
+            )?;
             rebuild_fts(conn)?;
             Ok(())
         }

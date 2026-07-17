@@ -15,10 +15,8 @@ mod tests {
     #[test]
     fn acquire_global_daemon_lock_rejects_duplicate_instances() {
         let _guard = env_guard();
-        let lock_home = std::env::temp_dir().join(format!(
-            "cortex-global-lock-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
-        ));
+        let lock_home = std::env::temp_dir()
+            .join(format!("cortex-global-lock-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
         let _home_var = ScopedEnvVar::set(CORTEX_GLOBAL_LOCK_HOME_ENV, &lock_home);
         let _first = acquire_global_daemon_lock().expect("first lock");
         let second = acquire_global_daemon_lock();

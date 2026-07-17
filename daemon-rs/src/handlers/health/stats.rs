@@ -1,4 +1,3 @@
-use super::*;
 use crate::handlers::{ensure_auth_rated, json_response};
 use crate::state::RuntimeState;
 use axum::extract::State;
@@ -24,5 +23,15 @@ pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap)
         })
         .map(|iter| iter.filter_map(|row| row.ok()).collect())
         .unwrap_or_default();
-    json_response(StatusCode::OK, build_recall_stats_payload_from_rows(&rows))
+    let mut queries = 0_i64;
+    let mut saved = 0_i64;
+    let mut spent = 0_i64;
+    for (data, _) in &rows {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+            queries += 1;
+            saved += value.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
+            spent += value.get("spent").and_then(|v| v.as_i64()).unwrap_or(0);
+        }
+    }
+    json_response(StatusCode::OK, json!({"queries":queries,"saved":saved,"spent":spent}))
 }

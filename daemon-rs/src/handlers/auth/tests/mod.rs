@@ -132,11 +132,7 @@ fn constant_time_eq_matches_only_identical_strings() {
 fn estimate_tokens_from_chars_matches_estimate_tokens() {
     for char_count in [0usize, 1, 3, 4, 38, 379, 10_000] {
         let text = "x".repeat(char_count);
-        assert_eq!(
-            estimate_tokens_from_chars(char_count),
-            estimate_tokens(&text),
-            "char-count estimator should match text estimator for {char_count} chars"
-        );
+        assert_eq!(estimate_tokens_from_chars(char_count), estimate_tokens(&text), "char-count estimator should match text estimator for {char_count} chars");
     }
 }
 #[test]

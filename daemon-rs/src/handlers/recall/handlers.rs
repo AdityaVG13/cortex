@@ -1,8 +1,6 @@
 use super::*;
 use crate::budgets::BudgetEndpoint;
-use crate::handlers::{
-    ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, estimate_tokens, json_response, resolve_source_identity,
-};
+use crate::handlers::{ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, estimate_tokens, json_response, resolve_source_identity};
 use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
 use axum::extract::{Query, State};
@@ -43,8 +41,8 @@ fn fire_recall_brain_event(state: &RuntimeState, payload: &Value, agent: &str) {
     });
 }
 async fn run_unified_recall_handler(
-    state: &RuntimeState, headers: &HeaderMap, q: String, requested_policy_mode: Option<RecallPolicyMode>, budget: Option<usize>,
-    k: Option<usize>, source_prefix: Option<String>, agent_default: Option<&str>, missing_q_error: &str, failure_prefix: &str,
+    state: &RuntimeState, headers: &HeaderMap, q: String, requested_policy_mode: Option<RecallPolicyMode>, budget: Option<usize>, k: Option<usize>,
+    source_prefix: Option<String>, agent_default: Option<&str>, missing_q_error: &str, failure_prefix: &str,
 ) -> Response {
     let caller_id = match auth_recall_caller(headers, state).await {
         Ok(id) => id,
@@ -212,10 +210,7 @@ pub async fn handle_peek(State(state): State<RuntimeState>, headers: HeaderMap, 
     let mut conn = state.db.lock().await;
     match run_recall(&mut conn, &q, k, &ctx, source_prefix) {
         Ok(results) => {
-            let matches: Vec<Value> = results
-                .iter()
-                .map(|r| json!({"source":r.source,"relevance":r.relevance,"method":r.method}))
-                .collect();
+            let matches: Vec<Value> = results.iter().map(|r| json!({"source":r.source,"relevance":r.relevance,"method":r.method})).collect();
             let usage = compute_headlines_token_usage(&results);
             json_response(
                 StatusCode::OK,
@@ -264,10 +259,7 @@ pub async fn handle_unfold(State(state): State<RuntimeState>, Query(query): Quer
             results.push(json!({"source":source,"text":null,"type":"not_found","tokens":0}));
         }
     }
-    json_response(
-        StatusCode::OK,
-        json!({"results":results,"totalTokens":total_tokens,"count":results.iter().filter(|r|r["type"]!="not_found").count(),}),
-    )
+    json_response(StatusCode::OK, json!({"results":results,"totalTokens":total_tokens,"count":results.iter().filter(|r|r["type"]!="not_found").count(),}))
 }
 pub(crate) fn extract_recall_node_ids(payload: &Value) -> Vec<String> {
     fn walk(v: &Value, out: &mut Vec<String>, limit: usize) {
@@ -276,9 +268,7 @@ pub(crate) fn extract_recall_node_ids(payload: &Value) -> Vec<String> {
         }
         match v {
             Value::Object(map) => {
-                if let (Some(target_type), Some(target_id)) =
-                    (map.get("type").and_then(|t| t.as_str()), map.get("id").and_then(|t| t.as_i64()))
-                {
+                if let (Some(target_type), Some(target_id)) = (map.get("type").and_then(|t| t.as_str()), map.get("id").and_then(|t| t.as_i64())) {
                     if matches!(target_type, "memory" | "decision" | "crystal") {
                         out.push(format!("{target_type}-{target_id}"));
                         if out.len() >= limit {

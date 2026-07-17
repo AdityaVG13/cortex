@@ -34,11 +34,8 @@ fn unread_feed_falls_back_when_ack_anchor_is_missing() {
     insert_entry(&conn, "a1", "alpha", "2026-04-10T00:00:00Z");
     insert_entry(&conn, "b1", "beta", "2026-04-10T00:01:00Z");
     insert_entry(&conn, "g1", "gamma", "2026-04-10T00:02:00Z");
-    conn.execute(
-        "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3)",
-        params!["alpha", "missing-anchor", "2026-04-10T00:03:00Z"],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3)", params!["alpha", "missing-anchor", "2026-04-10T00:03:00Z"])
+        .unwrap();
     let unread = get_unread_feed(&conn, "alpha", None).unwrap();
     let ids = unread.into_iter().map(|entry| entry.id).collect::<Vec<_>>();
     assert_eq!(ids, vec!["b1".to_string(), "g1".to_string()]);
@@ -50,11 +47,8 @@ fn unread_feed_starts_after_ack_and_skips_self_entries() {
     insert_entry(&conn, "b1", "beta", "2026-04-10T00:01:00Z");
     insert_entry(&conn, "a2", "alpha", "2026-04-10T00:02:00Z");
     insert_entry(&conn, "g1", "gamma", "2026-04-10T00:03:00Z");
-    conn.execute(
-        "INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3)",
-        params!["alpha", "b1", "2026-04-10T00:04:00Z"],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO feed_acks (agent, last_seen_id, updated_at) VALUES (?1, ?2, ?3)", params!["alpha", "b1", "2026-04-10T00:04:00Z"])
+        .unwrap();
     let unread = get_unread_feed(&conn, "alpha", None).unwrap();
     let ids = unread.into_iter().map(|entry| entry.id).collect::<Vec<_>>();
     assert_eq!(ids, vec!["g1".to_string()]);

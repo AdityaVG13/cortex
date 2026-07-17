@@ -1,16 +1,12 @@
-use crate::co_occurrence;
 use crate::db::checkpoint_wal_best_effort;
 use crate::handlers::{estimate_tokens, now_iso, parse_timestamp_ms, truncate_chars};
-use crate::rerank::{RerankCandidate, RerankedScore};
-use crate::state::{PreCacheEntry, RecallHistoryEntry, RuntimeState, SqliteVecCanaryConfig, SqliteVecRouteMode};
+use crate::state::{RuntimeState, SqliteVecCanaryConfig};
 use chrono::{TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
-use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 use std::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,16 +34,12 @@ pub(crate) fn query_shape_profile(query_text: &str, source_prefix: Option<&str>)
         naturalish: token_count >= 8 || char_count >= 56 || trimmed.ends_with('?'),
     }
 }
-pub(crate) const MAX_RECALL_HISTORY: usize = 50;
-pub(crate) const PRECACHE_TTL_MS: i64 = 5 * 60 * 1000;
-pub(crate) const RECALL_PREDICTIVE_PRECACHE_ENV: &str = "CORTEX_RECALL_PREDICTIVE_PRECACHE";
 pub(crate) const SEMANTIC_SIM_FLOOR: f64 = 0.3;
 pub(crate) const SEMANTIC_SCALE_BASE: f64 = 0.55;
 pub(crate) const MAX_SEMANTIC_RRF_CANDIDATES: usize = 120;
 pub(crate) const MAX_SEMANTIC_SQL_ROWS_PER_KIND: usize = MAX_SEMANTIC_RRF_CANDIDATES * 24;
 pub(crate) const MIN_BUDGET_HEADROOM_TOKENS: usize = 8;
 pub(crate) const MIN_EXCERPT_CHARS: usize = 24;
-pub(crate) const ASSOCIATIVE_MIN_BUDGET_TOKENS: usize = 260;
 pub(crate) const MEMORIES_BM25_TEXT_WEIGHT: f64 = 4.6;
 pub(crate) const MEMORIES_BM25_SOURCE_WEIGHT: f64 = 1.7;
 pub(crate) const MEMORIES_BM25_TAGS_WEIGHT: f64 = 2.2;
@@ -55,10 +47,6 @@ pub(crate) const DECISIONS_BM25_DECISION_WEIGHT: f64 = 6.6;
 pub(crate) const DECISIONS_BM25_CONTEXT_WEIGHT: f64 = 1.0;
 pub(crate) const BM25_WEIGHT_MIN: f64 = 0.1;
 pub(crate) const BM25_WEIGHT_MAX: f64 = 12.0;
-pub(crate) const SQLITE_VEC_TRIAL_MIN_OVERLAP_RATIO: f64 = 0.60;
-pub(crate) const SQLITE_VEC_TRIAL_MIN_JACCARD: f64 = 0.45;
-pub(crate) const SQLITE_VEC_TRIAL_MAX_MEAN_ABS_RANK_DELTA: f64 = 1.25;
-pub(crate) const SQLITE_VEC_TRIAL_TOP1_MATCH_REQUIRED: bool = true;
 pub(crate) const ENTITY_SIGNAL_OVERLAP_WEIGHT: f64 = 0.10;
 pub(crate) const ENTITY_SIGNAL_MATCH_WEIGHT: f64 = 0.01;
 pub(crate) const ENTITY_SIGNAL_MAX_BOOST: f64 = 0.12;
@@ -102,14 +90,6 @@ pub(crate) fn bm25_weights_from_resolver(mut resolve_env: impl FnMut(&str) -> Op
 }
 pub(crate) fn bm25_weights() -> &'static Bm25Weights {
     BM25_WEIGHTS.get_or_init(|| bm25_weights_from_resolver(|name| std::env::var(name).ok()))
-}
-pub(crate) fn recall_predictive_precache_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var(RECALL_PREDICTIVE_PRECACHE_ENV)
-            .ok()
-            .is_some_and(|raw| matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-    })
 }
 #[derive(Clone, Debug)]
 pub(crate) struct RecallItem {
@@ -161,24 +141,8 @@ pub(crate) struct SemanticCandidate {
     pub(crate) importance: f64,
     pub(crate) ts: i64,
 }
-#[derive(Clone)]
-pub(crate) struct ShadowSemanticRow {
-    pub(crate) source: String,
-    pub(crate) vector: Vec<f32>,
-}
-#[derive(Clone)]
-pub(crate) struct ShadowSemanticBaseline {
-    pub(crate) candidate_count: usize,
-    pub(crate) ranked_sources: Vec<String>,
-}
-impl ShadowSemanticBaseline {
-    pub(crate) fn top_sources(&self, top_k: usize) -> Vec<String> {
-        self.ranked_sources.iter().take(top_k.clamp(1, MAX_SEMANTIC_RRF_CANDIDATES)).cloned().collect()
-    }
-}
 pub(crate) struct RecallWithVectorTrace {
     pub(crate) ranked: Vec<RecallItem>,
-    pub(crate) semantic_baseline: Option<ShadowSemanticBaseline>,
     pub(crate) semantic_route: Value,
 }
 pub(crate) type CrystalMemberSourceRow = (Option<String>, Option<i64>, Option<String>);
@@ -337,13 +301,7 @@ pub(crate) fn query_crystal_for_unfold(conn: &Connection, crystal_id: i64) -> Op
          FROM memory_clusters
          WHERE id = ?1";
     match conn.query_row(sql_with_visibility, params![crystal_id], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-            row.get::<_, Option<String>>(4)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, Option<String>>(4)?))
     }) {
         Ok(row) => Some(row),
         Err(err) if is_missing_team_visibility_columns(&err) => conn
@@ -404,18 +362,10 @@ pub(crate) fn recall_default_k_for_mode(mode: RecallPolicyMode) -> usize {
 }
 pub(crate) fn recall_latency_budget_ms_for_mode(mode: RecallPolicyMode) -> u128 {
     match mode {
-        RecallPolicyMode::Headlines => {
-            parse_env_usize("CORTEX_RECALL_HEADLINES_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_FAST_MS as usize, 0, 60_000) as u128
-        }
-        RecallPolicyMode::Fast => {
-            parse_env_usize("CORTEX_RECALL_FAST_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_FAST_MS as usize, 0, 60_000) as u128
-        }
-        RecallPolicyMode::Balanced => {
-            parse_env_usize("CORTEX_RECALL_BALANCED_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_BALANCED_MS as usize, 0, 60_000) as u128
-        }
-        RecallPolicyMode::Deep => {
-            parse_env_usize("CORTEX_RECALL_DEEP_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_DEEP_MS as usize, 0, 120_000) as u128
-        }
+        RecallPolicyMode::Headlines => parse_env_usize("CORTEX_RECALL_HEADLINES_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_FAST_MS as usize, 0, 60_000) as u128,
+        RecallPolicyMode::Fast => parse_env_usize("CORTEX_RECALL_FAST_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_FAST_MS as usize, 0, 60_000) as u128,
+        RecallPolicyMode::Balanced => parse_env_usize("CORTEX_RECALL_BALANCED_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_BALANCED_MS as usize, 0, 60_000) as u128,
+        RecallPolicyMode::Deep => parse_env_usize("CORTEX_RECALL_DEEP_MAX_LATENCY_MS", DEFAULT_RECALL_LATENCY_DEEP_MS as usize, 0, 120_000) as u128,
     }
 }
 pub(crate) fn recall_mode_for_budget(budget: usize) -> RecallPolicyMode {
@@ -445,9 +395,7 @@ pub fn parse_recall_policy_mode(raw: Option<&str>) -> Result<Option<RecallPolicy
     };
     Ok(Some(mode))
 }
-pub fn resolve_recall_budget_k(
-    requested_mode: Option<RecallPolicyMode>, budget: Option<usize>, k: Option<usize>,
-) -> (usize, usize, RecallPolicyMode) {
+pub fn resolve_recall_budget_k(requested_mode: Option<RecallPolicyMode>, budget: Option<usize>, k: Option<usize>) -> (usize, usize, RecallPolicyMode) {
     let resolved_budget = match (requested_mode, budget) {
         (_, Some(explicit_budget)) => explicit_budget,
         (Some(mode), None) => recall_default_budget_for_mode(mode),
@@ -535,11 +483,10 @@ pub(crate) fn normalize_text(input: &str) -> String {
 }
 pub(crate) fn extract_keywords(text: &str) -> Vec<String> {
     let stop_words: HashSet<&'static str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would",
-        "could", "should", "may", "might", "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
-        "about", "that", "this", "it", "its", "not", "but", "and", "or", "if", "then", "so", "what", "which", "who", "how", "when",
-        "where", "why", "all", "each", "every", "both", "few", "more", "most", "some", "any", "no", "my", "your", "his", "her", "our",
-        "their", "i", "me",
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+        "may", "might", "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about", "that", "this", "it", "its", "not",
+        "but", "and", "or", "if", "then", "so", "what", "which", "who", "how", "when", "where", "why", "all", "each", "every", "both", "few", "more", "most",
+        "some", "any", "no", "my", "your", "his", "her", "our", "their", "i", "me",
     ]
     .into_iter()
     .collect();
@@ -784,17 +731,11 @@ pub(crate) fn term_set_jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f64 
     }
     intersection as f64 / union as f64
 }
-pub(crate) fn query_term_coverage_gain(
-    signature_terms: &HashSet<String>, query_terms: &HashSet<String>, covered_terms: &HashSet<String>,
-) -> usize {
-    query_terms
-        .iter()
-        .filter(|term| signature_terms.contains(*term) && !covered_terms.contains(*term))
-        .count()
+pub(crate) fn query_term_coverage_gain(signature_terms: &HashSet<String>, query_terms: &HashSet<String>, covered_terms: &HashSet<String>) -> usize {
+    query_terms.iter().filter(|term| signature_terms.contains(*term) && !covered_terms.contains(*term)).count()
 }
 pub(crate) fn should_skip_redundant_budget_candidate(
-    signature_terms: &HashSet<String>, selected_signatures: &[HashSet<String>], query_terms: &HashSet<String>,
-    covered_terms: &HashSet<String>,
+    signature_terms: &HashSet<String>, selected_signatures: &[HashSet<String>], query_terms: &HashSet<String>, covered_terms: &HashSet<String>,
 ) -> bool {
     if selected_signatures.is_empty() || signature_terms.is_empty() {
         return false;
@@ -802,15 +743,10 @@ pub(crate) fn should_skip_redundant_budget_candidate(
     if query_term_coverage_gain(signature_terms, query_terms, covered_terms) > 0 {
         return false;
     }
-    let max_similarity = selected_signatures
-        .iter()
-        .map(|existing| term_set_jaccard(existing, signature_terms))
-        .fold(0.0_f64, f64::max);
+    let max_similarity = selected_signatures.iter().map(|existing| term_set_jaccard(existing, signature_terms)).fold(0.0_f64, f64::max);
     max_similarity >= BUDGET_REDUNDANCY_SIMILARITY_THRESHOLD
 }
-pub(crate) fn update_query_term_coverage(
-    signature_terms: &HashSet<String>, query_terms: &HashSet<String>, covered_terms: &mut HashSet<String>,
-) {
+pub(crate) fn update_query_term_coverage(signature_terms: &HashSet<String>, query_terms: &HashSet<String>, covered_terms: &mut HashSet<String>) {
     for term in query_terms {
         if signature_terms.contains(term) {
             covered_terms.insert(term.clone());
@@ -842,11 +778,7 @@ pub(crate) fn query_focused_excerpt_with_terms(text: &str, sorted_focus_terms: &
         if let Some(answer_byte_idx) = lower_text.find("[user-answer]") {
             let answer_char_idx = text[..answer_byte_idx].chars().count();
             let answer_end_char = (answer_char_idx + max_chars).min(total_chars);
-            let mut answer_excerpt = text
-                .chars()
-                .skip(answer_char_idx)
-                .take(answer_end_char.saturating_sub(answer_char_idx))
-                .collect::<String>();
+            let mut answer_excerpt = text.chars().skip(answer_char_idx).take(answer_end_char.saturating_sub(answer_char_idx)).collect::<String>();
             if !answer_excerpt.trim().is_empty() {
                 if answer_char_idx > 0 {
                     answer_excerpt = format!("...{answer_excerpt}");
@@ -972,9 +904,7 @@ pub(crate) fn temporal_intent_multiplier(ts_ms: i64) -> f64 {
     let freshness = (1.0 / (1.0 + age_days / 14.0)).clamp(0.0, 1.0);
     1.0 + ((freshness - 0.5) * TEMPORAL_INTENT_MULTIPLIER_RANGE)
 }
-pub(crate) fn query_alignment_boost_with_profile(
-    source: &str, excerpt: &str, profile: &QueryAlignmentProfile, query_focus_term_count: usize,
-) -> f64 {
+pub(crate) fn query_alignment_boost_with_profile(source: &str, excerpt: &str, profile: &QueryAlignmentProfile, query_focus_term_count: usize) -> f64 {
     if profile.lower_query.is_empty() {
         return 0.0;
     }
@@ -1121,19 +1051,6 @@ pub(crate) fn entity_signal_boost(matches: usize, overlap: f64) -> f64 {
     let match_component = matches.min(3) as f64 * ENTITY_SIGNAL_MATCH_WEIGHT;
     (overlap_component + match_component).min(ENTITY_SIGNAL_MAX_BOOST)
 }
-pub(crate) fn jaccard_similarity(a: &str, b: &str) -> f64 {
-    let set_a: HashSet<&str> = a.split_whitespace().collect();
-    let set_b: HashSet<&str> = b.split_whitespace().collect();
-    if set_a.is_empty() && set_b.is_empty() {
-        return 1.0;
-    }
-    let intersection = set_a.intersection(&set_b).count();
-    let union = set_a.union(&set_b).count();
-    if union == 0 {
-        return 0.0;
-    }
-    intersection as f64 / union as f64
-}
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FusionWeights {
     pub(crate) keyword: f64,
@@ -1211,10 +1128,7 @@ pub(crate) fn fallback_ranking_score(
     let retrieval_weight = (retrievals.unwrap_or(0).clamp(0, 20) as f64) / 20.0;
     let score_weight = effective_score.clamp(0.0, 1.0);
     let weights = adaptive_fallback_ranking_weights(query_text, term_group_count);
-    (keyword_weight * weights.keyword)
-        + (score_weight * weights.score)
-        + (recency_weight * weights.recency)
-        + (retrieval_weight * weights.retrieval)
+    (keyword_weight * weights.keyword) + (score_weight * weights.score) + (recency_weight * weights.recency) + (retrieval_weight * weights.retrieval)
 }
 pub(crate) fn rrf_fuse_weighted(lists: &[Vec<(i64, f64)>], weights: &[f64], k: f64) -> Vec<(i64, f64)> {
     let smooth_k = if k.is_finite() && k >= 0.0 { k } else { 60.0 };
@@ -1299,31 +1213,24 @@ fn search_source_key(kind: SearchTableKind, id: i64, alt: Option<&str>) -> Strin
     }
 }
 fn search_table_recency(
-    conn: &Connection, limit: usize, source_prefix: Option<&str>, source_like: Option<&str>, kind: SearchTableKind,
-    excerpt_focus_terms: &[String],
+    conn: &Connection, limit: usize, source_prefix: Option<&str>, source_like: Option<&str>, kind: SearchTableKind, excerpt_focus_terms: &[String],
 ) -> Result<Vec<SearchCandidate>, String> {
     let(sql,use_aging)=match kind{SearchTableKind::Memories=>(format!("SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier FROM memories WHERE {ACTIVE_TEMPORAL} AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1"),true,),SearchTableKind::Decisions=>(format!("SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE {ACTIVE_TEMPORAL} AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1"),false,),};
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![limit as i64, source_like], |row| {
-            let effective_score = blend_importance(
-                row.get::<_, Option<f64>>(if use_aging { 4 } else { 3 })?,
-                row.get::<_, Option<f64>>(if use_aging { 5 } else { 4 })?,
-            );
+            let effective_score =
+                blend_importance(row.get::<_, Option<f64>>(if use_aging { 4 } else { 3 })?, row.get::<_, Option<f64>>(if use_aging { 5 } else { 4 })?);
             let (display, source) = if use_aging {
                 let text: String = row.get(1)?;
                 let compressed: Option<String> = row.get(9)?;
                 let age_tier: String = row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "fresh".to_string());
                 let display = crate::aging::get_display_text(&text, &compressed, &age_tier);
-                let source = row
-                    .get::<_, Option<String>>(2)?
-                    .unwrap_or_else(|| format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0)));
+                let source = row.get::<_, Option<String>>(2)?.unwrap_or_else(|| format!("memory::{}", row.get::<_, i64>(0).unwrap_or(0)));
                 (display, source)
             } else {
                 let decision: String = row.get(1)?;
-                let source = row
-                    .get::<_, Option<String>>(2)?
-                    .unwrap_or_else(|| format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0)));
+                let source = row.get::<_, Option<String>>(2)?.unwrap_or_else(|| format!("decision::{}", row.get::<_, i64>(0).unwrap_or(0)));
                 (decision, source)
             };
             Ok(SearchCandidate {
@@ -1373,11 +1280,9 @@ fn search_table_fts(
         let ts = parse_timestamp_ms(last_accessed.as_deref().or(created_at.as_deref()).unwrap_or(""));
         let display = crate::aging::get_display_text(&primary, &compressed_text, age_tier.as_deref().unwrap_or("fresh"));
         let haystacks: Vec<String> = match kind {
-            SearchTableKind::Memories => vec![
-                primary.to_lowercase(),
-                alt.as_deref().unwrap_or("").to_lowercase(),
-                tags.as_deref().unwrap_or("").to_lowercase(),
-            ],
+            SearchTableKind::Memories => {
+                vec![primary.to_lowercase(), alt.as_deref().unwrap_or("").to_lowercase(), tags.as_deref().unwrap_or("").to_lowercase()]
+            }
             SearchTableKind::Decisions => vec![primary.to_lowercase(), alt.as_deref().unwrap_or("").to_lowercase()],
         };
         let matched = count_matching_term_groups(&haystacks, term_groups);
@@ -1416,21 +1321,8 @@ fn search_table_fts(
             })
             .map_err(|e| e.to_string())?;
         for row in rows.flatten() {
-            let (
-                id,
-                primary,
-                alt,
-                tags,
-                score,
-                trust_score,
-                retrievals,
-                last_accessed,
-                created_at,
-                compressed_text,
-                age_tier,
-                row_owner_id,
-                row_visibility,
-            ) = row;
+            let (id, primary, alt, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, row_owner_id, row_visibility) =
+                row;
             push_fts_row(
                 id,
                 primary,
@@ -1467,20 +1359,7 @@ fn search_table_fts(
             })
             .map_err(|e| e.to_string())?;
         for row in rows.flatten() {
-            let (
-                id,
-                primary,
-                alt,
-                score,
-                trust_score,
-                retrievals,
-                last_accessed,
-                created_at,
-                compressed_text,
-                age_tier,
-                row_owner_id,
-                row_visibility,
-            ) = row;
+            let (id, primary, alt, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, row_owner_id, row_visibility) = row;
             push_fts_row(
                 id,
                 primary,
@@ -1562,11 +1441,9 @@ fn search_table_scan_fallback(
             continue;
         }
         let haystacks: Vec<String> = match kind {
-            SearchTableKind::Memories => vec![
-                primary.to_lowercase(),
-                alt.as_deref().unwrap_or("").to_lowercase(),
-                tags.as_deref().unwrap_or("").to_lowercase(),
-            ],
+            SearchTableKind::Memories => {
+                vec![primary.to_lowercase(), alt.as_deref().unwrap_or("").to_lowercase(), tags.as_deref().unwrap_or("").to_lowercase()]
+            }
             SearchTableKind::Decisions => vec![primary.to_lowercase(), alt.as_deref().unwrap_or("").to_lowercase()],
         };
         let matched = count_matching_term_groups(&haystacks, term_groups);
@@ -1592,9 +1469,7 @@ fn search_table_scan_fallback(
     ranked.truncate(limit);
     Ok(ranked)
 }
-fn search_table(
-    conn: &Connection, query_text: &str, limit: usize, source_prefix: Option<&str>, kind: SearchTableKind,
-) -> Result<Vec<SearchCandidate>, String> {
+fn search_table(conn: &Connection, query_text: &str, limit: usize, source_prefix: Option<&str>, kind: SearchTableKind) -> Result<Vec<SearchCandidate>, String> {
     let term_groups = build_search_term_groups(query_text);
     let excerpt_focus_terms = query_focus_terms_for_excerpt(query_text);
     let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
@@ -1627,14 +1502,10 @@ fn search_table(
         ),
     }
 }
-pub(crate) fn search_memories(
-    conn: &Connection, query_text: &str, limit: usize, source_prefix: Option<&str>,
-) -> Result<Vec<SearchCandidate>, String> {
+pub(crate) fn search_memories(conn: &Connection, query_text: &str, limit: usize, source_prefix: Option<&str>) -> Result<Vec<SearchCandidate>, String> {
     search_table(conn, query_text, limit, source_prefix, SearchTableKind::Memories)
 }
-pub(crate) fn search_decisions(
-    conn: &Connection, query_text: &str, limit: usize, source_prefix: Option<&str>,
-) -> Result<Vec<SearchCandidate>, String> {
+pub(crate) fn search_decisions(conn: &Connection, query_text: &str, limit: usize, source_prefix: Option<&str>) -> Result<Vec<SearchCandidate>, String> {
     search_table(conn, query_text, limit, source_prefix, SearchTableKind::Decisions)
 }
 include!("engine_semantic.rs");

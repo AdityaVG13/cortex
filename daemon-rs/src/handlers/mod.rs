@@ -15,10 +15,9 @@ pub mod recall;
 pub mod redaction;
 pub mod store;
 pub use auth::{
-    client_ip, ensure_admin, ensure_auth_rated, ensure_auth_with_caller_rated, ensure_auth_with_caller_rated_for_class,
-    ensure_endpoint_budget, ensure_events_stream_auth, ensure_ssrf_protection, log_budget_rejection, register_agent_presence,
-    register_agent_presence_from_headers, resolve_caller_id, resolve_source_identity, runtime_token_matches, SourceIdentity,
-    CORTEX_PEER_IP_HEADER,
+    client_ip, ensure_admin, ensure_auth_rated, ensure_auth_with_caller_rated, ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget,
+    ensure_events_stream_auth, ensure_ssrf_protection, log_budget_rejection, register_agent_presence, register_agent_presence_from_headers, resolve_caller_id,
+    resolve_source_identity, runtime_token_matches, SourceIdentity, CORTEX_PEER_IP_HEADER,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};

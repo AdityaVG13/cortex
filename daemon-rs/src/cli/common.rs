@@ -2,7 +2,6 @@ use crate::auth;
 use crate::crystallize;
 use crate::db;
 use crate::transport;
-use std::io::IsTerminal;
 use std::path::Path;
 use std::time::Duration;
 pub(crate) const SINGLE_DAEMON_TEST_BYPASS_ENV: &str = "CORTEX_SINGLE_DAEMON_TEST_BYPASS";
@@ -78,8 +77,7 @@ pub(crate) fn is_local_client_base_url(base_url: &str, paths: &auth::CortexPaths
     transport::is_local_http_base_url(base_url, paths)
 }
 pub(crate) fn resolve_client_target_inputs(
-    override_url: Option<&str>, override_api_key: Option<&str>, env_base_url: Option<&str>, env_api_key: Option<&str>,
-    default_base_url: &str,
+    override_url: Option<&str>, override_api_key: Option<&str>, env_base_url: Option<&str>, env_api_key: Option<&str>, default_base_url: &str,
 ) -> (String, Option<String>, bool) {
     let resolved_base_url = normalize_option(override_url).or_else(|| normalize_option(env_base_url));
     let resolved_api_key = normalize_option(override_api_key).or_else(|| normalize_option(env_api_key));
@@ -101,8 +99,7 @@ pub(crate) fn resolve_client_target(args: &[String], paths: &auth::CortexPaths) 
     )
 }
 pub(crate) fn ensure_remote_target_has_api_key(base_url: &str, api_key: Option<&str>, paths: &auth::CortexPaths) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(base_url)
-        .map_err(|_| format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// URL."))?;
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// URL."))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.", parsed.scheme()));
     }
@@ -145,18 +142,10 @@ pub(crate) fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usi
     Ok(Some(value))
 }
 pub(crate) fn parse_env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
+    std::env::var(key).ok().and_then(|raw| raw.trim().parse::<usize>().ok()).filter(|value| *value > 0).unwrap_or(default)
 }
 pub(crate) fn parse_env_u64(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
+    std::env::var(key).ok().and_then(|raw| raw.trim().parse::<u64>().ok()).filter(|value| *value > 0).unwrap_or(default)
 }
 pub(crate) fn open_cli_connection(db_path: &Path) -> Result<rusqlite::Connection, String> {
     let conn = db::open(db_path).map_err(|e| format!("Failed to open database at {}: {e}", db_path.display()))?;
@@ -166,41 +155,25 @@ pub(crate) fn open_cli_connection(db_path: &Path) -> Result<rusqlite::Connection
     crystallize::migrate_crystal_tables(&conn);
     Ok(conn)
 }
-pub(crate) async fn admin_request(
-    paths: &auth::CortexPaths, method: &str, path: &str, body: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
+pub(crate) async fn admin_request(paths: &auth::CortexPaths, method: &str, path: &str, body: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let token = read_auth_token(paths)?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("create admin client: {e}"))?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| format!("create admin client: {e}"))?;
     let base_url = local_daemon_base_url(paths);
     let payload = body.map(|value| value.to_string());
-    let mut headers = vec![
-        ("authorization".to_string(), format!("Bearer {token}")),
-        ("x-cortex-request".to_string(), "true".to_string()),
-    ];
+    let mut headers = vec![("authorization".to_string(), format!("Bearer {token}")), ("x-cortex-request".to_string(), "true".to_string())];
     if payload.is_some() {
         headers.push(("content-type".to_string(), "application/json".to_string()));
     }
-    let (status, body_text) = transport::request_with_local_ipc_fallback(
-        &client,
-        method,
-        &base_url,
-        path,
-        paths,
-        &headers,
-        payload.as_deref(),
-        Duration::from_secs(10),
-    )
-    .await
-    .map_err(|e| {
-        if e.to_ascii_lowercase().contains("connect") {
-            "Cortex daemon not running. Start with: cortex serve".to_string()
-        } else {
-            format!("Request failed: {e}")
-        }
-    })?;
+    let (status, body_text) =
+        transport::request_with_local_ipc_fallback(&client, method, &base_url, path, paths, &headers, payload.as_deref(), Duration::from_secs(10))
+            .await
+            .map_err(|e| {
+                if e.to_ascii_lowercase().contains("connect") {
+                    "Cortex daemon not running. Start with: cortex serve".to_string()
+                } else {
+                    format!("Request failed: {e}")
+                }
+            })?;
     if status.as_u16() == 403 {
         return Err("Admin commands require team mode. Run: cortex setup --team".to_string());
     }
@@ -220,47 +193,6 @@ pub(crate) async fn admin_request(
     }
     Ok(json)
 }
-pub(crate) fn confirm_action(prompt: &str) -> bool {
-    eprint!("{prompt} [y/N] ");
-    let mut input = String::new();
-    if std::io::stdin().read_line(&mut input).is_err() {
-        return false;
-    }
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
-}
 pub(crate) fn json_str(val: &serde_json::Value, key: &str) -> String {
     val.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
-}
-pub(crate) fn json_str_or(val: &serde_json::Value, key: &str, default: &str) -> String {
-    val.get(key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
-}
-pub(crate) fn json_field(val: &serde_json::Value, key: &str) -> String {
-    match val.get(key) {
-        Some(v) if v.is_string() => v.as_str().unwrap_or("").to_string(),
-        Some(v) => v.to_string(),
-        None => "-".to_string(),
-    }
-}
-pub(crate) fn api_key_output_masked() -> bool {
-    !std::io::stdout().is_terminal()
-}
-pub(crate) fn format_api_key_for_output(api_key: &str) -> String {
-    if !api_key_output_masked() {
-        return api_key.to_string();
-    }
-    mask_secret_for_logs(api_key)
-}
-fn mask_secret_for_logs(secret: &str) -> String {
-    const PREFIX: usize = 8;
-    const SUFFIX: usize = 4;
-    let chars: Vec<char> = secret.chars().collect();
-    if chars.is_empty() {
-        return String::new();
-    }
-    if chars.len() <= PREFIX + SUFFIX {
-        return "*".repeat(chars.len().max(4));
-    }
-    let prefix: String = chars.iter().take(PREFIX).collect();
-    let suffix: String = chars.iter().skip(chars.len().saturating_sub(SUFFIX)).collect();
-    format!("{prefix}...{suffix}")
 }

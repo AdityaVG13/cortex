@@ -41,8 +41,8 @@ pub fn initialize(paths: &CortexPaths, allow_token_rotation: bool) -> Result<(Ru
                          DB path: {}",
                         db_path.display()
                     );
-                    let conn = crate::db::open(db_path)
-                        .map_err(|open_err| format!("Database corrupt and could not be reopened after failed repair: {open_err}"))?;
+                    let conn =
+                        crate::db::open(db_path).map_err(|open_err| format!("Database corrupt and could not be reopened after failed repair: {open_err}"))?;
                     crate::db::configure(&conn).ok();
                     crate::db::initialize_schema(&conn).ok();
                     let (state, rx) = initialize_with_conn(conn, paths, allow_token_rotation)?;
@@ -56,9 +56,7 @@ pub fn initialize(paths: &CortexPaths, allow_token_rotation: bool) -> Result<(Ru
     }
     initialize_with_conn(conn, paths, allow_token_rotation)
 }
-fn initialize_with_conn(
-    conn: Connection, paths: &CortexPaths, allow_token_rotation: bool,
-) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
+fn initialize_with_conn(conn: Connection, paths: &CortexPaths, allow_token_rotation: bool) -> Result<(RuntimeState, oneshot::Receiver<()>), String> {
     match crate::db::rebuild_fts_if_needed(&conn) {
         Ok(true) => eprintln!("[cortex] FTS baseline rebuilt"),
         Ok(false) => {}
@@ -83,10 +81,8 @@ fn initialize_with_conn(
             .ok()
             .and_then(|v| v.parse::<i64>().ok());
         from_config.or_else(|| {
-            conn.query_row("SELECT id FROM users ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id ASC LIMIT 1", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .ok()
+            conn.query_row("SELECT id FROM users ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, id ASC LIMIT 1", [], |row| row.get::<_, i64>(0))
+                .ok()
         })
     } else {
         None
@@ -125,10 +121,7 @@ fn initialize_with_conn(
     let write_buffer_path = paths.write_buffer.clone();
     let sqlite_vec_canary = SqliteVecCanaryConfig::from_env();
     if sqlite_vec_canary.force_off {
-        eprintln!(
-            "[cortex] sqlite-vec routing force-off (configured mode={}, effective mode=baseline)",
-            sqlite_vec_canary.route_mode.as_str()
-        );
+        eprintln!("[cortex] sqlite-vec routing force-off (configured mode={}, effective mode=baseline)", sqlite_vec_canary.route_mode.as_str());
     } else {
         match sqlite_vec_canary.route_mode {
             SqliteVecRouteMode::Baseline => {
@@ -186,8 +179,6 @@ fn initialize_with_conn(
         brain_firing: brain_firing_tx,
         mcp_calls: Arc::new(AtomicU64::new(0)),
         mcp_sessions: Arc::new(Mutex::new(HashMap::new())),
-        recall_history: Arc::new(Mutex::new(HashMap::new())),
-        pre_cache: Arc::new(Mutex::new(HashMap::new())),
         served_content: Arc::new(Mutex::new(HashMap::<String, HashMap<u32, i64>>::new())),
         shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         home,

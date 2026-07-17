@@ -1,20 +1,5 @@
 use crate::handlers::recall::RecallContext;
-use crate::state::RuntimeState;
 use serde_json::{json, Value};
-pub(crate) fn recall_owner_scope(ctx: &RecallContext) -> String {
-    if !ctx.team_mode {
-        return "solo".to_string();
-    }
-    match ctx.caller_id {
-        Some(owner_id) => format!("team:{owner_id}"),
-        None => "team:none".to_string(),
-    }
-}
-pub(crate) async fn clear_served_scope_for_boot(state: &RuntimeState, agent: &str, ctx: &RecallContext) {
-    let scope_prefix = format!("{}::{agent}::", recall_owner_scope(ctx));
-    let mut served = state.served_content.lock().await;
-    served.retain(|key, _| !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != agent);
-}
 pub(crate) fn can_view_last_call(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode {
         return true;
@@ -41,9 +26,7 @@ pub(crate) fn table_has_column(conn: &rusqlite::Connection, table: &str, column:
     drop(stmt);
     found
 }
-pub(crate) fn fetch_last_call(
-    conn: &rusqlite::Connection, kind: Option<&str>, agent_filter: Option<&str>, ctx: &RecallContext,
-) -> Result<Value, String> {
+pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, agent_filter: Option<&str>, ctx: &RecallContext) -> Result<Value, String> {
     let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("any");
     let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty()).map(str::to_lowercase);
     let owner_scoped_entries = table_has_column(conn, "memories", "owner_id")

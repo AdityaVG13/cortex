@@ -19,18 +19,8 @@ pub(crate) fn test_conn() -> rusqlite::Connection {
 }
 
 pub(crate) fn store_decision_with_embedding(conn: &mut rusqlite::Connection, decision: &str, context: &str, vector: &[f32]) {
-    let (_, new_id) = store_decision_with_input_embedding(
-        conn,
-        decision,
-        Some(context.to_string()),
-        None,
-        "tester".to_string(),
-        None,
-        None,
-        Some(vector),
-        None,
-    )
-    .unwrap();
+    let (_, new_id) =
+        store_decision_with_input_embedding(conn, decision, Some(context.to_string()), None, "tester".to_string(), None, None, Some(vector), None).unwrap();
     if let Some(id) = new_id {
         persist_decision_embedding(conn, id, vector, crate::embeddings::selected_model_key()).unwrap();
     }

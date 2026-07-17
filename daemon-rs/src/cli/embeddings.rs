@@ -66,9 +66,7 @@ pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[
     };
     let max_batches_per_pass = match parse_flag_usize(args, "--max-batches") {
         Ok(Some(value)) => value.clamp(1, 10_000),
-        Ok(None) => {
-            parse_env_usize("CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS", DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS).clamp(1, 10_000)
-        }
+        Ok(None) => parse_env_usize("CORTEX_EMBED_BACKFILL_MAX_BATCHES_PER_PASS", DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS).clamp(1, 10_000),
         Err(err) => {
             eprintln!("Error: {err}");
             std::process::exit(1);
@@ -143,10 +141,7 @@ pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[
         println!("exhausted: {exhausted}");
     }
     if until_exhausted && !exhausted {
-        eprintln!(
-            "[embeddings] backlog still pending after {} iteration(s); rerun with higher --max-iterations or --max-batches",
-            iterations_ran
-        );
+        eprintln!("[embeddings] backlog still pending after {} iteration(s); rerun with higher --max-iterations or --max-batches", iterations_ran);
         std::process::exit(2);
     }
 }

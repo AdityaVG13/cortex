@@ -5,15 +5,6 @@ pub enum ExportFormat {
     Json,
     Sql,
 }
-impl ExportFormat {
-    pub fn parse(input: &str) -> Option<Self> {
-        match input.trim().to_ascii_lowercase().as_str() {
-            "json" => Some(Self::Json),
-            "sql" => Some(Self::Sql),
-            _ => None,
-        }
-    }
-}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetentionClass {

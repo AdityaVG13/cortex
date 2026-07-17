@@ -24,9 +24,7 @@ impl CortexPaths {
     pub fn resolve() -> Self {
         Self::resolve_with_overrides(None, None, None, None)
     }
-    pub fn resolve_with_overrides(
-        home_override: Option<&str>, db_override: Option<&str>, port_override: Option<u16>, bind_override: Option<&str>,
-    ) -> Self {
+    pub fn resolve_with_overrides(home_override: Option<&str>, db_override: Option<&str>, port_override: Option<u16>, bind_override: Option<&str>) -> Self {
         let home = home_override
             .map(PathBuf::from)
             .or_else(|| std::env::var("CORTEX_HOME").ok().map(PathBuf::from))
@@ -186,9 +184,7 @@ fn current_user_sid() -> io::Result<CurrentUserSid> {
     let word_count = (required_len as usize).div_ceil(word_size);
     let mut token_info = vec![0usize; word_count];
     let mut returned_len = 0u32;
-    let filled = unsafe {
-        GetTokenInformation(token.0, TokenUser, token_info.as_mut_ptr().cast(), (token_info.len() * word_size) as u32, &mut returned_len)
-    };
+    let filled = unsafe { GetTokenInformation(token.0, TokenUser, token_info.as_mut_ptr().cast(), (token_info.len() * word_size) as u32, &mut returned_len) };
     if filled == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -209,8 +205,7 @@ pub(crate) fn restrict_file_to_owner(path: &Path) -> io::Result<()> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::Security::Authorization::{
-        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID,
-        TRUSTEE_IS_USER, TRUSTEE_W,
+        SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PROTECTED_DACL_SECURITY_INFORMATION};
     use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;

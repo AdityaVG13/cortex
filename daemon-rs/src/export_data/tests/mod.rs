@@ -55,10 +55,7 @@ fn export_changeset_respects_cursor_upper_bound() {
     let changeset = export_json_changeset_value(&conn, None);
     let memories = changeset.get("memories").and_then(Value::as_array).cloned().unwrap_or_default();
     assert!(memories.is_empty(), "rows newer than cursor should be excluded");
-    assert!(
-        changeset.get("cursor").and_then(Value::as_str).is_some_and(|cursor| !cursor.trim().is_empty()),
-        "changeset cursor should always be emitted"
-    );
+    assert!(changeset.get("cursor").and_then(Value::as_str).is_some_and(|cursor| !cursor.trim().is_empty()), "changeset cursor should always be emitted");
 }
 #[test]
 fn export_json_page_limits_rows_and_emits_next_offsets() {
@@ -67,11 +64,8 @@ fn export_json_page_limits_rows_and_emits_next_offsets() {
     crate::db::initialize_schema(&conn).expect("initialize schema");
     crate::db::run_pending_migrations(&conn);
     for idx in 0..3 {
-        conn.execute(
-            "INSERT INTO memories (text, source, status) VALUES (?1, ?2, 'active')",
-            params![format!("memory {idx}"), format!("page::memory::{idx}")],
-        )
-        .expect("insert memory");
+        conn.execute("INSERT INTO memories (text, source, status) VALUES (?1, ?2, 'active')", params![format!("memory {idx}"), format!("page::memory::{idx}")])
+            .expect("insert memory");
     }
     for idx in 0..2 {
         conn.execute(

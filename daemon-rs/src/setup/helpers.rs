@@ -35,9 +35,7 @@ pub(crate) fn print_step(num: usize, name: &str, result: &StepResult) {
     eprintln!("  {} Step {}: {} -- {}", result.icon(), num, name, result.message());
 }
 fn current_exe_path() -> String {
-    std::env::current_exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "cortex".to_string())
+    std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "cortex".to_string())
 }
 pub(crate) fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
     let needs_copy = match fs::read(dest) {

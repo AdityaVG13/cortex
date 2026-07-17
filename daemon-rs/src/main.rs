@@ -1,11 +1,9 @@
 pub const DEFAULT_CORTEX_PORT: u16 = 7437;
-mod admin;
 mod aging;
 mod api_types;
 mod auth;
 mod budgets;
 mod cli;
-mod co_occurrence;
 mod compaction;
 mod compiler;
 mod conflict;
@@ -38,11 +36,10 @@ use chrono::Utc;
 pub(crate) use cli::run_daemon;
 use cli::{
     apply_path_env, cli_capabilities_payload, cli_capabilities_summary, cli_robot_docs_guide, cli_service_usage, ensure_daemon,
-    ensure_remote_target_has_api_key, is_disallowed_startup_binary_path, parse_flag_usize, parse_flag_value, print_usage_and_exit,
-    resolve_client_target, run_admin_cli, run_backup_cli, run_boot_cli, run_cleanup_cli, run_doctor_cli, run_embeddings_cli,
-    run_embeddings_drain_cli, run_eval_cli, run_export_cli, run_import_cli, run_recrystallize_cli, run_reindex_cli, run_restore_cli,
-    run_status_cli, run_sync_cli, run_team_cli, run_user_cli, unknown_cli_command_message, unknown_robot_docs_subcommand_message,
-    validate_cli_options_or_exit,
+    ensure_remote_target_has_api_key, is_disallowed_startup_binary_path, parse_flag_usize, parse_flag_value, print_usage_and_exit, resolve_client_target,
+    run_admin_cli, run_backup_cli, run_boot_cli, run_cleanup_cli, run_doctor_cli, run_embeddings_cli, run_embeddings_drain_cli, run_eval_cli, run_export_cli,
+    run_import_cli, run_recrystallize_cli, run_reindex_cli, run_restore_cli, run_status_cli, run_sync_cli, run_team_cli, run_user_cli,
+    unknown_cli_command_message, unknown_robot_docs_subcommand_message, validate_cli_options_or_exit,
 };
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};

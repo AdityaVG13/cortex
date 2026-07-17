@@ -45,14 +45,13 @@ pub(crate) fn run_preflight(paths: &auth::CortexPaths) -> Result<(), String> {
         .expect("build tokio runtime")
         .block_on(startup_single_daemon_preflight(paths))
 }
-pub(crate) fn run_ensure_daemon(
-    paths: &auth::CortexPaths, agent: Option<&str>, emit_port: bool, allow_service_ensure: bool,
-) -> Result<(), String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime")
-        .block_on(ensure_daemon(paths, agent, emit_port, allow_service_ensure))
+pub(crate) fn run_ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>, emit_port: bool, allow_service_ensure: bool) -> Result<(), String> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build tokio runtime").block_on(ensure_daemon(
+        paths,
+        agent,
+        emit_port,
+        allow_service_ensure,
+    ))
 }
 pub(crate) fn spawn_response_server(
     listener: TcpListener, status_line: &str, content_type: &str, body: String, max_requests: usize,
@@ -99,9 +98,7 @@ pub(crate) fn spawn_response_server(
         }
     })
 }
-pub(crate) fn spawn_preflight_response_server(
-    listener: TcpListener, status_line: &str, content_type: &str, body: String,
-) -> std::thread::JoinHandle<()> {
+pub(crate) fn spawn_preflight_response_server(listener: TcpListener, status_line: &str, content_type: &str, body: String) -> std::thread::JoinHandle<()> {
     spawn_response_server(listener, status_line, content_type, body, 4)
 }
 pub(crate) fn wait_for_control_center_lock(paths: &auth::CortexPaths, timeout: Duration) -> bool {
@@ -120,10 +117,7 @@ pub(crate) fn control_center_lock_holder_child_process() {
     }
     let home = std::env::var(CONTROL_CENTER_LOCK_TEST_HOME_ENV).expect("control-center lock test home env missing");
     let ready_file = std::env::var(CONTROL_CENTER_LOCK_TEST_READY_ENV).expect("control-center lock ready marker env missing");
-    let hold_ms = std::env::var(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1500);
+    let hold_ms = std::env::var(CONTROL_CENTER_LOCK_TEST_HOLD_MS_ENV).ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(1500);
     let lock_path = PathBuf::from(home).join("runtime").join(CONTROL_CENTER_LOCK_FILE);
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent).expect("create lock parent dir");

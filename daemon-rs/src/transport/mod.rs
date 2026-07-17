@@ -40,7 +40,7 @@ pub fn local_ipc_endpoint_for_base_url(base_url: &str, paths: &CortexPaths) -> O
     }
     paths.ipc_endpoint.clone()
 }
-fn split_base_and_path(url: &str) -> Option<(String, String)> {
+pub(crate) fn split_base_and_path(url: &str) -> Option<(String, String)> {
     let parsed = reqwest::Url::parse(url).ok()?;
     let mut base = parsed.clone();
     base.set_path("");
@@ -61,10 +61,7 @@ pub(crate) fn parse_http_response_bytes(raw: &[u8], source_label: &str) -> Resul
         return Err(format!("invalid HTTP response from {source_label}"));
     };
     let header = std::str::from_utf8(&raw[..header_end]).map_err(|_| format!("{source_label} response headers are not valid UTF-8"))?;
-    let status_line = header
-        .lines()
-        .next()
-        .ok_or_else(|| format!("{source_label} response missing valid HTTP status line"))?;
+    let status_line = header.lines().next().ok_or_else(|| format!("{source_label} response missing valid HTTP status line"))?;
     let status = parse_http_status_line(status_line, source_label)?;
     let body = String::from_utf8_lossy(&raw[header_end + 4..]).to_string();
     Ok((status, body))
@@ -79,9 +76,7 @@ fn parse_http_status_line(status_line: &str, source_label: &str) -> Result<reqwe
     if status_code_raw.len() != 3 || !status_code_raw.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(format!("{source_label} response has malformed status code '{status_code_raw}'"));
     }
-    let status_code = status_code_raw
-        .parse::<u16>()
-        .map_err(|_| format!("{source_label} response has malformed status code"))?;
+    let status_code = status_code_raw.parse::<u16>().map_err(|_| format!("{source_label} response has malformed status code"))?;
     reqwest::StatusCode::from_u16(status_code).map_err(|_| format!("{source_label} response returned invalid status code {status_code}"))
 }
 fn parse_http_response(raw: &[u8]) -> Result<(reqwest::StatusCode, String), String> {
@@ -126,9 +121,7 @@ async fn ipc_http_request(
         }
         #[cfg(windows)]
         {
-            let mut stream = tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(endpoint)
-                .map_err(|e| format!("IPC connect failed: {e}"))?;
+            let mut stream = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint).map_err(|e| format!("IPC connect failed: {e}"))?;
             return send_http_over_stream(&mut stream, method, path, headers, body).await;
         }
         #[allow(unreachable_code)]
@@ -136,7 +129,7 @@ async fn ipc_http_request(
     };
     tokio::time::timeout(timeout, fut).await.map_err(|_| "IPC request timed out".to_string())?
 }
-async fn send_http_request(
+pub(crate) async fn send_http_request(
     client: &reqwest::Client, method: &str, url: &str, headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     let mut req = match method {
@@ -158,8 +151,8 @@ async fn send_http_request(
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn request_with_local_ipc_fallback(
-    client: &reqwest::Client, method: &str, base_url: &str, path: &str, paths: &CortexPaths, headers: &[(String, String)],
-    body: Option<&str>, timeout: std::time::Duration,
+    client: &reqwest::Client, method: &str, base_url: &str, path: &str, paths: &CortexPaths, headers: &[(String, String)], body: Option<&str>,
+    timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     if let Some(endpoint) = local_ipc_endpoint_for_base_url(base_url, paths) {
         match ipc_http_request(&endpoint, method, path, headers, body, timeout).await {
@@ -175,8 +168,7 @@ pub async fn request_with_local_ipc_fallback(
     send_http_request(client, method, &url, headers, body, timeout).await
 }
 pub async fn request_url_with_local_ipc_fallback(
-    client: &reqwest::Client, method: &str, url: &str, paths: &CortexPaths, headers: &[(String, String)], body: Option<&str>,
-    timeout: std::time::Duration,
+    client: &reqwest::Client, method: &str, url: &str, paths: &CortexPaths, headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     if let Some((base_url, path)) = split_base_and_path(url) {
         return request_with_local_ipc_fallback(client, method, &base_url, &path, paths, headers, body, timeout).await;

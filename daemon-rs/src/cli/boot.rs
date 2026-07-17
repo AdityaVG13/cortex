@@ -1,6 +1,6 @@
 use super::common::{
-    ensure_remote_target_has_api_key, is_local_client_base_url, local_daemon_base_url, parse_flag_usize, parse_flag_value,
-    resolve_client_target, validate_cli_options,
+    ensure_remote_target_has_api_key, is_local_client_base_url, local_daemon_base_url, parse_flag_usize, parse_flag_value, resolve_client_target,
+    validate_cli_options,
 };
 use super::daemon::ensure_daemon;
 use crate::auth;
@@ -18,9 +18,7 @@ pub(crate) fn read_auth_token_from_path(token_path: &std::path::Path) -> Option<
         }
     })
 }
-pub(crate) fn resolve_boot_auth_header(
-    token_path: &std::path::Path, api_key: Option<&str>, allow_local_token_fallback: bool,
-) -> Option<String> {
+pub(crate) fn resolve_boot_auth_header(token_path: &std::path::Path, api_key: Option<&str>, allow_local_token_fallback: bool) -> Option<String> {
     if let Some(api_key) = api_key {
         let trimmed = api_key.trim();
         if !trimmed.is_empty() {
@@ -33,27 +31,19 @@ pub(crate) fn resolve_boot_auth_header(
     None
 }
 pub(crate) async fn request_boot_payload(
-    paths: &auth::CortexPaths, base_url: &str, token_path: &std::path::Path, api_key: Option<&str>, allow_local_token_fallback: bool,
-    agent: &str, budget: usize,
+    paths: &auth::CortexPaths, base_url: &str, token_path: &std::path::Path, api_key: Option<&str>, allow_local_token_fallback: bool, agent: &str,
+    budget: usize,
 ) -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("create boot client: {e}"))?;
-    let mut boot_url = reqwest::Url::parse(&format!("{}/boot", base_url.trim_end_matches('/')))
-        .map_err(|e| format!("invalid boot URL '{base_url}': {e}"))?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().map_err(|e| format!("create boot client: {e}"))?;
+    let mut boot_url = reqwest::Url::parse(&format!("{}/boot", base_url.trim_end_matches('/'))).map_err(|e| format!("invalid boot URL '{base_url}': {e}"))?;
     boot_url.query_pairs_mut().append_pair("agent", agent).append_pair("budget", &budget.to_string());
-    let mut headers = vec![
-        ("x-cortex-request".to_string(), "true".to_string()),
-        ("x-source-agent".to_string(), agent.to_string()),
-    ];
+    let mut headers = vec![("x-cortex-request".to_string(), "true".to_string()), ("x-source-agent".to_string(), agent.to_string())];
     if let Some(auth) = resolve_boot_auth_header(token_path, api_key, allow_local_token_fallback) {
         headers.push(("authorization".to_string(), auth));
     }
-    let (status, body) =
-        transport::request_url_with_local_ipc_fallback(&client, "GET", boot_url.as_ref(), paths, &headers, None, Duration::from_secs(10))
-            .await
-            .map_err(|e| format!("boot request failed: {e}"))?;
+    let (status, body) = transport::request_url_with_local_ipc_fallback(&client, "GET", boot_url.as_ref(), paths, &headers, None, Duration::from_secs(10))
+        .await
+        .map_err(|e| format!("boot request failed: {e}"))?;
     if !status.is_success() {
         let detail = body.trim();
         return if detail.is_empty() { Err(format!("boot returned {status}")) } else { Err(format!("boot returned {status}: {detail}")) };
@@ -82,8 +72,7 @@ pub(crate) async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> 
         false
     };
     let allow_local_token_fallback = local_owner_mode || local_target_identity_valid;
-    let payload =
-        request_boot_payload(paths, &base_url, &paths.token, api_key.as_deref(), allow_local_token_fallback, agent, budget).await?;
+    let payload = request_boot_payload(paths, &base_url, &paths.token, api_key.as_deref(), allow_local_token_fallback, agent, budget).await?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&payload).map_err(|e| format!("serialize boot response failed: {e}"))?);
     } else {

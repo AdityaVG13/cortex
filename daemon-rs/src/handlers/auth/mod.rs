@@ -88,9 +88,7 @@ pub fn ensure_admin(headers: &HeaderMap, state: &RuntimeState, conn: &rusqlite::
             return Err(json_response(StatusCode::FORBIDDEN, serde_json::json!({"error":"Admin endpoints require team mode"})));
         }
     };
-    let role: String = conn
-        .query_row("SELECT role FROM users WHERE id = ?1", rusqlite::params![user_id], |row| row.get(0))
-        .unwrap_or_default();
+    let role: String = conn.query_row("SELECT role FROM users WHERE id = ?1", rusqlite::params![user_id], |row| row.get(0)).unwrap_or_default();
     if role != "owner" && role != "admin" {
         return Err(json_response(StatusCode::FORBIDDEN, serde_json::json!({"error":"Insufficient permissions"})));
     }
@@ -112,10 +110,7 @@ pub fn resolve_caller_id(headers: &HeaderMap, state: &RuntimeState) -> Option<i6
             poisoned.into_inner()
         }
     };
-    hashes
-        .iter()
-        .find(|(_, hash)| crate::auth::verify_api_key_argon2id(&token, hash))
-        .map(|(user_id, _)| *user_id)
+    hashes.iter().find(|(_, hash)| crate::auth::verify_api_key_argon2id(&token, hash)).map(|(user_id, _)| *user_id)
 }
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
@@ -160,9 +155,7 @@ fn should_apply_auth_failure_bucket(ip: IpAddr) -> bool {
     !ip.is_loopback()
 }
 #[allow(clippy::result_large_err)]
-pub async fn ensure_endpoint_budget(
-    headers: &HeaderMap, state: &RuntimeState, endpoint: BudgetEndpoint, request_source: &str,
-) -> Result<(), Response> {
+pub async fn ensure_endpoint_budget(headers: &HeaderMap, state: &RuntimeState, endpoint: BudgetEndpoint, request_source: &str) -> Result<(), Response> {
     let ip = client_ip(headers);
     let Some(decision) = state.rate_limiter.check_budget_for_endpoint(ip, endpoint).await else {
         return Ok(());
@@ -219,9 +212,7 @@ pub async fn ensure_auth_with_caller_rated(headers: &HeaderMap, state: &RuntimeS
     ensure_auth_with_caller_rated_for_class(headers, state, RequestClass::Default).await
 }
 #[allow(dead_code)]
-pub async fn ensure_auth_with_caller_rated_for_class(
-    headers: &HeaderMap, state: &RuntimeState, class: RequestClass,
-) -> Result<Option<i64>, Response> {
+pub async fn ensure_auth_with_caller_rated_for_class(headers: &HeaderMap, state: &RuntimeState, class: RequestClass) -> Result<Option<i64>, Response> {
     let ip = client_ip(headers);
     let apply_auth_failure_bucket = should_apply_auth_failure_bucket(ip);
     if apply_auth_failure_bucket {
@@ -376,9 +367,7 @@ fn upsert_agent_presence(
     }
     Ok(())
 }
-pub async fn register_agent_presence(
-    state: &RuntimeState, source: &SourceIdentity, caller_id: Option<i64>, project: &str, description_prefix: &str,
-) {
+pub async fn register_agent_presence(state: &RuntimeState, source: &SourceIdentity, caller_id: Option<i64>, project: &str, description_prefix: &str) {
     let owner_id = if state.team_mode { caller_id.or(state.default_owner_id) } else { None };
     let conn = state.db.lock().await;
     let _ = upsert_agent_presence(&conn, source, owner_id, project, description_prefix);

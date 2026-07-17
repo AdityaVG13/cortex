@@ -15,12 +15,8 @@ pub(crate) fn run_reindex_cli(paths: &auth::CortexPaths, json_output: bool) {
         eprintln!("Error: failed to configure database for reindex: {err}");
         std::process::exit(1);
     }
-    let memories_base = conn
-        .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |row| row.get::<_, i64>(0))
-        .unwrap_or(0);
-    let decisions_base = conn
-        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |row| row.get::<_, i64>(0))
-        .unwrap_or(0);
+    let memories_base = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
+    let decisions_base = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
     if let Err(err) = db::reindex_fts(&conn) {
         eprintln!("Error: failed to rebuild FTS indexes: {err}");
         std::process::exit(1);
@@ -58,8 +54,7 @@ pub(crate) async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output
         let removed_embeddings = conn.execute("DELETE FROM embeddings WHERE target_type = 'crystal'", []).unwrap_or(0);
         let removed_crystals = conn.execute("DELETE FROM memory_clusters", []).unwrap_or(0);
         let brain_sender = Some(state.brain_firing.clone());
-        let pass =
-            crystallize::run_crystallize_pass_with_brain(&conn, state.embedding_engine.as_deref(), state.default_owner_id, &brain_sender);
+        let pass = crystallize::run_crystallize_pass_with_brain(&conn, state.embedding_engine.as_deref(), state.default_owner_id, &brain_sender);
         let crystals_after: i64 = conn.query_row("SELECT COUNT(*) FROM memory_clusters", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
         let members_after: i64 = conn.query_row("SELECT COUNT(*) FROM cluster_members", [], |row| row.get::<_, i64>(0)).unwrap_or(0);
         let embeddings_after: i64 = conn

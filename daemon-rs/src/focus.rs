@@ -3,9 +3,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value, String> {
     let existing: Option<i64> = conn
-        .query_row("SELECT id FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'", params![label, agent], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT id FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'", params![label, agent], |row| row.get(0))
         .ok();
     if let Some(id) = existing {
         return Ok(json!({"id":id,"label":label,"status":"already_open","message":
@@ -19,11 +17,9 @@ pub fn focus_start(conn: &Connection, label: &str, agent: &str) -> Result<Value,
 }
 pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
     let result: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT id, raw_entries FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC LIMIT 1",
-            params![agent],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT id, raw_entries FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC LIMIT 1", params![agent], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .ok();
     if let Some((id, raw_json)) = result {
         let mut entries: Vec<String> = serde_json::from_str(&raw_json).unwrap_or_default();
@@ -37,11 +33,9 @@ pub fn focus_append(conn: &Connection, agent: &str, entry: &str) -> bool {
 }
 pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i64>) -> Result<Value, String> {
     let session: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'",
-            params![label, agent],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT id, raw_entries FROM focus_sessions WHERE label = ?1 AND agent = ?2 AND status = 'open'", params![label, agent], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .ok();
     let (id, raw_json) = session.ok_or_else(|| format!("No open focus session with label '{label}'"))?;
     let entries: Vec<String> = serde_json::from_str(&raw_json).unwrap_or_default();
@@ -67,8 +61,10 @@ pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i
     }
     .map_err(|e| format!("Failed to store focus summary: {e}"))?;
     conn.execute(
-"UPDATE focus_sessions SET status = 'closed', summary = ?1, ended_at = datetime('now'), tokens_before = ?2, tokens_after = ?3 WHERE id = ?4"
-,params![summary,tokens_before as i64,tokens_after as i64,id],).map_err(|e|e.to_string())?;
+        "UPDATE focus_sessions SET status = 'closed', summary = ?1, ended_at = datetime('now'), tokens_before = ?2, tokens_after = ?3 WHERE id = ?4",
+        params![summary, tokens_before as i64, tokens_after as i64, id],
+    )
+    .map_err(|e| e.to_string())?;
     let savings = if tokens_before > 0 { ((1.0 - (tokens_after as f64 / tokens_before as f64)) * 100.0).round() as i64 } else { 0 };
     Ok(json!({"id":id,"label":label,"status":"closed",
 "entries":entries.len(),"tokensBefore":tokens_before,"tokensAfter":tokens_after,"savings":format!("{savings}%"),"summary":summary,
@@ -76,9 +72,16 @@ pub fn focus_end(conn: &Connection, label: &str, agent: &str, owner_id: Option<i
 }
 pub fn focus_current(conn: &Connection, agent: &str) -> Option<Value> {
     conn.query_row(
-"SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC LIMIT 1"
-,params![agent],|row|{let raw:String=row.get(2)?;let entries:Vec<String>=serde_json::from_str(&raw).unwrap_or_default();Ok(json!({
-"id":row.get::<_,i64>(0)?,"label":row.get::<_,String>(1)?,"entries":entries.len(),"startedAt":row.get::<_,String>(3)?,}))},).ok()
+        "SELECT id, label, raw_entries, started_at FROM focus_sessions WHERE agent = ?1 AND status = 'open' ORDER BY started_at DESC LIMIT 1",
+        params![agent],
+        |row| {
+            let raw: String = row.get(2)?;
+            let entries: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            Ok(json!({
+"id":row.get::<_,i64>(0)?,"label":row.get::<_,String>(1)?,"entries":entries.len(),"startedAt":row.get::<_,String>(3)?,}))
+        },
+    )
+    .ok()
 }
 fn summarize_entries(entries: &[String]) -> String {
     if entries.len() <= 3 {

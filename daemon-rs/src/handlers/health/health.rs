@@ -26,10 +26,7 @@ pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
 pub async fn build_health_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let embedding_model = crate::embeddings::selected_model_selection();
     let now_unix_secs = Utc::now().timestamp();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let (memories, decisions, embeddings_count, events, db_freelist_pages, sqlite_vec_status) = {
         let conn = state.db_read.lock().await;
         let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
@@ -46,14 +43,7 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
             Err(poisoned) => *poisoned.into_inner(),
         };
         if let Some(snapshot) = cache_snapshot_if_fresh(cached, now_unix_secs) {
-            (
-                snapshot.embedding_inventory,
-                snapshot.storage_bytes,
-                snapshot.backup_count,
-                snapshot.log_bytes,
-                "cache",
-                snapshot.cache_age_secs(now_unix_secs),
-            )
+            (snapshot.embedding_inventory, snapshot.storage_bytes, snapshot.backup_count, snapshot.log_bytes, "cache", snapshot.cache_age_secs(now_unix_secs))
         } else if app_managed_warmup_active(daemon_owner.as_deref()) {
             let fallback = cached.unwrap_or(HealthHeavyMetricsSnapshot {
                 computed_at_unix_secs: now_unix_secs,
@@ -76,13 +66,7 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
                 collect_embedding_inventory(&conn, embedding_model.key)
             };
             let (storage_bytes, backup_count, log_bytes) = collect_storage_metrics(&state.home);
-            let snapshot = HealthHeavyMetricsSnapshot {
-                computed_at_unix_secs: now_unix_secs,
-                embedding_inventory,
-                storage_bytes,
-                backup_count,
-                log_bytes,
-            };
+            let snapshot = HealthHeavyMetricsSnapshot { computed_at_unix_secs: now_unix_secs, embedding_inventory, storage_bytes, backup_count, log_bytes };
             match health_heavy_metrics_cache().lock() {
                 Ok(mut guard) => *guard = Some(snapshot),
                 Err(poisoned) => *poisoned.into_inner() = Some(snapshot),
@@ -95,8 +79,7 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
     let db_hard_limit_bytes = crate::compaction::STORAGE_HARD_LIMIT_BYTES.max(1) as u64;
     let db_pressure = crate::compaction::classify_storage_pressure(db_size_bytes as i64);
     let db_soft_utilization = ((db_size_bytes as f64) / (db_soft_limit_bytes as f64)).min(10.0);
-    let active_model_ratio =
-        if embeddings_count > 0 { (embedding_inventory.active_model_embeddings as f64) / (embeddings_count as f64) } else { 0.0 };
+    let active_model_ratio = if embeddings_count > 0 { (embedding_inventory.active_model_embeddings as f64) / (embeddings_count as f64) } else { 0.0 };
     let reembed_backlog_total = embedding_inventory.backlog_memories + embedding_inventory.backlog_decisions;
     let degraded = state.degraded_mode.load(std::sync::atomic::Ordering::Relaxed);
     let reranker_model = crate::rerank::selected_reranker_selection();
@@ -109,10 +92,7 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
         "unavailable"
     };
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
-    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let ipc_kind = if ipc_endpoint.is_some() { Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" }) } else { None };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
     let budgets = state.rate_limiter.budget_status().to_health_json(state.rate_limiter.recent_budget_denials().await);
@@ -151,14 +131,8 @@ pub async fn handle_health(State(state): State<RuntimeState>, headers: HeaderMap
 }
 pub async fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let ipc_kind = if ipc_endpoint.is_some() { Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" }) } else { None };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
     let mut payload = json!({"status":if ready{"ready"}else{"starting"},"ready":ready,"runtime":{"version":env!(

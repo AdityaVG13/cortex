@@ -52,9 +52,7 @@ pub(crate) fn build_identity_capsule(conn: &Connection) -> (String, usize) {
     }
     let mut parts = vec![detect_identity()];
     if let Ok(constraint_re) = Regex::new(r"(?i)\b(never|always|must|do not|don't|required|mandatory)\b") {
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20")
-        {
+        if let Ok(mut stmt) = conn.prepare("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20") {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
                 let constraints: Vec<String> = rows
                     .filter_map(|r| r.ok())
@@ -69,9 +67,7 @@ pub(crate) fn build_identity_capsule(conn: &Connection) -> (String, usize) {
         }
     }
     if let Ok(edge_re) = Regex::new(r"(?i)\b(windows|win32|encoding|cp1252|bash\.exe|CRLF)\b") {
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20")
-        {
+        if let Ok(mut stmt) = conn.prepare("SELECT text FROM memories WHERE type = 'feedback' AND status = 'active' ORDER BY score DESC LIMIT 20") {
             if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
                 let edges: Vec<String> = rows
                     .filter_map(|r| r.ok())

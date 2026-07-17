@@ -6,8 +6,8 @@ use crate::transport;
 #[cfg(not(windows))]
 use daemon_lifecycle::issue_owner_token_for_spawn;
 use daemon_lifecycle::{
-    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload, validate_spawned_owner_claim, wait_for_health,
-    DAEMON_OWNER_TOKEN_ENV, SPAWN_PARENT_START_TIME_ENV,
+    daemon_healthy, is_cortex_health_payload, readiness_state_from_payload, validate_spawned_owner_claim, wait_for_health, DAEMON_OWNER_TOKEN_ENV,
+    SPAWN_PARENT_START_TIME_ENV,
 };
 use fs2::FileExt;
 use std::path::{Path, PathBuf};
@@ -110,16 +110,10 @@ pub(crate) fn acquire_runtime_lock(paths: &auth::CortexPaths) -> Result<RuntimeL
     try_acquire_runtime_locks(paths)
 }
 pub(crate) fn daemon_owner_tag_from_env() -> Option<String> {
-    std::env::var("CORTEX_DAEMON_OWNER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
 }
 pub(crate) fn daemon_owner_token_from_env() -> Option<String> {
-    std::env::var(DAEMON_OWNER_TOKEN_ENV)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    std::env::var(DAEMON_OWNER_TOKEN_ENV).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
 }
 pub(crate) fn spawn_parent_pid_from_env() -> Option<u32> {
     std::env::var(SPAWN_PARENT_PID_ENV).ok().and_then(|value| value.trim().parse::<u32>().ok())
@@ -140,8 +134,7 @@ pub(crate) fn app_managed_startup_heavy_delay(owner_tag: Option<&str>) -> Durati
     if !is_control_center_owner(owner_tag) {
         return Duration::from_secs(0);
     }
-    let secs = parse_env_u64_nonnegative(APP_MANAGED_STARTUP_DELAY_ENV, APP_MANAGED_STARTUP_HEAVY_DELAY_SECS)
-        .min(APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS);
+    let secs = parse_env_u64_nonnegative(APP_MANAGED_STARTUP_DELAY_ENV, APP_MANAGED_STARTUP_HEAVY_DELAY_SECS).min(APP_MANAGED_STARTUP_HEAVY_DELAY_MAX_SECS);
     Duration::from_secs(secs)
 }
 #[derive(Clone, Copy)]
@@ -178,8 +171,7 @@ pub(crate) fn startup_schedule(owner_tag: Option<&str>) -> StartupSchedule {
     StartupSchedule { index, aging, embed, crystallize, storage_governor_initial }
 }
 pub(crate) fn background_db_lock_max_wait() -> Duration {
-    let max_wait_ms =
-        parse_env_u64_nonnegative(BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, BACKGROUND_DB_LOCK_DEFAULT_MAX_WAIT_MS).clamp(100, 60_000);
+    let max_wait_ms = parse_env_u64_nonnegative(BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV, BACKGROUND_DB_LOCK_DEFAULT_MAX_WAIT_MS).clamp(100, 60_000);
     Duration::from_millis(max_wait_ms)
 }
 pub(crate) async fn acquire_background_db_lock<'a>(
@@ -204,9 +196,7 @@ pub(crate) fn process_pid_start_time(pid: u32) -> Option<u64> {
     system.process(target).map(|process| process.start_time())
 }
 pub(crate) fn process_pid_identity_matches(pid: u32, expected_start_time: u64) -> bool {
-    process_pid_start_time(pid)
-        .map(|actual_start_time| actual_start_time == expected_start_time)
-        .unwrap_or(false)
+    process_pid_start_time(pid).map(|actual_start_time| actual_start_time == expected_start_time).unwrap_or(false)
 }
 pub(crate) fn spawn_parent_orphan_watch_task<F>(
     shutdown_tx: std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>, parent_pid: u32, parent_start_time: u64,
@@ -236,8 +226,7 @@ pub(crate) fn process_looks_like_cortex_daemon(process: &sysinfo::Process) -> bo
     if cmd.is_empty() {
         return false;
     }
-    let has_daemon_role =
-        cmd.iter().any(|arg| arg == "serve" || arg == "service-run") || cmd.windows(2).any(|pair| pair[0] == "service" && pair[1] == "run");
+    let has_daemon_role = cmd.iter().any(|arg| arg == "serve" || arg == "service-run") || cmd.windows(2).any(|pair| pair[0] == "service" && pair[1] == "run");
     if !has_daemon_role {
         return false;
     }
@@ -284,9 +273,7 @@ pub(crate) fn validate_spawned_owner_runtime_claim(
             return Err(format!("spawn parent process {parent_pid} is not running during ownership claim validation"));
         };
         if actual_start_time != parent_start_time {
-            return Err(format!(
-                "spawn parent start-time mismatch for pid {parent_pid} (env={parent_start_time}, actual={actual_start_time})"
-            ));
+            return Err(format!("spawn parent start-time mismatch for pid {parent_pid} (env={parent_start_time}, actual={actual_start_time})"));
         }
     }
     validate_spawned_owner_claim(paths, owner_tag, parent_pid, owner_token)
@@ -294,12 +281,9 @@ pub(crate) fn validate_spawned_owner_runtime_claim(
 pub(crate) async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -> Result<(), String> {
     if let Some((pid, exe, cmd)) = detect_other_cortex_daemon_process() {
         if single_daemon_test_bypass_enabled() {
-            eprintln!(
-"[cortex] Warning: bypassing single-daemon process preflight for debug test run (detected pid={pid}, exe={exe}, cmd=\"{cmd}\")");
+            eprintln!("[cortex] Warning: bypassing single-daemon process preflight for debug test run (detected pid={pid}, exe={exe}, cmd=\"{cmd}\")");
         } else {
-            return Err(format!(
-                "daemon startup denied: Cortex already has an active daemon process (pid={pid}, exe={exe}, cmd=\"{cmd}\")"
-            ));
+            return Err(format!("daemon startup denied: Cortex already has an active daemon process (pid={pid}, exe={exe}, cmd=\"{cmd}\")"));
         }
     }
     let bind_addr = paths.bind.trim();
@@ -316,22 +300,12 @@ pub(crate) async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -
         .timeout(Duration::from_secs(2))
         .build()
         .map_err(|err| format!("daemon startup preflight: build HTTP client: {err}"))?;
-    let (mut status, mut body) = match transport::request_url_with_local_ipc_fallback(
-        &client,
-        "GET",
-        &readiness_url,
-        paths,
-        &[],
-        None,
-        Duration::from_secs(2),
-    )
-    .await
+    let (mut status, mut body) = match transport::request_url_with_local_ipc_fallback(&client, "GET", &readiness_url, paths, &[], None, Duration::from_secs(2))
+        .await
     {
         Ok((status, body)) => (status.as_u16(), body),
         Err(readiness_err) => {
-            match transport::request_url_with_local_ipc_fallback(&client, "GET", &health_url, paths, &[], None, Duration::from_secs(2))
-                .await
-            {
+            match transport::request_url_with_local_ipc_fallback(&client, "GET", &health_url, paths, &[], None, Duration::from_secs(2)).await {
                 Ok((status, body)) => (status.as_u16(), body),
                 Err(health_err) => {
                     return Err(format!(
@@ -364,13 +338,12 @@ pub(crate) async fn startup_single_daemon_preflight(paths: &auth::CortexPaths) -
         return Err(format!("daemon startup denied: port {} is served by a different Cortex runtime identity", paths.port));
     }
     Err(format!(
-"daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}); readiness probe at {readiness_url} returned non-canonical payload (HTTP {status})"
-,paths.port))
+        "daemon startup denied: cannot bind {bind_addr}:{} ({bind_error}); readiness probe at {readiness_url} returned non-canonical payload (HTTP {status})",
+        paths.port
+    ))
 }
 pub(crate) fn app_init_required_client_name(agent: Option<&str>) -> String {
-    env_trimmed(APP_CLIENT_ENV)
-        .or_else(|| normalize_option(agent))
-        .unwrap_or_else(|| "client".to_string())
+    env_trimmed(APP_CLIENT_ENV).or_else(|| normalize_option(agent)).unwrap_or_else(|| "client".to_string())
 }
 pub(crate) fn app_init_required_error(paths: &auth::CortexPaths, agent: Option<&str>) -> String {
     let client = app_init_required_client_name(agent);
@@ -422,9 +395,7 @@ pub(crate) fn control_center_is_active(paths: &auth::CortexPaths) -> Result<bool
         Err(err) => Err(format!("probe control-center lock {}: {err}", lock_path.display())),
     }
 }
-pub(crate) async fn ensure_daemon(
-    paths: &auth::CortexPaths, agent: Option<&str>, emit_port: bool, allow_service_ensure: bool,
-) -> Result<(), String> {
+pub(crate) async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>, emit_port: bool, allow_service_ensure: bool) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let local_spawn_allowed = local_spawn_allowed_for_request(allow_service_ensure);
     let control_center_active_snapshot = if local_spawn_allowed { control_center_is_active(paths).ok() } else { None };
@@ -478,17 +449,15 @@ pub(crate) async fn ensure_daemon(
                     {
                         if ensure_service_ready_async().await {
                         } else {
-                            return Err(format!(
-                                "daemon is not healthy on port {} and Windows service ensure failed while daemon lock was held.",
-                                paths.port
-                            ));
+                            return Err(format!("daemon is not healthy on port {} and Windows service ensure failed while daemon lock was held.", paths.port));
                         }
                     }
                     #[cfg(not(windows))]
                     {
                         return Err(format!(
-"daemon is not healthy on port {} and another process still holds the daemon lock. Retry after the in-flight startup finishes.",
-paths.port));
+                            "daemon is not healthy on port {} and another process still holds the daemon lock. Retry after the in-flight startup finishes.",
+                            paths.port
+                        ));
                     }
                 } else {
                     return Err(app_init_required_error(paths, agent));

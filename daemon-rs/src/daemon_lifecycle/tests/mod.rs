@@ -14,18 +14,8 @@ fn temp_test_dir(name: &str) -> std::path::PathBuf {
 }
 #[test]
 fn cortex_health_payload_accepts_expected_shapes() {
-    assert!(is_cortex_health_payload(
-        200,
-        r#"{"status":"ok","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#,
-        Some(7437),
-        None,
-    ));
-    assert!(is_cortex_health_payload(
-        200,
-        r#"{"status":"degraded","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#,
-        Some(7437),
-        None,
-    ));
+    assert!(is_cortex_health_payload(200, r#"{"status":"ok","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#, Some(7437), None,));
+    assert!(is_cortex_health_payload(200, r#"{"status":"degraded","runtime":{"version":"0.5.0","port":7437},"stats":{"memories":1}}"#, Some(7437), None,));
 }
 #[test]
 fn cortex_health_payload_rejects_non_cortex_bodies() {
@@ -33,12 +23,7 @@ fn cortex_health_payload_rejects_non_cortex_bodies() {
     assert!(!is_cortex_health_payload(200, r#"{"status":"ok","runtime":{"version":"0.5.0"}}"#, Some(7437), None,));
     assert!(!is_cortex_health_payload(200, "<html>ok</html>", Some(7437), None));
     assert!(!is_cortex_health_payload(500, r#"{"status":"ok","runtime":{}}"#, Some(7437), None,));
-    assert!(!is_cortex_health_payload(
-        200,
-        r#"{"status":"ok","runtime":{"version":"0.5.0","port":9000},"stats":{"memories":1}}"#,
-        Some(7437),
-        None,
-    ));
+    assert!(!is_cortex_health_payload(200, r#"{"status":"ok","runtime":{"version":"0.5.0","port":9000},"stats":{"memories":1}}"#, Some(7437), None,));
 }
 #[test]
 fn cortex_readiness_payload_reports_ready_and_starting_states() {
@@ -186,7 +171,6 @@ fn owner_token_validation_skips_unspawned_owner_claims() {
     let home_dir = temp_test_dir("owner_token_unspawned");
     let home_str = home_dir.to_string_lossy().to_string();
     let paths = CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), Some("127.0.0.1"));
-    validate_spawned_owner_claim(&paths, Some("control-center"), None, None)
-        .expect("unspawned owner claims should remain backwards compatible");
+    validate_spawned_owner_claim(&paths, Some("control-center"), None, None).expect("unspawned owner claims should remain backwards compatible");
     let _ = std::fs::remove_dir_all(&home_dir);
 }

@@ -59,12 +59,7 @@ unwrap_or(Some(0)),"last_accessed":row.get::<_,Option<String>>(10).unwrap_or(Non
         let Some(id) = memory.get("id").and_then(|value| value.as_i64()) else {
             continue;
         };
-        let Some(source) = memory
-            .get("source")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(source) = memory.get("source").and_then(|value| value.as_str()).map(str::trim).filter(|value| !value.is_empty()) else {
             continue;
         };
         source_nodes.entry(source.to_string()).or_insert_with(|| format!("mem-{id}"));
@@ -73,12 +68,7 @@ unwrap_or(Some(0)),"last_accessed":row.get::<_,Option<String>>(10).unwrap_or(Non
         let Some(id) = decision.get("id").and_then(|value| value.as_i64()) else {
             continue;
         };
-        let Some(source) = decision
-            .get("context")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(source) = decision.get("context").and_then(|value| value.as_str()).map(str::trim).filter(|value| !value.is_empty()) else {
             continue;
         };
         source_nodes.entry(source.to_string()).or_insert_with(|| format!("dec-{id}"));
@@ -91,9 +81,9 @@ unwrap_or(Some(0)),"last_accessed":row.get::<_,Option<String>>(10).unwrap_or(Non
          ORDER BY count DESC, last_seen DESC
          LIMIT 240",
     ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?))
-        }) {
+        if let Ok(rows) =
+            stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?)))
+        {
             for row in rows.flatten() {
                 let (source_a, source_b, count, last_seen) = row;
                 let Some(node_a) = source_nodes.get(&source_a) else {

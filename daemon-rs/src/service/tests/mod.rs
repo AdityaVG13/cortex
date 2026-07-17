@@ -25,10 +25,7 @@ fn build_sc_create_command_includes_quoted_binpath_and_user() {
 #[test]
 fn build_sc_create_command_escapes_cmd_expansion_in_exe_path() {
     let cmd = build_sc_create_command(r"C:\Tools\%PATH%\Cortex^Bin\cortex.exe", "alice");
-    assert!(
-        cmd.contains(r"C:\Tools\^%PATH^%\Cortex^^Bin\cortex.exe"),
-        "executable path must survive cmd.exe parsing without expansion: {cmd}"
-    );
+    assert!(cmd.contains(r"C:\Tools\^%PATH^%\Cortex^^Bin\cortex.exe"), "executable path must survive cmd.exe parsing without expansion: {cmd}");
 }
 #[test]
 fn username_is_safe_for_cmd_fragment_rejects_shell_metacharacters() {

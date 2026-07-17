@@ -10,18 +10,14 @@ mod tests {
         initialize_schema(&conn).expect("schema");
         run_pending_migrations(&conn);
         let tables: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('decisions', 'memories', 'events')", [], |row| {
-                row.get(0)
-            })
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('decisions', 'memories', 'events')", [], |row| row.get(0))
             .expect("count tables");
         assert_eq!(tables, 3);
     }
     #[test]
     fn run_pending_migrations_is_idempotent() {
-        let path = std::env::temp_dir().join(format!(
-            "cortex-db-migrate-{}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()
-        ));
+        let path = std::env::temp_dir()
+            .join(format!("cortex-db-migrate-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos()));
         let conn = Connection::open(&path).expect("open file db");
         configure(&conn).expect("configure");
         initialize_schema(&conn).expect("schema");

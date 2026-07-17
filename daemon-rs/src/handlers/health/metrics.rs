@@ -23,12 +23,7 @@ pub(crate) fn directory_size_bytes(path: &std::path::Path) -> u64 {
 pub(crate) fn collect_storage_metrics(home: &std::path::Path) -> (u64, usize, u64) {
     let storage_bytes = directory_size_bytes(home);
     let backup_count = std::fs::read_dir(home.join("backups"))
-        .map(|entries| {
-            entries
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".db"))
-                .count()
-        })
+        .map(|entries| entries.filter_map(|entry| entry.ok()).filter(|entry| entry.file_name().to_string_lossy().ends_with(".db")).count())
         .unwrap_or(0);
     let log_bytes = STORAGE_LOG_FILES
         .iter()
@@ -84,14 +79,10 @@ pub(crate) fn app_managed_warmup_active(daemon_owner: Option<&str>) -> bool {
     let started = HEALTH_BOOT_INSTANT.get_or_init(Instant::now);
     started.elapsed() < Duration::from_secs(HEALTH_HEAVY_WARMUP_DELAY_SECS)
 }
-pub(crate) fn cache_snapshot_if_fresh(
-    snapshot: Option<HealthHeavyMetricsSnapshot>, now_unix_secs: i64,
-) -> Option<HealthHeavyMetricsSnapshot> {
+pub(crate) fn cache_snapshot_if_fresh(snapshot: Option<HealthHeavyMetricsSnapshot>, now_unix_secs: i64) -> Option<HealthHeavyMetricsSnapshot> {
     snapshot.and_then(|entry| if entry.cache_age_secs(now_unix_secs) <= HEALTH_HEAVY_CACHE_TTL_SECS { Some(entry) } else { None })
 }
-pub(crate) fn savings_payload_cache_if_fresh(
-    snapshot: Option<SavingsPayloadSnapshot>, now_unix_secs: i64,
-) -> Option<SavingsPayloadSnapshot> {
+pub(crate) fn savings_payload_cache_if_fresh(snapshot: Option<SavingsPayloadSnapshot>, now_unix_secs: i64) -> Option<SavingsPayloadSnapshot> {
     snapshot.and_then(|entry| if entry.cache_age_secs(now_unix_secs) <= SAVINGS_CACHE_TTL_SECS { Some(entry) } else { None })
 }
 pub(crate) fn weekday_name_from_sqlite(weekday: i64) -> &'static str {
@@ -111,9 +102,8 @@ pub(crate) fn collect_embedding_inventory(conn: &rusqlite::Connection, active_mo
     let active_model_embeddings: i64 = conn
         .query_row("SELECT COUNT(*) FROM embeddings WHERE LOWER(COALESCE(model, '')) = ?1", params![active_model_key], |r| r.get(0))
         .unwrap_or(0);
-    let unknown_model_embeddings: i64 = conn
-        .query_row("SELECT COUNT(*) FROM embeddings WHERE model IS NULL OR TRIM(model) = ''", [], |r| r.get(0))
-        .unwrap_or(0);
+    let unknown_model_embeddings: i64 =
+        conn.query_row("SELECT COUNT(*) FROM embeddings WHERE model IS NULL OR TRIM(model) = ''", [], |r| r.get(0)).unwrap_or(0);
     let other_model_embeddings = (total_embeddings - active_model_embeddings - unknown_model_embeddings).max(0);
     let backlog_memories: i64 = conn
         .query_row(

@@ -32,12 +32,7 @@ fn configure_tool(tool: &DetectedTool, cortex_exe: &str) -> StepResult {
         }
         ConfigMethod::CliCommand { program, args } => match run_mcp_add(program, args, cortex_exe, tool.agent_name) {
             Ok(()) => StepResult::Ok("Registered via CLI".into()),
-            Err(e) => StepResult::Warn(format!(
-                "CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp --agent {}",
-                program,
-                args.join(" "),
-                tool.agent_name
-            )),
+            Err(e) => StepResult::Warn(format!("CLI failed: {e}. Run manually: {} {} {cortex_exe} mcp --agent {}", program, args.join(" "), tool.agent_name)),
         },
         ConfigMethod::Manual(instructions) => StepResult::Ok(format!("Manual setup needed: {instructions}")),
     }
@@ -58,10 +53,7 @@ pub(crate) fn merge_mcp_config(config_path: &Path, cortex_exe: &str, agent_name:
     let exe_path = PathBuf::from(cortex_exe).to_string_lossy().to_string();
     let desired_registration = serde_json::json!({"command":
 exe_path,"args":["mcp","--agent",agent_name]});
-    mcp_servers
-        .as_object_mut()
-        .ok_or("mcpServers is not a JSON object")?
-        .insert("cortex".to_string(), desired_registration);
+    mcp_servers.as_object_mut().ok_or("mcpServers is not a JSON object")?.insert("cortex".to_string(), desired_registration);
     let action = if config == original {
         "Already configured"
     } else if config_path.exists() {
@@ -91,15 +83,7 @@ pub(crate) fn merge_toml_config(config_path: &Path, cortex_exe: &str, agent_name
     let servers_table = servers.as_table_mut().ok_or("mcp_servers is not a TOML table")?;
     let mut server = toml::map::Map::new();
     server.insert("command".into(), toml::Value::String(PathBuf::from(cortex_exe).to_string_lossy().to_string()));
-    server.insert(
-        "args".into(),
-        toml::Value::Array(
-            ["mcp", "--agent", agent_name]
-                .into_iter()
-                .map(|value| toml::Value::String(value.to_string()))
-                .collect(),
-        ),
-    );
+    server.insert("args".into(), toml::Value::Array(["mcp", "--agent", agent_name].into_iter().map(|value| toml::Value::String(value.to_string())).collect()));
     servers_table.insert("cortex".into(), toml::Value::Table(server));
     let action = if config == original {
         "Already configured"

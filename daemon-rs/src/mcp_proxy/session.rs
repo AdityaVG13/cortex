@@ -3,7 +3,6 @@ use crate::daemon_lifecycle;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use sysinfo::{ProcessesToUpdate, System};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub(crate) const HEALTH_CHECK_ATTEMPTS: u32 = 5;
 pub(crate) const REQUEST_ATTEMPTS: u32 = 3;
 pub(crate) const SESSION_HEARTBEAT_SECS: u64 = 15;
@@ -217,136 +216,26 @@ pub(crate) fn is_local_daemon_base(base_url: &str) -> bool {
     let paths = CortexPaths::resolve();
     crate::transport::is_local_http_base_url(base_url, &paths)
 }
-pub(crate) fn resolve_local_ipc_endpoint(base_url: &str, api_key: Option<&str>) -> Option<String> {
-    if api_key.is_some() || !is_local_daemon_base(base_url) {
-        return None;
-    }
-    CortexPaths::resolve().ipc_endpoint
-}
-pub(crate) fn split_base_and_path(url: &str) -> Option<(String, String)> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let mut base = parsed.clone();
-    base.set_path("");
-    base.set_query(None);
-    base.set_fragment(None);
-    let mut path = parsed.path().to_string();
-    if path.is_empty() {
-        path.push('/');
-    }
-    if let Some(query) = parsed.query() {
-        path.push('?');
-        path.push_str(query);
-    }
-    Some((base.to_string().trim_end_matches('/').to_string(), path))
-}
-pub(crate) fn parse_http_response(raw: &[u8]) -> Result<(reqwest::StatusCode, String), String> {
-    crate::transport::parse_http_response_bytes(raw, "IPC endpoint")
-}
-pub(crate) async fn send_http_over_stream<S>(
-    stream: &mut S, method: &str, path: &str, headers: &[(String, String)], body: Option<&str>,
-) -> Result<(reqwest::StatusCode, String), String>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    let body = body.unwrap_or("");
-    let mut request = String::new();
-    request.push_str(method);
-    request.push(' ');
-    request.push_str(path);
-    request.push_str(" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
-    for (name, value) in headers {
-        request.push_str(name);
-        request.push_str(": ");
-        request.push_str(value);
-        request.push_str("\r\n");
-    }
-    request.push_str("Content-Length: ");
-    request.push_str(&body.len().to_string());
-    request.push_str("\r\n\r\n");
-    request.push_str(body);
-    stream.write_all(request.as_bytes()).await.map_err(|e| format!("IPC write failed: {e}"))?;
-    stream.flush().await.map_err(|e| format!("IPC flush failed: {e}"))?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await.map_err(|e| format!("IPC read failed: {e}"))?;
-    parse_http_response(&response)
-}
-pub(crate) async fn ipc_http_request(
-    endpoint: &str, method: &str, path: &str, headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
-) -> Result<(reqwest::StatusCode, String), String> {
-    let fut = async {
-        #[cfg(unix)]
-        {
-            let mut stream = tokio::net::UnixStream::connect(endpoint).await.map_err(|e| format!("IPC connect failed: {e}"))?;
-            return send_http_over_stream(&mut stream, method, path, headers, body).await;
-        }
-        #[cfg(windows)]
-        {
-            let mut stream = tokio::net::windows::named_pipe::ClientOptions::new()
-                .open(endpoint)
-                .map_err(|e| format!("IPC connect failed: {e}"))?;
-            return send_http_over_stream(&mut stream, method, path, headers, body).await;
-        }
-        #[allow(unreachable_code)]
-        Err("IPC transport is unsupported on this platform".to_string())
-    };
-    tokio::time::timeout(timeout, fut).await.map_err(|_| "IPC request timed out".to_string())?
-}
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn transport_request(
-    client: &reqwest::Client, method: &str, base_url: &str, path: &str, api_key: Option<&str>, allow_local_token_fallback: bool,
-    headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
+    client: &reqwest::Client, method: &str, base_url: &str, path: &str, api_key: Option<&str>, allow_local_token_fallback: bool, headers: &[(String, String)],
+    body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
     let mut all_headers = Vec::with_capacity(headers.len() + 1);
     all_headers.extend_from_slice(headers);
     if let Some(auth) = build_auth_header(base_url, api_key, allow_local_token_fallback) {
         all_headers.push(("authorization".to_string(), auth));
     }
-    if let Some(endpoint) = resolve_local_ipc_endpoint(base_url, api_key) {
-        match ipc_http_request(&endpoint, method, path, &all_headers, body, timeout).await {
-            Ok(response) => return Ok(response),
-            Err(err) => {
-                eprintln!("[cortex-mcp] IPC request failed for {method} {path} ({endpoint}): {err}; falling back to HTTP");
-            }
-        }
+    if api_key.is_none() && is_local_daemon_base(base_url) {
+        return crate::transport::request_with_local_ipc_fallback(client, method, base_url, path, &CortexPaths::resolve(), &all_headers, body, timeout).await;
     }
-    let url = format!("{base_url}{path}");
-    let mut req = match method {
-        "GET" => client.get(&url),
-        "POST" => client.post(&url),
-        other => return Err(format!("Unsupported request method '{other}'")),
-    };
-    req = req.timeout(timeout);
-    for (name, value) in &all_headers {
-        req = req.header(name, value);
-    }
-    if let Some(payload) = body {
-        req = req.body(payload.to_string());
-    }
-    let response = req.send().await.map_err(|e| e.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|e| e.to_string())?;
-    Ok((status, body))
+    crate::transport::send_http_request(client, method, &format!("{base_url}{path}"), &all_headers, body, timeout).await
 }
 pub(crate) async fn transport_request_for_url(
     client: &reqwest::Client, method: &str, url: &str, headers: &[(String, String)], body: Option<&str>, timeout: std::time::Duration,
 ) -> Result<(reqwest::StatusCode, String), String> {
-    let Some((base_url, path)) = split_base_and_path(url) else {
-        let mut req = match method {
-            "GET" => client.get(url),
-            "POST" => client.post(url),
-            other => return Err(format!("Unsupported request method '{other}'")),
-        };
-        req = req.timeout(timeout);
-        for (name, value) in headers {
-            req = req.header(name, value);
-        }
-        if let Some(payload) = body {
-            req = req.body(payload.to_string());
-        }
-        let response = req.send().await.map_err(|e| e.to_string())?;
-        let status = response.status();
-        let body = response.text().await.map_err(|e| e.to_string())?;
-        return Ok((status, body));
+    let Some((base_url, path)) = crate::transport::split_base_and_path(url) else {
+        return crate::transport::send_http_request(client, method, url, headers, body, timeout).await;
     };
     transport_request(client, method, &base_url, &path, None, false, headers, body, timeout).await
 }
@@ -366,8 +255,7 @@ pub(crate) fn requires_explicit_api_key(base_url: &str, api_key: Option<&str>) -
     api_key.is_none() && !is_local_daemon_base(base_url)
 }
 pub(crate) fn validate_target_base_url(base_url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(base_url)
-        .map_err(|_| format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// base URL."))?;
+    let parsed = reqwest::Url::parse(base_url).map_err(|_| format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// base URL."))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.", parsed.scheme()));
     }
@@ -393,31 +281,27 @@ pub(crate) fn internal_health_probe_headers() -> [(String, String); 1] {
 }
 pub(crate) fn is_cortex_health_response(status: reqwest::StatusCode, body: &str, probe_url: &str) -> bool {
     let local_paths = if is_local_daemon_base(probe_url) { Some(CortexPaths::resolve()) } else { None };
-    if let Some(ready) =
-        daemon_lifecycle::readiness_state_from_payload(status.as_u16(), body, expected_port_from_url(probe_url), local_paths.as_ref())
-    {
+    if let Some(ready) = daemon_lifecycle::readiness_state_from_payload(status.as_u16(), body, expected_port_from_url(probe_url), local_paths.as_ref()) {
         return ready;
     }
     daemon_lifecycle::is_cortex_health_payload(status.as_u16(), body, expected_port_from_url(probe_url), local_paths.as_ref())
 }
 pub(crate) async fn health_check_ready(client: &reqwest::Client, probe_url: &str) -> bool {
     let probe_headers = internal_health_probe_headers();
-    let (status, body) =
-        match transport_request_for_url(client, "GET", probe_url, &probe_headers, None, std::time::Duration::from_secs(5)).await {
-            Ok(response) => response,
-            Err(_) => return false,
-        };
+    let (status, body) = match transport_request_for_url(client, "GET", probe_url, &probe_headers, None, std::time::Duration::from_secs(5)).await {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
     if is_cortex_health_response(status, &body, probe_url) {
         return true;
     }
     let Some(health_url) = fallback_health_probe_url(probe_url) else {
         return false;
     };
-    let (status, body) =
-        match transport_request_for_url(client, "GET", &health_url, &probe_headers, None, std::time::Duration::from_secs(5)).await {
-            Ok(response) => response,
-            Err(_) => return false,
-        };
+    let (status, body) = match transport_request_for_url(client, "GET", &health_url, &probe_headers, None, std::time::Duration::from_secs(5)).await {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
     is_cortex_health_response(status, &body, &health_url)
 }
 pub(crate) fn is_auth_recovery_status(status: reqwest::StatusCode) -> bool {
@@ -452,10 +336,7 @@ pub(crate) async fn session_start_with_retry(
 }
 pub(crate) fn persist_write_buffer(buffer_path: &std::path::Path, remaining: &[String]) -> Result<(), std::io::Error> {
     use std::io::{BufWriter, Write};
-    let parent = buffer_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let parent = buffer_path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
     std::fs::create_dir_all(parent)?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     {
@@ -479,20 +360,14 @@ pub(crate) fn sync_parent_dir(_parent: &std::path::Path) -> std::io::Result<()> 
     Ok(())
 }
 pub(crate) async fn drain_write_buffer(
-    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, model: Option<&str>, paths: &CortexPaths,
-    allow_local_token_fallback: bool,
+    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, model: Option<&str>, paths: &CortexPaths, allow_local_token_fallback: bool,
 ) {
     let buffer_path = &paths.write_buffer;
     let content = match std::fs::read_to_string(buffer_path) {
         Ok(content) if !content.trim().is_empty() => content,
         _ => return,
     };
-    let lines: Vec<String> = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let lines: Vec<String> = content.lines().map(str::trim).filter(|line| !line.is_empty()).map(|line| line.to_string()).collect();
     if lines.is_empty() {
         return;
     }
@@ -540,10 +415,7 @@ pub(crate) async fn session_start(
     let payload = serde_json::json!({"agent":agent,"ttl":7200,"description":model.map(|m|format!("MCP session - {m}")).unwrap_or_else(||
 "MCP session".to_string())})
     .to_string();
-    let headers = vec![
-        ("content-type".to_string(), "application/json".to_string()),
-        ("x-cortex-request".to_string(), "true".to_string()),
-    ];
+    let headers = vec![("content-type".to_string(), "application/json".to_string()), ("x-cortex-request".to_string(), "true".to_string())];
     match transport_request(
         client,
         "POST",
@@ -572,10 +444,7 @@ pub(crate) async fn session_heartbeat(
     let payload = serde_json::json!({"agent":agent,"description":model.map(|m|format!("MCP session - {m}")).
 unwrap_or_else(||"MCP session".to_string())})
     .to_string();
-    let headers = vec![
-        ("content-type".to_string(), "application/json".to_string()),
-        ("x-cortex-request".to_string(), "true".to_string()),
-    ];
+    let headers = vec![("content-type".to_string(), "application/json".to_string()), ("x-cortex-request".to_string(), "true".to_string())];
     match transport_request(
         client,
         "POST",
@@ -594,16 +463,11 @@ unwrap_or_else(||"MCP session".to_string())})
         Ok(_) | Err(_) => SessionHeartbeatOutcome::Failed,
     }
 }
-pub(crate) async fn session_end(
-    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, allow_local_token_fallback: bool,
-) -> bool {
+pub(crate) async fn session_end(client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, allow_local_token_fallback: bool) -> bool {
     let payload = serde_json::json!
 ({"agent":agent})
     .to_string();
-    let headers = vec![
-        ("content-type".to_string(), "application/json".to_string()),
-        ("x-cortex-request".to_string(), "true".to_string()),
-    ];
+    let headers = vec![("content-type".to_string(), "application/json".to_string()), ("x-cortex-request".to_string(), "true".to_string())];
     match transport_request(
         client,
         "POST",
@@ -621,8 +485,6 @@ pub(crate) async fn session_end(
         Err(_) => false,
     }
 }
-pub(crate) async fn finalize_proxy_session(
-    client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, allow_local_token_fallback: bool,
-) {
+pub(crate) async fn finalize_proxy_session(client: &reqwest::Client, base_url: &str, api_key: Option<&str>, agent: &str, allow_local_token_fallback: bool) {
     let _ = session_end(client, base_url, api_key, agent, allow_local_token_fallback).await;
 }

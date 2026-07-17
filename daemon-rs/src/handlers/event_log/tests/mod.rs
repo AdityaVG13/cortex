@@ -17,16 +17,11 @@ fn prune_event_type_keep_latest_trims_old_rows() {
     )
     .expect("create events table");
     for idx in 0..6 {
-        conn.execute(
-            "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
-            rusqlite::params![format!("{{\"idx\":{idx}}}")],
-        )
-        .expect("insert event");
+        conn.execute("INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')", rusqlite::params![format!("{{\"idx\":{idx}}}")])
+            .expect("insert event");
     }
     prune_event_type_keep_latest(&conn, "decision_stored", 3).expect("prune rows");
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored'", [], |row| row.get(0))
-        .expect("count rows");
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored'", [], |row| row.get(0)).expect("count rows");
     assert_eq!(count, 3);
 }
 #[test]
@@ -55,16 +50,11 @@ fn log_event_compacts_large_merge_payload() {
         "test",
     )
     .expect("log merge event");
-    let payload: String = conn
-        .query_row("SELECT data FROM events WHERE type = 'merge' LIMIT 1", [], |row| row.get(0))
-        .expect("read payload");
+    let payload: String = conn.query_row("SELECT data FROM events WHERE type = 'merge' LIMIT 1", [], |row| row.get(0)).expect("read payload");
     let parsed: Value = serde_json::from_str(&payload).expect("valid json");
     assert!(parsed.get("incoming_text").is_none());
     assert_eq!(parsed["incoming_chars"].as_i64(), Some(10_000));
-    assert!(parsed["incoming_preview"]
-        .as_str()
-        .map(|text| text.len() <= MERGE_EVENT_PREVIEW_CHARS)
-        .unwrap_or(false));
+    assert!(parsed["incoming_preview"].as_str().map(|text| text.len() <= MERGE_EVENT_PREVIEW_CHARS).unwrap_or(false));
 }
 #[test]
 fn log_event_keeps_recall_analytics_fields_small() {
@@ -261,9 +251,6 @@ fn log_event_payload_fallback_keeps_savings_fields_bounded() {
     assert_eq!(parsed["budget"].as_i64(), Some(240));
     assert_eq!(parsed["hits"].as_i64(), Some(3));
     assert_eq!(parsed["agent"].as_str(), Some("codex"));
-    assert!(
-        parsed["query"].as_str().map(|query| query.chars().count() <= 120).unwrap_or(false),
-        "query should stay bounded in fallback payload"
-    );
+    assert!(parsed["query"].as_str().map(|query| query.chars().count() <= 120).unwrap_or(false), "query should stay bounded in fallback payload");
     assert!(bytes as usize <= MAX_EVENT_JSON_BYTES);
 }

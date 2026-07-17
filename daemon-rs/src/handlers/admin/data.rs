@@ -54,11 +54,9 @@ pub async fn handle_assign_owner(State(state): State<RuntimeState>, headers: Hea
     let mut assigned = serde_json::Map::new();
     for table in tables {
         let count = if let Some(fid) = from_id {
-            conn.execute(&format!("UPDATE {table} SET owner_id = ?1 WHERE owner_id = ?2"), params![to_id, fid])
-                .unwrap_or(0)
+            conn.execute(&format!("UPDATE {table} SET owner_id = ?1 WHERE owner_id = ?2"), params![to_id, fid]).unwrap_or(0)
         } else {
-            conn.execute(&format!("UPDATE {table} SET owner_id = ?1 WHERE owner_id IS NULL"), params![to_id])
-                .unwrap_or(0)
+            conn.execute(&format!("UPDATE {table} SET owner_id = ?1 WHERE owner_id IS NULL"), params![to_id]).unwrap_or(0)
         };
         assigned.insert(table.to_string(), json!(count));
     }
@@ -109,8 +107,7 @@ pub async fn handle_archive(State(state): State<RuntimeState>, headers: HeaderMa
     }
     let placeholders: Vec<String> = body.ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
     let sql = format!("UPDATE {} SET status = 'archived' WHERE id IN ({})", body.table, placeholders.join(", "));
-    let param_values: Vec<Box<dyn rusqlite::types::ToSql>> =
-        body.ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
+    let param_values: Vec<Box<dyn rusqlite::types::ToSql>> = body.ids.iter().map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>).collect();
     let params_ref: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
     let archived = conn.execute(&sql, params_ref.as_slice()).unwrap_or(0);
     json_response(StatusCode::OK, json!({"archived":archived}))

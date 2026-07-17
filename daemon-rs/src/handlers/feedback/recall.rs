@@ -53,16 +53,6 @@ pub async fn handle_feedback(State(state): State<RuntimeState>, headers: HeaderM
 body.sources,}),
     )
 }
-pub fn record_unfold_feedback(conn: &Connection, sources: &[String], agent: &str, query_text: &str, query_blob: Option<&[u8]>) {
-    for source in sources {
-        let (result_type, result_id) = parse_source(source);
-        let _ = conn.execute(
-            "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6)",
-            params![query_text, query_blob, source, result_type, result_id, agent],
-        );
-    }
-}
 pub fn compute_boosts(conn: &Connection, sources: &[String], query_vector: Option<&[f32]>) -> std::collections::HashMap<String, f64> {
     let mut boosts = std::collections::HashMap::new();
     if sources.is_empty() {
@@ -135,15 +125,9 @@ pub async fn handle_feedback_stats(State(state): State<RuntimeState>, headers: H
     }
     let conn = state.db_read.lock().await;
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0)).unwrap_or(0);
-    let positive: i64 = conn
-        .query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal > 0", [], |row| row.get(0))
-        .unwrap_or(0);
-    let negative: i64 = conn
-        .query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal < 0", [], |row| row.get(0))
-        .unwrap_or(0);
-    let unique_sources: i64 = conn
-        .query_row("SELECT COUNT(DISTINCT result_source) FROM recall_feedback", [], |row| row.get(0))
-        .unwrap_or(0);
+    let positive: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal > 0", [], |row| row.get(0)).unwrap_or(0);
+    let negative: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal < 0", [], |row| row.get(0)).unwrap_or(0);
+    let unique_sources: i64 = conn.query_row("SELECT COUNT(DISTINCT result_source) FROM recall_feedback", [], |row| row.get(0)).unwrap_or(0);
     let top: Vec<Value> = conn
         .prepare(
             "SELECT result_source, SUM(signal) as total_signal, COUNT(*) as hits \

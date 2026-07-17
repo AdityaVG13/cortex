@@ -30,15 +30,12 @@ pub async fn run(
                 match reason {
                     PlainHttpRejectionReason::TeamMode => {
                         eprintln!("[cortex] TLS certificate not configured");
-                        eprintln!(
-                            "[cortex] Team mode requires valid TLS -- add certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
-                        );
+                        eprintln!("[cortex] Team mode requires valid TLS -- add certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY");
                     }
                     PlainHttpRejectionReason::NonLocalBind => {
                         eprintln!("[cortex] TLS certificate not configured");
                         eprintln!("[cortex] Refusing plain HTTP for non-local bind '{policy_bind_addr}'.");
-                        eprintln!(
-"[cortex] Add TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override.");
+                        eprintln!("[cortex] Add TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override.");
                     }
                 }
                 std::process::exit(1);
@@ -52,15 +49,12 @@ pub async fn run(
                 match reason {
                     PlainHttpRejectionReason::TeamMode => {
                         eprintln!("[cortex] TLS configuration error: {e}");
-                        eprintln!(
-                            "[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY"
-                        );
+                        eprintln!("[cortex] Team mode requires valid TLS -- fix certs at ~/.cortex/tls/ or set CORTEX_TLS_CERT/CORTEX_TLS_KEY");
                     }
                     PlainHttpRejectionReason::NonLocalBind => {
                         eprintln!("[cortex] TLS configuration error: {e}");
                         eprintln!("[cortex] Refusing insecure HTTP fallback for non-local bind '{policy_bind_addr}'.");
-                        eprintln!(
-"[cortex] Fix TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override.");
+                        eprintln!("[cortex] Fix TLS certs, bind to localhost, or set CORTEX_ALLOW_INSECURE_REMOTE=1 for explicit temporary override.");
                     }
                 }
                 std::process::exit(1);
@@ -92,9 +86,7 @@ pub(crate) fn effective_bind_addr_for_policy(configured_bind: &str, activated_li
         .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|| configured_bind.to_string())
 }
-pub(crate) fn plain_http_rejection_reason(
-    bind_addr: &str, team_mode: bool, allow_insecure_remote: bool,
-) -> Option<PlainHttpRejectionReason> {
+pub(crate) fn plain_http_rejection_reason(bind_addr: &str, team_mode: bool, allow_insecure_remote: bool) -> Option<PlainHttpRejectionReason> {
     if team_mode {
         Some(PlainHttpRejectionReason::TeamMode)
     } else if !is_local_bind_addr(bind_addr) && !allow_insecure_remote {
@@ -122,9 +114,7 @@ pub(crate) fn resolve_socket_activation_listener(expected_port: u16) -> Result<O
     }
     validate_socket_activation_fd(SYSTEMD_FIRST_SOCKET_FD)?;
     let std_listener = unsafe { std::net::TcpListener::from_raw_fd(SYSTEMD_FIRST_SOCKET_FD) };
-    std_listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("configure activated socket nonblocking: {e}"))?;
+    std_listener.set_nonblocking(true).map_err(|e| format!("configure activated socket nonblocking: {e}"))?;
     if let Ok(addr) = std_listener.local_addr() {
         if expected_port > 0 && addr.port() != expected_port {
             eprintln!("[cortex] Warning: activated socket port {} does not match configured port {}", addr.port(), expected_port);
@@ -135,9 +125,7 @@ pub(crate) fn resolve_socket_activation_listener(expected_port: u16) -> Result<O
     }
     std::env::remove_var("LISTEN_FDS");
     std::env::remove_var("LISTEN_PID");
-    tokio::net::TcpListener::from_std(std_listener)
-        .map(Some)
-        .map_err(|e| format!("adopt socket-activated listener: {e}"))
+    tokio::net::TcpListener::from_std(std_listener).map(Some).map_err(|e| format!("adopt socket-activated listener: {e}"))
 }
 #[cfg(unix)]
 pub(crate) fn validate_socket_activation_fd(fd: libc::c_int) -> Result<(), String> {
@@ -146,9 +134,7 @@ pub(crate) fn validate_socket_activation_fd(fd: libc::c_int) -> Result<(), Strin
     }
     let mut socket_type: libc::c_int = 0;
     let mut socket_type_len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-    if unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&mut socket_type as *mut libc::c_int).cast(), &mut socket_type_len) }
-        < 0
-    {
+    if unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, (&mut socket_type as *mut libc::c_int).cast(), &mut socket_type_len) } < 0 {
         return Err(format!("activated socket fd {fd} is not a socket: {}", std::io::Error::last_os_error()));
     }
     if socket_type != libc::SOCK_STREAM {
@@ -195,10 +181,7 @@ pub(crate) async fn run_ipc_listener(router: Router, endpoint: String) -> Result
                 let hyper_svc = hyper_util::service::TowerToHyperService::new(router.clone());
                 tokio::spawn(async move {
                     let io = hyper_util::rt::TokioIo::new(stream);
-                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                        .serve_connection(io, hyper_svc)
-                        .await
-                    {
+                    if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new()).serve_connection(io, hyper_svc).await {
                         eprintln!("[cortex] IPC unix connection error: {err}");
                     }
                 });
@@ -236,10 +219,7 @@ pub(crate) async fn run_ipc_listener(router: Router, endpoint: String) -> Result
         let hyper_svc = hyper_util::service::TowerToHyperService::new(router.clone());
         tokio::spawn(async move {
             let io = hyper_util::rt::TokioIo::new(server);
-            if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection(io, hyper_svc)
-                .await
-            {
+            if let Err(err) = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new()).serve_connection(io, hyper_svc).await {
                 eprintln!("[cortex] IPC pipe connection error: {err}");
             }
         });
@@ -256,8 +236,8 @@ pub(crate) fn detect_team_mode_for_tls(db_path: &Path) -> bool {
     }
 }
 pub(crate) async fn run_plain(
-    router: Router, bind_addr: &str, port: u16, activated_listener: Option<tokio::net::TcpListener>,
-    readiness_signal: Option<Arc<AtomicBool>>, shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    router: Router, bind_addr: &str, port: u16, activated_listener: Option<tokio::net::TcpListener>, readiness_signal: Option<Arc<AtomicBool>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     let listener = match activated_listener {
         Some(listener) => listener,

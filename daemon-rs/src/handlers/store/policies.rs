@@ -6,9 +6,8 @@ use crate::handlers::log_event;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 pub(crate) fn handle_contradiction_policy(
-    conn: &mut Connection, decision: &str, context: Option<&str>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance,
-    confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<&str>, ts: &str,
-    owner_id: Option<i64>, relation: &ConflictResult,
+    conn: &mut Connection, decision: &str, context: Option<&str>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance, confidence: f64,
+    trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<&str>, ts: &str, owner_id: Option<i64>, relation: &ConflictResult,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let existing_id = relation.matched_id.ok_or_else(|| StoreError::Internal("Missing conflict target id".to_string()))?;
     let existing_trust = relation.matched_trust_score.unwrap_or(0.8);
@@ -17,11 +16,8 @@ pub(crate) fn handle_contradiction_policy(
     let tx = conn.transaction().map_err(|e| StoreError::Internal(e.to_string()))?;
     if incoming_wins {
         if let Some(owner_id) = owner_id {
-            tx.execute(
-                "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
-                params![ts, existing_id, owner_id],
-            )
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+            tx.execute("UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2 AND owner_id = ?3", params![ts, existing_id, owner_id])
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
         } else {
             tx.execute("UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2", params![ts, existing_id])
                 .map_err(|e| StoreError::Internal(e.to_string()))?;
@@ -131,36 +127,23 @@ merged_count,"quality":quality,});
     decorate_entry_with_relation(
         &mut entry,
         relation,
-        Some(conflict_record_json(
-            conflict_record_id,
-            None,
-            target_id,
-            relation.classification,
-            "auto_resolved",
-            Some("deduplicated_merge"),
-        )),
+        Some(conflict_record_json(conflict_record_id, None, target_id, relation.classification, "auto_resolved", Some("deduplicated_merge"))),
     );
     Ok((entry, None))
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_refinement_policy(
-    conn: &mut Connection, decision: &str, context: Option<&str>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance,
-    confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<&str>, ts: &str,
-    owner_id: Option<i64>, relation: &ConflictResult,
+    conn: &mut Connection, decision: &str, context: Option<&str>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance, confidence: f64,
+    trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<&str>, ts: &str, owner_id: Option<i64>, relation: &ConflictResult,
 ) -> Result<(Value, Option<i64>), StoreError> {
-    let target_id = relation
-        .matched_id
-        .ok_or_else(|| StoreError::Internal("Missing refinement target id".to_string()))?;
+    let target_id = relation.matched_id.ok_or_else(|| StoreError::Internal("Missing refinement target id".to_string()))?;
     let target_trust = relation.matched_trust_score.unwrap_or(0.8);
     let should_supersede = relation.matched_agent.as_deref() == Some(source_agent) || trust_score >= target_trust;
     let tx = conn.transaction().map_err(|e| StoreError::Internal(e.to_string()))?;
     if should_supersede {
         if let Some(owner_id) = owner_id {
-            tx.execute(
-                "UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2 AND owner_id = ?3",
-                params![ts, target_id, owner_id],
-            )
-            .map_err(|e| StoreError::Internal(e.to_string()))?;
+            tx.execute("UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2 AND owner_id = ?3", params![ts, target_id, owner_id])
+                .map_err(|e| StoreError::Internal(e.to_string()))?;
         } else {
             tx.execute("UPDATE decisions SET status = 'superseded', updated_at = ?1 WHERE id = ?2", params![ts, target_id])
                 .map_err(|e| StoreError::Internal(e.to_string()))?;

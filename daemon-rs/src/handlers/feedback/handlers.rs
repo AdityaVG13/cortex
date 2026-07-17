@@ -1,6 +1,6 @@
-use super::agent::{
-    build_agent_feedback_stats_payload, normalize_horizon_days, normalize_limit, record_agent_feedback_from_value,
-    AgentFeedbackRecordRequest, AgentFeedbackStatsQuery,
+use super::{
+    build_agent_feedback_stats_payload, normalize_horizon_days, normalize_limit, record_agent_feedback_from_value, AgentFeedbackRecordRequest,
+    AgentFeedbackStatsQuery,
 };
 use crate::handlers::{ensure_auth_with_caller_rated, json_error, json_response};
 use crate::state::RuntimeState;
@@ -9,9 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use serde_json::json;
-pub async fn handle_agent_feedback_record(
-    State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<AgentFeedbackRecordRequest>,
-) -> Response {
+pub async fn handle_agent_feedback_record(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<AgentFeedbackRecordRequest>) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,
@@ -29,9 +27,7 @@ tokens_used,"memory_sources":body.memory_sources.unwrap_or_default(),"notes":bod
         Err(err) => json_error(StatusCode::BAD_REQUEST, &err),
     }
 }
-pub async fn handle_agent_feedback_stats(
-    State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<AgentFeedbackStatsQuery>,
-) -> Response {
+pub async fn handle_agent_feedback_stats(State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<AgentFeedbackStatsQuery>) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(caller_id) => caller_id,
         Err(resp) => return resp,

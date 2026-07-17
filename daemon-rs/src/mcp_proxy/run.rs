@@ -32,8 +32,7 @@ pub async fn run(base_url: &str, api_key: Option<&str>, agent: Option<&str>) -> 
                 break;
             }
             Ok((status, _)) => {
-                eprintln!(
-"[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: HTTP {status} was not a valid Cortex health payload");
+                eprintln!("[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: HTTP {status} was not a valid Cortex health payload");
             }
             Err(e) => {
                 eprintln!("[cortex-mcp] Health check attempt {attempt}/{HEALTH_CHECK_ATTEMPTS}: {e}");
@@ -44,22 +43,17 @@ pub async fn run(base_url: &str, api_key: Option<&str>, agent: Option<&str>) -> 
         }
     }
     if !healthy {
-        eprintln!(
-"[cortex-mcp] Health check failed after {HEALTH_CHECK_ATTEMPTS} attempts; keeping proxy alive and deferring errors to JSON-RPC responses"
-);
+        eprintln!("[cortex-mcp] Health check failed after {HEALTH_CHECK_ATTEMPTS} attempts; keeping proxy alive and deferring errors to JSON-RPC responses");
     }
     let mut allow_local_token_fallback = !local_token_fallback_required(&rpc_base_url, api_key) || healthy;
     if local_token_fallback_required(&rpc_base_url, api_key) && !allow_local_token_fallback {
         eprintln!("[cortex-mcp] Local target is not identity-verified yet; withholding local token auth until health is valid");
     } else if healthy {
         let paths = CortexPaths::resolve();
-        drain_write_buffer(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), &paths, allow_local_token_fallback)
-            .await;
+        drain_write_buffer(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), &paths, allow_local_token_fallback).await;
     }
     if allow_local_token_fallback || !local_token_fallback_required(&rpc_base_url, api_key) {
-        let _ =
-            session_start_with_retry(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), allow_local_token_fallback)
-                .await;
+        let _ = session_start_with_retry(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), allow_local_token_fallback).await;
     }
     {
         let heartbeat_base_url = rpc_base_url.clone();
@@ -129,8 +123,7 @@ pub async fn run(base_url: &str, api_key: Option<&str>, agent: Option<&str>) -> 
                                 heartbeat_base_url = refreshed_base;
                                 heartbeat_health_url = format!("{heartbeat_base_url}/readiness");
                                 let _ = heartbeat_base_tx.send(heartbeat_base_url.clone());
-                                heartbeat_allow_local_token_fallback =
-                                    !local_token_fallback_required(&heartbeat_base_url, heartbeat_api_key.as_deref());
+                                heartbeat_allow_local_token_fallback = !local_token_fallback_required(&heartbeat_base_url, heartbeat_api_key.as_deref());
                                 restarted = session_start_with_retry(
                                     &hb_client,
                                     &heartbeat_base_url,
@@ -369,16 +362,7 @@ pub async fn run(base_url: &str, api_key: Option<&str>, agent: Option<&str>) -> 
                     }
                     if consecutive_failures > 0 && status.is_success() {
                         let paths = CortexPaths::resolve();
-                        drain_write_buffer(
-                            &client,
-                            &rpc_base_url,
-                            api_key,
-                            &agent_display,
-                            agent_model.as_deref(),
-                            &paths,
-                            allow_local_token_fallback,
-                        )
-                        .await;
+                        drain_write_buffer(&client, &rpc_base_url, api_key, &agent_display, agent_model.as_deref(), &paths, allow_local_token_fallback).await;
                     }
                     consecutive_failures = 0;
                     break;
@@ -395,8 +379,7 @@ pub async fn run(base_url: &str, api_key: Option<&str>, agent: Option<&str>) -> 
         }
         if response_body.is_none() && should_count_failure {
             consecutive_failures += 1;
-            eprintln!(
-"[cortex-mcp] Request exhausted after {REQUEST_ATTEMPTS} attempts: {last_err} (consecutive failures: {consecutive_failures})");
+            eprintln!("[cortex-mcp] Request exhausted after {REQUEST_ATTEMPTS} attempts: {last_err} (consecutive failures: {consecutive_failures})");
         }
         if response_body.is_none() && !last_err.is_empty() && has_id {
             let id = msg.get("id").cloned().unwrap_or(Value::Null);

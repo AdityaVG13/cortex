@@ -17,9 +17,7 @@ fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, ag
     if text.is_empty() {
         return false;
     }
-    let existing: Option<i64> = conn
-        .query_row("SELECT id FROM memories WHERE source = ? AND status = 'active'", [source], |row| row.get(0))
-        .ok();
+    let existing: Option<i64> = conn.query_row("SELECT id FROM memories WHERE source = ? AND status = 'active'", [source], |row| row.get(0)).ok();
     if let Some(id) = existing {
         let _ = conn.execute("UPDATE memories SET text = ?, updated_at = datetime('now') WHERE id = ?", rusqlite::params![text, id]);
         let _ = conn.execute("DELETE FROM embeddings WHERE target_type = 'memory' AND target_id = ?", [id]);
@@ -29,10 +27,7 @@ fn upsert_memory(conn: &Connection, text: &str, source: &str, mem_type: &str, ag
             rusqlite::params![text, source, mem_type, agent, oid],
         );
     } else {
-        let _ = conn.execute(
-            "INSERT INTO memories (text, source, type, source_agent) VALUES (?, ?, ?, ?)",
-            rusqlite::params![text, source, mem_type, agent],
-        );
+        let _ = conn.execute("INSERT INTO memories (text, source, type, source_agent) VALUES (?, ?, ?, ?)", rusqlite::params![text, source, mem_type, agent]);
     }
     true
 }
@@ -92,18 +87,12 @@ fn index_memory_files(conn: &Connection, home: &Path, owner_id: Option<i64>) -> 
         }
         if let Ok(raw) = fs::read_to_string(&path) {
             let (fm, body) = parse_frontmatter(&raw);
-            let name = fm
-                .get("name")
-                .cloned()
-                .unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+            let name = fm.get("name").cloned().unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
             let mem_type = fm.get("type").cloned().unwrap_or_else(|| "memory".to_string());
             let desc = fm.get("description").cloned().unwrap_or_default();
             let body_preview: String = body.chars().take(500).collect();
-            let text = if !desc.is_empty() {
-                format!("[{name}] ({mem_type}) {desc}\n{body_preview}")
-            } else {
-                format!("[{name}] ({mem_type})\n{body_preview}")
-            };
+            let text =
+                if !desc.is_empty() { format!("[{name}] ({mem_type}) {desc}\n{body_preview}") } else { format!("[{name}] ({mem_type})\n{body_preview}") };
             let source = format!("memory::{}", path.file_name().unwrap_or_default().to_string_lossy());
             if upsert_memory(conn, &text, &source, &mem_type, "indexer", owner_id) {
                 count += 1;

@@ -55,19 +55,10 @@ async fn test_route_class_buckets_are_independent() {
     let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42));
     let store_limit = rl.request_limit_for_ip_class(ip, RequestClass::Store);
     for _ in 0..store_limit {
-        let _ = rl
-            .check_request_for_class(ip, RequestClass::Store)
-            .await
-            .expect("store class should allow requests below class limit");
+        let _ = rl.check_request_for_class(ip, RequestClass::Store).await.expect("store class should allow requests below class limit");
     }
-    assert!(
-        rl.check_request_for_class(ip, RequestClass::Store).await.is_err(),
-        "store class should rate limit once its own bucket is exhausted"
-    );
-    assert!(
-        rl.check_request_for_class(ip, RequestClass::Recall).await.is_ok(),
-        "recall class should remain available after store bucket is saturated"
-    );
+    assert!(rl.check_request_for_class(ip, RequestClass::Store).await.is_err(), "store class should rate limit once its own bucket is exhausted");
+    assert!(rl.check_request_for_class(ip, RequestClass::Recall).await.is_ok(), "recall class should remain available after store bucket is saturated");
 }
 #[tokio::test]
 async fn test_cleanup_removes_stale() {

@@ -88,11 +88,8 @@ fn test_full_crystallize_pass() {
         let mut vec = vec![0.0f32; 384];
         vec[0] = 1.0;
         vec[1] = 0.01 * i as f32;
-        conn.execute(
-            "INSERT INTO embeddings (target_type, target_id, vector) VALUES ('memory', ?1, ?2)",
-            params![i, embeddings::vector_to_blob(&vec)],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO embeddings (target_type, target_id, vector) VALUES ('memory', ?1, ?2)", params![i, embeddings::vector_to_blob(&vec)])
+            .unwrap();
     }
     let result = run_crystallize_pass_with_brain(&conn, None, None, &None);
     assert_eq!(result.clusters_found, 1);

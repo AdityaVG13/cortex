@@ -87,12 +87,8 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
     let open_conflicts: i64 = conn
         .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed' AND disputes_id IS NOT NULL", [], |row| row.get(0))
         .unwrap_or(0);
-    let active_memories: i64 = conn
-        .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |row| row.get(0))
-        .unwrap_or(0);
-    let active_decisions: i64 = conn
-        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |row| row.get(0))
-        .unwrap_or(0);
+    let active_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |row| row.get(0)).unwrap_or(0);
+    let active_decisions: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |row| row.get(0)).unwrap_or(0);
     let decayed_memories: i64 = conn
         .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |row| row.get(0))
         .unwrap_or(0);
@@ -114,11 +110,9 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
         )
         .unwrap_or(0);
     let recent_recalls: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND created_at >= datetime('now', ?1)",
-            params![since_modifier.as_str()],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM events WHERE type = 'recall_query' AND created_at >= datetime('now', ?1)", params![since_modifier.as_str()], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
     let recent_memory_hits: i64 = conn
         .query_row(
@@ -212,20 +206,15 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
     let stale_memory_hit_rate = ratio(stale_memory_hits, recent_memory_hits);
     let low_trust_hit_rate = ratio(recent_low_trust_hits, recent_total_hits);
     let consensus_promotion_precision = ratio(promoted_consensus, promoted_consensus + failed_consensus);
-    let success_rate_delta = diff_signal(
-        assisted_json.get("taskSuccessRate").and_then(Value::as_f64),
-        baseline_json.get("taskSuccessRate").and_then(Value::as_f64),
-    );
-    let first_pass_delta = diff_signal(
-        assisted_json.get("firstPassSuccess").and_then(Value::as_f64),
-        baseline_json.get("firstPassSuccess").and_then(Value::as_f64),
-    );
+    let success_rate_delta =
+        diff_signal(assisted_json.get("taskSuccessRate").and_then(Value::as_f64), baseline_json.get("taskSuccessRate").and_then(Value::as_f64));
+    let first_pass_delta =
+        diff_signal(assisted_json.get("firstPassSuccess").and_then(Value::as_f64), baseline_json.get("firstPassSuccess").and_then(Value::as_f64));
     let median_latency_delta_ms = diff_signal(
         assisted_json.get("medianTimeToValidResultMs").and_then(Value::as_f64),
         baseline_json.get("medianTimeToValidResultMs").and_then(Value::as_f64),
     );
-    let retry_delta =
-        diff_signal(assisted_json.get("retryCount").and_then(Value::as_f64), baseline_json.get("retryCount").and_then(Value::as_f64));
+    let retry_delta = diff_signal(assisted_json.get("retryCount").and_then(Value::as_f64), baseline_json.get("retryCount").and_then(Value::as_f64));
     json!({"ok":true,"windowDays":horizon_days,"snapshotAt":Utc::
 now().to_rfc3339(),"totals":{"activeMemories":active_memories,"activeDecisions":active_decisions,"openConflicts":open_conflicts},
 "window":{"recentConflicts":recent_conflicts,"recentResolutions":recent_resolutions,"recentRecallQueries":recent_recalls,
@@ -254,9 +243,7 @@ pub fn build_eval_regression_gate(current: &Value, baseline: &Value, max_regress
     json!({"ok":failed.is_empty(),"maxRegression":max_regression,"checkedMetrics":checks,
 "failedMetrics":failed})
 }
-fn evaluate_regression(
-    metric: &str, higher_is_better: bool, current_value: Option<f64>, baseline_value: Option<f64>, max_regression: f64,
-) -> Value {
+fn evaluate_regression(metric: &str, higher_is_better: bool, current_value: Option<f64>, baseline_value: Option<f64>, max_regression: f64) -> Value {
     let (Some(current), Some(baseline)) = (current_value, baseline_value) else {
         return json!({"metric":metric
 ,"direction":if higher_is_better{"higher_is_better"}else{"lower_is_better"},"status":"skipped_missing_value","current":

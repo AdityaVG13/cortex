@@ -21,13 +21,8 @@ mod tests {
     }
     #[test]
     fn resolve_client_target_inputs_prefers_cli_over_env_values() {
-        let (base_url, api_key, local_owner_mode) = resolve_client_target_inputs(
-            Some("https://cli.example"),
-            Some("ctx_cli"),
-            Some("https://env.example"),
-            Some("ctx_env"),
-            "http://127.0.0.1:7437",
-        );
+        let (base_url, api_key, local_owner_mode) =
+            resolve_client_target_inputs(Some("https://cli.example"), Some("ctx_cli"), Some("https://env.example"), Some("ctx_env"), "http://127.0.0.1:7437");
         assert_eq!(base_url, "https://cli.example");
         assert_eq!(api_key.as_deref(), Some("ctx_cli"));
         assert!(!local_owner_mode);

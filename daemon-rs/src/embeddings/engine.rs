@@ -37,8 +37,7 @@ impl EmbeddingEngine {
             let missing = missing_assets.iter().map(|asset| asset.file).collect::<Vec<_>>().join(", ");
             return Err(format!("model assets missing ({missing}) at {}", models_dir.display()));
         }
-        let tokenizer =
-            Tokenizer::from_file(&tok_path).map_err(|error| format!("failed to load tokenizer {}: {error}", tok_path.display()))?;
+        let tokenizer = Tokenizer::from_file(&tok_path).map_err(|error| format!("failed to load tokenizer {}: {error}", tok_path.display()))?;
         let mut sessions = Vec::with_capacity(pool_size);
         for index in 0..pool_size {
             let session = Self::build_session(&model_path).map_err(|error| format!("session {} failed: {error}", index + 1))?;
@@ -140,9 +139,7 @@ impl EmbeddingEngine {
         let seq_len_out = dims[1] as usize;
         Self::pool_output(data, self.dimension, seq_len_out, attention, self.pooling, self.normalize)
     }
-    fn pool_output(
-        data: &[f32], dimension: usize, seq_len_out: usize, attention: &[u32], pooling: PoolingStrategy, normalize: bool,
-    ) -> Option<Vec<f32>> {
+    fn pool_output(data: &[f32], dimension: usize, seq_len_out: usize, attention: &[u32], pooling: PoolingStrategy, normalize: bool) -> Option<Vec<f32>> {
         if dimension == 0 || seq_len_out == 0 || data.len() < seq_len_out * dimension {
             return None;
         }

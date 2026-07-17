@@ -108,10 +108,7 @@ async fn download_file(url: &str, dest: &Path) -> Result<(), String> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|error| error.to_string())?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(600)).build().map_err(|error| error.to_string())?;
     let mut resp = client.get(url).send().await.map_err(|error| error.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));

@@ -17,15 +17,11 @@ fn scrub_event_payload(event_type: &str) -> Value {
 pub struct EventsStreamQuery {
     pub token: Option<String>,
 }
-pub async fn handle_events_stream(
-    State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<EventsStreamQuery>,
-) -> Response {
+pub async fn handle_events_stream(State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<EventsStreamQuery>) -> Response {
     if let Err(resp) = ensure_events_stream_auth(&headers, query.token.as_deref(), &state).await {
         return resp;
     }
-    let initial = stream::once(async move {
-        Ok::<Event, Infallible>(Event::default().event("connected").data(scrub_event_payload("connected").to_string()))
-    });
+    let initial = stream::once(async move { Ok::<Event, Infallible>(Event::default().event("connected").data(scrub_event_payload("connected").to_string())) });
     let updates = BroadcastStream::new(state.events.subscribe()).filter_map(|msg| async move {
         match msg {
             Ok(event) => {
@@ -64,23 +60,40 @@ pub async fn handle_brain_firing_stream(State(state): State<RuntimeState>, Query
     }
     let caller_owner_id = state.default_owner_id;
     let connected = stream::once(async move {
-        Ok::<Event, Infallible>(
-            Event::default()
-                .event("connected")
-                .data(json!({"type":"connected","timestamp":now_iso()}).to_string()),
-        )
+        Ok::<Event, Infallible>(Event::default().event("connected").data(json!({"type":"connected","timestamp":now_iso()}).to_string()))
     });
     let receiver = state.brain_firing.subscribe();
     let event_stream = BroadcastStream::new(receiver);
     let batch_window = StdDuration::from_millis(50);
-    let buffered=futures_util::stream::unfold((event_stream,Vec::<BrainFiringEvent>::new(),
-caller_owner_id),move|(mut events,mut buf,owner)|async move{let first=match events.next().await{Some(Ok(ev))=>ev,Some(Err(_))=>
-return None,None=>return None,};if owner.is_some()&&first.owner_id==owner{buf.push(first);}else if owner.is_none(){}else if first.
-owner_id.is_none(){}let deadline=tokio::time::sleep(batch_window);tokio::pin!(deadline);loop{tokio::select!{_=&mut deadline=>break
-,next=events.next()=>{match next{Some(Ok(ev))=>{if owner.is_some()&&ev.owner_id==owner{buf.push(ev);}}Some(Err(_))|None=>break,}}}
-}if buf.is_empty(){Some((None,(events,Vec::new(),owner)))}else{let array:Vec<Value>=buf.iter().map(brain_event_to_json).collect();
-buf.clear();Some((Some(Value::Array(array)),(events,buf,owner)))}}).filter_map(|item:Option<Value>|async move{item.map(|payload|Ok
-::<Event,Infallible>(Event::default().event("brain_batch").data(payload.to_string())))});
+    let buffered =
+        futures_util::stream::unfold((event_stream, Vec::<BrainFiringEvent>::new(), caller_owner_id), move |(mut events, mut buf, owner)| async move {
+            let first = match events.next().await {
+                Some(Ok(ev)) => ev,
+                Some(Err(_)) => return None,
+                None => return None,
+            };
+            if owner.is_some() && first.owner_id == owner {
+                buf.push(first);
+            } else if owner.is_none() {
+            } else if first.owner_id.is_none() {
+            }
+            let deadline = tokio::time::sleep(batch_window);
+            tokio::pin!(deadline);
+            loop {
+                tokio::select! {_=&mut deadline=>break
+                ,next=events.next()=>{match next{Some(Ok(ev))=>{if owner.is_some()&&ev.owner_id==owner{buf.push(ev);}}Some(Err(_))|None=>break,}}}
+            }
+            if buf.is_empty() {
+                Some((None, (events, Vec::new(), owner)))
+            } else {
+                let array: Vec<Value> = buf.iter().map(brain_event_to_json).collect();
+                buf.clear();
+                Some((Some(Value::Array(array)), (events, buf, owner)))
+            }
+        })
+        .filter_map(|item: Option<Value>| async move {
+            item.map(|payload| Ok::<Event, Infallible>(Event::default().event("brain_batch").data(payload.to_string())))
+        });
     let stream = connected.chain(buffered);
     let sse = Sse::new(stream).keep_alive(KeepAlive::new().interval(StdDuration::from_secs(30)).text("keepalive"));
     sse.into_response()

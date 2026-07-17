@@ -26,8 +26,7 @@ pub(crate) fn ensure_sqlite_vec_registered() -> Result<(), String> {
             unsafe extern "C" {
                 #[link_name = "sqlite3_vec_init"]
                 pub(crate) fn sqlite3_vec_init_auto_extension(
-                    db: *mut rusqlite::ffi::sqlite3, err_msg: *mut *mut std::os::raw::c_char,
-                    api: *const rusqlite::ffi::sqlite3_api_routines,
+                    db: *mut rusqlite::ffi::sqlite3, err_msg: *mut *mut std::os::raw::c_char, api: *const rusqlite::ffi::sqlite3_api_routines,
                 ) -> std::os::raw::c_int;
             }
             let _sqlite_vec_symbol: unsafe extern "C" fn() = sqlite_vec::sqlite3_vec_init;

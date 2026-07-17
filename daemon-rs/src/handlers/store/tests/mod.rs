@@ -59,13 +59,8 @@ fn benchmark_entries_bypass_semantic_merge() {
 #[test]
 fn semantic_candidates_filter_model_and_vector_length() {
     let conn = test_conn();
-    let selected_id = insert_existing_decision_with_model(
-        &conn,
-        "selected model embedding candidate",
-        Some("seed"),
-        &[1.0, 0.0],
-        crate::embeddings::selected_model_key(),
-    );
+    let selected_id =
+        insert_existing_decision_with_model(&conn, "selected model embedding candidate", Some("seed"), &[1.0, 0.0], crate::embeddings::selected_model_key());
     insert_existing_decision_with_model(&conn, "wrong model embedding candidate", Some("seed"), &[1.0, 0.0], "other-embedding-model");
     insert_existing_decision_with_model(
         &conn,
@@ -83,16 +78,8 @@ fn semantic_candidates_filter_model_and_vector_length() {
 #[test]
 fn store_decision_rejects_invalid_explicit_ttl() {
     let mut conn = test_conn();
-    let err = store_decision_with_ttl(
-        &mut conn,
-        "ttl smoke",
-        Some("ctx".to_string()),
-        Some("decision".to_string()),
-        "tester".to_string(),
-        None,
-        Some(-1),
-        None,
-    )
-    .unwrap_err();
+    let err =
+        store_decision_with_ttl(&mut conn, "ttl smoke", Some("ctx".to_string()), Some("decision".to_string()), "tester".to_string(), None, Some(-1), None)
+            .unwrap_err();
     assert!(err.contains("ttl") || err.contains("TTL"));
 }

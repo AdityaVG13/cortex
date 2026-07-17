@@ -67,14 +67,7 @@ pub async fn handle_boot(State(state): State<RuntimeState>, Query(query): Query<
     if let Err(resp) = ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Boot, &agent).await {
         return resp;
     }
-    super::register_agent_presence(
-        &state,
-        &super::SourceIdentity { agent: agent.clone(), model: source.model },
-        caller_id,
-        "http",
-        "HTTP boot session",
-    )
-    .await;
+    super::register_agent_presence(&state, &super::SourceIdentity { agent: agent.clone(), model: source.model }, caller_id, "http", "HTTP boot session").await;
     let profile = query.profile.unwrap_or_else(|| "full".to_string());
     let max_tokens = query.budget.unwrap_or(600);
     let boot_started = Instant::now();
@@ -146,9 +139,7 @@ pub async fn handle_boot_audit(State(state): State<RuntimeState>, Query(query): 
         Err(e) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({"error":format!("boot_audits query failed: {e}")})),
     }
 }
-pub fn query_boot_audits(
-    conn: &rusqlite::Connection, agent: Option<&str>, limit: Option<usize>,
-) -> Result<serde_json::Value, rusqlite::Error> {
+pub fn query_boot_audits(conn: &rusqlite::Connection, agent: Option<&str>, limit: Option<usize>) -> Result<serde_json::Value, rusqlite::Error> {
     let limit = limit.unwrap_or(50).min(500);
     let rows: Vec<serde_json::Value> = match agent {
         Some(agent) => conn

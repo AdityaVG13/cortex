@@ -82,14 +82,7 @@ pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
             false
         }
     };
-    let fts_trigger_names = [
-        "memories_fts_ai",
-        "memories_fts_ad",
-        "memories_fts_au",
-        "decisions_fts_ai",
-        "decisions_fts_ad",
-        "decisions_fts_au",
-    ];
+    let fts_trigger_names = ["memories_fts_ai", "memories_fts_ad", "memories_fts_au", "decisions_fts_ai", "decisions_fts_ad", "decisions_fts_au"];
     let fts_tables_ok = db::table_exists(&conn, "memories_fts") && db::table_exists(&conn, "decisions_fts");
     let fts_queries_ok = conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get::<_, i64>(0)).is_ok()
         && conn.query_row("SELECT COUNT(*) FROM decisions_fts", [], |row| row.get::<_, i64>(0)).is_ok();
@@ -122,9 +115,7 @@ pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
         }
     }
     if event_pressure != "normal" {
-        println!(
-            "[doctor] WARN elevated event pressure detected; run `cortex cleanup --events --dry-run` to preview one-time remediation."
-        );
+        println!("[doctor] WARN elevated event pressure detected; run `cortex cleanup --events --dry-run` to preview one-time remediation.");
     }
     let all_ok = missing_tables.is_empty() && schema_current && integrity_ok && fts_ok;
     if all_ok {

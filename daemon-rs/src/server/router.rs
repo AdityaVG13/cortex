@@ -30,10 +30,7 @@ pub fn build_router(state: RuntimeState, port: u16) -> Router {
     .into_iter()
     .filter_map(|origin| parse_allowed_origin(&origin))
     .collect::<Vec<_>>();
-    let cors = CorsLayer::new()
-        .allow_origin(allowed_origins)
-        .allow_methods(tower_http::cors::Any)
-        .allow_headers(tower_http::cors::Any);
+    let cors = CorsLayer::new().allow_origin(allowed_origins).allow_methods(tower_http::cors::Any).allow_headers(tower_http::cors::Any);
     Router::new()
         .route("/health", get(handlers::health::handle_health))
         .route("/readiness", get(handlers::health::handle_readiness))

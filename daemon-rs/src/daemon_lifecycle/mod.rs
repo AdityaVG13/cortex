@@ -123,9 +123,7 @@ pub fn issue_owner_token_for_spawn(paths: &CortexPaths, owner_tag: &str, parent_
     let nonce = Uuid::new_v4().simple().to_string();
     build_owner_token(&key, owner_tag, parent_pid, issued_at, &nonce)
 }
-pub fn validate_spawned_owner_claim(
-    paths: &CortexPaths, owner_tag: Option<&str>, parent_pid: Option<u32>, owner_token: Option<&str>,
-) -> Result<(), String> {
+pub fn validate_spawned_owner_claim(paths: &CortexPaths, owner_tag: Option<&str>, parent_pid: Option<u32>, owner_token: Option<&str>) -> Result<(), String> {
     let Some(owner_tag) = owner_tag.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(());
     };
@@ -164,17 +162,9 @@ async fn daemon_healthy_at(bind: &str, port: u16, expected_paths: Option<&Cortex
     let probe_paths = expected_paths.unwrap_or(&resolved_paths);
     let base_url = health_probe_base(bind, port);
     let probe_headers = [(String::from("X-Cortex-Request"), String::from("true"))];
-    if let Ok((status, body)) = crate::transport::request_with_local_ipc_fallback(
-        &client,
-        "GET",
-        &base_url,
-        "/readiness",
-        probe_paths,
-        &probe_headers,
-        None,
-        Duration::from_secs(2),
-    )
-    .await
+    if let Ok((status, body)) =
+        crate::transport::request_with_local_ipc_fallback(&client, "GET", &base_url, "/readiness", probe_paths, &probe_headers, None, Duration::from_secs(2))
+            .await
     {
         if let Some(ready) = readiness_state_from_payload(status.as_u16(), &body, Some(port), expected_paths) {
             return ready;
@@ -213,10 +203,7 @@ fn normalize_runtime_path(value: &str) -> String {
 }
 fn path_field_matches(value: Option<&serde_json::Value>, expected: &Path) -> bool {
     let expected = normalize_runtime_path(&expected.to_string_lossy());
-    value
-        .and_then(|field| field.as_str())
-        .map(normalize_runtime_path)
-        .is_some_and(|actual| actual == expected)
+    value.and_then(|field| field.as_str()).map(normalize_runtime_path).is_some_and(|actual| actual == expected)
 }
 pub(crate) fn is_cortex_health_payload(status: u16, body: &str, expected_port: Option<u16>, expected_paths: Option<&CortexPaths>) -> bool {
     if !(200..300).contains(&status) {
@@ -253,9 +240,7 @@ pub(crate) fn is_cortex_health_payload(status: u16, body: &str, expected_port: O
     }
     matches!(health_status, Some("ok" | "degraded")) && runtime.is_some() && stats.is_some()
 }
-pub(crate) fn readiness_state_from_payload(
-    status: u16, body: &str, expected_port: Option<u16>, expected_paths: Option<&CortexPaths>,
-) -> Option<bool> {
+pub(crate) fn readiness_state_from_payload(status: u16, body: &str, expected_port: Option<u16>, expected_paths: Option<&CortexPaths>) -> Option<bool> {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
         return None;
     };

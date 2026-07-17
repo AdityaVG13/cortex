@@ -66,9 +66,7 @@ pub async fn handle_team_add_member(State(state): State<RuntimeState>, headers: 
     }
     json_response(StatusCode::OK, json!({"team":body.team_name,"username":body.username,"role":role,}))
 }
-pub async fn handle_team_remove_member(
-    State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<TeamRemoveMemberBody>,
-) -> Response {
+pub async fn handle_team_remove_member(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<TeamRemoveMemberBody>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -84,9 +82,7 @@ pub async fn handle_team_remove_member(
         Ok(id) => id,
         Err(_) => return json_error(StatusCode::NOT_FOUND, "user not found"),
     };
-    let deleted = conn
-        .execute("DELETE FROM team_members WHERE team_id = ?1 AND user_id = ?2", params![team_id, user_id])
-        .unwrap_or(0);
+    let deleted = conn.execute("DELETE FROM team_members WHERE team_id = ?1 AND user_id = ?2", params![team_id, user_id]).unwrap_or(0);
     if deleted == 0 {
         return json_error(StatusCode::NOT_FOUND, "membership not found");
     }

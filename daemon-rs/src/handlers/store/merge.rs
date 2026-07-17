@@ -5,8 +5,8 @@ use crate::handlers::log_event;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 pub(crate) fn merge_into_existing_decision(
-    conn: &mut Connection, target_id: i64, incoming_text: &str, incoming_context: Option<&str>, source_agent: &str, quality: i32,
-    similarity: f32, jaccard: f64, ts: &str, owner_id: Option<i64>,
+    conn: &mut Connection, target_id: i64, incoming_text: &str, incoming_context: Option<&str>, source_agent: &str, quality: i32, similarity: f32,
+    jaccard: f64, ts: &str, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let tx = conn.transaction().map_err(|e| StoreError::Internal(e.to_string()))?;
     let (existing_decision, existing_context, previous_merged_count): (String, Option<String>, i64) = if let Some(owner_id) = owner_id {
@@ -65,9 +65,7 @@ incoming_text,"similarity":similarity,"jaccard":jaccard,"source_agent":source_ag
         None,
     ))
 }
-pub(crate) fn merge_context(
-    existing_context: Option<String>, existing_decision: &str, incoming_context: Option<&str>, incoming_text: &str,
-) -> Option<String> {
+pub(crate) fn merge_context(existing_context: Option<String>, existing_decision: &str, incoming_context: Option<&str>, incoming_text: &str) -> Option<String> {
     let incoming_note = incoming_context
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -90,9 +88,9 @@ pub(crate) fn merge_context(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_decision(
-    conn: &Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance,
-    confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<String>, ts: &str,
-    owner_id: Option<i64>, surprise: f64, emit_decision_stored_event: bool,
+    conn: &Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance, confidence: f64,
+    trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<String>, ts: &str, owner_id: Option<i64>, surprise: f64,
+    emit_decision_stored_event: bool,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let surprise = (surprise * 10_000.0).round() / 10_000.0;
     if let
@@ -111,12 +109,7 @@ source_client.as_str(),provenance.source_model.as_deref(),provenance.reasoning_d
 StoreError::Internal(e.to_string()))?;
     let id = conn.last_insert_rowid();
     if emit_decision_stored_event {
-        let _ = log_event(
-            conn,
-            "decision_stored",
-            json!({"id":id,"source_agent":source_agent,"surprise":surprise,"quality":quality,}),
-            "rust-daemon",
-        );
+        let _ = log_event(conn, "decision_stored", json!({"id":id,"source_agent":source_agent,"surprise":surprise,"quality":quality,}), "rust-daemon");
     }
     checkpoint_wal_best_effort(conn);
     Ok((

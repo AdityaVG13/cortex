@@ -7,8 +7,8 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 #[allow(clippy::too_many_arguments, dead_code)]
 pub fn store_decision_with_ttl(
-    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
-    confidence: Option<f64>, ttl_seconds: Option<i64>, owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String, confidence: Option<f64>,
+    ttl_seconds: Option<i64>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
     let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
     store_decision_internal(conn, decision, context, entry_type, source_agent, provenance, confidence, ttl_seconds, None, None, owner_id)
@@ -16,8 +16,8 @@ pub fn store_decision_with_ttl(
 }
 #[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn store_decision_with_input_embedding(
-    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
-    confidence: Option<f64>, ttl_seconds: Option<i64>, query_embedding: Option<&[f32]>, owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String, confidence: Option<f64>,
+    ttl_seconds: Option<i64>, query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
     store_decision_with_input_embedding_and_provenance(
@@ -35,9 +35,8 @@ pub(crate) fn store_decision_with_input_embedding(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_with_input_embedding_and_provenance(
-    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
-    provenance: DecisionProvenance, confidence: Option<f64>, ttl_seconds: Option<i64>, query_embedding: Option<&[f32]>,
-    owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String, provenance: DecisionProvenance,
+    confidence: Option<f64>, ttl_seconds: Option<i64>, query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     store_decision_with_input_embedding_and_provenance_retention(
         conn,
@@ -55,29 +54,15 @@ pub(crate) fn store_decision_with_input_embedding_and_provenance(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_with_input_embedding_and_provenance_retention(
-    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
-    provenance: DecisionProvenance, confidence: Option<f64>, ttl_seconds: Option<i64>, retention_class: Option<RetentionClass>,
-    query_embedding: Option<&[f32]>, owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String, provenance: DecisionProvenance,
+    confidence: Option<f64>, ttl_seconds: Option<i64>, retention_class: Option<RetentionClass>, query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
-    store_decision_internal(
-        conn,
-        decision,
-        context,
-        entry_type,
-        source_agent,
-        provenance,
-        confidence,
-        ttl_seconds,
-        retention_class,
-        query_embedding,
-        owner_id,
-    )
+    store_decision_internal(conn, decision, context, entry_type, source_agent, provenance, confidence, ttl_seconds, retention_class, query_embedding, owner_id)
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_internal(
-    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String,
-    provenance: DecisionProvenance, confidence: Option<f64>, ttl_seconds: Option<i64>, retention_class: Option<RetentionClass>,
-    query_embedding: Option<&[f32]>, owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String, provenance: DecisionProvenance,
+    confidence: Option<f64>, ttl_seconds: Option<i64>, retention_class: Option<RetentionClass>, query_embedding: Option<&[f32]>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let suppress_benchmark_events = is_benchmark_entry_type(&entry_type) || is_benchmark_source_agent(&source_agent);
@@ -182,9 +167,8 @@ pub(crate) fn store_decision_internal(
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn store_decision_legacy(
-    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance,
-    confidence: f64, trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<String>, ts: &str,
-    owner_id: Option<i64>,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance, confidence: f64,
+    trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<String>, ts: &str, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let decision_tokens = jaccard_token_set(decision);
     let recent_candidates = fetch_recent_decision_candidates(conn, owner_id).map_err(StoreError::Internal)?;

@@ -34,9 +34,7 @@ fn age_memories_to_recent(conn: &Connection) -> usize {
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
         )
         .and_then(|mut stmt| {
-            let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
-            })?;
+            let mapped = stmt.query_map(params![FRESH_DAYS], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))?;
             Ok(mapped.flatten().collect())
         })
         .unwrap_or_default();
@@ -47,10 +45,8 @@ fn age_memories_to_recent(conn: &Connection) -> usize {
             }
         }
         let compressed = compress_to_key_points(&text);
-        let _ = conn.execute(
-            "UPDATE memories SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",
-            params![compressed, id],
-        );
+        let _ =
+            conn.execute("UPDATE memories SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2", params![compressed, id]);
         count += 1;
     }
     count
@@ -65,9 +61,7 @@ fn age_memories_to_old(conn: &Connection) -> usize {
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
         )
         .and_then(|mut stmt| {
-            let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
-            })?;
+            let mapped = stmt.query_map(params![RECENT_DAYS], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))?;
             Ok(mapped.flatten().collect())
         })
         .unwrap_or_default();
@@ -78,10 +72,7 @@ fn age_memories_to_old(conn: &Connection) -> usize {
             }
         }
         let compressed = compress_to_one_liner(&text);
-        let _ = conn.execute(
-            "UPDATE memories SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",
-            params![compressed, id],
-        );
+        let _ = conn.execute("UPDATE memories SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2", params![compressed, id]);
         count += 1;
     }
     count
@@ -106,9 +97,7 @@ fn age_decisions_to_recent(conn: &Connection) -> usize {
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
         )
         .and_then(|mut stmt| {
-            let mapped = stmt.query_map(params![FRESH_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
-            })?;
+            let mapped = stmt.query_map(params![FRESH_DAYS], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))?;
             Ok(mapped.flatten().collect())
         })
         .unwrap_or_default();
@@ -118,10 +107,8 @@ fn age_decisions_to_recent(conn: &Connection) -> usize {
             None => decision,
         };
         let compressed = compress_to_key_points(&full);
-        let _ = conn.execute(
-            "UPDATE decisions SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2",
-            params![compressed, id],
-        );
+        let _ =
+            conn.execute("UPDATE decisions SET compressed_text = ?1, age_tier = 'recent', updated_at = datetime('now') WHERE id = ?2", params![compressed, id]);
         count += 1;
     }
     count
@@ -136,9 +123,7 @@ fn age_decisions_to_old(conn: &Connection) -> usize {
              AND julianday('now') - julianday(COALESCE(updated_at, created_at)) > ?1",
         )
         .and_then(|mut stmt| {
-            let mapped = stmt.query_map(params![RECENT_DAYS], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
-            })?;
+            let mapped = stmt.query_map(params![RECENT_DAYS], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?)))?;
             Ok(mapped.flatten().collect())
         })
         .unwrap_or_default();
@@ -148,10 +133,8 @@ fn age_decisions_to_old(conn: &Connection) -> usize {
             None => decision,
         };
         let compressed = compress_to_one_liner(&full);
-        let _ = conn.execute(
-            "UPDATE decisions SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2",
-            params![compressed, id],
-        );
+        let _ =
+            conn.execute("UPDATE decisions SET compressed_text = ?1, age_tier = 'old', updated_at = datetime('now') WHERE id = ?2", params![compressed, id]);
         count += 1;
     }
     count

@@ -14,11 +14,6 @@ pub struct ResolveRequest {
     pub superseded_id: Option<i64>,
     #[serde(rename = "conflictId", alias = "id")]
     pub conflict_id: Option<String>,
-    pub classification: Option<String>,
-    pub notes: Option<String>,
-    #[serde(rename = "resolvedBy", alias = "resolved_by")]
-    pub resolved_by: Option<String>,
-    pub similarity: Option<f64>,
 }
 #[derive(Deserialize, Default)]
 pub struct ArchiveRequest {
@@ -65,12 +60,6 @@ impl ConflictStatusFilter {
             },
         }
     }
-    pub(crate) fn includes_open(self) -> bool {
-        matches!(self, Self::Open | Self::All)
-    }
-    pub(crate) fn includes_resolved(self) -> bool {
-        matches!(self, Self::Resolved | Self::All)
-    }
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
@@ -84,16 +73,10 @@ pub struct ConflictListOptions {
     pub status: ConflictStatusFilter,
     pub classification: Option<String>,
     pub conflict_id: Option<String>,
-    pub limit: usize,
 }
 impl Default for ConflictListOptions {
     fn default() -> Self {
-        Self {
-            status: ConflictStatusFilter::Open,
-            classification: None,
-            conflict_id: None,
-            limit: 100,
-        }
+        Self { status: ConflictStatusFilter::Open, classification: None, conflict_id: None }
     }
 }
 impl ConflictListOptions {
@@ -112,42 +95,9 @@ impl ConflictListOptions {
                 return Err("Invalid conflict id. Expected decision:<id>:<id> or <id>:<id>.".into());
             }
         }
-        Ok(Self {
-            status,
-            classification,
-            conflict_id,
-            limit: query.limit.unwrap_or(100).clamp(1, 500),
-        })
+        let _ = query.limit;
+        Ok(Self { status, classification, conflict_id })
     }
 }
 #[derive(Debug, Clone, Default)]
-pub struct ResolutionMetadata {
-    pub conflict_id: Option<String>,
-    pub classification: Option<String>,
-    pub notes: Option<String>,
-    pub resolved_by: Option<String>,
-    pub similarity: Option<f64>,
-}
-pub(crate) fn normalize_permission_client_id(raw: &str) -> Option<String> {
-    let before_model = raw.split('(').next().unwrap_or(raw).trim().to_ascii_lowercase();
-    let normalized: String = before_model.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_').collect();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
-}
-pub(crate) fn parse_permission(raw: &str) -> Option<&'static str> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "read" => Some("read"),
-        "write" => Some("write"),
-        "admin" => Some("admin"),
-        _ => None,
-    }
-}
-pub(crate) fn normalize_permission_scope(raw: Option<&str>) -> String {
-    raw.map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "*".to_string())
-}
+pub struct ResolutionMetadata;

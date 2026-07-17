@@ -41,9 +41,7 @@ pub async fn run_setup() {
     eprintln!("  Health check:   curl {}", daemon_url("/health"));
     eprintln!("  Readiness:      curl {}", daemon_url("/readiness"));
     eprintln!();
-    eprintln!(
-"  Cortex is configured. Start it from Control Center or let your client run `cortex mcp --agent <name>` when you want a live daemon."
-);
+    eprintln!("  Cortex is configured. Start it from Control Center or let your client run `cortex mcp --agent <name>` when you want a live daemon.");
     eprintln!();
 }
 async fn step_init() -> StepResult {
@@ -78,11 +76,7 @@ async fn step_init() -> StepResult {
     }
     notes.push(format!(
         "Embedding profile: {} [{} | {}d | {} pooling | {} tokens]",
-        embedding_model.display_name,
-        embedding_model.key,
-        embedding_model.dimension,
-        embedding_model.pooling,
-        embedding_model.max_input_tokens
+        embedding_model.display_name, embedding_model.key, embedding_model.dimension, embedding_model.pooling, embedding_model.max_input_tokens
     ));
     if rerank_config.is_active() {
         let reranker_exists = crate::rerank::selected_reranker_assets_exist(&models_dir);
@@ -91,21 +85,16 @@ async fn step_init() -> StepResult {
         } else {
             eprintln!("       Downloading reranker model ({})...", reranker_model.display_name);
             match crate::rerank::ensure_reranker_downloaded().await {
-                Some(_) => {
-                    notes.push(format!("Reranker: downloaded ({} | mode={})", reranker_model.display_name, rerank_config.mode.as_str()))
-                }
+                Some(_) => notes.push(format!("Reranker: downloaded ({} | mode={})", reranker_model.display_name, rerank_config.mode.as_str())),
                 None => notes.push("Reranker: download failed (rerank will stay unavailable)".into()),
             }
         }
     }
     if let Some((backlog_memories, backlog_decisions)) = collect_reembed_backlog_counts(&db_path, embedding_model.key) {
-        notes.push(format!(
-            "Re-embed backlog: memories={backlog_memories}, decisions={backlog_decisions}, total={}",
-            backlog_memories + backlog_decisions
-        ));
+        notes.push(format!("Re-embed backlog: memories={backlog_memories}, decisions={backlog_decisions}, total={}", backlog_memories + backlog_decisions));
         notes.push(
-"Backfill policy: daemon drains backlog in bounded background passes (batch + interval controlled by CORTEX_EMBED_BACKFILL_* env vars)"
-.into());
+            "Backfill policy: daemon drains backlog in bounded background passes (batch + interval controlled by CORTEX_EMBED_BACKFILL_* env vars)".into(),
+        );
     }
     StepResult::Ok(notes.join(" | "))
 }
@@ -114,9 +103,7 @@ async fn step_daemon() -> StepResult {
     if is_daemon_healthy().await {
         return StepResult::Ok(format!("Daemon already running on :{port}"));
     }
-    StepResult::Warn(format!(
-        "No daemon is running on :{port}. Start Cortex from Control Center or let your client launch `cortex mcp --agent <name>`."
-    ))
+    StepResult::Warn(format!("No daemon is running on :{port}. Start Cortex from Control Center or let your client launch `cortex mcp --agent <name>`."))
 }
 async fn is_daemon_healthy() -> bool {
     let paths = auth::CortexPaths::resolve();

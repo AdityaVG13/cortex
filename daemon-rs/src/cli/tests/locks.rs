@@ -36,10 +36,7 @@ mod tests {
         let home_str = home_dir.to_string_lossy().to_string();
         let paths = auth::CortexPaths::resolve_with_overrides(Some(&home_str), None, Some(7437), None);
         let ready_file = home_dir.join("control-center-lock-ready");
-        assert!(
-            !control_center_is_active(&paths).expect("probe lock without holder"),
-            "lock should not appear active before holder starts"
-        );
+        assert!(!control_center_is_active(&paths).expect("probe lock without holder"), "lock should not appear active before holder starts");
         let current_exe = std::env::current_exe().expect("resolve current test binary path");
         let mut child = Command::new(current_exe)
             .arg("--exact")
@@ -62,10 +59,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        assert!(
-            wait_for_control_center_lock(&paths, Duration::from_secs(3)),
-            "lock should appear active while child holds cross-process lock"
-        );
+        assert!(wait_for_control_center_lock(&paths, Duration::from_secs(3)), "lock should appear active while child holds cross-process lock");
         let status = child.wait().expect("wait lock-holder child");
         assert!(status.success(), "lock-holder child should exit successfully");
         assert!(!control_center_is_active(&paths).expect("probe lock after holder exits"), "lock should be released after child exits");
@@ -113,11 +107,7 @@ mod tests {
                 std::thread::spawn(move || acquire_runtime_lock(&worker_paths).is_err())
             })
             .collect();
-        let failures = workers
-            .into_iter()
-            .map(|worker| worker.join().expect("join worker"))
-            .filter(|failed| *failed)
-            .count();
+        let failures = workers.into_iter().map(|worker| worker.join().expect("join worker")).filter(|failed| *failed).count();
         assert_eq!(failures, 12, "all concurrent startups should fail while runtime lock is held");
         drop(first_lock);
         let second_lock = acquire_runtime_lock(&paths).expect("lock should be reacquired after release");
