@@ -1,7 +1,7 @@
 use super::*;
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
-pub(crate) const SCHEMA_MIGRATIONS: [MigrationDef; 16] = [
+pub(crate) const SCHEMA_MIGRATIONS: [MigrationDef; 17] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -18,6 +18,7 @@ pub(crate) const SCHEMA_MIGRATIONS: [MigrationDef; 16] = [
     ("014", "temporal_semantics_fields"),
     ("015", "boot_audits"),
     ("016", "retention_classes"),
+    ("017", "recall_hot_path_indexes"),
 ];
 pub fn migration_definitions() -> &'static [MigrationDef] {
     &SCHEMA_MIGRATIONS
@@ -477,6 +478,23 @@ r#"
                   ON memories(retention_class);
                 CREATE INDEX IF NOT EXISTS idx_decisions_retention_class
                   ON decisions(retention_class);
+                "#,
+            )?;
+            Ok(())
+        }
+        "017" => {
+            conn.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_memories_active_source_recent
+                  ON memories(source, COALESCE(last_accessed, created_at) DESC)
+                  WHERE status = 'active';
+                CREATE INDEX IF NOT EXISTS idx_decisions_context_status
+                  ON decisions(context, status);
+                CREATE INDEX IF NOT EXISTS idx_decisions_active_context_recent
+                  ON decisions(context, COALESCE(last_accessed, created_at) DESC)
+                  WHERE status = 'active';
+                CREATE INDEX IF NOT EXISTS idx_embeddings_model_type_target_norm
+                  ON embeddings(LOWER(COALESCE(model, '')), target_type, target_id);
                 "#,
             )?;
             Ok(())

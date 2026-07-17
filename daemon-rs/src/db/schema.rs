@@ -184,7 +184,14 @@ r#"
         -- Performance indexes (added 2026-03-31)
         CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
         CREATE INDEX IF NOT EXISTS idx_memories_source_status ON memories(source, status);
+        CREATE INDEX IF NOT EXISTS idx_memories_active_source_recent
+          ON memories(source, COALESCE(last_accessed, created_at) DESC)
+          WHERE status = 'active';
         CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+        CREATE INDEX IF NOT EXISTS idx_decisions_context_status ON decisions(context, status);
+        CREATE INDEX IF NOT EXISTS idx_decisions_active_context_recent
+          ON decisions(context, COALESCE(last_accessed, created_at) DESC)
+          WHERE status = 'active';
         CREATE INDEX IF NOT EXISTS idx_decision_conflicts_source ON decision_conflicts(source_decision_id);
         CREATE INDEX IF NOT EXISTS idx_decision_conflicts_target ON decision_conflicts(target_decision_id);
         CREATE INDEX IF NOT EXISTS idx_decision_conflicts_status_created ON decision_conflicts(status, created_at);
@@ -193,6 +200,8 @@ r#"
           ON embeddings(LOWER(COALESCE(model, '')));
         CREATE INDEX IF NOT EXISTS idx_embeddings_target_model_norm
           ON embeddings(target_type, target_id, LOWER(COALESCE(model, '')));
+        CREATE INDEX IF NOT EXISTS idx_embeddings_model_type_target_norm
+          ON embeddings(LOWER(COALESCE(model, '')), target_type, target_id);
         CREATE INDEX IF NOT EXISTS idx_events_type_created ON events(type, created_at);
         CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
         CREATE INDEX IF NOT EXISTS idx_events_type_id ON events(type, id);

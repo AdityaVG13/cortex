@@ -66,6 +66,30 @@ mod tests {
     }
 
     #[test]
+    fn semantic_candidates_include_current_pq8_embeddings() {
+        let mut conn = test_conn();
+        let vector = [0.0, 0.0, 0.0, 0.0, 1.0];
+        store_decision_with_embedding(
+            &mut conn,
+            "Semantic recall should read current PQ8 embeddings without scanning bad blobs.",
+            "decision::semantic-pq8",
+            &vector,
+        );
+
+        let candidates = collect_semantic_candidates(
+            &conn,
+            &vector,
+            "semantic recall pq8",
+            &solo_ctx(),
+            Some("decision::semantic"),
+        );
+
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.source == "decision::semantic-pq8"));
+    }
+
+    #[test]
     fn is_visible_team_private_hidden_from_other() {
         let ctx = team_ctx(2);
         assert!(!is_visible(Some(1), Some("private"), &ctx));

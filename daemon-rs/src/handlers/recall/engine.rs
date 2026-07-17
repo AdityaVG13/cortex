@@ -48,9 +48,11 @@ pub(crate) fn query_shape_profile(
 }
 pub(crate) const MAX_RECALL_HISTORY: usize = 50;
 pub(crate) const PRECACHE_TTL_MS: i64 = 5 * 60 * 1000;
+pub(crate) const RECALL_PREDICTIVE_PRECACHE_ENV: &str = "CORTEX_RECALL_PREDICTIVE_PRECACHE";
 pub(crate) const SEMANTIC_SIM_FLOOR: f64 = 0.3;
 pub(crate) const SEMANTIC_SCALE_BASE: f64 = 0.55;
 pub(crate) const MAX_SEMANTIC_RRF_CANDIDATES: usize = 120;
+pub(crate) const MAX_SEMANTIC_SQL_ROWS_PER_KIND: usize = MAX_SEMANTIC_RRF_CANDIDATES * 24;
 pub(crate) const MIN_BUDGET_HEADROOM_TOKENS: usize = 8;
 pub(crate) const MIN_EXCERPT_CHARS: usize = 24;
 pub(crate) const ASSOCIATIVE_MIN_BUDGET_TOKENS: usize = 260;
@@ -125,6 +127,19 @@ pub(crate) fn bm25_weights_from_resolver(
 }
 pub(crate) fn bm25_weights() -> &'static Bm25Weights {
     BM25_WEIGHTS.get_or_init(|| bm25_weights_from_resolver(|name| std::env::var(name).ok()))
+}
+pub(crate) fn recall_predictive_precache_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(RECALL_PREDICTIVE_PRECACHE_ENV)
+            .ok()
+            .is_some_and(|raw| {
+                matches!(
+                    raw.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+    })
 }
 #[derive(Clone, Debug)]
 pub(crate) struct RecallItem {

@@ -66,37 +66,6 @@ pub(crate) fn classify_recall_tier(cached: bool, mode: &str, methods: &Value) ->
     }
     "unknown"
 }
-#[allow(dead_code)]
-pub(crate) fn shadow_semantic_telemetry_summary(shadow_semantic: &Value) -> Value {
-    let status = shadow_semantic
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("error");
-    let mut summary = json!({"status":status,});
-    if let Some(reason) = shadow_semantic.get("reason").and_then(Value::as_str) {
-        summary["reason"] = json!(reason);
-    }
-    for key in [
-        "topK",
-        "vectorDimension",
-        "baselineCandidateCount",
-        "shadowCandidateCount",
-        "overlapCount",
-        "overlapRatio",
-        "jaccard",
-        "matchedRankPairs",
-        "meanAbsRankDelta",
-        "top1Match",
-    ] {
-        if let Some(value) = shadow_semantic.get(key) {
-            summary[key] = value.clone();
-        }
-    }
-    if status == "error" && summary.get("reason").is_none() {
-        summary["reason"] = json!("shadow_payload_invalid");
-    }
-    summary
-}
 pub(crate) fn run_budget_recall(
     conn: &mut Connection,
     query_text: &str,
@@ -1020,8 +989,9 @@ pub async fn execute_unified_recall(
     let latency_budget_ms = recall_latency_budget_ms_for_mode(policy_mode);
     let recall_scope = recall_scope_key(agent, ctx);
     let scope_prefix = recall_owner_scope(ctx);
+    let predictive_precache_enabled = recall_predictive_precache_enabled();
 
-    if budget > 0 && !state.rerank_config.is_active() {
+    if predictive_precache_enabled && budget > 0 && !state.rerank_config.is_active() {
         if let Some(cached) = get_pre_cached(state, &recall_scope, &scope_prefix, query_text).await
         {
             let deduped_cached = dedup_and_mark_served(state, agent, query_text, ctx, cached).await;
@@ -1174,14 +1144,16 @@ pub async fn execute_unified_recall(
         }
     }
 
-    record_recall_pattern(state, &recall_scope, query_text).await;
-    let state_clone = state.clone();
-    let scope_owned = recall_scope.clone();
-    let query_owned = query_text.to_string();
-    let ctx_owned = *ctx;
-    tokio::spawn(async move {
-        let _ = predict_and_cache(state_clone, &scope_owned, &query_owned, ctx_owned).await;
-    });
+    if predictive_precache_enabled {
+        record_recall_pattern(state, &recall_scope, query_text).await;
+        let state_clone = state.clone();
+        let scope_owned = recall_scope.clone();
+        let query_owned = query_text.to_string();
+        let ctx_owned = *ctx;
+        tokio::spawn(async move {
+            let _ = predict_and_cache(state_clone, &scope_owned, &query_owned, ctx_owned).await;
+        });
+    }
 
     if budget == 0 {
         let method_breakdown = build_method_breakdown(&results);

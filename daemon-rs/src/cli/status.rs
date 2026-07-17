@@ -20,14 +20,14 @@ struct StatusCheck {
     repair: Option<StatusRepair>,
 }
 #[derive(Debug, Clone)]
-enum StatusRuntimeProbe {
+pub(crate) enum StatusRuntimeProbe {
     Ready(String),
     Starting(String),
     WrongIdentity(String),
     Unavailable(String),
     Error(String),
 }
-struct StatusReport {
+pub(crate) struct StatusReport {
     payload: Value,
     exit_code: i32,
 }
