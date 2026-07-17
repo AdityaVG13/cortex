@@ -41,6 +41,18 @@ pub fn json_response(status: StatusCode, body: Value) -> Response {
 pub fn json_error(status: StatusCode, msg: &str) -> Response {
     json_response(status, serde_json::json!({"error":msg}))
 }
+pub(crate) fn require_team_caller(
+    state: &crate::state::RuntimeState,
+    caller_id: Option<i64>,
+) -> Result<Option<i64>, Response> {
+    if !state.team_mode || caller_id.is_some() {
+        return Ok(caller_id);
+    }
+    Err(json_response(
+        StatusCode::FORBIDDEN,
+        json!({"error":"Team mode requires a caller-scoped ctx_ API key"}),
+    ))
+}
 fn apply_json_headers(headers: &mut HeaderMap) {
     headers.insert("Cache-Control", HeaderValue::from_static("no-store"));
 }

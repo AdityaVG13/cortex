@@ -1,6 +1,6 @@
 use super::{
     ensure_auth_with_caller_rated, json_response, now_iso, parse_duration_to_seconds,
-    parse_json_array, redact_secrets,
+    parse_json_array, redact_secrets, require_team_caller,
 };
 use crate::db::checkpoint_wal_best_effort;
 use crate::state::RuntimeState;
@@ -20,17 +20,7 @@ fn owner_id_from_request(
     state: &RuntimeState,
     caller_id: Option<i64>,
 ) -> Result<Option<i64>, Response> {
-    if state.team_mode {
-        match caller_id {
-            Some(owner_id) => Ok(Some(owner_id)),
-            None => Err(json_response(
-                StatusCode::FORBIDDEN,
-                json!({"error":"Team mode requires a caller-scoped ctx_ API key"}),
-            )),
-        }
-    } else {
-        Ok(None)
-    }
+    require_team_caller(state, caller_id).map(|id| if state.team_mode { id } else { None })
 }
 #[derive(Clone)]
 struct FeedEntry {

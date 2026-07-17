@@ -3,7 +3,7 @@ use crate::api_types::StoreRequest;
 use crate::budgets::BudgetEndpoint;
 use crate::handlers::{
     ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response,
-    resolve_source_identity,
+    require_team_caller, resolve_source_identity,
 };
 use crate::rate_limit::RequestClass;
 use crate::state::RuntimeState;
@@ -27,11 +27,8 @@ pub async fn handle_store(
         Ok(id) => id,
         Err(resp) => return resp,
     };
-    if state.team_mode && caller_id.is_none() {
-        return json_response(
-            StatusCode::FORBIDDEN,
-            json!({"error":"Team mode requires a caller-scoped ctx_ API key"}),
-        );
+    if let Err(resp) = require_team_caller(&state, caller_id) {
+        return resp;
     }
     let decision = body.decision.unwrap_or_default();
     if decision.trim().is_empty() {
