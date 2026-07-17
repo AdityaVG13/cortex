@@ -1,1 +1,18 @@
-mod engine;mod handlers;#[cfg(test)]mod tests;pub(crate)use engine::*;pub use handlers::{handle_budget_recall,handle_peek,handle_recall,handle_recall_explain,handle_recall_post,handle_semantic_recall,handle_unfold,};pub use engine::{execute_recall_policy_explain,execute_semantic_recall,execute_unified_recall,unfold_source,};pub use engine::{parse_recall_policy_mode,resolve_recall_budget_k,RecallContext,RecallPolicyMode};pub use engine::shannon_entropy;
+// SPDX-License-Identifier: MIT
+
+mod engine;
+mod handlers;
+
+#[cfg(test)]
+mod tests;
+
+pub(crate) use engine::*;
+pub use handlers::{
+    handle_budget_recall, handle_peek, handle_recall, handle_recall_explain, handle_recall_post,
+    handle_semantic_recall, handle_unfold,
+};
+pub use engine::{
+    execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, unfold_source,
+};
+pub use engine::{parse_recall_policy_mode, resolve_recall_budget_k, RecallContext, RecallPolicyMode};
+pub use engine::shannon_entropy;
