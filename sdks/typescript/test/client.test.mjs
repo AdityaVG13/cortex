@@ -45,6 +45,29 @@ test("recall sends auth + cortex headers and query params", async () => {
   assert.equal(headers.Authorization, "Bearer ctx_test_token");
 });
 
+test("recall sends explicit default budget and k when options omitted", async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    calls.push({ input, init });
+    return okJson({ items: [] });
+  };
+
+  try {
+    const client = new CortexClient({
+      baseUrl: "http://127.0.0.1:7437",
+      token: "ctx_test_token",
+    });
+    await client.recall("default params");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const requestUrl = new URL(String(calls[0].input));
+  assert.equal(requestUrl.searchParams.get("budget"), "200");
+  assert.equal(requestUrl.searchParams.get("k"), "10");
+});
+
 test("store serializes optional fields to daemon schema", async () => {
   const calls = [];
   const originalFetch = globalThis.fetch;

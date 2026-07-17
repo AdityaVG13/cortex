@@ -106,6 +106,23 @@ class CortexClient:
         self.timeout = timeout
         normalized_source_agent = source_agent.strip()
         self.source_agent = normalized_source_agent or "python-sdk"
+        self._http_client: Optional[httpx.Client] = None
+
+    def _client(self) -> httpx.Client:
+        if self._http_client is None:
+            self._http_client = httpx.Client(timeout=self.timeout)
+        return self._http_client
+
+    def close(self) -> None:
+        if self._http_client is not None:
+            self._http_client.close()
+            self._http_client = None
+
+    def __enter__(self) -> "CortexClient":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def _headers(self) -> dict[str, str]:
         h = dict(_CORTEX_HEADERS)
@@ -115,33 +132,30 @@ class CortexClient:
         return h
 
     def _get(self, path: str, params: Optional[dict[str, object]] = None) -> dict[str, object]:
-        with httpx.Client(timeout=self.timeout) as c:
-            resp = c.get(
-                f"{self.base_url}{path}",
-                headers=self._headers(),
-                params=params,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = self._client().get(
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def _post(self, path: str, json: Optional[dict[str, object]] = None) -> dict[str, object]:
-        with httpx.Client(timeout=self.timeout) as c:
-            resp = c.post(
-                f"{self.base_url}{path}",
-                headers=self._headers(),
-                json=json or {},
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = self._client().post(
+            f"{self.base_url}{path}",
+            headers=self._headers(),
+            json=json or {},
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     # ── Public API ──────────────────────────────────────────────────
 
     def health(self) -> HealthResponse:
         """Check daemon health (no auth required)."""
-        with httpx.Client(timeout=self.timeout) as c:
-            resp = c.get(f"{self.base_url}/health")
-            resp.raise_for_status()
-            return cast(HealthResponse, resp.json())
+        resp = self._client().get(f"{self.base_url}/health")
+        resp.raise_for_status()
+        return cast(HealthResponse, resp.json())
 
     def recall(
         self,

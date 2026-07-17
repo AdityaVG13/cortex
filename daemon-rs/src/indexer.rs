@@ -285,11 +285,24 @@ fn load_custom_sources(home: &Path) -> Vec<CustomSource> {
 fn index_custom_sources(conn: &Connection, home: &Path, owner_id: Option<i64>) -> usize {
     let sources = load_custom_sources(home);
     let mut total = 0;
+    let home_root = home.canonicalize().ok();
 
     for src in &sources {
         let resolved = expand_tilde(&src.path);
         if !resolved.exists() {
             continue;
+        }
+        if let Some(root) = home_root.as_ref() {
+            let Ok(canonical) = resolved.canonicalize() else {
+                continue;
+            };
+            if !canonical.starts_with(root) {
+                eprintln!(
+                    "[cortex] skipping custom source outside Cortex home: {}",
+                    resolved.display()
+                );
+                continue;
+            }
         }
 
         if resolved.is_dir() {

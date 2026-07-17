@@ -8,6 +8,8 @@
 
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
 const DEFAULT_LOCAL_BASE_URL = 'http://127.0.0.1:7437';
 
@@ -60,12 +62,98 @@ function normalizeBaseUrl(baseUrl) {
   const normalized = normalizeOption(baseUrl).replace(/\/+$/, '');
   if (!normalized) return '';
   const parsed = new URL(normalized);
+  if (parsed.username || parsed.password) {
+    throw new Error('Cortex target URL must not include embedded credentials');
+  }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Unsupported Cortex target URL scheme '${parsed.protocol}'`);
   }
   parsed.search = '';
   parsed.hash = '';
   return parsed.toString().replace(/\/+$/, '');
+}
+
+function isLocalBaseUrl(baseUrl) {
+  try {
+    const parsed = new URL(baseUrl);
+    const host = (parsed.hostname || '').toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveCortexHome(env = process.env) {
+  const explicit = normalizeOption(env.CORTEX_HOME);
+  if (explicit) return explicit;
+  const home = env.USERPROFILE || env.HOME || '';
+  return home ? path.join(home, '.cortex') : '';
+}
+
+function resolveTokenPath(env = process.env) {
+  const cortexHome = resolveCortexHome(env);
+  if (cortexHome) return path.join(cortexHome, 'cortex.token');
+  const home = env.USERPROFILE || env.HOME || '';
+  return home ? path.join(home, '.cortex', 'cortex.token') : '';
+}
+
+function normalizeRuntimePath(value) {
+  if (typeof value !== 'string') return '';
+  let normalized = value.trim().replace(/\\/g, '/');
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  if (process.platform === 'win32') {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function pathFieldMatches(actualValue, expectedPath) {
+  if (typeof expectedPath !== 'string' || expectedPath.trim().length === 0) {
+    return true;
+  }
+  if (typeof actualValue !== 'string' || actualValue.trim().length === 0) {
+    return false;
+  }
+  return normalizeRuntimePath(actualValue) === normalizeRuntimePath(expectedPath);
+}
+
+function expectedLocalIdentity(baseUrl, env = process.env) {
+  if (!isLocalBaseUrl(baseUrl)) return null;
+  const cortexHome = resolveCortexHome(env);
+  const identity = {
+    home: cortexHome,
+    token: resolveTokenPath(env),
+    db: cortexHome ? path.join(cortexHome, 'cortex.db') : '',
+    pid: cortexHome ? path.join(cortexHome, 'cortex.pid') : ''
+  };
+  try {
+    const parsed = new URL(baseUrl);
+    const port = parsed.port ? Number.parseInt(parsed.port, 10) : parsed.protocol === 'https:' ? 443 : 80;
+    if (Number.isFinite(port)) identity.port = port;
+  } catch (_) {}
+  return identity;
+}
+
+function validateHealthIdentity(data, expectedIdentity) {
+  if (!expectedIdentity || typeof expectedIdentity !== 'object') return true;
+  if (!data || typeof data !== 'object') return false;
+  const runtime = data.runtime;
+  const stats = data.stats || {};
+
+  if (!runtime || typeof runtime !== 'object') {
+    return pathFieldMatches(stats.home, expectedIdentity.home);
+  }
+
+  if (Number.isFinite(expectedIdentity.port) && runtime.port !== expectedIdentity.port) {
+    return false;
+  }
+  if (!pathFieldMatches(stats.home, expectedIdentity.home)) return false;
+  if (!pathFieldMatches(runtime.db_path, expectedIdentity.db)) return false;
+  if (!pathFieldMatches(runtime.token_path, expectedIdentity.token)) return false;
+  if (!pathFieldMatches(runtime.pid_path, expectedIdentity.pid)) return false;
+  return true;
 }
 
 function isCortexReadinessResponse(data) {
@@ -126,6 +214,7 @@ function requestJson(url, headers, timeoutMs = 5000) {
 
 async function healthCheck(baseUrl, timeoutMs = 5000, apiKey = '') {
   const normalizedBase = normalizeBaseUrl(baseUrl);
+  const expectedIdentity = expectedLocalIdentity(normalizedBase);
   const headers = { 'X-Cortex-Request': 'true' };
   const normalizedApiKey = normalizeOption(apiKey);
   if (normalizedApiKey) headers.Authorization = `Bearer ${normalizedApiKey}`;
@@ -137,6 +226,13 @@ async function healthCheck(baseUrl, timeoutMs = 5000, apiKey = '') {
     readiness.statusCode < 300 &&
     isCortexReadinessResponse(readiness.data)
   ) {
+    if (!validateHealthIdentity(readiness.data, expectedIdentity)) {
+      return {
+        ok: false,
+        status: 'identity_mismatch',
+        error: 'daemon identity does not match local Cortex home paths'
+      };
+    }
     if (readiness.data.ready === true) {
       const stats = readiness.data.stats || {};
       return {
@@ -156,6 +252,13 @@ async function healthCheck(baseUrl, timeoutMs = 5000, apiKey = '') {
     health.statusCode < 300 &&
     isCortexHealthResponse(health.data)
   ) {
+    if (!validateHealthIdentity(health.data, expectedIdentity)) {
+      return {
+        ok: false,
+        status: 'identity_mismatch',
+        error: 'daemon identity does not match local Cortex home paths'
+      };
+    }
     const stats = health.data.stats || {};
     return {
       ok: true,

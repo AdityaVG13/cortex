@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readBundledStyles } from "./test/read-styles.js";
 
-const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const css = readBundledStyles();
 
 function readBlock(source, needle) {
   const start = source.indexOf(needle);

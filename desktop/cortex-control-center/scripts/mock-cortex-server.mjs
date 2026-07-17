@@ -483,6 +483,11 @@ export async function startMockCortexServer({ host = "127.0.0.1", port = 7437, t
       return;
     }
     if (request.method === "GET" && url.pathname === "/events/stream") {
+      const streamToken = url.searchParams.get("token") || "";
+      if (!isAuthorized(request, token) && streamToken !== token) {
+        sendJson(response, 401, { error: "Unauthorized" });
+        return;
+      }
       response.writeHead(200, {
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-store",

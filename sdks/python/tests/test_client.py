@@ -24,6 +24,17 @@ def test_recall_sends_auth_and_ssrf_headers(httpx_mock):
     assert req.headers["Authorization"] == "Bearer ctx_test_token"
 
 
+def test_recall_sends_default_budget_and_k(httpx_mock):
+    httpx_mock.add_response(json={"items": []})
+    client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_test_token")
+
+    client.recall("default params")
+
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["budget"] == "200"
+    assert req.url.params["k"] == "10"
+
+
 def test_store_serializes_optional_fields(httpx_mock):
     httpx_mock.add_response(json={"ok": True})
     client = CortexClient(base_url="http://127.0.0.1:7437", token="ctx_store_token")

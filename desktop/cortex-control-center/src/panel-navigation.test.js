@@ -1,7 +1,25 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const appSource = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
+const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+function listAppSources(dir = path.join(SRC_DIR, "app")) {
+  const entries = readdirSync(dir, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const absolutePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listAppSources(absolutePath));
+      continue;
+    }
+    if (/\.(js|jsx)$/.test(entry.name)) files.push(absolutePath);
+  }
+  return files;
+}
+
+const appSource = listAppSources().map((file) => readFileSync(file, "utf8")).join("\n");
 
 function readBlock(source, needle) {
   const start = source.indexOf(needle);
