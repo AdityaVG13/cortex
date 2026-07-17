@@ -106,5 +106,4 @@ rusqlite::Result<usize>{if table!="memories"&&table!="decisions"{return Err(rusq
 "UPDATE {table} SET status = 'archived' WHERE id IN ({placeholders})")};let mut stmt=conn.prepare(&sql)?;let affected=if let Some(
 owner_id)=owner_id{let mut values:Vec<rusqlite::types::Value>=ids.iter().copied().map(rusqlite::types::Value::Integer).collect();
 values.push(rusqlite::types::Value::Integer(owner_id));stmt.execute(rusqlite::params_from_iter(values.iter()))?}else{stmt.execute(
-rusqlite::params_from_iter(ids.iter()))?};Ok(affected)}#[allow(dead_code)]pub fn archive_entries(conn:&Connection,table:&str,ids:&
-[i64])->rusqlite::Result<usize>{archive_entries_scoped(conn,table,ids,None)}
+rusqlite::params_from_iter(ids.iter()))?};Ok(affected)}

@@ -1,9 +1,6 @@
 use super::*;use crate::api_types::RetentionClass;use crate::conflict::{detect_conflict,jaccard_similarity,ConflictClassification}
 ;use crate::db::checkpoint_wal_best_effort;use crate::handlers::{log_event,now_iso,truncate_chars};use rusqlite::{params,
-Connection};use serde_json::{json,Value};pub fn store_decision(conn:&mut Connection,decision:&str,context:Option<String>,
-entry_type:Option<String>,source_agent:String,confidence:Option<f64>,owner_id:Option<i64>,)->Result<(Value,Option<i64>),String>{
-let provenance=DecisionProvenance::from_fields(&source_agent,None,None);store_decision_internal(conn,decision,context,entry_type,
-source_agent,provenance,confidence,None,None,None,owner_id).map_err(|err|err.to_string())}#[allow(clippy::too_many_arguments,
+Connection};use serde_json::{json,Value};#[allow(clippy::too_many_arguments,
 dead_code)]pub fn store_decision_with_ttl(conn:&mut Connection,decision:&str,context:Option<String>,entry_type:Option<String>,
 source_agent:String,confidence:Option<f64>,ttl_seconds:Option<i64>,owner_id:Option<i64>,)->Result<(Value,Option<i64>),String>{let
 provenance=DecisionProvenance::from_fields(&source_agent,None,None);store_decision_internal(conn,decision,context,entry_type,

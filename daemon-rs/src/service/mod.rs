@@ -1,6 +1,6 @@
 const SERVICE_NAME:&str="CortexDaemon";const DISPLAY_NAME:&str="Cortex Memory Daemon";const DESCRIPTION:&str=
 "Always-on AI memory daemon -- serves Claude, Gemini, Codex, Cursor, and local LLMs via HTTP (:7437) and MCP.";const
-DEFAULT_START_MODE:&str="demand";const ENSURE_HEALTH_TIMEOUT_SECS:u64=12;const ENSURE_POLL_MILLIS:u64=250;const
+DEFAULT_START_MODE:&str="demand";const
 HEALTH_PROBE_TIMEOUT_SECS:u64=2;#[cfg(windows)]const CREATE_NO_WINDOW_FLAG:u32=0x0800_0000;#[cfg(windows)]fn
 apply_hidden_process_flags(command:&mut std::process::Command){use std::os::windows::process::CommandExt;command.creation_flags(
 CREATE_NO_WINDOW_FLAG);}#[cfg(not(windows))]fn apply_hidden_process_flags(_command:&mut std::process::Command){}fn daemon_base_url
@@ -17,15 +17,15 @@ match std::env::var("USERNAME"){Ok(raw)=>{let trimmed=raw.trim();if username_is_
 }else{"cortex-user".to_string()}}Err(_)=>"cortex-user".to_string(),}}fn service_exe_path_from_result(result:std::io::Result<std::
 path::PathBuf>)->Result<String,String>{result.map(|exe|exe.to_string_lossy().to_string()).map_err(|err|format!(
 "Failed to get exe path: {err}"))}fn service_exe_path()->Result<String,String>{service_exe_path_from_result(std::env::current_exe(
-))}#[derive(Debug,Clone,Copy,PartialEq,Eq)]enum ServiceState{NotInstalled,Running,Stopped,StartPending,StopPending,Unknown,}impl
+))}#[cfg(windows)]const ENSURE_HEALTH_TIMEOUT_SECS:u64=12;#[cfg(windows)]const ENSURE_POLL_MILLIS:u64=250;#[cfg(windows)]#[derive(Debug,Clone,Copy,PartialEq,Eq)]enum ServiceState{NotInstalled,Running,Stopped,StartPending,StopPending,Unknown,}#[cfg(windows)]impl
 ServiceState{fn as_str(self)->&'static str{match self{ServiceState::NotInstalled=>"NOT_INSTALLED",ServiceState::Running=>"RUNNING"
 ,ServiceState::Stopped=>"STOPPED",ServiceState::StartPending=>"START_PENDING",ServiceState::StopPending=>"STOP_PENDING",
-ServiceState::Unknown=>"UNKNOWN",}}}fn output_text(output:&std::process::Output)->String{let stdout=String::from_utf8_lossy(&
+ServiceState::Unknown=>"UNKNOWN",}}}#[cfg(windows)]fn output_text(output:&std::process::Output)->String{let stdout=String::from_utf8_lossy(&
 output.stdout).trim().to_string();let stderr=String::from_utf8_lossy(&output.stderr).trim().to_string();match(stdout.is_empty(),
 stderr.is_empty()){(false,false)=>format!("{stdout}\n{stderr}"),(false,true)=>stdout,(true,false)=>stderr,(true,true)=>
-"<no output>".to_string(),}}fn parse_service_state(output_text:&str)->ServiceState{if output_text.contains("RUNNING"){ServiceState
+"<no output>".to_string(),}}#[cfg(windows)]fn parse_service_state(output_text:&str)->ServiceState{if output_text.contains("RUNNING"){ServiceState
 ::Running}else if output_text.contains("STOPPED"){ServiceState::Stopped}else if output_text.contains("START_PENDING"){ServiceState
-::StartPending}else if output_text.contains("STOP_PENDING"){ServiceState::StopPending}else{ServiceState::Unknown}}fn
+::StartPending}else if output_text.contains("STOP_PENDING"){ServiceState::StopPending}else{ServiceState::Unknown}}#[cfg(windows)]fn
 query_service_state()->Result<ServiceState,String>{let mut command=std::process::Command::new("sc.exe");command.args(["query",
 SERVICE_NAME]);apply_hidden_process_flags(&mut command);let output=command.output().map_err(|e|format!(
 "Failed to run sc.exe query: {e}"))?;if output.status.success(){let text=output_text(&output);return Ok(parse_service_state(&text)
@@ -44,12 +44,12 @@ as_bytes()).map_err(|e|format!("write failed: {e}"))?;let mut response=Vec::new(
 &response)}fn daemon_health_response()->Option<String>{let paths=crate::auth::CortexPaths::resolve();if let Ok((status,body))=
 daemon_probe("/readiness"){if daemon_ready_from_payload(status,&body,&paths)==Some(true){return Some(body);}}if let Ok((status,
 body))=daemon_probe("/health"){if daemon_ready_from_payload(status,&body,&paths).unwrap_or(false){return Some(body);}}None}fn
-daemon_health_ready()->bool{daemon_health_response().is_some()}fn wait_for_daemon_health(timeout:std::time::Duration)->bool{let
+daemon_health_ready()->bool{daemon_health_response().is_some()}#[cfg(windows)]fn wait_for_daemon_health(timeout:std::time::Duration)->bool{let
 start=std::time::Instant::now();loop{if daemon_health_ready(){return true;}if start.elapsed()>=timeout{return false;}std::thread::
-sleep(std::time::Duration::from_millis(ENSURE_POLL_MILLIS));}}fn start_service_once()->Result<(),String>{let mut command=std::
+sleep(std::time::Duration::from_millis(ENSURE_POLL_MILLIS));}}#[cfg(windows)]fn start_service_once()->Result<(),String>{let mut command=std::
 process::Command::new("sc.exe");command.args(["start",SERVICE_NAME]);apply_hidden_process_flags(&mut command);let output=command.
 output().map_err(|e|format!("Failed to run sc.exe start: {e}"))?;if output.status.success(){return Ok(());}let text=output_text(&
-output);if text.contains("1056"){Ok(())}else{Err(text)}}fn stop_service_once()->Result<(),String>{let mut command=std::process::
+output);if text.contains("1056"){Ok(())}else{Err(text)}}#[cfg(windows)]fn stop_service_once()->Result<(),String>{let mut command=std::process::
 Command::new("sc.exe");command.args(["stop",SERVICE_NAME]);apply_hidden_process_flags(&mut command);let output=command.output().
 map_err(|e|format!("Failed to run sc.exe stop: {e}"))?;if output.status.success(){return Ok(());}let text=output_text(&output);if
 text.contains("1062"){Ok(())}else{Err(text)}}#[cfg(windows)]fn ensure_windows()->bool{if daemon_health_ready(){eprintln!(
@@ -106,7 +106,7 @@ daemon_health_ready(){eprintln!("[cortex] HTTP: LIVE");if let Ok((_,body))=daemo
 eprintln!("[cortex] HTTP: not responding");}true}Ok(_)=>{eprintln!("[cortex] Service not installed. Run: cortex service install");
 false}Err(e)=>{eprintln!("[cortex] Failed to run sc.exe: {e}");false}}}pub fn ensure()->bool{#[cfg(not(windows))]{eprintln!(
 "[cortex] `service ensure` is only available on Windows");false}#[cfg(windows)]{ensure_windows()}}#[cfg(windows)]pub fn
-ensure_ready()->bool{ensure_windows()}#[cfg(not(windows))]pub fn ensure_ready()->bool{false}#[cfg(windows)]mod scm{use std::ffi::
+ensure_ready()->bool{ensure_windows()}#[cfg(not(windows))]#[allow(dead_code)]pub fn ensure_ready()->bool{false}#[cfg(windows)]mod scm{use std::ffi::
 OsString;use std::sync::mpsc;use windows_service::service::{ServiceControl,ServiceControlAccept,ServiceExitCode,ServiceState,
 ServiceStatus,ServiceType};use windows_service::service_control_handler::{self,ServiceControlHandlerResult};use windows_service::{
 define_windows_service,service_dispatcher};const SERVICE_TYPE:ServiceType=ServiceType::OWN_PROCESS;define_windows_service!(

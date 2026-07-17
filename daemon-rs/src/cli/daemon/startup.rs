@@ -3,8 +3,7 @@ parse_truthy_flag,single_daemon_test_bypass_enabled};use crate::daemon_lifecycle
 daemon_lifecycle::issue_owner_token_for_spawn;use daemon_lifecycle::{daemon_healthy,is_cortex_health_payload,
 readiness_state_from_payload,validate_spawned_owner_claim,wait_for_health,DAEMON_OWNER_TOKEN_ENV,SPAWN_PARENT_START_TIME_ENV};use
 fs2::FileExt;use std::path::{Path,PathBuf};use std::time::Duration;pub(crate)const CONTROL_CENTER_LOCK_FILE:&str=
-"control-center.lock";pub(crate)const CONTROL_CENTER_OWNER_TAG:&str="control-center";pub(crate)const SINGLE_DAEMON_TEST_BYPASS_ENV
-:&str="CORTEX_SINGLE_DAEMON_TEST_BYPASS";pub(crate)const SPAWN_PARENT_PID_ENV:&str="CORTEX_SPAWN_PARENT_PID";pub(crate)const
+"control-center.lock";pub(crate)const CONTROL_CENTER_OWNER_TAG:&str="control-center";pub(crate)const SPAWN_PARENT_PID_ENV:&str="CORTEX_SPAWN_PARENT_PID";pub(crate)const
 ORPHAN_WATCH_INTERVAL_SECS:u64=2;pub(crate)const DEFAULT_EMBED_BACKFILL_BATCH_SIZE:usize=200;pub(crate)const
 DEFAULT_EMBED_BACKFILL_MAX_BATCHES_PER_PASS:usize=8;pub(crate)const DEFAULT_EMBED_BACKFILL_INTERVAL_SECS:u64=120;pub(crate)const
 DEFAULT_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES:usize=64;pub(crate)const DEFAULT_STARTUP_INDEX_DELAY_SECS:u64=5;pub(crate)const
@@ -23,9 +22,7 @@ BACKGROUND_DB_LOCK_MAX_WAIT_MS_ENV:&str="CORTEX_BACKGROUND_DB_LOCK_MAX_WAIT_MS";
 EMBED_BACKFILL_DRAIN_ON_STARTUP_ENV:&str="CORTEX_EMBED_BACKFILL_DRAIN_ON_STARTUP";pub(crate)const
 EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES_ENV:&str="CORTEX_EMBED_BACKFILL_STARTUP_DRAIN_MAX_BATCHES";pub(crate)const
 IDLE_SHUTDOWN_SECS_ENV:&str="CORTEX_IDLE_SHUTDOWN_SECS";pub(crate)const IDLE_SHUTDOWN_MIN_UPTIME_SECS_ENV:&str=
-"CORTEX_IDLE_SHUTDOWN_MIN_UPTIME_SECS";pub(crate)const STARTUP_LOG_FILES:&[&str]=&["daemon.log","daemon.err.log","daemon.out.log",
-"mcp-crash.log","rust-daemon.err.log"];pub(crate)const DAEMON_STARTUP_WAIT_SECS:u64=90;pub(crate)const DEFAULT_BOOT_BUDGET:usize=
-600;pub(crate)const DEFAULT_DAEMON_LOCK_WAIT_SECS:u64=15;pub(crate)const DAEMON_LOCK_RETRY_INTERVAL_MS:u64=100;pub(crate)const
+"CORTEX_IDLE_SHUTDOWN_MIN_UPTIME_SECS";pub(crate)const DAEMON_STARTUP_WAIT_SECS:u64=90;pub(crate)const DEFAULT_DAEMON_LOCK_WAIT_SECS:u64=15;pub(crate)const DAEMON_LOCK_RETRY_INTERVAL_MS:u64=100;pub(crate)const
 DAEMON_LOCK_HANDOFF_GRACE_SECS:u64=3;pub(crate)const DAEMON_LOCAL_SPAWN_ENV:&str="CORTEX_DAEMON_OWNER_LOCAL_SPAWN";pub(crate)const
 APP_REQUIRED_ENV:&str="CORTEX_APP_REQUIRED";pub(crate)const APP_CLIENT_ENV:&str="CORTEX_APP_CLIENT";pub(crate)const
 APP_MANAGED_STARTUP_DELAY_ENV:&str="CORTEX_APP_MANAGED_STARTUP_DELAY_SECS";pub(crate)fn daemon_lock_wait_timeout()->Duration{let

@@ -52,8 +52,7 @@ return 0,};let file_stem=path.file_stem().unwrap_or_default().to_string_lossy().
 chars().take(src.truncate).collect()}else{content};let source=format!("{}::{}",src.name,file_stem);if upsert_memory(conn,&text,&
 source,&src.mem_type,"indexer",owner_id){1}else{0}}fn matches_glob(path:&Path,pattern:&str)->bool{if pattern=="*"{return true;}let
 name=match path.file_name().and_then(|n|n.to_str()){Some(n)=>n,None=>return false,};if let Some(ext_pattern)=pattern.strip_prefix(
-"*."){return name.ends_with(&format!(".{ext_pattern}"));}name==pattern}#[allow(dead_code)]pub fn custom_source_paths(home:&Path)->
-Vec<PathBuf>{load_custom_sources(home).iter().map(|s|expand_tilde(&s.path)).filter(|p|p.exists()).collect()}pub fn decay_pass(conn
+"*."){return name.ends_with(&format!(".{ext_pattern}"));}name==pattern}pub fn decay_pass(conn
 :&Connection)->usize{let mem_result=conn.execute(
 "UPDATE memories SET score = MAX(0.05, score * POWER(
             MIN(1.0, 0.95 + 0.005 * MIN(retrievals, 10)),

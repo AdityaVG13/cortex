@@ -1,8 +1,7 @@
 use crate::embeddings;use crate::handlers::{ensure_auth_rated,json_error,json_response};use crate::state::RuntimeState;use axum::
 extract::State;use axum::http::{HeaderMap,StatusCode};use axum::response::Response;use axum::Json;use rusqlite::{params,Connection
 };use serde::Deserialize;use serde_json::{json,Value};const MAX_BOOST:f64=0.3;const MIN_BOOST:f64=-0.2;const DECAY_HALF_LIFE_DAYS:
-f64=30.0;pub const IMMUNITY_THRESHOLD:i64=5;pub const IMMUNITY_WINDOW_DAYS:i64=14;const AGENT_FEEDBACK_DEFAULT_HORIZON_DAYS:i64=30
-;const AGENT_FEEDBACK_DEFAULT_LIMIT:usize=400;const AGENT_FEEDBACK_DECAY_HALF_LIFE_DAYS:f64=21.0;#[derive(Deserialize)]pub struct
+f64=30.0;pub const IMMUNITY_THRESHOLD:i64=5;pub const IMMUNITY_WINDOW_DAYS:i64=14;#[derive(Deserialize)]pub struct
 FeedbackRequest{pub query:Option<String>,pub sources:Vec<String>,pub signal:Option<f64>,pub agent:Option<String>,}pub async fn
 handle_feedback(State(state):State<RuntimeState>,headers:HeaderMap,Json(body):Json<FeedbackRequest>)->Response{if let Err(resp)=
 ensure_auth_rated(&headers,&state).await{return resp;}if body.sources.is_empty(){return json_error(StatusCode::BAD_REQUEST,
@@ -18,13 +17,7 @@ body.sources,}),)}pub fn record_unfold_feedback(conn:&Connection,sources:&[Strin
 u8]>){for source in sources{let(result_type,result_id)=parse_source(source);let _=conn.execute(
 "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
              VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6)"
-,params![query_text,query_blob,source,result_type,result_id,agent],);}}#[allow(dead_code)]pub fn compute_boost(conn:&Connection,
-result_source:&str)->f64{let decay_lambda=(2.0f64).ln()/DECAY_HALF_LIFE_DAYS;let boost:f64=conn.prepare(
-"SELECT signal, julianday('now') - julianday(created_at) AS age_days \
-             FROM recall_feedback WHERE result_source = ?1"
-,).and_then(|mut stmt|{let rows=stmt.query_map(params![result_source],|row|{let signal:f64=row.get(0)?;let age_days:f64=row.get::<
-_,f64>(1)?.max(0.0);Ok(signal*(-decay_lambda*age_days).exp())})?;let mut total=0.0f64;for v in rows.flatten(){total+=v;}Ok(total)}
-).unwrap_or(0.0);boost.clamp(MIN_BOOST,MAX_BOOST)}pub fn compute_boosts(conn:&Connection,sources:&[String],query_vector:Option<&[
+,params![query_text,query_blob,source,result_type,result_id,agent],);}}pub fn compute_boosts(conn:&Connection,sources:&[String],query_vector:Option<&[
 f32]>)->std::collections::HashMap<String,f64>{let mut boosts=std::collections::HashMap::new();if sources.is_empty(){return boosts;
 }let decay_lambda=(2.0f64).ln()/DECAY_HALF_LIFE_DAYS;let placeholders=sources.iter().enumerate().map(|(i,_)|format!("?{}",i+1)).
 collect::<Vec<_>>().join(", ");let sql=format!(

@@ -56,6 +56,7 @@ use super::*;
         assert!(err.contains("Failed to get exe path"), "expected contextual error: {err}");
     }
     #[test]
+    #[cfg(windows)]
     fn parse_service_state_recognizes_known_states() {
         assert_eq!(parse_service_state("STATE              : 4  RUNNING"), ServiceState::Running);
         assert_eq!(parse_service_state("STATE              : 1  STOPPED"), ServiceState::Stopped);
@@ -64,6 +65,7 @@ use super::*;
         assert_eq!(parse_service_state("STATE              : ???"), ServiceState::Unknown);
     }
     #[test]
+    #[cfg(windows)]
     fn service_state_strings_are_stable() {
         assert_eq!(ServiceState::NotInstalled.as_str(), "NOT_INSTALLED");
         assert_eq!(ServiceState::Running.as_str(), "RUNNING");

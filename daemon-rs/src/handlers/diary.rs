@@ -1,6 +1,6 @@
 use super::{ensure_auth_rated,json_error,json_response,log_event,now_iso,resolve_source_identity};use crate::state::RuntimeState;
 use axum::extract::State;use axum::http::{HeaderMap,StatusCode};use axum::response::Response;use axum::Json;use serde::Deserialize
-;use serde_json::json;use std::fs;use std::path::Path;#[derive(Clone,Deserialize)]pub struct DiaryRequest{pub accomplished:Option<
+;use serde_json::json;use std::fs;#[derive(Clone,Deserialize)]pub struct DiaryRequest{pub accomplished:Option<
 String>,#[serde(rename="nextSteps")]pub next_steps:Option<String>,pub decisions:Option<String>,#[serde(rename="keyDecisions")]pub
 key_decisions:Option<String>,pub pending:Option<String>,#[serde(rename="knownIssues")]pub known_issues:Option<String>,}impl
 DiaryRequest{pub(crate)fn decisions_text(&self)->Option<&str>{self.decisions.as_deref().or(self.key_decisions.as_deref())}}pub
@@ -26,5 +26,4 @@ push(String::new());}fn extract_section(content:&str,header:&str)->Option<String
 header.len();let rest=&content[start..];let end=rest.find("\n## ").map(|i|i+1).unwrap_or(rest.len());let text=rest[..end].trim().
 to_string();if text.is_empty(){None}else{Some(text)}}fn sanitize_markdown(input:&str)->String{input.lines().map(|line|{let trimmed
 =line.trim();if trimmed.chars().all(|c|c=='-')&&trimmed.len()>=3{return line.to_string();}if trimmed.starts_with("##"){return
-format!("<!-- {line} -->");}line.to_string()}).collect::<Vec<_>>().join("\n")}#[allow(dead_code)]fn path_to_string(path:&Path)->
-String{path.display().to_string()}
+format!("<!-- {line} -->");}line.to_string()}).collect::<Vec<_>>().join("\n")}

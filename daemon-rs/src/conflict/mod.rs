@@ -42,26 +42,7 @@ let mut best_sim=0.0_f64;let mut best_candidate:Option<DecisionCandidate>=None;f
 decision,&candidate.decision);if sim>best_sim{best_sim=sim;best_candidate=Some(candidate.clone());}}let Some(best_candidate)=
 best_candidate else{return Ok(ConflictResult::unrelated());};if best_sim<RELATED_THRESHOLD{return Ok(ConflictResult::unrelated());
 }let classification=classify_relation(decision,source_agent,&best_candidate,best_sim);Ok(ConflictResult::from_candidate(
-classification,&best_candidate,source_agent,best_sim,None))}#[allow(dead_code)]pub fn detect_conflict_cosine(decision:&str,
-source_agent:&str,engine:&crate::embeddings::EmbeddingEngine,conn:&Connection)->Option<ConflictResult>{let new_vec=engine.embed(
-decision)?;let mut stmt=conn.prepare(
-"SELECT d.id, d.source_agent, e.vector \
-             FROM decisions d \
-             JOIN embeddings e ON e.target_type = 'decision' AND e.target_id = d.id \
-             WHERE d.status = 'active' \
-             AND (d.expires_at IS NULL OR d.expires_at > datetime('now'))"
-,).ok()?;let rows:Vec<(i64,String,Vec<u8>)>=stmt.query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).ok()?.filter_map(|r|
-r.ok()).collect();let mut best_sim=0.0f32;let mut best_id:Option<i64>=None;let mut best_agent:Option<String>=None;for(id,agent,
-blob)in&rows{let existing_vec=crate::embeddings::blob_to_vector(blob);let sim=crate::embeddings::cosine_similarity(&new_vec,&
-existing_vec);if sim>best_sim{best_sim=sim;best_id=Some(*id);best_agent=Some(agent.clone());}}const HARD_THRESHOLD:f32=0.85;const
-MERGE_THRESHOLD:f32=0.70;if best_sim>HARD_THRESHOLD{let classification=if best_agent.as_deref()==Some(source_agent){
-ConflictClassification::Refines}else{ConflictClassification::Contradicts};Some(ConflictResult{classification,is_conflict:matches!(
-classification,ConflictClassification::Contradicts),is_update:matches!(classification,ConflictClassification::Refines),matched_id:
-best_id,matched_agent:best_agent,matched_decision:None,matched_trust_score:None,similarity_jaccard:0.0,similarity_cosine:Some(
-best_sim as f64),})}else if best_sim>MERGE_THRESHOLD&&best_agent.as_deref()==Some(source_agent){let classification=
-ConflictClassification::Agrees;Some(ConflictResult{classification,is_conflict:false,is_update:true,matched_id:best_id,
-matched_agent:best_agent,matched_decision:None,matched_trust_score:None,similarity_jaccard:0.0,similarity_cosine:Some(best_sim as
-f64),})}else{None}}fn classify_relation(incoming_decision:&str,incoming_agent:&str,candidate:&DecisionCandidate,similarity_jaccard
+classification,&best_candidate,source_agent,best_sim,None))}fn classify_relation(incoming_decision:&str,incoming_agent:&str,candidate:&DecisionCandidate,similarity_jaccard
 :f64)->ConflictClassification{if similarity_jaccard<RELATED_THRESHOLD{return ConflictClassification::Unrelated;}if
 contradiction_signal(incoming_decision,&candidate.decision,similarity_jaccard){return ConflictClassification::Contradicts;}if
 similarity_jaccard>=AGREEMENT_THRESHOLD{return ConflictClassification::Agrees;}if candidate.source_agent==incoming_agent||
