@@ -14,7 +14,9 @@ function makeDeps(overrides = {}) {
   return {
     getInvoke: () => overrides.invoke ?? null,
     getToken: () =>
-      typeof overrides.getToken === "function" ? overrides.getToken() : (overrides.token ?? ""),
+      typeof overrides.getToken === "function"
+        ? overrides.getToken()
+        : (overrides.token ?? ""),
     cortexBase: overrides.cortexBase ?? "http://127.0.0.1:7437",
     onTokenRefresh: overrides.onTokenRefresh,
   };
@@ -26,8 +28,11 @@ function mockFetch(status, body, ok) {
       ok: ok ?? (status >= 200 && status < 300),
       status,
       json: () => Promise.resolve(body),
-      text: () => Promise.resolve(typeof body === "string" ? body : JSON.stringify(body ?? "")),
-    })
+      text: () =>
+        Promise.resolve(
+          typeof body === "string" ? body : JSON.stringify(body ?? ""),
+        ),
+    }),
   );
 }
 
@@ -61,7 +66,7 @@ describe("createApi - api()", () => {
   it("throws with path when withAuth=true and no token (no IPC)", async () => {
     const api = createApi(makeDeps({ token: "" }));
     await expect(api("/sessions", true)).rejects.toThrow(
-      "/sessions: no auth token (Tauri IPC missing)"
+      "/sessions: no auth token (Tauri IPC missing)",
     );
   });
 
@@ -69,7 +74,7 @@ describe("createApi - api()", () => {
     const invoke = vi.fn();
     const api = createApi(makeDeps({ token: "", invoke }));
     await expect(api("/sessions", true)).rejects.toThrow(
-      "/sessions: no auth token (Tauri IPC available)"
+      "/sessions: no auth token (Tauri IPC available)",
     );
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -78,7 +83,9 @@ describe("createApi - api()", () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
     const invoke = vi.fn(() => Promise.resolve(null));
     const api = createApi(makeDeps({ invoke, token: "tok" }));
-    await expect(api("/health")).rejects.toThrow("/health: invalid IPC response");
+    await expect(api("/health")).rejects.toThrow(
+      "/health: invalid IPC response",
+    );
   });
 
   it("times out hung IPC GET requests", async () => {
@@ -88,7 +95,7 @@ describe("createApi - api()", () => {
       const invoke = vi.fn(() => new Promise(() => {}));
       const api = createApi(makeDeps({ invoke, token: "tok" }));
       const assertion = expect(api("/health")).rejects.toThrow(
-        "/health: IPC request: timed out after 12000ms"
+        "/health: IPC request: timed out after 12000ms",
       );
       await vi.advanceTimersByTimeAsync(12000);
       await assertion;
@@ -115,11 +122,15 @@ describe("createApi - api()", () => {
   });
 
   it("falls back to HTTP GET when IPC returns a raw read transport error", async () => {
-    const invoke = vi.fn(() => Promise.reject(new Error("Read failed: os error 10060")));
+    const invoke = vi.fn(() =>
+      Promise.reject(new Error("Read failed: os error 10060")),
+    );
     globalThis.fetch = mockFetch(200, { status: "ok-from-http" }, true);
     const api = createApi(makeDeps({ invoke, token: "tok" }));
 
-    await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
+    await expect(api("/sessions", true)).resolves.toEqual({
+      status: "ok-from-http",
+    });
     expectFetchCall("http://127.0.0.1:7437/sessions", {
       headers: {
         Authorization: "Bearer tok",
@@ -134,10 +145,12 @@ describe("createApi - api()", () => {
       makeDeps({
         token: "tok",
         cortexBase: " http://127.0.0.1:7437///?debug=1#fragment ",
-      })
+      }),
     );
 
-    await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
+    await expect(api("/sessions", true)).resolves.toEqual({
+      status: "ok-from-http",
+    });
     expectFetchCall("http://127.0.0.1:7437/sessions", {
       headers: {
         Authorization: "Bearer tok",
@@ -152,21 +165,29 @@ describe("createApi - api()", () => {
       makeDeps({
         token: "tok",
         cortexBase: "file:///tmp/cortex.sock",
-      })
+      }),
     );
 
-    await expect(api("/sessions", true)).rejects.toThrow("must use http or https");
+    await expect(api("/sessions", true)).rejects.toThrow(
+      "must use http or https",
+    );
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to HTTP GET for Windows connection-attempt timeout envelopes", async () => {
-    const invoke = vi.fn(() => Promise.reject(new Error(
-      "A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond. (os error 10060)"
-    )));
+    const invoke = vi.fn(() =>
+      Promise.reject(
+        new Error(
+          "A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond. (os error 10060)",
+        ),
+      ),
+    );
     globalThis.fetch = mockFetch(200, { status: "ok-from-http" }, true);
     const api = createApi(makeDeps({ invoke, token: "tok" }));
 
-    await expect(api("/sessions", true)).resolves.toEqual({ status: "ok-from-http" });
+    await expect(api("/sessions", true)).resolves.toEqual({
+      status: "ok-from-http",
+    });
     expectFetchCall("http://127.0.0.1:7437/sessions", {
       headers: {
         Authorization: "Bearer tok",
@@ -179,12 +200,14 @@ describe("createApi - api()", () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
     const invoke = vi.fn(() => Promise.resolve({ status: 200, body: 42 }));
     const api = createApi(makeDeps({ invoke, token: "tok" }));
-    await expect(api("/health")).rejects.toThrow("/health: invalid IPC response");
+    await expect(api("/health")).rejects.toThrow(
+      "/health: invalid IPC response",
+    );
   });
 
   it("throws on IPC HTTP non-2xx", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 403, body: '{"error":"forbidden"}' })
+      Promise.resolve({ status: 403, body: '{"error":"forbidden"}' }),
     );
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     await expect(api("/sessions", true)).rejects.toThrow("/sessions: HTTP 403");
@@ -192,7 +215,7 @@ describe("createApi - api()", () => {
 
   it("throws on IPC JSON parse failure", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: "not json{{{" })
+      Promise.resolve({ status: 200, body: "not json{{{" }),
     );
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     await expect(api("/health")).rejects.toThrow(); // SyntaxError from JSON.parse
@@ -200,7 +223,7 @@ describe("createApi - api()", () => {
 
   it("returns parsed JSON on IPC success", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: '{"sessions":[]}' })
+      Promise.resolve({ status: 200, body: '{"sessions":[]}' }),
     );
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     const result = await api("/sessions", true);
@@ -209,7 +232,7 @@ describe("createApi - api()", () => {
 
   it("uses an extended transport timeout for MCP RPC IPC GET requests", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: '{"ok":true}' })
+      Promise.resolve({ status: 200, body: '{"ok":true}' }),
     );
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     await api("/mcp-rpc", true);
@@ -222,7 +245,7 @@ describe("createApi - api()", () => {
 
   it("routes absolute session URLs to core IPC timeout budgets", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: '{"sessions":[]}' })
+      Promise.resolve({ status: 200, body: '{"sessions":[]}' }),
     );
     const api = createApi(makeDeps({ invoke, token: "tok" }));
     await api("http://127.0.0.1:7437/sessions", true);
@@ -268,14 +291,14 @@ describe("createApi - api()", () => {
       token = "stale-token";
     });
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 401, body: '{"error":"Unauthorized"}' })
+      Promise.resolve({ status: 401, body: '{"error":"Unauthorized"}' }),
     );
     const api = createApi(
       makeDeps({
         getToken: () => token,
         invoke,
         onTokenRefresh,
-      })
+      }),
     );
 
     await expect(api("/sessions", true)).rejects.toThrow("/sessions: HTTP 401");
@@ -296,7 +319,7 @@ describe("createPostApi - postApi()", () => {
   it("throws when no token (always requires auth)", async () => {
     const postApi = createPostApi(makeDeps({ token: "" }));
     await expect(postApi("/resolve")).rejects.toThrow(
-      "POST /resolve: no auth token"
+      "POST /resolve: no auth token",
     );
   });
 
@@ -306,7 +329,7 @@ describe("createPostApi - postApi()", () => {
       token = "fresh-token";
     });
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: '{"ok":true}' })
+      Promise.resolve({ status: 200, body: '{"ok":true}' }),
     );
 
     const postApi = createPostApi(
@@ -314,7 +337,7 @@ describe("createPostApi - postApi()", () => {
         getToken: () => token,
         invoke,
         onTokenRefresh,
-      })
+      }),
     );
 
     const result = await postApi("/resolve", { keepId: "a" });
@@ -333,7 +356,7 @@ describe("createPostApi - postApi()", () => {
     const invoke = vi.fn(() => Promise.resolve(undefined));
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
     await expect(postApi("/resolve")).rejects.toThrow(
-      "POST /resolve: invalid IPC response"
+      "POST /resolve: invalid IPC response",
     );
   });
 
@@ -343,9 +366,9 @@ describe("createPostApi - postApi()", () => {
       globalThis.fetch = vi.fn(() => Promise.reject(new Error("network down")));
       const invoke = vi.fn(() => new Promise(() => {}));
       const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
-      const assertion = expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow(
-        "POST /resolve: IPC request: timed out after 8000ms"
-      );
+      const assertion = expect(
+        postApi("/resolve", { keepId: "a" }),
+      ).rejects.toThrow("POST /resolve: IPC request: timed out after 8000ms");
       await vi.advanceTimersByTimeAsync(8000);
       await assertion;
     } finally {
@@ -375,11 +398,15 @@ describe("createPostApi - postApi()", () => {
   });
 
   it("falls back to HTTP POST when IPC returns a raw read transport error", async () => {
-    const invoke = vi.fn(() => Promise.reject(new Error("Read failed: os error 10060")));
+    const invoke = vi.fn(() =>
+      Promise.reject(new Error("Read failed: os error 10060")),
+    );
     globalThis.fetch = mockFetch(200, { ok: true }, true);
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
 
-    await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({ ok: true });
+    await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({
+      ok: true,
+    });
     expectFetchCall("http://127.0.0.1:7437/resolve", {
       method: "POST",
       headers: {
@@ -395,23 +422,29 @@ describe("createPostApi - postApi()", () => {
       makeDeps({
         token: "tok",
         cortexBase: "https://user:pass@team.example.com",
-      })
+      }),
     );
 
     await expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow(
-      "must not include embedded credentials"
+      "must not include embedded credentials",
     );
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("falls back to HTTP POST for Windows connection-attempt timeout envelopes", async () => {
-    const invoke = vi.fn(() => Promise.reject(new Error(
-      "A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond. (os error 10060)"
-    )));
+    const invoke = vi.fn(() =>
+      Promise.reject(
+        new Error(
+          "A connection attempt failed because the connected party did not properly respond after a period of time, or established connection failed because connected host has failed to respond. (os error 10060)",
+        ),
+      ),
+    );
     globalThis.fetch = mockFetch(200, { ok: true }, true);
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
 
-    await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({ ok: true });
+    await expect(postApi("/resolve", { keepId: "a" })).resolves.toEqual({
+      ok: true,
+    });
     expectFetchCall("http://127.0.0.1:7437/resolve", {
       method: "POST",
       headers: {
@@ -423,15 +456,17 @@ describe("createPostApi - postApi()", () => {
 
   it("throws on IPC HTTP non-2xx", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 422, body: '{"error":"bad"}' })
+      Promise.resolve({ status: 422, body: '{"error":"bad"}' }),
     );
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
-    await expect(postApi("/resolve")).rejects.toThrow("POST /resolve: HTTP 422");
+    await expect(postApi("/resolve")).rejects.toThrow(
+      "POST /resolve: HTTP 422",
+    );
   });
 
   it("returns parsed JSON on IPC success", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: '{"ok":true}' })
+      Promise.resolve({ status: 200, body: '{"ok":true}' }),
     );
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
     const result = await postApi("/resolve", { keepId: "a" });
@@ -459,7 +494,7 @@ describe("createPostApi - postApi()", () => {
         getToken: () => token,
         invoke,
         onTokenRefresh,
-      })
+      }),
     );
 
     const result = await postApi("/resolve", { keepId: "a" });
@@ -481,7 +516,7 @@ describe("createPostApi - postApi()", () => {
 
   it("uses an extended transport timeout for MCP RPC IPC POST requests", async () => {
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 200, body: '{"ok":true}' })
+      Promise.resolve({ status: 200, body: '{"ok":true}' }),
     );
     const postApi = createPostApi(makeDeps({ invoke, token: "tok" }));
     await postApi("/mcp-rpc", { jsonrpc: "2.0", id: "1" });
@@ -496,7 +531,9 @@ describe("createPostApi - postApi()", () => {
   it("throws on browser fetch HTTP non-2xx", async () => {
     globalThis.fetch = mockFetch(500, {}, false);
     const postApi = createPostApi(makeDeps({ token: "tok" }));
-    await expect(postApi("/resolve")).rejects.toThrow("POST /resolve: HTTP 500");
+    await expect(postApi("/resolve")).rejects.toThrow(
+      "POST /resolve: HTTP 500",
+    );
   });
 
   it("sends POST with correct headers on browser fetch", async () => {
@@ -535,7 +572,7 @@ describe("createPostApi - postApi()", () => {
       makeDeps({
         getToken: () => token,
         onTokenRefresh,
-      })
+      }),
     );
 
     const result = await postApi("/resolve", { x: 1 });
@@ -557,7 +594,7 @@ describe("createPostApi - postApi()", () => {
       token = "stale-token";
     });
     const invoke = vi.fn(() =>
-      Promise.resolve({ status: 401, body: '{"error":"Unauthorized"}' })
+      Promise.resolve({ status: 401, body: '{"error":"Unauthorized"}' }),
     );
 
     const postApi = createPostApi(
@@ -565,10 +602,12 @@ describe("createPostApi - postApi()", () => {
         getToken: () => token,
         invoke,
         onTokenRefresh,
-      })
+      }),
     );
 
-    await expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow("POST /resolve: HTTP 401");
+    await expect(postApi("/resolve", { keepId: "a" })).rejects.toThrow(
+      "POST /resolve: HTTP 401",
+    );
     expect(onTokenRefresh).toHaveBeenCalledTimes(4);
     expect(invoke).toHaveBeenCalledTimes(1);
   });
@@ -598,7 +637,7 @@ describe("settledWithRethrow", () => {
           apply: (v) => results.push(v),
         },
         { fn: () => Promise.resolve("also-ok"), apply: (v) => results.push(v) },
-      ])
+      ]),
     ).rejects.toThrow("/sessions: HTTP 403");
 
     // partial results were still applied
@@ -616,7 +655,7 @@ describe("settledWithRethrow", () => {
           fn: () => Promise.reject(new Error("err2")),
           apply: () => {},
         },
-      ])
+      ]),
     ).rejects.toThrow("err1; err2");
   });
 });
@@ -669,18 +708,15 @@ describe("summarizeDashboardErrors", () => {
         "/locks: HTTP 401",
         "/tasks?status=all: HTTP 401",
         "/feed?since=1h: HTTP 401",
-      ])
+      ]),
     ).toBe(
-      "Sessions, Locks, Tasks, Feed could not authenticate. Refresh the token or restart the daemon from Control Center."
+      "Sessions, Locks, Tasks, Feed could not authenticate. Refresh the token or restart the daemon from Control Center.",
     );
   });
 
   it("falls back to the original joined output for mixed failures", () => {
     expect(
-      summarizeDashboardErrors([
-        "/sessions: HTTP 401",
-        "/health: HTTP 500",
-      ])
+      summarizeDashboardErrors(["/sessions: HTTP 401", "/health: HTTP 500"]),
     ).toBe("/sessions: HTTP 401; /health: HTTP 500");
   });
 });

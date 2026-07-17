@@ -1,1 +1,592 @@
-import React from"react";import{sameAgent}from"../../live-surface.js";import{EmptyItem}from"../components/common.jsx";import{OperatorSelector}from"../components/OperatorSelector.jsx";import{TaskItem}from"../components/TaskItem.jsx";import{LockItem}from"../components/LockItem.jsx";import{FeedItem}from"../components/FeedItem.jsx";import{MessageItem}from"../components/MessageItem.jsx";function WorkPanel(p){const{panel,tasks,locks,feedEntries,messageEntries,feedFilters,setFeedFilters,selectedOperator,setSelectedOperator,messageTarget,setMessageTarget,messageDraft,setMessageDraft,taskCompletionDrafts,setTaskCompletionDrafts,completionTaskId,setCompletionTaskId,busyActionKey,setFeedbackMessage,changePanel,knownAgents,selectedOperatorName,messageTargetName,runRefreshAll,handleTaskClaim,handleTaskAbandon,handleTaskComplete,handleTaskDelete,handleUnlock,handleSendMessage,handleFeedAck,refreshMessages,refreshFeed,reportSurfaceError,postApi,pendingTasks,claimedTasks,completedTasks}=p;return React.createElement(React.Fragment,null,panel==="work"?React.createElement("section",{className:"panel active"},React.createElement("div",{className:"panel-header"},React.createElement("div",null,React.createElement("h1",null,"Work"),React.createElement("p",{className:"panel-subtitle"},"Queue, inbox, locks, and shared feed run through the same live operator surface.")),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",onClick:runRefreshAll},"Refresh"),React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>changePanel("agents")},"Agents"))),React.createElement("div",{className:"surface-toolbar work-operator-toolbar"},React.createElement(OperatorSelector,{value:selectedOperator,knownAgents,onChange:setSelectedOperator}),React.createElement("div",{className:"surface-actions"},React.createElement("span",{className:"badge"},selectedOperator.trim()||"Unset"),React.createElement("span",{className:"surface-inline-hint"},"Live actions use the selected operator label."))),React.createElement("div",{className:"surface-stat-grid"},React.createElement("div",{className:"surface-stat-card"},React.createElement("span",{className:"surface-stat-label"},"Pending"),React.createElement("strong",null,pendingTasks.length)),React.createElement("div",{className:"surface-stat-card"},React.createElement("span",{className:"surface-stat-label"},"Claimed"),React.createElement("strong",null,claimedTasks.length)),React.createElement("div",{className:"surface-stat-card"},React.createElement("span",{className:"surface-stat-label"},"Completed"),React.createElement("strong",null,completedTasks.length)),React.createElement("div",{className:"surface-stat-card"},React.createElement("span",{className:"surface-stat-label"},"Locks"),React.createElement("strong",null,locks.length))),React.createElement("div",{className:"work-grid"},React.createElement("div",{className:"task-columns work-task-columns"},React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Pending"),React.createElement("span",{className:"badge"},pendingTasks.length)),React.createElement("ul",{className:"item-list"},pendingTasks.length?pendingTasks.map(task=>React.createElement(TaskItem,{key:task.taskId,task,selectedOperator,onClaim:handleTaskClaim,busyActionKey})):React.createElement(EmptyItem,{text:"No pending tasks"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"In Progress"),React.createElement("span",{className:"badge"},claimedTasks.length)),React.createElement("ul",{className:"item-list"},claimedTasks.length?claimedTasks.map(task=>React.createElement(TaskItem,{key:task.taskId,task,selectedOperator,completionDraft:taskCompletionDrafts[task.taskId]||"",completionExpanded:completionTaskId===task.taskId,onAbandon:handleTaskAbandon,onComplete:handleTaskComplete,onCompletionDraftChange:(taskId,value)=>{setTaskCompletionDrafts(current=>({...current,[taskId]:value}))},onToggleComplete:taskId=>{setCompletionTaskId(current=>current===taskId?"":taskId)},busyActionKey})):React.createElement(EmptyItem,{text:"Nothing in progress"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Done"),React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},React.createElement("span",{className:"badge"},completedTasks.length),completedTasks.length>0?React.createElement("button",{type:"button",className:"btn-sm",onClick:async()=>{try{const failed=(await Promise.allSettled(completedTasks.filter(task=>task?.taskId).map(task=>postApi("/tasks/delete",{taskId:task.taskId})))).filter(result=>result.status==="rejected");failed.length&&setFeedbackMessage(`${failed.length} task delete(s) failed: ${failed[0].reason}`),await runRefreshAll()}catch(error){reportSurfaceError(error)}}},"Clear"):null)),React.createElement("ul",{className:"item-list"},completedTasks.length?completedTasks.slice(0,10).map(task=>React.createElement(TaskItem,{key:task.taskId,task,selectedOperator,onDelete:handleTaskDelete,busyActionKey})):React.createElement(EmptyItem,{text:"No completed tasks"})))),React.createElement("div",{className:"work-side-stack"},React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Operator Inbox"),React.createElement("span",{className:"badge"},messageEntries.length)),React.createElement("div",{className:"surface-toolbar"},React.createElement(OperatorSelector,{value:selectedOperator,knownAgents,onChange:setSelectedOperator}),React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Recipient"),React.createElement("input",{type:"text",list:"message-recipient-list",placeholder:"factory-droid",value:messageTarget,onChange:event=>setMessageTarget(event.target.value)}),React.createElement("datalist",{id:"message-recipient-list"},knownAgents.filter(agent=>!sameAgent(agent,selectedOperator)).map(agent=>React.createElement("option",{key:agent,value:agent})))),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>refreshMessages().catch(reportSurfaceError)},"Refresh Inbox"))),React.createElement("form",{className:"surface-compose",onSubmit:handleSendMessage},React.createElement("textarea",{value:messageDraft,onChange:event=>setMessageDraft(event.target.value),"aria-label":selectedOperatorName&&messageTargetName?`Message from ${selectedOperatorName} to ${messageTargetName}`:"Operator message body",placeholder:selectedOperator.trim()?`Message from ${selectedOperator.trim()}`:"Select an operator to send messages",rows:3}),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"submit",className:"btn-sm btn-primary",disabled:busyActionKey==="message:send"},busyActionKey==="message:send"?"Sending...":"Send Message"))),React.createElement("ul",{className:"item-list compact-list"},selectedOperator.trim()?messageEntries.length?messageEntries.map(entry=>React.createElement(MessageItem,{key:entry.id,entry})):React.createElement(EmptyItem,{text:`No inbox messages for ${selectedOperator.trim()}`}):React.createElement(EmptyItem,{text:"Select an operator to view the inbox"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Locks"),React.createElement("span",{className:"badge"},locks.length)),React.createElement("ul",{className:"item-list"},locks.length?locks.map(lock=>React.createElement(LockItem,{key:lock.id||`${lock.path}:${lock.agent}`,lock,selectedOperator,onUnlock:handleUnlock,busyActionKey})):React.createElement(EmptyItem,{text:"No active locks"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Shared Feed"),React.createElement("span",{className:"badge"},feedEntries.length)),React.createElement("div",{className:"feed-toolbar work-feed-toolbar"},React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Since"),React.createElement("select",{value:feedFilters.since,onChange:event=>setFeedFilters(current=>({...current,since:event.target.value}))},React.createElement("option",{value:"15m"},"15m"),React.createElement("option",{value:"1h"},"1h"),React.createElement("option",{value:"4h"},"4h"),React.createElement("option",{value:"1d"},"1d"))),React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Kind"),React.createElement("select",{value:feedFilters.kind,onChange:event=>setFeedFilters(current=>({...current,kind:event.target.value}))},React.createElement("option",{value:"all"},"All"),React.createElement("option",{value:"prompt"},"Prompt"),React.createElement("option",{value:"completion"},"Completion"),React.createElement("option",{value:"task_complete"},"Task Complete"),React.createElement("option",{value:"system"},"System"))),React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Agent"),React.createElement("input",{type:"text",placeholder:"factory-droid",value:feedFilters.agent,onChange:event=>setFeedFilters(current=>({...current,agent:event.target.value}))})),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",disabled:busyActionKey==="feed:ack"||!selectedOperator.trim(),onClick:()=>handleFeedAck().catch(reportSurfaceError)},busyActionKey==="feed:ack"?"Acking...":"Acknowledge Visible"),React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>refreshFeed().catch(reportSurfaceError)},"Refresh"))),React.createElement("ul",{className:"item-list"},feedEntries.length?feedEntries.map(entry=>React.createElement(FeedItem,{key:entry.id,entry})):React.createElement(EmptyItem,{text:"No feed entries"})))))):null)}export{WorkPanel};
+import React from "react";
+import { sameAgent } from "../../live-surface.js";
+import { EmptyItem } from "../components/common.jsx";
+import { OperatorSelector } from "../components/OperatorSelector.jsx";
+import { TaskItem } from "../components/TaskItem.jsx";
+import { LockItem } from "../components/LockItem.jsx";
+import { FeedItem } from "../components/FeedItem.jsx";
+import { MessageItem } from "../components/MessageItem.jsx";
+function WorkPanel(p) {
+  const {
+    panel,
+    tasks,
+    locks,
+    feedEntries,
+    messageEntries,
+    feedFilters,
+    setFeedFilters,
+    selectedOperator,
+    setSelectedOperator,
+    messageTarget,
+    setMessageTarget,
+    messageDraft,
+    setMessageDraft,
+    taskCompletionDrafts,
+    setTaskCompletionDrafts,
+    completionTaskId,
+    setCompletionTaskId,
+    busyActionKey,
+    setFeedbackMessage,
+    changePanel,
+    knownAgents,
+    selectedOperatorName,
+    messageTargetName,
+    runRefreshAll,
+    handleTaskClaim,
+    handleTaskAbandon,
+    handleTaskComplete,
+    handleTaskDelete,
+    handleUnlock,
+    handleSendMessage,
+    handleFeedAck,
+    refreshMessages,
+    refreshFeed,
+    reportSurfaceError,
+    postApi,
+    pendingTasks,
+    claimedTasks,
+    completedTasks,
+  } = p;
+  return React.createElement(
+    React.Fragment,
+    null,
+    panel === "work"
+      ? React.createElement(
+          "section",
+          { className: "panel active" },
+          React.createElement(
+            "div",
+            { className: "panel-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement("h1", null, "Work"),
+              React.createElement(
+                "p",
+                { className: "panel-subtitle" },
+                "Queue, inbox, locks, and shared feed run through the same live operator surface.",
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "surface-actions" },
+              React.createElement(
+                "button",
+                { type: "button", className: "btn-sm", onClick: runRefreshAll },
+                "Refresh",
+              ),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "btn-sm",
+                  onClick: () => changePanel("agents"),
+                },
+                "Agents",
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "surface-toolbar work-operator-toolbar" },
+            React.createElement(OperatorSelector, {
+              value: selectedOperator,
+              knownAgents,
+              onChange: setSelectedOperator,
+            }),
+            React.createElement(
+              "div",
+              { className: "surface-actions" },
+              React.createElement(
+                "span",
+                { className: "badge" },
+                selectedOperator.trim() || "Unset",
+              ),
+              React.createElement(
+                "span",
+                { className: "surface-inline-hint" },
+                "Live actions use the selected operator label.",
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "surface-stat-grid" },
+            React.createElement(
+              "div",
+              { className: "surface-stat-card" },
+              React.createElement(
+                "span",
+                { className: "surface-stat-label" },
+                "Pending",
+              ),
+              React.createElement("strong", null, pendingTasks.length),
+            ),
+            React.createElement(
+              "div",
+              { className: "surface-stat-card" },
+              React.createElement(
+                "span",
+                { className: "surface-stat-label" },
+                "Claimed",
+              ),
+              React.createElement("strong", null, claimedTasks.length),
+            ),
+            React.createElement(
+              "div",
+              { className: "surface-stat-card" },
+              React.createElement(
+                "span",
+                { className: "surface-stat-label" },
+                "Completed",
+              ),
+              React.createElement("strong", null, completedTasks.length),
+            ),
+            React.createElement(
+              "div",
+              { className: "surface-stat-card" },
+              React.createElement(
+                "span",
+                { className: "surface-stat-label" },
+                "Locks",
+              ),
+              React.createElement("strong", null, locks.length),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "work-grid" },
+            React.createElement(
+              "div",
+              { className: "task-columns work-task-columns" },
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Pending"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    pendingTasks.length,
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list" },
+                  pendingTasks.length
+                    ? pendingTasks.map((task) =>
+                        React.createElement(TaskItem, {
+                          key: task.taskId,
+                          task,
+                          selectedOperator,
+                          onClaim: handleTaskClaim,
+                          busyActionKey,
+                        }),
+                      )
+                    : React.createElement(EmptyItem, {
+                        text: "No pending tasks",
+                      }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "In Progress"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    claimedTasks.length,
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list" },
+                  claimedTasks.length
+                    ? claimedTasks.map((task) =>
+                        React.createElement(TaskItem, {
+                          key: task.taskId,
+                          task,
+                          selectedOperator,
+                          completionDraft:
+                            taskCompletionDrafts[task.taskId] || "",
+                          completionExpanded: completionTaskId === task.taskId,
+                          onAbandon: handleTaskAbandon,
+                          onComplete: handleTaskComplete,
+                          onCompletionDraftChange: (taskId, value) => {
+                            setTaskCompletionDrafts((current) => ({
+                              ...current,
+                              [taskId]: value,
+                            }));
+                          },
+                          onToggleComplete: (taskId) => {
+                            setCompletionTaskId((current) =>
+                              current === taskId ? "" : taskId,
+                            );
+                          },
+                          busyActionKey,
+                        }),
+                      )
+                    : React.createElement(EmptyItem, {
+                        text: "Nothing in progress",
+                      }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Done"),
+                  React.createElement(
+                    "div",
+                    {
+                      style: { display: "flex", gap: 8, alignItems: "center" },
+                    },
+                    React.createElement(
+                      "span",
+                      { className: "badge" },
+                      completedTasks.length,
+                    ),
+                    completedTasks.length > 0
+                      ? React.createElement(
+                          "button",
+                          {
+                            type: "button",
+                            className: "btn-sm",
+                            onClick: async () => {
+                              try {
+                                const failed = (
+                                  await Promise.allSettled(
+                                    completedTasks
+                                      .filter((task) => task?.taskId)
+                                      .map((task) =>
+                                        postApi("/tasks/delete", {
+                                          taskId: task.taskId,
+                                        }),
+                                      ),
+                                  )
+                                ).filter(
+                                  (result) => result.status === "rejected",
+                                );
+                                (failed.length &&
+                                  setFeedbackMessage(
+                                    `${failed.length} task delete(s) failed: ${failed[0].reason}`,
+                                  ),
+                                  await runRefreshAll());
+                              } catch (error) {
+                                reportSurfaceError(error);
+                              }
+                            },
+                          },
+                          "Clear",
+                        )
+                      : null,
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list" },
+                  completedTasks.length
+                    ? completedTasks
+                        .slice(0, 10)
+                        .map((task) =>
+                          React.createElement(TaskItem, {
+                            key: task.taskId,
+                            task,
+                            selectedOperator,
+                            onDelete: handleTaskDelete,
+                            busyActionKey,
+                          }),
+                        )
+                    : React.createElement(EmptyItem, {
+                        text: "No completed tasks",
+                      }),
+                ),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "work-side-stack" },
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Operator Inbox"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    messageEntries.length,
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "surface-toolbar" },
+                  React.createElement(OperatorSelector, {
+                    value: selectedOperator,
+                    knownAgents,
+                    onChange: setSelectedOperator,
+                  }),
+                  React.createElement(
+                    "label",
+                    { className: "feed-control" },
+                    React.createElement("span", null, "Recipient"),
+                    React.createElement("input", {
+                      type: "text",
+                      list: "message-recipient-list",
+                      placeholder: "factory-droid",
+                      value: messageTarget,
+                      onChange: (event) => setMessageTarget(event.target.value),
+                    }),
+                    React.createElement(
+                      "datalist",
+                      { id: "message-recipient-list" },
+                      knownAgents
+                        .filter((agent) => !sameAgent(agent, selectedOperator))
+                        .map((agent) =>
+                          React.createElement("option", {
+                            key: agent,
+                            value: agent,
+                          }),
+                        ),
+                    ),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "surface-actions" },
+                    React.createElement(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn-sm",
+                        onClick: () =>
+                          refreshMessages().catch(reportSurfaceError),
+                      },
+                      "Refresh Inbox",
+                    ),
+                  ),
+                ),
+                React.createElement(
+                  "form",
+                  { className: "surface-compose", onSubmit: handleSendMessage },
+                  React.createElement("textarea", {
+                    value: messageDraft,
+                    onChange: (event) => setMessageDraft(event.target.value),
+                    "aria-label":
+                      selectedOperatorName && messageTargetName
+                        ? `Message from ${selectedOperatorName} to ${messageTargetName}`
+                        : "Operator message body",
+                    placeholder: selectedOperator.trim()
+                      ? `Message from ${selectedOperator.trim()}`
+                      : "Select an operator to send messages",
+                    rows: 3,
+                  }),
+                  React.createElement(
+                    "div",
+                    { className: "surface-actions" },
+                    React.createElement(
+                      "button",
+                      {
+                        type: "submit",
+                        className: "btn-sm btn-primary",
+                        disabled: busyActionKey === "message:send",
+                      },
+                      busyActionKey === "message:send"
+                        ? "Sending..."
+                        : "Send Message",
+                    ),
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list compact-list" },
+                  selectedOperator.trim()
+                    ? messageEntries.length
+                      ? messageEntries.map((entry) =>
+                          React.createElement(MessageItem, {
+                            key: entry.id,
+                            entry,
+                          }),
+                        )
+                      : React.createElement(EmptyItem, {
+                          text: `No inbox messages for ${selectedOperator.trim()}`,
+                        })
+                    : React.createElement(EmptyItem, {
+                        text: "Select an operator to view the inbox",
+                      }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Locks"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    locks.length,
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list" },
+                  locks.length
+                    ? locks.map((lock) =>
+                        React.createElement(LockItem, {
+                          key: lock.id || `${lock.path}:${lock.agent}`,
+                          lock,
+                          selectedOperator,
+                          onUnlock: handleUnlock,
+                          busyActionKey,
+                        }),
+                      )
+                    : React.createElement(EmptyItem, {
+                        text: "No active locks",
+                      }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Shared Feed"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    feedEntries.length,
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "feed-toolbar work-feed-toolbar" },
+                  React.createElement(
+                    "label",
+                    { className: "feed-control" },
+                    React.createElement("span", null, "Since"),
+                    React.createElement(
+                      "select",
+                      {
+                        value: feedFilters.since,
+                        onChange: (event) =>
+                          setFeedFilters((current) => ({
+                            ...current,
+                            since: event.target.value,
+                          })),
+                      },
+                      React.createElement("option", { value: "15m" }, "15m"),
+                      React.createElement("option", { value: "1h" }, "1h"),
+                      React.createElement("option", { value: "4h" }, "4h"),
+                      React.createElement("option", { value: "1d" }, "1d"),
+                    ),
+                  ),
+                  React.createElement(
+                    "label",
+                    { className: "feed-control" },
+                    React.createElement("span", null, "Kind"),
+                    React.createElement(
+                      "select",
+                      {
+                        value: feedFilters.kind,
+                        onChange: (event) =>
+                          setFeedFilters((current) => ({
+                            ...current,
+                            kind: event.target.value,
+                          })),
+                      },
+                      React.createElement("option", { value: "all" }, "All"),
+                      React.createElement(
+                        "option",
+                        { value: "prompt" },
+                        "Prompt",
+                      ),
+                      React.createElement(
+                        "option",
+                        { value: "completion" },
+                        "Completion",
+                      ),
+                      React.createElement(
+                        "option",
+                        { value: "task_complete" },
+                        "Task Complete",
+                      ),
+                      React.createElement(
+                        "option",
+                        { value: "system" },
+                        "System",
+                      ),
+                    ),
+                  ),
+                  React.createElement(
+                    "label",
+                    { className: "feed-control" },
+                    React.createElement("span", null, "Agent"),
+                    React.createElement("input", {
+                      type: "text",
+                      placeholder: "factory-droid",
+                      value: feedFilters.agent,
+                      onChange: (event) =>
+                        setFeedFilters((current) => ({
+                          ...current,
+                          agent: event.target.value,
+                        })),
+                    }),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "surface-actions" },
+                    React.createElement(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn-sm",
+                        disabled:
+                          busyActionKey === "feed:ack" ||
+                          !selectedOperator.trim(),
+                        onClick: () =>
+                          handleFeedAck().catch(reportSurfaceError),
+                      },
+                      busyActionKey === "feed:ack"
+                        ? "Acking..."
+                        : "Acknowledge Visible",
+                    ),
+                    React.createElement(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn-sm",
+                        onClick: () => refreshFeed().catch(reportSurfaceError),
+                      },
+                      "Refresh",
+                    ),
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list" },
+                  feedEntries.length
+                    ? feedEntries.map((entry) =>
+                        React.createElement(FeedItem, { key: entry.id, entry }),
+                      )
+                    : React.createElement(EmptyItem, {
+                        text: "No feed entries",
+                      }),
+                ),
+              ),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+export { WorkPanel };

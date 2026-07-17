@@ -8,7 +8,11 @@ import {
   trapFocusInContainer,
 } from "./keyboard-access.js";
 
-function focusableElement({ tabIndex = 0, disabled = false, hidden = false } = {}) {
+function focusableElement({
+  tabIndex = 0,
+  disabled = false,
+  hidden = false,
+} = {}) {
   return {
     disabled,
     tabIndex,
@@ -29,16 +33,24 @@ describe("keyboard access helpers", () => {
     const preventDefault = vi.fn();
     const callback = vi.fn();
 
-    expect(handleKeyboardActivation({ key: " ", preventDefault }, callback)).toBe(true);
+    expect(
+      handleKeyboardActivation({ key: " ", preventDefault }, callback),
+    ).toBe(true);
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
   it("does not steal global shortcuts from form controls or buttons", () => {
-    expect(shouldIgnoreGlobalShortcut({ target: { tagName: "INPUT" } })).toBe(true);
-    expect(shouldIgnoreGlobalShortcut({ target: { tagName: "TEXTAREA" } })).toBe(true);
-    expect(shouldIgnoreGlobalShortcut({ target: { tagName: "SELECT" } })).toBe(true);
+    expect(shouldIgnoreGlobalShortcut({ target: { tagName: "INPUT" } })).toBe(
+      true,
+    );
+    expect(
+      shouldIgnoreGlobalShortcut({ target: { tagName: "TEXTAREA" } }),
+    ).toBe(true);
+    expect(shouldIgnoreGlobalShortcut({ target: { tagName: "SELECT" } })).toBe(
+      true,
+    );
     expect(
       shouldIgnoreGlobalShortcut({
         target: {
@@ -53,8 +65,12 @@ describe("keyboard access helpers", () => {
     const passiveTarget = { tagName: "DIV", closest: () => null };
 
     expect(shouldIgnoreGlobalShortcut({ target: passiveTarget })).toBe(false);
-    expect(shouldIgnoreGlobalShortcut({ target: passiveTarget }, true)).toBe(true);
-    expect(shouldIgnoreGlobalShortcut({ target: passiveTarget, ctrlKey: true })).toBe(true);
+    expect(shouldIgnoreGlobalShortcut({ target: passiveTarget }, true)).toBe(
+      true,
+    );
+    expect(
+      shouldIgnoreGlobalShortcut({ target: passiveTarget, ctrlKey: true }),
+    ).toBe(true);
   });
 
   it("collects focusable dialog controls while skipping disabled and hidden controls", () => {
@@ -78,11 +94,23 @@ describe("keyboard access helpers", () => {
       querySelectorAll: () => [first, last],
     };
 
-    expect(trapFocusInContainer({ key: "Tab", shiftKey: true, preventDefault }, container, first)).toBe(true);
+    expect(
+      trapFocusInContainer(
+        { key: "Tab", shiftKey: true, preventDefault },
+        container,
+        first,
+      ),
+    ).toBe(true);
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(last.focus).toHaveBeenCalledTimes(1);
 
-    expect(trapFocusInContainer({ key: "Tab", shiftKey: false, preventDefault }, container, last)).toBe(true);
+    expect(
+      trapFocusInContainer(
+        { key: "Tab", shiftKey: false, preventDefault },
+        container,
+        last,
+      ),
+    ).toBe(true);
     expect(first.focus).toHaveBeenCalledTimes(1);
   });
 
@@ -94,7 +122,13 @@ describe("keyboard access helpers", () => {
       querySelectorAll: () => [first],
     };
 
-    expect(trapFocusInContainer({ key: "Tab", shiftKey: false, preventDefault }, container, {})).toBe(true);
+    expect(
+      trapFocusInContainer(
+        { key: "Tab", shiftKey: false, preventDefault },
+        container,
+        {},
+      ),
+    ).toBe(true);
     expect(first.focus).toHaveBeenCalledTimes(1);
   });
 });

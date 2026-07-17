@@ -1,1 +1,170 @@
-import React from"react";import{canClaimTask,canFinalizeTask}from"../../live-surface.js";import{timeAgo}from"../../constants.js";function TaskItem({task,selectedOperator="",completionDraft="",completionExpanded=!1,onClaim=null,onAbandon=null,onComplete=null,onDelete=null,onCompletionDraftChange=null,onToggleComplete=null,busyActionKey=""}){const operator=String(selectedOperator||"").trim(),claimBusy=busyActionKey===`claim:${task.taskId}`,abandonBusy=busyActionKey===`abandon:${task.taskId}`,completeBusy=busyActionKey===`complete:${task.taskId}`,deleteBusy=busyActionKey===`delete:${task.taskId}`,operatorOwnsTask=canFinalizeTask(task,operator),files=Array.isArray(task.files)?task.files.slice(0,4):[],detail=task.claimedBy?`${task.claimedBy}${task.summary?` \u2014 ${task.summary}`:""} - ${timeAgo(task.claimedAt||task.completedAt)}`:task.project||"\u2014";return React.createElement("li",null,React.createElement("div",{className:"task-top"},React.createElement("span",{className:`status-dot ${task.status}`}),React.createElement("span",{className:`priority priority-${task.priority}`},task.priority),React.createElement("span",{className:"item-name"},task.title)),React.createElement("div",{className:"item-detail"},detail),task.description?React.createElement("div",{className:"item-detail"},task.description):null,files.length?React.createElement("div",{className:"feed-files"},files.map(file=>React.createElement("span",{key:`${task.taskId}-${file}`,className:"lock-path"},file))):null,React.createElement("div",{className:"task-actions"},canClaimTask(task,operator)&&onClaim?React.createElement("button",{type:"button",className:"btn-sm btn-primary","aria-label":`Claim task ${task.title}`,disabled:claimBusy,onClick:()=>onClaim(task)},claimBusy?"Claiming...":"Claim"):null,task.status==="claimed"&&operatorOwnsTask&&onToggleComplete?React.createElement("button",{type:"button",className:"btn-sm","aria-label":`${completionExpanded?"Cancel completion for":"Complete task"} ${task.title}`,disabled:completeBusy,onClick:()=>onToggleComplete(task.taskId)},completionExpanded?"Cancel Complete":"Complete"):null,task.status==="claimed"&&operatorOwnsTask&&onAbandon?React.createElement("button",{type:"button",className:"btn-sm btn-danger","aria-label":`Abandon task ${task.title}`,disabled:abandonBusy,onClick:()=>onAbandon(task)},abandonBusy?"Abandoning...":"Abandon"):null,task.status==="claimed"&&!operatorOwnsTask&&task.claimedBy?React.createElement("span",{className:"surface-inline-hint"},"Held by ",task.claimedBy):null,task.status==="completed"&&onDelete?React.createElement("button",{type:"button",className:"btn-sm","aria-label":`Delete task ${task.title}`,disabled:deleteBusy,onClick:()=>onDelete(task)},deleteBusy?"Deleting...":"Delete"):null),completionExpanded&&operatorOwnsTask&&onComplete&&onCompletionDraftChange?React.createElement("div",{className:"task-complete-panel"},React.createElement("textarea",{value:completionDraft,onChange:event=>onCompletionDraftChange(task.taskId,event.target.value),"aria-label":`Completion summary for ${task.title}`,placeholder:"Optional completion summary for the task feed",rows:3}),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm","aria-label":`Keep task ${task.title} open`,onClick:()=>onToggleComplete?.(task.taskId)},"Keep Open"),React.createElement("button",{type:"button",className:"btn-sm btn-primary","aria-label":`Confirm complete task ${task.title}`,disabled:completeBusy,onClick:()=>onComplete(task,completionDraft)},completeBusy?"Completing...":"Confirm Complete"))):null)}export{TaskItem};
+import React from "react";
+import { canClaimTask, canFinalizeTask } from "../../live-surface.js";
+import { timeAgo } from "../../constants.js";
+function TaskItem({
+  task,
+  selectedOperator = "",
+  completionDraft = "",
+  completionExpanded = !1,
+  onClaim = null,
+  onAbandon = null,
+  onComplete = null,
+  onDelete = null,
+  onCompletionDraftChange = null,
+  onToggleComplete = null,
+  busyActionKey = "",
+}) {
+  const operator = String(selectedOperator || "").trim(),
+    claimBusy = busyActionKey === `claim:${task.taskId}`,
+    abandonBusy = busyActionKey === `abandon:${task.taskId}`,
+    completeBusy = busyActionKey === `complete:${task.taskId}`,
+    deleteBusy = busyActionKey === `delete:${task.taskId}`,
+    operatorOwnsTask = canFinalizeTask(task, operator),
+    files = Array.isArray(task.files) ? task.files.slice(0, 4) : [],
+    detail = task.claimedBy
+      ? `${task.claimedBy}${task.summary ? ` \u2014 ${task.summary}` : ""} - ${timeAgo(task.claimedAt || task.completedAt)}`
+      : task.project || "\u2014";
+  return React.createElement(
+    "li",
+    null,
+    React.createElement(
+      "div",
+      { className: "task-top" },
+      React.createElement("span", { className: `status-dot ${task.status}` }),
+      React.createElement(
+        "span",
+        { className: `priority priority-${task.priority}` },
+        task.priority,
+      ),
+      React.createElement("span", { className: "item-name" }, task.title),
+    ),
+    React.createElement("div", { className: "item-detail" }, detail),
+    task.description
+      ? React.createElement(
+          "div",
+          { className: "item-detail" },
+          task.description,
+        )
+      : null,
+    files.length
+      ? React.createElement(
+          "div",
+          { className: "feed-files" },
+          files.map((file) =>
+            React.createElement(
+              "span",
+              { key: `${task.taskId}-${file}`, className: "lock-path" },
+              file,
+            ),
+          ),
+        )
+      : null,
+    React.createElement(
+      "div",
+      { className: "task-actions" },
+      canClaimTask(task, operator) && onClaim
+        ? React.createElement(
+            "button",
+            {
+              type: "button",
+              className: "btn-sm btn-primary",
+              "aria-label": `Claim task ${task.title}`,
+              disabled: claimBusy,
+              onClick: () => onClaim(task),
+            },
+            claimBusy ? "Claiming..." : "Claim",
+          )
+        : null,
+      task.status === "claimed" && operatorOwnsTask && onToggleComplete
+        ? React.createElement(
+            "button",
+            {
+              type: "button",
+              className: "btn-sm",
+              "aria-label": `${completionExpanded ? "Cancel completion for" : "Complete task"} ${task.title}`,
+              disabled: completeBusy,
+              onClick: () => onToggleComplete(task.taskId),
+            },
+            completionExpanded ? "Cancel Complete" : "Complete",
+          )
+        : null,
+      task.status === "claimed" && operatorOwnsTask && onAbandon
+        ? React.createElement(
+            "button",
+            {
+              type: "button",
+              className: "btn-sm btn-danger",
+              "aria-label": `Abandon task ${task.title}`,
+              disabled: abandonBusy,
+              onClick: () => onAbandon(task),
+            },
+            abandonBusy ? "Abandoning..." : "Abandon",
+          )
+        : null,
+      task.status === "claimed" && !operatorOwnsTask && task.claimedBy
+        ? React.createElement(
+            "span",
+            { className: "surface-inline-hint" },
+            "Held by ",
+            task.claimedBy,
+          )
+        : null,
+      task.status === "completed" && onDelete
+        ? React.createElement(
+            "button",
+            {
+              type: "button",
+              className: "btn-sm",
+              "aria-label": `Delete task ${task.title}`,
+              disabled: deleteBusy,
+              onClick: () => onDelete(task),
+            },
+            deleteBusy ? "Deleting..." : "Delete",
+          )
+        : null,
+    ),
+    completionExpanded &&
+      operatorOwnsTask &&
+      onComplete &&
+      onCompletionDraftChange
+      ? React.createElement(
+          "div",
+          { className: "task-complete-panel" },
+          React.createElement("textarea", {
+            value: completionDraft,
+            onChange: (event) =>
+              onCompletionDraftChange(task.taskId, event.target.value),
+            "aria-label": `Completion summary for ${task.title}`,
+            placeholder: "Optional completion summary for the task feed",
+            rows: 3,
+          }),
+          React.createElement(
+            "div",
+            { className: "surface-actions" },
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                className: "btn-sm",
+                "aria-label": `Keep task ${task.title} open`,
+                onClick: () => onToggleComplete?.(task.taskId),
+              },
+              "Keep Open",
+            ),
+            React.createElement(
+              "button",
+              {
+                type: "button",
+                className: "btn-sm btn-primary",
+                "aria-label": `Confirm complete task ${task.title}`,
+                disabled: completeBusy,
+                onClick: () => onComplete(task, completionDraft),
+              },
+              completeBusy ? "Completing..." : "Confirm Complete",
+            ),
+          ),
+        )
+      : null,
+  );
+}
+export { TaskItem };

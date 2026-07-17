@@ -158,7 +158,7 @@ describe("computeStartupRetryStep", () => {
     const step = computeStartupRetryStep(
       { startedAtMs: 1000, attempts: 7 },
       5000,
-      { maxAttempts: 8, maxWindowMs: 600000 }
+      { maxAttempts: 8, maxWindowMs: 600000 },
     );
 
     expect(step.attempts).toBe(8);
@@ -171,7 +171,7 @@ describe("computeStartupRetryStep", () => {
     const step = computeStartupRetryStep(
       { startedAtMs: 1000, attempts: 2 },
       7000,
-      { maxAttempts: 50, maxWindowMs: 5000 }
+      { maxAttempts: 50, maxWindowMs: 5000 },
     );
 
     expect(step.attempts).toBe(3);
@@ -182,7 +182,7 @@ describe("computeStartupRetryStep", () => {
   it("uses a bounded default startup window to avoid long stalls", () => {
     const step = computeStartupRetryStep(
       { startedAtMs: 1000, attempts: 5 },
-      47000
+      47000,
     );
 
     expect(step.elapsedMs).toBe(46000);
@@ -192,50 +192,82 @@ describe("computeStartupRetryStep", () => {
 
 describe("shouldContinueStartupRecovery", () => {
   it("continues startup retries while the managed daemon is still unreachable", () => {
-    expect(shouldContinueStartupRecovery({
-      invokeAvailable: true,
-      daemonReachable: false,
-      currentDaemonState: { managed: true, running: true, reachable: false },
-      previousDaemonState: { managed: true, running: true, reachable: false },
-    })).toBe(true);
+    expect(
+      shouldContinueStartupRecovery({
+        invokeAvailable: true,
+        daemonReachable: false,
+        currentDaemonState: { managed: true, running: true, reachable: false },
+        previousDaemonState: { managed: true, running: true, reachable: false },
+      }),
+    ).toBe(true);
   });
 
   it("continues startup retries when current status drops managed but prior state was starting", () => {
-    expect(shouldContinueStartupRecovery({
-      invokeAvailable: true,
-      daemonReachable: false,
-      currentDaemonState: { managed: false, running: false, reachable: false },
-      previousDaemonState: { managed: true, running: true, reachable: false },
-    })).toBe(true);
+    expect(
+      shouldContinueStartupRecovery({
+        invokeAvailable: true,
+        daemonReachable: false,
+        currentDaemonState: {
+          managed: false,
+          running: false,
+          reachable: false,
+        },
+        previousDaemonState: { managed: true, running: true, reachable: false },
+      }),
+    ).toBe(true);
   });
 
   it("stops startup retries when daemon is reachable or runtime is not tauri-invoke", () => {
-    expect(shouldContinueStartupRecovery({
-      invokeAvailable: true,
-      daemonReachable: true,
-      currentDaemonState: { managed: true, running: true, reachable: true },
-      previousDaemonState: { managed: true, running: true, reachable: false },
-    })).toBe(false);
+    expect(
+      shouldContinueStartupRecovery({
+        invokeAvailable: true,
+        daemonReachable: true,
+        currentDaemonState: { managed: true, running: true, reachable: true },
+        previousDaemonState: { managed: true, running: true, reachable: false },
+      }),
+    ).toBe(false);
 
-    expect(shouldContinueStartupRecovery({
-      invokeAvailable: false,
-      daemonReachable: false,
-      currentDaemonState: { managed: true, running: true, reachable: false },
-      previousDaemonState: { managed: true, running: true, reachable: false },
-    })).toBe(false);
+    expect(
+      shouldContinueStartupRecovery({
+        invokeAvailable: false,
+        daemonReachable: false,
+        currentDaemonState: { managed: true, running: true, reachable: false },
+        previousDaemonState: { managed: true, running: true, reachable: false },
+      }),
+    ).toBe(false);
   });
 });
 
 describe("isTransientDaemonFeedback", () => {
   it("treats startup and warmup notices as transient", () => {
-    expect(isTransientDaemonFeedback("Daemon is still starting. Reconnect will continue automatically.")).toBe(true);
-    expect(isTransientDaemonFeedback("Daemon startup timed out after 46s. Check Cortex logs, then restart from Control Center.")).toBe(true);
-    expect(isTransientDaemonFeedback("Waiting for daemon auth token to finish rotating...")).toBe(true);
-    expect(isTransientDaemonFeedback("Daemon is reachable but still warming up. Retrying shortly...")).toBe(true);
+    expect(
+      isTransientDaemonFeedback(
+        "Daemon is still starting. Reconnect will continue automatically.",
+      ),
+    ).toBe(true);
+    expect(
+      isTransientDaemonFeedback(
+        "Daemon startup timed out after 46s. Check Cortex logs, then restart from Control Center.",
+      ),
+    ).toBe(true);
+    expect(
+      isTransientDaemonFeedback(
+        "Waiting for daemon auth token to finish rotating...",
+      ),
+    ).toBe(true);
+    expect(
+      isTransientDaemonFeedback(
+        "Daemon is reachable but still warming up. Retrying shortly...",
+      ),
+    ).toBe(true);
   });
 
   it("keeps durable operator messages intact", () => {
     expect(isTransientDaemonFeedback("Connected (core ready).")).toBe(false);
-    expect(isTransientDaemonFeedback("Restart failed: Existing daemon did not stop cleanly.")).toBe(false);
+    expect(
+      isTransientDaemonFeedback(
+        "Restart failed: Existing daemon did not stop cleanly.",
+      ),
+    ).toBe(false);
   });
 });

@@ -1,1 +1,61 @@
-import React from"react";import{timeAgo}from"../../constants.js";import{feedKindLabel}from"../utils/format.js";function FeedItem({entry}){const files=Array.isArray(entry.files)?entry.files.slice(0,6):[],metaBits=[timeAgo(entry.timestamp)];return entry.priority&&metaBits.push(entry.priority),typeof entry.tokens=="number"&&metaBits.push(`${entry.tokens} tok`),React.createElement("li",null,React.createElement("div",{className:"item-meta"},React.createElement("span",{className:"feed-kind"},feedKindLabel(entry.kind)),React.createElement("span",{className:"item-name"},entry.agent||"unknown"),React.createElement("span",{className:"muted-inline"},metaBits.join(" - "))),React.createElement("div",{className:"feed-summary"},entry.summary||"(no summary)"),entry.taskId?React.createElement("div",{className:"item-detail"},"task: ",entry.taskId):null,files.length?React.createElement("div",{className:"feed-files"},files.map(file=>React.createElement("span",{key:`${entry.id}-${file}`,className:"lock-path"},file))):null)}export{FeedItem};
+import React from "react";
+import { timeAgo } from "../../constants.js";
+import { feedKindLabel } from "../utils/format.js";
+function FeedItem({ entry }) {
+  const files = Array.isArray(entry.files) ? entry.files.slice(0, 6) : [],
+    metaBits = [timeAgo(entry.timestamp)];
+  return (
+    entry.priority && metaBits.push(entry.priority),
+    typeof entry.tokens == "number" && metaBits.push(`${entry.tokens} tok`),
+    React.createElement(
+      "li",
+      null,
+      React.createElement(
+        "div",
+        { className: "item-meta" },
+        React.createElement(
+          "span",
+          { className: "feed-kind" },
+          feedKindLabel(entry.kind),
+        ),
+        React.createElement(
+          "span",
+          { className: "item-name" },
+          entry.agent || "unknown",
+        ),
+        React.createElement(
+          "span",
+          { className: "muted-inline" },
+          metaBits.join(" - "),
+        ),
+      ),
+      React.createElement(
+        "div",
+        { className: "feed-summary" },
+        entry.summary || "(no summary)",
+      ),
+      entry.taskId
+        ? React.createElement(
+            "div",
+            { className: "item-detail" },
+            "task: ",
+            entry.taskId,
+          )
+        : null,
+      files.length
+        ? React.createElement(
+            "div",
+            { className: "feed-files" },
+            files.map((file) =>
+              React.createElement(
+                "span",
+                { key: `${entry.id}-${file}`, className: "lock-path" },
+                file,
+              ),
+            ),
+          )
+        : null,
+    )
+  );
+}
+export { FeedItem };

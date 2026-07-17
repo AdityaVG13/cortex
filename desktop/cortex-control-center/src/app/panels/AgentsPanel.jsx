@@ -1,1 +1,216 @@
-import React from"react";import{EmptyItem}from"../components/common.jsx";import{AgentItem}from"../components/AgentItem.jsx";import{OperatorSelector}from"../components/OperatorSelector.jsx";import{MessageItem}from"../components/MessageItem.jsx";import{ActivityItem}from"../components/ActivityItem.jsx";function AgentsPanel(p){const{panel,messageEntries,activityEntries,selectedOperator,setSelectedOperator,activitySince,setActivitySince,changePanel,normalizedSessions,knownAgents,runRefreshAll,refreshMessages,refreshActivity,reportSurfaceError}=p;return React.createElement(React.Fragment,null,panel==="agents"?React.createElement("section",{className:"panel active"},React.createElement("div",{className:"panel-header"},React.createElement("div",null,React.createElement("h1",null,"Agents"),React.createElement("p",{className:"panel-subtitle"},"Sessions, messages, and recent activity in one place.")),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",onClick:runRefreshAll},"Refresh"),React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>changePanel("brain")},"Brain View"))),React.createElement("div",{className:"surface-grid agents-grid"},React.createElement("div",{className:"card agents-card-span-2"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Active Sessions"),React.createElement("span",{className:"badge"},normalizedSessions.length)),React.createElement("ul",{className:"item-list"},normalizedSessions.length?normalizedSessions.map(session=>React.createElement(AgentItem,{key:session.sessionId||session.agent,session})):React.createElement(EmptyItem,{text:"No agents online"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Operator Inbox"),React.createElement("span",{className:"badge"},messageEntries.length)),React.createElement("div",{className:"surface-toolbar"},React.createElement(OperatorSelector,{value:selectedOperator,knownAgents,onChange:setSelectedOperator}),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>refreshMessages().catch(reportSurfaceError)},"Refresh"))),React.createElement("ul",{className:"item-list"},selectedOperator.trim()?messageEntries.length?messageEntries.map(entry=>React.createElement(MessageItem,{key:entry.id,entry})):React.createElement(EmptyItem,{text:`No inbox messages for ${selectedOperator.trim()}`}):React.createElement(EmptyItem,{text:"Select an operator to view the inbox"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Recent Activity"),React.createElement("span",{className:"badge"},activityEntries.length)),React.createElement("div",{className:"surface-toolbar"},React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Since"),React.createElement("select",{value:activitySince,onChange:event=>setActivitySince(event.target.value)},React.createElement("option",{value:"15m"},"15m"),React.createElement("option",{value:"1h"},"1h"),React.createElement("option",{value:"4h"},"4h"),React.createElement("option",{value:"1d"},"1d"))),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>refreshActivity().catch(reportSurfaceError)},"Refresh"))),React.createElement("ul",{className:"item-list"},activityEntries.length?activityEntries.map(entry=>React.createElement(ActivityItem,{key:entry.id,entry})):React.createElement(EmptyItem,{text:"No recent activity"}))))):null)}export{AgentsPanel};
+import React from "react";
+import { EmptyItem } from "../components/common.jsx";
+import { AgentItem } from "../components/AgentItem.jsx";
+import { OperatorSelector } from "../components/OperatorSelector.jsx";
+import { MessageItem } from "../components/MessageItem.jsx";
+import { ActivityItem } from "../components/ActivityItem.jsx";
+function AgentsPanel(p) {
+  const {
+    panel,
+    messageEntries,
+    activityEntries,
+    selectedOperator,
+    setSelectedOperator,
+    activitySince,
+    setActivitySince,
+    changePanel,
+    normalizedSessions,
+    knownAgents,
+    runRefreshAll,
+    refreshMessages,
+    refreshActivity,
+    reportSurfaceError,
+  } = p;
+  return React.createElement(
+    React.Fragment,
+    null,
+    panel === "agents"
+      ? React.createElement(
+          "section",
+          { className: "panel active" },
+          React.createElement(
+            "div",
+            { className: "panel-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement("h1", null, "Agents"),
+              React.createElement(
+                "p",
+                { className: "panel-subtitle" },
+                "Sessions, messages, and recent activity in one place.",
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "surface-actions" },
+              React.createElement(
+                "button",
+                { type: "button", className: "btn-sm", onClick: runRefreshAll },
+                "Refresh",
+              ),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "btn-sm",
+                  onClick: () => changePanel("brain"),
+                },
+                "Brain View",
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "surface-grid agents-grid" },
+            React.createElement(
+              "div",
+              { className: "card agents-card-span-2" },
+              React.createElement(
+                "div",
+                { className: "card-header" },
+                React.createElement("h2", null, "Active Sessions"),
+                React.createElement(
+                  "span",
+                  { className: "badge" },
+                  normalizedSessions.length,
+                ),
+              ),
+              React.createElement(
+                "ul",
+                { className: "item-list" },
+                normalizedSessions.length
+                  ? normalizedSessions.map((session) =>
+                      React.createElement(AgentItem, {
+                        key: session.sessionId || session.agent,
+                        session,
+                      }),
+                    )
+                  : React.createElement(EmptyItem, {
+                      text: "No agents online",
+                    }),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "card" },
+              React.createElement(
+                "div",
+                { className: "card-header" },
+                React.createElement("h2", null, "Operator Inbox"),
+                React.createElement(
+                  "span",
+                  { className: "badge" },
+                  messageEntries.length,
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "surface-toolbar" },
+                React.createElement(OperatorSelector, {
+                  value: selectedOperator,
+                  knownAgents,
+                  onChange: setSelectedOperator,
+                }),
+                React.createElement(
+                  "div",
+                  { className: "surface-actions" },
+                  React.createElement(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn-sm",
+                      onClick: () =>
+                        refreshMessages().catch(reportSurfaceError),
+                    },
+                    "Refresh",
+                  ),
+                ),
+              ),
+              React.createElement(
+                "ul",
+                { className: "item-list" },
+                selectedOperator.trim()
+                  ? messageEntries.length
+                    ? messageEntries.map((entry) =>
+                        React.createElement(MessageItem, {
+                          key: entry.id,
+                          entry,
+                        }),
+                      )
+                    : React.createElement(EmptyItem, {
+                        text: `No inbox messages for ${selectedOperator.trim()}`,
+                      })
+                  : React.createElement(EmptyItem, {
+                      text: "Select an operator to view the inbox",
+                    }),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "card" },
+              React.createElement(
+                "div",
+                { className: "card-header" },
+                React.createElement("h2", null, "Recent Activity"),
+                React.createElement(
+                  "span",
+                  { className: "badge" },
+                  activityEntries.length,
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "surface-toolbar" },
+                React.createElement(
+                  "label",
+                  { className: "feed-control" },
+                  React.createElement("span", null, "Since"),
+                  React.createElement(
+                    "select",
+                    {
+                      value: activitySince,
+                      onChange: (event) => setActivitySince(event.target.value),
+                    },
+                    React.createElement("option", { value: "15m" }, "15m"),
+                    React.createElement("option", { value: "1h" }, "1h"),
+                    React.createElement("option", { value: "4h" }, "4h"),
+                    React.createElement("option", { value: "1d" }, "1d"),
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "surface-actions" },
+                  React.createElement(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn-sm",
+                      onClick: () =>
+                        refreshActivity().catch(reportSurfaceError),
+                    },
+                    "Refresh",
+                  ),
+                ),
+              ),
+              React.createElement(
+                "ul",
+                { className: "item-list" },
+                activityEntries.length
+                  ? activityEntries.map((entry) =>
+                      React.createElement(ActivityItem, {
+                        key: entry.id,
+                        entry,
+                      }),
+                    )
+                  : React.createElement(EmptyItem, {
+                      text: "No recent activity",
+                    }),
+              ),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+export { AgentsPanel };

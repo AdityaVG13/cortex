@@ -1,1 +1,73 @@
-const EDITABLE_TAGS=new Set(["INPUT","SELECT","TEXTAREA"]),FOCUSABLE_SELECTOR=["button:not([disabled])","a[href]","input:not([disabled])","select:not([disabled])","textarea:not([disabled])","[role='button']","[role='tab']","[role='switch']","[tabindex]:not([tabindex='-1'])"].join(",");function isKeyboardActivationKey(key){return key==="Enter"||key===" "||key==="Spacebar"}function handleKeyboardActivation(event,callback){return isKeyboardActivationKey(event?.key)?(event.preventDefault(),callback?.(event),!0):!1}function shouldIgnoreGlobalShortcut(event,modalOpen=!1){if(modalOpen||!event||event.altKey||event.ctrlKey||event.metaKey)return!0;const target=event.target;if(!target||typeof target!="object")return!1;const tagName=String(target.tagName||"").toUpperCase();return EDITABLE_TAGS.has(tagName)||target.isContentEditable?!0:typeof target.closest=="function"?!!target.closest("button, a[href], [role='button'], [role='tab'], [role='switch'], [contenteditable='true']"):!1}function getFocusableElements(container){return!container||typeof container.querySelectorAll!="function"?[]:Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(element=>!element||element.disabled||element.getAttribute?.("aria-hidden")==="true"?!1:Number(element.tabIndex??0)>=0)}function trapFocusInContainer(event,container,activeElement=globalThis.document?.activeElement){if(event?.key!=="Tab"||!container)return!1;const focusable=getFocusableElements(container);if(focusable.length===0)return event.preventDefault(),container.focus?.(),!0;const first=focusable[0],last=focusable[focusable.length-1];return typeof container.contains=="function"&&container.contains(activeElement)?event.shiftKey&&activeElement===first?(event.preventDefault(),last.focus?.(),!0):!event.shiftKey&&activeElement===last?(event.preventDefault(),first.focus?.(),!0):!1:(event.preventDefault(),(event.shiftKey?last:first).focus?.(),!0)}export{getFocusableElements,handleKeyboardActivation,isKeyboardActivationKey,shouldIgnoreGlobalShortcut,trapFocusInContainer};
+const EDITABLE_TAGS = new Set(["INPUT", "SELECT", "TEXTAREA"]),
+  FOCUSABLE_SELECTOR = [
+    "button:not([disabled])",
+    "a[href]",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[role='button']",
+    "[role='tab']",
+    "[role='switch']",
+    "[tabindex]:not([tabindex='-1'])",
+  ].join(",");
+function isKeyboardActivationKey(key) {
+  return key === "Enter" || key === " " || key === "Spacebar";
+}
+function handleKeyboardActivation(event, callback) {
+  return isKeyboardActivationKey(event?.key)
+    ? (event.preventDefault(), callback?.(event), !0)
+    : !1;
+}
+function shouldIgnoreGlobalShortcut(event, modalOpen = !1) {
+  if (modalOpen || !event || event.altKey || event.ctrlKey || event.metaKey)
+    return !0;
+  const target = event.target;
+  if (!target || typeof target != "object") return !1;
+  const tagName = String(target.tagName || "").toUpperCase();
+  return EDITABLE_TAGS.has(tagName) || target.isContentEditable
+    ? !0
+    : typeof target.closest == "function"
+      ? !!target.closest(
+          "button, a[href], [role='button'], [role='tab'], [role='switch'], [contenteditable='true']",
+        )
+      : !1;
+}
+function getFocusableElements(container) {
+  return !container || typeof container.querySelectorAll != "function"
+    ? []
+    : Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+        (element) =>
+          !element ||
+          element.disabled ||
+          element.getAttribute?.("aria-hidden") === "true"
+            ? !1
+            : Number(element.tabIndex ?? 0) >= 0,
+      );
+}
+function trapFocusInContainer(
+  event,
+  container,
+  activeElement = globalThis.document?.activeElement,
+) {
+  if (event?.key !== "Tab" || !container) return !1;
+  const focusable = getFocusableElements(container);
+  if (focusable.length === 0)
+    return (event.preventDefault(), container.focus?.(), !0);
+  const first = focusable[0],
+    last = focusable[focusable.length - 1];
+  return typeof container.contains == "function" &&
+    container.contains(activeElement)
+    ? event.shiftKey && activeElement === first
+      ? (event.preventDefault(), last.focus?.(), !0)
+      : !event.shiftKey && activeElement === last
+        ? (event.preventDefault(), first.focus?.(), !0)
+        : !1
+    : (event.preventDefault(), (event.shiftKey ? last : first).focus?.(), !0);
+}
+export {
+  getFocusableElements,
+  handleKeyboardActivation,
+  isKeyboardActivationKey,
+  shouldIgnoreGlobalShortcut,
+  trapFocusInContainer,
+};

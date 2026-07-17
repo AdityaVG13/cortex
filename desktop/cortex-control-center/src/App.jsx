@@ -1,1 +1,2 @@
-import{App}from"./app/App.jsx";export{App};
+import { App } from "./app/App.jsx";
+export { App };

@@ -1,1 +1,38 @@
-function pickDefined(...values){for(const value of values)if(value!=null&&value!=="")return value;return null}function normalizePermissionGrant(entry,index){const client=String(pickDefined(entry?.client,entry?.client_id,entry?.clientId,"unknown")||"unknown"),permission=String(pickDefined(entry?.permission,"read")||"read").toLowerCase(),scope=String(pickDefined(entry?.scope,"*")||"*"),grantedBy=String(pickDefined(entry?.grantedBy,entry?.granted_by,"")||""),grantedAt=String(pickDefined(entry?.grantedAt,entry?.granted_at,"")||"");return{key:`${client}-${permission}-${scope}-${index}`,client,permission,scope,grantedBy,grantedAt}}function normalizePermissionPayload(payload){return(Array.isArray(payload?.grants)?payload.grants:[]).map((entry,index)=>normalizePermissionGrant(entry,index))}export{normalizePermissionGrant,normalizePermissionPayload,pickDefined};
+function pickDefined(...values) {
+  for (const value of values) if (value != null && value !== "") return value;
+  return null;
+}
+function normalizePermissionGrant(entry, index) {
+  const client = String(
+      pickDefined(
+        entry?.client,
+        entry?.client_id,
+        entry?.clientId,
+        "unknown",
+      ) || "unknown",
+    ),
+    permission = String(
+      pickDefined(entry?.permission, "read") || "read",
+    ).toLowerCase(),
+    scope = String(pickDefined(entry?.scope, "*") || "*"),
+    grantedBy = String(
+      pickDefined(entry?.grantedBy, entry?.granted_by, "") || "",
+    ),
+    grantedAt = String(
+      pickDefined(entry?.grantedAt, entry?.granted_at, "") || "",
+    );
+  return {
+    key: `${client}-${permission}-${scope}-${index}`,
+    client,
+    permission,
+    scope,
+    grantedBy,
+    grantedAt,
+  };
+}
+function normalizePermissionPayload(payload) {
+  return (Array.isArray(payload?.grants) ? payload.grants : []).map(
+    (entry, index) => normalizePermissionGrant(entry, index),
+  );
+}
+export { normalizePermissionPayload };

@@ -1,1 +1,54 @@
-import React from"react";import{timeAgo}from"../../constants.js";import{AppIcon}from"../../ui-icons.jsx";import{agentColor}from"../utils/agent-color.js";function MessageItem({entry}){const fromColor=agentColor(entry.from);return React.createElement("li",{className:"msg-bubble"},React.createElement("div",{className:"msg-header"},React.createElement("span",{className:"msg-agent",style:{color:fromColor}},React.createElement("span",{className:"agent-indicator",style:{background:fromColor,boxShadow:`0 0 6px ${fromColor}`,display:"inline-block",width:6,height:6,borderRadius:"50%",marginRight:6,verticalAlign:"middle"}}),entry.from||"unknown"),React.createElement("span",{className:"msg-arrow"},React.createElement(AppIcon,{name:"outbound"})),React.createElement("span",{className:"msg-to"},entry.to||"unknown"),React.createElement("span",{className:"muted-inline"},timeAgo(entry.timestamp))),React.createElement("div",{className:"msg-body"},entry.message||"(empty message)"))}export{MessageItem};
+import React from "react";
+import { timeAgo } from "../../constants.js";
+import { AppIcon } from "../../ui-icons.jsx";
+import { agentColor } from "../utils/agent-color.js";
+function MessageItem({ entry }) {
+  const fromColor = agentColor(entry.from);
+  return React.createElement(
+    "li",
+    { className: "msg-bubble" },
+    React.createElement(
+      "div",
+      { className: "msg-header" },
+      React.createElement(
+        "span",
+        { className: "msg-agent", style: { color: fromColor } },
+        React.createElement("span", {
+          className: "agent-indicator",
+          style: {
+            background: fromColor,
+            boxShadow: `0 0 6px ${fromColor}`,
+            display: "inline-block",
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            marginRight: 6,
+            verticalAlign: "middle",
+          },
+        }),
+        entry.from || "unknown",
+      ),
+      React.createElement(
+        "span",
+        { className: "msg-arrow" },
+        React.createElement(AppIcon, { name: "outbound" }),
+      ),
+      React.createElement(
+        "span",
+        { className: "msg-to" },
+        entry.to || "unknown",
+      ),
+      React.createElement(
+        "span",
+        { className: "muted-inline" },
+        timeAgo(entry.timestamp),
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "msg-body" },
+      entry.message || "(empty message)",
+    ),
+  );
+}
+export { MessageItem };

@@ -22,19 +22,24 @@ export function clearLegacyBrowserAuthTokens() {
 export function readPersistedBrowserAuthToken() {
   if (typeof window === "undefined") return "";
   try {
-    const sessionToken = window.sessionStorage.getItem(CORTEX_AUTH_STORAGE_KEY) || "";
+    const sessionToken =
+      window.sessionStorage.getItem(CORTEX_AUTH_STORAGE_KEY) || "";
     if (sessionToken) return sessionToken;
 
     for (const key of LEGACY_CORTEX_AUTH_STORAGE_KEYS) {
       const legacySessionToken = window.sessionStorage.getItem(key) || "";
       if (legacySessionToken) {
-        window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, legacySessionToken);
+        window.sessionStorage.setItem(
+          CORTEX_AUTH_STORAGE_KEY,
+          legacySessionToken,
+        );
         clearLegacyBrowserAuthTokens();
         return legacySessionToken;
       }
     }
 
-    const legacyToken = window.localStorage.getItem(CORTEX_AUTH_STORAGE_KEY) || "";
+    const legacyToken =
+      window.localStorage.getItem(CORTEX_AUTH_STORAGE_KEY) || "";
     if (legacyToken) {
       window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, legacyToken);
       window.localStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
@@ -45,7 +50,10 @@ export function readPersistedBrowserAuthToken() {
     for (const key of LEGACY_CORTEX_AUTH_STORAGE_KEYS) {
       const legacyLocalToken = window.localStorage.getItem(key) || "";
       if (legacyLocalToken) {
-        window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, legacyLocalToken);
+        window.sessionStorage.setItem(
+          CORTEX_AUTH_STORAGE_KEY,
+          legacyLocalToken,
+        );
         clearLegacyBrowserAuthTokens();
         return legacyLocalToken;
       }
@@ -66,14 +74,19 @@ export function readBrowserBootstrap() {
   let storedBase = DEFAULT_CORTEX_BASE;
   try {
     storedPanel = window.localStorage.getItem(CORTEX_PANEL_STORAGE_KEY) || "";
-    storedBase = window.localStorage.getItem(CORTEX_BASE_STORAGE_KEY) || DEFAULT_CORTEX_BASE;
+    storedBase =
+      window.localStorage.getItem(CORTEX_BASE_STORAGE_KEY) ||
+      DEFAULT_CORTEX_BASE;
   } catch {
     // Ignore storage failures in restricted browser contexts.
   }
 
   const requestedPanel = params.get("panel") || storedPanel || "";
-  const panel = PANEL_SEQUENCE_KEYS.has(requestedPanel) ? requestedPanel : "overview";
-  const cortexBase = params.get("cortexBase") || storedBase || DEFAULT_CORTEX_BASE;
+  const panel = PANEL_SEQUENCE_KEYS.has(requestedPanel)
+    ? requestedPanel
+    : "overview";
+  const cortexBase =
+    params.get("cortexBase") || storedBase || DEFAULT_CORTEX_BASE;
   const authTokenFromParams = params.get("authToken") || "";
   const authToken = authTokenFromParams || readPersistedBrowserAuthToken();
 
@@ -113,7 +126,9 @@ export function readLocalStorageValue(key, fallback = "") {
 }
 
 export function normalizeCurrencyCode(raw) {
-  const candidate = String(raw || "").trim().toUpperCase();
+  const candidate = String(raw || "")
+    .trim()
+    .toUpperCase();
   return CURRENCY_OPTIONS.includes(candidate) ? candidate : "USD";
 }
 

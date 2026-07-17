@@ -1,1 +1,26 @@
-function clamp01(x){return x<0?0:x>1?1:x}function easeOutCubic(t){const x=clamp01(t);return 1-Math.pow(1-x,3)}function easeInOutCubic(t){const x=clamp01(t);return x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2}function expDecay(tMs,tauMs){return!Number.isFinite(tMs)||tMs<=0||tauMs<=0?tMs<=0?1:0:Math.exp(-tMs/tauMs)}function riseDecay(tMs,riseMs,tauMs){return tMs<=0?0:tMs<=riseMs?easeOutCubic(tMs/riseMs):expDecay(tMs-riseMs,tauMs)}export{clamp01,easeInOutCubic,easeOutCubic,expDecay,riseDecay};
+function clamp01(x) {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+function easeOutCubic(t) {
+  const x = clamp01(t);
+  return 1 - Math.pow(1 - x, 3);
+}
+function easeInOutCubic(t) {
+  const x = clamp01(t);
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+function expDecay(tMs, tauMs) {
+  return !Number.isFinite(tMs) || tMs <= 0 || tauMs <= 0
+    ? tMs <= 0
+      ? 1
+      : 0
+    : Math.exp(-tMs / tauMs);
+}
+function riseDecay(tMs, riseMs, tauMs) {
+  return tMs <= 0
+    ? 0
+    : tMs <= riseMs
+      ? easeOutCubic(tMs / riseMs)
+      : expDecay(tMs - riseMs, tauMs);
+}
+export { easeInOutCubic, easeOutCubic, riseDecay };

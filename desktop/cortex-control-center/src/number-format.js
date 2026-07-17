@@ -1,1 +1,53 @@
-function trimFractionZeros(text){return text.replace(/\.0+$/,"").replace(/(\.\d*[1-9])0+$/,"$1")}const COMPACT_SUFFIXES=["","K","M","B","T","Q","Qi","Sx","Sp","Oc","No","Dc"];function normalizedFractionDigits(maxFractionDigits){const digits=Number(maxFractionDigits);return Number.isFinite(digits)?Math.min(2,Math.max(0,Math.trunc(digits))):1}function formatScaled(scaled,suffix,maxFractionDigits){const decimals=scaled>=100?0:scaled>=10?1:maxFractionDigits;return`${trimFractionZeros(scaled.toFixed(decimals))}${suffix}`}function formatCompactNumber(value,maxFractionDigits=1){const numeric=Number(value||0);if(!Number.isFinite(numeric))return"0";const absolute=Math.abs(numeric);if(absolute<1e3)return Math.round(numeric).toString();const digits=normalizedFractionDigits(maxFractionDigits);let scaled=absolute,suffixIndex=0;for(;scaled>=1e3&&suffixIndex<COMPACT_SUFFIXES.length-1;)scaled/=1e3,suffixIndex+=1;let overflowSteps=0;for(;scaled>=1e3;)scaled/=1e3,overflowSteps+=1;const suffix=overflowSteps>0?`${COMPACT_SUFFIXES[COMPACT_SUFFIXES.length-1]}+${overflowSteps}`:COMPACT_SUFFIXES[suffixIndex],compact=formatScaled(scaled,suffix,digits);return numeric<0?`-${compact}`:compact}function formatSignedCompactNumber(value,maxFractionDigits=1){const numeric=Number(value||0);return Number.isFinite(numeric)?`${numeric>0?"+":numeric<0?"-":""}${formatCompactNumber(Math.abs(numeric),maxFractionDigits)}`:"0"}export{formatCompactNumber,formatSignedCompactNumber};
+function trimFractionZeros(text) {
+  return text.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+}
+const COMPACT_SUFFIXES = [
+  "",
+  "K",
+  "M",
+  "B",
+  "T",
+  "Q",
+  "Qi",
+  "Sx",
+  "Sp",
+  "Oc",
+  "No",
+  "Dc",
+];
+function normalizedFractionDigits(maxFractionDigits) {
+  const digits = Number(maxFractionDigits);
+  return Number.isFinite(digits)
+    ? Math.min(2, Math.max(0, Math.trunc(digits)))
+    : 1;
+}
+function formatScaled(scaled, suffix, maxFractionDigits) {
+  const decimals = scaled >= 100 ? 0 : scaled >= 10 ? 1 : maxFractionDigits;
+  return `${trimFractionZeros(scaled.toFixed(decimals))}${suffix}`;
+}
+function formatCompactNumber(value, maxFractionDigits = 1) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return "0";
+  const absolute = Math.abs(numeric);
+  if (absolute < 1e3) return Math.round(numeric).toString();
+  const digits = normalizedFractionDigits(maxFractionDigits);
+  let scaled = absolute,
+    suffixIndex = 0;
+  for (; scaled >= 1e3 && suffixIndex < COMPACT_SUFFIXES.length - 1;)
+    ((scaled /= 1e3), (suffixIndex += 1));
+  let overflowSteps = 0;
+  for (; scaled >= 1e3;) ((scaled /= 1e3), (overflowSteps += 1));
+  const suffix =
+      overflowSteps > 0
+        ? `${COMPACT_SUFFIXES[COMPACT_SUFFIXES.length - 1]}+${overflowSteps}`
+        : COMPACT_SUFFIXES[suffixIndex],
+    compact = formatScaled(scaled, suffix, digits);
+  return numeric < 0 ? `-${compact}` : compact;
+}
+function formatSignedCompactNumber(value, maxFractionDigits = 1) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric)
+    ? `${numeric > 0 ? "+" : numeric < 0 ? "-" : ""}${formatCompactNumber(Math.abs(numeric), maxFractionDigits)}`
+    : "0";
+}
+export { formatCompactNumber, formatSignedCompactNumber };

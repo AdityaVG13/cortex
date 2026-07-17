@@ -1,1 +1,405 @@
-import React from"react";import{timeAgo}from"../../constants.js";import{conflictBadgeClass,formatConfidencePercent,formatTimestamp,formatTrustScore}from"../normalize/conflicts.js";import{agentColor}from"../utils/agent-color.js";function ConflictPairCard({pair,conflictLoading=!1,onResolveQuick=null,onResolveDraft=null,resolveDraft=null,onResolveDraftChange=null}){const draftAction=resolveDraft?.action||"keep",draftWinner=resolveDraft?.winner||"left",leftId=pair?.left?.id,rightId=pair?.right?.id,canResolve=leftId!=null&&rightId!==null&&rightId!==void 0,winner=draftWinner==="right"?pair.right:pair.left,loser=draftWinner==="right"?pair.left:pair.right;return React.createElement("div",{key:pair.key,className:"conflict-pair"},React.createElement("div",{className:"conflict-topline"},React.createElement("div",{className:"conflict-topline-left"},React.createElement("span",{className:"conflict-id"},"Conflict #",pair.conflictId||pair.key),React.createElement("span",{className:conflictBadgeClass("conflict-pill conflict-class",pair.classification)},pair.classification),React.createElement("span",{className:conflictBadgeClass("conflict-pill conflict-status",pair.status)},pair.status)),React.createElement("div",{className:"conflict-timestamps"},React.createElement("span",null,"Created ",formatTimestamp(pair.createdAt)),pair.resolvedAt?React.createElement("span",null,"Resolved ",formatTimestamp(pair.resolvedAt)):null)),React.createElement("div",{className:"conflict-cards"},React.createElement("div",{className:"card conflict-card"},React.createElement("div",{className:"conflict-card-header"},React.createElement("span",{className:"conflict-id"},"#",pair.left.id??"?"),React.createElement("span",{className:"agent-indicator",style:{background:agentColor(pair.left.sourceAgent),boxShadow:`0 0 8px ${agentColor(pair.left.sourceAgent)}`}}),React.createElement("span",{className:"item-name"},pair.left.sourceAgent||"unknown"),React.createElement("span",{className:"muted-inline"},timeAgo(pair.left.createdAt))),React.createElement("p",{className:"conflict-text"},pair.left.decision),pair.left.context?React.createElement("p",{className:"conflict-context"},pair.left.context):null,React.createElement("div",{className:"conflict-meta"},React.createElement("span",null,"Confidence: ",formatConfidencePercent(pair.left.confidence)),React.createElement("span",null,"Trust: ",formatTrustScore(pair.left.trustScore)))),React.createElement("div",{className:"conflict-vs"},"VS"),React.createElement("div",{className:"card conflict-card"},React.createElement("div",{className:"conflict-card-header"},React.createElement("span",{className:"conflict-id"},"#",pair.right.id??"?"),React.createElement("span",{className:"agent-indicator",style:{background:agentColor(pair.right.sourceAgent),boxShadow:`0 0 8px ${agentColor(pair.right.sourceAgent)}`}}),React.createElement("span",{className:"item-name"},pair.right.sourceAgent||"unknown"),React.createElement("span",{className:"muted-inline"},timeAgo(pair.right.createdAt))),React.createElement("p",{className:"conflict-text"},pair.right.decision),pair.right.context?React.createElement("p",{className:"conflict-context"},pair.right.context):null,React.createElement("div",{className:"conflict-meta"},React.createElement("span",null,"Confidence: ",formatConfidencePercent(pair.right.confidence)),React.createElement("span",null,"Trust: ",formatTrustScore(pair.right.trustScore))))),pair.resolution?React.createElement("div",{className:"conflict-resolution-summary"},React.createElement("div",{className:"conflict-resolution-grid"},React.createElement("span",null,React.createElement("strong",null,"Winner:")," ",pair.resolution.winnerId!==null&&pair.resolution.winnerId!==void 0?`#${pair.resolution.winnerId}`:"n/a",pair.resolution.winnerAgent?` (${pair.resolution.winnerAgent})`:""),React.createElement("span",null,React.createElement("strong",null,"Loser:")," ",pair.resolution.loserId!==null&&pair.resolution.loserId!==void 0?`#${pair.resolution.loserId}`:"n/a",pair.resolution.loserAgent?` (${pair.resolution.loserAgent})`:""),pair.resolution.action?React.createElement("span",null,React.createElement("strong",null,"Action:")," ",pair.resolution.action):null,pair.resolution.method?React.createElement("span",null,React.createElement("strong",null,"Method:")," ",pair.resolution.method):null,pair.resolution.resolvedBy?React.createElement("span",null,React.createElement("strong",null,"Resolved by:")," ",pair.resolution.resolvedBy):null,pair.resolution.trustDelta!==null?React.createElement("span",{className:"conflict-trust-highlight"},React.createElement("strong",null,"Trust delta:")," ",pair.resolution.trustDelta.toFixed(3)):null),pair.resolution.notes?React.createElement("div",{className:"conflict-resolution-notes"},pair.resolution.notes):null):null,React.createElement("div",{className:"conflict-actions"},React.createElement("button",{className:"btn-sm btn-primary",disabled:conflictLoading||!canResolve,onClick:()=>onResolveQuick?.(pair.left.id,"keep",pair.right.id,pair)},"Keep Left"),React.createElement("button",{className:"btn-sm btn-primary",disabled:conflictLoading||!canResolve,onClick:()=>onResolveQuick?.(pair.right.id,"keep",pair.left.id,pair)},"Keep Right"),React.createElement("button",{className:"btn-sm",disabled:conflictLoading||!canResolve,onClick:()=>onResolveQuick?.(pair.left.id,"merge",pair.right.id,pair)},"Merge Both"),React.createElement("button",{className:"btn-sm btn-danger",disabled:conflictLoading||!canResolve,onClick:()=>onResolveQuick?.(pair.left.id,"archive",pair.right.id,pair)},"Archive Both")),React.createElement("div",{className:"conflict-manual-controls"},React.createElement("span",{className:"conflict-manual-label"},"Manual resolve"),React.createElement("label",{className:"conflict-control-group"},React.createElement("span",null,"Action"),React.createElement("select",{className:"conflict-select",value:draftAction,onChange:event=>onResolveDraftChange?.(pair.key,{action:event.target.value})},React.createElement("option",{value:"keep"},"Keep"),React.createElement("option",{value:"merge"},"Merge"),React.createElement("option",{value:"archive"},"Archive"))),draftAction==="keep"?React.createElement("label",{className:"conflict-control-group"},React.createElement("span",null,"Winner"),React.createElement("select",{className:"conflict-select",value:draftWinner,onChange:event=>onResolveDraftChange?.(pair.key,{winner:event.target.value})},React.createElement("option",{value:"left"},"Left (",pair.left.sourceAgent||"unknown",")"),React.createElement("option",{value:"right"},"Right (",pair.right.sourceAgent||"unknown",")"))):null,React.createElement("button",{className:"btn-sm btn-primary",disabled:conflictLoading||!canResolve,onClick:()=>{if(draftAction==="keep"){onResolveDraft?.(winner.id,"keep",loser.id,pair);return}if(draftAction==="merge"){onResolveDraft?.(pair.left.id,"merge",pair.right.id,pair);return}onResolveDraft?.(pair.left.id,"archive",pair.right.id,pair)}},"Apply")))}export{ConflictPairCard};
+import React from "react";
+import { timeAgo } from "../../constants.js";
+import {
+  conflictBadgeClass,
+  formatConfidencePercent,
+  formatTimestamp,
+  formatTrustScore,
+} from "../normalize/conflicts.js";
+import { agentColor } from "../utils/agent-color.js";
+function ConflictPairCard({
+  pair,
+  conflictLoading = !1,
+  onResolveQuick = null,
+  onResolveDraft = null,
+  resolveDraft = null,
+  onResolveDraftChange = null,
+}) {
+  const draftAction = resolveDraft?.action || "keep",
+    draftWinner = resolveDraft?.winner || "left",
+    leftId = pair?.left?.id,
+    rightId = pair?.right?.id,
+    canResolve = leftId != null && rightId !== null && rightId !== void 0,
+    winner = draftWinner === "right" ? pair.right : pair.left,
+    loser = draftWinner === "right" ? pair.left : pair.right;
+  return React.createElement(
+    "div",
+    { key: pair.key, className: "conflict-pair" },
+    React.createElement(
+      "div",
+      { className: "conflict-topline" },
+      React.createElement(
+        "div",
+        { className: "conflict-topline-left" },
+        React.createElement(
+          "span",
+          { className: "conflict-id" },
+          "Conflict #",
+          pair.conflictId || pair.key,
+        ),
+        React.createElement(
+          "span",
+          {
+            className: conflictBadgeClass(
+              "conflict-pill conflict-class",
+              pair.classification,
+            ),
+          },
+          pair.classification,
+        ),
+        React.createElement(
+          "span",
+          {
+            className: conflictBadgeClass(
+              "conflict-pill conflict-status",
+              pair.status,
+            ),
+          },
+          pair.status,
+        ),
+      ),
+      React.createElement(
+        "div",
+        { className: "conflict-timestamps" },
+        React.createElement(
+          "span",
+          null,
+          "Created ",
+          formatTimestamp(pair.createdAt),
+        ),
+        pair.resolvedAt
+          ? React.createElement(
+              "span",
+              null,
+              "Resolved ",
+              formatTimestamp(pair.resolvedAt),
+            )
+          : null,
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "conflict-cards" },
+      React.createElement(
+        "div",
+        { className: "card conflict-card" },
+        React.createElement(
+          "div",
+          { className: "conflict-card-header" },
+          React.createElement(
+            "span",
+            { className: "conflict-id" },
+            "#",
+            pair.left.id ?? "?",
+          ),
+          React.createElement("span", {
+            className: "agent-indicator",
+            style: {
+              background: agentColor(pair.left.sourceAgent),
+              boxShadow: `0 0 8px ${agentColor(pair.left.sourceAgent)}`,
+            },
+          }),
+          React.createElement(
+            "span",
+            { className: "item-name" },
+            pair.left.sourceAgent || "unknown",
+          ),
+          React.createElement(
+            "span",
+            { className: "muted-inline" },
+            timeAgo(pair.left.createdAt),
+          ),
+        ),
+        React.createElement(
+          "p",
+          { className: "conflict-text" },
+          pair.left.decision,
+        ),
+        pair.left.context
+          ? React.createElement(
+              "p",
+              { className: "conflict-context" },
+              pair.left.context,
+            )
+          : null,
+        React.createElement(
+          "div",
+          { className: "conflict-meta" },
+          React.createElement(
+            "span",
+            null,
+            "Confidence: ",
+            formatConfidencePercent(pair.left.confidence),
+          ),
+          React.createElement(
+            "span",
+            null,
+            "Trust: ",
+            formatTrustScore(pair.left.trustScore),
+          ),
+        ),
+      ),
+      React.createElement("div", { className: "conflict-vs" }, "VS"),
+      React.createElement(
+        "div",
+        { className: "card conflict-card" },
+        React.createElement(
+          "div",
+          { className: "conflict-card-header" },
+          React.createElement(
+            "span",
+            { className: "conflict-id" },
+            "#",
+            pair.right.id ?? "?",
+          ),
+          React.createElement("span", {
+            className: "agent-indicator",
+            style: {
+              background: agentColor(pair.right.sourceAgent),
+              boxShadow: `0 0 8px ${agentColor(pair.right.sourceAgent)}`,
+            },
+          }),
+          React.createElement(
+            "span",
+            { className: "item-name" },
+            pair.right.sourceAgent || "unknown",
+          ),
+          React.createElement(
+            "span",
+            { className: "muted-inline" },
+            timeAgo(pair.right.createdAt),
+          ),
+        ),
+        React.createElement(
+          "p",
+          { className: "conflict-text" },
+          pair.right.decision,
+        ),
+        pair.right.context
+          ? React.createElement(
+              "p",
+              { className: "conflict-context" },
+              pair.right.context,
+            )
+          : null,
+        React.createElement(
+          "div",
+          { className: "conflict-meta" },
+          React.createElement(
+            "span",
+            null,
+            "Confidence: ",
+            formatConfidencePercent(pair.right.confidence),
+          ),
+          React.createElement(
+            "span",
+            null,
+            "Trust: ",
+            formatTrustScore(pair.right.trustScore),
+          ),
+        ),
+      ),
+    ),
+    pair.resolution
+      ? React.createElement(
+          "div",
+          { className: "conflict-resolution-summary" },
+          React.createElement(
+            "div",
+            { className: "conflict-resolution-grid" },
+            React.createElement(
+              "span",
+              null,
+              React.createElement("strong", null, "Winner:"),
+              " ",
+              pair.resolution.winnerId !== null &&
+                pair.resolution.winnerId !== void 0
+                ? `#${pair.resolution.winnerId}`
+                : "n/a",
+              pair.resolution.winnerAgent
+                ? ` (${pair.resolution.winnerAgent})`
+                : "",
+            ),
+            React.createElement(
+              "span",
+              null,
+              React.createElement("strong", null, "Loser:"),
+              " ",
+              pair.resolution.loserId !== null &&
+                pair.resolution.loserId !== void 0
+                ? `#${pair.resolution.loserId}`
+                : "n/a",
+              pair.resolution.loserAgent
+                ? ` (${pair.resolution.loserAgent})`
+                : "",
+            ),
+            pair.resolution.action
+              ? React.createElement(
+                  "span",
+                  null,
+                  React.createElement("strong", null, "Action:"),
+                  " ",
+                  pair.resolution.action,
+                )
+              : null,
+            pair.resolution.method
+              ? React.createElement(
+                  "span",
+                  null,
+                  React.createElement("strong", null, "Method:"),
+                  " ",
+                  pair.resolution.method,
+                )
+              : null,
+            pair.resolution.resolvedBy
+              ? React.createElement(
+                  "span",
+                  null,
+                  React.createElement("strong", null, "Resolved by:"),
+                  " ",
+                  pair.resolution.resolvedBy,
+                )
+              : null,
+            pair.resolution.trustDelta !== null
+              ? React.createElement(
+                  "span",
+                  { className: "conflict-trust-highlight" },
+                  React.createElement("strong", null, "Trust delta:"),
+                  " ",
+                  pair.resolution.trustDelta.toFixed(3),
+                )
+              : null,
+          ),
+          pair.resolution.notes
+            ? React.createElement(
+                "div",
+                { className: "conflict-resolution-notes" },
+                pair.resolution.notes,
+              )
+            : null,
+        )
+      : null,
+    React.createElement(
+      "div",
+      { className: "conflict-actions" },
+      React.createElement(
+        "button",
+        {
+          className: "btn-sm btn-primary",
+          disabled: conflictLoading || !canResolve,
+          onClick: () =>
+            onResolveQuick?.(pair.left.id, "keep", pair.right.id, pair),
+        },
+        "Keep Left",
+      ),
+      React.createElement(
+        "button",
+        {
+          className: "btn-sm btn-primary",
+          disabled: conflictLoading || !canResolve,
+          onClick: () =>
+            onResolveQuick?.(pair.right.id, "keep", pair.left.id, pair),
+        },
+        "Keep Right",
+      ),
+      React.createElement(
+        "button",
+        {
+          className: "btn-sm",
+          disabled: conflictLoading || !canResolve,
+          onClick: () =>
+            onResolveQuick?.(pair.left.id, "merge", pair.right.id, pair),
+        },
+        "Merge Both",
+      ),
+      React.createElement(
+        "button",
+        {
+          className: "btn-sm btn-danger",
+          disabled: conflictLoading || !canResolve,
+          onClick: () =>
+            onResolveQuick?.(pair.left.id, "archive", pair.right.id, pair),
+        },
+        "Archive Both",
+      ),
+    ),
+    React.createElement(
+      "div",
+      { className: "conflict-manual-controls" },
+      React.createElement(
+        "span",
+        { className: "conflict-manual-label" },
+        "Manual resolve",
+      ),
+      React.createElement(
+        "label",
+        { className: "conflict-control-group" },
+        React.createElement("span", null, "Action"),
+        React.createElement(
+          "select",
+          {
+            className: "conflict-select",
+            value: draftAction,
+            onChange: (event) =>
+              onResolveDraftChange?.(pair.key, { action: event.target.value }),
+          },
+          React.createElement("option", { value: "keep" }, "Keep"),
+          React.createElement("option", { value: "merge" }, "Merge"),
+          React.createElement("option", { value: "archive" }, "Archive"),
+        ),
+      ),
+      draftAction === "keep"
+        ? React.createElement(
+            "label",
+            { className: "conflict-control-group" },
+            React.createElement("span", null, "Winner"),
+            React.createElement(
+              "select",
+              {
+                className: "conflict-select",
+                value: draftWinner,
+                onChange: (event) =>
+                  onResolveDraftChange?.(pair.key, {
+                    winner: event.target.value,
+                  }),
+              },
+              React.createElement(
+                "option",
+                { value: "left" },
+                "Left (",
+                pair.left.sourceAgent || "unknown",
+                ")",
+              ),
+              React.createElement(
+                "option",
+                { value: "right" },
+                "Right (",
+                pair.right.sourceAgent || "unknown",
+                ")",
+              ),
+            ),
+          )
+        : null,
+      React.createElement(
+        "button",
+        {
+          className: "btn-sm btn-primary",
+          disabled: conflictLoading || !canResolve,
+          onClick: () => {
+            if (draftAction === "keep") {
+              onResolveDraft?.(winner.id, "keep", loser.id, pair);
+              return;
+            }
+            if (draftAction === "merge") {
+              onResolveDraft?.(pair.left.id, "merge", pair.right.id, pair);
+              return;
+            }
+            onResolveDraft?.(pair.left.id, "archive", pair.right.id, pair);
+          },
+        },
+        "Apply",
+      ),
+    ),
+  );
+}
+export { ConflictPairCard };

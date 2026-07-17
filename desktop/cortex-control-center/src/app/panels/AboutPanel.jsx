@@ -1,1 +1,231 @@
-import React from"react";import{CONTROL_CENTER_VERSION}from"../constants.js";function AboutPanel(p){const{panel,stats}=p;return React.createElement(React.Fragment,null,panel==="about"?React.createElement("section",{className:"panel active"},React.createElement("div",{className:"panel-header"},React.createElement("div",null,React.createElement("h1",null,"About"),React.createElement("p",{className:"panel-subtitle"},"Shipping surface, runtime contract, and contributor credits for Cortex Control Center."))),React.createElement("div",{className:"card full"},React.createElement("div",{className:"about-content"},React.createElement("div",{className:"about-brand"},React.createElement("img",{src:`${import.meta.env.BASE_URL}icons/icon.png`,alt:"Cortex",className:"about-logo",onError:event=>{event.currentTarget.style.display="none",event.currentTarget.nextSibling.style.display="flex"}}),React.createElement("div",{className:"about-logo about-logo-fallback"},"CC"),React.createElement("div",{className:"about-heading"},React.createElement("h2",{className:"about-title"},"Cortex Control Center"),React.createElement("p",{className:"about-version"},"Built by the Cortex maintainer team -- Version ",CONTROL_CENTER_VERSION))),React.createElement("p",{className:"about-description"},"A desktop command surface for Cortex built around one app-managed daemon instance: auth-aware startup, owned lifecycle control, live telemetry, and a brain view that can double as a showpiece."),React.createElement("div",{className:"about-stats-grid"},[["Daemon","Rust + Axum"],["Desktop shell","Tauri + React"],["Embeddings","ONNX (all-MiniLM-L6-v2)"],["Storage","SQLite (WAL)"],["Transport","HTTP + MCP stdio"],["Port","7437"]].map(([label,value])=>React.createElement("div",{key:label,className:"about-stat-card"},React.createElement("span",{className:"about-stat-label"},label),React.createElement("div",{className:"about-stat-value"},value)))),React.createElement("div",{className:"about-section"},React.createElement("h3",{className:"about-section-title"},"App Lifecycle"),React.createElement("table",{className:"about-lifecycle-table"},React.createElement("thead",null,React.createElement("tr",null,React.createElement("th",null,"Action"),React.createElement("th",null,"What happens"))),React.createElement("tbody",null,React.createElement("tr",null,React.createElement("td",null,"Start"),React.createElement("td",null,"Launches the app-managed Cortex daemon and waits for a healthy API before reloading data.")),React.createElement("tr",null,React.createElement("td",null,"Stop"),React.createElement("td",null,"Sends a graceful shutdown request to the app-managed daemon, then clears owned process handles.")),React.createElement("tr",null,React.createElement("td",null,"Restart"),React.createElement("td",null,"Runs Stop then Start with timeout handling so the UI can recover from stale daemon state without creating a second instance.")),React.createElement("tr",null,React.createElement("td",null,"Close Window"),React.createElement("td",null,"Minimizes to tray by default so the app-managed daemon can keep serving local clients in the background.")),React.createElement("tr",null,React.createElement("td",null,"Exit"),React.createElement("td",null,"Fully quits the app and requests daemon shutdown when this app instance owns it."))))),React.createElement("div",{className:"about-section"},React.createElement("h3",{className:"about-section-title"},"Contributors"),React.createElement("div",{className:"about-contributors"},[{handle:"Cortex-Team",role:"Creator & maintainer"},{handle:"Claude Code",role:"Core architecture & retrieval pipeline"},{handle:"Factory Droid",role:"Desktop app, reconnection & telemetry"},{handle:"Codex",role:"Desktop rewrite, auth hardening, analytics and brain UX"}].map(({handle,role})=>React.createElement("div",{key:handle,className:"about-contributor"},React.createElement("span",{className:"agent-indicator",style:{background:"var(--cyan)",boxShadow:"0 0 8px var(--cyan)"}}),React.createElement("span",{className:"about-contributor-handle"},"@",handle),React.createElement("span",{className:"about-contributor-role"},role)))))))):null)}export{AboutPanel};
+import React from "react";
+import { CONTROL_CENTER_VERSION } from "../constants.js";
+function AboutPanel(p) {
+  const { panel, stats } = p;
+  return React.createElement(
+    React.Fragment,
+    null,
+    panel === "about"
+      ? React.createElement(
+          "section",
+          { className: "panel active" },
+          React.createElement(
+            "div",
+            { className: "panel-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement("h1", null, "About"),
+              React.createElement(
+                "p",
+                { className: "panel-subtitle" },
+                "Shipping surface, runtime contract, and contributor credits for Cortex Control Center.",
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "card full" },
+            React.createElement(
+              "div",
+              { className: "about-content" },
+              React.createElement(
+                "div",
+                { className: "about-brand" },
+                React.createElement("img", {
+                  src: `${import.meta.env.BASE_URL}icons/icon.png`,
+                  alt: "Cortex",
+                  className: "about-logo",
+                  onError: (event) => {
+                    ((event.currentTarget.style.display = "none"),
+                      (event.currentTarget.nextSibling.style.display = "flex"));
+                  },
+                }),
+                React.createElement(
+                  "div",
+                  { className: "about-logo about-logo-fallback" },
+                  "CC",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "about-heading" },
+                  React.createElement(
+                    "h2",
+                    { className: "about-title" },
+                    "Cortex Control Center",
+                  ),
+                  React.createElement(
+                    "p",
+                    { className: "about-version" },
+                    "Built by the Cortex maintainer team -- Version ",
+                    CONTROL_CENTER_VERSION,
+                  ),
+                ),
+              ),
+              React.createElement(
+                "p",
+                { className: "about-description" },
+                "A desktop command surface for Cortex built around one app-managed daemon instance: auth-aware startup, owned lifecycle control, live telemetry, and a brain view that can double as a showpiece.",
+              ),
+              React.createElement(
+                "div",
+                { className: "about-stats-grid" },
+                [
+                  ["Daemon", "Rust + Axum"],
+                  ["Desktop shell", "Tauri + React"],
+                  ["Embeddings", "ONNX (all-MiniLM-L6-v2)"],
+                  ["Storage", "SQLite (WAL)"],
+                  ["Transport", "HTTP + MCP stdio"],
+                  ["Port", "7437"],
+                ].map(([label, value]) =>
+                  React.createElement(
+                    "div",
+                    { key: label, className: "about-stat-card" },
+                    React.createElement(
+                      "span",
+                      { className: "about-stat-label" },
+                      label,
+                    ),
+                    React.createElement(
+                      "div",
+                      { className: "about-stat-value" },
+                      value,
+                    ),
+                  ),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "about-section" },
+                React.createElement(
+                  "h3",
+                  { className: "about-section-title" },
+                  "App Lifecycle",
+                ),
+                React.createElement(
+                  "table",
+                  { className: "about-lifecycle-table" },
+                  React.createElement(
+                    "thead",
+                    null,
+                    React.createElement(
+                      "tr",
+                      null,
+                      React.createElement("th", null, "Action"),
+                      React.createElement("th", null, "What happens"),
+                    ),
+                  ),
+                  React.createElement(
+                    "tbody",
+                    null,
+                    React.createElement(
+                      "tr",
+                      null,
+                      React.createElement("td", null, "Start"),
+                      React.createElement(
+                        "td",
+                        null,
+                        "Launches the app-managed Cortex daemon and waits for a healthy API before reloading data.",
+                      ),
+                    ),
+                    React.createElement(
+                      "tr",
+                      null,
+                      React.createElement("td", null, "Stop"),
+                      React.createElement(
+                        "td",
+                        null,
+                        "Sends a graceful shutdown request to the app-managed daemon, then clears owned process handles.",
+                      ),
+                    ),
+                    React.createElement(
+                      "tr",
+                      null,
+                      React.createElement("td", null, "Restart"),
+                      React.createElement(
+                        "td",
+                        null,
+                        "Runs Stop then Start with timeout handling so the UI can recover from stale daemon state without creating a second instance.",
+                      ),
+                    ),
+                    React.createElement(
+                      "tr",
+                      null,
+                      React.createElement("td", null, "Close Window"),
+                      React.createElement(
+                        "td",
+                        null,
+                        "Minimizes to tray by default so the app-managed daemon can keep serving local clients in the background.",
+                      ),
+                    ),
+                    React.createElement(
+                      "tr",
+                      null,
+                      React.createElement("td", null, "Exit"),
+                      React.createElement(
+                        "td",
+                        null,
+                        "Fully quits the app and requests daemon shutdown when this app instance owns it.",
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "about-section" },
+                React.createElement(
+                  "h3",
+                  { className: "about-section-title" },
+                  "Contributors",
+                ),
+                React.createElement(
+                  "div",
+                  { className: "about-contributors" },
+                  [
+                    { handle: "Cortex-Team", role: "Creator & maintainer" },
+                    {
+                      handle: "Claude Code",
+                      role: "Core architecture & retrieval pipeline",
+                    },
+                    {
+                      handle: "Factory Droid",
+                      role: "Desktop app, reconnection & telemetry",
+                    },
+                    {
+                      handle: "Codex",
+                      role: "Desktop rewrite, auth hardening, analytics and brain UX",
+                    },
+                  ].map(({ handle, role }) =>
+                    React.createElement(
+                      "div",
+                      { key: handle, className: "about-contributor" },
+                      React.createElement("span", {
+                        className: "agent-indicator",
+                        style: {
+                          background: "var(--cyan)",
+                          boxShadow: "0 0 8px var(--cyan)",
+                        },
+                      }),
+                      React.createElement(
+                        "span",
+                        { className: "about-contributor-handle" },
+                        "@",
+                        handle,
+                      ),
+                      React.createElement(
+                        "span",
+                        { className: "about-contributor-role" },
+                        role,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      : null,
+  );
+}
+export { AboutPanel };

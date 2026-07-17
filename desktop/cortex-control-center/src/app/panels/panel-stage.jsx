@@ -1,4 +1,3 @@
-import React from "react";
 import { BrainVisualizerPanel } from "../components/BrainVisualizerPanel.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 import { OverviewPanel } from "./OverviewPanel.jsx";

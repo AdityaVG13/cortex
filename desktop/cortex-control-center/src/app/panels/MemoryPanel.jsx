@@ -1,1 +1,593 @@
-import React from"react";import{handleKeyboardActivation}from"../../keyboard-access.js";import{conflictBadgeClass}from"../normalize/conflicts.js";import{EmptyItem}from"../components/common.jsx";import{ConflictPairCard}from"../components/ConflictPairCard.jsx";function MemoryPanel(p){const{panel,stats,memoryQuery,setMemoryQuery,memoryResults,memorySearching,conflictPairs,resolveDrafts,conflictLoading,permissionGrants,permissionLoading,permissionAccessDenied,permissionsEndpointAvailable,permissionDraft,setPermissionDraft,changePanel,handleMemorySearch,handleMemoryExpand,handleResolveConflict,handleResolveDraftChange,handleGrantPermission,handleRevokePermission,refreshConflicts,refreshPermissions,reportSurfaceError,pill,latestRecallHitRate,recallWindowAverage}=p;return React.createElement(React.Fragment,null,panel==="memory"?React.createElement("section",{className:"panel active"},React.createElement("div",{className:"panel-header"},React.createElement("div",null,React.createElement("h1",null,"Memory"),React.createElement("p",{className:"panel-subtitle"},"Search the brain, inspect recall health, manage client permissions, and resolve conflicts without leaving the same tab.")),React.createElement("div",{className:"surface-actions"},React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>refreshConflicts().catch(reportSurfaceError)},"Refresh Conflicts"),React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>changePanel("analytics")},"Analytics"))),React.createElement("div",{className:"memory-layout"},React.createElement("div",{className:"card full"},React.createElement("div",{className:"card-header"},React.createElement("h2",{id:"memory-explorer-title"},"Memory Explorer"),React.createElement("span",{className:"badge","aria-live":"polite"},memoryResults.length,React.createElement("span",{className:"sr-only"}," memory matches"))),React.createElement("form",{className:"memory-search","aria-labelledby":"memory-explorer-title",onSubmit:handleMemorySearch},React.createElement("input",{type:"text",className:"memory-input","aria-label":"Search Cortex memories",placeholder:"Search the brain... (uses cortex_peek)",value:memoryQuery,onChange:event=>setMemoryQuery(event.target.value)}),React.createElement("button",{type:"submit",className:"btn-sm btn-primary",disabled:memorySearching},memorySearching?"Searching...":"Peek")),memoryResults.length>0?React.createElement("div",{className:"memory-stats"},React.createElement("span",{className:"badge"},memoryResults.length," matches"),React.createElement("span",{className:"muted-inline"},"via cortex_peek -- click to expand full recall")):null,React.createElement("ul",{className:"item-list"},memoryResults.length?memoryResults.map((match,index)=>React.createElement("li",{key:`${match.source}-${index}`,className:`memory-item ${match.expanded?"":"memory-item-action"}`,role:match.expanded?void 0:"button",tabIndex:match.expanded?void 0:0,"aria-expanded":match.expanded?void 0:!1,onClick:()=>!match.expanded&&handleMemoryExpand(match.source),onKeyDown:event=>!match.expanded&&handleKeyboardActivation(event,()=>handleMemoryExpand(match.source))},React.createElement("div",{className:"memory-header"},React.createElement("span",{className:"memory-method"},match.method),React.createElement("span",{className:"memory-relevance"},(match.relevance*100).toFixed(0),"%")),React.createElement("div",{className:"memory-source"},match.source),match.expanded&&match.excerpt?React.createElement("div",{className:"memory-excerpt"},match.excerpt):null,match.expanded?null:React.createElement("div",{className:"memory-expand-hint"},"Press Enter or Space to expand"))):memoryQuery?React.createElement(EmptyItem,{text:"No matches -- try different keywords"}):React.createElement(EmptyItem,{text:"Search to explore Cortex memories"}))),React.createElement("div",{className:"memory-side-stack"},React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Memory Health"),React.createElement("span",{className:"badge"},latestRecallHitRate||0,"%")),React.createElement("div",{className:"overview-status-list"},React.createElement("div",{className:"overview-status-row"},React.createElement("span",null,"Memories"),React.createElement("strong",null,stats.memories)),React.createElement("div",{className:"overview-status-row"},React.createElement("span",null,"Decisions"),React.createElement("strong",null,stats.decisions)),React.createElement("div",{className:"overview-status-row"},React.createElement("span",null,"7-day recall avg"),React.createElement("strong",null,recallWindowAverage||0,"%")),React.createElement("div",{className:"overview-status-row"},React.createElement("span",null,"Open conflicts"),React.createElement("strong",null,conflictPairs.length)))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Conflict Radar"),React.createElement("span",{className:"badge"},conflictPairs.length)),React.createElement("ul",{className:"item-list compact-list"},conflictPairs.length?conflictPairs.slice(0,4).map(pair=>React.createElement("li",{key:pair.key},React.createElement("div",{className:"item-meta"},React.createElement("span",{className:"item-name"},"#",pair.left.id??"?"," vs #",pair.right.id??"?"),React.createElement("span",{className:conflictBadgeClass("conflict-pill conflict-class",pair.classification)},pair.classification)),React.createElement("div",{className:"item-detail"},pair.left.sourceAgent||"unknown"," / ",pair.right.sourceAgent||"unknown"," - ",pair.status))):React.createElement(EmptyItem,{text:"No active conflicts"}))),React.createElement("div",{className:"card"},React.createElement("div",{className:"card-header"},React.createElement("h2",null,"Client Permissions"),React.createElement("span",{className:"badge"},permissionGrants.length)),permissionsEndpointAvailable?permissionAccessDenied?React.createElement("ul",{className:"item-list compact-list permission-list"},React.createElement(EmptyItem,{text:"Permission controls require admin role in team mode."})):React.createElement(React.Fragment,null,React.createElement("div",{className:"permission-form"},React.createElement("input",{type:"text",className:"memory-input","aria-label":"Client id for permission grant",placeholder:"client id (e.g. codex, claude, *)",value:permissionDraft.client,onChange:event=>setPermissionDraft(current=>({...current,client:event.target.value}))}),React.createElement("div",{className:"permission-form-row"},React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Permission"),React.createElement("select",{value:permissionDraft.permission,onChange:event=>setPermissionDraft(current=>({...current,permission:event.target.value}))},React.createElement("option",{value:"read"},"read"),React.createElement("option",{value:"write"},"write"),React.createElement("option",{value:"admin"},"admin"))),React.createElement("label",{className:"feed-control"},React.createElement("span",null,"Scope"),React.createElement("input",{type:"text",placeholder:"* or tool name",value:permissionDraft.scope,onChange:event=>setPermissionDraft(current=>({...current,scope:event.target.value}))}))),React.createElement("div",{className:"permission-actions"},React.createElement("button",{type:"button",className:"btn-sm btn-primary",disabled:permissionLoading,onClick:()=>handleGrantPermission().catch(reportSurfaceError)},permissionLoading?"Applying...":"Grant"),React.createElement("button",{type:"button",className:"btn-sm",disabled:permissionLoading,onClick:()=>refreshPermissions({force:!0}).catch(reportSurfaceError)},"Refresh"))),React.createElement("ul",{className:"item-list compact-list permission-list"},permissionGrants.length?permissionGrants.slice(0,8).map(grant=>React.createElement("li",{key:grant.key},React.createElement("div",{className:"item-meta"},React.createElement("span",{className:"item-name"},grant.client),React.createElement("span",{className:"badge"},grant.permission)),React.createElement("div",{className:"item-detail"},"scope=",grant.scope," ",grant.grantedBy?`- by ${grant.grantedBy}`:""),React.createElement("div",{className:"permission-item-actions"},React.createElement("button",{type:"button",className:"btn-sm btn-danger",disabled:permissionLoading,onClick:()=>handleRevokePermission(grant).catch(reportSurfaceError)},"Revoke")))):React.createElement(EmptyItem,{text:"No explicit grants yet (legacy permissive mode)."}))):React.createElement("div",{className:"permission-form"},React.createElement("div",{className:"permission-actions"},React.createElement("button",{type:"button",className:"btn-sm",disabled:permissionLoading,onClick:()=>refreshPermissions({force:!0}).catch(reportSurfaceError)},"Recheck")),React.createElement("ul",{className:"item-list compact-list permission-list"},React.createElement(EmptyItem,{text:"Permission endpoint unavailable on this daemon build."})))))),React.createElement("div",{className:"memory-conflicts-section"},React.createElement("div",{className:"panel-header panel-header-inline"},React.createElement("h2",null,"Conflict Resolution"),React.createElement("div",{className:"panel-header-actions"},React.createElement("span",{className:"badge"},conflictPairs.length," dispute",conflictPairs.length!==1?"s":""),React.createElement("button",{type:"button",className:"btn-sm",onClick:()=>refreshConflicts().catch(reportSurfaceError)},"Refresh"))),conflictPairs.length===0?React.createElement("div",{className:"card full"},React.createElement("ul",{className:"item-list"},React.createElement(EmptyItem,{text:"No active conflicts -- all decisions are in harmony"}))):conflictPairs.map(pair=>React.createElement(ConflictPairCard,{key:pair.key,pair,conflictLoading,onResolveQuick:handleResolveConflict,onResolveDraft:handleResolveConflict,resolveDraft:resolveDrafts[pair.key],onResolveDraftChange:handleResolveDraftChange})))):null)}export{MemoryPanel};
+import React from "react";
+import { handleKeyboardActivation } from "../../keyboard-access.js";
+import { conflictBadgeClass } from "../normalize/conflicts.js";
+import { EmptyItem } from "../components/common.jsx";
+import { ConflictPairCard } from "../components/ConflictPairCard.jsx";
+function MemoryPanel(p) {
+  const {
+    panel,
+    stats,
+    memoryQuery,
+    setMemoryQuery,
+    memoryResults,
+    memorySearching,
+    conflictPairs,
+    resolveDrafts,
+    conflictLoading,
+    permissionGrants,
+    permissionLoading,
+    permissionAccessDenied,
+    permissionsEndpointAvailable,
+    permissionDraft,
+    setPermissionDraft,
+    changePanel,
+    handleMemorySearch,
+    handleMemoryExpand,
+    handleResolveConflict,
+    handleResolveDraftChange,
+    handleGrantPermission,
+    handleRevokePermission,
+    refreshConflicts,
+    refreshPermissions,
+    reportSurfaceError,
+    pill,
+    latestRecallHitRate,
+    recallWindowAverage,
+  } = p;
+  return React.createElement(
+    React.Fragment,
+    null,
+    panel === "memory"
+      ? React.createElement(
+          "section",
+          { className: "panel active" },
+          React.createElement(
+            "div",
+            { className: "panel-header" },
+            React.createElement(
+              "div",
+              null,
+              React.createElement("h1", null, "Memory"),
+              React.createElement(
+                "p",
+                { className: "panel-subtitle" },
+                "Search the brain, inspect recall health, manage client permissions, and resolve conflicts without leaving the same tab.",
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "surface-actions" },
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "btn-sm",
+                  onClick: () => refreshConflicts().catch(reportSurfaceError),
+                },
+                "Refresh Conflicts",
+              ),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  className: "btn-sm",
+                  onClick: () => changePanel("analytics"),
+                },
+                "Analytics",
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "memory-layout" },
+            React.createElement(
+              "div",
+              { className: "card full" },
+              React.createElement(
+                "div",
+                { className: "card-header" },
+                React.createElement(
+                  "h2",
+                  { id: "memory-explorer-title" },
+                  "Memory Explorer",
+                ),
+                React.createElement(
+                  "span",
+                  { className: "badge", "aria-live": "polite" },
+                  memoryResults.length,
+                  React.createElement(
+                    "span",
+                    { className: "sr-only" },
+                    " memory matches",
+                  ),
+                ),
+              ),
+              React.createElement(
+                "form",
+                {
+                  className: "memory-search",
+                  "aria-labelledby": "memory-explorer-title",
+                  onSubmit: handleMemorySearch,
+                },
+                React.createElement("input", {
+                  type: "text",
+                  className: "memory-input",
+                  "aria-label": "Search Cortex memories",
+                  placeholder: "Search the brain... (uses cortex_peek)",
+                  value: memoryQuery,
+                  onChange: (event) => setMemoryQuery(event.target.value),
+                }),
+                React.createElement(
+                  "button",
+                  {
+                    type: "submit",
+                    className: "btn-sm btn-primary",
+                    disabled: memorySearching,
+                  },
+                  memorySearching ? "Searching..." : "Peek",
+                ),
+              ),
+              memoryResults.length > 0
+                ? React.createElement(
+                    "div",
+                    { className: "memory-stats" },
+                    React.createElement(
+                      "span",
+                      { className: "badge" },
+                      memoryResults.length,
+                      " matches",
+                    ),
+                    React.createElement(
+                      "span",
+                      { className: "muted-inline" },
+                      "via cortex_peek -- click to expand full recall",
+                    ),
+                  )
+                : null,
+              React.createElement(
+                "ul",
+                { className: "item-list" },
+                memoryResults.length
+                  ? memoryResults.map((match, index) =>
+                      React.createElement(
+                        "li",
+                        {
+                          key: `${match.source}-${index}`,
+                          className: `memory-item ${match.expanded ? "" : "memory-item-action"}`,
+                          role: match.expanded ? void 0 : "button",
+                          tabIndex: match.expanded ? void 0 : 0,
+                          "aria-expanded": match.expanded ? void 0 : !1,
+                          onClick: () =>
+                            !match.expanded && handleMemoryExpand(match.source),
+                          onKeyDown: (event) =>
+                            !match.expanded &&
+                            handleKeyboardActivation(event, () =>
+                              handleMemoryExpand(match.source),
+                            ),
+                        },
+                        React.createElement(
+                          "div",
+                          { className: "memory-header" },
+                          React.createElement(
+                            "span",
+                            { className: "memory-method" },
+                            match.method,
+                          ),
+                          React.createElement(
+                            "span",
+                            { className: "memory-relevance" },
+                            (match.relevance * 100).toFixed(0),
+                            "%",
+                          ),
+                        ),
+                        React.createElement(
+                          "div",
+                          { className: "memory-source" },
+                          match.source,
+                        ),
+                        match.expanded && match.excerpt
+                          ? React.createElement(
+                              "div",
+                              { className: "memory-excerpt" },
+                              match.excerpt,
+                            )
+                          : null,
+                        match.expanded
+                          ? null
+                          : React.createElement(
+                              "div",
+                              { className: "memory-expand-hint" },
+                              "Press Enter or Space to expand",
+                            ),
+                      ),
+                    )
+                  : memoryQuery
+                    ? React.createElement(EmptyItem, {
+                        text: "No matches -- try different keywords",
+                      })
+                    : React.createElement(EmptyItem, {
+                        text: "Search to explore Cortex memories",
+                      }),
+              ),
+            ),
+            React.createElement(
+              "div",
+              { className: "memory-side-stack" },
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Memory Health"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    latestRecallHitRate || 0,
+                    "%",
+                  ),
+                ),
+                React.createElement(
+                  "div",
+                  { className: "overview-status-list" },
+                  React.createElement(
+                    "div",
+                    { className: "overview-status-row" },
+                    React.createElement("span", null, "Memories"),
+                    React.createElement("strong", null, stats.memories),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "overview-status-row" },
+                    React.createElement("span", null, "Decisions"),
+                    React.createElement("strong", null, stats.decisions),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "overview-status-row" },
+                    React.createElement("span", null, "7-day recall avg"),
+                    React.createElement(
+                      "strong",
+                      null,
+                      recallWindowAverage || 0,
+                      "%",
+                    ),
+                  ),
+                  React.createElement(
+                    "div",
+                    { className: "overview-status-row" },
+                    React.createElement("span", null, "Open conflicts"),
+                    React.createElement("strong", null, conflictPairs.length),
+                  ),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Conflict Radar"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    conflictPairs.length,
+                  ),
+                ),
+                React.createElement(
+                  "ul",
+                  { className: "item-list compact-list" },
+                  conflictPairs.length
+                    ? conflictPairs
+                        .slice(0, 4)
+                        .map((pair) =>
+                          React.createElement(
+                            "li",
+                            { key: pair.key },
+                            React.createElement(
+                              "div",
+                              { className: "item-meta" },
+                              React.createElement(
+                                "span",
+                                { className: "item-name" },
+                                "#",
+                                pair.left.id ?? "?",
+                                " vs #",
+                                pair.right.id ?? "?",
+                              ),
+                              React.createElement(
+                                "span",
+                                {
+                                  className: conflictBadgeClass(
+                                    "conflict-pill conflict-class",
+                                    pair.classification,
+                                  ),
+                                },
+                                pair.classification,
+                              ),
+                            ),
+                            React.createElement(
+                              "div",
+                              { className: "item-detail" },
+                              pair.left.sourceAgent || "unknown",
+                              " / ",
+                              pair.right.sourceAgent || "unknown",
+                              " - ",
+                              pair.status,
+                            ),
+                          ),
+                        )
+                    : React.createElement(EmptyItem, {
+                        text: "No active conflicts",
+                      }),
+                ),
+              ),
+              React.createElement(
+                "div",
+                { className: "card" },
+                React.createElement(
+                  "div",
+                  { className: "card-header" },
+                  React.createElement("h2", null, "Client Permissions"),
+                  React.createElement(
+                    "span",
+                    { className: "badge" },
+                    permissionGrants.length,
+                  ),
+                ),
+                permissionsEndpointAvailable
+                  ? permissionAccessDenied
+                    ? React.createElement(
+                        "ul",
+                        { className: "item-list compact-list permission-list" },
+                        React.createElement(EmptyItem, {
+                          text: "Permission controls require admin role in team mode.",
+                        }),
+                      )
+                    : React.createElement(
+                        React.Fragment,
+                        null,
+                        React.createElement(
+                          "div",
+                          { className: "permission-form" },
+                          React.createElement("input", {
+                            type: "text",
+                            className: "memory-input",
+                            "aria-label": "Client id for permission grant",
+                            placeholder: "client id (e.g. codex, claude, *)",
+                            value: permissionDraft.client,
+                            onChange: (event) =>
+                              setPermissionDraft((current) => ({
+                                ...current,
+                                client: event.target.value,
+                              })),
+                          }),
+                          React.createElement(
+                            "div",
+                            { className: "permission-form-row" },
+                            React.createElement(
+                              "label",
+                              { className: "feed-control" },
+                              React.createElement("span", null, "Permission"),
+                              React.createElement(
+                                "select",
+                                {
+                                  value: permissionDraft.permission,
+                                  onChange: (event) =>
+                                    setPermissionDraft((current) => ({
+                                      ...current,
+                                      permission: event.target.value,
+                                    })),
+                                },
+                                React.createElement(
+                                  "option",
+                                  { value: "read" },
+                                  "read",
+                                ),
+                                React.createElement(
+                                  "option",
+                                  { value: "write" },
+                                  "write",
+                                ),
+                                React.createElement(
+                                  "option",
+                                  { value: "admin" },
+                                  "admin",
+                                ),
+                              ),
+                            ),
+                            React.createElement(
+                              "label",
+                              { className: "feed-control" },
+                              React.createElement("span", null, "Scope"),
+                              React.createElement("input", {
+                                type: "text",
+                                placeholder: "* or tool name",
+                                value: permissionDraft.scope,
+                                onChange: (event) =>
+                                  setPermissionDraft((current) => ({
+                                    ...current,
+                                    scope: event.target.value,
+                                  })),
+                              }),
+                            ),
+                          ),
+                          React.createElement(
+                            "div",
+                            { className: "permission-actions" },
+                            React.createElement(
+                              "button",
+                              {
+                                type: "button",
+                                className: "btn-sm btn-primary",
+                                disabled: permissionLoading,
+                                onClick: () =>
+                                  handleGrantPermission().catch(
+                                    reportSurfaceError,
+                                  ),
+                              },
+                              permissionLoading ? "Applying..." : "Grant",
+                            ),
+                            React.createElement(
+                              "button",
+                              {
+                                type: "button",
+                                className: "btn-sm",
+                                disabled: permissionLoading,
+                                onClick: () =>
+                                  refreshPermissions({ force: !0 }).catch(
+                                    reportSurfaceError,
+                                  ),
+                              },
+                              "Refresh",
+                            ),
+                          ),
+                        ),
+                        React.createElement(
+                          "ul",
+                          {
+                            className: "item-list compact-list permission-list",
+                          },
+                          permissionGrants.length
+                            ? permissionGrants
+                                .slice(0, 8)
+                                .map((grant) =>
+                                  React.createElement(
+                                    "li",
+                                    { key: grant.key },
+                                    React.createElement(
+                                      "div",
+                                      { className: "item-meta" },
+                                      React.createElement(
+                                        "span",
+                                        { className: "item-name" },
+                                        grant.client,
+                                      ),
+                                      React.createElement(
+                                        "span",
+                                        { className: "badge" },
+                                        grant.permission,
+                                      ),
+                                    ),
+                                    React.createElement(
+                                      "div",
+                                      { className: "item-detail" },
+                                      "scope=",
+                                      grant.scope,
+                                      " ",
+                                      grant.grantedBy
+                                        ? `- by ${grant.grantedBy}`
+                                        : "",
+                                    ),
+                                    React.createElement(
+                                      "div",
+                                      { className: "permission-item-actions" },
+                                      React.createElement(
+                                        "button",
+                                        {
+                                          type: "button",
+                                          className: "btn-sm btn-danger",
+                                          disabled: permissionLoading,
+                                          onClick: () =>
+                                            handleRevokePermission(grant).catch(
+                                              reportSurfaceError,
+                                            ),
+                                        },
+                                        "Revoke",
+                                      ),
+                                    ),
+                                  ),
+                                )
+                            : React.createElement(EmptyItem, {
+                                text: "No explicit grants yet (legacy permissive mode).",
+                              }),
+                        ),
+                      )
+                  : React.createElement(
+                      "div",
+                      { className: "permission-form" },
+                      React.createElement(
+                        "div",
+                        { className: "permission-actions" },
+                        React.createElement(
+                          "button",
+                          {
+                            type: "button",
+                            className: "btn-sm",
+                            disabled: permissionLoading,
+                            onClick: () =>
+                              refreshPermissions({ force: !0 }).catch(
+                                reportSurfaceError,
+                              ),
+                          },
+                          "Recheck",
+                        ),
+                      ),
+                      React.createElement(
+                        "ul",
+                        { className: "item-list compact-list permission-list" },
+                        React.createElement(EmptyItem, {
+                          text: "Permission endpoint unavailable on this daemon build.",
+                        }),
+                      ),
+                    ),
+              ),
+            ),
+          ),
+          React.createElement(
+            "div",
+            { className: "memory-conflicts-section" },
+            React.createElement(
+              "div",
+              { className: "panel-header panel-header-inline" },
+              React.createElement("h2", null, "Conflict Resolution"),
+              React.createElement(
+                "div",
+                { className: "panel-header-actions" },
+                React.createElement(
+                  "span",
+                  { className: "badge" },
+                  conflictPairs.length,
+                  " dispute",
+                  conflictPairs.length !== 1 ? "s" : "",
+                ),
+                React.createElement(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn-sm",
+                    onClick: () => refreshConflicts().catch(reportSurfaceError),
+                  },
+                  "Refresh",
+                ),
+              ),
+            ),
+            conflictPairs.length === 0
+              ? React.createElement(
+                  "div",
+                  { className: "card full" },
+                  React.createElement(
+                    "ul",
+                    { className: "item-list" },
+                    React.createElement(EmptyItem, {
+                      text: "No active conflicts -- all decisions are in harmony",
+                    }),
+                  ),
+                )
+              : conflictPairs.map((pair) =>
+                  React.createElement(ConflictPairCard, {
+                    key: pair.key,
+                    pair,
+                    conflictLoading,
+                    onResolveQuick: handleResolveConflict,
+                    onResolveDraft: handleResolveConflict,
+                    resolveDraft: resolveDrafts[pair.key],
+                    onResolveDraftChange: handleResolveDraftChange,
+                  }),
+                ),
+          ),
+        )
+      : null,
+  );
+}
+export { MemoryPanel };

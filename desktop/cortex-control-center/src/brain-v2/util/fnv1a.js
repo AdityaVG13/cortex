@@ -1,1 +1,17 @@
-function fnv1a32(bytes){let hash=2166136261;if(!bytes)return hash>>>0;if(typeof bytes=="string")for(let i=0;i<bytes.length;i+=1)hash^=bytes.charCodeAt(i),hash=Math.imul(hash,16777619);else{const len=bytes.length||bytes.byteLength||0,view=bytes.buffer?new Uint8Array(bytes.buffer,bytes.byteOffset||0,len):bytes;for(let i=0;i<len;i+=1)hash^=view[i]&255,hash=Math.imul(hash,16777619)}return hash>>>0}export{fnv1a32};
+function fnv1a32(bytes) {
+  let hash = 2166136261;
+  if (!bytes) return hash >>> 0;
+  if (typeof bytes == "string")
+    for (let i = 0; i < bytes.length; i += 1)
+      ((hash ^= bytes.charCodeAt(i)), (hash = Math.imul(hash, 16777619)));
+  else {
+    const len = bytes.length || bytes.byteLength || 0,
+      view = bytes.buffer
+        ? new Uint8Array(bytes.buffer, bytes.byteOffset || 0, len)
+        : bytes;
+    for (let i = 0; i < len; i += 1)
+      ((hash ^= view[i] & 255), (hash = Math.imul(hash, 16777619)));
+  }
+  return hash >>> 0;
+}
+export { fnv1a32 };

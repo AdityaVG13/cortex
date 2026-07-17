@@ -1,1 +1,24 @@
-let sparklineCounter=0;function clampNumber(value,min,max){return Math.min(Math.max(value,min),max)}function buildLineGeometry(data,width,height,padding=8){if(!data||data.length<2)return null;const numeric=data.map(value=>Number(value||0)),max=Math.max(...numeric,1),min=Math.min(...numeric,0),range=max-min||1,innerWidth=width-padding*2,innerHeight=height-padding*2,points=numeric.map((value,index)=>{const x=padding+index/(numeric.length-1)*innerWidth,y=padding+innerHeight-(value-min)/range*innerHeight;return{x,y,value}}),line=points.map((point,index)=>`${index===0?"M":"L"} ${point.x} ${point.y}`).join(" "),area=`${line} L ${points[points.length-1].x} ${height-padding} L ${points[0].x} ${height-padding} Z`;return{points,line,area,min,max,padding}}export{buildLineGeometry,clampNumber,sparklineCounter};
+let sparklineCounter = 0;
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+function buildLineGeometry(data, width, height, padding = 8) {
+  if (!data || data.length < 2) return null;
+  const numeric = data.map((value) => Number(value || 0)),
+    max = Math.max(...numeric, 1),
+    min = Math.min(...numeric, 0),
+    range = max - min || 1,
+    innerWidth = width - padding * 2,
+    innerHeight = height - padding * 2,
+    points = numeric.map((value, index) => {
+      const x = padding + (index / (numeric.length - 1)) * innerWidth,
+        y = padding + innerHeight - ((value - min) / range) * innerHeight;
+      return { x, y, value };
+    }),
+    line = points
+      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+      .join(" "),
+    area = `${line} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
+  return { points, line, area, min, max, padding };
+}
+export { buildLineGeometry, clampNumber, sparklineCounter };
