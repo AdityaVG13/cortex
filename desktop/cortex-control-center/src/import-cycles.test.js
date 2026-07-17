@@ -38,7 +38,7 @@ function resolveLocalImport(fromFile, specifier, allFiles) {
 
 function buildGraph(files) {
   const allFiles = new Set(files);
-  const importPattern = /import\s+(?:[^"';]+\s+from\s+)?["'](\.[^"']+)["']/g;
+  const importPattern = /\bimport\s*(?:[^"';]+?\s*from\s*)?["'](\.[^"']+)["']/g;
   const graph = new Map();
 
   for (const file of files) {

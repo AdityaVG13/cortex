@@ -1,3 +1,1 @@
-export function EmptyItem({ text }) {
-  return <li className="empty">{text}</li>;
-}
+import React from"react";function EmptyItem({text}){return React.createElement("li",{className:"empty"},text)}export{EmptyItem};

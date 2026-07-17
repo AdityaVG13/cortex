@@ -1,6 +1,4 @@
-import * as THREE from "three";
-
-const VERTEX = /* glsl */ `
+import*as THREE from"three";const VERTEX=`
 attribute float aProgress;
 attribute float aBeamId;
 attribute vec3 aColor;
@@ -17,9 +15,7 @@ void main() {
   vActivation = texture2D(uActivation, vec2(u, 0.5)).r;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
-`;
-
-const FRAGMENT = /* glsl */ `
+`,FRAGMENT=`
 precision mediump float;
 uniform float uTime;
 uniform float uHeadSpeed;
@@ -41,41 +37,4 @@ void main() {
   float intensity = (uBaseOpacity + vActivation * 0.85 + pulse * vActivation * 1.4);
   gl_FragColor = vec4(color * intensity, clamp(intensity, 0.0, 1.0));
 }
-`;
-
-export function createActivationTexture(slotCount) {
-  const size = Math.max(slotCount, 1);
-  const data = new Float32Array(size);
-  const texture = new THREE.DataTexture(data, size, 1, THREE.RedFormat, THREE.FloatType);
-  texture.needsUpdate = true;
-  texture.minFilter = THREE.NearestFilter;
-  texture.magFilter = THREE.NearestFilter;
-  texture.generateMipmaps = false;
-  return { texture, data };
-}
-
-export function createPulseMaterial({
-  activationTexture,
-  beamCount,
-  baseOpacity = 0.0,
-  headSpeed = 0.6,
-  headWidth = 0.1,
-  trailWidth = 0.22,
-} = {}) {
-  return new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uActivation: { value: activationTexture },
-      uBeamCount: { value: beamCount },
-      uHeadSpeed: { value: headSpeed },
-      uHeadWidth: { value: headWidth },
-      uTrailWidth: { value: trailWidth },
-      uBaseOpacity: { value: baseOpacity },
-    },
-    vertexShader: VERTEX,
-    fragmentShader: FRAGMENT,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-}
+`;function createActivationTexture(slotCount){const size=Math.max(slotCount,1),data=new Float32Array(size),texture=new THREE.DataTexture(data,size,1,THREE.RedFormat,THREE.FloatType);return texture.needsUpdate=!0,texture.minFilter=THREE.NearestFilter,texture.magFilter=THREE.NearestFilter,texture.generateMipmaps=!1,{texture,data}}function createPulseMaterial({activationTexture,beamCount,baseOpacity=0,headSpeed=.6,headWidth=.1,trailWidth=.22}={}){return new THREE.ShaderMaterial({uniforms:{uTime:{value:0},uActivation:{value:activationTexture},uBeamCount:{value:beamCount},uHeadSpeed:{value:headSpeed},uHeadWidth:{value:headWidth},uTrailWidth:{value:trailWidth},uBaseOpacity:{value:baseOpacity}},vertexShader:VERTEX,fragmentShader:FRAGMENT,transparent:!0,blending:THREE.AdditiveBlending,depthWrite:!1})}export{createActivationTexture,createPulseMaterial};
