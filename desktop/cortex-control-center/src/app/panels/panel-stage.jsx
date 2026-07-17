@@ -1,1 +1,53 @@
-import React from"react";import"../../ui-icons.jsx";import"../../constants.js";import"../constants.js";import"../../settings/settings-state.js";import"../../keyboard-access.js";import"../../live-surface.js";import"../utils/format.js";import"../normalize/conflicts.js";import"../utils/agent-color.js";import"../components/AnimatedNumber.jsx";import"../components/Sparkline.jsx";import"../components/MonteCarloProjectionChart.jsx";import"../components/common.jsx";import"../components/AgentItem.jsx";import"../components/OperatorSelector.jsx";import"../components/TaskItem.jsx";import"../components/LockItem.jsx";import"../components/FeedItem.jsx";import"../components/MessageItem.jsx";import"../components/ActivityItem.jsx";import"../components/ConflictPairCard.jsx";import"../constants.js";import{BrainVisualizerPanel}from"../components/BrainVisualizerPanel.jsx";import{SettingsPanel}from"./SettingsPanel.jsx";import{OverviewPanel}from"./OverviewPanel.jsx";import{AgentsPanel}from"./AgentsPanel.jsx";import{WorkPanel}from"./WorkPanel.jsx";import{MemoryPanel}from"./MemoryPanel.jsx";import{AnalyticsPanel}from"./AnalyticsPanel.jsx";import{ConflictsPanel}from"./ConflictsPanel.jsx";import{AboutPanel}from"./AboutPanel.jsx";function PanelStage(p){return React.createElement("div",{className:"panel-stage","data-panel-direction":p.panelMotionDirection},React.createElement(SettingsPanel,{...p}),React.createElement(OverviewPanel,{...p}),React.createElement(AgentsPanel,{...p}),React.createElement(WorkPanel,{...p}),React.createElement(MemoryPanel,{...p}),React.createElement(AnalyticsPanel,{...p}),React.createElement(BrainVisualizerPanel,{brainPanelRef:p.brainPanelRef,panel:p.panel,brainPanelMounted:p.brainPanelMounted,api:p.api,cortexBase:p.cortexBase,authToken:p.tokenRef.current,effectiveReducedMotion:p.effectiveReducedMotion}),React.createElement(ConflictsPanel,{...p}),React.createElement(AboutPanel,{...p}))}export{PanelStage};
+import React from "react";
+import { BrainVisualizerPanel } from "../components/BrainVisualizerPanel.jsx";
+import { SettingsPanel } from "./SettingsPanel.jsx";
+import { OverviewPanel } from "./OverviewPanel.jsx";
+import { AgentsPanel } from "./AgentsPanel.jsx";
+import { WorkPanel } from "./WorkPanel.jsx";
+import { MemoryPanel } from "./MemoryPanel.jsx";
+import { AnalyticsPanel } from "./AnalyticsPanel.jsx";
+import { ConflictsPanel } from "./ConflictsPanel.jsx";
+import { AboutPanel } from "./AboutPanel.jsx";
+
+function renderActivePanel(p) {
+  switch (p.panel) {
+    case "settings":
+      return <SettingsPanel {...p} />;
+    case "overview":
+      return <OverviewPanel {...p} />;
+    case "agents":
+      return <AgentsPanel {...p} />;
+    case "work":
+      return <WorkPanel {...p} />;
+    case "memory":
+      return <MemoryPanel {...p} />;
+    case "analytics":
+      return <AnalyticsPanel {...p} />;
+    case "brain":
+      return (
+        <BrainVisualizerPanel
+          brainPanelRef={p.brainPanelRef}
+          panel={p.panel}
+          brainPanelMounted={p.brainPanelMounted}
+          api={p.api}
+          cortexBase={p.cortexBase}
+          authToken={p.tokenRef.current}
+          effectiveReducedMotion={p.effectiveReducedMotion}
+        />
+      );
+    case "conflicts":
+      return <ConflictsPanel {...p} />;
+    case "about":
+      return <AboutPanel {...p} />;
+    default:
+      return null;
+  }
+}
+
+export function PanelStage(p) {
+  return (
+    <div className="panel-stage" data-panel-direction={p.panelMotionDirection}>
+      {renderActivePanel(p)}
+    </div>
+  );
+}
