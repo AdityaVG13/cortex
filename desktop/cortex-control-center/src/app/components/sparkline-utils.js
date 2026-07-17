@@ -1,5 +1,4 @@
-let sparklineCounter = 0;
-function clampNumber(value, min, max) {
+export function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 function buildLineGeometry(data, width, height, padding = 8) {
@@ -21,4 +20,4 @@ function buildLineGeometry(data, width, height, padding = 8) {
     area = `${line} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
   return { points, line, area, min, max, padding };
 }
-export { buildLineGeometry, clampNumber, sparklineCounter };
+export { buildLineGeometry, clampNumber };

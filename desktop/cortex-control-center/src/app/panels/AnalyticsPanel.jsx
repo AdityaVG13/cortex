@@ -15,6 +15,7 @@ import { AnimatedNumber } from "../components/AnimatedNumber.jsx";
 import { Sparkline } from "../components/Sparkline.jsx";
 import { MonteCarloProjectionChart } from "../components/MonteCarloProjectionChart.jsx";
 import { EmptyItem } from "../components/common.jsx";
+import { clampNumber } from "../components/sparkline-utils.js";
 function AnalyticsPanel(p) {
   const {
     panel,

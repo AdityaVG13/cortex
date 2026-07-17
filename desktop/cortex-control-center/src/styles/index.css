@@ -106,15 +106,9 @@
     text-shadow: none !important;
   }
   .app,
-  .app-shell,
   .sidebar,
-  .main,
   .panel,
-  .settings-section,
-  .modal,
-  .glass-card,
-  .memory-card,
-  .agent-card {
+  .settings-section {
     background-image: none !important;
   }
   :is(
@@ -721,16 +715,6 @@ body {
   outline: none;
   box-shadow: 0 0 12px #00d4ff1a;
 }
-.feed-control-check {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  padding-bottom: 7px;
-}
-.feed-control-check input {
-  accent-color: var(--cyan);
-}
-.feed-actions,
 .surface-actions {
   justify-content: flex-end;
   align-items: center;
@@ -1391,9 +1375,7 @@ button.sys-item {
 :root[data-cortex-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-effective-reduced-motion="reduce"] .metrics .metric,
 :root[data-cortex-reduced-motion="reduce"] .item-list li,
-:root[data-cortex-effective-reduced-motion="reduce"] .item-list li,
-:root[data-cortex-reduced-motion="reduce"] .activity-feed li,
-:root[data-cortex-effective-reduced-motion="reduce"] .activity-feed li {
+:root[data-cortex-effective-reduced-motion="reduce"] .item-list li {
   animation: none !important;
 }
 @keyframes panel-slide-forward {
@@ -3060,14 +3042,6 @@ button.sys-item {
   left: 18px;
   right: auto;
 }
-.brain-hud-secondary {
-  align-items: center;
-  gap: 18px;
-  padding: 10px 14px;
-  display: flex;
-  top: 140px;
-  left: 18px;
-}
 .brain-hud-copy {
   flex-direction: column;
   gap: 4px;
@@ -3500,8 +3474,7 @@ kbd {
   .work-feed-toolbar {
     grid-template-columns: minmax(0, 1fr);
   }
-  .surface-actions,
-  .feed-actions {
+  .surface-actions {
     flex-wrap: wrap;
     justify-content: flex-start;
     width: 100%;
@@ -3587,15 +3560,6 @@ kbd {
   background: #ff174426;
   box-shadow: 0 0 12px #ff17441a;
 }
-.btn-collapse {
-  text-align: center;
-  width: 100%;
-  color: var(--text-3);
-  font-size: 11px;
-}
-.btn-collapse:hover {
-  color: var(--cyan);
-}
 .app.sidebar-collapsed {
   grid-template-columns: var(--sidebar-collapsed-w) minmax(0, 1fr);
 }
@@ -3609,8 +3573,7 @@ kbd {
 }
 .sidebar.collapsed .logo span,
 .sidebar.collapsed .pill,
-.sidebar.collapsed .sidebar-status,
-.sidebar.collapsed .daemon-controls {
+.sidebar.collapsed .sidebar-status {
   display: none;
 }
 .sidebar.collapsed .nav-item {
@@ -3641,10 +3604,6 @@ kbd {
 .sidebar.collapsed .btn-sidebar-collapse {
   padding: 8px 0;
   font-size: 14px;
-}
-.sidebar.collapsed .sidebar-collapse-btn {
-  top: 20px;
-  right: -1px;
 }
 @media (width<=480px) {
   .app,
@@ -3729,7 +3688,6 @@ kbd {
   .overview-hero-meta,
   .panel-header-actions,
   .surface-actions,
-  .feed-actions,
   .analytics-toolbar,
   .analytics-view-toggle,
   .permission-actions {
@@ -3752,7 +3710,6 @@ kbd {
   .overview-hero-meta .btn-sm,
   .panel-header-actions .btn-sm,
   .surface-actions .btn-sm,
-  .feed-actions .btn-sm,
   .connection-actions .btn-sm,
   .settings-budget-actions .btn-sm,
   .permission-actions .btn-sm {
@@ -3789,17 +3746,10 @@ kbd {
     margin: -16px -10px 0;
   }
   .brain-hud,
-  .brain-hud-primary,
-  .brain-hud-secondary {
+  .brain-hud-primary {
     max-width: none;
     left: 10px;
     right: 10px;
-  }
-  .brain-hud-secondary {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-    top: 154px;
   }
 }
 .topbar-connection {
@@ -4323,11 +4273,6 @@ kbd {
   font-weight: 500;
   overflow: hidden;
 }
-.brain-v2-tooltip-meta {
-  color: #40e0ffa6;
-  margin-top: 4px;
-  font-size: 10px;
-}
 .brain-v2-detail {
   color: #f1faff;
   z-index: 6;
@@ -4446,4 +4391,61 @@ kbd {
     inset: auto 0 0;
     transform: none;
   }
+}
+.nav-item:not(.active) {
+  color: #7f8fa6;
+}
+.work-operator-toolbar {
+  align-items: end;
+  margin-bottom: 14px;
+}
+.surface-inline-hint {
+  font-family: var(--font-mono);
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.task-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  display: flex;
+}
+.task-complete-panel,
+.surface-compose {
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  display: flex;
+}
+.task-complete-panel {
+  background: #ffffff08;
+  border: 1px solid #ffffff0f;
+  border-radius: 10px;
+  padding: 12px;
+}
+.task-complete-panel textarea,
+.surface-compose textarea {
+  resize: vertical;
+  background: var(--bg-deep);
+  width: 100%;
+  min-height: 84px;
+  color: var(--text);
+  font: inherit;
+  border: 1px solid #ffffff14;
+  border-radius: 10px;
+  padding: 12px 14px;
+  line-height: 1.5;
+}
+.task-complete-panel textarea:focus,
+.surface-compose textarea:focus {
+  border-color: #00d4ff59;
+  outline: none;
+  box-shadow: 0 0 0 1px #00d4ff1f;
+}
+.surface-compose {
+  margin-bottom: 14px;
+}
+.surface-compose .surface-actions {
+  justify-content: flex-end;
 }

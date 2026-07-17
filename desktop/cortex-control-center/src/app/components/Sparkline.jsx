@@ -1,6 +1,9 @@
 import React from "react";
 import { useState } from "react";
 import { buildLineGeometry } from "./sparkline-utils.js";
+
+let sparklineCounter = 0;
+
 function Sparkline({
   data,
   width = 280,
@@ -12,12 +15,7 @@ function Sparkline({
 }) {
   const [id] = useState(() => `spark-fill-${++sparklineCounter}`),
     geometry = buildLineGeometry(data, width, height, 8);
-  if (!geometry)
-    return React.createElement(
-      "div",
-      { className: "sparkline-empty" },
-      "No data yet",
-    );
+  if (!geometry) return React.createElement("div", { className: "sparkline-empty" }, "No data yet");
   const lastPoint = geometry.points.at(-1),
     gridLines = Array.from({ length: 4 }, (_, index) => {
       const y = 8 + (index * (height - 16)) / 3;
