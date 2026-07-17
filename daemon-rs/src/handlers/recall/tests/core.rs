@@ -3,6 +3,7 @@
 mod tests {
     use super::support::*;
     use super::super::*;
+    #[test]
     fn search_memories_excludes_temporally_invalid_rows() {
         let conn = test_conn();
         conn.execute(

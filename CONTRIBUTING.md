@@ -45,7 +45,7 @@ npm run dev
 
 ## Recommended Checks
 
-Run the checks relevant to the area you changed.
+Run the checks relevant to the area you changed. See [Info/testing-philosophy.md](Info/testing-philosophy.md) for what we optimize for (release boundaries, not exhaustive unit coverage).
 
 ### Daemon / Rust changes
 
@@ -53,6 +53,9 @@ Run the checks relevant to the area you changed.
 cd daemon-rs
 cargo fmt
 cargo check --all-features
+# Optional for most PRs; required before release or when touching CLI output:
+cargo test --test cli_goldens
+# Full suite only when changing core recall/store/MCP behavior:
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -66,6 +69,13 @@ cd desktop/cortex-control-center
 npm test
 npm run build
 npm run verify:lifecycle:dev
+```
+
+### Release / smoke (maintainers)
+
+```bash
+bash scripts/first-run-smoke.sh
+cd daemon-rs && cargo test --test cli_goldens
 ```
 
 ### Root convenience scripts
