@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: MIT
-use std::collections::HashMap;
-use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
-use axum::Json;
+use super::*;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use crate::handlers::{ensure_auth_rated, ensure_auth_with_caller_rated, json_response, log_event, now_iso, resolve_source_identity, truncate_chars};
-use crate::db::{archive_entries_scoped, checkpoint_wal_best_effort};
-use crate::state::RuntimeState;
-
-
-use super::*;
+use std::collections::HashMap;
 pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare(
@@ -34,15 +25,7 @@ pub fn list_permissions(conn: &Connection, owner_id: i64) -> Result<Vec<Value>, 
         .map_err(|err| err.to_string())?;
     Ok(rows.filter_map(Result::ok).collect())
 }
-
-pub fn grant_permission(
-    conn: &Connection,
-    owner_id: i64,
-    client: &str,
-    permission: &str,
-    scope: &str,
-    granted_by: &str,
-) -> Result<(), String> {
+pub fn grant_permission(conn: &Connection, owner_id: i64, client: &str, permission: &str, scope: &str, granted_by: &str) -> Result<(), String> {
     conn.execute(
         "INSERT INTO client_permissions (owner_id, client_id, permission, scope, granted_by, granted_at)
          VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
@@ -53,14 +36,7 @@ pub fn grant_permission(
     .map_err(|err| err.to_string())?;
     Ok(())
 }
-
-pub fn revoke_permission(
-    conn: &Connection,
-    owner_id: i64,
-    client: &str,
-    permission: &str,
-    scope: &str,
-) -> Result<usize, String> {
+pub fn revoke_permission(conn: &Connection, owner_id: i64, client: &str, permission: &str, scope: &str) -> Result<usize, String> {
     conn.execute(
         "DELETE FROM client_permissions
          WHERE owner_id = ?1 AND client_id = ?2 AND permission = ?3 AND scope = ?4",
@@ -68,16 +44,12 @@ pub fn revoke_permission(
     )
     .map_err(|err| err.to_string())
 }
-
 pub fn parse_conflict_id(raw: &str) -> Option<(i64, i64)> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let payload = trimmed
-        .strip_prefix("decision:")
-        .or_else(|| trimmed.strip_prefix("decision_pair:"))
-        .unwrap_or(trimmed);
+    let payload = trimmed.strip_prefix("decision:").or_else(|| trimmed.strip_prefix("decision_pair:")).unwrap_or(trimmed);
     let mut parts = payload.split(':');
     let a = parts.next()?.trim().parse::<i64>().ok()?;
     let b = parts.next()?.trim().parse::<i64>().ok()?;
@@ -86,12 +58,10 @@ pub fn parse_conflict_id(raw: &str) -> Option<(i64, i64)> {
     }
     Some((a.min(b), a.max(b)))
 }
-
 pub(crate) fn conflict_id_from_pair(a: i64, b: i64) -> String {
     let (left, right) = (a.min(b), a.max(b));
     format!("decision:{left}:{right}")
 }
-
 pub(crate) fn normalize_conflict_classification(raw: &str) -> Option<String> {
     let normalized = raw.trim().to_ascii_uppercase();
     match normalized.as_str() {
@@ -99,7 +69,6 @@ pub(crate) fn normalize_conflict_classification(raw: &str) -> Option<String> {
         _ => None,
     }
 }
-
 pub(crate) fn default_classification_for_action(action: &str) -> &'static str {
     match action {
         "merge" => "REFINES",
@@ -107,7 +76,6 @@ pub(crate) fn default_classification_for_action(action: &str) -> &'static str {
         _ => "CONTRADICTS",
     }
 }
-
 pub(crate) struct DecisionNodeRecord {
     id: i64,
     decision: String,
@@ -122,7 +90,6 @@ pub(crate) struct DecisionNodeRecord {
     created_at: Option<String>,
     updated_at: Option<String>,
 }
-
 pub(crate) fn build_decision_node(record: DecisionNodeRecord) -> Value {
     let source_agent_legacy = record.source_agent.clone();
     let created_at_legacy = record.created_at.clone();
@@ -145,25 +112,19 @@ pub(crate) fn build_decision_node(record: DecisionNodeRecord) -> Value {
         "updated_at": record.updated_at,
     })
 }
-
 pub(crate) fn decision_node_missing(id: i64) -> Value {
     json!({
         "id": id,
         "missing": true
     })
 }
-
-pub(crate) fn fetch_decision_nodes_by_ids(
-    conn: &Connection,
-    ids: &[i64],
-) -> Result<HashMap<i64, Value>, String> {
+pub(crate) fn fetch_decision_nodes_by_ids(conn: &Connection, ids: &[i64]) -> Result<HashMap<i64, Value>, String> {
     let mut unique_ids = ids.to_vec();
     unique_ids.sort_unstable();
     unique_ids.dedup();
     if unique_ids.is_empty() {
         return Ok(HashMap::new());
     }
-
     let placeholders = vec!["?"; unique_ids.len()].join(", ");
     let sql = format!(
         "SELECT id, decision, context, source_agent, source_client, source_model, reasoning_depth,
@@ -194,18 +155,15 @@ pub(crate) fn fetch_decision_nodes_by_ids(
             ))
         })
         .map_err(|err| err.to_string())?;
-
     let mut out = HashMap::with_capacity(unique_ids.len());
     for row in rows.flatten() {
         out.insert(row.0, row.1);
     }
     Ok(out)
 }
-
 pub(crate) fn decision_text(node: &Value) -> Option<&str> {
     node.get("decision").and_then(|value| value.as_str())
 }
-
 pub(crate) fn trust_snapshot(node: &Value) -> Value {
     json!({
         "id": node.get("id").cloned().unwrap_or(Value::Null),
@@ -217,7 +175,6 @@ pub(crate) fn trust_snapshot(node: &Value) -> Value {
         "sourceAgent": node.get("sourceAgent").cloned().unwrap_or(Value::Null),
     })
 }
-
 pub(crate) fn preferred_winner_id(left: &Value, right: &Value) -> Option<i64> {
     let left_id = left.get("id").and_then(|value| value.as_i64())?;
     let right_id = right.get("id").and_then(|value| value.as_i64())?;
@@ -239,31 +196,19 @@ pub(crate) fn preferred_winner_id(left: &Value, right: &Value) -> Option<i64> {
         Some(right_id)
     }
 }
-
 pub(crate) fn conflict_matches_filters(conflict: &Value, options: &ConflictListOptions) -> bool {
     if let Some(expected) = options.classification.as_deref() {
-        if conflict
-            .get("classification")
-            .and_then(|value| value.as_str())
-            .map(|value| value != expected)
-            .unwrap_or(true)
-        {
+        if conflict.get("classification").and_then(|value| value.as_str()).map(|value| value != expected).unwrap_or(true) {
             return false;
         }
     }
     if let Some(expected_id) = options.conflict_id.as_deref() {
-        if conflict
-            .get("id")
-            .and_then(|value| value.as_str())
-            .map(|value| value != expected_id)
-            .unwrap_or(true)
-        {
+        if conflict.get("id").and_then(|value| value.as_str()).map(|value| value != expected_id).unwrap_or(true) {
             return false;
         }
     }
     true
 }
-
 pub(crate) fn legacy_pair_from_conflict(conflict: &Value) -> Value {
     let left = conflict.get("left").cloned().unwrap_or(Value::Null);
     let right = conflict.get("right").cloned().unwrap_or(Value::Null);
@@ -302,7 +247,6 @@ pub(crate) fn legacy_pair_from_conflict(conflict: &Value) -> Value {
         },
     })
 }
-
 pub(crate) fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare(
@@ -318,14 +262,12 @@ pub(crate) fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec
              LIMIT ?1",
         )
         .map_err(|err| err.to_string())?;
-
     let rows = stmt
         .query_map(params![limit as i64], |row| {
             let left_id = row.get::<_, i64>(0)?;
             let left_decision = row.get::<_, String>(1)?;
             let right_id = row.get::<_, i64>(12)?;
             let right_decision = row.get::<_, String>(13)?;
-
             let left = build_decision_node(DecisionNodeRecord {
                 id: left_id,
                 decision: left_decision.clone(),
@@ -354,11 +296,9 @@ pub(crate) fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec
                 created_at: row.get::<_, Option<String>>(22)?,
                 updated_at: row.get::<_, Option<String>>(23)?,
             });
-
             let similarity = crate::conflict::jaccard_similarity(&left_decision, &right_decision);
             let classification = "CONTRADICTS".to_string();
             let conflict_id = conflict_id_from_pair(left_id, right_id);
-
             Ok(json!({
                 "id": conflict_id,
                 "status": "open",
@@ -375,10 +315,8 @@ pub(crate) fn list_open_conflicts(conn: &Connection, limit: usize) -> Result<Vec
             }))
         })
         .map_err(|err| err.to_string())?;
-
     Ok(rows.filter_map(Result::ok).collect())
 }
-
 pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result<Vec<Value>, String> {
     #[derive(Debug)]
     pub(crate) struct ResolvedConflictSeed {
@@ -395,7 +333,6 @@ pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result
         notes: Value,
         resolution_classification: Value,
     }
-
     let mut stmt = conn
         .prepare(
             "SELECT data, source_agent, created_at
@@ -405,7 +342,6 @@ pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result
              LIMIT ?1",
         )
         .map_err(|err| err.to_string())?;
-
     let rows = stmt
         .query_map(params![limit as i64], |row| {
             let data_raw: String = row.get(0)?;
@@ -414,55 +350,31 @@ pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result
             Ok((data_raw, source_agent, created_at))
         })
         .map_err(|err| err.to_string())?;
-
     let mut seeds = Vec::new();
     let mut decision_ids = Vec::new();
     for row in rows.flatten() {
         let (data_raw, source_agent, created_at) = row;
         let data: Value = serde_json::from_str(&data_raw).unwrap_or_else(|_| json!({}));
-        let winner_id = data
-            .get("winnerId")
-            .and_then(|value| value.as_i64())
-            .or_else(|| data.get("keepId").and_then(|value| value.as_i64()));
+        let winner_id = data.get("winnerId").and_then(|value| value.as_i64()).or_else(|| data.get("keepId").and_then(|value| value.as_i64()));
         let superseded_id = data.get("supersededId").and_then(|value| value.as_i64());
         let Some(winner_id) = winner_id else {
             continue;
         };
-
         let conflict_id = data
             .get("conflictId")
             .and_then(|value| value.as_str())
             .map(str::to_string)
             .or_else(|| superseded_id.map(|other| conflict_id_from_pair(winner_id, other)))
             .unwrap_or_else(|| conflict_id_from_pair(winner_id, winner_id));
-
-        let (left_id, right_id) = parse_conflict_id(&conflict_id).unwrap_or_else(|| {
-            (
-                winner_id.min(superseded_id.unwrap_or(winner_id)),
-                winner_id.max(superseded_id.unwrap_or(winner_id)),
-            )
-        });
-        let action = data
-            .get("action")
-            .and_then(|value| value.as_str())
-            .unwrap_or("keep")
-            .to_string();
+        let (left_id, right_id) = parse_conflict_id(&conflict_id).unwrap_or_else(|| (winner_id.min(superseded_id.unwrap_or(winner_id)), winner_id.max(superseded_id.unwrap_or(winner_id))));
+        let action = data.get("action").and_then(|value| value.as_str()).unwrap_or("keep").to_string();
         let classification = data
             .get("classification")
             .and_then(|value| value.as_str())
             .and_then(normalize_conflict_classification)
             .unwrap_or_else(|| default_classification_for_action(&action).to_string());
-        let resolved_by = data
-            .get("resolvedBy")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .or(source_agent.clone());
-        let resolved_at = data
-            .get("resolvedAt")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .unwrap_or(created_at);
-
+        let resolved_by = data.get("resolvedBy").and_then(|value| value.as_str()).map(str::to_string).or(source_agent.clone());
+        let resolved_at = data.get("resolvedAt").and_then(|value| value.as_str()).map(str::to_string).unwrap_or(created_at);
         decision_ids.push(left_id);
         decision_ids.push(right_id);
         seeds.push(ResolvedConflictSeed {
@@ -480,18 +392,11 @@ pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result
             resolution_classification: data.get("classification").cloned().unwrap_or(Value::Null),
         });
     }
-
     let decision_nodes = fetch_decision_nodes_by_ids(conn, &decision_ids)?;
     let mut conflicts = Vec::with_capacity(seeds.len());
     for seed in seeds {
-        let left = decision_nodes
-            .get(&seed.left_id)
-            .cloned()
-            .unwrap_or_else(|| decision_node_missing(seed.left_id));
-        let right = decision_nodes
-            .get(&seed.right_id)
-            .cloned()
-            .unwrap_or_else(|| decision_node_missing(seed.right_id));
+        let left = decision_nodes.get(&seed.left_id).cloned().unwrap_or_else(|| decision_node_missing(seed.left_id));
+        let right = decision_nodes.get(&seed.right_id).cloned().unwrap_or_else(|| decision_node_missing(seed.right_id));
         let similarity = seed.similarity.or_else(|| {
             let left_text = decision_text(&left)?;
             let right_text = decision_text(&right)?;
@@ -520,7 +425,5 @@ pub(crate) fn list_resolved_conflicts(conn: &Connection, limit: usize) -> Result
             }
         }));
     }
-
     Ok(conflicts)
 }
-

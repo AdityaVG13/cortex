@@ -6,14 +6,12 @@ const RERANK_FUSION_ALPHA_ENV: &str = "CORTEX_RERANK_FUSION_ALPHA";
 const DEFAULT_TOP_N: usize = 24;
 const MAX_TOP_N: usize = 64;
 const DEFAULT_FUSION_ALPHA: f64 = 0.65;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RerankMode {
     Off,
     Shadow,
     Primary,
 }
-
 impl RerankMode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -23,14 +21,12 @@ impl RerankMode {
         }
     }
 }
-
 #[derive(Clone, Debug)]
 pub struct RerankConfig {
     pub mode: RerankMode,
     pub top_n: usize,
     pub fusion_alpha: f64,
 }
-
 impl RerankConfig {
     pub fn from_env() -> Self {
         let mode = parse_mode_from_env();
@@ -45,13 +41,8 @@ impl RerankConfig {
             .filter(|value| value.is_finite())
             .unwrap_or(DEFAULT_FUSION_ALPHA)
             .clamp(0.0, 1.0);
-        Self {
-            mode,
-            top_n,
-            fusion_alpha,
-        }
+        Self { mode, top_n, fusion_alpha }
     }
-
     #[cfg(test)]
     pub fn off() -> Self {
         Self {
@@ -60,16 +51,13 @@ impl RerankConfig {
             fusion_alpha: DEFAULT_FUSION_ALPHA,
         }
     }
-
     pub fn is_active(&self) -> bool {
         !matches!(self.mode, RerankMode::Off)
     }
-
     pub fn is_primary(&self) -> bool {
         matches!(self.mode, RerankMode::Primary)
     }
 }
-
 fn parse_mode_from_env() -> RerankMode {
     if let Ok(raw) = std::env::var(RERANK_MODE_ENV) {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -82,7 +70,6 @@ fn parse_mode_from_env() -> RerankMode {
             }
         }
     }
-
     match std::env::var(RERANK_ENABLED_ENV) {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "on" | "primary" => RerankMode::Primary,
@@ -92,4 +79,3 @@ fn parse_mode_from_env() -> RerankMode {
         Err(_) => RerankMode::Off,
     }
 }
-

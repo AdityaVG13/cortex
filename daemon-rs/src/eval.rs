@@ -2,7 +2,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-
 const RATE_GATED_METRICS: [(&str, bool); 6] = [
     ("taskSuccessRate", true),
     ("firstPassSuccess", true),
@@ -11,7 +10,6 @@ const RATE_GATED_METRICS: [(&str, bool); 6] = [
     ("lowTrustHitRate", false),
     ("consensusPromotionPrecision", true),
 ];
-
 #[derive(Default, Clone)]
 struct TaskEvalAggregate {
     total: i64,
@@ -20,13 +18,11 @@ struct TaskEvalAggregate {
     retries_total: i64,
     latencies_valid_ms: Vec<i64>,
 }
-
 impl TaskEvalAggregate {
     fn observe(&mut self, outcome: &str, retries: Option<i64>, latency_ms: Option<i64>) {
         self.total += 1;
         let retries_value = retries.unwrap_or(0).max(0);
         self.retries_total += retries_value;
-
         if outcome == "success" {
             self.success += 1;
             if retries_value == 0 {
@@ -39,23 +35,18 @@ impl TaskEvalAggregate {
             }
         }
     }
-
     fn task_success_rate(&self) -> f64 {
         ratio(self.success, self.total)
     }
-
     fn first_pass_success(&self) -> f64 {
         ratio(self.first_pass_success, self.total)
     }
-
     fn retry_count(&self) -> f64 {
         ratio(self.retries_total, self.total)
     }
-
     fn median_time_to_valid_result_ms(&self) -> f64 {
         median_i64(&self.latencies_valid_ms).unwrap_or(0.0)
     }
-
     fn as_json(&self) -> Value {
         json!({
             "sampleCount": self.total,
@@ -66,18 +57,10 @@ impl TaskEvalAggregate {
         })
     }
 }
-
 fn is_baseline_task_class(task_class: &str) -> bool {
-    task_class
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("baseline")
+    task_class.trim().to_ascii_lowercase().starts_with("baseline")
 }
-
-fn collect_task_metrics(
-    conn: &Connection,
-    since_modifier: &str,
-) -> (TaskEvalAggregate, TaskEvalAggregate) {
+fn collect_task_metrics(conn: &Connection, since_modifier: &str) -> (TaskEvalAggregate, TaskEvalAggregate) {
     let mut baseline = TaskEvalAggregate::default();
     let mut assisted = TaskEvalAggregate::default();
     let mut stmt = match conn.prepare(
@@ -89,17 +72,11 @@ fn collect_task_metrics(
         Err(_) => return (baseline, assisted),
     };
     let rows = match stmt.query_map(params![since_modifier], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-        ))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?, row.get::<_, Option<i64>>(3)?))
     }) {
         Ok(rows) => rows,
         Err(_) => return (baseline, assisted),
     };
-
     for row in rows.flatten() {
         let (task_class, outcome, retries, latency_ms) = row;
         if is_baseline_task_class(&task_class) {
@@ -108,49 +85,21 @@ fn collect_task_metrics(
             assisted.observe(&outcome, retries, latency_ms);
         }
     }
-
     (baseline, assisted)
 }
-
-/// Build a local reliability/memory-quality snapshot over the requested horizon.
 pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
     let horizon_days = horizon_days.clamp(1, 180);
     let since_modifier = format!("-{horizon_days} days");
-
     let open_conflicts: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status = 'disputed' AND disputes_id IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'disputed' AND disputes_id IS NOT NULL", [], |row| row.get(0))
         .unwrap_or(0);
-    let active_memories: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'active'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    let active_decisions: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status = 'active'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let active_memories: i64 = conn.query_row("SELECT COUNT(*) FROM memories WHERE status = 'active'", [], |row| row.get(0)).unwrap_or(0);
+    let active_decisions: i64 = conn.query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active'", [], |row| row.get(0)).unwrap_or(0);
     let decayed_memories: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM memories WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |row| row.get(0))
         .unwrap_or(0);
     let decayed_decisions: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM decisions WHERE status = 'active' AND score < 0.5 AND pinned = 0", [], |row| row.get(0))
         .unwrap_or(0);
     let recent_conflicts: i64 = conn
         .query_row(
@@ -173,7 +122,6 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
             |row| row.get(0),
         )
         .unwrap_or(0);
-
     let recent_memory_hits: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memories
@@ -233,7 +181,6 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
             |row| row.get(0),
         )
         .unwrap_or(0);
-
     let promoted_consensus: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(CAST(json_extract(data, '$.promoted') AS INTEGER)), 0)
@@ -256,11 +203,9 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
             |row| row.get(0),
         )
         .unwrap_or(0);
-
     let (baseline_tasks, assisted_tasks) = collect_task_metrics(conn, since_modifier.as_str());
     let baseline_json = baseline_tasks.as_json();
     let assisted_json = assisted_tasks.as_json();
-
     let total_active = active_memories + active_decisions;
     let conflict_burden = ratio(open_conflicts, active_decisions);
     let decay_burden = ratio(decayed_memories + decayed_decisions, total_active);
@@ -268,34 +213,20 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
     let contradiction_rate = ratio(recent_conflicts, recent_recalls);
     let stale_memory_hit_rate = ratio(stale_memory_hits, recent_memory_hits);
     let low_trust_hit_rate = ratio(recent_low_trust_hits, recent_total_hits);
-    let consensus_promotion_precision =
-        ratio(promoted_consensus, promoted_consensus + failed_consensus);
-
+    let consensus_promotion_precision = ratio(promoted_consensus, promoted_consensus + failed_consensus);
     let success_rate_delta = diff_signal(
         assisted_json.get("taskSuccessRate").and_then(Value::as_f64),
         baseline_json.get("taskSuccessRate").and_then(Value::as_f64),
     );
     let first_pass_delta = diff_signal(
-        assisted_json
-            .get("firstPassSuccess")
-            .and_then(Value::as_f64),
-        baseline_json
-            .get("firstPassSuccess")
-            .and_then(Value::as_f64),
+        assisted_json.get("firstPassSuccess").and_then(Value::as_f64),
+        baseline_json.get("firstPassSuccess").and_then(Value::as_f64),
     );
     let median_latency_delta_ms = diff_signal(
-        assisted_json
-            .get("medianTimeToValidResultMs")
-            .and_then(Value::as_f64),
-        baseline_json
-            .get("medianTimeToValidResultMs")
-            .and_then(Value::as_f64),
+        assisted_json.get("medianTimeToValidResultMs").and_then(Value::as_f64),
+        baseline_json.get("medianTimeToValidResultMs").and_then(Value::as_f64),
     );
-    let retry_delta = diff_signal(
-        assisted_json.get("retryCount").and_then(Value::as_f64),
-        baseline_json.get("retryCount").and_then(Value::as_f64),
-    );
-
+    let retry_delta = diff_signal(assisted_json.get("retryCount").and_then(Value::as_f64), baseline_json.get("retryCount").and_then(Value::as_f64));
     json!({
         "ok": true,
         "windowDays": horizon_days,
@@ -340,36 +271,19 @@ pub fn build_eval_snapshot(conn: &Connection, horizon_days: i64) -> Value {
         }
     })
 }
-
-/// Compare two eval snapshots and report whether current metrics stay within the
-/// allowed regression envelope.
 pub fn build_eval_regression_gate(current: &Value, baseline: &Value, max_regression: f64) -> Value {
     let max_regression = max_regression.clamp(0.0, 1.0);
     let mut checks = Vec::new();
     let mut failed = Vec::new();
-
     for (metric, higher_is_better) in RATE_GATED_METRICS {
-        let current_value = current
-            .get("signals")
-            .and_then(|signals| signals.get(metric))
-            .and_then(Value::as_f64);
-        let baseline_value = baseline
-            .get("signals")
-            .and_then(|signals| signals.get(metric))
-            .and_then(Value::as_f64);
-        let status = evaluate_regression(
-            metric,
-            higher_is_better,
-            current_value,
-            baseline_value,
-            max_regression,
-        );
+        let current_value = current.get("signals").and_then(|signals| signals.get(metric)).and_then(Value::as_f64);
+        let baseline_value = baseline.get("signals").and_then(|signals| signals.get(metric)).and_then(Value::as_f64);
+        let status = evaluate_regression(metric, higher_is_better, current_value, baseline_value, max_regression);
         if status.get("regressed").and_then(Value::as_bool) == Some(true) {
             failed.push(status.clone());
         }
         checks.push(status);
     }
-
     json!({
         "ok": failed.is_empty(),
         "maxRegression": max_regression,
@@ -377,14 +291,7 @@ pub fn build_eval_regression_gate(current: &Value, baseline: &Value, max_regress
         "failedMetrics": failed
     })
 }
-
-fn evaluate_regression(
-    metric: &str,
-    higher_is_better: bool,
-    current_value: Option<f64>,
-    baseline_value: Option<f64>,
-    max_regression: f64,
-) -> Value {
+fn evaluate_regression(metric: &str, higher_is_better: bool, current_value: Option<f64>, baseline_value: Option<f64>, max_regression: f64) -> Value {
     let (Some(current), Some(baseline)) = (current_value, baseline_value) else {
         return json!({
             "metric": metric,
@@ -395,19 +302,9 @@ fn evaluate_regression(
             "regressed": false
         });
     };
-
     let raw_delta = current - baseline;
-    let relative_delta = if baseline.abs() > f64::EPSILON {
-        raw_delta / baseline.abs()
-    } else {
-        raw_delta
-    };
-    let regressed = if higher_is_better {
-        -relative_delta > max_regression
-    } else {
-        relative_delta > max_regression
-    };
-
+    let relative_delta = if baseline.abs() > f64::EPSILON { raw_delta / baseline.abs() } else { raw_delta };
+    let regressed = if higher_is_better { -relative_delta > max_regression } else { relative_delta > max_regression };
     json!({
         "metric": metric,
         "direction": if higher_is_better { "higher_is_better" } else { "lower_is_better" },
@@ -419,14 +316,12 @@ fn evaluate_regression(
         "regressed": regressed
     })
 }
-
 fn diff_signal(current: Option<f64>, baseline: Option<f64>) -> Value {
     match (current, baseline) {
         (Some(current), Some(baseline)) => json!(current - baseline),
         _ => Value::Null,
     }
 }
-
 fn median_i64(values: &[i64]) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -440,7 +335,6 @@ fn median_i64(values: &[i64]) -> Option<f64> {
         Some(sorted[mid] as f64)
     }
 }
-
 fn ratio(numerator: i64, denominator: i64) -> f64 {
     if denominator <= 0 {
         0.0
@@ -448,18 +342,15 @@ fn ratio(numerator: i64, denominator: i64) -> f64 {
         numerator as f64 / denominator as f64
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn eval_snapshot_computes_expected_signals() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         crate::db::configure(&conn).expect("configure sqlite");
         crate::db::initialize_schema(&conn).expect("initialize schema");
         crate::db::run_pending_migrations(&conn);
-
         conn.execute(
             "INSERT INTO memories
              (text, source, status, score, trust_score, retrievals, last_accessed, pinned, created_at, updated_at)
@@ -488,7 +379,6 @@ mod tests {
             [],
         )
         .expect("insert disputed decision");
-
         conn.execute(
             "INSERT INTO agent_feedback
              (owner_id, agent, task_class, outcome, outcome_score, quality_score, latency_ms, retries, tokens_used, created_at)
@@ -517,7 +407,6 @@ mod tests {
             [],
         )
         .expect("insert assisted partial");
-
         conn.execute(
             "INSERT INTO events (type, data, source_agent, created_at)
              VALUES ('decision_conflict', '{}', 'tests::eval', datetime('now'))",
@@ -554,101 +443,34 @@ mod tests {
             [],
         )
         .expect("insert second consensus event");
-
         let snapshot = build_eval_snapshot(&conn, 30);
         let totals = snapshot.get("totals").expect("totals");
         let window = snapshot.get("window").expect("window");
         let signals = snapshot.get("signals").expect("signals");
         let tasks = snapshot.get("taskMetrics").expect("task metrics");
-
-        assert_eq!(
-            totals.get("activeMemories").and_then(Value::as_i64),
-            Some(2)
-        );
-        assert_eq!(
-            totals.get("activeDecisions").and_then(Value::as_i64),
-            Some(1)
-        );
+        assert_eq!(totals.get("activeMemories").and_then(Value::as_i64), Some(2));
+        assert_eq!(totals.get("activeDecisions").and_then(Value::as_i64), Some(1));
         assert_eq!(totals.get("openConflicts").and_then(Value::as_i64), Some(1));
-        assert_eq!(
-            window.get("recentConflicts").and_then(Value::as_i64),
-            Some(1)
-        );
-        assert_eq!(
-            window.get("recentResolutions").and_then(Value::as_i64),
-            Some(1)
-        );
-        assert_eq!(
-            window.get("recentRecallQueries").and_then(Value::as_i64),
-            Some(2)
-        );
-        assert_eq!(
-            signals.get("conflictBurden").and_then(Value::as_f64),
-            Some(1.0)
-        );
-        let decay_burden = signals
-            .get("decayBurden")
-            .and_then(Value::as_f64)
-            .expect("decay burden");
-        assert!(
-            (decay_burden - (2.0 / 3.0)).abs() < 0.0001,
-            "expected 2/3 decay burden, got {decay_burden}"
-        );
-        assert_eq!(
-            signals.get("contradictionRate").and_then(Value::as_f64),
-            Some(0.5)
-        );
-        assert_eq!(
-            signals.get("taskSuccessRate").and_then(Value::as_f64),
-            Some(0.5)
-        );
-        assert_eq!(
-            signals.get("firstPassSuccess").and_then(Value::as_f64),
-            Some(0.5)
-        );
-        assert_eq!(
-            signals
-                .get("medianTimeToValidResultMs")
-                .and_then(Value::as_f64),
-            Some(350.0)
-        );
+        assert_eq!(window.get("recentConflicts").and_then(Value::as_i64), Some(1));
+        assert_eq!(window.get("recentResolutions").and_then(Value::as_i64), Some(1));
+        assert_eq!(window.get("recentRecallQueries").and_then(Value::as_i64), Some(2));
+        assert_eq!(signals.get("conflictBurden").and_then(Value::as_f64), Some(1.0));
+        let decay_burden = signals.get("decayBurden").and_then(Value::as_f64).expect("decay burden");
+        assert!((decay_burden - (2.0 / 3.0)).abs() < 0.0001, "expected 2/3 decay burden, got {decay_burden}");
+        assert_eq!(signals.get("contradictionRate").and_then(Value::as_f64), Some(0.5));
+        assert_eq!(signals.get("taskSuccessRate").and_then(Value::as_f64), Some(0.5));
+        assert_eq!(signals.get("firstPassSuccess").and_then(Value::as_f64), Some(0.5));
+        assert_eq!(signals.get("medianTimeToValidResultMs").and_then(Value::as_f64), Some(350.0));
         assert_eq!(signals.get("retryCount").and_then(Value::as_f64), Some(0.5));
-        let stale_memory_hit_rate = signals
-            .get("staleMemoryHitRate")
-            .and_then(Value::as_f64)
-            .expect("stale memory hit rate");
-        assert!(
-            (stale_memory_hit_rate - 0.5).abs() < 0.0001,
-            "expected stale memory hit rate 0.5, got {stale_memory_hit_rate}"
-        );
-        let low_trust_hit_rate = signals
-            .get("lowTrustHitRate")
-            .and_then(Value::as_f64)
-            .expect("low trust hit rate");
-        assert!(
-            (low_trust_hit_rate - (2.0 / 3.0)).abs() < 0.0001,
-            "expected low trust hit rate 2/3, got {low_trust_hit_rate}"
-        );
-        let consensus_precision = signals
-            .get("consensusPromotionPrecision")
-            .and_then(Value::as_f64)
-            .expect("consensus precision");
-        assert!(
-            (consensus_precision - 0.75).abs() < 0.0001,
-            "expected consensus precision 0.75, got {consensus_precision}"
-        );
-        assert_eq!(
-            tasks["assisted"]["sampleCount"].as_i64(),
-            Some(2),
-            "assisted task sample count"
-        );
-        assert_eq!(
-            tasks["baseline"]["sampleCount"].as_i64(),
-            Some(2),
-            "baseline task sample count"
-        );
+        let stale_memory_hit_rate = signals.get("staleMemoryHitRate").and_then(Value::as_f64).expect("stale memory hit rate");
+        assert!((stale_memory_hit_rate - 0.5).abs() < 0.0001, "expected stale memory hit rate 0.5, got {stale_memory_hit_rate}");
+        let low_trust_hit_rate = signals.get("lowTrustHitRate").and_then(Value::as_f64).expect("low trust hit rate");
+        assert!((low_trust_hit_rate - (2.0 / 3.0)).abs() < 0.0001, "expected low trust hit rate 2/3, got {low_trust_hit_rate}");
+        let consensus_precision = signals.get("consensusPromotionPrecision").and_then(Value::as_f64).expect("consensus precision");
+        assert!((consensus_precision - 0.75).abs() < 0.0001, "expected consensus precision 0.75, got {consensus_precision}");
+        assert_eq!(tasks["assisted"]["sampleCount"].as_i64(), Some(2), "assisted task sample count");
+        assert_eq!(tasks["baseline"]["sampleCount"].as_i64(), Some(2), "baseline task sample count");
     }
-
     #[test]
     fn eval_regression_gate_flags_rate_regressions() {
         let baseline = json!({
@@ -671,16 +493,11 @@ mod tests {
                 "consensusPromotionPrecision": 0.88
             }
         });
-
         let gate = build_eval_regression_gate(&current, &baseline, 0.20);
         assert_eq!(gate["ok"].as_bool(), Some(false));
-        let failed = gate["failedMetrics"]
-            .as_array()
-            .expect("failed metrics list should be present");
+        let failed = gate["failedMetrics"].as_array().expect("failed metrics list should be present");
         assert!(
-            failed
-                .iter()
-                .any(|entry| entry.get("metric").and_then(Value::as_str) == Some("taskSuccessRate")),
+            failed.iter().any(|entry| entry.get("metric").and_then(Value::as_str) == Some("taskSuccessRate")),
             "taskSuccessRate regression should be reported"
         );
     }

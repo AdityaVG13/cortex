@@ -1,21 +1,7 @@
 // SPDX-License-Identifier: MIT
-use chrono::{Duration, Utc};
-use rusqlite::OptionalExtension;
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::time::Instant;
-use crate::handlers::diary::{write_diary_entry, DiaryRequest};
-use crate::handlers::feedback::{build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value};
-use crate::handlers::health::{build_digest, build_health_payload};
-use crate::handlers::mutate::{forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision, resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata};
-use crate::handlers::recall::{execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext};
-use crate::handlers::store::{persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention, validate_explicit_ttl_seconds, DecisionProvenance};
-use crate::handlers::{estimate_tokens, now_iso, SourceIdentity};
-use crate::api_types::RetentionClass;
+use crate::handlers::recall::RecallContext;
 use crate::state::RuntimeState;
-use crate::{aging, db, indexer};
-
-use super::*;
+use serde_json::{json, Value};
 pub(crate) fn recall_owner_scope(ctx: &RecallContext) -> String {
     if !ctx.team_mode {
         return "solo".to_string();
@@ -25,20 +11,12 @@ pub(crate) fn recall_owner_scope(ctx: &RecallContext) -> String {
         None => "team:none".to_string(),
     }
 }
-
 pub(crate) async fn clear_served_scope_for_boot(state: &RuntimeState, agent: &str, ctx: &RecallContext) {
     let scope_prefix = format!("{}::{agent}::", recall_owner_scope(ctx));
     let mut served = state.served_content.lock().await;
-    served.retain(|key, _| {
-        !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != agent
-    });
+    served.retain(|key, _| !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != agent);
 }
-
-pub(crate) fn can_view_last_call(
-    owner_id: Option<i64>,
-    visibility: Option<&str>,
-    ctx: &RecallContext,
-) -> bool {
+pub(crate) fn can_view_last_call(owner_id: Option<i64>, visibility: Option<&str>, ctx: &RecallContext) -> bool {
     if !ctx.team_mode {
         return true;
     }
@@ -50,7 +28,6 @@ pub(crate) fn can_view_last_call(
     };
     owner_id == caller_id || matches!(visibility, Some("shared") | Some("team"))
 }
-
 pub(crate) fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
     let pragma = format!("PRAGMA table_info({table})");
     let mut stmt = match conn.prepare(&pragma) {
@@ -65,27 +42,13 @@ pub(crate) fn table_has_column(conn: &rusqlite::Connection, table: &str, column:
     drop(stmt);
     found
 }
-
-pub(crate) fn fetch_last_call(
-    conn: &rusqlite::Connection,
-    kind: Option<&str>,
-    agent_filter: Option<&str>,
-    ctx: &RecallContext,
-) -> Result<Value, String> {
-    let normalized_kind = kind
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("any");
-    let agent_filter = agent_filter
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_lowercase);
-
+pub(crate) fn fetch_last_call(conn: &rusqlite::Connection, kind: Option<&str>, agent_filter: Option<&str>, ctx: &RecallContext) -> Result<Value, String> {
+    let normalized_kind = kind.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("any");
+    let agent_filter = agent_filter.map(str::trim).filter(|value| !value.is_empty()).map(str::to_lowercase);
     let owner_scoped_entries = table_has_column(conn, "memories", "owner_id")
         && table_has_column(conn, "memories", "visibility")
         && table_has_column(conn, "decisions", "owner_id")
         && table_has_column(conn, "decisions", "visibility");
-
     let sql = if owner_scoped_entries {
         "
             SELECT kind, id, created_at, source_agent, summary, detail, owner_id, visibility
@@ -143,7 +106,6 @@ pub(crate) fn fetch_last_call(
             LIMIT 32
         "
     };
-
     let mut stmt = conn.prepare(sql).map_err(|err| err.to_string())?;
     let rows = stmt
         .query_map(rusqlite::params![normalized_kind], |row| {
@@ -159,14 +121,10 @@ pub(crate) fn fetch_last_call(
             ))
         })
         .map_err(|err| err.to_string())?;
-
     for row in rows.flatten() {
         let (row_kind, id, created_at, source_agent, summary, detail, owner_id, visibility) = row;
         if let Some(filter) = agent_filter.as_deref() {
-            let current = source_agent
-                .as_deref()
-                .map(str::to_lowercase)
-                .unwrap_or_default();
+            let current = source_agent.as_deref().map(str::to_lowercase).unwrap_or_default();
             if current != filter {
                 continue;
             }
@@ -184,7 +142,5 @@ pub(crate) fn fetch_last_call(
             "detail": serde_json::from_str::<Value>(&detail).unwrap_or(Value::String(detail)),
         }));
     }
-
     Ok(json!({ "found": false }))
 }
-

@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
-//! Local operator budget configuration for daemon endpoints.
-
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-
 const BUDGETS_FILE_NAME: &str = "budgets.toml";
 pub const BUDGET_SOURCE: &str = "budgets.toml";
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum BudgetEndpoint {
     Store,
@@ -16,17 +12,10 @@ pub enum BudgetEndpoint {
     Boot,
     Mcp,
 }
-
 impl BudgetEndpoint {
     pub const fn all() -> &'static [BudgetEndpoint] {
-        &[
-            BudgetEndpoint::Store,
-            BudgetEndpoint::Recall,
-            BudgetEndpoint::Boot,
-            BudgetEndpoint::Mcp,
-        ]
+        &[BudgetEndpoint::Store, BudgetEndpoint::Recall, BudgetEndpoint::Boot, BudgetEndpoint::Mcp]
     }
-
     pub fn as_str(self) -> &'static str {
         match self {
             BudgetEndpoint::Store => "store",
@@ -35,7 +24,6 @@ impl BudgetEndpoint {
             BudgetEndpoint::Mcp => "mcp",
         }
     }
-
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "store" => Some(Self::Store),
@@ -46,13 +34,11 @@ impl BudgetEndpoint {
         }
     }
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EndpointBudget {
     pub limit: usize,
     pub window_seconds: u64,
 }
-
 impl EndpointBudget {
     fn to_health_json(self) -> Value {
         json!({
@@ -62,47 +48,21 @@ impl EndpointBudget {
         })
     }
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetConfig {
     pub enabled: bool,
     endpoints: BTreeMap<BudgetEndpoint, EndpointBudget>,
 }
-
 impl BudgetConfig {
     pub fn parse_toml_str(contents: &str) -> Result<Self, BudgetConfigError> {
-        let raw: RawBudgetFile = toml::from_str(contents).map_err(|error| {
-            BudgetConfigError::new(
-                "parse_error",
-                format!("failed to parse budgets.toml: {error}"),
-                None,
-                None,
-            )
-        })?;
-
-        let enabled = raw
-            .defaults
-            .and_then(|defaults| defaults.enabled)
-            .unwrap_or(true);
-
+        let raw: RawBudgetFile = toml::from_str(contents).map_err(|error| BudgetConfigError::new("parse_error", format!("failed to parse budgets.toml: {error}"), None, None))?;
+        let enabled = raw.defaults.and_then(|defaults| defaults.enabled).unwrap_or(true);
         let mut endpoints = BTreeMap::new();
         for (name, raw_budget) in raw.endpoints.unwrap_or_default() {
-            let endpoint = BudgetEndpoint::parse(&name).ok_or_else(|| {
-                BudgetConfigError::new(
-                    "unknown_endpoint",
-                    format!("unknown budget endpoint: {name}"),
-                    Some(name.clone()),
-                    None,
-                )
-            })?;
-            let limit = raw_budget.limit.ok_or_else(|| {
-                BudgetConfigError::new(
-                    "missing_limit",
-                    format!("budget endpoint {name} is missing limit"),
-                    Some(name.clone()),
-                    Some("limit"),
-                )
-            })?;
+            let endpoint = BudgetEndpoint::parse(&name).ok_or_else(|| BudgetConfigError::new("unknown_endpoint", format!("unknown budget endpoint: {name}"), Some(name.clone()), None))?;
+            let limit = raw_budget
+                .limit
+                .ok_or_else(|| BudgetConfigError::new("missing_limit", format!("budget endpoint {name} is missing limit"), Some(name.clone()), Some("limit")))?;
             if limit <= 0 {
                 return Err(BudgetConfigError::new(
                     "invalid_limit",
@@ -111,7 +71,6 @@ impl BudgetConfig {
                     Some("limit"),
                 ));
             }
-
             let window_seconds = raw_budget.window_seconds.ok_or_else(|| {
                 BudgetConfigError::new(
                     "missing_window_seconds",
@@ -128,7 +87,6 @@ impl BudgetConfig {
                     Some("window_seconds"),
                 ));
             }
-
             endpoints.insert(
                 endpoint,
                 EndpointBudget {
@@ -137,14 +95,11 @@ impl BudgetConfig {
                 },
             );
         }
-
         Ok(Self { enabled, endpoints })
     }
-
     pub fn budget_for(&self, endpoint: BudgetEndpoint) -> Option<EndpointBudget> {
         self.endpoints.get(&endpoint).copied()
     }
-
     fn endpoints_json(&self) -> Value {
         let mut map = serde_json::Map::new();
         for endpoint in BudgetEndpoint::all() {
@@ -155,7 +110,6 @@ impl BudgetConfig {
         Value::Object(map)
     }
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetConfigError {
     pub code: String,
@@ -163,14 +117,8 @@ pub struct BudgetConfigError {
     pub endpoint: Option<String>,
     pub field: Option<String>,
 }
-
 impl BudgetConfigError {
-    fn new(
-        code: impl Into<String>,
-        message: impl Into<String>,
-        endpoint: Option<String>,
-        field: Option<&str>,
-    ) -> Self {
+    fn new(code: impl Into<String>, message: impl Into<String>, endpoint: Option<String>, field: Option<&str>) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -178,7 +126,6 @@ impl BudgetConfigError {
             field: field.map(str::to_string),
         }
     }
-
     fn to_json(&self) -> Value {
         json!({
             "code": self.code,
@@ -188,7 +135,6 @@ impl BudgetConfigError {
         })
     }
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetConfigStatus {
     pub config_loaded: bool,
@@ -196,12 +142,10 @@ pub struct BudgetConfigStatus {
     pub config: Option<BudgetConfig>,
     pub error: Option<BudgetConfigError>,
 }
-
 impl BudgetConfigStatus {
     pub fn load_from_home(home: &Path) -> Self {
         Self::load_from_path(home.join(BUDGETS_FILE_NAME))
     }
-
     pub fn load_from_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         match std::fs::read_to_string(&path) {
@@ -216,16 +160,10 @@ impl BudgetConfigStatus {
                 config_loaded: true,
                 source: path,
                 config: None,
-                error: Some(BudgetConfigError::new(
-                    "io_error",
-                    format!("failed to read budgets.toml: {error}"),
-                    None,
-                    None,
-                )),
+                error: Some(BudgetConfigError::new("io_error", format!("failed to read budgets.toml: {error}"), None, None)),
             },
         }
     }
-
     pub fn missing_for_tests() -> Self {
         Self {
             config_loaded: false,
@@ -234,7 +172,6 @@ impl BudgetConfigStatus {
             error: None,
         }
     }
-
     fn from_contents(source: PathBuf, contents: &str) -> Self {
         match BudgetConfig::parse_toml_str(contents) {
             Ok(config) => Self {
@@ -251,25 +188,15 @@ impl BudgetConfigStatus {
             },
         }
     }
-
     pub fn enabled(&self) -> bool {
-        self.error.is_none()
-            && self
-                .config
-                .as_ref()
-                .map(|config| config.enabled)
-                .unwrap_or(false)
+        self.error.is_none() && self.config.as_ref().map(|config| config.enabled).unwrap_or(false)
     }
-
     pub fn budget_for(&self, endpoint: BudgetEndpoint) -> Option<EndpointBudget> {
         if !self.enabled() {
             return None;
         }
-        self.config
-            .as_ref()
-            .and_then(|config| config.budget_for(endpoint))
+        self.config.as_ref().and_then(|config| config.budget_for(endpoint))
     }
-
     pub fn to_health_json(&self, recent_denials: usize) -> Value {
         json!({
             "configLoaded": self.config_loaded,
@@ -287,7 +214,6 @@ impl BudgetConfigStatus {
         })
     }
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BudgetDecision {
     pub allowed: bool,
@@ -297,7 +223,6 @@ pub struct BudgetDecision {
     pub retry_after_seconds: u64,
     pub remaining: Option<usize>,
 }
-
 impl BudgetDecision {
     pub fn allowed(endpoint: BudgetEndpoint, budget: EndpointBudget, remaining: usize) -> Self {
         Self {
@@ -309,7 +234,6 @@ impl BudgetDecision {
             remaining: Some(remaining),
         }
     }
-
     pub fn denied(endpoint: BudgetEndpoint, budget: EndpointBudget, retry_after: u64) -> Self {
         Self {
             allowed: false,
@@ -320,7 +244,6 @@ impl BudgetDecision {
             remaining: Some(0),
         }
     }
-
     pub fn http_body_json(&self) -> Value {
         json!({
             "error": "budget_exceeded",
@@ -331,7 +254,6 @@ impl BudgetDecision {
             "source": BUDGET_SOURCE
         })
     }
-
     pub fn event_json(&self, request_source: &str, source_ip: &str) -> Value {
         json!({
             "endpoint": self.endpoint.as_str(),
@@ -344,101 +266,62 @@ impl BudgetDecision {
         })
     }
 }
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBudgetFile {
     defaults: Option<RawDefaults>,
     endpoints: Option<HashMap<String, RawEndpointBudget>>,
 }
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDefaults {
     enabled: Option<bool>,
 }
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawEndpointBudget {
     limit: Option<i64>,
     window_seconds: Option<i64>,
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn valid_config() -> &'static str {
         r#"
 [defaults]
 enabled = true
-
 [endpoints.store]
 limit = 120
 window_seconds = 60
-
 [endpoints.recall]
 limit = 300
 window_seconds = 60
-
 [endpoints.boot]
 limit = 60
 window_seconds = 60
-
 [endpoints.mcp]
 limit = 240
 window_seconds = 60
 "#
     }
-
     #[test]
     fn missing_file_disables_budgets_without_error() {
-        let path = std::env::temp_dir().join(format!(
-            "cortex-missing-budgets-{}.toml",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("cortex-missing-budgets-{}.toml", uuid::Uuid::new_v4()));
         let status = BudgetConfigStatus::load_from_path(path);
         assert!(!status.config_loaded);
         assert!(!status.enabled());
         assert!(status.error.is_none());
         assert!(status.budget_for(BudgetEndpoint::Store).is_none());
     }
-
     #[test]
     fn valid_config_parses_all_endpoint_budgets() {
         let config = BudgetConfig::parse_toml_str(valid_config()).unwrap();
         assert!(config.enabled);
-        assert_eq!(
-            config.budget_for(BudgetEndpoint::Store),
-            Some(EndpointBudget {
-                limit: 120,
-                window_seconds: 60
-            })
-        );
-        assert_eq!(
-            config.budget_for(BudgetEndpoint::Recall),
-            Some(EndpointBudget {
-                limit: 300,
-                window_seconds: 60
-            })
-        );
-        assert_eq!(
-            config.budget_for(BudgetEndpoint::Boot),
-            Some(EndpointBudget {
-                limit: 60,
-                window_seconds: 60
-            })
-        );
-        assert_eq!(
-            config.budget_for(BudgetEndpoint::Mcp),
-            Some(EndpointBudget {
-                limit: 240,
-                window_seconds: 60
-            })
-        );
+        assert_eq!(config.budget_for(BudgetEndpoint::Store), Some(EndpointBudget { limit: 120, window_seconds: 60 }));
+        assert_eq!(config.budget_for(BudgetEndpoint::Recall), Some(EndpointBudget { limit: 300, window_seconds: 60 }));
+        assert_eq!(config.budget_for(BudgetEndpoint::Boot), Some(EndpointBudget { limit: 60, window_seconds: 60 }));
+        assert_eq!(config.budget_for(BudgetEndpoint::Mcp), Some(EndpointBudget { limit: 240, window_seconds: 60 }));
     }
-
     #[test]
     fn disabled_config_validates_but_does_not_enforce() {
         let status = BudgetConfigStatus::from_contents(
@@ -446,7 +329,6 @@ window_seconds = 60
             r#"
 [defaults]
 enabled = false
-
 [endpoints.recall]
 limit = 1
 window_seconds = 60
@@ -457,24 +339,18 @@ window_seconds = 60
         assert!(!status.enabled());
         assert!(status.budget_for(BudgetEndpoint::Recall).is_none());
     }
-
     #[test]
     fn health_json_uses_portable_budget_source_label() {
-        let status = BudgetConfigStatus::from_contents(
-            PathBuf::from("C:/cortex-test/testuser/.cortex/budgets.toml"),
-            valid_config(),
-        );
+        let status = BudgetConfigStatus::from_contents(PathBuf::from("C:/cortex-test/testuser/.cortex/budgets.toml"), valid_config());
         let payload = status.to_health_json(0);
         assert_eq!(payload["source"], BUDGET_SOURCE);
     }
-
     #[test]
     fn missing_endpoint_is_unlimited_for_that_endpoint() {
         let config = BudgetConfig::parse_toml_str(
             r#"
 [defaults]
 enabled = true
-
 [endpoints.store]
 limit = 2
 window_seconds = 60
@@ -483,7 +359,6 @@ window_seconds = 60
         .unwrap();
         assert!(config.budget_for(BudgetEndpoint::Recall).is_none());
     }
-
     #[test]
     fn zero_limit_is_structured_error() {
         let err = BudgetConfig::parse_toml_str(
@@ -498,7 +373,6 @@ window_seconds = 60
         assert_eq!(err.endpoint.as_deref(), Some("store"));
         assert_eq!(err.field.as_deref(), Some("limit"));
     }
-
     #[test]
     fn negative_limit_is_structured_error() {
         let err = BudgetConfig::parse_toml_str(
@@ -511,7 +385,6 @@ window_seconds = 60
         .unwrap_err();
         assert_eq!(err.code, "invalid_limit");
     }
-
     #[test]
     fn zero_window_is_structured_error() {
         let err = BudgetConfig::parse_toml_str(
@@ -526,7 +399,6 @@ window_seconds = 0
         assert_eq!(err.endpoint.as_deref(), Some("recall"));
         assert_eq!(err.field.as_deref(), Some("window_seconds"));
     }
-
     #[test]
     fn negative_window_is_structured_error() {
         let err = BudgetConfig::parse_toml_str(
@@ -539,7 +411,6 @@ window_seconds = -30
         .unwrap_err();
         assert_eq!(err.code, "invalid_window_seconds");
     }
-
     #[test]
     fn unknown_endpoint_is_structured_error() {
         let err = BudgetConfig::parse_toml_str(

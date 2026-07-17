@@ -1,27 +1,16 @@
 // SPDX-License-Identifier: MIT
+use crate::handlers::{ensure_auth_rated, json_response};
+use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use chrono::Utc;
-use rusqlite::{params, OpenFlags};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashSet};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
-use crate::handlers::{client_ip, ensure_auth_rated, ensure_ssrf_protection, json_response, truncate_chars};
-use crate::state::RuntimeState;
-
-
-use super::*;
-// ─── GET /dump ───────────────────────────────────────────────────────────────
-
 pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-
     let conn = state.db_read.lock().await;
-
     let memories: Vec<Value> = conn
         .prepare(
             "SELECT id, text, source, type, tags, source_agent, confidence, status, score, \
@@ -54,7 +43,6 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
         })
         .unwrap_or_default();
-
     let decisions: Vec<Value> = conn
         .prepare(
             "SELECT id, decision, context, type, source_agent, confidence, surprise, status, \
@@ -88,44 +76,27 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
         })
         .unwrap_or_default();
-
     let mut source_nodes: BTreeMap<String, String> = BTreeMap::new();
     for memory in &memories {
         let Some(id) = memory.get("id").and_then(|value| value.as_i64()) else {
             continue;
         };
-        let Some(source) = memory
-            .get("source")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(source) = memory.get("source").and_then(|value| value.as_str()).map(str::trim).filter(|value| !value.is_empty()) else {
             continue;
         };
-        source_nodes
-            .entry(source.to_string())
-            .or_insert_with(|| format!("mem-{id}"));
+        source_nodes.entry(source.to_string()).or_insert_with(|| format!("mem-{id}"));
     }
     for decision in &decisions {
         let Some(id) = decision.get("id").and_then(|value| value.as_i64()) else {
             continue;
         };
-        let Some(source) = decision
-            .get("context")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(source) = decision.get("context").and_then(|value| value.as_str()).map(str::trim).filter(|value| !value.is_empty()) else {
             continue;
         };
-        source_nodes
-            .entry(source.to_string())
-            .or_insert_with(|| format!("dec-{id}"));
+        source_nodes.entry(source.to_string()).or_insert_with(|| format!("dec-{id}"));
     }
-
     let mut seen_links: HashSet<String> = HashSet::new();
     let mut graph_links: Vec<Value> = Vec::new();
-
     if let Ok(mut stmt) = conn.prepare(
         "SELECT source_a, source_b, count, last_seen
          FROM co_occurrence
@@ -133,12 +104,7 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
          LIMIT 240",
     ) {
         if let Ok(rows) = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<String>>(3)?))
         }) {
             for row in rows.flatten() {
                 let (source_a, source_b, count, last_seen) = row;
@@ -151,11 +117,7 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
                 if node_a == node_b {
                     continue;
                 }
-                let (left, right) = if node_a <= node_b {
-                    (node_a.clone(), node_b.clone())
-                } else {
-                    (node_b.clone(), node_a.clone())
-                };
+                let (left, right) = if node_a <= node_b { (node_a.clone(), node_b.clone()) } else { (node_b.clone(), node_a.clone()) };
                 let key = format!("{left}|{right}|co_occurrence");
                 if !seen_links.insert(key) {
                     continue;
@@ -170,7 +132,6 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
             }
         }
     }
-
     for decision in &decisions {
         let Some(id) = decision.get("id").and_then(|value| value.as_i64()) else {
             continue;
@@ -180,11 +141,7 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
         };
         let left = format!("dec-{id}");
         let right = format!("dec-{disputes_id}");
-        let (source, target) = if left <= right {
-            (left, right)
-        } else {
-            (right, left)
-        };
+        let (source, target) = if left <= right { (left, right) } else { (right, left) };
         let key = format!("{source}|{target}|conflict");
         if !seen_links.insert(key) {
             continue;
@@ -196,7 +153,6 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
             "weight": 1,
         }));
     }
-
     json_response(
         StatusCode::OK,
         json!({
@@ -209,4 +165,3 @@ pub async fn handle_dump(State(state): State<RuntimeState>, headers: HeaderMap) 
         }),
     )
 }
-

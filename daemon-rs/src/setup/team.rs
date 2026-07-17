@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: MIT
-use std::fs;
-use std::path::Path;
-
+use super::helpers::{arg_value, persist_team_owner_token, restore_previous_token, rollback_team_setup};
 use crate::auth;
 use crate::db;
-
-use super::helpers::{
-    arg_value, collect_reembed_backlog_counts, persist_team_owner_token, restore_previous_token,
-    rollback_team_setup,
-};
-use super::types::StepResult;
-
+use std::fs;
 pub async fn run_setup_team(args: &[String], dry_run: bool) {
     let db_path = auth::db_path();
     if let Some(parent) = db_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-
-    // Open DB early so we can check current mode before prompting.
     let conn = match db::open(&db_path) {
         Ok(v) => v,
         Err(e) => {
@@ -35,20 +25,13 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
     db::migrate_focus_table(&conn);
     crate::crystallize::migrate_crystal_tables(&conn);
-
-    // Idempotency: refuse to re-migrate.
     if db::is_team_mode(&conn) {
         eprintln!();
         eprintln!("  Already in team mode. No changes needed.");
         eprintln!();
         return;
     }
-
-    // Resolve owner: flag > interactive prompt > env fallback.
-    let default_owner = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "owner".to_string());
-
+    let default_owner = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_else(|_| "owner".to_string());
     let owner = if let Some(v) = arg_value(args, "--owner") {
         v
     } else {
@@ -60,9 +43,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             default_owner.clone()
         }
     };
-
     let display_name = arg_value(args, "--display-name").unwrap_or_else(|| owner.clone());
-
     eprintln!();
     if dry_run {
         eprintln!("  [DRY RUN] Cortex Team Migration Preview");
@@ -74,23 +55,16 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     eprintln!();
     eprintln!("  Owner username: {owner}");
     eprintln!();
-
-    // ── Pre-migration backup (skip for dry-run) ────────────────────────────
     if !dry_run && db_path.exists() {
         let bak_path = db_path.with_extension("db.bak");
         eprint!("  Backing up database to {}... ", bak_path.display());
-
-        // Close the connection to release the WAL lock before copying.
         drop(conn);
-
         if let Err(e) = fs::copy(&db_path, &bak_path) {
             eprintln!("FAILED");
             eprintln!("  [FAIL] Backup failed: {e}  -- aborting migration.");
             return;
         }
         eprintln!("done");
-
-        // Also copy WAL/SHM if they exist (ensures consistent backup).
         let wal = db_path.with_extension("db-wal");
         let shm = db_path.with_extension("db-shm");
         if wal.exists() {
@@ -100,10 +74,7 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             let _ = fs::copy(&shm, bak_path.with_extension("db.bak-shm"));
         }
     } else if !dry_run {
-        // No DB yet -- nothing to back up, will be created fresh.
     }
-
-    // Re-open the connection (closed above for backup).
     let conn = match db::open(&db_path) {
         Ok(v) => v,
         Err(e) => {
@@ -121,17 +92,13 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
     db::migrate_focus_table(&conn);
     crate::crystallize::migrate_crystal_tables(&conn);
-
     // SAFETY: team setup is a write transaction; take SQLite's writer lock
-    // up front so contention fails/retries at the transaction boundary.
     if let Err(e) = conn.execute_batch("BEGIN IMMEDIATE") {
         eprintln!("  [FAIL] Cannot begin transaction: {e}");
         return;
     }
-
     eprintln!("  Migrating to team mode...");
     eprintln!();
-
     let owner_key = auth::generate_ctx_api_key();
     let owner_hash = match auth::hash_api_key_argon2id(&owner_key) {
         Ok(v) => v,
@@ -141,7 +108,6 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             return;
         }
     };
-
     eprint!("  Creating team tables... ");
     if let Err(e) = db::create_team_mode_tables(&conn) {
         eprintln!("FAILED");
@@ -150,7 +116,6 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         return;
     }
     eprintln!("done");
-
     let owner_id = match db::upsert_owner_user(&conn, &owner, Some(&display_name), &owner_hash) {
         Ok(v) => v,
         Err(e) => {
@@ -159,7 +124,6 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             return;
         }
     };
-
     eprint!("  Adding ownership columns... ");
     if let Err(e) = db::migrate_to_team_mode(&conn, owner_id) {
         eprintln!("FAILED");
@@ -169,51 +133,29 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     }
     eprintln!("done");
     eprintln!();
-
-    // ── Row count report ───────────────────────────────────────────────────
     let counts = db::migration_counts(&conn);
     let total: i64 = counts.iter().map(|(_, n)| n).sum();
-
     if dry_run {
         eprintln!("  [DRY RUN] Would migrate to team mode:");
     } else {
         eprintln!("  Assigned ownership:");
     }
-
     let label_width = 22;
     for (table, count) in &counts {
         if dry_run {
-            eprintln!(
-                "    {:<width$} {:>6} rows would be assigned",
-                format!("{table}:"),
-                count,
-                width = label_width,
-            );
+            eprintln!("    {:<width$} {:>6} rows would be assigned", format!("{table}:"), count, width = label_width,);
         } else {
-            eprintln!(
-                "    {:<width$} {:>6} rows",
-                format!("{table}:"),
-                count,
-                width = label_width,
-            );
+            eprintln!("    {:<width$} {:>6} rows", format!("{table}:"), count, width = label_width,);
         }
     }
-
     if dry_run {
-        eprintln!(
-            "    {:<width$} {:>6} rows",
-            "Total:",
-            total,
-            width = label_width
-        );
+        eprintln!("    {:<width$} {:>6} rows", "Total:", total, width = label_width);
         eprintln!();
         rollback_team_setup(&conn);
         eprintln!("  No changes made.");
         eprintln!();
         return;
     }
-
-    // Non-dry-run: finish migration.
     let default_team_id = match db::ensure_default_team_membership(&conn, owner_id) {
         Ok(v) => v,
         Err(e) => {
@@ -222,15 +164,11 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
             return;
         }
     };
-
-    // Keep the existing auth path compatible with current handlers/MCP proxy.
     let paths = auth::CortexPaths::resolve();
     let previous_token = fs::read(&paths.token).ok();
     if let Err(e) = persist_team_owner_token(&paths, &owner_key) {
         rollback_team_setup(&conn);
-        eprintln!(
-            "  [FAIL] Team migration rolled back because owner token persistence failed: {e}"
-        );
+        eprintln!("  [FAIL] Team migration rolled back because owner token persistence failed: {e}");
         return;
     }
     if let Err(e) = conn.execute_batch("COMMIT") {
@@ -239,16 +177,9 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
         eprintln!("  [FAIL] Failed to commit team migration: {e}");
         return;
     }
-
     let key_preview: String = owner_key.chars().take(8).collect();
-
     eprintln!("    ────────────────────────────");
-    eprintln!(
-        "    {:<width$} {:>6} rows -> owner \"{owner}\" (id: {owner_id})",
-        "Total:",
-        total,
-        width = label_width,
-    );
+    eprintln!("    {:<width$} {:>6} rows -> owner \"{owner}\" (id: {owner_id})", "Total:", total, width = label_width,);
     eprintln!();
     eprintln!("  All rows set to visibility: private");
     eprintln!();
@@ -261,4 +192,3 @@ pub async fn run_setup_team(args: &[String], dry_run: bool) {
     eprintln!("  Migration complete. Restart daemon: cortex serve");
     eprintln!();
 }
-

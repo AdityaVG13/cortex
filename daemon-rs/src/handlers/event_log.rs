@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
-use chrono::Utc;
+use super::truncate_chars;
 use rusqlite;
 use serde_json::{json, Value};
-
-use super::truncate_chars;
-
 const MAX_EVENT_JSON_BYTES: usize = 1_200;
 const MAX_EVENT_VALUE_CHARS: usize = 240;
 const MERGE_EVENT_PREVIEW_CHARS: usize = 240;
@@ -44,27 +41,21 @@ const NON_PERSISTENT_BENCHMARK_EVENT_KINDS: &[&str] = &[
     "decision_resolve",
     "merge",
 ];
-
 fn compact_event_payload(kind: &str, data: Value) -> Value {
     let projected = match kind {
         "recall_query" => compact_recall_query_payload(data),
         "merge" => compact_merge_event_payload(data),
-        "store_savings" | "tool_call_savings" | "boot_savings" => {
-            compact_savings_event_payload(data)
-        }
+        "store_savings" | "tool_call_savings" | "boot_savings" => compact_savings_event_payload(data),
         _ => truncate_event_value(data, 0),
     };
     enforce_event_payload_budget(kind, projected)
 }
-
 fn compact_recall_query_payload(data: Value) -> Value {
     let Some(obj) = data.as_object() else {
         return truncate_event_value(data, 0);
     };
-
     let semantic_route = compact_semantic_route(obj.get("semantic_route"));
     let shadow_semantic = compact_shadow_semantic(obj.get("shadow_semantic"));
-
     json!({
         "agent": obj.get("agent").cloned().unwrap_or(Value::Null),
         "query": obj
@@ -88,7 +79,6 @@ fn compact_recall_query_payload(data: Value) -> Value {
         "shadow_semantic": shadow_semantic,
     })
 }
-
 fn compact_semantic_route(value: Option<&Value>) -> Value {
     let Some(route) = value.and_then(Value::as_object) else {
         return Value::Null;
@@ -101,7 +91,6 @@ fn compact_semantic_route(value: Option<&Value>) -> Value {
         "candidateCount": route.get("candidateCount").cloned().unwrap_or(Value::Null),
     })
 }
-
 fn compact_shadow_semantic(value: Option<&Value>) -> Value {
     let Some(shadow) = value.and_then(Value::as_object) else {
         return Value::Null;
@@ -120,22 +109,16 @@ fn compact_shadow_semantic(value: Option<&Value>) -> Value {
             .get("shadowTopSimilarity")
             .cloned()
             .unwrap_or(Value::Null),
-        // Keep payloads small and avoid storing source arrays in hot telemetry.
         "baselineTopSources": Value::Null,
         "shadowTopSources": Value::Null,
     })
 }
-
 fn compact_merge_event_payload(data: Value) -> Value {
     let Some(obj) = data.as_object() else {
         return truncate_event_value(data, 0);
     };
-    let incoming = obj
-        .get("incoming_text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let incoming = obj.get("incoming_text").and_then(Value::as_str).unwrap_or_default();
     let incoming_chars = incoming.chars().count() as i64;
-
     json!({
         "source_id": obj.get("source_id").cloned().unwrap_or(Value::Null),
         "target_id": obj.get("target_id").cloned().unwrap_or(Value::Null),
@@ -147,7 +130,6 @@ fn compact_merge_event_payload(data: Value) -> Value {
         "incoming_preview": truncate_chars(incoming, MERGE_EVENT_PREVIEW_CHARS),
     })
 }
-
 fn compact_savings_event_payload(data: Value) -> Value {
     let Some(obj) = data.as_object() else {
         return truncate_event_value(data, 0);
@@ -175,48 +157,30 @@ fn compact_savings_event_payload(data: Value) -> Value {
         "latency_ms": extract_i64(obj.get("latency_ms")),
     })
 }
-
 fn extract_i64(value: Option<&Value>) -> i64 {
     value
-        .and_then(|v| {
-            v.as_i64()
-                .or_else(|| v.as_u64().and_then(|x| i64::try_from(x).ok()))
-                .or_else(|| v.as_f64().map(|x| x.round() as i64))
-        })
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().and_then(|x| i64::try_from(x).ok())).or_else(|| v.as_f64().map(|x| x.round() as i64)))
         .unwrap_or(0)
 }
-
 fn truncate_event_value(value: Value, depth: usize) -> Value {
     if depth >= 4 {
         return Value::Null;
     }
     match value {
         Value::String(s) => Value::String(truncate_chars(&s, MAX_EVENT_VALUE_CHARS)),
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .take(16)
-                .map(|item| truncate_event_value(item, depth + 1))
-                .collect(),
-        ),
+        Value::Array(items) => Value::Array(items.into_iter().take(16).map(|item| truncate_event_value(item, depth + 1)).collect()),
         Value::Object(map) => {
-            let compacted = map
-                .into_iter()
-                .take(24)
-                .map(|(key, val)| (key, truncate_event_value(val, depth + 1)))
-                .collect();
+            let compacted = map.into_iter().take(24).map(|(key, val)| (key, truncate_event_value(val, depth + 1))).collect();
             Value::Object(compacted)
         }
         other => other,
     }
 }
-
 fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
     let encoded = payload.to_string();
     if encoded.len() <= MAX_EVENT_JSON_BYTES {
         return payload;
     }
-
     let mut fallback = json!({
         "truncated": true,
         "type": kind,
@@ -249,10 +213,7 @@ fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
             "jaccard",
             "incoming_chars",
         ] {
-            if let Some(value) = obj
-                .get(key)
-                .and_then(|value| compact_budget_scalar(value, MAX_EVENT_VALUE_CHARS))
-            {
+            if let Some(value) = obj.get(key).and_then(|value| compact_budget_scalar(value, MAX_EVENT_VALUE_CHARS)) {
                 fallback[key] = value;
             }
         }
@@ -268,27 +229,17 @@ fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
             fallback["shadow_semantic"] = shadow_semantic;
         }
     }
-
     if fallback.to_string().len() <= MAX_EVENT_JSON_BYTES {
         return fallback;
     }
-
     if let Some(fallback_obj) = fallback.as_object_mut() {
-        for key in [
-            "query",
-            "semantic_route",
-            "shadow_semantic",
-            "target_type",
-            "tier",
-            "mode",
-        ] {
+        for key in ["query", "semantic_route", "shadow_semantic", "target_type", "tier", "mode"] {
             fallback_obj.remove(key);
         }
     }
     if fallback.to_string().len() <= MAX_EVENT_JSON_BYTES {
         return fallback;
     }
-
     let mut minimal = json!({
         "truncated": true,
         "type": kind,
@@ -296,17 +247,13 @@ fn enforce_event_payload_budget(kind: &str, payload: Value) -> Value {
     });
     if let Some(obj) = payload.as_object() {
         for key in ["agent", "source_agent"] {
-            if let Some(value) = obj
-                .get(key)
-                .and_then(|value| compact_budget_scalar(value, MAX_SOURCE_LABEL_LEN))
-            {
+            if let Some(value) = obj.get(key).and_then(|value| compact_budget_scalar(value, MAX_SOURCE_LABEL_LEN)) {
                 minimal[key] = value;
             }
         }
     }
     minimal
 }
-
 fn compact_budget_scalar(value: &Value, max_chars: usize) -> Option<Value> {
     match value {
         Value::String(text) => Some(Value::String(truncate_chars(text, max_chars))),
@@ -314,7 +261,6 @@ fn compact_budget_scalar(value: &Value, max_chars: usize) -> Option<Value> {
         _ => None,
     }
 }
-
 fn payload_field_has_benchmark_prefix(payload: &Value, key: &str, lowercase_prefix: &str) -> bool {
     payload
         .get(key)
@@ -324,33 +270,16 @@ fn payload_field_has_benchmark_prefix(payload: &Value, key: &str, lowercase_pref
         .map(|value| value.to_ascii_lowercase().starts_with(lowercase_prefix))
         .unwrap_or(false)
 }
-
 fn is_benchmark_event_source(source_agent: &str, payload: &Value) -> bool {
     let benchmark_prefix = crate::compaction::BENCHMARK_SOURCE_AGENT_PREFIX.to_ascii_lowercase();
-    source_agent
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with(&benchmark_prefix)
+    source_agent.trim().to_ascii_lowercase().starts_with(&benchmark_prefix)
         || payload_field_has_benchmark_prefix(payload, "source_agent", &benchmark_prefix)
         || payload_field_has_benchmark_prefix(payload, "agent", &benchmark_prefix)
 }
-
-fn should_skip_benchmark_event_persistence(
-    kind: &str,
-    payload: &Value,
-    source_agent: &str,
-) -> bool {
-    NON_PERSISTENT_BENCHMARK_EVENT_KINDS.contains(&kind)
-        && is_benchmark_event_source(source_agent, payload)
+fn should_skip_benchmark_event_persistence(kind: &str, payload: &Value, source_agent: &str) -> bool {
+    NON_PERSISTENT_BENCHMARK_EVENT_KINDS.contains(&kind) && is_benchmark_event_source(source_agent, payload)
 }
-
-/// Insert an event row into the `events` table.
-pub fn log_event(
-    conn: &rusqlite::Connection,
-    kind: &str,
-    data: Value,
-    source_agent: &str,
-) -> rusqlite::Result<()> {
+pub fn log_event(conn: &rusqlite::Connection, kind: &str, data: Value, source_agent: &str) -> rusqlite::Result<()> {
     let compacted = compact_event_payload(kind, data);
     if should_skip_benchmark_event_persistence(kind, &compacted, source_agent) {
         return Ok(());
@@ -362,12 +291,8 @@ pub fn log_event(
     maybe_prune_high_volume_event(conn, kind)?;
     Ok(())
 }
-
 fn maybe_prune_high_volume_event(conn: &rusqlite::Connection, kind: &str) -> rusqlite::Result<()> {
-    let Some(keep_rows) = HIGH_VOLUME_EVENT_CAPS
-        .iter()
-        .find_map(|(event_type, keep)| (*event_type == kind).then_some(*keep))
-    else {
+    let Some(keep_rows) = HIGH_VOLUME_EVENT_CAPS.iter().find_map(|(event_type, keep)| (*event_type == kind).then_some(*keep)) else {
         return Ok(());
     };
     let inserted_id = conn.last_insert_rowid();
@@ -376,12 +301,7 @@ fn maybe_prune_high_volume_event(conn: &rusqlite::Connection, kind: &str) -> rus
     }
     prune_event_type_keep_latest(conn, kind, keep_rows)
 }
-
-fn prune_event_type_keep_latest(
-    conn: &rusqlite::Connection,
-    event_type: &str,
-    keep_rows: i64,
-) -> rusqlite::Result<()> {
+fn prune_event_type_keep_latest(conn: &rusqlite::Connection, event_type: &str, keep_rows: i64) -> rusqlite::Result<()> {
     if keep_rows < 1 {
         return Ok(());
     }
@@ -398,13 +318,10 @@ fn prune_event_type_keep_latest(
     )?;
     Ok(())
 }
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
     #[test]
     fn prune_event_type_keep_latest_trims_old_rows() {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
@@ -418,7 +335,6 @@ mod tests {
             );",
         )
         .expect("create events table");
-
         for idx in 0..6 {
             conn.execute(
                 "INSERT INTO events (type, data, source_agent) VALUES ('decision_stored', ?1, 'test')",
@@ -426,19 +342,10 @@ mod tests {
             )
             .expect("insert event");
         }
-
         prune_event_type_keep_latest(&conn, "decision_stored", 3).expect("prune rows");
-
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM events WHERE type = 'decision_stored'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("count rows");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM events WHERE type = 'decision_stored'", [], |row| row.get(0)).expect("count rows");
         assert_eq!(count, 3);
     }
-
     #[test]
     fn log_event_compacts_large_merge_payload() {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
@@ -452,7 +359,6 @@ mod tests {
             );",
         )
         .expect("create events table");
-
         let incoming = "x".repeat(10_000);
         log_event(
             &conn,
@@ -466,23 +372,12 @@ mod tests {
             "test",
         )
         .expect("log merge event");
-
-        let payload: String = conn
-            .query_row(
-                "SELECT data FROM events WHERE type = 'merge' LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read payload");
+        let payload: String = conn.query_row("SELECT data FROM events WHERE type = 'merge' LIMIT 1", [], |row| row.get(0)).expect("read payload");
         let parsed: Value = serde_json::from_str(&payload).expect("valid json");
         assert!(parsed.get("incoming_text").is_none());
         assert_eq!(parsed["incoming_chars"].as_i64(), Some(10_000));
-        assert!(parsed["incoming_preview"]
-            .as_str()
-            .map(|text| text.len() <= MERGE_EVENT_PREVIEW_CHARS)
-            .unwrap_or(false));
+        assert!(parsed["incoming_preview"].as_str().map(|text| text.len() <= MERGE_EVENT_PREVIEW_CHARS).unwrap_or(false));
     }
-
     #[test]
     fn log_event_keeps_recall_analytics_fields_small() {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
@@ -496,7 +391,6 @@ mod tests {
             );",
         )
         .expect("create events table");
-
         log_event(
             &conn,
             "recall_query",
@@ -533,28 +427,19 @@ mod tests {
             "codex",
         )
         .expect("log recall event");
-
         let (payload, bytes): (String, i64) = conn
-            .query_row(
-                "SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
             .expect("read payload");
         let parsed: Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(parsed["saved"].as_i64(), Some(188));
         assert_eq!(parsed["budget"].as_i64(), Some(240));
         assert_eq!(parsed["hits"].as_i64(), Some(3));
         assert_eq!(parsed["semantic_route"]["mode"].as_str(), Some("baseline"));
-        assert_eq!(
-            parsed["shadow_semantic"]["status"].as_str(),
-            Some("unavailable")
-        );
+        assert_eq!(parsed["shadow_semantic"]["status"].as_str(), Some("unavailable"));
         assert!(parsed["shadow_semantic"]["baselineTopSources"].is_null());
         assert!(parsed["shadow_semantic"]["shadowTopSources"].is_null());
         assert!(bytes as usize <= MAX_EVENT_JSON_BYTES);
     }
-
     #[test]
     fn log_event_skips_non_persistent_benchmark_noise() {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
@@ -568,7 +453,6 @@ mod tests {
             );",
         )
         .expect("create events table");
-
         log_event(
             &conn,
             "recall_query",
@@ -614,12 +498,8 @@ mod tests {
             "rust-daemon",
         )
         .expect("skip benchmark decision_stored noise");
-
-        let skipped_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
-            .expect("count skipped rows");
+        let skipped_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0)).expect("count skipped rows");
         assert_eq!(skipped_count, 0);
-
         log_event(
             &conn,
             "recall_query",
@@ -634,13 +514,9 @@ mod tests {
             "codex",
         )
         .expect("persist non-benchmark event");
-
-        let persisted_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
-            .expect("count persisted rows");
+        let persisted_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0)).expect("count persisted rows");
         assert_eq!(persisted_count, 1);
     }
-
     #[test]
     fn log_event_payload_fallback_keeps_savings_fields_bounded() {
         let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
@@ -654,12 +530,10 @@ mod tests {
             );",
         )
         .expect("create events table");
-
         let mut method_breakdown = serde_json::Map::new();
         for idx in 0..24 {
             method_breakdown.insert(format!("bucket_{idx}"), Value::String("x".repeat(1024)));
         }
-
         log_event(
             &conn,
             "recall_query",
@@ -690,13 +564,8 @@ mod tests {
             "codex",
         )
         .expect("log oversized recall event");
-
         let (payload, bytes): (String, i64) = conn
-            .query_row(
-                "SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT data, LENGTH(data) FROM events WHERE type = 'recall_query' LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?)))
             .expect("read payload");
         let parsed: Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(parsed["truncated"].as_bool(), Some(true));
@@ -705,10 +574,7 @@ mod tests {
         assert_eq!(parsed["hits"].as_i64(), Some(3));
         assert_eq!(parsed["agent"].as_str(), Some("codex"));
         assert!(
-            parsed["query"]
-                .as_str()
-                .map(|query| query.chars().count() <= 120)
-                .unwrap_or(false),
+            parsed["query"].as_str().map(|query| query.chars().count() <= 120).unwrap_or(false),
             "query should stay bounded in fallback payload"
         );
         assert!(bytes as usize <= MAX_EVENT_JSON_BYTES);

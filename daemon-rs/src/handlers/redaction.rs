@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: MIT
 use regex::Regex;
 use std::sync::OnceLock;
-
 static BEARER_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static HASH_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
 static CREDENTIAL_REDACTION_RE: OnceLock<Option<Regex>> = OnceLock::new();
-
-// Apply redactions in three passes so broad credential masking does not hide
-// structured bearer/hash patterns from earlier, more specific replacements.
 pub fn redact_secrets(text: &str) -> String {
     let bearer = BEARER_REDACTION_RE
         .get_or_init(|| Regex::new(r"Bearer\s+[a-f0-9]{32,}").ok())

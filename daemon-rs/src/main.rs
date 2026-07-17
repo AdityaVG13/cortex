@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT
-
-/// Default TCP port the Cortex daemon binds to when no `--port` flag or
-/// `CORTEX_PORT` env var is set.
 pub const DEFAULT_CORTEX_PORT: u16 = 7437;
-
 mod admin;
 mod aging;
 mod api_types;
@@ -39,25 +35,16 @@ mod test_support;
 mod tls;
 mod transport;
 mod workspace;
-
 use chrono::Utc;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-
 use cli::{
-    apply_path_env, cli_capabilities_payload, cli_capabilities_summary, cli_robot_docs_guide,
-    cli_service_usage, ensure_daemon, ensure_remote_target_has_api_key,
-    is_disallowed_startup_binary_path, parse_flag_usize, parse_flag_value, print_usage_and_exit,
-    resolve_client_target, run_admin_cli, run_backup_cli, run_boot_cli, run_cleanup_cli,
-    run_doctor_cli, run_embeddings_cli, run_embeddings_drain_cli, run_eval_cli, run_export_cli,
-    run_import_cli, run_recrystallize_cli, run_reindex_cli, run_restore_cli, run_status_cli,
-    run_sync_cli, run_team_cli, run_user_cli, unknown_cli_command_message,
-    unknown_robot_docs_subcommand_message, validate_cli_options_or_exit,
+    apply_path_env, cli_capabilities_payload, cli_capabilities_summary, cli_robot_docs_guide, cli_service_usage, ensure_daemon, ensure_remote_target_has_api_key, is_disallowed_startup_binary_path,
+    parse_flag_usize, parse_flag_value, print_usage_and_exit, resolve_client_target, run_admin_cli, run_backup_cli, run_boot_cli, run_cleanup_cli, run_doctor_cli, run_embeddings_cli,
+    run_embeddings_drain_cli, run_eval_cli, run_export_cli, run_import_cli, run_recrystallize_cli, run_reindex_cli, run_restore_cli, run_status_cli, run_sync_cli, run_team_cli, run_user_cli,
+    unknown_cli_command_message, unknown_robot_docs_subcommand_message, validate_cli_options_or_exit,
 };
-
 pub(crate) use cli::run_daemon;
-
 pub(crate) fn install_daemon_panic_hook(paths: &auth::CortexPaths) {
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     if INSTALLED.swap(true, Ordering::SeqCst) {
@@ -79,25 +66,17 @@ pub(crate) fn install_daemon_panic_hook(paths: &auth::CortexPaths) {
             .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
             .unwrap_or_else(|| "<unknown location>".to_string());
         let backtrace = std::backtrace::Backtrace::force_capture();
-        let entry = format!(
-            "[{ts}] PANIC at {location}: {message}\n{backtrace}\n",
-            ts = Utc::now().to_rfc3339(),
-        );
+        let entry = format!("[{ts}] PANIC at {location}: {message}\n{backtrace}\n", ts = Utc::now().to_rfc3339(),);
         eprintln!("[cortex] {entry}");
         if let Some(parent) = panic_log_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&panic_log_path)
-        {
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&panic_log_path) {
             let _ = file.write_all(entry.as_bytes());
         }
         previous(info);
     }));
 }
-
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -105,14 +84,10 @@ async fn main() {
     let paths = auth::CortexPaths::resolve_from_args(&args);
     if let Ok(current_exe) = std::env::current_exe() {
         if is_disallowed_startup_binary_path(&current_exe) {
-            eprintln!(
-                "[cortex] Refusing to run from disallowed runtime path: {}",
-                current_exe.display()
-            );
+            eprintln!("[cortex] Refusing to run from disallowed runtime path: {}", current_exe.display());
             std::process::exit(1);
         }
     }
-
     match mode {
         "" | "--help" | "-h" | "help" => print_usage_and_exit(0),
         "--version" | "-V" | "version" => println!("cortex {}", env!("CARGO_PKG_VERSION")),
@@ -165,7 +140,8 @@ async fn main() {
                     _ = tokio::signal::ctrl_c() => eprintln!("[cortex] Received Ctrl+C, shutting down..."),
                     _ = sigterm_future() => eprintln!("[cortex] Received SIGTERM, shutting down..."),
                 }
-            }).await;
+            })
+            .await;
         }
         "mcp" => {
             let remaining = &args[2..];
@@ -260,12 +236,22 @@ async fn main() {
                 "stop" => u8::from(service::stop()),
                 "status" => u8::from(service::status()),
                 "ensure" => u8::from(service::ensure()),
-                _ => { eprintln!("{}", cli_service_usage()); 1 }
-            }).await {
+                _ => {
+                    eprintln!("{}", cli_service_usage());
+                    1
+                }
+            })
+            .await
+            {
                 Ok(code) => code,
-                Err(err) => { eprintln!("[cortex] Service command task failed: {err}"); 1 }
+                Err(err) => {
+                    eprintln!("[cortex] Service command task failed: {err}");
+                    1
+                }
             };
-            if code != 0 { std::process::exit(code as i32); }
+            if code != 0 {
+                std::process::exit(code as i32);
+            }
         }
         "service-run" => service::dispatch_service(),
         "prompt-inject" => prompt_inject::run(&args[2..]).await,
@@ -313,7 +299,10 @@ async fn main() {
             let max_event_passes = match parse_flag_usize(&args[2..], "--max-passes") {
                 Ok(Some(value)) => value.clamp(1, 12),
                 Ok(None) => 3,
-                Err(err) => { eprintln!("Error: {err}"); std::process::exit(1); }
+                Err(err) => {
+                    eprintln!("Error: {err}");
+                    std::process::exit(1);
+                }
             };
             run_cleanup_cli(&paths, args.iter().any(|a| a == "--dry-run"), args.iter().any(|a| a == "--events"), max_event_passes);
         }

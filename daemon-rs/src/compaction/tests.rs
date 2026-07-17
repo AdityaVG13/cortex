@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! Data-integrity tests for compaction only. See Info/testing-philosophy.md.
-
 #[cfg(test)]
 mod tests {
-    use crate::compaction::{
-        prune_expired_entries, prune_old_events, purge_benchmark_artifacts,
-    };
+    use crate::compaction::{prune_expired_entries, prune_old_events, purge_benchmark_artifacts};
     use rusqlite::Connection;
-
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::configure(&conn).unwrap();
@@ -15,24 +10,15 @@ mod tests {
         crate::db::run_pending_migrations(&conn);
         conn
     }
-
     #[test]
     fn prune_old_events_removes_stale_rows() {
         let conn = setup();
-        conn.execute(
-            "INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now', '-40 days'))",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now'))",
-            [],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now', '-40 days'))", [])
+            .unwrap();
+        conn.execute("INSERT INTO events (type, data, created_at) VALUES ('boot', '{}', datetime('now'))", []).unwrap();
         let removed = prune_old_events(&conn);
         assert_eq!(removed, 1);
     }
-
     #[test]
     fn prune_expired_entries_removes_expired_decisions() {
         let conn = setup();
@@ -51,7 +37,6 @@ mod tests {
         let removed = prune_expired_entries(&conn);
         assert_eq!(removed, 1);
     }
-
     #[test]
     fn purge_benchmark_artifacts_removes_benchmark_rows() {
         let conn = setup();

@@ -1,21 +1,5 @@
 // SPDX-License-Identifier: MIT
-use chrono::{Duration, Utc};
-use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::time::Instant;
-use crate::handlers::diary::{write_diary_entry, DiaryRequest};
-use crate::handlers::feedback::{build_agent_feedback_stats_payload, recommend_recall_k, record_agent_feedback_from_value};
-use crate::handlers::health::{build_digest, build_health_payload};
-use crate::handlers::mutate::{forget_keyword_scoped, list_conflicts_payload, parse_conflict_id, resolve_decision, resolve_decision_with_metadata, ConflictListOptions, ConflictStatusFilter, ResolutionMetadata};
-use crate::handlers::recall::{execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, parse_recall_policy_mode, resolve_recall_budget_k, unfold_source, RecallContext};
-use crate::handlers::store::{persist_decision_embedding, store_decision_with_input_embedding_and_provenance_retention, validate_explicit_ttl_seconds, DecisionProvenance};
-use crate::handlers::{estimate_tokens, now_iso, SourceIdentity};
-use crate::api_types::RetentionClass;
-use crate::state::RuntimeState;
-use crate::{aging, db, indexer};
-
-use super::*;
 pub fn mcp_tools() -> Vec<Value> {
     vec![
         json!({
@@ -382,4 +366,3 @@ pub fn mcp_tools() -> Vec<Value> {
         }),
     ]
 }
-

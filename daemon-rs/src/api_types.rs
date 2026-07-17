@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT
 use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
     Json,
     Sql,
 }
-
 impl ExportFormat {
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
@@ -17,7 +15,6 @@ impl ExportFormat {
         }
     }
 }
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RetentionClass {
@@ -27,7 +24,6 @@ pub enum RetentionClass {
     Audit,
     Ephemeral,
 }
-
 impl RetentionClass {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -37,7 +33,6 @@ impl RetentionClass {
             Self::Ephemeral => "ephemeral",
         }
     }
-
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
             "durable" => Some(Self::Durable),
@@ -47,7 +42,6 @@ impl RetentionClass {
             _ => None,
         }
     }
-
     pub fn default_ttl_seconds(self) -> Option<i64> {
         match self {
             Self::Durable => None,
@@ -56,73 +50,41 @@ impl RetentionClass {
             Self::Ephemeral => Some(14 * 24 * 60 * 60),
         }
     }
-
     pub fn from_entry_type(entry_type: &str) -> Option<Self> {
         match entry_type.trim().to_ascii_lowercase().as_str() {
-            "decision" | "policy" | "rule" | "convention" | "contract" | "procedure"
-            | "playbook" | "runbook" => Some(Self::Durable),
+            "decision" | "policy" | "rule" | "convention" | "contract" | "procedure" | "playbook" | "runbook" => Some(Self::Durable),
             "trace" | "security" | "rollback" | "permission" | "audit" => Some(Self::Audit),
-            "chatter" | "scratch" | "transient" | "temporary" | "ephemeral" => {
-                Some(Self::Ephemeral)
-            }
-            "observation" | "note" | "finding" | "fact" | "memory" | "focus_summary" => {
-                Some(Self::Operational)
-            }
+            "chatter" | "scratch" | "transient" | "temporary" | "ephemeral" => Some(Self::Ephemeral),
+            "observation" | "note" | "finding" | "fact" | "memory" | "focus_summary" => Some(Self::Operational),
             _ => None,
         }
     }
-
-    pub fn classify(
-        explicit: Option<Self>,
-        entry_type: &str,
-        text: &str,
-        context: Option<&str>,
-    ) -> Self {
+    pub fn classify(explicit: Option<Self>, entry_type: &str, text: &str, context: Option<&str>) -> Self {
         if let Some(explicit) = explicit {
             return explicit;
         }
         if let Some(mapped) = Self::from_entry_type(entry_type) {
             return mapped;
         }
-
         let combined = match context {
-            Some(context) if !context.trim().is_empty() => {
-                format!("{} {}", text.trim(), context.trim()).to_ascii_lowercase()
-            }
+            Some(context) if !context.trim().is_empty() => format!("{} {}", text.trim(), context.trim()).to_ascii_lowercase(),
             _ => text.trim().to_ascii_lowercase(),
         };
-        if [
-            "architectural",
-            "architecture",
-            "convention",
-            "always",
-            "never",
-            "api contract",
-            "must ",
-            "do not",
-        ]
-        .iter()
-        .any(|needle| combined.contains(needle))
+        if ["architectural", "architecture", "convention", "always", "never", "api contract", "must ", "do not"]
+            .iter()
+            .any(|needle| combined.contains(needle))
         {
             return Self::Durable;
         }
-        if ["rollback", "permission", "security event", "audit"]
-            .iter()
-            .any(|needle| combined.contains(needle))
-        {
+        if ["rollback", "permission", "security event", "audit"].iter().any(|needle| combined.contains(needle)) {
             return Self::Audit;
         }
-        if ["throwaway", "temporary", "transient", "scratch"]
-            .iter()
-            .any(|needle| combined.contains(needle))
-        {
+        if ["throwaway", "temporary", "transient", "scratch"].iter().any(|needle| combined.contains(needle)) {
             return Self::Ephemeral;
         }
-
         Self::Operational
     }
 }
-
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct StoreRequest {
     pub decision: Option<String>,
@@ -136,13 +98,11 @@ pub struct StoreRequest {
     pub ttl_seconds: Option<i64>,
     pub retention_class: Option<RetentionClass>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportPayload {
     pub memories: Option<Vec<ImportMemory>>,
     pub decisions: Option<Vec<ImportDecision>>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportMemory {
     pub text: String,
@@ -162,7 +122,6 @@ pub struct ImportMemory {
     pub valid_until: Option<String>,
     pub retention_class: Option<RetentionClass>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportDecision {
     pub decision: String,
@@ -181,14 +140,12 @@ pub struct ImportDecision {
     pub valid_until: Option<String>,
     pub retention_class: Option<RetentionClass>,
 }
-
 #[derive(Debug, Clone)]
 pub struct ImportOptions {
     pub owner_id: Option<i64>,
     pub visibility: Option<String>,
     pub source_agent_fallback: String,
 }
-
 impl Default for ImportOptions {
     fn default() -> Self {
         Self {
@@ -198,7 +155,6 @@ impl Default for ImportOptions {
         }
     }
 }
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImportCounts {
     pub memories: usize,

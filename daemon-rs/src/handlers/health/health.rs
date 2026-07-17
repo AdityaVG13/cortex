@@ -1,24 +1,15 @@
 // SPDX-License-Identifier: MIT
+use super::*;
+use crate::handlers::{client_ip, ensure_ssrf_protection, json_response};
+use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use chrono::Utc;
-use rusqlite::{params, OpenFlags};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashSet};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
-use crate::handlers::{client_ip, ensure_auth_rated, ensure_ssrf_protection, json_response, truncate_chars};
-use crate::state::RuntimeState;
-
-
-use super::*;
-// ─── GET /health ─────────────────────────────────────────────────────────────
-
 pub(crate) fn include_private_runtime_details(headers: &HeaderMap) -> bool {
     ensure_ssrf_protection(headers).is_ok() && client_ip(headers).is_loopback()
 }
-
 pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
     if let Some(runtime) = payload.get_mut("runtime").and_then(Value::as_object_mut) {
         runtime.remove("db_path");
@@ -29,49 +20,25 @@ pub(crate) fn redact_private_runtime_details(payload: &mut Value) {
         runtime.remove("executable");
         runtime.remove("owner");
     }
-
     if let Some(stats) = payload.get_mut("stats").and_then(Value::as_object_mut) {
         stats.remove("home");
     }
 }
-
 pub async fn build_health_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
     let embedding_model = crate::embeddings::selected_model_selection();
     let now_unix_secs = Utc::now().timestamp();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    // Read DB stats in a short lock, then drop it before the network call.
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let (memories, decisions, embeddings_count, events, db_freelist_pages, sqlite_vec_status) = {
         let conn = state.db_read.lock().await;
-        let m: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
-            .unwrap_or(0);
-        let d: i64 = conn
-            .query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0))
-            .unwrap_or(0);
-        let e: i64 = conn
-            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
-            .unwrap_or(0);
-        let ev: i64 = conn
-            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
-            .unwrap_or(0);
-        let freelist: i64 = conn
-            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
-            .unwrap_or(0);
+        let m: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0)).unwrap_or(0);
+        let d: i64 = conn.query_row("SELECT COUNT(*) FROM decisions", [], |r| r.get(0)).unwrap_or(0);
+        let e: i64 = conn.query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0)).unwrap_or(0);
+        let ev: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap_or(0);
+        let freelist: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0)).unwrap_or(0);
         let sqlite_vec_status = crate::db::sqlite_vec_status(&conn);
         (m, d, e, ev, freelist, sqlite_vec_status)
     }; // DB lock released here.
-
-    let (
-        embedding_inventory,
-        storage_bytes,
-        backup_count,
-        log_bytes,
-        heavy_metrics_source,
-        cache_age_secs,
-    ) = {
+    let (embedding_inventory, storage_bytes, backup_count, log_bytes, heavy_metrics_source, cache_age_secs) = {
         let cached = match health_heavy_metrics_cache().lock() {
             Ok(guard) => *guard,
             Err(poisoned) => *poisoned.into_inner(),
@@ -118,20 +85,10 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
                 Ok(mut guard) => *guard = Some(snapshot),
                 Err(poisoned) => *poisoned.into_inner() = Some(snapshot),
             }
-            (
-                embedding_inventory,
-                storage_bytes,
-                backup_count,
-                log_bytes,
-                "live",
-                0,
-            )
+            (embedding_inventory, storage_bytes, backup_count, log_bytes, "live", 0)
         }
     };
-
-    let db_size_bytes = std::fs::metadata(&state.db_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
+    let db_size_bytes = std::fs::metadata(&state.db_path).map(|meta| meta.len()).unwrap_or(0);
     let db_soft_limit_bytes = crate::compaction::STORAGE_SOFT_LIMIT_BYTES.max(1) as u64;
     let db_hard_limit_bytes = crate::compaction::STORAGE_HARD_LIMIT_BYTES.max(1) as u64;
     let db_pressure = crate::compaction::classify_storage_pressure(db_size_bytes as i64);
@@ -141,18 +98,10 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
     } else {
         0.0
     };
-    let reembed_backlog_total =
-        embedding_inventory.backlog_memories + embedding_inventory.backlog_decisions;
-
-    let degraded = state
-        .degraded_mode
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let reembed_backlog_total = embedding_inventory.backlog_memories + embedding_inventory.backlog_decisions;
+    let degraded = state.degraded_mode.load(std::sync::atomic::Ordering::Relaxed);
     let reranker_model = crate::rerank::selected_reranker_selection();
-
-    let db_corrupted = state
-        .db_corrupted
-        .load(std::sync::atomic::Ordering::Relaxed);
-
+    let db_corrupted = state.db_corrupted.load(std::sync::atomic::Ordering::Relaxed);
     let embedding_status = if degraded {
         "degraded"
     } else if state.embedding_engine.is_some() {
@@ -160,30 +109,15 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
     } else {
         "unavailable"
     };
-
-    let executable = std::env::current_exe()
-        .ok()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
+    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let ipc_kind = if ipc_endpoint.is_some() {
-        Some(if cfg!(windows) {
-            "named-pipe"
-        } else {
-            "unix-socket"
-        })
+        Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" })
     } else {
         None
     };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
-    let budgets = state
-        .rate_limiter
-        .budget_status()
-        .to_health_json(state.rate_limiter.recent_budget_denials().await);
-
+    let budgets = state.rate_limiter.budget_status().to_health_json(state.rate_limiter.recent_budget_denials().await);
     let mut payload = json!({
         "status": if degraded || db_corrupted { "degraded" } else { "ok" },
         "ready": ready,
@@ -282,46 +216,25 @@ pub async fn build_health_payload(state: &RuntimeState, include_private_runtime:
             "owner": daemon_owner
         }
     });
-
     if !include_private_runtime {
         redact_private_runtime_details(&mut payload);
     }
-
     payload
 }
-
 pub async fn handle_health(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     let include_private_runtime = include_private_runtime_details(&headers);
-    json_response(
-        StatusCode::OK,
-        build_health_payload(&state, include_private_runtime).await,
-    )
+    json_response(StatusCode::OK, build_health_payload(&state, include_private_runtime).await)
 }
-
 pub async fn build_readiness_payload(state: &RuntimeState, include_private_runtime: bool) -> Value {
-    let executable = std::env::current_exe()
-        .ok()
-        .map(|path| path.display().to_string())
-        .unwrap_or_default();
-    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let executable = std::env::current_exe().ok().map(|path| path.display().to_string()).unwrap_or_default();
+    let daemon_owner = std::env::var("CORTEX_DAEMON_OWNER").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let ipc_endpoint = std::env::var("CORTEX_IPC_ENDPOINT").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     let ipc_kind = if ipc_endpoint.is_some() {
-        Some(if cfg!(windows) {
-            "named-pipe"
-        } else {
-            "unix-socket"
-        })
+        Some(if cfg!(windows) { "named-pipe" } else { "unix-socket" })
     } else {
         None
     };
     let ready = state.readiness.load(std::sync::atomic::Ordering::Relaxed);
-
     let mut payload = json!({
         "status": if ready { "ready" } else { "starting" },
         "ready": ready,
@@ -341,26 +254,15 @@ pub async fn build_readiness_payload(state: &RuntimeState, include_private_runti
             "home": state.home.display().to_string()
         }
     });
-
     if !include_private_runtime {
         redact_private_runtime_details(&mut payload);
     }
-
     payload
 }
-
 pub async fn handle_readiness(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     let include_private_runtime = include_private_runtime_details(&headers);
     let payload = build_readiness_payload(&state, include_private_runtime).await;
-    let ready = payload
-        .get("ready")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false);
-    let status = if ready {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
+    let ready = payload.get("ready").and_then(|value| value.as_bool()).unwrap_or(false);
+    let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
     json_response(status, payload)
 }
-

@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: MIT
+use super::keys::cortex_dir;
+use super::paths::{CortexPaths, BASE62};
 use std::fs;
 use std::path::PathBuf;
-
-use super::keys::cortex_dir;
-use super::paths::{BASE62, CortexPaths};
-
-/// Write the current process PID to `~/.cortex/cortex.pid`.
 #[allow(dead_code)]
 pub fn write_pid() {
     let dir = cortex_dir();
@@ -14,39 +11,26 @@ pub fn write_pid() {
     }
     fs::write(dir.join("cortex.pid"), std::process::id().to_string()).ok();
 }
-
-/// Remove stale PID file when the recorded daemon process no longer exists.
 pub fn cleanup_stale_pid_lock(paths: &CortexPaths) -> Option<u32> {
     let pid = stale_pid_candidate(paths)?;
-
     let _ = fs::remove_file(&paths.pid);
     eprintln!("[cortex] Cleaned stale PID file (process {pid} not running)");
     Some(pid)
 }
-
 pub fn stale_pid_candidate(paths: &CortexPaths) -> Option<u32> {
     if !paths.pid.exists() {
         return None;
     }
-
-    let pid = fs::read_to_string(&paths.pid)
-        .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok())?;
-
+    let pid = fs::read_to_string(&paths.pid).ok().and_then(|value| value.trim().parse::<u32>().ok())?;
     if pid == std::process::id() || process_is_running(pid) {
         return None;
     }
-
     Some(pid)
 }
-
 #[cfg(windows)]
 fn process_is_running(pid: u32) -> bool {
     use std::process::Command;
-
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output();
+    let output = Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]).output();
     let Ok(out) = output else {
         return false;
     };
@@ -56,23 +40,17 @@ fn process_is_running(pid: u32) -> bool {
     let stdout = String::from_utf8_lossy(&out.stdout);
     stdout.contains(&format!("\"{pid}\""))
 }
-
 #[cfg(unix)]
 fn process_is_running(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
     // SAFETY: `pid` has been range-checked for the platform `pid_t`.
-    // Passing signal 0 performs an existence/permission probe and does not
-    // deliver a signal.
     unsafe { libc::kill(pid, 0) == 0 }
 }
-
-/// Returns the canonical database path: `~/.cortex/cortex.db`.
 pub fn db_path() -> PathBuf {
     cortex_dir().join("cortex.db")
 }
-
 pub(crate) fn fnv1a16(input: &[u8]) -> u16 {
     let mut hash: u32 = 0x811C9DC5;
     for byte in input {
@@ -81,7 +59,6 @@ pub(crate) fn fnv1a16(input: &[u8]) -> u16 {
     }
     (hash & 0xFFFF) as u16
 }
-
 pub(crate) fn left_pad_base62(num: u16, width: usize) -> String {
     let mut s = base62_encode_u64(num as u64);
     while s.len() < width {
@@ -89,7 +66,6 @@ pub(crate) fn left_pad_base62(num: u16, width: usize) -> String {
     }
     s
 }
-
 pub(crate) fn base62_encode_u64(mut num: u64) -> String {
     if num == 0 {
         return "0".to_string();
@@ -101,7 +77,6 @@ pub(crate) fn base62_encode_u64(mut num: u64) -> String {
     }
     out.iter().rev().collect()
 }
-
 pub(crate) fn base62_encode_bytes(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
@@ -119,9 +94,5 @@ pub(crate) fn base62_encode_bytes(bytes: &[u8]) -> String {
             carry /= 62;
         }
     }
-    digits
-        .iter()
-        .rev()
-        .map(|d| BASE62[*d as usize] as char)
-        .collect()
+    digits.iter().rev().map(|d| BASE62[*d as usize] as char).collect()
 }

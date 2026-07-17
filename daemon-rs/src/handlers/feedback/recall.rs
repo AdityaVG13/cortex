@@ -1,50 +1,22 @@
 // SPDX-License-Identifier: MIT
-//! Relevance Feedback Loop — learns which recalled results are actually useful.
-//!
-//! Signal sources:
-//!   - Explicit: cortex_unfold() calls → positive signal for unfolded sources
-//!   - Explicit: POST /feedback → caller reports useful/not-useful
-//!
-//! Feedback is stored in `recall_feedback` with the query embedding so future
-//! recalls for similar queries can rerank based on what worked before.
-//!
-//! Reranking: boost = sum(signal * decay) for matching result_source,
-//! where decay = exp(-age_days / 30). Capped at [-0.2, +0.3].
-
-use axum::extract::{Query, State};
+use crate::embeddings;
+use crate::handlers::{ensure_auth_rated, json_error, json_response};
+use crate::state::RuntimeState;
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
-
-use crate::handlers::{ensure_auth_rated, ensure_auth_with_caller_rated, json_error, json_response};
-use crate::embeddings;
-use crate::state::RuntimeState;
-use std::collections::HashMap;
-
-// ─── Constants ──────────────────────────────────────────────────────────────
-
-/// Max boost from feedback (prevents runaway amplification).
 const MAX_BOOST: f64 = 0.3;
-/// Max penalty from negative feedback.
 const MIN_BOOST: f64 = -0.2;
-/// Half-life for feedback signal decay (days).
 const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
-/// Minimum positive feedback signals in last 14 days to grant aging immunity.
 pub const IMMUNITY_THRESHOLD: i64 = 5;
-/// Window for aging immunity check (days).
 pub const IMMUNITY_WINDOW_DAYS: i64 = 14;
-/// Default lookback window for agent outcome telemetry stats.
 const AGENT_FEEDBACK_DEFAULT_HORIZON_DAYS: i64 = 30;
-/// Default row cap for agent outcome telemetry stats.
 const AGENT_FEEDBACK_DEFAULT_LIMIT: usize = 400;
-/// Recency half-life used for reliability weighting.
 const AGENT_FEEDBACK_DECAY_HALF_LIFE_DAYS: f64 = 21.0;
-
-// ─── POST /feedback ─────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct FeedbackRequest {
     pub query: Option<String>,
@@ -52,31 +24,20 @@ pub struct FeedbackRequest {
     pub signal: Option<f64>,
     pub agent: Option<String>,
 }
-
-pub async fn handle_feedback(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FeedbackRequest>,
-) -> Response {
+pub async fn handle_feedback(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FeedbackRequest>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     if body.sources.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "sources array is empty");
     }
-
     let signal = body.signal.unwrap_or(1.0).clamp(-1.0, 1.0);
     let agent = body.agent.as_deref().unwrap_or("http");
     let query_text = body.query.as_deref().unwrap_or("");
-
     let query_embedding = match state.embedding_engine.clone() {
-        Some(engine) => engine
-            .embed_query_async(query_text.to_string())
-            .await
-            .map(|v| embeddings::vector_to_blob(&v)),
+        Some(engine) => engine.embed_query_async(query_text.to_string()).await.map(|v| embeddings::vector_to_blob(&v)),
         None => None,
     };
-
     let conn = state.db.lock().await;
     let mut stored = 0usize;
     for source in &body.sources {
@@ -84,21 +45,12 @@ pub async fn handle_feedback(
         match conn.execute(
             "INSERT INTO recall_feedback (query_text, query_embedding, result_source, result_type, result_id, signal, agent) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                query_text,
-                query_embedding,
-                source,
-                result_type,
-                result_id,
-                signal,
-                agent,
-            ],
+            params![query_text, query_embedding, source, result_type, result_id, signal, agent,],
         ) {
             Ok(_) => stored += 1,
             Err(e) => eprintln!("[feedback] Failed to store for {source}: {e}"),
         }
     }
-
     json_response(
         StatusCode::OK,
         json!({
@@ -108,18 +60,7 @@ pub async fn handle_feedback(
         }),
     )
 }
-
-// ─── Feedback recording (called internally by unfold) ───────────────────────
-
-/// Record positive feedback for sources that were unfolded after a recall.
-/// Called from the MCP unfold handler — no HTTP round-trip needed.
-pub fn record_unfold_feedback(
-    conn: &Connection,
-    sources: &[String],
-    agent: &str,
-    query_text: &str,
-    query_blob: Option<&[u8]>,
-) {
+pub fn record_unfold_feedback(conn: &Connection, sources: &[String], agent: &str, query_text: &str, query_blob: Option<&[u8]>) {
     for source in sources {
         let (result_type, result_id) = parse_source(source);
         let _ = conn.execute(
@@ -129,24 +70,9 @@ pub fn record_unfold_feedback(
         );
     }
 }
-
-// ─── Reranking: compute boost for a result source ───────────────────────────
-
-/// Compute a relevance boost for a given result source based on historical
-/// feedback. Returns a value in [MIN_BOOST, MAX_BOOST].
-///
-/// Algorithm:
-///   boost = sum(signal_i * exp(-age_days_i / HALF_LIFE)) for all feedback rows
-///   clamped to [MIN_BOOST, MAX_BOOST]
-///
-/// This is O(feedback_rows_for_source) which stays small because:
-/// - Each unfold generates ~2-3 rows
-/// - Old feedback decays naturally
-/// - We only scan rows for the specific source
 #[allow(dead_code)]
 pub fn compute_boost(conn: &Connection, result_source: &str) -> f64 {
     let decay_lambda = (2.0f64).ln() / DECAY_HALF_LIFE_DAYS;
-
     let boost: f64 = conn
         .prepare(
             "SELECT signal, julianday('now') - julianday(created_at) AS age_days \
@@ -165,68 +91,39 @@ pub fn compute_boost(conn: &Connection, result_source: &str) -> f64 {
             Ok(total)
         })
         .unwrap_or(0.0);
-
     boost.clamp(MIN_BOOST, MAX_BOOST)
 }
-
-/// Batch compute boosts for multiple sources at once (avoids N queries).
-/// Returns a map of source → boost value.
-pub fn compute_boosts(
-    conn: &Connection,
-    sources: &[String],
-    query_vector: Option<&[f32]>,
-) -> std::collections::HashMap<String, f64> {
+pub fn compute_boosts(conn: &Connection, sources: &[String], query_vector: Option<&[f32]>) -> std::collections::HashMap<String, f64> {
     let mut boosts = std::collections::HashMap::new();
     if sources.is_empty() {
         return boosts;
     }
-
     let decay_lambda = (2.0f64).ln() / DECAY_HALF_LIFE_DAYS;
-
-    // Single query: fetch all feedback for any of the requested sources
-    let placeholders = sources
-        .iter()
-        .enumerate()
-        .map(|(i, _)| format!("?{}", i + 1))
-        .collect::<Vec<_>>()
-        .join(", ");
-
+    let placeholders = sources.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(", ");
     let sql = format!(
         "SELECT result_source, signal, query_embedding, julianday('now') - julianday(created_at) AS age_days \
          FROM recall_feedback WHERE result_source IN ({placeholders})"
     );
-
     if let Ok(mut stmt) = conn.prepare(&sql) {
-        let params: Vec<&dyn rusqlite::types::ToSql> = sources
-            .iter()
-            .map(|s| s as &dyn rusqlite::types::ToSql)
-            .collect();
-
+        let params: Vec<&dyn rusqlite::types::ToSql> = sources.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
         if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
             let source: String = row.get(0)?;
             let signal: f64 = row.get(1)?;
             let query_blob: Option<Vec<u8>> = row.get(2)?;
             let age_days: f64 = row.get::<_, f64>(3)?.max(0.0);
             let query_weight = query_similarity_weight(query_vector, query_blob.as_deref());
-            Ok((
-                source,
-                signal * query_weight * (-decay_lambda * age_days).exp(),
-            ))
+            Ok((source, signal * query_weight * (-decay_lambda * age_days).exp()))
         }) {
             for row in rows.flatten() {
                 *boosts.entry(row.0).or_insert(0.0) += row.1;
             }
         }
     }
-
-    // Clamp all values
     for v in boosts.values_mut() {
         *v = v.clamp(MIN_BOOST, MAX_BOOST);
     }
-
     boosts
 }
-
 fn query_similarity_weight(current_query: Option<&[f32]>, stored_blob: Option<&[u8]>) -> f64 {
     let Some(current_query) = current_query else {
         return 1.0;
@@ -239,11 +136,8 @@ fn query_similarity_weight(current_query: Option<&[f32]>, stored_blob: Option<&[
         return 0.6;
     }
     let sim = embeddings::cosine_similarity(current_query, &stored_vec).clamp(0.0, 1.0);
-    // Keep a non-zero floor so sparse historic signal still contributes lightly.
     0.2 + (sim as f64 * 0.8)
 }
-
-/// Check if a source has enough recent positive feedback to be immune from aging.
 pub fn has_retrieval_immunity(conn: &Connection, source: &str) -> bool {
     conn.query_row(
         "SELECT COUNT(*) FROM recall_feedback \
@@ -255,12 +149,6 @@ pub fn has_retrieval_immunity(conn: &Connection, source: &str) -> bool {
     .unwrap_or(0)
         >= IMMUNITY_THRESHOLD
 }
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/// Parse a source string into (type, optional ID).
-/// "decision::42" → ("decision", Some(42))
-/// "memory::my_project.md" → ("memory", None)
 fn parse_source(source: &str) -> (String, Option<i64>) {
     if let Some(rest) = source.strip_prefix("decision::") {
         let id = rest.parse::<i64>().ok();
@@ -271,44 +159,15 @@ fn parse_source(source: &str) -> (String, Option<i64>) {
         ("unknown".to_string(), None)
     }
 }
-
-// ─── GET /feedback/stats ────────────────────────────────────────────────────
-
-pub async fn handle_feedback_stats(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_feedback_stats(State(state): State<RuntimeState>, headers: HeaderMap) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db.lock().await;
-
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0))
-        .unwrap_or(0);
-    let positive: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM recall_feedback WHERE signal > 0",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    let negative: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM recall_feedback WHERE signal < 0",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-    let unique_sources: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT result_source) FROM recall_feedback",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // Top boosted sources
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0)).unwrap_or(0);
+    let positive: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal > 0", [], |row| row.get(0)).unwrap_or(0);
+    let negative: i64 = conn.query_row("SELECT COUNT(*) FROM recall_feedback WHERE signal < 0", [], |row| row.get(0)).unwrap_or(0);
+    let unique_sources: i64 = conn.query_row("SELECT COUNT(DISTINCT result_source) FROM recall_feedback", [], |row| row.get(0)).unwrap_or(0);
     let top: Vec<Value> = conn
         .prepare(
             "SELECT result_source, SUM(signal) as total_signal, COUNT(*) as hits \
@@ -327,7 +186,6 @@ pub async fn handle_feedback_stats(
             Ok(rows.flatten().collect())
         })
         .unwrap_or_default();
-
     json_response(
         StatusCode::OK,
         json!({

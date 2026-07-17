@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: MIT
-use chrono::{Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
-
-
 use super::*;
-// ─── Event log rotation ─────────────────────────────────────────────────────
-
+use rusqlite::{params, Connection};
 pub(crate) fn rollup_old_boot_savings(conn: &Connection) -> usize {
     rollup_old_boot_savings_with_retention(conn, BOOT_SAVINGS_RETENTION_DAYS)
 }
-
 pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retention_days: i64) -> usize {
     let retention_window = format!("-{retention_days} days");
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
-
     let (old_saved, old_served, old_baseline, old_boots): (i64, i64, i64, i64) = conn
         .query_row(
             "SELECT \
@@ -32,14 +24,7 @@ pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retentio
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap_or((0, 0, 0, 0));
-
-    let (rollup_saved, rollup_served, rollup_baseline, rollup_boots, rollup_rows): (
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-    ) = conn
+    let (rollup_saved, rollup_served, rollup_baseline, rollup_boots, rollup_rows): (i64, i64, i64, i64, i64) = conn
         .query_row(
             "SELECT \
                  COALESCE(SUM(COALESCE(CAST(json_extract(data, '$.saved') AS INTEGER), 0)), 0), \
@@ -50,27 +35,16 @@ pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retentio
              FROM events \
              WHERE type = 'boot_savings_rollup'",
             [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .unwrap_or((0, 0, 0, 0, 0));
-
     if old_boots <= 0 && rollup_rows <= 1 {
         return 0;
     }
-
     let merged_saved = old_saved + rollup_saved;
     let merged_served = old_served + rollup_served;
     let merged_baseline = old_baseline + rollup_baseline;
     let merged_boots = old_boots + rollup_boots;
-
     let deleted_old = conn
         .execute(
             "DELETE FROM events \
@@ -82,11 +56,7 @@ pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retentio
             params![retention_window, benchmark_source_pattern],
         )
         .unwrap_or(0);
-
-    let deleted_rollups = conn
-        .execute("DELETE FROM events WHERE type = 'boot_savings_rollup'", [])
-        .unwrap_or(0);
-
+    let deleted_rollups = conn.execute("DELETE FROM events WHERE type = 'boot_savings_rollup'", []).unwrap_or(0);
     if merged_boots > 0 {
         let payload = serde_json::json!({
             "saved": merged_saved,
@@ -108,7 +78,6 @@ pub(crate) fn rollup_old_boot_savings_with_retention(conn: &Connection, retentio
         deleted_old + deleted_rollups
     }
 }
-
 pub(crate) fn rollup_old_savings_events(conn: &Connection, retention_days: i64) -> usize {
     let retention_window = format!("-{retention_days} days");
     let benchmark_source_pattern = format!("{BENCHMARK_SOURCE_AGENT_PREFIX}%");
@@ -156,9 +125,7 @@ pub(crate) fn rollup_old_savings_events(conn: &Connection, retention_days: i64) 
               GROUP BY day, hour, operation",
         )
         .and_then(|mut stmt| {
-            let rows = stmt.query_map(
-                params![retention_window.clone(), benchmark_source_pattern.clone()],
-                |row| {
+            let rows = stmt.query_map(params![retention_window.clone(), benchmark_source_pattern.clone()], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -170,16 +137,13 @@ pub(crate) fn rollup_old_savings_events(conn: &Connection, retention_days: i64) 
                     row.get::<_, i64>(7)?,
                     row.get::<_, i64>(8)?,
                 ))
-            },
-            )?;
+            })?;
             Ok(rows.flatten().collect())
         })
         .unwrap_or_default();
-
     if rollup_rows.is_empty() {
         return 0;
     }
-
     for (day, hour, operation, saved, served, baseline, events, hits, misses) in rollup_rows {
         let _ = conn.execute(
             "INSERT INTO event_savings_rollups \
@@ -196,7 +160,6 @@ pub(crate) fn rollup_old_savings_events(conn: &Connection, retention_days: i64) 
             params![day, hour, operation, saved, served, baseline, events, hits, misses],
         );
     }
-
     conn.execute(
         "DELETE FROM events \
          WHERE type IN ('recall_query', 'store_savings', 'tool_call_savings') \
@@ -209,7 +172,6 @@ pub(crate) fn rollup_old_savings_events(conn: &Connection, retention_days: i64) 
     )
     .unwrap_or(0)
 }
-
 pub(crate) fn prune_old_event_savings_rollups(conn: &Connection, retention_days: i64) -> usize {
     conn.execute(
         "DELETE FROM event_savings_rollups \
@@ -218,22 +180,15 @@ pub(crate) fn prune_old_event_savings_rollups(conn: &Connection, retention_days:
     )
     .unwrap_or(0)
 }
-
 #[cfg(test)]
 pub(crate) fn prune_old_events(conn: &Connection) -> usize {
     prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, None)
 }
-
 #[cfg(test)]
 pub(crate) fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
     prune_old_events_with_retention_limit(conn, retention_days, None)
 }
-
-pub(crate) fn prune_old_events_with_retention_limit(
-    conn: &Connection,
-    retention_days: i64,
-    max_delete_rows: Option<i64>,
-) -> usize {
+pub(crate) fn prune_old_events_with_retention_limit(conn: &Connection, retention_days: i64, max_delete_rows: Option<i64>) -> usize {
     let retention_window = format!("-{retention_days} days");
     if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
         return conn
@@ -259,17 +214,11 @@ pub(crate) fn prune_old_events_with_retention_limit(
     )
     .unwrap_or(0)
 }
-
 #[cfg(test)]
 pub(crate) fn prune_event_type_caps(conn: &Connection, caps: &[(&str, i64)]) -> usize {
     prune_event_type_caps_with_limit(conn, caps, None)
 }
-
-pub(crate) fn prune_event_type_caps_with_limit(
-    conn: &Connection,
-    caps: &[(&str, i64)],
-    max_delete_rows: Option<i64>,
-) -> usize {
+pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str, i64)], max_delete_rows: Option<i64>) -> usize {
     let mut total = 0usize;
     for (event_type, keep_rows) in caps.iter().copied() {
         if keep_rows <= 0 {
@@ -311,22 +260,14 @@ pub(crate) fn prune_event_type_caps_with_limit(
     }
     total
 }
-
 #[cfg(test)]
 pub(crate) fn prune_nonboot_event_overflow(conn: &Connection, keep_rows: i64) -> usize {
     prune_nonboot_event_overflow_with_limit(conn, keep_rows, None)
 }
-
-pub(crate) fn prune_nonboot_event_overflow_with_limit(
-    conn: &Connection,
-    keep_rows: i64,
-    max_delete_rows: Option<i64>,
-) -> usize {
+pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_rows: i64, max_delete_rows: Option<i64>) -> usize {
     if keep_rows <= 0 {
         return 0;
     }
-    // Keep recall/store/tool savings events out of global overflow pruning so
-    // /savings can rely on their short-horizon raw rows until rollup runs.
     let protected_analytics_rows: i64 = conn
         .query_row(
             "SELECT COUNT(*)
@@ -345,7 +286,6 @@ pub(crate) fn prune_nonboot_event_overflow_with_limit(
         'store_savings',
         'tool_call_savings'
     )";
-
     if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
         return conn
             .execute(
@@ -383,13 +323,10 @@ pub(crate) fn prune_nonboot_event_overflow_with_limit(
     )
     .unwrap_or(0)
 }
-
 pub(crate) fn checkpoint_after_compaction(conn: &Connection, allow_vacuum: bool) {
     let _ = if allow_vacuum {
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
     } else {
-        // Startup governor mode: avoid TRUNCATE stalls while still nudging WAL forward.
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
     };
 }
-

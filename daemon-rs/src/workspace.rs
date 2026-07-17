@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Workspace-level helpers shared by boot compilation and indexing.
-
 use std::env;
-
-/// Derive the Claude Code project folder slug from the current working directory.
-/// Claude encodes paths with separators flattened, e.g. `C--Users-project-cortex`.
 pub(crate) fn claude_project_slug() -> Option<String> {
     let cwd = env::current_dir().ok()?;
     let canonical = cwd.to_string_lossy().to_string();

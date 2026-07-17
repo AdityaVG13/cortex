@@ -1,32 +1,17 @@
 // SPDX-License-Identifier: MIT
+use super::{ensure_auth_with_caller_rated, ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, now_iso};
+use crate::budgets::BudgetEndpoint;
+use crate::compiler;
+use crate::db::checkpoint_wal_best_effort;
+use crate::rate_limit::RequestClass;
+use crate::state::RuntimeState;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Instant;
-
-use super::{
-    ensure_auth_with_caller_rated, ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget,
-    json_response, now_iso,
-};
-use crate::budgets::BudgetEndpoint;
-use crate::compiler;
-use crate::db::checkpoint_wal_best_effort;
-use crate::rate_limit::RequestClass;
-use crate::state::RuntimeState;
-
-/// C5 — default retention window for `boot_audits`. Rows older than this
-/// are pruned at the start of each boot call. Override via the
-/// `CORTEX_BOOT_AUDIT_RETENTION_DAYS` env var (0 disables prune).
-///
-/// 90 days matches audit-trail norms (longer than the 30-day draft spec
-/// because an audit log that self-deletes too aggressively defeats the
-/// purpose -- debugging "why did boot capsule X appear three weeks ago"
-/// breaks at 30). Rows are small metadata only; storage impact at
-/// typical 10-boots/day is well under 1 MB/year even without compression.
 const BOOT_AUDIT_RETENTION_DAYS_DEFAULT: i64 = 90;
-
 fn boot_audit_retention_days() -> i64 {
     std::env::var("CORTEX_BOOT_AUDIT_RETENTION_DAYS")
         .ok()
@@ -34,33 +19,13 @@ fn boot_audit_retention_days() -> i64 {
         .filter(|&v| v >= 0)
         .unwrap_or(BOOT_AUDIT_RETENTION_DAYS_DEFAULT)
 }
-
-// ─── Query types ─────────────────────────────────────────────────────────────
-
-pub fn record_boot_audit_best_effort(
-    conn: &rusqlite::Connection,
-    agent: &str,
-    profile: &str,
-    max_tokens: usize,
-    result: &crate::compiler::BootResult,
-    latency_ms: i64,
-) {
-    let token_savings = result
-        .savings
-        .get("saved")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+pub fn record_boot_audit_best_effort(conn: &rusqlite::Connection, agent: &str, profile: &str, max_tokens: usize, result: &crate::compiler::BootResult, latency_ms: i64) {
+    let token_savings = result.savings.get("saved").and_then(|v| v.as_i64()).unwrap_or(0);
     let capsules_count = result.capsules.len() as i64;
-    let capsules_json =
-        serde_json::to_string(&result.capsules).unwrap_or_else(|_| "[]".to_string());
+    let capsules_json = serde_json::to_string(&result.capsules).unwrap_or_else(|_| "[]".to_string());
     let retention_days = boot_audit_retention_days();
     if retention_days > 0 {
-        if let Err(e) = conn.execute(
-            &format!(
-                "DELETE FROM boot_audits WHERE created_at < datetime('now', '-{retention_days} days')"
-            ),
-            [],
-        ) {
+        if let Err(e) = conn.execute(&format!("DELETE FROM boot_audits WHERE created_at < datetime('now', '-{retention_days} days')"), []) {
             eprintln!("[boot_audits] prune failed: {e}");
         }
     }
@@ -82,36 +47,23 @@ pub fn record_boot_audit_best_effort(
         eprintln!("[boot_audits] insert failed: {e}");
     }
 }
-
 #[derive(Deserialize, Default)]
 pub struct BootQuery {
     pub profile: Option<String>,
     pub agent: Option<String>,
     pub budget: Option<usize>,
 }
-
-// ─── GET /boot ───────────────────────────────────────────────────────────────
-
-pub async fn handle_boot(
-    State(state): State<RuntimeState>,
-    Query(query): Query<BootQuery>,
-    headers: HeaderMap,
-) -> Response {
-    let caller_id =
-        match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Boot).await {
-            Ok(id) => id,
-            Err(resp) => return resp,
-        };
+pub async fn handle_boot(State(state): State<RuntimeState>, Query(query): Query<BootQuery>, headers: HeaderMap) -> Response {
+    let caller_id = match ensure_auth_with_caller_rated_for_class(&headers, &state, RequestClass::Boot).await {
+        Ok(id) => id,
+        Err(resp) => return resp,
+    };
     if state.team_mode && caller_id.is_none() {
-        return json_response(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
-        );
+        return json_response(StatusCode::FORBIDDEN, json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }));
     }
     let source = super::resolve_source_identity(&headers, query.agent.as_deref().unwrap_or("mcp"));
     let agent = source.agent;
-    if let Err(resp) = ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Boot, &agent).await
-    {
+    if let Err(resp) = ensure_endpoint_budget(&headers, &state, BudgetEndpoint::Boot, &agent).await {
         return resp;
     }
     super::register_agent_presence(
@@ -125,12 +77,9 @@ pub async fn handle_boot(
         "HTTP boot session",
     )
     .await;
-
     let profile = query.profile.unwrap_or_else(|| "full".to_string());
     let max_tokens = query.budget.unwrap_or(600);
     let boot_started = Instant::now();
-
-    // Clear served content for this agent on boot
     {
         let mut served = state.served_content.lock().await;
         let scope_prefix = if state.team_mode {
@@ -141,29 +90,13 @@ pub async fn handle_boot(
         } else {
             format!("solo::{agent}::")
         };
-        // Clear current scoped keys plus legacy pre-scope keys.
-        served.retain(|key, _| {
-            !key.starts_with(&scope_prefix)
-                && !key.starts_with(&format!("{agent}::"))
-                && key != &agent
-        });
+        served.retain(|key, _| !key.starts_with(&scope_prefix) && !key.starts_with(&format!("{agent}::")) && key != &agent);
     }
-
     let conn = state.db.lock().await;
-
-    // Clean expired conductor state before compiling
     let _ = clean_expired_locks(&conn);
     let _ = clean_expired_sessions(&conn);
-
-    // Compile the boot prompt using the full capsule compiler
     let result = compiler::compile(&conn, &state.home, &agent, max_tokens);
-
-    // Auto-ack feed on boot: advance last_seen_id to the latest feed entry.
-    if let Ok(latest_id) = conn.query_row(
-        "SELECT id FROM feed ORDER BY timestamp DESC LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
+    if let Ok(latest_id) = conn.query_row("SELECT id FROM feed ORDER BY timestamp DESC LIMIT 1", [], |row| row.get::<_, String>(0)) {
         let feed_ack_owner = if state.team_mode { caller_id } else { None };
         if let Some(owner_id) = feed_ack_owner {
             let _ = conn.execute(
@@ -179,20 +112,10 @@ pub async fn handle_boot(
             );
         }
     }
-
-    // C5 — boot audit trail. Record one row per /boot call + prune anything
-    // older than BOOT_AUDIT_RETENTION_DAYS. Failures are logged but never
-    // block the boot response; audit rows are diagnostic, not critical-path.
     let latency_ms = boot_started.elapsed().as_millis() as i64;
     record_boot_audit_best_effort(&conn, &agent, &profile, max_tokens, &result, latency_ms);
-
     checkpoint_wal_best_effort(&conn);
-
-    state.emit(
-        "agent_boot",
-        json!({"agent": agent, "profile": profile.clone()}),
-    );
-
+    state.emit("agent_boot", json!({"agent": agent, "profile": profile.clone()}));
     json_response(
         StatusCode::OK,
         json!({
@@ -215,50 +138,26 @@ pub async fn handle_boot(
         }),
     )
 }
-
-// ─── GET /boot/audit ─────────────────────────────────────────────────────────
-
 #[derive(Deserialize, Default)]
 pub struct BootAuditQuery {
     pub agent: Option<String>,
     pub limit: Option<usize>,
 }
-
-/// Returns the most recent `boot_audits` rows, newest first. Optional
-/// `agent` filter narrows to one agent; `limit` caps the returned rows
-/// (default 50, ceiling 500).
-pub async fn handle_boot_audit(
-    State(state): State<RuntimeState>,
-    Query(query): Query<BootAuditQuery>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn handle_boot_audit(State(state): State<RuntimeState>, Query(query): Query<BootAuditQuery>, headers: HeaderMap) -> Response {
     let caller_id = match ensure_auth_with_caller_rated(&headers, &state).await {
         Ok(id) => id,
         Err(resp) => return resp,
     };
     if state.team_mode && caller_id.is_none() {
-        return json_response(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }),
-        );
+        return json_response(StatusCode::FORBIDDEN, json!({ "error": "Team mode requires a caller-scoped ctx_ API key" }));
     }
-
     let conn = state.db.lock().await;
-
     match query_boot_audits(&conn, query.agent.as_deref(), query.limit) {
         Ok(payload) => json_response(StatusCode::OK, payload),
-        Err(e) => json_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": format!("boot_audits query failed: {e}") }),
-        ),
+        Err(e) => json_response(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("boot_audits query failed: {e}") })),
     }
 }
-
-pub fn query_boot_audits(
-    conn: &rusqlite::Connection,
-    agent: Option<&str>,
-    limit: Option<usize>,
-) -> Result<serde_json::Value, rusqlite::Error> {
+pub fn query_boot_audits(conn: &rusqlite::Connection, agent: Option<&str>, limit: Option<usize>) -> Result<serde_json::Value, rusqlite::Error> {
     let limit = limit.unwrap_or(50).min(500);
     let rows: Vec<serde_json::Value> = match agent {
         Some(agent) => conn
@@ -270,10 +169,7 @@ pub fn query_boot_audits(
                  ORDER BY id DESC
                  LIMIT ?2",
             )
-            .and_then(|mut stmt| {
-                stmt.query_map(rusqlite::params![agent, limit as i64], row_to_json)?
-                    .collect()
-            })?,
+            .and_then(|mut stmt| stmt.query_map(rusqlite::params![agent, limit as i64], row_to_json)?.collect())?,
         None => conn
             .prepare(
                 "SELECT id, agent, profile, budget_tokens, token_estimate,
@@ -282,19 +178,14 @@ pub fn query_boot_audits(
                  ORDER BY id DESC
                  LIMIT ?1",
             )
-            .and_then(|mut stmt| {
-                stmt.query_map(rusqlite::params![limit as i64], row_to_json)?
-                    .collect()
-            })?,
+            .and_then(|mut stmt| stmt.query_map(rusqlite::params![limit as i64], row_to_json)?.collect())?,
     };
-
     Ok(json!({
         "audits": rows,
         "count": rows.len(),
         "retention_days": boot_audit_retention_days(),
     }))
 }
-
 fn row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
     Ok(json!({
         "id":             row.get::<_, i64>(0)?,
@@ -308,45 +199,24 @@ fn row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
         "created_at":     row.get::<_, String>(8)?,
     }))
 }
-
-// ─── Cleanup helpers (shared with conductor but needed before compile) ──────
-
 fn clean_expired_locks(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     if let Some(owner_id) = current_owner_id(conn) {
-        conn.execute(
-            "DELETE FROM locks WHERE owner_id = ?1 AND expires_at < ?2",
-            rusqlite::params![owner_id, now_iso()],
-        )?;
+        conn.execute("DELETE FROM locks WHERE owner_id = ?1 AND expires_at < ?2", rusqlite::params![owner_id, now_iso()])?;
     } else {
-        conn.execute(
-            "DELETE FROM locks WHERE expires_at < ?1",
-            rusqlite::params![now_iso()],
-        )?;
+        conn.execute("DELETE FROM locks WHERE expires_at < ?1", rusqlite::params![now_iso()])?;
     }
     Ok(())
 }
-
 fn clean_expired_sessions(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     if let Some(owner_id) = current_owner_id(conn) {
-        conn.execute(
-            "DELETE FROM sessions WHERE owner_id = ?1 AND expires_at < ?2",
-            rusqlite::params![owner_id, now_iso()],
-        )?;
+        conn.execute("DELETE FROM sessions WHERE owner_id = ?1 AND expires_at < ?2", rusqlite::params![owner_id, now_iso()])?;
     } else {
-        conn.execute(
-            "DELETE FROM sessions WHERE expires_at < ?1",
-            rusqlite::params![now_iso()],
-        )?;
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?1", rusqlite::params![now_iso()])?;
     }
     Ok(())
 }
-
 fn current_owner_id(conn: &rusqlite::Connection) -> Option<i64> {
-    conn.query_row(
-        "SELECT value FROM config WHERE key = 'owner_user_id' LIMIT 1",
-        [],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .and_then(|v| v.parse::<i64>().ok())
+    conn.query_row("SELECT value FROM config WHERE key = 'owner_user_id' LIMIT 1", [], |row| row.get::<_, String>(0))
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
 }

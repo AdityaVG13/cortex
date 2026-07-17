@@ -1,38 +1,22 @@
 // SPDX-License-Identifier: MIT
 use serde_json::Value;
-
-/// A single entry in the per-session recall history, recording what was queried
-/// and when (Unix milliseconds).
 #[derive(Clone, Debug)]
 pub struct RecallHistoryEntry {
     pub query: String,
     pub timestamp: i64,
 }
-
-/// A cached recall result set.  `expires_at` is a Unix-millisecond deadline
-/// after which the entry should be discarded.
 #[derive(Clone, Debug)]
 pub struct PreCacheEntry {
     pub query: String,
-    /// Serialised recall results — stored as `Value` so this module does not
-    /// need to know about the full recall pipeline types.
     pub results: Value,
     pub expires_at: i64,
 }
-
-/// A typed event broadcast to all SSE subscribers.
 #[derive(Clone, Debug)]
 pub struct DaemonEvent {
     pub event_type: String,
-    // Event payloads are retained on the bus for future internal consumers,
-    // but the public SSE stream currently redacts them before emission.
     #[allow(dead_code)]
     pub data: Value,
 }
-
-/// Brain-tab firing telemetry. Carries full payloads (unscrubbed), but the
-/// `/brain/firing` SSE handler filters per-subscriber by `owner_id` before
-/// forwarding. Public `/events/stream` is unaffected.
 #[derive(Clone, Debug)]
 pub enum BrainKind {
     ConsolidationStarted,
@@ -40,7 +24,6 @@ pub enum BrainKind {
     ClusterFinalized,
     Recall,
 }
-
 impl BrainKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -51,21 +34,18 @@ impl BrainKind {
         }
     }
 }
-
 #[derive(Clone, Debug)]
 pub struct BrainFiringEvent {
     pub kind: BrainKind,
     pub payload: Value,
     pub owner_id: Option<i64>,
 }
-
 #[derive(Clone, Debug)]
 pub enum SqliteVecRouteMode {
     Baseline,
     Trial,
     Primary,
 }
-
 impl SqliteVecRouteMode {
     pub(crate) fn from_env() -> Self {
         match std::env::var("CORTEX_SQLITE_VEC_ROUTE") {
@@ -74,16 +54,13 @@ impl SqliteVecRouteMode {
                 "trial" | "canary" | "sampled" => Self::Trial,
                 "primary" | "vec0" | "production" | "on" => Self::Primary,
                 unknown => {
-                    eprintln!(
-                        "[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using primary"
-                    );
+                    eprintln!("[cortex] WARNING: invalid CORTEX_SQLITE_VEC_ROUTE={unknown:?}; using primary");
                     Self::Primary
                 }
             },
             Err(_) => Self::Primary,
         }
     }
-
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Baseline => "baseline",
@@ -92,14 +69,12 @@ impl SqliteVecRouteMode {
         }
     }
 }
-
 #[derive(Clone, Debug)]
 pub struct SqliteVecCanaryConfig {
     pub trial_percent: u8,
     pub force_off: bool,
     pub route_mode: SqliteVecRouteMode,
 }
-
 impl SqliteVecCanaryConfig {
     pub(crate) fn from_env() -> Self {
         let route_mode = SqliteVecRouteMode::from_env();
@@ -113,9 +88,7 @@ impl SqliteVecCanaryConfig {
                 match trimmed.parse::<u8>() {
                     Ok(percent) => Some(percent.min(100)),
                     Err(_) => {
-                        eprintln!(
-                            "[cortex] WARNING: invalid CORTEX_SQLITE_VEC_TRIAL_PERCENT={trimmed:?}; using 0"
-                        );
+                        eprintln!("[cortex] WARNING: invalid CORTEX_SQLITE_VEC_TRIAL_PERCENT={trimmed:?}; using 0");
                         Some(0)
                     }
                 }
@@ -123,19 +96,9 @@ impl SqliteVecCanaryConfig {
             .unwrap_or(0);
         let force_off = std::env::var("CORTEX_SQLITE_VEC_TRIAL_FORCE_OFF")
             .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            });
-        Self {
-            trial_percent,
-            force_off,
-            route_mode,
-        }
+            .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+        Self { trial_percent, force_off, route_mode }
     }
-
     pub fn effective_route_mode(&self) -> SqliteVecRouteMode {
         if self.force_off {
             SqliteVecRouteMode::Baseline

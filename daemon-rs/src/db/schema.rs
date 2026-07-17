@@ -1,22 +1,10 @@
 // SPDX-License-Identifier: MIT
-use std::collections::HashSet;
-use std::path::Path;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
-use rusqlite::{params, Connection, OptionalExtension};
-
-
-use super::*;
-
-/// Create all 12 application tables and supporting indexes if they do not
-/// already exist.
+use rusqlite::Connection;
 pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
         PRAGMA foreign_keys = ON;
-
         CREATE TABLE IF NOT EXISTS memories (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           text TEXT NOT NULL,
@@ -48,7 +36,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
-
         CREATE TABLE IF NOT EXISTS decisions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           decision TEXT NOT NULL,
@@ -81,7 +68,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
-
         CREATE TABLE IF NOT EXISTS decision_conflicts (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           source_decision_id INTEGER REFERENCES decisions(id) ON DELETE SET NULL,
@@ -97,7 +83,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           resolved_at TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-
         CREATE TABLE IF NOT EXISTS embeddings (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           target_type TEXT NOT NULL,
@@ -106,7 +91,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           model TEXT DEFAULT 'nomic-embed-text',
           created_at TEXT DEFAULT (datetime('now'))
         );
-
         CREATE TABLE IF NOT EXISTS events (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           type TEXT NOT NULL,
@@ -114,7 +98,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           source_agent TEXT,
           created_at TEXT DEFAULT (datetime('now'))
         );
-
         CREATE TABLE IF NOT EXISTS co_occurrence (
           source_a TEXT NOT NULL,
           source_b TEXT NOT NULL,
@@ -122,7 +105,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           last_seen TEXT DEFAULT (datetime('now')),
           PRIMARY KEY (source_a, source_b)
         );
-
         CREATE TABLE IF NOT EXISTS locks (
           id TEXT PRIMARY KEY,
           path TEXT NOT NULL UNIQUE,
@@ -130,7 +112,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           locked_at TEXT NOT NULL,
           expires_at TEXT
         );
-
         CREATE TABLE IF NOT EXISTS activities (
           id TEXT PRIMARY KEY,
           agent TEXT NOT NULL,
@@ -138,7 +119,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           files_json TEXT NOT NULL DEFAULT '[]',
           timestamp TEXT NOT NULL
         );
-
         CREATE TABLE IF NOT EXISTS messages (
           id TEXT PRIMARY KEY,
           sender TEXT NOT NULL,
@@ -146,7 +126,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           message TEXT NOT NULL,
           timestamp TEXT NOT NULL
         );
-
         CREATE TABLE IF NOT EXISTS sessions (
           agent TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
@@ -157,7 +136,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           last_heartbeat TEXT NOT NULL,
           expires_at TEXT NOT NULL
         );
-
         CREATE TABLE IF NOT EXISTS tasks (
           task_id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
@@ -173,7 +151,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           completed_at TEXT,
           summary TEXT
         );
-
         CREATE TABLE IF NOT EXISTS feed (
           id TEXT PRIMARY KEY,
           agent TEXT NOT NULL,
@@ -187,13 +164,11 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           timestamp TEXT NOT NULL,
           tokens INTEGER NOT NULL DEFAULT 0
         );
-
         CREATE TABLE IF NOT EXISTS feed_acks (
           agent TEXT PRIMARY KEY,
           last_seen_id TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
-
         CREATE TABLE IF NOT EXISTS client_permissions (
           owner_id INTEGER NOT NULL DEFAULT 0,
           client_id TEXT NOT NULL,
@@ -203,13 +178,10 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           granted_at TEXT NOT NULL DEFAULT (datetime('now')),
           PRIMARY KEY (owner_id, client_id, permission, scope)
         );
-
         CREATE INDEX IF NOT EXISTS idx_client_permissions_client
           ON client_permissions(owner_id, client_id);
-
         CREATE INDEX IF NOT EXISTS idx_cooccur_a ON co_occurrence(source_a);
         CREATE INDEX IF NOT EXISTS idx_cooccur_b ON co_occurrence(source_b);
-
         -- Performance indexes (added 2026-03-31)
         CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
         CREATE INDEX IF NOT EXISTS idx_memories_source_status ON memories(source, status);
@@ -236,7 +208,6 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
         CREATE INDEX IF NOT EXISTS idx_locks_expires ON locks(expires_at);
-
         CREATE TABLE IF NOT EXISTS context_cache (
           cache_key TEXT PRIMARY KEY,
           content_hash TEXT NOT NULL,
@@ -245,14 +216,12 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           created_at TEXT DEFAULT (datetime('now')),
           hits INTEGER DEFAULT 0
         );
-
         CREATE TABLE IF NOT EXISTS schema_migrations (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           version TEXT NOT NULL UNIQUE,
           name TEXT NOT NULL,
           applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-
         -- FTS5 full-text search indexes (porter+unicode61 for stemming + unicode tokenization)
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
           text, source, tags,
@@ -260,14 +229,12 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           content_rowid=id,
           tokenize='porter unicode61'
         );
-
         CREATE VIRTUAL TABLE IF NOT EXISTS decisions_fts USING fts5(
           decision, context,
           content=decisions,
           content_rowid=id,
           tokenize='porter unicode61'
         );
-
         -- Relevance feedback: tracks which recalled results were actually useful
         CREATE TABLE IF NOT EXISTS recall_feedback (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,10 +247,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           agent TEXT NOT NULL DEFAULT 'unknown',
           created_at TEXT DEFAULT (datetime('now'))
         );
-
         CREATE INDEX IF NOT EXISTS idx_feedback_result ON recall_feedback(result_source);
         CREATE INDEX IF NOT EXISTS idx_feedback_created ON recall_feedback(created_at);
-
         CREATE TABLE IF NOT EXISTS event_savings_rollups (
           day TEXT NOT NULL,
           hour INTEGER NOT NULL,
@@ -298,12 +263,10 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           updated_at TEXT NOT NULL DEFAULT (datetime('now')),
           PRIMARY KEY (day, hour, operation)
         );
-
         CREATE INDEX IF NOT EXISTS idx_event_savings_rollups_day
           ON event_savings_rollups(day);
         CREATE INDEX IF NOT EXISTS idx_event_savings_rollups_operation_day
           ON event_savings_rollups(operation, day);
-
         CREATE TABLE IF NOT EXISTS agent_feedback (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           owner_id INTEGER NOT NULL DEFAULT 0,
@@ -320,34 +283,27 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           notes TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-
         CREATE INDEX IF NOT EXISTS idx_agent_feedback_agent_created
           ON agent_feedback(owner_id, agent, created_at);
         CREATE INDEX IF NOT EXISTS idx_agent_feedback_task_created
           ON agent_feedback(owner_id, task_class, created_at);
-
         -- Triggers to keep FTS in sync with base tables
         CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
           INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
         END;
-
         CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
           INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) VALUES('delete', old.id, old.text, old.source, old.tags);
         END;
-
         CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
           INSERT INTO memories_fts(memories_fts, rowid, text, source, tags) VALUES('delete', old.id, old.text, old.source, old.tags);
           INSERT INTO memories_fts(rowid, text, source, tags) VALUES (new.id, new.text, new.source, new.tags);
         END;
-
         CREATE TRIGGER IF NOT EXISTS decisions_fts_ai AFTER INSERT ON decisions BEGIN
           INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
         END;
-
         CREATE TRIGGER IF NOT EXISTS decisions_fts_ad AFTER DELETE ON decisions BEGIN
           INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
         END;
-
         CREATE TRIGGER IF NOT EXISTS decisions_fts_au AFTER UPDATE ON decisions BEGIN
           INSERT INTO decisions_fts(decisions_fts, rowid, decision, context) VALUES('delete', old.id, old.decision, old.context);
           INSERT INTO decisions_fts(rowid, decision, context) VALUES (new.id, new.decision, new.context);
@@ -356,4 +312,3 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     Ok(())
 }
-

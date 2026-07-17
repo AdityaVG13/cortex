@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: MIT
-//! Shared in-process test fixtures for handler/unit tests.
-
+use crate::db;
+use crate::rerank::{RerankConfig, Reranker};
+use crate::state::RuntimeState;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
-
 use tokio::sync::{broadcast, Mutex};
-
-use crate::db;
-use crate::rerank::{RerankConfig, Reranker};
-use crate::state::RuntimeState;
-
 pub fn test_conn() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
     db::configure(&conn).expect("configure db");
@@ -19,22 +14,12 @@ pub fn test_conn() -> rusqlite::Connection {
     db::run_pending_migrations(&conn);
     conn
 }
-
 pub fn solo_state() -> RuntimeState {
     runtime_state(test_conn(), test_conn(), false, None, RerankConfig::off(), None)
 }
-
 pub fn team_state(default_owner_id: i64) -> RuntimeState {
-    runtime_state(
-        test_conn(),
-        test_conn(),
-        true,
-        Some(default_owner_id),
-        RerankConfig::off(),
-        None,
-    )
+    runtime_state(test_conn(), test_conn(), true, Some(default_owner_id), RerankConfig::off(), None)
 }
-
 pub fn runtime_state(
     write_conn: rusqlite::Connection,
     read_conn: rusqlite::Connection,

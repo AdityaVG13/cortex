@@ -1,20 +1,10 @@
 // SPDX-License-Identifier: MIT
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
-use axum::Json;
+use super::*;
+use crate::api_types::RetentionClass;
+use crate::db::checkpoint_wal_best_effort;
+use crate::handlers::log_event;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use crate::handlers::{ensure_auth_with_caller_rated_for_class, ensure_endpoint_budget, json_response, log_event, now_iso, resolve_source_identity, truncate_chars};
-use crate::api_types::{RetentionClass, StoreRequest};
-use crate::budgets::BudgetEndpoint;
-use crate::conflict::{detect_conflict, jaccard_similarity, ConflictClassification, ConflictResult};
-use crate::db::checkpoint_wal_best_effort;
-use crate::rate_limit::RequestClass;
-use crate::state::RuntimeState;
-
-
-use super::*;
 pub(crate) fn merge_into_existing_decision(
     conn: &mut Connection,
     target_id: i64,
@@ -27,14 +17,8 @@ pub(crate) fn merge_into_existing_decision(
     ts: &str,
     owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), StoreError> {
-    let tx = conn
-        .transaction()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
-    let (existing_decision, existing_context, previous_merged_count): (
-        String,
-        Option<String>,
-        i64,
-    ) = if let Some(owner_id) = owner_id {
+    let tx = conn.transaction().map_err(|e| StoreError::Internal(e.to_string()))?;
+    let (existing_decision, existing_context, previous_merged_count): (String, Option<String>, i64) = if let Some(owner_id) = owner_id {
         tx.query_row(
             "SELECT decision, context, COALESCE(merged_count, 0) \
                  FROM decisions WHERE id = ?1 AND owner_id = ?2",
@@ -43,20 +27,12 @@ pub(crate) fn merge_into_existing_decision(
         )
         .map_err(|e| StoreError::Internal(e.to_string()))?
     } else {
-        tx.query_row(
-            "SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1",
-            params![target_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
+        tx.query_row("SELECT decision, context, COALESCE(merged_count, 0) FROM decisions WHERE id = ?1", params![target_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .map_err(|e| StoreError::Internal(e.to_string()))?
     };
-
-    let merged_context = merge_context(
-        existing_context,
-        &existing_decision,
-        incoming_context,
-        incoming_text,
-    );
+    let merged_context = merge_context(existing_context, &existing_decision, incoming_context, incoming_text);
     let merged_count = previous_merged_count + 1;
     if let Some(owner_id) = owner_id {
         tx.execute(
@@ -67,15 +43,7 @@ pub(crate) fn merge_into_existing_decision(
                  quality = MAX(COALESCE(quality, 50), ?4), \
                  updated_at = ?5 \
              WHERE id = ?6 AND owner_id = ?7",
-            params![
-                merged_context,
-                MERGE_SCORE_BONUS,
-                merged_count,
-                quality,
-                ts,
-                target_id,
-                owner_id
-            ],
+            params![merged_context, MERGE_SCORE_BONUS, merged_count, quality, ts, target_id, owner_id],
         )
         .map_err(|e| StoreError::Internal(e.to_string()))?;
     } else {
@@ -87,18 +55,10 @@ pub(crate) fn merge_into_existing_decision(
                  quality = MAX(COALESCE(quality, 50), ?4), \
                  updated_at = ?5 \
              WHERE id = ?6",
-            params![
-                merged_context,
-                MERGE_SCORE_BONUS,
-                merged_count,
-                quality,
-                ts,
-                target_id
-            ],
+            params![merged_context, MERGE_SCORE_BONUS, merged_count, quality, ts, target_id],
         )
         .map_err(|e| StoreError::Internal(e.to_string()))?;
     }
-
     let _ = log_event(
         &tx,
         "merge",
@@ -113,10 +73,8 @@ pub(crate) fn merge_into_existing_decision(
         }),
         "rust-daemon",
     );
-    tx.commit()
-        .map_err(|e| StoreError::Internal(e.to_string()))?;
+    tx.commit().map_err(|e| StoreError::Internal(e.to_string()))?;
     checkpoint_wal_best_effort(conn);
-
     Ok((
         json!({
             "action": "merged",
@@ -129,28 +87,18 @@ pub(crate) fn merge_into_existing_decision(
         None,
     ))
 }
-
-pub(crate) fn merge_context(
-    existing_context: Option<String>,
-    existing_decision: &str,
-    incoming_context: Option<&str>,
-    incoming_text: &str,
-) -> Option<String> {
+pub(crate) fn merge_context(existing_context: Option<String>, existing_decision: &str, incoming_context: Option<&str>, incoming_text: &str) -> Option<String> {
     let incoming_note = incoming_context
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| incoming_text.trim().to_string());
-
     if incoming_note.is_empty() || incoming_note.eq_ignore_ascii_case(existing_decision.trim()) {
         return existing_context;
     }
-
     match existing_context {
         Some(existing) if !existing.trim().is_empty() => {
-            let already_present = existing
-                .split("\n\n")
-                .any(|part| part.trim().eq_ignore_ascii_case(&incoming_note));
+            let already_present = existing.split("\n\n").any(|part| part.trim().eq_ignore_ascii_case(&incoming_note));
             if already_present {
                 Some(existing)
             } else {
@@ -160,7 +108,6 @@ pub(crate) fn merge_context(
         _ => Some(incoming_note),
     }
 }
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_decision(
     conn: &Connection,
@@ -227,7 +174,6 @@ pub(crate) fn insert_decision(
         )
     }
     .map_err(|e| StoreError::Internal(e.to_string()))?;
-
     let id = conn.last_insert_rowid();
     if emit_decision_stored_event {
         let _ = log_event(
@@ -243,7 +189,6 @@ pub(crate) fn insert_decision(
         );
     }
     checkpoint_wal_best_effort(conn);
-
     Ok((
         json!({
             "action": "inserted",
@@ -256,19 +201,12 @@ pub(crate) fn insert_decision(
         Some(id),
     ))
 }
-
-pub(crate) fn compute_expires_at(
-    conn: &Connection,
-    ttl_seconds: Option<i64>,
-) -> Result<Option<String>, String> {
+pub(crate) fn compute_expires_at(conn: &Connection, ttl_seconds: Option<i64>) -> Result<Option<String>, String> {
     let Some(ttl_seconds) = ttl_seconds else {
         return Ok(None);
     };
     let modifier = format!("+{ttl_seconds} seconds");
-    conn.query_row("SELECT datetime('now', ?1)", params![modifier], |row| {
-        row.get(0)
-    })
-    .map(Some)
-    .map_err(|e| format!("Failed to compute expires_at: {e}"))
+    conn.query_row("SELECT datetime('now', ?1)", params![modifier], |row| row.get(0))
+        .map(Some)
+        .map_err(|e| format!("Failed to compute expires_at: {e}"))
 }
-

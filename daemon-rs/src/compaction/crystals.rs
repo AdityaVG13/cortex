@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: MIT
-use chrono::{Duration, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
-
-
-use super::*;
-// ─── Crystal member embedding pruning ───────────────────────────────────────
-
-/// Remove individual embeddings for entries that are members of a crystal.
-/// The crystal's embedding handles recall; individual members are found by
-/// ID lookup through cluster_members, not semantic search.
+use rusqlite::Connection;
 pub(crate) fn prune_crystal_member_embeddings(conn: &Connection) -> usize {
     let mut count = 0usize;
-
     count += conn
         .execute(
             "DELETE FROM embeddings WHERE target_type = 'memory' AND target_id IN (\
@@ -21,7 +10,6 @@ pub(crate) fn prune_crystal_member_embeddings(conn: &Connection) -> usize {
             [],
         )
         .unwrap_or(0);
-
     count += conn
         .execute(
             "DELETE FROM embeddings WHERE target_type = 'decision' AND target_id IN (\
@@ -30,10 +18,8 @@ pub(crate) fn prune_crystal_member_embeddings(conn: &Connection) -> usize {
             [],
         )
         .unwrap_or(0);
-
     count
 }
-
 pub(crate) fn prune_orphan_cluster_members(conn: &Connection) -> usize {
     let mut count = 0usize;
     count += conn
@@ -68,4 +54,3 @@ pub(crate) fn prune_orphan_cluster_members(conn: &Connection) -> usize {
         .unwrap_or(0);
     count
 }
-

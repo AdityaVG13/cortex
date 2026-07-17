@@ -1,24 +1,14 @@
 // SPDX-License-Identifier: MIT
-//! Export and import handlers.
-//!
-//! GET  /export?format=json|sql  -- dump all active memories + decisions
-//! POST /import                  -- restore from a JSON export payload
-
+use super::{ensure_auth_rated, json_response};
+use crate::api_types::{ExportFormat, ImportOptions, ImportPayload};
+use crate::export_data::{export_json_page_value, import_payload as import_data, DEFAULT_EXPORT_PAGE_LIMIT, MAX_EXPORT_PAGE_LIMIT};
+use crate::state::RuntimeState;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-
-use super::{ensure_auth_rated, json_response};
-use crate::api_types::{ExportFormat, ImportOptions, ImportPayload};
-use crate::export_data::{
-    export_json_page_value, import_payload as import_data, DEFAULT_EXPORT_PAGE_LIMIT,
-    MAX_EXPORT_PAGE_LIMIT,
-};
-use crate::state::RuntimeState;
-
 #[derive(Deserialize)]
 pub struct ExportQuery {
     pub format: Option<ExportFormat>,
@@ -27,31 +17,18 @@ pub struct ExportQuery {
     pub memories_offset: Option<usize>,
     pub decisions_offset: Option<usize>,
 }
-
-pub async fn handle_export(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Query(query): Query<ExportQuery>,
-) -> Response {
+pub async fn handle_export(State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<ExportQuery>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-
     let conn = state.db_read.lock().await;
-
     match query.format.unwrap_or(ExportFormat::Json) {
         ExportFormat::Json => {
-            let limit = query
-                .limit
-                .unwrap_or(DEFAULT_EXPORT_PAGE_LIMIT)
-                .clamp(1, MAX_EXPORT_PAGE_LIMIT);
+            let limit = query.limit.unwrap_or(DEFAULT_EXPORT_PAGE_LIMIT).clamp(1, MAX_EXPORT_PAGE_LIMIT);
             let offset = query.offset.unwrap_or(0);
             let memories_offset = query.memories_offset.unwrap_or(offset);
             let decisions_offset = query.decisions_offset.unwrap_or(offset);
-            json_response(
-                StatusCode::OK,
-                export_json_page_value(&conn, limit, memories_offset, decisions_offset),
-            )
+            json_response(StatusCode::OK, export_json_page_value(&conn, limit, memories_offset, decisions_offset))
         }
         ExportFormat::Sql => json_response(
             StatusCode::BAD_REQUEST,
@@ -61,16 +38,10 @@ pub async fn handle_export(
         ),
     }
 }
-
-pub async fn handle_import(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(payload): Json<ImportPayload>,
-) -> Response {
+pub async fn handle_import(State(state): State<RuntimeState>, headers: HeaderMap, Json(payload): Json<ImportPayload>) -> Response {
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-
     let mut conn = state.db.lock().await;
     let options = if state.team_mode {
         ImportOptions {

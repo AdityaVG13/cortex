@@ -1,33 +1,10 @@
 // SPDX-License-Identifier: MIT
-use axum::body::Bytes;
-use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::middleware::Next;
-use axum::response::Response;
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use serde_json::Value;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tower::Service;
-use tower_http::catch_panic::CatchPanicLayer;
-use tower_http::cors::CorsLayer;
-
-use crate::budgets::BudgetEndpoint;
 use crate::handlers;
-use crate::handlers::mcp::handle_mcp_message_with_caller;
 use crate::state::RuntimeState;
-
-
-use super::*;
-// ─── Compaction handlers ────────────────────────────────────────────────
-
-pub(crate) async fn handle_compact(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::Json;
+pub(crate) async fn handle_compact(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -53,11 +30,7 @@ pub(crate) async fn handle_compact(
         }),
     )
 }
-
-pub(crate) async fn handle_compact_benchmark(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_compact_benchmark(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
@@ -79,28 +52,14 @@ pub(crate) async fn handle_compact_benchmark(
         }),
     )
 }
-
-pub(crate) async fn handle_storage(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_storage(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
     let breakdown = crate::compaction::storage_breakdown(&conn);
-    let total_bytes: i64 = conn
-        .query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(0)
-        * conn
-            .query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0))
-            .unwrap_or(4096);
-
-    let tables: Vec<serde_json::Value> = breakdown
-        .iter()
-        .map(|(name, count)| serde_json::json!({"table": name, "rows": count}))
-        .collect();
-
+    let total_bytes: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get::<_, i64>(0)).unwrap_or(0) * conn.query_row("PRAGMA page_size", [], |r| r.get::<_, i64>(0)).unwrap_or(4096);
+    let tables: Vec<serde_json::Value> = breakdown.iter().map(|(name, count)| serde_json::json!({"table": name, "rows": count})).collect();
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({
@@ -110,39 +69,21 @@ pub(crate) async fn handle_storage(
         }),
     )
 }
-
-// ─── Crystal handlers ───────────────────────────────────────────────────
-
-pub(crate) async fn handle_crystals(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_crystals(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db_read.lock().await;
     let crystals = crate::crystallize::list_crystals(&conn);
-    handlers::json_response(
-        axum::http::StatusCode::OK,
-        serde_json::json!({ "crystals": crystals, "count": crystals.len() }),
-    )
+    handlers::json_response(axum::http::StatusCode::OK, serde_json::json!({ "crystals": crystals, "count": crystals.len() }))
 }
-
-pub(crate) async fn handle_crystallize(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-) -> axum::response::Response {
+pub(crate) async fn handle_crystallize(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let conn = state.db.lock().await;
     let brain_sender = Some(state.brain_firing.clone());
-    let result = crate::crystallize::run_crystallize_pass_with_brain(
-        &conn,
-        state.embedding_engine.as_deref(),
-        state.default_owner_id,
-        &brain_sender,
-    );
+    let result = crate::crystallize::run_crystallize_pass_with_brain(&conn, state.embedding_engine.as_deref(), state.default_owner_id, &brain_sender);
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({
@@ -153,30 +94,19 @@ pub(crate) async fn handle_crystallize(
         }),
     )
 }
-
-// ─── Focus handlers (thin wrappers around focus.rs) ──────────────────────
-
 #[derive(serde::Deserialize)]
 pub(crate) struct FocusRequest {
     label: Option<String>,
     agent: Option<String>,
 }
-
-pub(crate) async fn handle_focus_start(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FocusRequest>,
-) -> axum::response::Response {
+pub(crate) async fn handle_focus_start(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let label = match &body.label {
         Some(l) if !l.is_empty() => l.as_str(),
         _ => {
-            return handlers::json_error(
-                axum::http::StatusCode::BAD_REQUEST,
-                "Missing field: label",
-            );
+            return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label");
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
@@ -186,22 +116,14 @@ pub(crate) async fn handle_focus_start(
         Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
-
-pub(crate) async fn handle_focus_end(
-    State(state): State<RuntimeState>,
-    headers: HeaderMap,
-    Json(body): Json<FocusRequest>,
-) -> axum::response::Response {
+pub(crate) async fn handle_focus_end(State(state): State<RuntimeState>, headers: HeaderMap, Json(body): Json<FocusRequest>) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
     }
     let label = match &body.label {
         Some(l) if !l.is_empty() => l.as_str(),
         _ => {
-            return handlers::json_error(
-                axum::http::StatusCode::BAD_REQUEST,
-                "Missing field: label",
-            );
+            return handlers::json_error(axum::http::StatusCode::BAD_REQUEST, "Missing field: label");
         }
     };
     let agent = body.agent.as_deref().unwrap_or("http");
@@ -211,4 +133,3 @@ pub(crate) async fn handle_focus_end(
         Err(e) => handlers::json_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, &e),
     }
 }
-

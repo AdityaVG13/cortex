@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: MIT
+pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-
-pub use crate::api_types::{ExportFormat, ImportCounts, ImportOptions, ImportPayload};
-
 pub const DEFAULT_EXPORT_PAGE_LIMIT: usize = 1000;
 pub const MAX_EXPORT_PAGE_LIMIT: usize = 5000;
-
 fn normalize_memory_entry_type(raw: Option<&str>) -> String {
-    let normalized = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_else(|| "fact".to_string());
+    let normalized = raw.map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase).unwrap_or_else(|| "fact".to_string());
     match normalized.as_str() {
         "memory" | "note" | "finding" | "observation" | "fact" => "fact".to_string(),
         "episode" | "event" => "episode".to_string(),
@@ -22,7 +15,6 @@ fn normalize_memory_entry_type(raw: Option<&str>) -> String {
         other => other.to_string(),
     }
 }
-
 fn normalize_decision_entry_type(raw: Option<&str>) -> String {
     let normalized = raw
         .map(str::trim)
@@ -37,7 +29,6 @@ fn normalize_decision_entry_type(raw: Option<&str>) -> String {
         other => other.to_string(),
     }
 }
-
 pub fn export_json_value(conn: &Connection) -> Value {
     let memories = query_table_json(
         conn,
@@ -49,7 +40,6 @@ pub fn export_json_value(conn: &Connection) -> Value {
         "SELECT id, decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, retention_class, status, score, \
          retrievals, pinned, observed_at, valid_from, valid_until, created_at, updated_at FROM decisions WHERE status = 'active'",
     );
-
     json!({
         "version": 1,
         "exported_at": now_iso(),
@@ -59,13 +49,7 @@ pub fn export_json_value(conn: &Connection) -> Value {
         "decisions_count": decisions.len(),
     })
 }
-
-pub fn export_json_page_value(
-    conn: &Connection,
-    limit: usize,
-    memories_offset: usize,
-    decisions_offset: usize,
-) -> Value {
+pub fn export_json_page_value(conn: &Connection, limit: usize, memories_offset: usize, decisions_offset: usize) -> Value {
     let limit = limit.clamp(1, MAX_EXPORT_PAGE_LIMIT);
     let (memories, memories_has_more) = query_table_json_page(
         conn,
@@ -81,7 +65,6 @@ pub fn export_json_page_value(
         limit,
         decisions_offset,
     );
-
     json!({
         "version": 1,
         "mode": "page",
@@ -106,7 +89,6 @@ pub fn export_json_page_value(
         "decisions_count": decisions.len(),
     })
 }
-
 pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Value {
     let cursor = now_iso();
     let memories = query_table_json_since(
@@ -127,7 +109,6 @@ pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Va
         since,
         &cursor,
     );
-
     json!({
         "version": 1,
         "mode": "changeset",
@@ -140,14 +121,8 @@ pub fn export_json_changeset_value(conn: &Connection, since: Option<&str>) -> Va
         "decisions_count": decisions.len(),
     })
 }
-
 pub fn export_sql_text(conn: &Connection) -> String {
-    let mut lines: Vec<String> = vec![
-        "-- Cortex export".to_string(),
-        format!("-- Exported at {}", now_iso()),
-        "BEGIN TRANSACTION;".to_string(),
-    ];
-
+    let mut lines: Vec<String> = vec!["-- Cortex export".to_string(), format!("-- Exported at {}", now_iso()), "BEGIN TRANSACTION;".to_string()];
     if let Ok(mut stmt) = conn.prepare(
         "SELECT text, source, type, tags, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, observed_at, valid_from, valid_until FROM memories WHERE status = 'active'",
     ) {
@@ -210,7 +185,6 @@ pub fn export_sql_text(conn: &Connection) -> String {
             }
         }
     }
-
     if let Ok(mut stmt) = conn.prepare(
         "SELECT decision, context, type, source_agent, source_client, source_model, confidence, reasoning_depth, trust_score, score, retention_class, observed_at, valid_from, valid_until FROM decisions WHERE status = 'active'",
     ) {
@@ -270,28 +244,18 @@ pub fn export_sql_text(conn: &Connection) -> String {
             }
         }
     }
-
     lines.push("COMMIT;".to_string());
     lines.join("\n")
 }
-
-pub fn import_payload(
-    conn: &mut Connection,
-    payload: &ImportPayload,
-    options: &ImportOptions,
-) -> Result<ImportCounts, String> {
+pub fn import_payload(conn: &mut Connection, payload: &ImportPayload, options: &ImportOptions) -> Result<ImportCounts, String> {
     let mut counts = ImportCounts::default();
     let visibility = options.visibility.as_deref().unwrap_or("private");
     let fallback = options.source_agent_fallback.as_str();
-
     let memories_has_owner = column_exists(conn, "memories", "owner_id");
     let memories_has_visibility = column_exists(conn, "memories", "visibility");
     let decisions_has_owner = column_exists(conn, "decisions", "owner_id");
     let decisions_has_visibility = column_exists(conn, "decisions", "visibility");
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("failed to start import transaction: {e}"))?;
-
+    let tx = conn.transaction().map_err(|e| format!("failed to start import transaction: {e}"))?;
     if let Some(memories) = &payload.memories {
         for (idx, m) in memories.iter().enumerate() {
             let entry_type = normalize_memory_entry_type(m.entry_type.as_deref());
@@ -346,14 +310,12 @@ pub fn import_payload(
                     ],
                 )
             };
-
             match inserted {
                 Ok(_) => counts.memories += 1,
                 Err(e) => return Err(format!("failed to import memories[{idx}]: {e}")),
             }
         }
     }
-
     if let Some(decisions) = &payload.decisions {
         for (idx, d) in decisions.iter().enumerate() {
             let entry_type = normalize_decision_entry_type(d.entry_type.as_deref());
@@ -406,30 +368,22 @@ pub fn import_payload(
                     ],
                 )
             };
-
             match inserted {
                 Ok(_) => counts.decisions += 1,
                 Err(e) => return Err(format!("failed to import decisions[{idx}]: {e}")),
             }
         }
     }
-
-    tx.commit()
-        .map_err(|e| format!("failed to commit import transaction: {e}"))?;
+    tx.commit().map_err(|e| format!("failed to commit import transaction: {e}"))?;
     Ok(counts)
 }
-
 fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-
     let column_count = stmt.column_count();
-    let column_names: Vec<String> = (0..column_count)
-        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
-        .collect();
-
+    let column_names: Vec<String> = (0..column_count).map(|i| stmt.column_name(i).unwrap_or("?").to_string()).collect();
     stmt.query_map([], |row| {
         let mut obj = serde_json::Map::new();
         for (i, name) in column_names.iter().enumerate() {
@@ -453,13 +407,7 @@ fn query_table_json(conn: &Connection, sql: &str) -> Vec<Value> {
     .filter_map(|r| r.ok())
     .collect()
 }
-
-fn query_table_json_page(
-    conn: &Connection,
-    sql: &str,
-    limit: usize,
-    offset: usize,
-) -> (Vec<Value>, bool) {
+fn query_table_json_page(conn: &Connection, sql: &str, limit: usize, offset: usize) -> (Vec<Value>, bool) {
     let fetch_limit = limit.saturating_add(1);
     let mut rows = query_table_json_page_inner(conn, sql, fetch_limit, offset);
     let has_more = rows.len() > limit;
@@ -468,23 +416,13 @@ fn query_table_json_page(
     }
     (rows, has_more)
 }
-
-fn query_table_json_page_inner(
-    conn: &Connection,
-    sql: &str,
-    limit: usize,
-    offset: usize,
-) -> Vec<Value> {
+fn query_table_json_page_inner(conn: &Connection, sql: &str, limit: usize, offset: usize) -> Vec<Value> {
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-
     let column_count = stmt.column_count();
-    let column_names: Vec<String> = (0..column_count)
-        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
-        .collect();
-
+    let column_names: Vec<String> = (0..column_count).map(|i| stmt.column_name(i).unwrap_or("?").to_string()).collect();
     stmt.query_map(params![limit as i64, offset as i64], |row| {
         let mut obj = serde_json::Map::new();
         for (i, name) in column_names.iter().enumerate() {
@@ -508,23 +446,13 @@ fn query_table_json_page_inner(
     .filter_map(|r| r.ok())
     .collect()
 }
-
-fn query_table_json_since(
-    conn: &Connection,
-    sql: &str,
-    since: Option<&str>,
-    cursor: &str,
-) -> Vec<Value> {
+fn query_table_json_since(conn: &Connection, sql: &str, since: Option<&str>, cursor: &str) -> Vec<Value> {
     let mut stmt = match conn.prepare(sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-
     let column_count = stmt.column_count();
-    let column_names: Vec<String> = (0..column_count)
-        .map(|i| stmt.column_name(i).unwrap_or("?").to_string())
-        .collect();
-
+    let column_names: Vec<String> = (0..column_count).map(|i| stmt.column_name(i).unwrap_or("?").to_string()).collect();
     stmt.query_map(params![since, cursor], |row| {
         let mut obj = serde_json::Map::new();
         for (i, name) in column_names.iter().enumerate() {
@@ -548,22 +476,18 @@ fn query_table_json_since(
     .filter_map(|r| r.ok())
     .collect()
 }
-
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
-
 fn sql_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
-
 fn sql_quote_opt(s: &Option<String>) -> String {
     match s {
         Some(v) => sql_quote(v),
         None => "NULL".to_string(),
     }
 }
-
 fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
     let mut stmt = match conn.prepare(&format!("PRAGMA table_info({table})")) {
         Ok(v) => v,
@@ -580,132 +504,73 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
     }
     false
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn export_changeset_filters_rows_by_since_cutoff() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         crate::db::configure(&conn).expect("configure sqlite");
         crate::db::initialize_schema(&conn).expect("initialize schema");
         crate::db::run_pending_migrations(&conn);
-
         conn.execute(
             "INSERT INTO memories (text, source, status, created_at, updated_at)
              VALUES (?1, ?2, 'active', ?3, ?4)",
-            params![
-                "old memory",
-                "sync::old-memory",
-                "2026-01-01T00:00:00Z",
-                "2026-01-01T00:00:00Z"
-            ],
+            params!["old memory", "sync::old-memory", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
         )
         .expect("insert old memory");
         conn.execute(
             "INSERT INTO memories (text, source, status, created_at, updated_at)
              VALUES (?1, ?2, 'active', ?3, ?4)",
-            params![
-                "new memory",
-                "sync::new-memory",
-                "2026-03-01T00:00:00Z",
-                "2026-03-01T00:00:00Z"
-            ],
+            params!["new memory", "sync::new-memory", "2026-03-01T00:00:00Z", "2026-03-01T00:00:00Z"],
         )
         .expect("insert new memory");
         conn.execute(
             "INSERT INTO decisions (decision, context, status, created_at, updated_at)
              VALUES (?1, ?2, 'active', ?3, ?4)",
-            params![
-                "old decision",
-                "sync::old-decision",
-                "2026-01-01T00:00:00Z",
-                "2026-01-01T00:00:00Z"
-            ],
+            params!["old decision", "sync::old-decision", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
         )
         .expect("insert old decision");
         conn.execute(
             "INSERT INTO decisions (decision, context, status, created_at, updated_at)
              VALUES (?1, ?2, 'active', ?3, ?4)",
-            params![
-                "new decision",
-                "sync::new-decision",
-                "2026-03-01T00:00:00Z",
-                "2026-03-01T00:00:00Z"
-            ],
+            params!["new decision", "sync::new-decision", "2026-03-01T00:00:00Z", "2026-03-01T00:00:00Z"],
         )
         .expect("insert new decision");
-
         let changeset = export_json_changeset_value(&conn, Some("2026-02-01T00:00:00Z"));
-        let memories = changeset
-            .get("memories")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let decisions = changeset
-            .get("decisions")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
+        let memories = changeset.get("memories").and_then(Value::as_array).cloned().unwrap_or_default();
+        let decisions = changeset.get("decisions").and_then(Value::as_array).cloned().unwrap_or_default();
         assert_eq!(memories.len(), 1, "only new memory should be exported");
         assert_eq!(decisions.len(), 1, "only new decision should be exported");
-        assert_eq!(
-            memories[0].get("source").and_then(Value::as_str),
-            Some("sync::new-memory")
-        );
-        assert_eq!(
-            decisions[0].get("context").and_then(Value::as_str),
-            Some("sync::new-decision")
-        );
+        assert_eq!(memories[0].get("source").and_then(Value::as_str), Some("sync::new-memory"));
+        assert_eq!(decisions[0].get("context").and_then(Value::as_str), Some("sync::new-decision"));
     }
-
     #[test]
     fn export_changeset_respects_cursor_upper_bound() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         crate::db::configure(&conn).expect("configure sqlite");
         crate::db::initialize_schema(&conn).expect("initialize schema");
         crate::db::run_pending_migrations(&conn);
-
         conn.execute(
             "INSERT INTO memories (text, source, status, created_at, updated_at)
              VALUES (?1, ?2, 'active', ?3, ?4)",
-            params![
-                "future memory",
-                "sync::future-memory",
-                "9999-01-01T00:00:00Z",
-                "9999-01-01T00:00:00Z"
-            ],
+            params!["future memory", "sync::future-memory", "9999-01-01T00:00:00Z", "9999-01-01T00:00:00Z"],
         )
         .expect("insert future memory");
-
         let changeset = export_json_changeset_value(&conn, None);
-        let memories = changeset
-            .get("memories")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let memories = changeset.get("memories").and_then(Value::as_array).cloned().unwrap_or_default();
+        assert!(memories.is_empty(), "rows newer than cursor should be excluded");
         assert!(
-            memories.is_empty(),
-            "rows newer than cursor should be excluded"
-        );
-        assert!(
-            changeset
-                .get("cursor")
-                .and_then(Value::as_str)
-                .is_some_and(|cursor| !cursor.trim().is_empty()),
+            changeset.get("cursor").and_then(Value::as_str).is_some_and(|cursor| !cursor.trim().is_empty()),
             "changeset cursor should always be emitted"
         );
     }
-
     #[test]
     fn export_json_page_limits_rows_and_emits_next_offsets() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         crate::db::configure(&conn).expect("configure sqlite");
         crate::db::initialize_schema(&conn).expect("initialize schema");
         crate::db::run_pending_migrations(&conn);
-
         for idx in 0..3 {
             conn.execute(
                 "INSERT INTO memories (text, source, status) VALUES (?1, ?2, 'active')",
@@ -720,65 +585,24 @@ mod tests {
             )
             .expect("insert decision");
         }
-
         let first_page = export_json_page_value(&conn, 2, 0, 0);
-        assert_eq!(
-            first_page
-                .get("memories")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(2)
-        );
-        assert_eq!(
-            first_page
-                .get("decisions")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(2)
-        );
-        assert_eq!(
-            first_page
-                .get("next_memories_offset")
-                .and_then(Value::as_u64),
-            Some(2)
-        );
-        assert_eq!(
-            first_page
-                .get("next_decisions_offset")
-                .and_then(Value::as_u64),
-            None
-        );
-        assert_eq!(
-            first_page.get("truncated").and_then(Value::as_bool),
-            Some(true)
-        );
-
+        assert_eq!(first_page.get("memories").and_then(Value::as_array).map(Vec::len), Some(2));
+        assert_eq!(first_page.get("decisions").and_then(Value::as_array).map(Vec::len), Some(2));
+        assert_eq!(first_page.get("next_memories_offset").and_then(Value::as_u64), Some(2));
+        assert_eq!(first_page.get("next_decisions_offset").and_then(Value::as_u64), None);
+        assert_eq!(first_page.get("truncated").and_then(Value::as_bool), Some(true));
         let second_page = export_json_page_value(&conn, 2, 2, 0);
-        let memories = second_page
-            .get("memories")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let memories = second_page.get("memories").and_then(Value::as_array).cloned().unwrap_or_default();
         assert_eq!(memories.len(), 1);
-        assert_eq!(
-            memories[0].get("source").and_then(Value::as_str),
-            Some("page::memory::2")
-        );
-        assert_eq!(
-            second_page
-                .get("next_memories_offset")
-                .and_then(Value::as_u64),
-            None
-        );
+        assert_eq!(memories[0].get("source").and_then(Value::as_str), Some("page::memory::2"));
+        assert_eq!(second_page.get("next_memories_offset").and_then(Value::as_u64), None);
     }
-
     #[test]
     fn import_payload_normalizes_types_and_preserves_temporal_fields() {
         let mut conn = Connection::open_in_memory().expect("open sqlite");
         crate::db::configure(&conn).expect("configure sqlite");
         crate::db::initialize_schema(&conn).expect("initialize schema");
         crate::db::run_pending_migrations(&conn);
-
         let payload = ImportPayload {
             memories: Some(vec![crate::api_types::ImportMemory {
                 text: "deployment runbook".to_string(),
@@ -814,59 +638,23 @@ mod tests {
                 retention_class: Some(crate::api_types::RetentionClass::Audit),
             }]),
         };
-
-        let counts = import_payload(&mut conn, &payload, &ImportOptions::default())
-            .expect("import should succeed");
+        let counts = import_payload(&mut conn, &payload, &ImportOptions::default()).expect("import should succeed");
         assert_eq!(counts.memories, 1);
         assert_eq!(counts.decisions, 1);
-
-        let memory_row: (
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ) = conn
-            .query_row(
-                "SELECT type, retention_class, observed_at, valid_from, valid_until FROM memories LIMIT 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
+        let memory_row: (String, String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row("SELECT type, retention_class, observed_at, valid_from, valid_until FROM memories LIMIT 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })
             .expect("memory row");
         assert_eq!(memory_row.0, "fact");
         assert_eq!(memory_row.1, "operational");
         assert_eq!(memory_row.2.as_deref(), Some("2026-04-18T10:00:00Z"));
         assert_eq!(memory_row.3.as_deref(), Some("2026-04-18T00:00:00Z"));
         assert_eq!(memory_row.4.as_deref(), Some("2026-05-18T00:00:00Z"));
-
-        let decision_row: (
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ) = conn
-            .query_row(
-                "SELECT type, retention_class, observed_at, valid_from, valid_until FROM decisions LIMIT 1",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
+        let decision_row: (String, String, Option<String>, Option<String>, Option<String>) = conn
+            .query_row("SELECT type, retention_class, observed_at, valid_from, valid_until FROM decisions LIMIT 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })
             .expect("decision row");
         assert_eq!(decision_row.0, "decision");
         assert_eq!(decision_row.1, "audit");
@@ -874,7 +662,6 @@ mod tests {
         assert_eq!(decision_row.3.as_deref(), Some("2026-04-18T00:00:00Z"));
         assert_eq!(decision_row.4.as_deref(), Some("2026-05-01T00:00:00Z"));
     }
-
     #[test]
     fn import_payload_rolls_back_and_reports_failed_rows() {
         let mut conn = Connection::open_in_memory().expect("open sqlite");
@@ -890,7 +677,6 @@ mod tests {
             [],
         )
         .expect("create failure trigger");
-
         let payload = ImportPayload {
             memories: Some(vec![
                 crate::api_types::ImportMemory {
@@ -930,14 +716,9 @@ mod tests {
             ]),
             decisions: None,
         };
-
-        let err = import_payload(&mut conn, &payload, &ImportOptions::default())
-            .expect_err("second memory should fail");
+        let err = import_payload(&mut conn, &payload, &ImportOptions::default()).expect_err("second memory should fail");
         assert!(err.contains("memories[1]"));
-
-        let row_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
-            .expect("count memories");
+        let row_count: i64 = conn.query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0)).expect("count memories");
         assert_eq!(row_count, 0, "import should roll back earlier rows");
     }
 }

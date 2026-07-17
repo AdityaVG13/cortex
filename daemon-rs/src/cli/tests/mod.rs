@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 #[cfg(test)]
-mod support;
-
+mod common;
 #[cfg(test)]
 mod locks;
 #[cfg(test)]
 mod spawn;
 #[cfg(test)]
-mod common;
+mod support;

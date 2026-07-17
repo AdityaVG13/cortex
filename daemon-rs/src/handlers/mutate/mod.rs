@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: MIT
-mod types;
-mod permissions;
 mod conflicts;
-
+mod permissions;
+mod types;
 #[cfg(test)]
 mod tests {
-    // Mutate handler internals are not release-gated; see Info/testing-philosophy.md.
 }
-
-pub(crate) use types::*;
-pub(crate) use permissions::*;
-pub(crate) use conflicts::*;
-
-pub use permissions::{list_permissions, grant_permission, revoke_permission, parse_conflict_id};
 pub use conflicts::{
-    list_conflicts_payload, forget_keyword_scoped, resolve_decision,
-    resolve_decision_with_metadata, handle_forget, handle_resolve, handle_archive,
-    handle_conflicts, handle_permissions_list, handle_permissions_grant, handle_permissions_revoke,
-    handle_shutdown,
+    forget_keyword_scoped, handle_archive, handle_conflicts, handle_forget, handle_permissions_grant, handle_permissions_list, handle_permissions_revoke, handle_resolve, handle_shutdown,
+    list_conflicts_payload, resolve_decision, resolve_decision_with_metadata,
 };
+pub(crate) use permissions::*;
+pub use permissions::{grant_permission, list_permissions, parse_conflict_id, revoke_permission};
+pub(crate) use types::*;

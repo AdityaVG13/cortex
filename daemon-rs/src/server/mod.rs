@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
-mod router;
 mod handlers;
+mod router;
 mod runtime;
-
 #[cfg(test)]
 mod tests;
-
-pub(crate) use router::*;
 pub(crate) use handlers::*;
-pub(crate) use runtime::*;
-
 pub use router::build_router;
 pub use runtime::run;
+pub(crate) use runtime::*;
