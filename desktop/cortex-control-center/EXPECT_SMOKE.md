@@ -84,7 +84,6 @@ The smoke step is intentionally opt-in because hosted runners do not come with a
 
 ## Files
 
-- `scripts/mock-cortex-server.mjs`
 - `scripts/run-expect-smoke.mjs`
 - `package.json`
 - `.github/workflows/ci.yml`

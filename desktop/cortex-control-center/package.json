@@ -17,7 +17,6 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "mock:cortex": "node scripts/mock-cortex-server.mjs",
     "verify:lifecycle:dev": "node scripts/run-dev-lifecycle-verification.mjs"
   },
   "dependencies": {
