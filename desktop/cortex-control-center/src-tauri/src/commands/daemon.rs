@@ -1,7 +1,6 @@
 use crate::constants::{DAEMON_REACHABILITY_TIMEOUT_MS, DAEMON_STOP_WAIT_MS};
 use crate::cortex_http::{
-    auth_token_ready, is_cortex_reachable_with_port, probe_cortex_reachability_with_port,
-    read_auth_token_with_retry, wait_for_reachability,
+    auth_token_ready, is_cortex_reachable_with_port, probe_cortex_reachability_with_port, read_auth_token_with_retry, wait_for_reachability,
 };
 use crate::daemon::paths::{daemon_port, log_startup_path, service_ensure_fallback_enabled};
 use crate::daemon::shutdown::send_http_shutdown;
@@ -14,36 +13,22 @@ use tauri::State;
 pub async fn daemon_status(state: State<'_, DaemonState>) -> Result<DaemonCommandResult, String> {
     let (managed, pid) = state.status()?;
     let port = daemon_port();
-    let probe = tauri::async_runtime::spawn_blocking(move || {
-        probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS)
-    })
-    .await
-    .map_err(|err| format!("daemon_status reachability task failed: {err}"))?;
+    let probe = tauri::async_runtime::spawn_blocking(move || probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS))
+        .await
+        .map_err(|err| format!("daemon_status reachability task failed: {err}"))?;
     let reachable = probe.reachable;
     let starting = probe.starting;
     let auth_token_ready = if reachable {
-        tauri::async_runtime::spawn_blocking(auth_token_ready)
-            .await
-            .map_err(|err| format!("daemon_status token task failed: {err}"))?
+        tauri::async_runtime::spawn_blocking(auth_token_ready).await.map_err(|err| format!("daemon_status token task failed: {err}"))?
     } else {
         false
     };
-    let mut message =
-        describe_daemon_state(managed, reachable, starting, auth_token_ready, pid, port);
+    let mut message = describe_daemon_state(managed, reachable, starting, auth_token_ready, pid, port);
     if probe.identity_mismatch {
-        message.push_str(
-            " Runtime identity metadata mismatch detected; using loose local daemon probe.",
-        );
+        message.push_str(" Runtime identity metadata mismatch detected; using loose local daemon probe.");
     }
 
-    Ok(DaemonCommandResult {
-        running: managed || reachable || starting,
-        reachable,
-        managed,
-        auth_token_ready,
-        pid,
-        message,
-    })
+    Ok(DaemonCommandResult { running: managed || reachable || starting, reachable, managed, auth_token_ready, pid, message })
 }
 
 #[tauri::command]
@@ -64,18 +49,9 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
         let auth_token_ready = auth_token_ready();
         let mut message = describe_daemon_state(managed, true, false, auth_token_ready, pid, port);
         if probe.identity_mismatch {
-            message.push_str(
-                " Runtime identity metadata mismatch detected; using loose local daemon probe.",
-            );
+            message.push_str(" Runtime identity metadata mismatch detected; using loose local daemon probe.");
         }
-        return Ok(DaemonCommandResult {
-            running: true,
-            reachable: true,
-            managed,
-            auth_token_ready,
-            pid,
-            message,
-        });
+        return Ok(DaemonCommandResult { running: true, reachable: true, managed, auth_token_ready, pid, message });
     }
 
     if probe.starting {
@@ -91,18 +67,9 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
         let auth_token_ready = auth_token_ready();
         let mut message = describe_daemon_state(managed, false, true, auth_token_ready, pid, port);
         if probe.identity_mismatch {
-            message.push_str(
-                " Runtime identity metadata mismatch detected; using loose local daemon probe.",
-            );
+            message.push_str(" Runtime identity metadata mismatch detected; using loose local daemon probe.");
         }
-        return Ok(DaemonCommandResult {
-            running: true,
-            reachable: false,
-            managed,
-            auth_token_ready,
-            pid,
-            message,
-        });
+        return Ok(DaemonCommandResult { running: true, reachable: false, managed, auth_token_ready, pid, message });
     }
 
     match try_local_app_managed_ensure(&state, port) {
@@ -117,23 +84,10 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
                 },
             );
             let (managed, pid) = state.status()?;
-            let auth_token_ready = if local_probe.reachable {
-                auth_token_ready()
-            } else {
-                false
-            };
-            let mut message = describe_daemon_state(
-                managed,
-                local_probe.reachable,
-                local_probe.starting,
-                auth_token_ready,
-                pid,
-                port,
-            );
+            let auth_token_ready = if local_probe.reachable { auth_token_ready() } else { false };
+            let mut message = describe_daemon_state(managed, local_probe.reachable, local_probe.starting, auth_token_ready, pid, port);
             if local_probe.identity_mismatch {
-                message.push_str(
-                    " Runtime identity metadata mismatch detected; using loose local daemon probe.",
-                );
+                message.push_str(" Runtime identity metadata mismatch detected; using loose local daemon probe.");
             }
             Ok(DaemonCommandResult {
                 running: managed || local_probe.reachable || local_probe.starting,
@@ -148,11 +102,7 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
             if service_ensure_fallback_enabled() {
                 match try_service_ensure(port) {
                     Ok(true) => {
-                        log_startup_path(
-                            "start_daemon",
-                            "service-ensure",
-                            "daemon started or validated via service ensure after app-managed fallback",
-                        );
+                        log_startup_path("start_daemon", "service-ensure", "daemon started or validated via service ensure after app-managed fallback");
                         let auth_token_ready = auth_token_ready();
                         Ok(DaemonCommandResult {
                             running: true,
@@ -165,23 +115,15 @@ pub async fn start_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommand
                     }
                     Ok(false) => {
                         log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
-                        Err(format!(
-                            "App-managed local start failed and Windows service ensure was unavailable: {local_err}"
-                        ))
+                        Err(format!("App-managed local start failed and Windows service ensure was unavailable: {local_err}"))
                     }
                     Err(service_err) => {
                         log_startup_path("start_daemon", "blocked", "app-managed spawn failed");
-                        Err(format!(
-                            "App-managed local start failed: {local_err}. Windows service ensure failed: {service_err}"
-                        ))
+                        Err(format!("App-managed local start failed: {local_err}. Windows service ensure failed: {service_err}"))
                     }
                 }
             } else {
-                log_startup_path(
-                    "start_daemon",
-                    "blocked",
-                    "app-managed spawn failed (service fallback disabled)",
-                );
+                log_startup_path("start_daemon", "blocked", "app-managed spawn failed (service fallback disabled)");
                 Err(format!("App-managed local start failed: {local_err}"))
             }
         }
@@ -198,15 +140,10 @@ pub async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandR
         if let Err(err) = send_http_shutdown() {
             shutdown_error = Some(err);
         }
-        let _ =
-            wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
+        let _ = wait_for_reachability(port, false, Duration::from_millis(DAEMON_STOP_WAIT_MS)).await;
     }
 
-    let managed_stop_error = if was_running {
-        state.stop().err()
-    } else {
-        None
-    };
+    let managed_stop_error = if was_running { state.stop().err() } else { None };
     let reachable = is_cortex_reachable_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
     if reachable {
         if let Some(err) = managed_stop_error.or(shutdown_error) {
@@ -224,14 +161,7 @@ pub async fn stop_daemon(state: State<'_, DaemonState>) -> Result<DaemonCommandR
         "Daemon is already stopped.".to_string()
     };
 
-    Ok(DaemonCommandResult {
-        running: reachable,
-        reachable,
-        managed: false,
-        auth_token_ready: reachable && auth_token_ready(),
-        pid: None,
-        message,
-    })
+    Ok(DaemonCommandResult { running: reachable, reachable, managed: false, auth_token_ready: reachable && auth_token_ready(), pid: None, message })
 }
 
 #[tauri::command]

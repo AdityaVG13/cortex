@@ -7,46 +7,38 @@ import { MemoryPanel } from "./MemoryPanel.jsx";
 import { AnalyticsPanel } from "./AnalyticsPanel.jsx";
 import { ConflictsPanel } from "./ConflictsPanel.jsx";
 import { AboutPanel } from "./AboutPanel.jsx";
+import { useDashboard } from "../DashboardContext.jsx";
 
 function renderActivePanel(p) {
   switch (p.panel) {
     case "settings":
-      return <SettingsPanel {...p} />;
+      return <SettingsPanel />;
     case "overview":
-      return <OverviewPanel {...p} />;
+      return <OverviewPanel />;
     case "agents":
-      return <AgentsPanel {...p} />;
+      return <AgentsPanel />;
     case "work":
-      return <WorkPanel {...p} />;
+      return <WorkPanel />;
     case "memory":
-      return <MemoryPanel {...p} />;
+      return <MemoryPanel />;
     case "analytics":
-      return <AnalyticsPanel {...p} />;
+      return <AnalyticsPanel />;
     case "brain":
-      return (
-        <BrainVisualizerPanel
-          brainPanelRef={p.brainPanelRef}
-          panel={p.panel}
-          brainPanelMounted={p.brainPanelMounted}
-          api={p.api}
-          cortexBase={p.cortexBase}
-          authToken={p.tokenRef.current}
-          effectiveReducedMotion={p.effectiveReducedMotion}
-        />
-      );
+      return <BrainVisualizerPanel />;
     case "conflicts":
-      return <ConflictsPanel {...p} />;
+      return <ConflictsPanel />;
     case "about":
-      return <AboutPanel {...p} />;
+      return <AboutPanel />;
     default:
       return null;
   }
 }
 
-export function PanelStage(p) {
+export function PanelStage() {
+  const dashboard = useDashboard();
   return (
-    <div className="panel-stage" data-panel-direction={p.panelMotionDirection}>
-      {renderActivePanel(p)}
+    <div className="panel-stage" data-panel-direction={dashboard.panelMotionDirection}>
+      {renderActivePanel(dashboard)}
     </div>
   );
 }

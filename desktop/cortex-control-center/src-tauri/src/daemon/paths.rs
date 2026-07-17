@@ -28,15 +28,11 @@ pub fn default_cortex_dir() -> Result<PathBuf, String> {
     Ok(cortex_home()?.join(".cortex"))
 }
 pub(crate) fn token_path() -> Result<PathBuf, String> {
-    resolved_cortex_paths()
-        .token
-        .ok_or_else(|| "Could not resolve Cortex token path".to_string())
+    resolved_cortex_paths().token.ok_or_else(|| "Could not resolve Cortex token path".to_string())
 }
 
 pub fn cortex_db_path() -> Result<PathBuf, String> {
-    resolved_cortex_paths()
-        .db
-        .ok_or_else(|| "Could not resolve Cortex database path".to_string())
+    resolved_cortex_paths().db.ok_or_else(|| "Could not resolve Cortex database path".to_string())
 }
 
 pub fn daemon_port() -> u16 {
@@ -51,9 +47,7 @@ fn cortex_binary_name() -> &'static str {
 }
 
 fn normalized_path_for_guard(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "/")
-        .to_ascii_lowercase()
+    path.to_string_lossy().replace('\\', "/").to_ascii_lowercase()
 }
 
 fn path_is_under_root(path: &Path, root: &Path) -> bool {
@@ -62,8 +56,7 @@ fn path_is_under_root(path: &Path, root: &Path) -> bool {
     if !normalized_root.ends_with('/') {
         normalized_root.push('/');
     }
-    normalized_path == normalized_root.trim_end_matches('/')
-        || normalized_path.starts_with(&normalized_root)
+    normalized_path == normalized_root.trim_end_matches('/') || normalized_path.starts_with(&normalized_root)
 }
 
 fn is_allowed_isolated_target_dir(segment: &str) -> bool {
@@ -105,31 +98,18 @@ fn is_non_runtime_test_artifact_path(path: &Path) -> bool {
 }
 
 fn is_shared_workspace_debug_runtime_path(path: &Path) -> bool {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
     if file_name != cortex_binary_name().to_ascii_lowercase() {
         return false;
     }
 
-    let segments: Vec<String> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase())
-        .collect();
-    segments
-        .windows(3)
-        .any(|window| window == ["daemon-rs", "target", "debug"])
+    let segments: Vec<String> = path.components().map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase()).collect();
+    segments.windows(3).any(|window| window == ["daemon-rs", "target", "debug"])
 }
 
 pub fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
     let normalized = normalized_path_for_guard(path);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
 
     if file_name.starts_with("cortex-daemon-run") {
         return true;
@@ -151,25 +131,14 @@ pub fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
     if let Ok(tmp) = std::env::var("TMP") {
         temp_roots.push(PathBuf::from(tmp));
     }
-    temp_roots
-        .iter()
-        .any(|root| !root.as_os_str().is_empty() && path_is_under_root(path, root))
+    temp_roots.iter().any(|root| !root.as_os_str().is_empty() && path_is_under_root(path, root))
 }
 
 pub fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> {
     let daemon_root = home.join("cortex").join("daemon-rs");
-    let release_path = daemon_root
-        .join("target")
-        .join("release")
-        .join(cortex_binary_name());
-    let isolated_release_path = daemon_root
-        .join(RELEASE_DAEMON_TARGET_DIR)
-        .join("release")
-        .join(cortex_binary_name());
-    let isolated_debug_path = daemon_root
-        .join(DEV_DAEMON_TARGET_DIR)
-        .join("debug")
-        .join(cortex_binary_name());
+    let release_path = daemon_root.join("target").join("release").join(cortex_binary_name());
+    let isolated_release_path = daemon_root.join(RELEASE_DAEMON_TARGET_DIR).join("release").join(cortex_binary_name());
+    let isolated_debug_path = daemon_root.join(DEV_DAEMON_TARGET_DIR).join("debug").join(cortex_binary_name());
 
     if prefer_debug {
         vec![isolated_debug_path, isolated_release_path, release_path]
@@ -192,11 +161,7 @@ fn resolve_binary_on_path(binary_name: &str) -> Option<PathBuf> {
         .filter_map(|line| {
             let candidate = PathBuf::from(line);
             if is_disallowed_daemon_binary_path(&candidate) {
-                log_startup_path(
-                    "resolve-binary-on-path",
-                    "reject-disallowed",
-                    &candidate.display().to_string(),
-                );
+                log_startup_path("resolve-binary-on-path", "reject-disallowed", &candidate.display().to_string());
                 None
             } else {
                 Some(candidate)
@@ -219,56 +184,32 @@ fn path_binary_fallback_enabled() -> bool {
 }
 
 pub fn service_ensure_fallback_enabled() -> bool {
-    path_binary_fallback_enabled_from_value(
-        std::env::var(SERVICE_ENSURE_FALLBACK_ENV).ok().as_deref(),
-    )
+    path_binary_fallback_enabled_from_value(std::env::var(SERVICE_ENSURE_FALLBACK_ENV).ok().as_deref())
 }
 
 fn parse_paths_json(output: &[u8]) -> Result<ResolvedCortexPaths, String> {
-    let json: serde_json::Value = serde_json::from_slice(output)
-        .map_err(|err| format!("Invalid JSON from `cortex paths --json`: {err}"))?;
+    let json: serde_json::Value = serde_json::from_slice(output).map_err(|err| format!("Invalid JSON from `cortex paths --json`: {err}"))?;
     let port = json
         .get("port")
         .and_then(|value| value.as_u64())
-        .map(|value| {
-            u16::try_from(value).map_err(|err| format!("Port value out of range ({value}): {err}"))
-        })
+        .map(|value| u16::try_from(value).map_err(|err| format!("Port value out of range ({value}): {err}")))
         .transpose()?;
 
     Ok(ResolvedCortexPaths {
-        home: json
-            .get("home")
-            .and_then(|value| value.as_str())
-            .map(PathBuf::from),
-        token: json
-            .get("token")
-            .and_then(|value| value.as_str())
-            .map(PathBuf::from),
-        db: json
-            .get("db")
-            .and_then(|value| value.as_str())
-            .map(PathBuf::from),
-        pid: json
-            .get("pid")
-            .and_then(|value| value.as_str())
-            .map(PathBuf::from),
+        home: json.get("home").and_then(|value| value.as_str()).map(PathBuf::from),
+        token: json.get("token").and_then(|value| value.as_str()).map(PathBuf::from),
+        db: json.get("db").and_then(|value| value.as_str()).map(PathBuf::from),
+        pid: json.get("pid").and_then(|value| value.as_str()).map(PathBuf::from),
         port,
-        bind: json
-            .get("bind")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string()),
+        bind: json.get("bind").and_then(|value| value.as_str()).map(|value| value.to_string()),
     })
 }
 
-fn resolve_paths_with_binary(
-    binary: impl AsRef<std::ffi::OsStr>,
-) -> Result<Option<ResolvedCortexPaths>, String> {
+fn resolve_paths_with_binary(binary: impl AsRef<std::ffi::OsStr>) -> Result<Option<ResolvedCortexPaths>, String> {
     let mut command = Command::new(binary);
     command.args(["paths", "--json"]);
     apply_hidden_process_flags(&mut command);
-    let output = command
-        .output()
-        .map_err(|err| format!("Failed to execute `cortex paths --json`: {err}"))?;
+    let output = command.output().map_err(|err| format!("Failed to execute `cortex paths --json`: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
@@ -280,10 +221,7 @@ fn resolve_paths_with_binary(
 }
 
 fn fallback_cortex_paths() -> ResolvedCortexPaths {
-    let cortex_dir = env::var("CORTEX_HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| default_cortex_dir().ok());
+    let cortex_dir = env::var("CORTEX_HOME").ok().map(PathBuf::from).or_else(|| default_cortex_dir().ok());
 
     let port = match env::var("CORTEX_PORT") {
         Ok(value) => match value.parse::<u16>() {
@@ -306,11 +244,7 @@ fn fallback_cortex_paths() -> ResolvedCortexPaths {
         db: cortex_dir.as_ref().map(|dir| dir.join("cortex.db")),
         pid: cortex_dir.as_ref().map(|dir| dir.join("cortex.pid")),
         port,
-        bind: env::var("CORTEX_BIND")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .or_else(|| Some("127.0.0.1".to_string())),
+        bind: env::var("CORTEX_BIND").ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()).or_else(|| Some("127.0.0.1".to_string())),
     }
 }
 
@@ -341,9 +275,7 @@ fn resolve_daemon_port() -> u16 {
 }
 
 pub fn log_startup_path(context: &str, decision: &str, detail: &str) {
-    eprintln!(
-        "[cortex-control-center] startup-path context={context} decision={decision} detail={detail}"
-    );
+    eprintln!("[cortex-control-center] startup-path context={context} decision={decision} detail={detail}");
 }
 
 pub fn installed_plugin_binary_path(home: &Path) -> PathBuf {
@@ -352,27 +284,20 @@ pub fn installed_plugin_binary_path(home: &Path) -> PathBuf {
 
 pub fn copy_if_changed(src: &Path, dest: &Path) -> Result<(), String> {
     let needs_copy = match fs::read(dest) {
-        Ok(existing) => {
-            existing != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?
-        }
+        Ok(existing) => existing != fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(format!("read {}: {err}", dest.display())),
     };
 
     if needs_copy {
-        fs::copy(src, dest)
-            .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dest.display()))?;
+        fs::copy(src, dest).map_err(|e| format!("copy {} -> {}: {e}", src.display(), dest.display()))?;
     }
 
     Ok(())
 }
 
 pub fn find_cortex_binary() -> Option<PathBuf> {
-    let sidecar_candidate = env::current_exe().ok().and_then(|exe| {
-        exe.parent()
-            .map(|dir| dir.join(cortex_binary_name()))
-            .filter(|path| path.exists())
-    });
+    let sidecar_candidate = env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(cortex_binary_name())).filter(|path| path.exists()));
 
     if let Ok(home) = cortex_home() {
         let plugin_path = home.join(".cortex").join("bin").join(cortex_binary_name());
@@ -387,11 +312,7 @@ pub fn find_cortex_binary() -> Option<PathBuf> {
                     continue;
                 }
                 if is_disallowed_daemon_binary_path(&candidate) {
-                    log_startup_path(
-                        "find-cortex-binary",
-                        "reject-disallowed",
-                        &candidate.display().to_string(),
-                    );
+                    log_startup_path("find-cortex-binary", "reject-disallowed", &candidate.display().to_string());
                     continue;
                 }
                 return Some(candidate);
@@ -413,20 +334,14 @@ pub fn find_cortex_binary() -> Option<PathBuf> {
                 continue;
             }
             if is_disallowed_daemon_binary_path(&candidate) {
-                log_startup_path(
-                    "find-cortex-binary",
-                    "reject-disallowed",
-                    &candidate.display().to_string(),
-                );
+                log_startup_path("find-cortex-binary", "reject-disallowed", &candidate.display().to_string());
                 continue;
             }
             return Some(candidate);
         }
     }
 
-    if let Some(sidecar) =
-        sidecar_candidate.filter(|candidate| !is_disallowed_daemon_binary_path(candidate))
-    {
+    if let Some(sidecar) = sidecar_candidate.filter(|candidate| !is_disallowed_daemon_binary_path(candidate)) {
         return Some(sidecar);
     }
 

@@ -1,41 +1,16 @@
 import React from "react";
+import { useDashboard } from "../DashboardContext.jsx";
 import { AppIcon } from "../../ui-icons.jsx";
 import { CURRENCY_OPTIONS } from "../../constants.js";
 import { BUDGET_ENDPOINT_DEFINITIONS } from "../../settings/settings-state.js";
 import { normalizeCurrencyCode, formatDaemonEndpoint } from "../utils/format.js";
 import { PANEL_SEQUENCE } from "../constants.js";
-function SettingsPanel(p) {
-  const {
-    panel,
-    savings,
-    cortexBase,
-    controlSettings,
-    budgetDraft,
-    budgetConfigBusy,
-    budgetConfigMessage,
-    ipcAvailable,
-    setCurrency,
-    isTauriRuntime,
-    safeCurrency,
-    budgetSummary,
-    budgetDraftError,
-    budgetDraftEndpoints,
-    runRefreshAll,
-    openConnectionDialog,
-    updateControlSetting,
-    reloadBudgetConfigDraft,
-    saveBudgetConfigDraft,
-    updateBudgetDraftRoot,
-    updateBudgetEndpointDraft,
-    pill,
-    daemonStatusBadge,
-  } = p;
-  return (
-    <React.Fragment>
-      <section
-        className={`panel settings-panel ${panel === "settings" ? "active" : "panel-hidden"}`}
-        aria-hidden={panel === "settings" ? void 0 : !0}
-      >
+function SettingsPanel() { const { panel, savings, cortexBase, controlSettings, budgetDraft, budgetConfigBusy,
+    budgetConfigMessage, ipcAvailable, setCurrency, isTauriRuntime, safeCurrency, budgetSummary, budgetDraftError, budgetDraftEndpoints,
+    runRefreshAll, openConnectionDialog, updateControlSetting, reloadBudgetConfigDraft,
+    saveBudgetConfigDraft, updateBudgetDraftRoot, updateBudgetEndpointDraft, pill, daemonStatusBadge, } = useDashboard();
+  return ( <React.Fragment>
+      <section className={`panel settings-panel ${panel === "settings" ? "active" : "panel-hidden"}`} aria-hidden={panel === "settings" ? void 0 : !0}>
         <div className="panel-header">
           <div>
             <span className="panel-kicker">Control Center</span>
@@ -60,8 +35,7 @@ function SettingsPanel(p) {
               <input
                 type="checkbox"
                 checked={controlSettings.highContrast}
-                onChange={(event) => updateControlSetting("highContrast", event.target.checked)}
-              />
+                onChange={(event) => updateControlSetting("highContrast", event.target.checked)} />
             </label>
             <label className="settings-row">
               <span>
@@ -71,8 +45,7 @@ function SettingsPanel(p) {
               <input
                 type="checkbox"
                 checked={controlSettings.keyboardHints}
-                onChange={(event) => updateControlSetting("keyboardHints", event.target.checked)}
-              />
+                onChange={(event) => updateControlSetting("keyboardHints", event.target.checked)} />
             </label>
           </section>
           <section className="settings-section" aria-labelledby="settings-motion">
@@ -87,8 +60,7 @@ function SettingsPanel(p) {
               </span>
               <select
                 value={controlSettings.reducedMotion}
-                onChange={(event) => updateControlSetting("reducedMotion", event.target.value)}
-              >
+                onChange={(event) => updateControlSetting("reducedMotion", event.target.value)} >
                 <option value="system">System</option>
                 <option value="reduce">Reduced</option>
                 <option value="full">Full</option>
@@ -100,8 +72,7 @@ function SettingsPanel(p) {
                 <small>Token-savings estimates.</small>
               </span>
               <select value={safeCurrency} onChange={(event) => setCurrency(normalizeCurrencyCode(event.target.value))}>
-                {CURRENCY_OPTIONS.map((code) => (
-                  <option key={code} value={code}>
+                {CURRENCY_OPTIONS.map((code) => ( <option key={code} value={code}>
                     {code}
                   </option>
                 ))}
@@ -157,8 +128,7 @@ function SettingsPanel(p) {
                 <strong>{budgetSummary.recentDenialsTotal}</strong>
               </div>
             </div>
-            {budgetSummary.error ? (
-              <p className="settings-error" role="alert">
+            {budgetSummary.error ? ( <p className="settings-error" role="alert">
                 {budgetSummary.error}
               </p>
             ) : null}
@@ -177,18 +147,15 @@ function SettingsPanel(p) {
                   {(budgetSummary.endpointRows.length
                     ? budgetSummary.endpointRows
                     : [{ endpoint: "none", limit: null, windowSeconds: null }]
-                  ).map((row) => {
-                    const denial = budgetSummary.denialRows.find((entry) => entry.endpoint === row.endpoint)?.count;
-                    return (
-                      <tr key={row.endpoint}>
+                  ).map((row) => { const denial = budgetSummary.denialRows.find((entry) => entry.endpoint === row.endpoint)?.count;
+                    return ( <tr key={row.endpoint}>
                         <th scope="row" data-label="Endpoint">
                           {row.endpoint}
                         </th>
                         <td data-label="Limit">{row.limit ?? "--"}</td>
                         <td data-label="Window">{row.windowSeconds ? `${row.windowSeconds}s` : "--"}</td>
                         <td data-label="Recent Denials">{denial ?? (budgetSummary.denialRows.length ? 0 : "--")}</td>
-                      </tr>
-                    );
+                      </tr> );
                   })}
                 </tbody>
               </table>
@@ -204,48 +171,31 @@ function SettingsPanel(p) {
                     type="checkbox"
                     checked={budgetDraft.enabled}
                     disabled={!ipcAvailable || budgetConfigBusy}
-                    onChange={(event) => updateBudgetDraftRoot({ enabled: event.target.checked })}
-                  />
+                    onChange={(event) => updateBudgetDraftRoot({ enabled: event.target.checked })} />
                 </label>
                 <div className="settings-budget-actions">
                   <button
                     type="button"
                     className="btn-sm"
                     disabled={!ipcAvailable || budgetConfigBusy}
-                    onClick={() => reloadBudgetConfigDraft()}
-                  >
+                    onClick={() => reloadBudgetConfigDraft()} >
                     Reload
                   </button>
-                  <button
-                    type="submit"
-                    className="btn-sm btn-primary"
-                    disabled={!ipcAvailable || budgetConfigBusy || !!budgetDraftError}
-                  >
+                  <button type="submit" className="btn-sm btn-primary" disabled={!ipcAvailable || budgetConfigBusy || !!budgetDraftError}>
                     {budgetConfigBusy ? "Saving..." : "Save"}
                   </button>
                 </div>
               </div>
               <div className="settings-budget-edit-grid" role="group" aria-label="Budget endpoint editor">
-                {BUDGET_ENDPOINT_DEFINITIONS.map((definition) => {
-                  const draft = budgetDraftEndpoints[definition.key],
-                    endpointEnabled = !!draft?.enabled;
-                  return (
-                    <fieldset
-                      key={definition.key}
-                      className="settings-budget-edit-row"
-                      disabled={!ipcAvailable || budgetConfigBusy}
-                    >
+                {BUDGET_ENDPOINT_DEFINITIONS.map((definition) => { const draft = budgetDraftEndpoints[definition.key], endpointEnabled = !!draft?.enabled;
+                  return ( <fieldset key={definition.key} className="settings-budget-edit-row" disabled={!ipcAvailable || budgetConfigBusy}>
                       <legend>{definition.label}</legend>
                       <label className="settings-budget-enable">
                         <input
                           type="checkbox"
                           checked={endpointEnabled}
-                          onChange={(event) =>
-                            updateBudgetEndpointDraft(definition.key, {
-                              enabled: event.target.checked,
-                            })
-                          }
-                        />
+                          onChange={(event) => updateBudgetEndpointDraft(definition.key, { enabled: event.target.checked, })
+                          } />
                         <span>Limited</span>
                       </label>
                       <label className="settings-budget-input">
@@ -257,12 +207,8 @@ function SettingsPanel(p) {
                           inputMode="numeric"
                           value={draft?.limit ?? ""}
                           disabled={!endpointEnabled}
-                          onChange={(event) =>
-                            updateBudgetEndpointDraft(definition.key, {
-                              limit: event.target.value,
-                            })
-                          }
-                        />
+                          onChange={(event) => updateBudgetEndpointDraft(definition.key, { limit: event.target.value, })
+                          } />
                       </label>
                       <label className="settings-budget-input">
                         <span>Window</span>
@@ -273,25 +219,18 @@ function SettingsPanel(p) {
                           inputMode="numeric"
                           value={draft?.windowSeconds ?? ""}
                           disabled={!endpointEnabled}
-                          onChange={(event) =>
-                            updateBudgetEndpointDraft(definition.key, {
-                              windowSeconds: event.target.value,
-                            })
-                          }
-                        />
+                          onChange={(event) => updateBudgetEndpointDraft(definition.key, { windowSeconds: event.target.value, })
+                          } />
                       </label>
-                    </fieldset>
-                  );
+                    </fieldset> );
                 })}
               </div>
               {ipcAvailable ? null : <p className="settings-budget-note">Budget edits require the desktop app.</p>}
-              {budgetDraftError ? (
-                <p className="settings-error" role="alert">
+              {budgetDraftError ? ( <p className="settings-error" role="alert">
                   {budgetDraftError}
                 </p>
               ) : null}
-              {budgetConfigMessage ? (
-                <p className="settings-budget-note" role="status">
+              {budgetConfigMessage ? ( <p className="settings-budget-note" role="status">
                   {budgetConfigMessage}
                 </p>
               ) : null}
@@ -310,13 +249,10 @@ function SettingsPanel(p) {
               <input
                 type="checkbox"
                 checked={controlSettings.compactNavigation}
-                onChange={(event) => updateControlSetting("compactNavigation", event.target.checked)}
-              />
+                onChange={(event) => updateControlSetting("compactNavigation", event.target.checked)} />
             </label>
-            {controlSettings.keyboardHints ? (
-              <div className="settings-shortcut-grid" role="group" aria-label="Keyboard shortcut summary">
-                {PANEL_SEQUENCE.map((item, idx) => (
-                  <span key={item.key}>
+            {controlSettings.keyboardHints ? ( <div className="settings-shortcut-grid" role="group" aria-label="Keyboard shortcut summary">
+                {PANEL_SEQUENCE.map((item, idx) => ( <span key={item.key}>
                     <kbd>{idx + 1}</kbd>
                     {item.label}
                   </span>
@@ -326,7 +262,6 @@ function SettingsPanel(p) {
           </section>
         </div>
       </section>
-    </React.Fragment>
-  );
+    </React.Fragment> );
 }
 export { SettingsPanel };

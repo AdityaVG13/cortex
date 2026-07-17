@@ -1,77 +1,28 @@
-function isDaemonOfflineErrorMessage(message) {
-  const value = String(message || "").toLowerCase();
-  return (
-    value.includes("cannot connect to daemon") ||
-    value.includes("cannot reach daemon") ||
-    value.includes("actively refused") ||
-    value.includes("os error 10061") ||
-    value.includes("connection refused")
-  );
+function isDaemonOfflineErrorMessage(message) { const value = String(message || "").toLowerCase();
+  return ( value.includes("cannot connect to daemon") || value.includes("cannot reach daemon") || value.includes("actively refused") ||
+    value.includes("os error 10061") || value.includes("connection refused") );
 }
-function isDaemonTimeoutErrorMessage(message) {
-  const value = String(message || "").toLowerCase();
-  return (
-    value.includes("ipc request: timed out") ||
-    value.includes("os error 10060") ||
-    value.includes(
-      "connection attempt failed because the connected party did not properly respond",
-    ) ||
-    value.includes(
-      "established connection failed because connected host has failed to respond",
-    )
-  );
+function isDaemonTimeoutErrorMessage(message) { const value = String(message || "").toLowerCase();
+  return ( value.includes("ipc request: timed out") ||
+    value.includes("os error 10060") || value.includes("connection attempt failed because the connected party did not properly respond") ||
+    value.includes("established connection failed because connected host has failed to respond") );
 }
-function isDaemonSuppressibleErrorMessage(message) {
-  return (
-    isDaemonOfflineErrorMessage(message) || isDaemonTimeoutErrorMessage(message)
-  );
+function isDaemonSuppressibleErrorMessage(message) { return isDaemonOfflineErrorMessage(message) || isDaemonTimeoutErrorMessage(message);
 }
-function isReachableHealthPayload(health) {
-  const status = String(health?.status || "").toLowerCase();
-  return status !== "ok" && status !== "degraded"
-    ? !1
-    : !!health?.runtime || !!health?.stats;
+function isReachableHealthPayload(health) { const status = String(health?.status || "").toLowerCase();
+  return status !== "ok" && status !== "degraded" ? !1 : !!health?.runtime || !!health?.stats;
 }
-function setElementInert(element, inert) {
-  if (element) {
-    if (inert) {
-      (element.setAttribute("inert", ""), (element.inert = !0));
+function setElementInert(element, inert) { if (element) { if (inert) { (element.setAttribute("inert", ""), (element.inert = !0));
       return;
     }
     (element.removeAttribute("inert"), (element.inert = !1));
   }
 }
-function isReadyReadinessPayload(readiness) {
-  if (!readiness || typeof readiness != "object") return !1;
+function isReadyReadinessPayload(readiness) { if (!readiness || typeof readiness != "object") return !1;
   if (readiness.ready === !0) return !0;
   const status = String(readiness.status || "").toLowerCase();
   return status === "ready" || status === "ok";
 }
-function parseMcpToolResult(result) {
-  const text =
-    result?.content?.find((item) => typeof item?.text == "string")?.text || "";
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { text };
-  }
-}
-function extractMcpToolError(payload) {
-  if (payload?.error?.message) return payload.error.message;
-  if (!payload?.result?.isError) return "";
-  const parsed = parseMcpToolResult(payload.result);
-  return parsed && typeof parsed == "object" && typeof parsed.error == "string"
-    ? parsed.error
-    : parsed?.text || "Unknown MCP error.";
-}
 export {
-  extractMcpToolError,
-  isDaemonOfflineErrorMessage,
-  isDaemonSuppressibleErrorMessage,
-  isDaemonTimeoutErrorMessage,
-  isReachableHealthPayload,
-  isReadyReadinessPayload,
-  parseMcpToolResult,
-  setElementInert,
-};
+  isDaemonOfflineErrorMessage, isDaemonSuppressibleErrorMessage, isDaemonTimeoutErrorMessage, isReachableHealthPayload,
+  isReadyReadinessPayload, setElementInert, };

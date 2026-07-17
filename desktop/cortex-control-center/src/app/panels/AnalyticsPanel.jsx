@@ -1,4 +1,5 @@
 import React from "react";
+import { useDashboard } from "../DashboardContext.jsx";
 import { AppIcon } from "../../ui-icons.jsx";
 import { CURRENCY_OPTIONS, SAVINGS_OPERATION_LABELS, timeAgo } from "../../constants.js";
 import { MOTION_MS } from "../../design/motion.js";
@@ -11,55 +12,18 @@ import { Sparkline } from "../components/Sparkline.jsx";
 import { MonteCarloProjectionChart } from "../components/MonteCarloProjectionChart.jsx";
 import { EmptyItem } from "../components/common.jsx";
 import { clampNumber } from "../components/sparkline-utils.js";
-function AnalyticsPanel(p) {
-  const {
-    panel,
-    savings,
-    hasVisitedAnalytics,
-    analyticsReady,
-    setCurrency,
-    analyticsMode,
-    setAnalyticsMode,
-    effectiveReducedMotion,
-    analyticsPanelRef,
-    analyticsTabRefs,
-    safeCurrency,
-    formatCurrency,
-    savingsEstimateLegend,
-    refreshSavings,
-    reportSurfaceError,
-    dailySeries,
-    cumulativeSeries,
-    cumulativeLatestTotal,
-    activityHeatmap,
-    activityHeatmapLookup,
-    activityHeatmapMax,
-    throughputSummary,
-    throughputBoots30d,
-    recentRecallWindow,
-    latestRecallPoint,
-    latestRecallSampleSize,
-    recallHeadlineUsesFallback,
-    monteCarloProjection,
-    bootSavingsMomentum,
-    latestRecallHitRate,
-    recallWindowAverage,
-    recallWindowSpread,
-    handleAnalyticsTabKey,
-    operationRows,
-    operationMaxSaved,
-    topSavingsByAgent,
-  } = p;
-  const throughputBoots7d = throughputSummary.boots,
-    throughputAvgPerDay7d = throughputSummary.avgPerDay;
-  return (
-    <React.Fragment>
-      {panel === "analytics" || hasVisitedAnalytics ? (
-        <section
+function AnalyticsPanel() { const { panel, savings, hasVisitedAnalytics, analyticsReady, setCurrency, analyticsMode,
+    setAnalyticsMode, effectiveReducedMotion, analyticsPanelRef, analyticsTabRefs, safeCurrency, formatCurrency, savingsEstimateLegend, refreshSavings,
+    reportSurfaceError, dailySeries, cumulativeSeries, cumulativeLatestTotal, activityHeatmap, activityHeatmapLookup, activityHeatmapMax, throughputSummary,
+    throughputBoots30d, recentRecallWindow, latestRecallPoint, latestRecallSampleSize,
+    recallHeadlineUsesFallback, monteCarloProjection, bootSavingsMomentum, latestRecallHitRate,
+    recallWindowAverage, recallWindowSpread, handleAnalyticsTabKey, operationRows, operationMaxSaved, topSavingsByAgent, } = useDashboard();
+  const throughputBoots7d = throughputSummary.boots, throughputAvgPerDay7d = throughputSummary.avgPerDay;
+  return ( <React.Fragment>
+      {panel === "analytics" || hasVisitedAnalytics ? ( <section
           ref={analyticsPanelRef}
           className={`panel analytics-panel ${panel === "analytics" ? "active" : "panel-hidden"}`}
-          aria-hidden={panel === "analytics" ? void 0 : !0}
-        >
+          aria-hidden={panel === "analytics" ? void 0 : !0} >
           <div className="analytics-panel-header">
             <div className="analytics-header-copy">
               <span className="analytics-kicker">Cortex / Analytics</span>
@@ -75,10 +39,8 @@ function AnalyticsPanel(p) {
                 <span>Currency</span>
                 <select
                   value={safeCurrency}
-                  onChange={(event) => setCurrency(normalizeCurrencyCode(event.target.value))}
-                >
-                  {CURRENCY_OPTIONS.map((code) => (
-                    <option key={code} value={code}>
+                  onChange={(event) => setCurrency(normalizeCurrencyCode(event.target.value))} >
+                  {CURRENCY_OPTIONS.map((code) => ( <option key={code} value={code}>
                       {code}
                     </option>
                   ))}
@@ -87,8 +49,7 @@ function AnalyticsPanel(p) {
               <div className="analytics-view-toggle" role="tablist" aria-label="Analytics view mode">
                 <button
                   id="analytics-tab-aggregate"
-                  ref={(element) => {
-                    analyticsTabRefs.current.aggregate = element;
+                  ref={(element) => { analyticsTabRefs.current.aggregate = element;
                   }}
                   type="button"
                   role="tab"
@@ -96,14 +57,12 @@ function AnalyticsPanel(p) {
                   tabIndex={analyticsMode === "aggregate" ? 0 : -1}
                   className={`btn-sm ${analyticsMode === "aggregate" ? "btn-primary" : ""}`}
                   onClick={() => setAnalyticsMode("aggregate")}
-                  onKeyDown={handleAnalyticsTabKey}
-                >
+                  onKeyDown={handleAnalyticsTabKey} >
                   Aggregate
                 </button>
                 <button
                   id="analytics-tab-operations"
-                  ref={(element) => {
-                    analyticsTabRefs.current.operations = element;
+                  ref={(element) => { analyticsTabRefs.current.operations = element;
                   }}
                   type="button"
                   role="tab"
@@ -111,8 +70,7 @@ function AnalyticsPanel(p) {
                   tabIndex={analyticsMode === "operations" ? 0 : -1}
                   className={`btn-sm ${analyticsMode === "operations" ? "btn-primary" : ""}`}
                   onClick={() => setAnalyticsMode("operations")}
-                  onKeyDown={handleAnalyticsTabKey}
-                >
+                  onKeyDown={handleAnalyticsTabKey} >
                   By Operation
                 </button>
               </div>
@@ -121,12 +79,9 @@ function AnalyticsPanel(p) {
               </button>
             </div>
           </div>
-          {analyticsReady ? (
-            savings ? (
-              <React.Fragment>
+          {analyticsReady ? ( savings ? ( <React.Fragment>
                 <div className="analytics-metric-legend" role="group" aria-label="Analytics metric legend">
-                  {ANALYTICS_METRIC_LEGEND.map((entry) => (
-                    <div key={entry.label} className="analytics-metric-legend-item">
+                  {ANALYTICS_METRIC_LEGEND.map((entry) => ( <div key={entry.label} className="analytics-metric-legend-item">
                       <span className="analytics-metric-legend-label">{entry.label}</span>
                       <span className="analytics-metric-legend-value">{entry.meaning}</span>
                     </div>
@@ -137,17 +92,15 @@ function AnalyticsPanel(p) {
                   <div className="metric metric-featured" data-accent="cyan">
                     <span className="metric-kicker">Compounding return</span>
                     <span className="metric-value">
-                      <AnimatedNumber
-                        value={savings.summary?.totalSaved || 0}
-                        duration={MOTION_MS.numberSlow}
-                        reducedMotion={effectiveReducedMotion}
-                      />
+                      <AnimatedNumber value={savings.summary?.totalSaved || 0} duration={MOTION_MS.numberSlow} reducedMotion={effectiveReducedMotion} />
                     </span>
                     <span className="metric-label">Boot Tokens Saved (30d total)</span>
                     <span className="metric-footnote">
                       {bootSavingsMomentum === null
                         ? "Rolling 30-day total tokens saved across boot compilations. Momentum appears after at least 8 daily samples."
-                        : `Rolling 30-day total tokens saved across boot compilations, momentum ${bootSavingsMomentum >= 0 ? "+" : ""}${bootSavingsMomentum}% vs prior 4-day window.`}
+                        : `Rolling 30-day total tokens saved across boot compilations, momentum ${
+                            bootSavingsMomentum >= 0 ? "+" : ""
+                          }${bootSavingsMomentum}% vs prior 4-day window.`}
                     </span>
                     <span className="metric-icon">
                       <AppIcon name="savings" />
@@ -179,7 +132,9 @@ function AnalyticsPanel(p) {
                       {throughputSummary.daysRepresented === 0
                         ? "No boot compilations recorded in the last 7 calendar days."
                         : throughputSummary.isPartialHistory
-                          ? `Since first recorded boot (${throughputSummary.daysRepresented} day${throughputSummary.daysRepresented === 1 ? "" : "s"}, ~${throughputAvgPerDay7d}/day).`
+                          ? `Since first recorded boot (${throughputSummary.daysRepresented} day${
+                              throughputSummary.daysRepresented === 1 ? "" : "s"
+                            }, ~${throughputAvgPerDay7d}/day).`
                           : `Last 7 calendar days (~${throughputAvgPerDay7d}/day).`}
                     </span>
                     <span className="metric-icon">
@@ -189,11 +144,7 @@ function AnalyticsPanel(p) {
                   <div className="metric" data-accent="purple">
                     <span className="metric-kicker">Compiled context</span>
                     <span className="metric-value">
-                      <AnimatedNumber
-                        value={savings.summary?.totalServed || 0}
-                        duration={MOTION_MS.numberSlow}
-                        reducedMotion={effectiveReducedMotion}
-                      />
+                      <AnimatedNumber value={savings.summary?.totalServed || 0} duration={MOTION_MS.numberSlow} reducedMotion={effectiveReducedMotion} />
                     </span>
                     <span className="metric-label">Boot Prompt Tokens Served (30d total)</span>
                     <span className="metric-footnote">
@@ -223,14 +174,12 @@ function AnalyticsPanel(p) {
                     <span className="metric-icon">$</span>
                   </div>
                 </div>
-                {analyticsMode === "aggregate" ? (
-                  <div
+                {analyticsMode === "aggregate" ? ( <div
                     id="analytics-tabpanel-aggregate"
                     className="analytics-mode-panel"
                     role="tabpanel"
                     aria-labelledby="analytics-tab-aggregate"
-                    tabIndex={0}
-                  >
+                    tabIndex={0} >
                     <div className="analytics-explainer analytics-explainer-rich">
                       <div className="analytics-explainer-title">How to read this</div>
                       <p>
@@ -240,8 +189,7 @@ function AnalyticsPanel(p) {
                         <code>served</code>
                         {" is the compiled prompt, and "}
                         <code>saved</code>
-                        {
-                          " is the difference. Aggregate mode shows the compounding system view. By Operation isolates where those savings come from."
+                        { " is the difference. Aggregate mode shows the compounding system view. By Operation isolates where those savings come from."
                         }
                       </p>
                       <div className="analytics-stat-strip">
@@ -278,12 +226,10 @@ function AnalyticsPanel(p) {
                         </div>
                         <p className="chart-summary">
                           A deterministic Monte Carlo projection built from recent daily savings. It estimates the
-                          likely additional savings band over the next 30 days so the trajectory reads as future lift,
-                          not replayed lifetime totals.
+                          likely additional savings band over the next 30 days so the trajectory reads as future lift, not replayed lifetime totals.
                         </p>
                         <MonteCarloProjectionChart projection={monteCarloProjection} />
-                        {monteCarloProjection ? (
-                          <div className="analytics-stat-strip analytics-stat-strip-tight">
+                        {monteCarloProjection ? ( <div className="analytics-stat-strip analytics-stat-strip-tight">
                             <div className="analytics-stat-chip">
                               <span className="analytics-stat-chip-label">p10</span>
                               <strong>
@@ -347,8 +293,7 @@ function AnalyticsPanel(p) {
                             </strong>
                           </div>
                         </div>
-                        {recallHeadlineUsesFallback ? (
-                          <p className="analytics-inline-note">
+                        {recallHeadlineUsesFallback ? ( <p className="analytics-inline-note">
                             {"Headline is pinned to the last full sample day until live recall reaches "}
                             {RECALL_HEADLINE_MIN_QUERIES}
                             {" queries. Today's live sample is "}
@@ -359,15 +304,12 @@ function AnalyticsPanel(p) {
                           </p>
                         ) : null}
                         <div className="chart-legend analytics-quality-strip">
-                          {recentRecallWindow.length ? (
-                            recentRecallWindow.map((point) => (
-                              <span key={point.date} className="chart-day">
+                          {recentRecallWindow.length ? ( recentRecallWindow.map((point) => ( <span key={point.date} className="chart-day">
                                 <span className="chart-day-label">{(point.date || "").slice(5)}</span>
                                 <span className="chart-day-value">{Math.round(Number(point.hitRatePct || 0))}%</span>
                               </span>
                             ))
-                          ) : (
-                            <span className="sparkline-empty">Recall metrics will appear after recent boots.</span>
+                          ) : ( <span className="sparkline-empty">Recall metrics will appear after recent boots.</span>
                           )}
                         </div>
                       </div>
@@ -388,11 +330,9 @@ function AnalyticsPanel(p) {
                           data={(savings.daily || []).map((d) => d.saved)}
                           width={520}
                           height={120}
-                          className="sparkline-tall"
-                        />
+                          className="sparkline-tall" />
                         <div className="chart-legend">
-                          {(savings.daily || []).slice(-7).map((d) => (
-                            <span key={d.date} className="chart-day">
+                          {(savings.daily || []).slice(-7).map((d) => ( <span key={d.date} className="chart-day">
                               <span className="chart-day-label">{d.date.slice(5)}</span>
                               <span className="chart-day-value">{formatCompactNumber(Number(d.saved || 0))}</span>
                             </span>
@@ -415,11 +355,9 @@ function AnalyticsPanel(p) {
                           width={520}
                           height={120}
                           color="var(--agent-claude)"
-                          className="sparkline-tall"
-                        />
+                          className="sparkline-tall" />
                         <div className="chart-legend">
-                          {(savings.daily || []).slice(-7).map((d) => (
-                            <span key={d.date} className="chart-day">
+                          {(savings.daily || []).slice(-7).map((d) => ( <span key={d.date} className="chart-day">
                               <span className="chart-day-label">{d.date.slice(5)}</span>
                               <span className="chart-day-value">{d.boots}</span>
                             </span>
@@ -439,11 +377,9 @@ function AnalyticsPanel(p) {
                           width={520}
                           height={120}
                           color="var(--green)"
-                          className="sparkline-tall"
-                        />
+                          className="sparkline-tall" />
                         <div className="chart-legend">
-                          {cumulativeSeries.slice(-7).map((point) => (
-                            <span key={point.date || point.timestamp} className="chart-day">
+                          {cumulativeSeries.slice(-7).map((point) => ( <span key={point.date || point.timestamp} className="chart-day">
                               <span className="chart-day-label">{(point.date || "").slice(5)}</span>
                               <span className="chart-day-value">
                                 {formatCompactNumber(Number(point.savedTotal || 0))}
@@ -453,8 +389,7 @@ function AnalyticsPanel(p) {
                         </div>
                       </div>
                     </div>
-                    {activityHeatmap.length > 0 && (
-                      <div className="card analytics-heatmap-card">
+                    {activityHeatmap.length > 0 && ( <div className="card analytics-heatmap-card">
                         <div className="analytics-card-header-tight">
                           <div>
                             <span className="analytics-card-kicker">Behavioral map</span>
@@ -467,22 +402,16 @@ function AnalyticsPanel(p) {
                           </div>
                         </div>
                         <div className="activity-heatmap">
-                          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-                            <div key={day} className="activity-heatmap-row">
+                          {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => ( <div key={day} className="activity-heatmap-row">
                               <span className="activity-heatmap-day">{day}</span>
                               <div className="activity-heatmap-cells">
-                                {Array.from({ length: 24 }).map((_, hour) => {
-                                  const count = activityHeatmapLookup.get(`${day}:${hour}`) || 0,
+                                {Array.from({ length: 24 }).map((_, hour) => { const count = activityHeatmapLookup.get(`${day}:${hour}`) || 0,
                                     alpha = count > 0 ? clampNumber(count / activityHeatmapMax, 0.12, 1) : 0.04;
-                                  return (
-                                    <span
+                                  return ( <span
                                       key={`${day}-${hour}`}
                                       className="activity-heatmap-cell"
                                       title={`${day} ${hour.toString().padStart(2, "0")}:00 - ${count} events`}
-                                      style={{
-                                        background: `linear-gradient(180deg, rgba(67, 234, 255, ${alpha}), rgba(58, 109, 255, ${alpha * 0.72}))`,
-                                      }}
-                                    />
+                                      style={{ background: `linear-gradient(180deg, rgba(67, 234, 255, ${alpha}), rgba(58, 109, 255, ${alpha * 0.72}))`, }} />
                                   );
                                 })}
                               </div>
@@ -501,16 +430,11 @@ function AnalyticsPanel(p) {
                           <span className="badge">{savings.byAgent?.length || 0}</span>
                         </div>
                         <ul className="item-list analytics-list">
-                          {topSavingsByAgent.length ? (
-                            topSavingsByAgent.map((row, i) => (
-                              <li key={`${row.agent}-${i}`}>
+                          {topSavingsByAgent.length ? ( topSavingsByAgent.map((row, i) => ( <li key={`${row.agent}-${i}`}>
                                 <div className="item-meta">
                                   <span
                                     className="item-name"
-                                    style={{
-                                      color: agentColor(row.agent),
-                                    }}
-                                  >
+                                    style={{ color: agentColor(row.agent), }} >
                                     {row.agent}
                                   </span>
                                   <span className="memory-method">{Number(row.percent || 0)}% saved</span>
@@ -524,8 +448,7 @@ function AnalyticsPanel(p) {
                                 </div>
                               </li>
                             ))
-                          ) : (
-                            <EmptyItem text="No per-agent savings data yet" />
+                          ) : ( <EmptyItem text="No per-agent savings data yet" />
                           )}
                         </ul>
                       </div>
@@ -538,47 +461,41 @@ function AnalyticsPanel(p) {
                           <span className="badge">{savings.recent?.length || 0}</span>
                         </div>
                         <ul className="item-list analytics-list">
-                          {savings.recent?.length ? (
-                            savings.recent
+                          {savings.recent?.length ? ( savings.recent
                               .slice(-10)
                               .reverse()
-                              .map((s, i) => (
-                                <li key={`${s.timestamp}-${i}`}>
+                              .map((s, i) => ( <li key={`${s.timestamp}-${i}`}>
                                   <div className="item-meta">
                                     <span
                                       className="item-name"
-                                      style={{
-                                        color: agentColor(s.agent),
-                                      }}
-                                    >
+                                      style={{ color: agentColor(s.agent), }} >
                                       {s.agent}
                                     </span>
                                     <span className="memory-method">{s.percent}% saved</span>
                                     <span className="muted-inline">{timeAgo(s.timestamp)}</span>
                                   </div>
                                   <div className="item-detail">
-                                    {`boot prompt ${Number(s.served || 0).toLocaleString()}t from est. raw ${Number(s.baseline || 0).toLocaleString()}t (${Number(s.saved || 0).toLocaleString()}t saved)`}
+                                    {`boot prompt ${Number(s.served || 0).toLocaleString()}t from est. raw ${Number(
+                                      s.baseline || 0,
+                                    ).toLocaleString()}t (${Number(s.saved || 0).toLocaleString()}t saved)`}
                                     {Number(s.admitted || 0) > 0 || Number(s.rejected || 0) > 0
                                       ? ` - capsules ${Number(s.admitted || 0)} in / ${Number(s.rejected || 0)} out`
                                       : ""}
                                   </div>
                                 </li>
                               ))
-                          ) : (
-                            <EmptyItem text="No recent boot savings events yet" />
+                          ) : ( <EmptyItem text="No recent boot savings events yet" />
                           )}
                         </ul>
                       </div>
                     </div>
                   </div>
-                ) : (
-                  <div
+                ) : ( <div
                     id="analytics-tabpanel-operations"
                     className="analytics-mode-panel"
                     role="tabpanel"
                     aria-labelledby="analytics-tab-operations"
-                    tabIndex={0}
-                  >
+                    tabIndex={0} >
                     <div className="analytics-explainer analytics-explainer-rich">
                       <div className="analytics-explainer-title">Operation view</div>
                       <p>
@@ -599,15 +516,10 @@ function AnalyticsPanel(p) {
                         </span>
                       </div>
                       <div className="operation-bars">
-                        {operationRows.length ? (
-                          operationRows.map((row) => {
-                            const saved = Number(row.saved || 0),
-                              served = Number(row.served || 0),
-                              baseline = Number(row.baseline || 0),
-                              width = Math.max(4, Math.round((saved / operationMaxSaved) * 100)),
+                        {operationRows.length ? ( operationRows.map((row) => { const saved = Number(row.saved || 0), served = Number(row.served || 0),
+                              baseline = Number(row.baseline || 0), width = Math.max(4, Math.round((saved / operationMaxSaved) * 100)),
                               label = SAVINGS_OPERATION_LABELS[row.operation] || row.operation;
-                            return (
-                              <div className="operation-bar-row" key={row.operation}>
+                            return ( <div className="operation-bar-row" key={row.operation}>
                                 <div className="operation-bar-header">
                                   <span className="item-name">{label}</span>
                                   <span className="muted-inline">
@@ -616,39 +528,30 @@ function AnalyticsPanel(p) {
                                     {formatCurrency((saved * SAVINGS_USD_PER_MILLION) / 1e6)}
                                   </span>
                                 </div>
-                                <div
-                                  className="operation-bar-track"
-                                  title={`Raw ${baseline.toLocaleString()} - Compressed ${served.toLocaleString()}`}
-                                >
+                                <div className="operation-bar-track" title={`Raw ${baseline.toLocaleString()} - Compressed ${served.toLocaleString()}`}>
                                   <span className="operation-bar-fill" style={{ width: `${width}%` }} />
                                 </div>
                                 <div className="item-detail">
                                   {`${Number(row.events || 0)} events - raw ${baseline.toLocaleString()} - compressed ${served.toLocaleString()}`}
                                 </div>
-                              </div>
-                            );
+                              </div> );
                           })
-                        ) : (
-                          <EmptyItem text="No operation breakdown data yet" />
+                        ) : ( <EmptyItem text="No operation breakdown data yet" />
                         )}
                       </div>
                     </div>
                   </div>
                 )}
               </React.Fragment>
-            ) : (
-              <div className="card full">
+            ) : ( <div className="card full">
                 <EmptyItem text="Loading savings data..." />
-              </div>
-            )
-          ) : (
-            <div className="card full analytics-loading-card">
+              </div> )
+          ) : ( <div className="card full analytics-loading-card">
               <EmptyItem text="Preparing analytics surface..." />
             </div>
           )}
         </section>
       ) : null}
-    </React.Fragment>
-  );
+    </React.Fragment> );
 }
 export { AnalyticsPanel };

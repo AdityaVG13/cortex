@@ -155,11 +155,10 @@ describe("computeStartupRetryStep", () => {
   });
 
   it("backs off retries and eventually exhausts by attempt budget", () => {
-    const step = computeStartupRetryStep(
-      { startedAtMs: 1000, attempts: 7 },
-      5000,
-      { maxAttempts: 8, maxWindowMs: 600000 },
-    );
+    const step = computeStartupRetryStep({ startedAtMs: 1000, attempts: 7 }, 5000, {
+      maxAttempts: 8,
+      maxWindowMs: 600000,
+    });
 
     expect(step.attempts).toBe(8);
     expect(step.elapsedMs).toBe(4000);
@@ -168,11 +167,10 @@ describe("computeStartupRetryStep", () => {
   });
 
   it("exhausts by elapsed startup window even with low attempts", () => {
-    const step = computeStartupRetryStep(
-      { startedAtMs: 1000, attempts: 2 },
-      7000,
-      { maxAttempts: 50, maxWindowMs: 5000 },
-    );
+    const step = computeStartupRetryStep({ startedAtMs: 1000, attempts: 2 }, 7000, {
+      maxAttempts: 50,
+      maxWindowMs: 5000,
+    });
 
     expect(step.attempts).toBe(3);
     expect(step.elapsedMs).toBe(6000);
@@ -180,10 +178,7 @@ describe("computeStartupRetryStep", () => {
   });
 
   it("uses a bounded default startup window to avoid long stalls", () => {
-    const step = computeStartupRetryStep(
-      { startedAtMs: 1000, attempts: 5 },
-      47000,
-    );
+    const step = computeStartupRetryStep({ startedAtMs: 1000, attempts: 5 }, 47000);
 
     expect(step.elapsedMs).toBe(46000);
     expect(step.exhausted).toBe(true);
@@ -240,34 +235,18 @@ describe("shouldContinueStartupRecovery", () => {
 
 describe("isTransientDaemonFeedback", () => {
   it("treats startup and warmup notices as transient", () => {
-    expect(
-      isTransientDaemonFeedback(
-        "Daemon is still starting. Reconnect will continue automatically.",
-      ),
-    ).toBe(true);
+    expect(isTransientDaemonFeedback("Daemon is still starting. Reconnect will continue automatically.")).toBe(true);
     expect(
       isTransientDaemonFeedback(
         "Daemon startup timed out after 46s. Check Cortex logs, then restart from Control Center.",
       ),
     ).toBe(true);
-    expect(
-      isTransientDaemonFeedback(
-        "Waiting for daemon auth token to finish rotating...",
-      ),
-    ).toBe(true);
-    expect(
-      isTransientDaemonFeedback(
-        "Daemon is reachable but still warming up. Retrying shortly...",
-      ),
-    ).toBe(true);
+    expect(isTransientDaemonFeedback("Waiting for daemon auth token to finish rotating...")).toBe(true);
+    expect(isTransientDaemonFeedback("Daemon is reachable but still warming up. Retrying shortly...")).toBe(true);
   });
 
   it("keeps durable operator messages intact", () => {
     expect(isTransientDaemonFeedback("Connected (core ready).")).toBe(false);
-    expect(
-      isTransientDaemonFeedback(
-        "Restart failed: Existing daemon did not stop cleanly.",
-      ),
-    ).toBe(false);
+    expect(isTransientDaemonFeedback("Restart failed: Existing daemon did not stop cleanly.")).toBe(false);
   });
 });

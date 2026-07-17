@@ -1,7 +1,4 @@
-use crate::budget::{
-    budget_config_path, read_budget_config_snapshot, save_budget_from_draft, BudgetConfigDraft,
-    BudgetConfigSnapshot,
-};
+use crate::budget::{budget_config_path, read_budget_config_snapshot, save_budget_from_draft, BudgetConfigDraft, BudgetConfigSnapshot};
 
 #[tauri::command]
 pub fn read_budget_config() -> Result<BudgetConfigSnapshot, String> {

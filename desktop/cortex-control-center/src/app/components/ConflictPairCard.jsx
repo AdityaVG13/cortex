@@ -1,29 +1,13 @@
 import React from "react";
 import { timeAgo } from "../../constants.js";
 import {
-  conflictBadgeClass,
-  formatConfidencePercent,
-  formatTimestamp,
-  formatTrustScore,
-} from "../normalize/conflicts.js";
+  conflictBadgeClass, formatConfidencePercent, formatTimestamp, formatTrustScore, } from "../normalize/conflicts.js";
 import { agentColor } from "../utils/agent-color.js";
-function ConflictPairCard({
-  pair,
-  conflictLoading = !1,
-  onResolveQuick = null,
-  onResolveDraft = null,
-  resolveDraft = null,
-  onResolveDraftChange = null,
-}) {
-  const draftAction = resolveDraft?.action || "keep",
-    draftWinner = resolveDraft?.winner || "left",
-    leftId = pair?.left?.id,
-    rightId = pair?.right?.id,
-    canResolve = leftId != null && rightId !== null && rightId !== void 0,
-    winner = draftWinner === "right" ? pair.right : pair.left,
+function ConflictPairCard({ pair, conflictLoading = !1, onResolveQuick = null, onResolveDraft = null, resolveDraft = null, onResolveDraftChange = null, }) {
+  const draftAction = resolveDraft?.action || "keep", draftWinner = resolveDraft?.winner || "left", leftId = pair?.left?.id, rightId = pair?.right?.id,
+    canResolve = leftId != null && rightId !== null && rightId !== void 0, winner = draftWinner === "right" ? pair.right : pair.left,
     loser = draftWinner === "right" ? pair.left : pair.right;
-  return (
-    <div key={pair.key} className="conflict-pair">
+  return ( <div key={pair.key} className="conflict-pair">
       <div className="conflict-topline">
         <div className="conflict-topline-left">
           <span className="conflict-id">Conflict #{pair.conflictId || pair.key}</span>
@@ -37,8 +21,7 @@ function ConflictPairCard({
             {"Created "}
             {formatTimestamp(pair.createdAt)}
           </span>
-          {pair.resolvedAt ? (
-            <span>
+          {pair.resolvedAt ? ( <span>
               {"Resolved "}
               {formatTimestamp(pair.resolvedAt)}
             </span>
@@ -51,11 +34,7 @@ function ConflictPairCard({
             <span className="conflict-id">#{pair.left.id ?? "?"}</span>
             <span
               className="agent-indicator"
-              style={{
-                background: agentColor(pair.left.sourceAgent),
-                boxShadow: `0 0 8px ${agentColor(pair.left.sourceAgent)}`,
-              }}
-            />
+              style={{ background: agentColor(pair.left.sourceAgent), boxShadow: `0 0 8px ${agentColor(pair.left.sourceAgent)}`, }} />
             <span className="item-name">{pair.left.sourceAgent || "unknown"}</span>
             <span className="muted-inline">{timeAgo(pair.left.createdAt)}</span>
           </div>
@@ -78,11 +57,7 @@ function ConflictPairCard({
             <span className="conflict-id">#{pair.right.id ?? "?"}</span>
             <span
               className="agent-indicator"
-              style={{
-                background: agentColor(pair.right.sourceAgent),
-                boxShadow: `0 0 8px ${agentColor(pair.right.sourceAgent)}`,
-              }}
-            />
+              style={{ background: agentColor(pair.right.sourceAgent), boxShadow: `0 0 8px ${agentColor(pair.right.sourceAgent)}`, }} />
             <span className="item-name">{pair.right.sourceAgent || "unknown"}</span>
             <span className="muted-inline">{timeAgo(pair.right.createdAt)}</span>
           </div>
@@ -100,8 +75,7 @@ function ConflictPairCard({
           </div>
         </div>
       </div>
-      {pair.resolution ? (
-        <div className="conflict-resolution-summary">
+      {pair.resolution ? ( <div className="conflict-resolution-summary">
           <div className="conflict-resolution-grid">
             <span>
               <strong>Winner:</strong>{" "}
@@ -117,25 +91,17 @@ function ConflictPairCard({
                 : "n/a"}
               {pair.resolution.loserAgent ? ` (${pair.resolution.loserAgent})` : ""}
             </span>
-            {pair.resolution.action ? (
-              <span>
-                <strong>Action:</strong> {pair.resolution.action}
-              </span>
+            {pair.resolution.action ? ( <span>
+                <strong>Action:</strong> {pair.resolution.action} </span>
             ) : null}
-            {pair.resolution.method ? (
-              <span>
-                <strong>Method:</strong> {pair.resolution.method}
-              </span>
+            {pair.resolution.method ? ( <span>
+                <strong>Method:</strong> {pair.resolution.method} </span>
             ) : null}
-            {pair.resolution.resolvedBy ? (
-              <span>
-                <strong>Resolved by:</strong> {pair.resolution.resolvedBy}
-              </span>
+            {pair.resolution.resolvedBy ? ( <span>
+                <strong>Resolved by:</strong> {pair.resolution.resolvedBy} </span>
             ) : null}
-            {pair.resolution.trustDelta !== null ? (
-              <span className="conflict-trust-highlight">
-                <strong>Trust delta:</strong> {pair.resolution.trustDelta.toFixed(3)}
-              </span>
+            {pair.resolution.trustDelta !== null ? ( <span className="conflict-trust-highlight">
+                <strong>Trust delta:</strong> {pair.resolution.trustDelta.toFixed(3)} </span>
             ) : null}
           </div>
           {pair.resolution.notes ? <div className="conflict-resolution-notes">{pair.resolution.notes}</div> : null}
@@ -145,29 +111,25 @@ function ConflictPairCard({
         <button
           className="btn-sm btn-primary"
           disabled={conflictLoading || !canResolve}
-          onClick={() => onResolveQuick?.(pair.left.id, "keep", pair.right.id, pair)}
-        >
+          onClick={() => onResolveQuick?.(pair.left.id, "keep", pair.right.id, pair)} >
           Keep Left
         </button>
         <button
           className="btn-sm btn-primary"
           disabled={conflictLoading || !canResolve}
-          onClick={() => onResolveQuick?.(pair.right.id, "keep", pair.left.id, pair)}
-        >
+          onClick={() => onResolveQuick?.(pair.right.id, "keep", pair.left.id, pair)} >
           Keep Right
         </button>
         <button
           className="btn-sm"
           disabled={conflictLoading || !canResolve}
-          onClick={() => onResolveQuick?.(pair.left.id, "merge", pair.right.id, pair)}
-        >
+          onClick={() => onResolveQuick?.(pair.left.id, "merge", pair.right.id, pair)} >
           Merge Both
         </button>
         <button
           className="btn-sm btn-danger"
           disabled={conflictLoading || !canResolve}
-          onClick={() => onResolveQuick?.(pair.left.id, "archive", pair.right.id, pair)}
-        >
+          onClick={() => onResolveQuick?.(pair.left.id, "archive", pair.right.id, pair)} >
           Archive Both
         </button>
       </div>
@@ -178,25 +140,19 @@ function ConflictPairCard({
           <select
             className="conflict-select"
             value={draftAction}
-            onChange={(event) => onResolveDraftChange?.(pair.key, { action: event.target.value })}
-          >
+            onChange={(event) => onResolveDraftChange?.(pair.key, { action: event.target.value })} >
             <option value="keep">Keep</option>
             <option value="merge">Merge</option>
             <option value="archive">Archive</option>
           </select>
         </label>
-        {draftAction === "keep" ? (
-          <label className="conflict-control-group">
+        {draftAction === "keep" ? ( <label className="conflict-control-group">
             <span>Winner</span>
             <select
               className="conflict-select"
               value={draftWinner}
-              onChange={(event) =>
-                onResolveDraftChange?.(pair.key, {
-                  winner: event.target.value,
-                })
-              }
-            >
+              onChange={(event) => onResolveDraftChange?.(pair.key, { winner: event.target.value, })
+              } >
               <option value="left">Left ({pair.left.sourceAgent || "unknown"})</option>
               <option value="right">Right ({pair.right.sourceAgent || "unknown"})</option>
             </select>
@@ -205,22 +161,17 @@ function ConflictPairCard({
         <button
           className="btn-sm btn-primary"
           disabled={conflictLoading || !canResolve}
-          onClick={() => {
-            if (draftAction === "keep") {
-              onResolveDraft?.(winner.id, "keep", loser.id, pair);
+          onClick={() => { if (draftAction === "keep") { onResolveDraft?.(winner.id, "keep", loser.id, pair);
               return;
             }
-            if (draftAction === "merge") {
-              onResolveDraft?.(pair.left.id, "merge", pair.right.id, pair);
+            if (draftAction === "merge") { onResolveDraft?.(pair.left.id, "merge", pair.right.id, pair);
               return;
             }
             onResolveDraft?.(pair.left.id, "archive", pair.right.id, pair);
-          }}
-        >
+          }} >
           Apply
         </button>
       </div>
-    </div>
-  );
+    </div> );
 }
 export { ConflictPairCard };

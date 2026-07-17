@@ -26,13 +26,7 @@ function listSourceFiles(dir = SRC_DIR) {
 
 function resolveLocalImport(fromFile, specifier, allFiles) {
   const base = path.resolve(path.dirname(fromFile), specifier);
-  const candidates = [
-    base,
-    `${base}.js`,
-    `${base}.jsx`,
-    path.join(base, "index.js"),
-    path.join(base, "index.jsx"),
-  ];
+  const candidates = [base, `${base}.js`, `${base}.jsx`, path.join(base, "index.js"), path.join(base, "index.jsx")];
   return candidates.find((candidate) => allFiles.has(candidate)) ?? null;
 }
 

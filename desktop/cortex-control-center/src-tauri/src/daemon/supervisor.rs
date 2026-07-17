@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::cortex_http::readiness::{probe_cortex_reachability_with_port};
+use crate::cortex_http::readiness::probe_cortex_reachability_with_port;
 use crate::daemon::paths::{daemon_port, log_startup_path, service_ensure_fallback_enabled};
 use crate::daemon::spawn::{try_local_app_managed_ensure, try_service_ensure};
 use crate::daemon::state::DaemonState;
@@ -32,19 +32,13 @@ pub fn supervisor_tick(app_handle: &tauri::AppHandle, consecutive_failures: &Ato
     let attempt = consecutive_failures.fetch_add(1, Ordering::SeqCst);
     match try_local_app_managed_ensure(&daemon_state, port) {
         Ok(_) => {
-            log_startup_path(
-                "supervisor",
-                "respawn",
-                "daemon was unreachable; supervisor respawned via app-managed local mode",
-            );
+            log_startup_path("supervisor", "respawn", "daemon was unreachable; supervisor respawned via app-managed local mode");
             consecutive_failures.store(0, Ordering::SeqCst);
         }
         Err(err) => {
             // Throttle log noise: only log first failure and every 10th retry.
             if attempt == 0 || attempt % 10 == 0 {
-                eprintln!(
-                    "[cortex-control-center] supervisor respawn attempt {attempt} failed: {err}"
-                );
+                eprintln!("[cortex-control-center] supervisor respawn attempt {attempt} failed: {err}");
                 log_startup_path("supervisor", "respawn-failed", &err);
             }
         }
@@ -97,16 +91,10 @@ pub fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
             if service_ensure_fallback_enabled() {
                 match try_service_ensure(port) {
                     Ok(true) => {
-                        log_startup_path(
-                            "setup",
-                            "service-ensure",
-                            "daemon started or validated via service ensure after app-managed fallback",
-                        );
+                        log_startup_path("setup", "service-ensure", "daemon started or validated via service ensure after app-managed fallback");
                     }
                     Ok(false) => {
-                        eprintln!(
-                            "[cortex-control-center] app-managed local start failed at startup and Windows service ensure was unavailable: {local_err}"
-                        );
+                        eprintln!("[cortex-control-center] app-managed local start failed at startup and Windows service ensure was unavailable: {local_err}");
                         log_startup_path("setup", "blocked", "app-managed spawn failed");
                     }
                     Err(service_err) => {
@@ -117,9 +105,7 @@ pub fn bootstrap_daemon_on_startup(app_handle: &tauri::AppHandle) {
                     }
                 }
             } else {
-                eprintln!(
-                    "[cortex-control-center] app-managed local start failed at startup (service fallback disabled): {local_err}"
-                );
+                eprintln!("[cortex-control-center] app-managed local start failed at startup (service fallback disabled): {local_err}");
                 log_startup_path("setup", "blocked", "app-managed spawn failed");
             }
         }

@@ -4,602 +4,149 @@ import { installUpdate } from "../updater.js";
 import { AppIcon } from "../ui-icons.jsx";
 import { PANEL_SEQUENCE } from "./constants.js";
 import { PanelStage } from "./panels/panel-stage.jsx";
-function AppShell(d) {
-  const {
-    effectiveSidebarCollapsed,
-    panel,
-    changePanel,
-    pill,
-    utilityPill,
-    sidebarUtilityStats,
-    activePanelLabel,
-    daemonState,
-    daemonRecoveryHint,
-    handleRestartDaemon,
-    restartingDaemon,
-    invokeRef,
-    handleStartDaemon,
-    handleStopDaemon,
-    canStartDaemon,
-    canStopDaemon,
-    restartError,
-    availableUpdate,
-    updateInstalling,
-    setUpdateInstalling,
-    setFeedbackMessage,
-    feedbackMessage,
-    setSidebarCollapsed,
-    topbarRef,
-    stats,
-    normalizedSessions,
-    openConnectionDialog,
-    hostLabel,
-    daemonStatusBadge,
-    showEditorSetupWizard,
-    isSettingUpEditors,
-    closeEditorSetupWizard,
-    editorSetupDialogRef,
-    editorDetectionSummary,
-    selectedEditorIds,
-    toggleEditorSelection,
-    manualMcpSnippet,
-    applyEditorSetup,
-    showConnectionDialog,
-    dismissConnectionDialog,
-    connectionDialogRef,
-    isTauriRuntime,
-    connectionEndpoint,
-    closeConnectionDialog,
-    setCortexBase,
-    tokenRef,
-    persistBrowserAuthToken,
-    readAuthToken,
-    refreshAllRef,
-    DEFAULT_CORTEX_BASE,
-    trapFocusInContainer,
-  } = d;
-  return (
-    useEffect(() => {
-      if (!(!showConnectionDialog || !connectionDialogRef.current))
+import { useDashboard } from "./DashboardContext.jsx";
+function AppShell({ DEFAULT_CORTEX_BASE, persistBrowserAuthToken }) { const d = useDashboard();
+  const { effectiveSidebarCollapsed, panel, changePanel, pill, utilityPill, sidebarUtilityStats, activePanelLabel,
+    daemonState, daemonRecoveryHint, handleRestartDaemon, restartingDaemon, invokeRef, handleStartDaemon, handleStopDaemon, canStartDaemon,
+    canStopDaemon, restartError, availableUpdate, updateInstalling, setUpdateInstalling, setFeedbackMessage, feedbackMessage, setSidebarCollapsed,
+    topbarRef, stats, normalizedSessions, openConnectionDialog, hostLabel, daemonStatusBadge, showEditorSetupWizard, isSettingUpEditors,
+    closeEditorSetupWizard, editorSetupDialogRef, editorDetectionSummary, selectedEditorIds,
+    toggleEditorSelection, manualMcpSnippet, applyEditorSetup, showConnectionDialog,
+    dismissConnectionDialog, connectionDialogRef, isTauriRuntime, connectionEndpoint, closeConnectionDialog, setCortexBase, tokenRef, persistBrowserAuthToken,
+    readAuthToken, refreshAllRef, DEFAULT_CORTEX_BASE, trapFocusInContainer, } = d;
+  return ( useEffect(() => { if (!(!showConnectionDialog || !connectionDialogRef.current))
         return trapFocusInContainer(connectionDialogRef.current);
-    }, [showConnectionDialog]),
-    useEffect(() => {
-      if (!(!showEditorSetupWizard || !editorSetupDialogRef.current))
+    }, [showConnectionDialog]), useEffect(() => { if (!(!showEditorSetupWizard || !editorSetupDialogRef.current))
         return trapFocusInContainer(editorSetupDialogRef.current);
-    }, [showEditorSetupWizard]),
-    React.createElement(
-      "div",
-      {
-        className: `app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`,
-      },
-      React.createElement("a", { className: "skip-link", href: "#main-content" }, "Skip to main content"),
-      React.createElement(
-        "aside",
-        {
-          className: `sidebar ${effectiveSidebarCollapsed ? "collapsed" : ""}`,
-          "aria-labelledby": "sidebar-title",
-        },
-        React.createElement(
-          "div",
-          { className: "sidebar-header" },
-          React.createElement(
-            "div",
-            { className: "logo" },
-            React.createElement("span", { id: "sidebar-title" }, "Cortex"),
-          ),
-          React.createElement("div", { className: pill.className }, pill.label),
-        ),
-        React.createElement(
-          "nav",
-          { className: "sidebar-nav", "aria-label": "Primary panels" },
-          PANEL_SEQUENCE.map((item, idx) =>
-            React.createElement(
-              "button",
-              {
-                key: item.key,
-                type: "button",
-                className: `nav-item ${panel === item.key ? "active" : ""}`,
-                onClick: () => changePanel(item.key),
-                "data-key": idx + 1,
-                "aria-current": panel === item.key ? "page" : void 0,
-              },
-              React.createElement(
-                "span",
-                { style: { opacity: 0.5, fontSize: "12px" } },
-                React.createElement(AppIcon, { name: item.icon }),
-              ),
-              item.label,
-            ),
-          ),
-        ),
-        React.createElement(
-          "div",
-          { className: "sidebar-utility" },
-          React.createElement(
-            "div",
-            { className: "sidebar-utility-header" },
-            React.createElement("span", { className: "sidebar-utility-kicker" }, "Mission status"),
-            React.createElement(
-              "span",
-              { className: `sidebar-utility-pill ${utilityPill.className}` },
-              utilityPill.label,
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "sidebar-utility-grid" },
-            sidebarUtilityStats.map((item) =>
-              React.createElement(
-                "div",
-                {
-                  key: item.label,
-                  className: `sidebar-utility-card tone-${item.tone}`,
-                },
-                React.createElement("span", { className: "sidebar-utility-label" }, item.label),
-                React.createElement("strong", { className: "sidebar-utility-value" }, item.value),
-              ),
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "sidebar-utility-note" },
-            React.createElement("span", { className: "sidebar-utility-note-label" }, "Focus"),
-            React.createElement("strong", null, activePanelLabel),
-            React.createElement("p", null, daemonState.message),
-            daemonRecoveryHint
+    }, [showEditorSetupWizard]), React.createElement( "div", { className: `app ${effectiveSidebarCollapsed ? "sidebar-collapsed" : ""}`, },
+      React.createElement("a", { className: "skip-link", href: "#main-content" }, "Skip to main content"), React.createElement( "aside", {
+          className: `sidebar ${effectiveSidebarCollapsed ? "collapsed" : ""}`, "aria-labelledby": "sidebar-title", }, React.createElement(
+          "div", { className: "sidebar-header" }, React.createElement( "div",
+            { className: "logo" }, React.createElement("span", { id: "sidebar-title" }, "Cortex"),
+          ), React.createElement("div", { className: pill.className }, pill.label), ), React.createElement(
+          "nav", { className: "sidebar-nav", "aria-label": "Primary panels" }, PANEL_SEQUENCE.map((item, idx) => React.createElement(
+              "button", { key: item.key, type: "button", className: `nav-item ${panel === item.key ? "active" : ""}`, onClick: () => changePanel(item.key),
+                "data-key": idx + 1, "aria-current": panel === item.key ? "page" : void 0, }, React.createElement(
+                "span", { style: { opacity: 0.5, fontSize: "12px" } }, React.createElement(AppIcon, { name: item.icon }), ), item.label, ), ), ),
+        React.createElement( "div", { className: "sidebar-utility" }, React.createElement( "div", { className: "sidebar-utility-header" },
+            React.createElement("span", { className: "sidebar-utility-kicker" }, "Mission status"), React.createElement(
+              "span", { className: `sidebar-utility-pill ${utilityPill.className}` }, utilityPill.label, ),
+          ), React.createElement( "div", { className: "sidebar-utility-grid" }, sidebarUtilityStats.map((item) => React.createElement( "div", {
+                  key: item.label, className: `sidebar-utility-card tone-${item.tone}`,
+                }, React.createElement("span", { className: "sidebar-utility-label" }, item.label),
+                React.createElement("strong", { className: "sidebar-utility-value" }, item.value), ), ), ),
+          React.createElement( "div", { className: "sidebar-utility-note" }, React.createElement("span", { className: "sidebar-utility-note-label" }, "Focus"),
+            React.createElement("strong", null, activePanelLabel), React.createElement("p", null, daemonState.message), daemonRecoveryHint
               ? React.createElement("p", { className: "sidebar-utility-alert" }, daemonRecoveryHint)
-              : null,
-          ),
-        ),
-        React.createElement(
-          "div",
-          { className: "sidebar-footer" },
-          React.createElement(
-            "div",
-            { className: "daemon-restart-row" },
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "btn-ctrl btn-restart",
-                onClick: handleRestartDaemon,
-                disabled: restartingDaemon || !invokeRef.current,
-              },
-              restartingDaemon ? "Restarting..." : "Restart",
-            ),
-          ),
-          React.createElement(
-            "div",
-            { className: "daemon-controls-grid" },
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "btn-ctrl btn-primary",
-                onClick: handleStartDaemon,
-                disabled: !canStartDaemon,
-              },
-              "Start",
-            ),
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "btn-ctrl",
-                onClick: handleStopDaemon,
-                disabled: !canStopDaemon,
-              },
-              "Stop",
-            ),
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "btn-ctrl btn-danger",
-                onClick: async () => {
-                  if (invokeRef.current)
-                    try {
-                      await d.call("quit_app");
-                    } catch {}
-                },
-              },
-              "Exit",
-            ),
-          ),
-          restartError
-            ? React.createElement(
-                "button",
-                {
-                  type: "button",
-                  className: "btn-sm btn-danger btn-restart-retry",
-                  onClick: handleRestartDaemon,
-                },
-                "Retry Restart",
-              )
-            : null,
-          availableUpdate &&
-            React.createElement(
-              "div",
-              { className: "update-banner" },
-              React.createElement("span", null, "v", availableUpdate.version, " available"),
-              React.createElement(
-                "button",
-                {
-                  type: "button",
-                  className: "btn-sm btn-primary",
-                  disabled: updateInstalling,
-                  onClick: async () => {
-                    (setUpdateInstalling(!0), setFeedbackMessage("Downloading update..."));
-                    try {
-                      await installUpdate(availableUpdate);
-                    } catch (err) {
-                      (setFeedbackMessage(`Update failed: ${String(err)}`), setUpdateInstalling(!1));
-                    }
-                  },
-                },
-                updateInstalling ? "Installing..." : "Update",
-              ),
-            ),
-          React.createElement("p", { className: "sidebar-status", "aria-hidden": "true" }, feedbackMessage),
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              className: "btn-sidebar-collapse",
-              "aria-label": effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
-              title: effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
-              onClick: () => setSidebarCollapsed((c) => !c),
-            },
-            React.createElement(AppIcon, {
-              name: effectiveSidebarCollapsed ? "chevron-right" : "chevron-left",
-              size: 16,
-            }),
-          ),
-        ),
-      ),
-      React.createElement(
-        "main",
-        { id: "main-content", className: "content", tabIndex: -1 },
-        React.createElement(
-          "p",
-          {
-            className: "sr-only",
-            role: "status",
-            "aria-live": "polite",
-            "aria-atomic": "true",
-          },
-          feedbackMessage,
-        ),
-        React.createElement(
-          "div",
-          {
-            ref: topbarRef,
-            className: `topbar ${panel === "overview" ? "topbar-hidden" : ""}`,
-            "aria-hidden": panel === "overview" ? !0 : void 0,
-          },
-          React.createElement(
-            "div",
-            { className: "topbar-left" },
-            React.createElement("span", { className: "topbar-path" }, "CORTEX"),
+              : null, ), ), React.createElement( "div", { className: "sidebar-footer" }, React.createElement( "div",
+            { className: "daemon-restart-row" }, React.createElement( "button", {
+                type: "button", className: "btn-ctrl btn-restart", onClick: handleRestartDaemon, disabled: restartingDaemon || !invokeRef.current,
+              }, restartingDaemon ? "Restarting..." : "Restart", ), ), React.createElement( "div", { className: "daemon-controls-grid" }, React.createElement(
+              "button", { type: "button", className: "btn-ctrl btn-primary", onClick: handleStartDaemon, disabled: !canStartDaemon, }, "Start",
+            ), React.createElement( "button", { type: "button", className: "btn-ctrl", onClick: handleStopDaemon, disabled: !canStopDaemon,
+              }, "Stop", ), React.createElement( "button", { type: "button", className: "btn-ctrl btn-danger", onClick: async () => { if (invokeRef.current)
+                    try { await d.call("quit_app");
+                    } catch {} }, }, "Exit", ), ), restartError
+            ? React.createElement( "button", { type: "button",
+                  className: "btn-sm btn-danger btn-restart-retry", onClick: handleRestartDaemon, }, "Retry Restart", )
+            : null, availableUpdate && React.createElement( "div",
+              { className: "update-banner" }, React.createElement("span", null, "v", availableUpdate.version, " available"), React.createElement( "button",
+                { type: "button", className: "btn-sm btn-primary", disabled: updateInstalling,
+                  onClick: async () => { (setUpdateInstalling(!0), setFeedbackMessage("Downloading update..."));
+                    try { await installUpdate(availableUpdate);
+                    } catch (err) { (setFeedbackMessage(`Update failed: ${String(err)}`), setUpdateInstalling(!1));
+                    } }, }, updateInstalling ? "Installing..." : "Update",
+              ), ), React.createElement("p", { className: "sidebar-status", "aria-hidden": "true" }, feedbackMessage), React.createElement(
+            "button", { type: "button", className: "btn-sidebar-collapse", "aria-label": effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
+              title: effectiveSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar", onClick: () => setSidebarCollapsed((c) => !c),
+            }, React.createElement(AppIcon, { name: effectiveSidebarCollapsed ? "chevron-right" : "chevron-left", size: 16, }), ), ), ),
+      React.createElement( "main", { id: "main-content", className: "content", tabIndex: -1 }, React.createElement( "p", { className: "sr-only", role: "status",
+            "aria-live": "polite", "aria-atomic": "true", }, feedbackMessage, ), React.createElement( "div", {
+            ref: topbarRef, className: `topbar ${panel === "overview" ? "topbar-hidden" : ""}`, "aria-hidden": panel === "overview" ? !0 : void 0, },
+          React.createElement( "div", { className: "topbar-left" }, React.createElement("span", { className: "topbar-path" }, "CORTEX"),
             React.createElement("span", { className: "topbar-sep" }, "/"),
-            React.createElement("span", { className: "topbar-current" }, activePanelLabel.toUpperCase()),
-          ),
-          React.createElement(
-            "div",
-            { className: "topbar-right" },
-            React.createElement(
-              "span",
-              { className: "topbar-stat" },
-              React.createElement("span", { className: "topbar-label" }, "MEM"),
-              " ",
-              stats.memories,
-            ),
-            React.createElement(
-              "span",
-              { className: "topbar-stat" },
-              React.createElement("span", { className: "topbar-label" }, "DEC"),
-              " ",
-              stats.decisions,
-            ),
-            React.createElement(
-              "span",
-              { className: "topbar-stat" },
-              React.createElement("span", { className: "topbar-label" }, "EVT"),
-              " ",
-              stats.events,
-            ),
-            React.createElement(
-              "span",
-              { className: "topbar-stat" },
-              React.createElement("span", { className: "topbar-label" }, "AGENTS"),
-              " ",
-              normalizedSessions.length,
-            ),
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "topbar-stat topbar-connection",
-                onClick: openConnectionDialog,
-                tabIndex: panel === "overview" ? -1 : void 0,
-                title: "Click to change connection",
-                "aria-label": `Connection host ${hostLabel}. Open connection settings.`,
-              },
-              React.createElement("span", { className: "topbar-label" }, "HOST"),
-              hostLabel,
-            ),
-            React.createElement(
-              "span",
-              {
-                className: `topbar-status ${daemonStatusBadge.className}`,
-                title: daemonStatusBadge.title,
-              },
-              daemonStatusBadge.label,
-            ),
-          ),
-        ),
-        showEditorSetupWizard &&
-          React.createElement(
-            "div",
-            {
-              className: "connection-overlay",
-              role: "presentation",
-              onClick: () => !isSettingUpEditors && closeEditorSetupWizard(),
-            },
-            React.createElement(
-              "div",
-              {
-                ref: editorSetupDialogRef,
-                className: "connection-dialog editor-setup-dialog",
-                role: "dialog",
-                "aria-modal": "true",
-                "aria-labelledby": "editor-setup-title",
-                "aria-describedby": "editor-setup-description",
-                "aria-busy": isSettingUpEditors ? !0 : void 0,
-                tabIndex: -1,
-                onClick: (e) => e.stopPropagation(),
-              },
-              React.createElement(
-                "div",
-                { className: "editor-setup-dialog-header" },
-                React.createElement(
-                  "div",
-                  null,
-                  React.createElement("span", { className: "editor-setup-kicker" }, "Shared MCP Registration"),
-                  React.createElement("h2", { id: "editor-setup-title" }, "Setup MCP"),
-                ),
-                React.createElement(
-                  "span",
-                  { className: "badge" },
-                  editorDetectionSummary.detected,
-                  "/",
-                  editorDetectionSummary.results.length,
-                ),
-              ),
-              React.createElement(
-                "p",
-                {
-                  className: "connection-subtitle",
-                  id: "editor-setup-description",
-                },
+            React.createElement("span", { className: "topbar-current" }, activePanelLabel.toUpperCase()), ), React.createElement( "div",
+            { className: "topbar-right" }, React.createElement( "span", { className: "topbar-stat" },
+              React.createElement("span", { className: "topbar-label" }, "MEM"), " ", stats.memories, ),
+            React.createElement( "span", { className: "topbar-stat" }, React.createElement("span", { className: "topbar-label" }, "DEC"),
+              " ", stats.decisions, ), React.createElement(
+              "span", { className: "topbar-stat" }, React.createElement("span", { className: "topbar-label" }, "EVT"), " ",
+              stats.events, ), React.createElement( "span",
+              { className: "topbar-stat" }, React.createElement("span", { className: "topbar-label" }, "AGENTS"), " ", normalizedSessions.length,
+            ), React.createElement( "button", {
+                type: "button", className: "topbar-stat topbar-connection", onClick: openConnectionDialog, tabIndex: panel === "overview" ? -1 : void 0,
+                title: "Click to change connection", "aria-label": `Connection host ${hostLabel}. Open connection settings.`,
+              }, React.createElement("span", { className: "topbar-label" }, "HOST"), hostLabel, ),
+            React.createElement( "span", { className: `topbar-status ${daemonStatusBadge.className}`,
+                title: daemonStatusBadge.title, }, daemonStatusBadge.label, ), ), ), showEditorSetupWizard && React.createElement(
+            "div", { className: "connection-overlay", role: "presentation",
+              onClick: () => !isSettingUpEditors && closeEditorSetupWizard(), }, React.createElement( "div",
+              { ref: editorSetupDialogRef, className: "connection-dialog editor-setup-dialog", role: "dialog",
+                "aria-modal": "true", "aria-labelledby": "editor-setup-title",
+                "aria-describedby": "editor-setup-description", "aria-busy": isSettingUpEditors ? !0 : void 0,
+                tabIndex: -1, onClick: (e) => e.stopPropagation(), }, React.createElement(
+                "div", { className: "editor-setup-dialog-header" }, React.createElement( "div",
+                  null, React.createElement("span", { className: "editor-setup-kicker" }, "Shared MCP Registration"),
+                  React.createElement("h2", { id: "editor-setup-title" }, "Setup MCP"), ), React.createElement( "span",
+                  { className: "badge" }, editorDetectionSummary.detected, "/", editorDetectionSummary.results.length, ), ), React.createElement( "p",
+                { className: "connection-subtitle", id: "editor-setup-description", },
                 "Choose which supported clients should receive the shared Cortex attach-only MCP entry. Every client points at the same app-owned daemon command.",
-              ),
-              React.createElement(
-                "div",
-                { className: "editor-setup-choice-list" },
-                editorDetectionSummary.results.map((entry) => {
-                  const tone = entry.detected ? (entry.registered ? "ok" : "warn") : "idle",
+              ), React.createElement( "div", { className: "editor-setup-choice-list" },
+                editorDetectionSummary.results.map((entry) => { const tone = entry.detected ? (entry.registered ? "ok" : "warn") : "idle",
                     stateLabel = entry.detected ? (entry.registered ? "Configured" : "Detected") : "Not detected",
                     selected = selectedEditorIds.includes(entry.id);
-                  return React.createElement(
-                    "label",
-                    {
-                      key: entry.id,
-                      className: `editor-setup-choice ${tone} ${entry.detected ? "" : "disabled"}`,
-                    },
-                    React.createElement("input", {
-                      type: "checkbox",
-                      checked: selected,
-                      disabled: !entry.detected || isSettingUpEditors,
-                      onChange: () => toggleEditorSelection(entry.id),
-                    }),
-                    React.createElement(
-                      "div",
-                      { className: "editor-setup-choice-body" },
-                      React.createElement(
-                        "div",
-                        { className: "editor-setup-item-head" },
-                        React.createElement("span", { className: "editor-setup-name" }, entry.name),
-                        React.createElement("span", { className: "editor-setup-state" }, stateLabel),
-                      ),
+                  return React.createElement( "label", { key: entry.id,
+                      className: `editor-setup-choice ${tone} ${entry.detected ? "" : "disabled"}`, }, React.createElement("input", { type: "checkbox",
+                      checked: selected, disabled: !entry.detected || isSettingUpEditors, onChange: () => toggleEditorSelection(entry.id), }),
+                    React.createElement( "div", { className: "editor-setup-choice-body" }, React.createElement(
+                        "div", { className: "editor-setup-item-head" }, React.createElement("span", { className: "editor-setup-name" }, entry.name),
+                        React.createElement("span", { className: "editor-setup-state" }, stateLabel), ),
                       entry.configPath ? React.createElement("code", null, entry.configPath) : null,
-                      React.createElement("p", null, entry.message || "No detail provided."),
-                    ),
-                  );
-                }),
-              ),
-              React.createElement(
-                "div",
-                { className: "editor-setup-manual" },
-                React.createElement("span", { className: "editor-setup-kicker" }, "Manual Fallback"),
-                React.createElement(
-                  "p",
-                  null,
-                  "If a client is missing from the supported list, register this MCP server manually or paste it into that AI's setup flow:",
-                ),
-                React.createElement("pre", null, manualMcpSnippet),
-                React.createElement(
-                  "p",
-                  null,
-                  "Replace ",
-                  React.createElement("code", null, "codex"),
-                  " with that AI's agent ID (for example: ",
-                  React.createElement("code", null, "claude"),
-                  ", ",
-                  React.createElement("code", null, "cursor"),
-                  ", ",
-                  React.createElement("code", null, "gemini"),
-                  ").",
-                ),
-              ),
-              React.createElement(
-                "div",
-                { className: "connection-actions" },
-                React.createElement(
-                  "button",
-                  {
-                    type: "button",
-                    className: "btn-sm",
-                    onClick: closeEditorSetupWizard,
-                    disabled: isSettingUpEditors,
-                  },
-                  "Cancel",
-                ),
-                React.createElement(
-                  "button",
-                  {
-                    type: "button",
-                    className: "btn-sm btn-primary",
-                    onClick: applyEditorSetup,
-                    disabled: isSettingUpEditors || !selectedEditorIds.length,
-                  },
-                  isSettingUpEditors
+                      React.createElement("p", null, entry.message || "No detail provided."), ), );
+                }), ), React.createElement( "div",
+                { className: "editor-setup-manual" }, React.createElement("span", { className: "editor-setup-kicker" }, "Manual Fallback"),
+                React.createElement( "p",
+                  null, "If a client is missing from the supported list, register this MCP server manually or paste it into that AI's setup flow:",
+                ), React.createElement("pre", null, manualMcpSnippet), React.createElement( "p",
+                  null, "Replace ", React.createElement("code", null, "codex"), " with that AI's agent ID (for example: ",
+                  React.createElement("code", null, "claude"), ", ", React.createElement("code", null, "cursor"), ", ",
+                  React.createElement("code", null, "gemini"), ").", ), ), React.createElement( "div", { className: "connection-actions" }, React.createElement(
+                  "button", { type: "button", className: "btn-sm", onClick: closeEditorSetupWizard, disabled: isSettingUpEditors, }, "Cancel",
+                ), React.createElement( "button", {
+                    type: "button", className: "btn-sm btn-primary", onClick: applyEditorSetup, disabled: isSettingUpEditors || !selectedEditorIds.length,
+                  }, isSettingUpEditors
                     ? "Applying..."
-                    : `Apply to ${selectedEditorIds.length} Client${selectedEditorIds.length === 1 ? "" : "s"}`,
-                ),
-              ),
-            ),
-          ),
-        showConnectionDialog &&
-          React.createElement(
-            "div",
-            {
-              className: "connection-overlay",
-              role: "presentation",
-              onClick: dismissConnectionDialog,
-            },
-            React.createElement(
-              "div",
-              {
-                ref: connectionDialogRef,
-                className: "connection-dialog",
-                role: "dialog",
-                "aria-modal": "true",
-                "aria-labelledby": "connection-dialog-title",
-                "aria-describedby": "connection-dialog-description",
-                tabIndex: -1,
-                onClick: (e) => e.stopPropagation(),
-              },
-              React.createElement(
-                "div",
-                { className: "connection-dialog-header" },
-                React.createElement("h2", { id: "connection-dialog-title" }, "Connection Settings"),
-                React.createElement(
-                  "button",
-                  {
-                    type: "button",
-                    className: "connection-dialog-close",
-                    "aria-label": "Close connection settings",
-                    onClick: dismissConnectionDialog,
-                  },
-                  "\xD7",
-                ),
-              ),
-              React.createElement(
-                "p",
-                {
-                  className: "connection-subtitle",
-                  id: "connection-dialog-description",
-                },
-                isTauriRuntime
+                    : `Apply to ${selectedEditorIds.length} Client${selectedEditorIds.length === 1 ? "" : "s"}`, ), ), ),
+          ), showConnectionDialog && React.createElement( "div", { className: "connection-overlay", role: "presentation", onClick: dismissConnectionDialog,
+            }, React.createElement( "div", { ref: connectionDialogRef, className: "connection-dialog", role: "dialog", "aria-modal": "true",
+                "aria-labelledby": "connection-dialog-title", "aria-describedby": "connection-dialog-description",
+                tabIndex: -1, onClick: (e) => e.stopPropagation(), }, React.createElement( "div", { className: "connection-dialog-header" },
+                React.createElement("h2", { id: "connection-dialog-title" }, "Connection Settings"), React.createElement( "button", {
+                    type: "button", className: "connection-dialog-close", "aria-label": "Close connection settings", onClick: dismissConnectionDialog,
+                  }, "\xD7", ), ), React.createElement( "p", { className: "connection-subtitle", id: "connection-dialog-description", }, isTauriRuntime
                   ? "Desktop app mode uses the local app-managed Cortex daemon only."
-                  : "Connect to a local or remote Cortex daemon",
-              ),
-              React.createElement(
-                "form",
-                {
-                  onSubmit: (e) => {
-                    if ((e.preventDefault(), isTauriRuntime)) {
-                      (setCortexBase(DEFAULT_CORTEX_BASE),
-                        (tokenRef.current = ""),
-                        persistBrowserAuthToken(""),
-                        closeConnectionDialog(),
-                        queueMicrotask(() => refreshAllRef.current()));
+                  : "Connect to a local or remote Cortex daemon", ), React.createElement( "form",
+                { onSubmit: (e) => { if ((e.preventDefault(), isTauriRuntime)) { (setCortexBase(DEFAULT_CORTEX_BASE),
+                        (tokenRef.current = ""), persistBrowserAuthToken(""), closeConnectionDialog(), queueMicrotask(() => refreshAllRef.current()));
                       return;
                     }
-                    const fd = new FormData(e.target),
-                      host = fd.get("host")?.toString().trim() || "127.0.0.1",
-                      port = fd.get("port")?.toString().trim() || "7437",
-                      token = fd.get("token")?.toString().trim();
-                    (setCortexBase(`http://${host}:${port}`),
-                      (tokenRef.current = token || ""),
-                      persistBrowserAuthToken(token || ""),
-                      closeConnectionDialog(),
-                      queueMicrotask(() => refreshAllRef.current()));
-                  },
-                },
-                React.createElement(
-                  "label",
-                  { className: "connection-field" },
-                  React.createElement("span", null, "Host"),
-                  React.createElement("input", {
-                    name: "host",
-                    defaultValue: connectionEndpoint.host,
-                    placeholder: "127.0.0.1",
-                    disabled: isTauriRuntime,
-                  }),
-                ),
-                React.createElement(
-                  "label",
-                  { className: "connection-field" },
-                  React.createElement("span", null, "Port"),
-                  React.createElement("input", {
-                    name: "port",
-                    defaultValue: connectionEndpoint.port,
-                    placeholder: "7437",
-                    disabled: isTauriRuntime,
-                  }),
-                ),
-                React.createElement(
-                  "label",
-                  { className: "connection-field" },
-                  React.createElement("span", null, "Auth Token"),
-                  React.createElement("input", {
-                    name: "token",
-                    type: "password",
-                    placeholder: isTauriRuntime
+                    const fd = new FormData(e.target), host = fd.get("host")?.toString().trim() || "127.0.0.1",
+                      port = fd.get("port")?.toString().trim() || "7437", token = fd.get("token")?.toString().trim();
+                    (setCortexBase(`http://${host}:${port}`), (tokenRef.current = token || ""), persistBrowserAuthToken(token || ""), closeConnectionDialog(),
+                      queueMicrotask(() => refreshAllRef.current())); }, }, React.createElement(
+                  "label", { className: "connection-field" }, React.createElement("span", null, "Host"), React.createElement("input", {
+                    name: "host", defaultValue: connectionEndpoint.host, placeholder: "127.0.0.1", disabled: isTauriRuntime,
+                  }), ), React.createElement( "label",
+                  { className: "connection-field" }, React.createElement("span", null, "Port"), React.createElement("input", { name: "port",
+                    defaultValue: connectionEndpoint.port, placeholder: "7437", disabled: isTauriRuntime, }),
+                ), React.createElement( "label", { className: "connection-field" },
+                  React.createElement("span", null, "Auth Token"), React.createElement("input", { name: "token", type: "password", placeholder: isTauriRuntime
                       ? "Managed by desktop app token flow"
-                      : "Leave blank for local (auto-read)",
-                    disabled: isTauriRuntime,
-                  }),
-                ),
-                React.createElement(
-                  "div",
-                  { className: "connection-actions" },
-                  React.createElement(
-                    "button",
-                    {
-                      type: "button",
-                      className: "btn-sm",
-                      onClick: () => {
-                        (setCortexBase(DEFAULT_CORTEX_BASE),
-                          (tokenRef.current = ""),
-                          persistBrowserAuthToken(""),
-                          closeConnectionDialog(),
-                          readAuthToken({ suppressFeedback: !0 }),
-                          queueMicrotask(() => refreshAllRef.current()));
-                      },
-                    },
-                    "Reset to Local",
-                  ),
-                  React.createElement("button", { type: "submit", className: "btn-sm btn-primary" }, "Connect"),
-                ),
-              ),
-            ),
-          ),
-        React.createElement(PanelStage, { ...d }),
-      ),
-    )
-  );
+                      : "Leave blank for local (auto-read)", disabled: isTauriRuntime, }), ),
+                React.createElement( "div", { className: "connection-actions" }, React.createElement( "button", { type: "button", className: "btn-sm",
+                      onClick: () => { (setCortexBase(DEFAULT_CORTEX_BASE), (tokenRef.current = ""), persistBrowserAuthToken(""),
+                          closeConnectionDialog(), readAuthToken({ suppressFeedback: !0 }), queueMicrotask(() => refreshAllRef.current())); },
+                    }, "Reset to Local", ), React.createElement("button", { type: "submit", className: "btn-sm btn-primary" }, "Connect"), ), ), ), ),
+        React.createElement(PanelStage), ), ) );
 }
 export { AppShell };

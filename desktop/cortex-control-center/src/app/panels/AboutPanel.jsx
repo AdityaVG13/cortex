@@ -1,11 +1,9 @@
 import React from "react";
+import { useDashboard } from "../DashboardContext.jsx";
 import { CONTROL_CENTER_VERSION } from "../constants.js";
-function AboutPanel(p) {
-  const { panel, stats } = p;
-  return (
-    <React.Fragment>
-      {panel === "about" ? (
-        <section className="panel active">
+function AboutPanel() { const { panel, stats } = useDashboard();
+  return ( <React.Fragment>
+      {panel === "about" ? ( <section className="panel active">
           <div className="panel-header">
             <div>
               <h1>About</h1>
@@ -21,11 +19,8 @@ function AboutPanel(p) {
                   src={`${import.meta.env.BASE_URL}icons/icon.png`}
                   alt="Cortex"
                   className="about-logo"
-                  onError={(event) => {
-                    ((event.currentTarget.style.display = "none"),
-                      (event.currentTarget.nextSibling.style.display = "flex"));
-                  }}
-                />
+                  onError={(event) => { ((event.currentTarget.style.display = "none"), (event.currentTarget.nextSibling.style.display = "flex"));
+                  }} />
                 <div className="about-logo about-logo-fallback">CC</div>
                 <div className="about-heading">
                   <h2 className="about-title">Cortex Control Center</h2>
@@ -40,14 +35,8 @@ function AboutPanel(p) {
                 owned lifecycle control, live telemetry, and a brain view that can double as a showpiece.
               </p>
               <div className="about-stats-grid">
-                {[
-                  ["Daemon", "Rust + Axum"],
-                  ["Desktop shell", "Tauri + React"],
-                  ["Embeddings", "ONNX (all-MiniLM-L6-v2)"],
-                  ["Storage", "SQLite (WAL)"],
-                  ["Transport", "HTTP + MCP stdio"],
-                  ["Port", "7437"],
-                ].map(([label, value]) => (
+                {[ ["Daemon", "Rust + Axum"], ["Desktop shell", "Tauri + React"], ["Embeddings", "ONNX (all-MiniLM-L6-v2)"],
+                  ["Storage", "SQLite (WAL)"], ["Transport", "HTTP + MCP stdio"], ["Port", "7437"], ].map(([label, value]) => (
                   <div key={label} className="about-stat-card">
                     <span className="about-stat-label">{label}</span>
                     <div className="about-stat-value">{value}</div>
@@ -98,29 +87,13 @@ function AboutPanel(p) {
               <div className="about-section">
                 <h3 className="about-section-title">Contributors</h3>
                 <div className="about-contributors">
-                  {[
-                    { handle: "Cortex-Team", role: "Creator & maintainer" },
-                    {
-                      handle: "Claude Code",
-                      role: "Core architecture & retrieval pipeline",
-                    },
-                    {
-                      handle: "Factory Droid",
-                      role: "Desktop app, reconnection & telemetry",
-                    },
-                    {
-                      handle: "Codex",
-                      role: "Desktop rewrite, auth hardening, analytics and brain UX",
-                    },
-                  ].map(({ handle, role }) => (
-                    <div key={handle} className="about-contributor">
+                  {[ { handle: "Cortex-Team", role: "Creator & maintainer" }, { handle: "Claude Code",
+                      role: "Core architecture & retrieval pipeline", }, { handle: "Factory Droid",
+                      role: "Desktop app, reconnection & telemetry", }, { handle: "Codex", role: "Desktop rewrite, auth hardening, analytics and brain UX", },
+                  ].map(({ handle, role }) => ( <div key={handle} className="about-contributor">
                       <span
                         className="agent-indicator"
-                        style={{
-                          background: "var(--cyan)",
-                          boxShadow: "0 0 8px var(--cyan)",
-                        }}
-                      />
+                        style={{ background: "var(--cyan)", boxShadow: "0 0 8px var(--cyan)", }} />
                       <span className="about-contributor-handle">@{handle}</span>
                       <span className="about-contributor-role">{role}</span>
                     </div>
@@ -131,7 +104,6 @@ function AboutPanel(p) {
           </div>
         </section>
       ) : null}
-    </React.Fragment>
-  );
+    </React.Fragment> );
 }
 export { AboutPanel };

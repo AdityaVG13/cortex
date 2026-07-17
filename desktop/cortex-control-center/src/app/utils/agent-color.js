@@ -1,5 +1,4 @@
-function agentColor(name) {
-  if (!name) return "var(--cyan)";
+function agentColor(name) { if (!name) return "var(--cyan)";
   const n = name.toLowerCase();
   return n.includes("claude")
     ? "var(--agent-claude)"

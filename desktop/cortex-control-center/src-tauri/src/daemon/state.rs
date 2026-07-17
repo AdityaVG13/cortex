@@ -1,6 +1,6 @@
 use crate::constants::{CONTROL_CENTER_LOCK_FILE, CONTROL_CENTER_OWNER_TAG, DEFAULT_DAEMON_PORT, LOCAL_DAEMON_LOCK_WAIT_SECS};
 use crate::daemon::paths::{default_cortex_dir, is_disallowed_daemon_binary_path, resolved_cortex_paths};
-use crate::daemon::process::{apply_hidden_daemon_process_flags};
+use crate::daemon::process::apply_hidden_daemon_process_flags;
 use fs2::FileExt;
 use serde::Serialize;
 use std::fs;
@@ -22,11 +22,7 @@ pub struct DaemonState {
 
 impl DaemonState {
     pub fn new(exe_path: Option<PathBuf>) -> Self {
-        Self {
-            exe_path,
-            child: Mutex::new(None),
-            intentional_stop: AtomicBool::new(false),
-        }
+        Self { exe_path, child: Mutex::new(None), intentional_stop: AtomicBool::new(false) }
     }
 
     pub fn supervisor_paused(&self) -> bool {
@@ -34,10 +30,7 @@ impl DaemonState {
     }
 
     pub fn status(&self) -> Result<(bool, Option<u32>), String> {
-        let mut child = self
-            .child
-            .lock()
-            .map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
         let Some(managed_child) = child.as_mut() else {
             return Ok((false, None));
         };
@@ -49,9 +42,7 @@ impl DaemonState {
             }
             Ok(None) => Ok((true, Some(managed_child.id()))),
             Err(err) => {
-                eprintln!(
-                    "[cortex-control-center] failed to poll managed daemon process; clearing stale handle: {err}"
-                );
+                eprintln!("[cortex-control-center] failed to poll managed daemon process; clearing stale handle: {err}");
                 *child = None;
                 Ok((false, None))
             }
@@ -59,10 +50,7 @@ impl DaemonState {
     }
 
     pub fn ensure_local_daemon(&self) -> Result<Option<u32>, String> {
-        let mut child = self
-            .child
-            .lock()
-            .map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
         if let Some(existing) = child.as_mut() {
             match existing.try_wait() {
                 Ok(Some(_)) => {
@@ -72,31 +60,20 @@ impl DaemonState {
                     return Ok(Some(existing.id()));
                 }
                 Err(err) => {
-                    eprintln!(
-                        "[cortex-control-center] failed to poll existing managed daemon before spawn; clearing stale handle: {err}"
-                    );
+                    eprintln!("[cortex-control-center] failed to poll existing managed daemon before spawn; clearing stale handle: {err}");
                     *child = None;
                 }
             }
         }
 
-        let exe_path = self.exe_path.clone().ok_or_else(|| {
-            "Could not resolve Cortex daemon binary for app-managed local mode.".to_string()
-        })?;
+        let exe_path = self.exe_path.clone().ok_or_else(|| "Could not resolve Cortex daemon binary for app-managed local mode.".to_string())?;
         if is_disallowed_daemon_binary_path(&exe_path) {
-            return Err(format!(
-                "Refusing to launch app-managed daemon from disallowed path: {}",
-                exe_path.display()
-            ));
+            return Err(format!("Refusing to launch app-managed daemon from disallowed path: {}", exe_path.display()));
         }
 
         let paths = resolved_cortex_paths();
-        let home = paths.home.clone().ok_or_else(|| {
-            "Could not resolve Cortex home path for app-managed local mode.".to_string()
-        })?;
-        let db = paths.db.clone().ok_or_else(|| {
-            "Could not resolve Cortex database path for app-managed local mode.".to_string()
-        })?;
+        let home = paths.home.clone().ok_or_else(|| "Could not resolve Cortex home path for app-managed local mode.".to_string())?;
+        let db = paths.db.clone().ok_or_else(|| "Could not resolve Cortex database path for app-managed local mode.".to_string())?;
         // App-managed mode is intentionally local-only. We always bind to loopback
         // so Control Center can own daemon lifecycle without exposing it on LAN.
         let bind = "127.0.0.1".to_string();
@@ -117,21 +94,13 @@ impl DaemonState {
             .env("CORTEX_DAEMON_OWNER_SOURCE", "control-center-app")
             .env("CORTEX_DAEMON_OWNER_MODE", "app-managed-local")
             .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
-            .env(
-                "CORTEX_DAEMON_LOCK_WAIT_SECS",
-                LOCAL_DAEMON_LOCK_WAIT_SECS.to_string(),
-            )
+            .env("CORTEX_DAEMON_LOCK_WAIT_SECS", LOCAL_DAEMON_LOCK_WAIT_SECS.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         apply_hidden_daemon_process_flags(&mut command);
 
-        let spawned = command.spawn().map_err(|err| {
-            format!(
-                "Failed to spawn app-managed daemon from {}: {err}",
-                exe_path.display()
-            )
-        })?;
+        let spawned = command.spawn().map_err(|err| format!("Failed to spawn app-managed daemon from {}: {err}", exe_path.display()))?;
         let pid = spawned.id();
         *child = Some(spawned);
         // A successful spawn implicitly arms the supervisor: any later death
@@ -144,10 +113,7 @@ impl DaemonState {
         // Pause the supervisor BEFORE killing the child so the watchdog does
         // not race in and spawn a new instance during teardown.
         self.intentional_stop.store(true, Ordering::SeqCst);
-        let mut child = self
-            .child
-            .lock()
-            .map_err(|_| "Failed to lock managed daemon state.".to_string())?;
+        let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
         if let Some(managed_child) = child.as_mut() {
             match managed_child.try_wait() {
                 Ok(Some(_)) => {
@@ -162,9 +128,7 @@ impl DaemonState {
                     *child = None;
                 }
                 Err(err) => {
-                    eprintln!(
-                        "[cortex-control-center] failed to poll managed daemon process during stop; clearing stale handle: {err}"
-                    );
+                    eprintln!("[cortex-control-center] failed to poll managed daemon process during stop; clearing stale handle: {err}");
                     *child = None;
                 }
             }
@@ -183,9 +147,7 @@ pub struct AppInstanceGuard {
 
 impl Default for LifecycleState {
     fn default() -> Self {
-        Self {
-            explicit_quit: AtomicBool::new(false),
-        }
+        Self { explicit_quit: AtomicBool::new(false) }
     }
 }
 
@@ -203,8 +165,7 @@ impl AppInstanceGuard {
     pub fn acquire() -> Result<Option<Self>, String> {
         let lock_path = control_center_lock_path()?;
         if let Some(parent) = lock_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
         }
         let mut lock_file = OpenOptions::new()
             .create(true)
@@ -232,9 +193,7 @@ impl Drop for AppInstanceGuard {
 }
 
 fn control_center_lock_path() -> Result<PathBuf, String> {
-    Ok(default_cortex_dir()?
-        .join("runtime")
-        .join(CONTROL_CENTER_LOCK_FILE))
+    Ok(default_cortex_dir()?.join("runtime").join(CONTROL_CENTER_LOCK_FILE))
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -246,42 +205,21 @@ pub struct DaemonCommandResult {
     pub pid: Option<u32>,
     pub message: String,
 }
-pub fn describe_daemon_state(
-    managed: bool,
-    reachable: bool,
-    starting: bool,
-    auth_token_ready: bool,
-    pid: Option<u32>,
-    port: u16,
-) -> String {
+pub fn describe_daemon_state(managed: bool, reachable: bool, starting: bool, auth_token_ready: bool, pid: Option<u32>, port: u16) -> String {
     if managed && reachable && auth_token_ready {
         format!("Cortex daemon running (pid {}).", pid.unwrap_or_default())
     } else if managed && reachable {
-        format!(
-            "Cortex daemon running (pid {}) and reachable, waiting for auth token.",
-            pid.unwrap_or_default()
-        )
+        format!("Cortex daemon running (pid {}) and reachable, waiting for auth token.", pid.unwrap_or_default())
     } else if managed && starting {
-        format!(
-            "Cortex daemon running (pid {}) and still starting on :{}.",
-            pid.unwrap_or_default(),
-            port
-        )
+        format!("Cortex daemon running (pid {}) and still starting on :{}.", pid.unwrap_or_default(), port)
     } else if managed {
-        format!(
-            "Cortex daemon running (pid {}) but not reachable on :{} yet.",
-            pid.unwrap_or_default(),
-            port
-        )
+        format!("Cortex daemon running (pid {}) but not reachable on :{} yet.", pid.unwrap_or_default(), port)
     } else if reachable && auth_token_ready {
         "Cortex daemon reachable (external process).".to_string()
     } else if reachable {
         "Cortex daemon reachable (external process), waiting for auth token.".to_string()
     } else if starting {
-        format!(
-            "Cortex daemon is responding on :{} and still starting.",
-            port
-        )
+        format!("Cortex daemon is responding on :{} and still starting.", port)
     } else {
         "Cortex daemon is offline.".to_string()
     }

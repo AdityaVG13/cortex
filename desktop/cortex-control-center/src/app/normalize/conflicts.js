@@ -1,366 +1,92 @@
-const CONFLICT_CLASSIFICATIONS = new Set([
-    "AGREES",
-    "CONTRADICTS",
-    "REFINES",
-    "UNRELATED",
-  ]),
-  CONFLICT_STATUS_FALLBACK = "OPEN";
-function pickDefined(...values) {
-  for (const value of values) if (value != null && value !== "") return value;
+const CONFLICT_CLASSIFICATIONS = new Set(["AGREES", "CONTRADICTS", "REFINES", "UNRELATED"]), CONFLICT_STATUS_FALLBACK = "OPEN";
+function pickDefined(...values) { for (const value of values) if (value != null && value !== "") return value;
   return null;
 }
-function toFiniteNumber(value) {
-  const numeric = Number(value);
+function toFiniteNumber(value) { const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
-function normalizeConflictClassification(value) {
-  const normalized = String(value || "")
+function normalizeConflictClassification(value) { const normalized = String(value || "")
     .trim()
     .toUpperCase();
-  return normalized
-    ? (CONFLICT_CLASSIFICATIONS.has(normalized), normalized)
-    : "UNSPECIFIED";
+  return normalized ? (CONFLICT_CLASSIFICATIONS.has(normalized), normalized) : "UNSPECIFIED";
 }
-function normalizeConflictStatus(value) {
-  const normalized = String(value || "")
+function normalizeConflictStatus(value) { const normalized = String(value || "")
     .trim()
     .toUpperCase();
-  return normalized
-    ? normalized === "IN_PROGRESS"
-      ? "OPEN"
-      : normalized
-    : CONFLICT_STATUS_FALLBACK;
+  return normalized ? (normalized === "IN_PROGRESS" ? "OPEN" : normalized) : CONFLICT_STATUS_FALLBACK;
 }
-function extractEntityId(value) {
-  return value && typeof value == "object"
-    ? pickDefined(value.id, value.decision_id, value.memory_id)
-    : value;
+function extractEntityId(value) { return value && typeof value == "object" ? pickDefined(value.id, value.decision_id, value.memory_id) : value;
 }
-function extractEntityAgent(value) {
-  return !value || typeof value != "object"
+function extractEntityAgent(value) { return !value || typeof value != "object"
     ? ""
-    : String(
-        pickDefined(
-          value.source_agent,
-          value.sourceAgent,
-          value.agent,
-          value.source_client,
-          value.client_id,
-          "",
-        ) || "",
-      );
+    : String( pickDefined(value.source_agent, value.sourceAgent, value.agent, value.source_client, value.client_id, "") || "", );
 }
-function normalizeConflictEntry(entry, fallbackId) {
-  const sourceAgent = String(
-      pickDefined(
-        entry?.source_agent,
-        entry?.sourceAgent,
-        entry?.agent,
-        entry?.source_client,
-        entry?.client_id,
-        "unknown",
-      ) || "unknown",
-    ),
-    id = pickDefined(
-      entry?.id,
-      entry?.decision_id,
-      entry?.memory_id,
-      fallbackId,
-    );
-  return {
-    raw: entry || {},
-    id,
-    sourceAgent,
-    decision: String(
-      pickDefined(
-        entry?.decision,
-        entry?.text,
-        entry?.content,
-        entry?.memory,
-        entry?.value,
-        "(no decision text)",
-      ) || "(no decision text)",
-    ),
-    context: String(
-      pickDefined(entry?.context, entry?.scope, entry?.topic, "") || "",
-    ),
-    confidence: toFiniteNumber(
-      pickDefined(entry?.confidence, entry?.source_confidence, entry?.score),
-    ),
-    trustScore: toFiniteNumber(
-      pickDefined(entry?.trust_score, entry?.trustScore, entry?.trust),
-    ),
-    createdAt: String(
-      pickDefined(
-        entry?.created_at,
-        entry?.createdAt,
-        entry?.detected_at,
-        entry?.timestamp,
-        "",
-      ) || "",
-    ),
-    resolvedAt: String(
-      pickDefined(entry?.resolved_at, entry?.resolvedAt, "") || "",
-    ),
-  };
+function normalizeConflictEntry(entry, fallbackId) { const sourceAgent = String( pickDefined( entry?.source_agent,
+        entry?.sourceAgent, entry?.agent, entry?.source_client, entry?.client_id,
+        "unknown", ) || "unknown", ), id = pickDefined(entry?.id, entry?.decision_id, entry?.memory_id, fallbackId);
+  return { raw: entry || {}, id, sourceAgent,
+    decision: String( pickDefined(entry?.decision, entry?.text, entry?.content, entry?.memory, entry?.value, "(no decision text)") || "(no decision text)", ),
+    context: String(pickDefined(entry?.context, entry?.scope, entry?.topic, "") || ""),
+    confidence: toFiniteNumber(pickDefined(entry?.confidence, entry?.source_confidence, entry?.score)),
+    trustScore: toFiniteNumber(pickDefined(entry?.trust_score, entry?.trustScore, entry?.trust)),
+    createdAt: String(pickDefined(entry?.created_at, entry?.createdAt, entry?.detected_at, entry?.timestamp, "") || ""),
+    resolvedAt: String(pickDefined(entry?.resolved_at, entry?.resolvedAt, "") || ""), };
 }
 function normalizeConflictResolution(rawResolution, pair, left, right) {
-  const resolution =
-      rawResolution && typeof rawResolution == "object" ? rawResolution : {},
-    winnerRaw = pickDefined(
-      resolution.winner,
-      pair?.winner,
-      pair?.winning_entry,
-    ),
-    loserRaw = pickDefined(
-      resolution.loser,
-      pair?.loser,
-      pair?.losing_entry,
-      pair?.superseded,
-    ),
-    winnerId = pickDefined(
-      resolution.winner_id,
-      resolution.winnerId,
-      pair?.winner_id,
-      pair?.winnerId,
-      extractEntityId(winnerRaw),
-    ),
-    loserId = pickDefined(
-      resolution.loser_id,
-      resolution.loserId,
-      pair?.loser_id,
-      pair?.loserId,
-      pair?.superseded_id,
-      pair?.supersededId,
-      extractEntityId(loserRaw),
-    ),
-    winnerAgentFallback =
-      winnerId === left?.id
-        ? left.sourceAgent
-        : winnerId === right?.id
-          ? right.sourceAgent
-          : "",
-    loserAgentFallback =
-      loserId === left?.id
-        ? left.sourceAgent
-        : loserId === right?.id
-          ? right.sourceAgent
-          : "",
-    action = String(
-      pickDefined(
-        resolution.action,
-        resolution.resolution,
-        resolution.method,
-        resolution.policy,
-        pair?.resolution,
-        pair?.resolution_action,
-      ) || "",
-    ).toLowerCase(),
-    method = String(
-      pickDefined(
-        resolution.method,
-        resolution.policy,
-        pair?.resolved_by,
-        pair?.resolvedBy,
-        "",
-      ) || "",
-    ),
-    resolvedBy = String(
-      pickDefined(
-        resolution.resolved_by,
-        resolution.resolvedBy,
-        pair?.resolved_by,
-        pair?.resolvedBy,
-        "",
-      ) || "",
-    ),
-    notes = String(
-      pickDefined(
-        resolution.notes,
-        resolution.reason,
-        pair?.resolution_reason,
-        pair?.reason,
-        "",
-      ) || "",
-    ),
-    trustDelta = toFiniteNumber(
-      pickDefined(
-        resolution.trust_delta,
-        resolution.trustDelta,
-        pair?.trust_delta,
-        pair?.trustDelta,
-      ),
-    );
-  return winnerId === null &&
-    loserId === null &&
-    !action &&
-    !method &&
-    !resolvedBy &&
-    !notes &&
-    trustDelta === null
+  const resolution = rawResolution && typeof rawResolution == "object" ? rawResolution : {},
+    winnerRaw = pickDefined(resolution.winner, pair?.winner, pair?.winning_entry),
+    loserRaw = pickDefined(resolution.loser, pair?.loser, pair?.losing_entry, pair?.superseded), winnerId = pickDefined(
+      resolution.winner_id, resolution.winnerId, pair?.winner_id, pair?.winnerId, extractEntityId(winnerRaw), ), loserId = pickDefined( resolution.loser_id,
+      resolution.loserId, pair?.loser_id, pair?.loserId, pair?.superseded_id, pair?.supersededId, extractEntityId(loserRaw),
+    ), winnerAgentFallback = winnerId === left?.id ? left.sourceAgent : winnerId === right?.id ? right.sourceAgent : "",
+    loserAgentFallback = loserId === left?.id ? left.sourceAgent : loserId === right?.id ? right.sourceAgent : "", action = String(
+      pickDefined( resolution.action, resolution.resolution, resolution.method, resolution.policy, pair?.resolution, pair?.resolution_action, ) || "",
+    ).toLowerCase(), method = String(pickDefined(resolution.method, resolution.policy, pair?.resolved_by, pair?.resolvedBy, "") || ""),
+    resolvedBy = String( pickDefined(resolution.resolved_by, resolution.resolvedBy, pair?.resolved_by, pair?.resolvedBy, "") || "",
+    ), notes = String(pickDefined(resolution.notes, resolution.reason, pair?.resolution_reason, pair?.reason, "") || ""),
+    trustDelta = toFiniteNumber( pickDefined(resolution.trust_delta, resolution.trustDelta, pair?.trust_delta, pair?.trustDelta), );
+  return winnerId === null && loserId === null && !action && !method && !resolvedBy && !notes && trustDelta === null
     ? null
-    : {
-        winnerId,
-        loserId,
-        winnerAgent: String(
-          pickDefined(
-            resolution.winner_agent,
-            resolution.winnerAgent,
-            extractEntityAgent(winnerRaw),
-            winnerAgentFallback,
-            "",
-          ) || "",
-        ),
-        loserAgent: String(
-          pickDefined(
-            resolution.loser_agent,
-            resolution.loserAgent,
-            extractEntityAgent(loserRaw),
-            loserAgentFallback,
-            "",
-          ) || "",
-        ),
-        action,
-        method,
-        resolvedBy,
-        notes,
-        trustDelta,
-      };
+    : { winnerId, loserId, winnerAgent: String( pickDefined( resolution.winner_agent, resolution.winnerAgent, extractEntityAgent(winnerRaw),
+            winnerAgentFallback, "", ) || "", ), loserAgent: String( pickDefined( resolution.loser_agent, resolution.loserAgent,
+            extractEntityAgent(loserRaw), loserAgentFallback, "", ) || "", ), action, method, resolvedBy, notes, trustDelta, };
 }
-function normalizeConflictPair(pair, index) {
-  const leftRaw = pickDefined(
-      pair?.left,
-      pair?.memory_a,
-      pair?.a,
-      pair?.first,
-      pair?.winner,
-      pair?.entries?.[0],
-    ),
-    rightRaw = pickDefined(
-      pair?.right,
-      pair?.memory_b,
-      pair?.b,
-      pair?.second,
-      pair?.loser,
-      pair?.entries?.[1],
-    ),
-    left = normalizeConflictEntry(leftRaw, `left-${index}`),
-    right = normalizeConflictEntry(rightRaw, `right-${index}`),
-    conflictId = pickDefined(
-      pair?.id,
-      pair?.conflict_id,
-      pair?.conflictId,
-      pair?.pair_id,
-      pair?.pairId,
-    ),
-    classification = normalizeConflictClassification(
-      pickDefined(
-        pair?.classification,
-        pair?.conflict_classification,
-        pair?.relation,
-        pair?.relationship,
-        pair?.type,
-        pair?.conflict_type,
-      ),
-    ),
-    createdAt = String(
-      pickDefined(
-        pair?.created_at,
-        pair?.createdAt,
-        pair?.detected_at,
-        left.createdAt,
-        right.createdAt,
-        "",
-      ) || "",
-    ),
-    resolvedAt = String(
-      pickDefined(
-        pair?.resolved_at,
-        pair?.resolvedAt,
-        left.resolvedAt,
-        right.resolvedAt,
-        "",
-      ) || "",
-    ),
-    status = normalizeConflictStatus(
-      pickDefined(
-        pair?.status,
-        pair?.state,
-        pair?.resolution_status,
-        pair?.conflict_status,
-        resolvedAt ? "resolved" : "open",
-      ),
-    ),
-    trustDelta = toFiniteNumber(
-      pickDefined(pair?.trust_delta, pair?.trustDelta),
-    ),
-    resolution = normalizeConflictResolution(
-      pickDefined(
-        pair?.resolution,
-        pair?.resolution_detail,
-        pair?.result,
-        pair?.outcome,
-      ),
-      pair,
-      left,
-      right,
-    ),
-    key = String(
-      conflictId || `${left.id || "left"}-${right.id || "right"}-${index}`,
-    );
-  return {
-    raw: pair || {},
-    key,
-    conflictId,
-    classification,
-    status,
-    createdAt,
-    resolvedAt,
-    trustDelta,
-    left,
-    right,
-    resolution,
-  };
+function normalizeConflictPair(pair, index) { const leftRaw = pickDefined(pair?.left, pair?.memory_a, pair?.a, pair?.first, pair?.winner, pair?.entries?.[0]),
+    rightRaw = pickDefined(pair?.right, pair?.memory_b, pair?.b, pair?.second, pair?.loser, pair?.entries?.[1]),
+    left = normalizeConflictEntry(leftRaw, `left-${index}`), right = normalizeConflictEntry(rightRaw, `right-${index}`),
+    conflictId = pickDefined(pair?.id, pair?.conflict_id, pair?.conflictId, pair?.pair_id, pair?.pairId), classification = normalizeConflictClassification(
+      pickDefined( pair?.classification, pair?.conflict_classification, pair?.relation, pair?.relationship, pair?.type, pair?.conflict_type, ),
+    ), createdAt = String( pickDefined(pair?.created_at, pair?.createdAt, pair?.detected_at, left.createdAt, right.createdAt, "") || "", ),
+    resolvedAt = String(pickDefined(pair?.resolved_at, pair?.resolvedAt, left.resolvedAt, right.resolvedAt, "") || ""), status = normalizeConflictStatus(
+      pickDefined( pair?.status, pair?.state, pair?.resolution_status, pair?.conflict_status, resolvedAt ? "resolved" : "open", ), ),
+    trustDelta = toFiniteNumber(pickDefined(pair?.trust_delta, pair?.trustDelta)), resolution = normalizeConflictResolution(
+      pickDefined(pair?.resolution, pair?.resolution_detail, pair?.result, pair?.outcome), pair, left, right,
+    ), key = String(conflictId || `${left.id || "left"}-${right.id || "right"}-${index}`);
+  return { raw: pair || {}, key, conflictId, classification, status, createdAt, resolvedAt, trustDelta, left, right, resolution, };
 }
-function normalizeConflictPairsPayload(payload) {
-  return (
-    Array.isArray(payload?.pairs)
-      ? payload.pairs
-      : Array.isArray(payload?.conflicts)
-        ? payload.conflicts
-        : []
+function normalizeConflictPairsPayload(payload) { return (
+    Array.isArray(payload?.pairs) ? payload.pairs : Array.isArray(payload?.conflicts) ? payload.conflicts : []
   ).map((pair, index) => normalizeConflictPair(pair, index));
 }
-function formatConfidencePercent(value) {
-  const numeric = toFiniteNumber(value);
+function formatConfidencePercent(value) { const numeric = toFiniteNumber(value);
   if (numeric === null) return "n/a";
   const normalized = numeric <= 1 ? numeric * 100 : numeric;
   return `${Math.max(0, normalized).toFixed(0)}%`;
 }
-function formatTrustScore(value) {
-  const numeric = toFiniteNumber(value);
+function formatTrustScore(value) { const numeric = toFiniteNumber(value);
   return numeric === null ? "n/a" : numeric.toFixed(3);
 }
-function formatTimestamp(iso) {
-  if (!iso) return "unknown";
+function formatTimestamp(iso) { if (!iso) return "unknown";
   const parsed = new Date(iso);
   return Number.isNaN(parsed.getTime()) ? String(iso) : parsed.toLocaleString();
 }
-function conflictBadgeClass(prefix, value) {
-  const suffix = String(value || "unspecified")
+function conflictBadgeClass(prefix, value) { const suffix = String(value || "unspecified")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-");
   return `${prefix} ${prefix}-${suffix}`;
 }
-function isRouteMissingError(error) {
-  const message = String(error?.message || error || "");
+function isRouteMissingError(error) { const message = String(error?.message || error || "");
   return message.includes("HTTP 404") || message.includes("HTTP 405");
 }
 export {
-  conflictBadgeClass,
-  formatConfidencePercent,
-  formatTimestamp,
-  formatTrustScore,
-  isRouteMissingError,
-  normalizeConflictPairsPayload,
-};
+  conflictBadgeClass, formatConfidencePercent, formatTimestamp, formatTrustScore, isRouteMissingError, normalizeConflictPairsPayload, };

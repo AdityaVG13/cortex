@@ -1,43 +1,16 @@
 import React from "react";
+import { useDashboard } from "../DashboardContext.jsx";
 import { handleKeyboardActivation } from "../../keyboard-access.js";
 import { conflictBadgeClass } from "../normalize/conflicts.js";
 import { EmptyItem } from "../components/common.jsx";
 import { ConflictPairCard } from "../components/ConflictPairCard.jsx";
-function MemoryPanel(p) {
-  const {
-    panel,
-    stats,
-    memoryQuery,
-    setMemoryQuery,
-    memoryResults,
-    memorySearching,
-    conflictPairs,
-    resolveDrafts,
-    conflictLoading,
-    permissionGrants,
-    permissionLoading,
-    permissionAccessDenied,
-    permissionsEndpointAvailable,
-    permissionDraft,
-    setPermissionDraft,
-    changePanel,
-    handleMemorySearch,
-    handleMemoryExpand,
-    handleResolveConflict,
-    handleResolveDraftChange,
-    handleGrantPermission,
-    handleRevokePermission,
-    refreshConflicts,
-    refreshPermissions,
-    reportSurfaceError,
-    pill,
-    latestRecallHitRate,
-    recallWindowAverage,
-  } = p;
-  return (
-    <React.Fragment>
-      {panel === "memory" ? (
-        <section className="panel active">
+function MemoryPanel() { const { panel, stats, memoryQuery, setMemoryQuery, memoryResults, memorySearching,
+    conflictPairs, resolveDrafts, conflictLoading, permissionGrants, permissionLoading, permissionAccessDenied, permissionsEndpointAvailable, permissionDraft,
+    setPermissionDraft, changePanel, handleMemorySearch, handleMemoryExpand,
+    handleResolveConflict, handleResolveDraftChange, handleGrantPermission, handleRevokePermission,
+    refreshConflicts, refreshPermissions, reportSurfaceError, pill, latestRecallHitRate, recallWindowAverage, } = useDashboard();
+  return ( <React.Fragment>
+      {panel === "memory" ? ( <section className="panel active">
           <div className="panel-header">
             <div>
               <h1>Memory</h1>
@@ -71,14 +44,12 @@ function MemoryPanel(p) {
                   aria-label="Search Cortex memories"
                   placeholder="Search the brain... (uses cortex_peek)"
                   value={memoryQuery}
-                  onChange={(event) => setMemoryQuery(event.target.value)}
-                />
+                  onChange={(event) => setMemoryQuery(event.target.value)} />
                 <button type="submit" className="btn-sm btn-primary" disabled={memorySearching}>
                   {memorySearching ? "Searching..." : "Peek"}
                 </button>
               </form>
-              {memoryResults.length > 0 ? (
-                <div className="memory-stats">
+              {memoryResults.length > 0 ? ( <div className="memory-stats">
                   <span className="badge">
                     {memoryResults.length}
                     {" matches"}
@@ -87,19 +58,15 @@ function MemoryPanel(p) {
                 </div>
               ) : null}
               <ul className="item-list">
-                {memoryResults.length ? (
-                  memoryResults.map((match, index) => (
-                    <li
+                {memoryResults.length ? ( memoryResults.map((match, index) => ( <li
                       key={`${match.source}-${index}`}
                       className={`memory-item ${match.expanded ? "" : "memory-item-action"}`}
                       role={match.expanded ? void 0 : "button"}
                       tabIndex={match.expanded ? void 0 : 0}
                       aria-expanded={match.expanded ? void 0 : !1}
                       onClick={() => !match.expanded && handleMemoryExpand(match.source)}
-                      onKeyDown={(event) =>
-                        !match.expanded && handleKeyboardActivation(event, () => handleMemoryExpand(match.source))
-                      }
-                    >
+                      onKeyDown={(event) => !match.expanded && handleKeyboardActivation(event, () => handleMemoryExpand(match.source))
+                      } >
                       <div className="memory-header">
                         <span className="memory-method">{match.method}</span>
                         <span className="memory-relevance">{(match.relevance * 100).toFixed(0)}%</span>
@@ -109,10 +76,8 @@ function MemoryPanel(p) {
                       {match.expanded ? null : <div className="memory-expand-hint">Press Enter or Space to expand</div>}
                     </li>
                   ))
-                ) : memoryQuery ? (
-                  <EmptyItem text="No matches -- try different keywords" />
-                ) : (
-                  <EmptyItem text="Search to explore Cortex memories" />
+                ) : memoryQuery ? ( <EmptyItem text="No matches -- try different keywords" />
+                ) : ( <EmptyItem text="Search to explore Cortex memories" />
                 )}
               </ul>
             </div>
@@ -147,9 +112,7 @@ function MemoryPanel(p) {
                   <span className="badge">{conflictPairs.length}</span>
                 </div>
                 <ul className="item-list compact-list">
-                  {conflictPairs.length ? (
-                    conflictPairs.slice(0, 4).map((pair) => (
-                      <li key={pair.key}>
+                  {conflictPairs.length ? ( conflictPairs.slice(0, 4).map((pair) => ( <li key={pair.key}>
                         <div className="item-meta">
                           <span className="item-name">
                             #{pair.left.id ?? "?"}
@@ -169,8 +132,7 @@ function MemoryPanel(p) {
                         </div>
                       </li>
                     ))
-                  ) : (
-                    <EmptyItem text="No active conflicts" />
+                  ) : ( <EmptyItem text="No active conflicts" />
                   )}
                 </ul>
               </div>
@@ -179,13 +141,10 @@ function MemoryPanel(p) {
                   <h2>Client Permissions</h2>
                   <span className="badge">{permissionGrants.length}</span>
                 </div>
-                {permissionsEndpointAvailable ? (
-                  permissionAccessDenied ? (
-                    <ul className="item-list compact-list permission-list">
+                {permissionsEndpointAvailable ? ( permissionAccessDenied ? ( <ul className="item-list compact-list permission-list">
                       <EmptyItem text="Permission controls require admin role in team mode." />
                     </ul>
-                  ) : (
-                    <React.Fragment>
+                  ) : ( <React.Fragment>
                       <div className="permission-form">
                         <input
                           type="text"
@@ -193,25 +152,15 @@ function MemoryPanel(p) {
                           aria-label="Client id for permission grant"
                           placeholder="client id (e.g. codex, claude, *)"
                           value={permissionDraft.client}
-                          onChange={(event) =>
-                            setPermissionDraft((current) => ({
-                              ...current,
-                              client: event.target.value,
-                            }))
-                          }
-                        />
+                          onChange={(event) => setPermissionDraft((current) => ({ ...current, client: event.target.value, }))
+                          } />
                         <div className="permission-form-row">
                           <label className="feed-control">
                             <span>Permission</span>
                             <select
                               value={permissionDraft.permission}
-                              onChange={(event) =>
-                                setPermissionDraft((current) => ({
-                                  ...current,
-                                  permission: event.target.value,
-                                }))
-                              }
-                            >
+                              onChange={(event) => setPermissionDraft((current) => ({ ...current, permission: event.target.value, }))
+                              } >
                               <option value="read">read</option>
                               <option value="write">write</option>
                               <option value="admin">admin</option>
@@ -223,13 +172,8 @@ function MemoryPanel(p) {
                               type="text"
                               placeholder="* or tool name"
                               value={permissionDraft.scope}
-                              onChange={(event) =>
-                                setPermissionDraft((current) => ({
-                                  ...current,
-                                  scope: event.target.value,
-                                }))
-                              }
-                            />
+                              onChange={(event) => setPermissionDraft((current) => ({ ...current, scope: event.target.value, }))
+                              } />
                           </label>
                         </div>
                         <div className="permission-actions">
@@ -237,24 +181,20 @@ function MemoryPanel(p) {
                             type="button"
                             className="btn-sm btn-primary"
                             disabled={permissionLoading}
-                            onClick={() => handleGrantPermission().catch(reportSurfaceError)}
-                          >
+                            onClick={() => handleGrantPermission().catch(reportSurfaceError)} >
                             {permissionLoading ? "Applying..." : "Grant"}
                           </button>
                           <button
                             type="button"
                             className="btn-sm"
                             disabled={permissionLoading}
-                            onClick={() => refreshPermissions({ force: !0 }).catch(reportSurfaceError)}
-                          >
+                            onClick={() => refreshPermissions({ force: !0 }).catch(reportSurfaceError)} >
                             Refresh
                           </button>
                         </div>
                       </div>
                       <ul className="item-list compact-list permission-list">
-                        {permissionGrants.length ? (
-                          permissionGrants.slice(0, 8).map((grant) => (
-                            <li key={grant.key}>
+                        {permissionGrants.length ? ( permissionGrants.slice(0, 8).map((grant) => ( <li key={grant.key}>
                               <div className="item-meta">
                                 <span className="item-name">{grant.client}</span>
                                 <span className="badge">{grant.permission}</span>
@@ -268,28 +208,23 @@ function MemoryPanel(p) {
                                   type="button"
                                   className="btn-sm btn-danger"
                                   disabled={permissionLoading}
-                                  onClick={() => handleRevokePermission(grant).catch(reportSurfaceError)}
-                                >
+                                  onClick={() => handleRevokePermission(grant).catch(reportSurfaceError)} >
                                   Revoke
                                 </button>
                               </div>
                             </li>
                           ))
-                        ) : (
-                          <EmptyItem text="No explicit grants yet (legacy permissive mode)." />
+                        ) : ( <EmptyItem text="No explicit grants yet (legacy permissive mode)." />
                         )}
                       </ul>
-                    </React.Fragment>
-                  )
-                ) : (
-                  <div className="permission-form">
+                    </React.Fragment> )
+                ) : ( <div className="permission-form">
                     <div className="permission-actions">
                       <button
                         type="button"
                         className="btn-sm"
                         disabled={permissionLoading}
-                        onClick={() => refreshPermissions({ force: !0 }).catch(reportSurfaceError)}
-                      >
+                        onClick={() => refreshPermissions({ force: !0 }).catch(reportSurfaceError)} >
                         Recheck
                       </button>
                     </div>
@@ -315,29 +250,24 @@ function MemoryPanel(p) {
                 </button>
               </div>
             </div>
-            {conflictPairs.length === 0 ? (
-              <div className="card full">
+            {conflictPairs.length === 0 ? ( <div className="card full">
                 <ul className="item-list">
                   <EmptyItem text="No active conflicts -- all decisions are in harmony" />
                 </ul>
               </div>
-            ) : (
-              conflictPairs.map((pair) => (
-                <ConflictPairCard
+            ) : ( conflictPairs.map((pair) => ( <ConflictPairCard
                   key={pair.key}
                   pair={pair}
                   conflictLoading={conflictLoading}
                   onResolveQuick={handleResolveConflict}
                   onResolveDraft={handleResolveConflict}
                   resolveDraft={resolveDrafts[pair.key]}
-                  onResolveDraftChange={handleResolveDraftChange}
-                />
+                  onResolveDraftChange={handleResolveDraftChange} />
               ))
             )}
           </div>
         </section>
       ) : null}
-    </React.Fragment>
-  );
+    </React.Fragment> );
 }
 export { MemoryPanel };

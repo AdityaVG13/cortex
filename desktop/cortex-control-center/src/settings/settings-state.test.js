@@ -176,8 +176,6 @@ describe("summarizeBudgetStatus", () => {
   });
 
   it("uses the documented storage key", () => {
-    expect(CONTROL_CENTER_SETTINGS_STORAGE_KEY).toBe(
-      "cortex_control_center_settings",
-    );
+    expect(CONTROL_CENTER_SETTINGS_STORAGE_KEY).toBe("cortex_control_center_settings");
   });
 });

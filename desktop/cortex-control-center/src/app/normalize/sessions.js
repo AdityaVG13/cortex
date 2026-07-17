@@ -1,44 +1,22 @@
 import { sameAgent } from "../../live-surface.js";
-function normalizeSession(session, index) {
-  const files = Array.isArray(session?.files)
+function normalizeSession(session, index) { const files = Array.isArray(session?.files)
       ? session.files
       : Array.isArray(session?.files_json)
         ? session.files_json
-        : [],
-    startedAt = session?.startedAt ?? session?.started_at ?? null,
-    lastHeartbeat =
-      session?.lastHeartbeat ?? session?.last_heartbeat ?? startedAt,
-    parsedLastHeartbeat = Date.parse(String(lastHeartbeat || "")),
-    lastHeartbeatMs = Number.isFinite(parsedLastHeartbeat)
-      ? parsedLastHeartbeat
-      : 0,
-    expiresAt = session?.expiresAt ?? session?.expires_at ?? null,
-    sessionId =
-      session?.sessionId ??
-      session?.session_id ??
-      `${session?.agent || "agent"}-${index}`;
-  return {
-    ...session,
-    files,
-    sessionId,
-    startedAt,
-    lastHeartbeat,
-    lastHeartbeatMs,
-    expiresAt,
-  };
+        : [], startedAt = session?.startedAt ?? session?.started_at ?? null,
+    lastHeartbeat = session?.lastHeartbeat ?? session?.last_heartbeat ?? startedAt, parsedLastHeartbeat = Date.parse(String(lastHeartbeat || "")),
+    lastHeartbeatMs = Number.isFinite(parsedLastHeartbeat) ? parsedLastHeartbeat : 0, expiresAt = session?.expiresAt ?? session?.expires_at ?? null,
+    sessionId = session?.sessionId ?? session?.session_id ?? `${session?.agent || "agent"}-${index}`;
+  return { ...session, files, sessionId, startedAt, lastHeartbeat, lastHeartbeatMs, expiresAt, };
 }
-function normalizeSessionAgent(agent) {
-  return String(agent || "")
+function normalizeSessionAgent(agent) { return String(agent || "")
     .replace(/\s*\([^)]*\)\s*$/, "")
     .trim()
     .toLowerCase();
 }
-function sessionMatchesAgent(session, agent) {
-  const rawSessionAgent = String(session?.agent || "").trim(),
-    rawAgent = String(agent || "").trim();
+function sessionMatchesAgent(session, agent) { const rawSessionAgent = String(session?.agent || "").trim(), rawAgent = String(agent || "").trim();
   return !rawSessionAgent || !rawAgent
     ? !1
-    : sameAgent(rawSessionAgent, rawAgent) ||
-        normalizeSessionAgent(rawSessionAgent) === rawAgent.toLowerCase();
+    : sameAgent(rawSessionAgent, rawAgent) || normalizeSessionAgent(rawSessionAgent) === rawAgent.toLowerCase();
 }
 export { normalizeSession, sessionMatchesAgent };

@@ -11,14 +11,13 @@ mod editor;
 mod tray;
 
 use commands::{
-    daemon_status, detect_editors, fetch_cortex, hide_to_tray, post_cortex, quit_app,
-    read_auth_token, read_budget_config, save_budget_config, setup_editors, start_daemon,
-    stop_daemon, write_dev_verification_report,
+    daemon_status, detect_editors, fetch_cortex, hide_to_tray, post_cortex, quit_app, read_auth_token, read_budget_config, save_budget_config, setup_editors,
+    start_daemon, stop_daemon, write_dev_verification_report,
 };
 use constants::SUPERVISOR_TICK_MS;
 use daemon::paths::find_cortex_binary;
 use daemon::supervisor::{bootstrap_daemon_on_startup, supervisor_tick};
-use daemon::{AppInstanceGuard, DaemonState, LifecycleState, shutdown_daemon};
+use daemon::{shutdown_daemon, AppInstanceGuard, DaemonState, LifecycleState};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tauri::Manager;
@@ -68,12 +67,7 @@ fn main() {
                         supervisor_tick(&supervisor_handle, &consecutive_failures);
                     }
                 })
-                .map_err(|err| {
-                    std::io::Error::new(
-                        err.kind(),
-                        format!("failed to spawn cortex daemon supervisor thread: {err}"),
-                    )
-                })?;
+                .map_err(|err| std::io::Error::new(err.kind(), format!("failed to spawn cortex daemon supervisor thread: {err}")))?;
 
             Ok(())
         })

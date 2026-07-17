@@ -17,18 +17,8 @@ pub struct FetchCortexResponse {
     pub status: u16,
     pub body: String,
 }
-pub fn send_cortex_request(
-    method: &str,
-    path: &str,
-    auth_token: &str,
-    body: Option<&str>,
-    timeout_ms: Option<u64>,
-) -> Result<FetchCortexResponse, String> {
-    let read_timeout = Duration::from_millis(
-        timeout_ms
-            .unwrap_or(DAEMON_READ_TIMEOUT_MS)
-            .clamp(DAEMON_MIN_REQUEST_TIMEOUT_MS, DAEMON_MAX_REQUEST_TIMEOUT_MS),
-    );
+pub fn send_cortex_request(method: &str, path: &str, auth_token: &str, body: Option<&str>, timeout_ms: Option<u64>) -> Result<FetchCortexResponse, String> {
+    let read_timeout = Duration::from_millis(timeout_ms.unwrap_or(DAEMON_READ_TIMEOUT_MS).clamp(DAEMON_MIN_REQUEST_TIMEOUT_MS, DAEMON_MAX_REQUEST_TIMEOUT_MS));
     send_cortex_request_with_port(
         daemon_port(),
         method,
@@ -47,10 +37,7 @@ pub fn should_use_partial_response_on_read_timeout(err: &std::io::Error, respons
         return false;
     }
 
-    if matches!(
-        err.kind(),
-        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-    ) {
+    if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) {
         return true;
     }
 
@@ -85,17 +72,11 @@ pub fn send_cortex_request_with_port(
     validate_cortex_request_path(path)?;
 
     let mut stream =
-        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect)
-            .map_err(|e| format!("Cannot connect to daemon: {e}"))?;
-    stream
-        .set_read_timeout(Some(timeouts.read))
-        .map_err(|e| format!("Cannot set read timeout: {e}"))?;
-    stream
-        .set_write_timeout(Some(timeouts.write))
-        .map_err(|e| format!("Cannot set write timeout: {e}"))?;
+        TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), timeouts.connect).map_err(|e| format!("Cannot connect to daemon: {e}"))?;
+    stream.set_read_timeout(Some(timeouts.read)).map_err(|e| format!("Cannot set read timeout: {e}"))?;
+    stream.set_write_timeout(Some(timeouts.write)).map_err(|e| format!("Cannot set write timeout: {e}"))?;
 
-    let mut request =
-        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\n");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Cortex-Request: true\r\n");
     if !auth_token.is_empty() {
         request.push_str(&format!("Authorization: Bearer {auth_token}\r\n"));
     }
@@ -108,9 +89,7 @@ pub fn send_cortex_request_with_port(
         request.push_str(payload);
     }
 
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("Write failed: {e}"))?;
+    stream.write_all(request.as_bytes()).map_err(|e| format!("Write failed: {e}"))?;
 
     let mut response = Vec::new();
     if let Err(err) = stream.read_to_end(&mut response) {
@@ -131,17 +110,9 @@ pub fn send_cortex_request_with_port(
         });
 
         // Check for chunked transfer encoding
-        let body_bytes = if chunked {
-            decode_chunked_bytes(body)?
-        } else {
-            body.to_vec()
-        };
-        let body_text = String::from_utf8(body_bytes)
-            .map_err(|e| format!("Response body is not valid UTF-8: {e}"))?;
-        Ok(FetchCortexResponse {
-            status,
-            body: body_text,
-        })
+        let body_bytes = if chunked { decode_chunked_bytes(body)? } else { body.to_vec() };
+        let body_text = String::from_utf8(body_bytes).map_err(|e| format!("Response body is not valid UTF-8: {e}"))?;
+        Ok(FetchCortexResponse { status, body: body_text })
     } else {
         Err("Invalid HTTP response".to_string())
     }
@@ -151,22 +122,13 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    haystack.windows(needle.len()).position(|window| window == needle)
 }
 
 fn parse_status_code(headers: &str) -> Result<u16, String> {
-    let status_line = headers
-        .lines()
-        .next()
-        .ok_or_else(|| "Missing HTTP status line".to_string())?;
-    let code = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| format!("Invalid HTTP status line: {status_line}"))?;
-    code.parse::<u16>()
-        .map_err(|e| format!("Invalid HTTP status code '{code}': {e}"))
+    let status_line = headers.lines().next().ok_or_else(|| "Missing HTTP status line".to_string())?;
+    let code = status_line.split_whitespace().nth(1).ok_or_else(|| format!("Invalid HTTP status line: {status_line}"))?;
+    code.parse::<u16>().map_err(|e| format!("Invalid HTTP status code '{code}': {e}"))
 }
 
 fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
@@ -174,14 +136,10 @@ fn decode_chunked_bytes(body: &[u8]) -> Result<Vec<u8>, String> {
     let mut remaining = body;
 
     loop {
-        let line_end = find_bytes(remaining, b"\r\n").ok_or_else(|| {
-            "Invalid chunked encoding: missing chunk size line ending".to_string()
-        })?;
-        let size_line = std::str::from_utf8(&remaining[..line_end])
-            .map_err(|e| format!("Invalid chunk size line UTF-8: {e}"))?;
+        let line_end = find_bytes(remaining, b"\r\n").ok_or_else(|| "Invalid chunked encoding: missing chunk size line ending".to_string())?;
+        let size_line = std::str::from_utf8(&remaining[..line_end]).map_err(|e| format!("Invalid chunk size line UTF-8: {e}"))?;
         let size_hex = size_line.split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size_hex, 16)
-            .map_err(|e| format!("Invalid chunk size '{size_hex}': {e}"))?;
+        let size = usize::from_str_radix(size_hex, 16).map_err(|e| format!("Invalid chunk size '{size_hex}': {e}"))?;
 
         let data_start = line_end + 2;
         if data_start > remaining.len() {

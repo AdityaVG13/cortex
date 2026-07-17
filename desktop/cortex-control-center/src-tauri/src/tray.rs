@@ -29,12 +29,7 @@ pub fn request_app_quit<R: Runtime>(app: &tauri::AppHandle<R>) {
     app.exit(0);
 }
 pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let tray_menu = MenuBuilder::new(app)
-        .text(TRAY_SHOW_ID, "Show")
-        .text(TRAY_HIDE_ID, "Hide / Minimize")
-        .separator()
-        .text(TRAY_QUIT_ID, "Quit")
-        .build()?;
+    let tray_menu = MenuBuilder::new(app).text(TRAY_SHOW_ID, "Show").text(TRAY_HIDE_ID, "Hide / Minimize").separator().text(TRAY_QUIT_ID, "Quit").build()?;
 
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
@@ -47,14 +42,7 @@ pub fn setup_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if matches!(
-                event,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-            ) {
+            if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) {
                 show_main_window(tray.app_handle());
             }
         });

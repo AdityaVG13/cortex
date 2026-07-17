@@ -1,30 +1,14 @@
 import React from "react";
+import { useDashboard } from "../DashboardContext.jsx";
 import { EmptyItem } from "../components/common.jsx";
 import { AgentItem } from "../components/AgentItem.jsx";
 import { OperatorSelector } from "../components/OperatorSelector.jsx";
 import { MessageItem } from "../components/MessageItem.jsx";
 import { ActivityItem } from "../components/ActivityItem.jsx";
-function AgentsPanel(p) {
-  const {
-    panel,
-    messageEntries,
-    activityEntries,
-    selectedOperator,
-    setSelectedOperator,
-    activitySince,
-    setActivitySince,
-    changePanel,
-    normalizedSessions,
-    knownAgents,
-    runRefreshAll,
-    refreshMessages,
-    refreshActivity,
-    reportSurfaceError,
-  } = p;
-  return (
-    <React.Fragment>
-      {panel === "agents" ? (
-        <section className="panel active">
+function AgentsPanel() { const { panel, messageEntries, activityEntries, selectedOperator, setSelectedOperator, activitySince,
+    setActivitySince, changePanel, normalizedSessions, knownAgents, runRefreshAll, refreshMessages, refreshActivity, reportSurfaceError, } = useDashboard();
+  return ( <React.Fragment>
+      {panel === "agents" ? ( <section className="panel active">
           <div className="panel-header">
             <div>
               <h1>Agents</h1>
@@ -46,12 +30,9 @@ function AgentsPanel(p) {
                 <span className="badge">{normalizedSessions.length}</span>
               </div>
               <ul className="item-list">
-                {normalizedSessions.length ? (
-                  normalizedSessions.map((session) => (
-                    <AgentItem key={session.sessionId || session.agent} session={session} />
+                {normalizedSessions.length ? ( normalizedSessions.map((session) => ( <AgentItem key={session.sessionId || session.agent} session={session} />
                   ))
-                ) : (
-                  <EmptyItem text="No agents online" />
+                ) : ( <EmptyItem text="No agents online" />
                 )}
               </ul>
             </div>
@@ -69,14 +50,9 @@ function AgentsPanel(p) {
                 </div>
               </div>
               <ul className="item-list">
-                {selectedOperator.trim() ? (
-                  messageEntries.length ? (
-                    messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
-                  ) : (
-                    <EmptyItem text={`No inbox messages for ${selectedOperator.trim()}`} />
-                  )
-                ) : (
-                  <EmptyItem text="Select an operator to view the inbox" />
+                {selectedOperator.trim() ? ( messageEntries.length ? ( messageEntries.map((entry) => <MessageItem key={entry.id} entry={entry} />)
+                  ) : ( <EmptyItem text={`No inbox messages for ${selectedOperator.trim()}`} /> )
+                ) : ( <EmptyItem text="Select an operator to view the inbox" />
                 )}
               </ul>
             </div>
@@ -102,17 +78,14 @@ function AgentsPanel(p) {
                 </div>
               </div>
               <ul className="item-list">
-                {activityEntries.length ? (
-                  activityEntries.map((entry) => <ActivityItem key={entry.id} entry={entry} />)
-                ) : (
-                  <EmptyItem text="No recent activity" />
+                {activityEntries.length ? ( activityEntries.map((entry) => <ActivityItem key={entry.id} entry={entry} />)
+                ) : ( <EmptyItem text="No recent activity" />
                 )}
               </ul>
             </div>
           </div>
         </section>
       ) : null}
-    </React.Fragment>
-  );
+    </React.Fragment> );
 }
 export { AgentsPanel };

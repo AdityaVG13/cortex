@@ -22,11 +22,7 @@ fn copy_sidecar_binary() {
     let binaries_dir = manifest_dir.join("binaries");
     let _ = fs::create_dir_all(&binaries_dir);
 
-    let ext = if target_triple.contains("windows") {
-        ".exe"
-    } else {
-        ""
-    };
+    let ext = if target_triple.contains("windows") { ".exe" } else { "" };
     let dest = binaries_dir.join(format!("cortex-{target_triple}{ext}"));
 
     let profile = env::var("PROFILE").unwrap_or_default();
@@ -37,75 +33,29 @@ fn copy_sidecar_binary() {
         candidates.push(PathBuf::from(sidecar_override));
     }
 
-    if let Some(repo_root) = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-    {
+    if let Some(repo_root) = manifest_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
         let daemon_root = repo_root.join("daemon-rs");
         if profile != "release" {
-            candidates.push(
-                daemon_root
-                    .join(DEV_DAEMON_TARGET_DIR)
-                    .join("debug")
-                    .join(format!("cortex{ext}")),
-            );
-            candidates.push(
-                daemon_root
-                    .join("target")
-                    .join("debug")
-                    .join(format!("cortex{ext}")),
-            );
-            candidates.push(
-                daemon_root
-                    .join(RELEASE_DAEMON_TARGET_DIR)
-                    .join("release")
-                    .join(format!("cortex{ext}")),
-            );
+            candidates.push(daemon_root.join(DEV_DAEMON_TARGET_DIR).join("debug").join(format!("cortex{ext}")));
+            candidates.push(daemon_root.join("target").join("debug").join(format!("cortex{ext}")));
+            candidates.push(daemon_root.join(RELEASE_DAEMON_TARGET_DIR).join("release").join(format!("cortex{ext}")));
         } else {
-            candidates.push(
-                daemon_root
-                    .join(RELEASE_DAEMON_TARGET_DIR)
-                    .join("release")
-                    .join(format!("cortex{ext}")),
-            );
+            candidates.push(daemon_root.join(RELEASE_DAEMON_TARGET_DIR).join("release").join(format!("cortex{ext}")));
         }
-        candidates.push(
-            daemon_root
-                .join("target")
-                .join("release")
-                .join(format!("cortex{ext}")),
-        );
+        candidates.push(daemon_root.join("target").join("release").join(format!("cortex{ext}")));
     }
 
-    let home = env::var_os("USERPROFILE")
-        .or_else(|| env::var_os("HOME"))
-        .map(PathBuf::from);
+    let home = env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).map(PathBuf::from);
 
     if let Some(home) = home {
-        candidates.push(
-            home.join(".cortex")
-                .join("bin")
-                .join(format!("cortex{ext}")),
-        );
-        candidates.push(
-            home.join("cortex")
-                .join("daemon-rs")
-                .join("target")
-                .join("release")
-                .join(format!("cortex{ext}")),
-        );
+        candidates.push(home.join(".cortex").join("bin").join(format!("cortex{ext}")));
+        candidates.push(home.join("cortex").join("daemon-rs").join("target").join("release").join(format!("cortex{ext}")));
     }
 
     for src in candidates {
         if src.exists() {
             if let Err(err) = copy_if_changed(&src, &dest) {
-                println!(
-                    "cargo:warning=Failed to copy Cortex sidecar from {} to {}: {}",
-                    src.display(),
-                    dest.display(),
-                    err
-                );
+                println!("cargo:warning=Failed to copy Cortex sidecar from {} to {}: {}", src.display(), dest.display(), err);
             }
             return;
         }

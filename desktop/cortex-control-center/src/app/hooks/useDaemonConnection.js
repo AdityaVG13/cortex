@@ -1,161 +1,68 @@
 import { useCallback } from "react";
 import {
-  DAEMON_START_POLL_INTERVAL_MS,
-  DAEMON_START_STILL_STARTING_GRACE_MS,
-  DAEMON_START_WAIT_TIMEOUT_MS,
-  DAEMON_STOP_HANG_TIMEOUT_MS,
-  DAEMON_STOP_WAIT_TIMEOUT_MS,
-  EMPTY_DAEMON,
-} from "../constants.js";
+  DAEMON_START_POLL_INTERVAL_MS, DAEMON_START_STILL_STARTING_GRACE_MS, DAEMON_START_WAIT_TIMEOUT_MS, DAEMON_STOP_HANG_TIMEOUT_MS,
+  DAEMON_STOP_WAIT_TIMEOUT_MS, EMPTY_DAEMON, } from "../constants.js";
 import { persistBrowserAuthToken } from "../browser-bootstrap.js";
 import { formatDaemonEndpoint } from "../utils/format.js";
 import { isDaemonOfflineErrorMessage, isReachableHealthPayload } from "../utils/daemon.js";
-function useDaemonConnection(ctx) {
-  const {
-      cortexBase,
-      setFeedbackMessage,
-      invokeRef,
-      tokenRef,
-      runRefreshAll,
-      readAuthToken,
-      api,
-      call,
-      setDaemonState,
-      daemonTransitionRef,
-      resetStartupRetryState,
-      clearDisconnectedData,
-      scheduleStartupRecoveryRetry,
-    } = ctx,
-    waitForDaemonReachable = useCallback(
-      async (options = {}) => {
-        const shortCircuitIfStarting = options?.shortCircuitIfStarting === !0,
-          started = Date.now();
-        for (; Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS;) {
-          try {
-            if (invokeRef.current) {
-              const state = {
-                ...EMPTY_DAEMON,
-                ...(await call("daemon_status")),
-              };
+function useDaemonConnection(ctx) { const { cortexBase, setFeedbackMessage, invokeRef, tokenRef, runRefreshAll, readAuthToken,
+      api, call, setDaemonState, daemonTransitionRef, resetStartupRetryState, clearDisconnectedData, scheduleStartupRecoveryRetry, } = ctx,
+    waitForDaemonReachable = useCallback( async (options = {}) => { const shortCircuitIfStarting = options?.shortCircuitIfStarting === !0, started = Date.now();
+        for (; Date.now() - started < DAEMON_START_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const state = {
+                ...EMPTY_DAEMON, ...(await call("daemon_status")), };
               if ((setDaemonState(state), state?.reachable)) return !0;
-              if (
-                shortCircuitIfStarting &&
-                state?.running &&
-                !state?.reachable &&
-                Date.now() - started >= DAEMON_START_STILL_STARTING_GRACE_MS
-              )
+              if ( shortCircuitIfStarting && state?.running && !state?.reachable && Date.now() - started >= DAEMON_START_STILL_STARTING_GRACE_MS )
                 return !1;
-            } else {
-              const health = await api("/health");
+            } else { const health = await api("/health");
               if (isReachableHealthPayload(health)) return !0;
             }
           } catch {}
           await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
         }
-        return !1;
-      },
-      [api, call],
-    ),
-    waitForDaemonOffline = useCallback(async () => {
-      const started = Date.now();
-      for (; Date.now() - started < DAEMON_STOP_WAIT_TIMEOUT_MS;) {
-        try {
-          if (invokeRef.current) {
-            const state = await call("daemon_status");
+        return !1; }, [api, call], ), waitForDaemonOffline = useCallback(async () => { const started = Date.now();
+      for (; Date.now() - started < DAEMON_STOP_WAIT_TIMEOUT_MS;) { try { if (invokeRef.current) { const state = await call("daemon_status");
             if ((setDaemonState(state), !state?.reachable)) return !0;
           } else await api("/health");
-        } catch (error) {
-          if (isDaemonOfflineErrorMessage(error?.message || error)) return !0;
+        } catch (error) { if (isDaemonOfflineErrorMessage(error?.message || error)) return !0;
         }
         await new Promise((resolve) => setTimeout(resolve, DAEMON_START_POLL_INTERVAL_MS));
       }
       return !1;
-    }, [api, call]),
-    runRestartDaemonSequence = useCallback(async () => {
-      ((daemonTransitionRef.current = !0), resetStartupRetryState());
-      const statusBefore = await call("daemon_status").catch(() => null),
-        shouldStop = !!(statusBefore?.running || statusBefore?.reachable),
+    }, [api, call]), runRestartDaemonSequence = useCallback(async () => { ((daemonTransitionRef.current = !0), resetStartupRetryState());
+      const statusBefore = await call("daemon_status").catch(() => null), shouldStop = !!(statusBefore?.running || statusBefore?.reachable),
         managedBefore = !!statusBefore?.managed;
-      let restartSkippedExternal = !1,
-        startResult = null;
-      if (shouldStop) {
-        setFeedbackMessage("Restarting daemon: stopping...");
+      let restartSkippedExternal = !1, startResult = null;
+      if (shouldStop) { setFeedbackMessage("Restarting daemon: stopping...");
         const stopPromise = call("stop_daemon")
             .then((result) => ({ ok: !0, result }))
-            .catch((error) => ({
-              ok: !1,
-              error: error?.message || String(error),
-            })),
-          stopResult = await Promise.race([
-            stopPromise,
-            new Promise((resolve) => setTimeout(() => resolve({ timedOut: !0 }), DAEMON_STOP_HANG_TIMEOUT_MS)),
-          ]);
+            .catch((error) => ({ ok: !1, error: error?.message || String(error), })),
+          stopResult = await Promise.race([ stopPromise, new Promise((resolve) => setTimeout(() => resolve({ timedOut: !0 }), DAEMON_STOP_HANG_TIMEOUT_MS)), ]);
         let stopFailure = "";
         stopResult?.timedOut
           ? setFeedbackMessage("Shutdown is taking longer than expected. Waiting for daemon to go offline...")
           : stopResult?.ok || (stopFailure = stopResult?.error || "Existing daemon rejected shutdown.");
-        const stopState = stopResult?.ok ? stopResult.result : null,
-          unmanagedStillReachable = !!(stopState?.reachable && !stopState?.managed);
+        const stopState = stopResult?.ok ? stopResult.result : null, unmanagedStillReachable = !!(stopState?.reachable && !stopState?.managed);
         if (!(unmanagedStillReachable ? !1 : await waitForDaemonOffline()))
           if (unmanagedStillReachable && !managedBefore)
-            ((restartSkippedExternal = !0),
-              setFeedbackMessage(
-                "Daemon is externally managed and remained online. Continuing without forced shutdown.",
-              ));
+            ((restartSkippedExternal = !0), setFeedbackMessage( "Daemon is externally managed and remained online. Continuing without forced shutdown.", ));
           else throw new Error(stopFailure || "Existing daemon did not stop cleanly.");
-        restartSkippedExternal ||
-          ((tokenRef.current = ""),
-          persistBrowserAuthToken(""),
-          clearDisconnectedData(),
-          setDaemonState({
-            running: !1,
-            reachable: !1,
-            managed: !1,
-            authTokenReady: !1,
-            pid: null,
-            message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`,
-          }));
+        restartSkippedExternal || ((tokenRef.current = ""), persistBrowserAuthToken(""), clearDisconnectedData(),
+          setDaemonState({ running: !1, reachable: !1, managed: !1,
+            authTokenReady: !1, pid: null, message: `Cannot reach daemon on ${formatDaemonEndpoint(cortexBase)}`, }));
       } else setFeedbackMessage("Daemon already stopped. Starting...");
       if (restartSkippedExternal)
-        startResult = await call("daemon_status").catch(() => ({
-          running: !0,
-          reachable: !0,
-          managed: !1,
-          authTokenReady: !!tokenRef.current,
-          pid: null,
-          message: "Daemon remained online (externally managed).",
-        }));
-      else if (
-        (setFeedbackMessage("Restarting daemon: starting..."),
-        (startResult = await call("start_daemon")),
-        startResult?.message && setFeedbackMessage(startResult.message),
-        !(await waitForDaemonReachable({ shortCircuitIfStarting: !0 })))
-      )
+        startResult = await call("daemon_status").catch(() => ({ running: !0, reachable: !0, managed: !1,
+          authTokenReady: !!tokenRef.current, pid: null, message: "Daemon remained online (externally managed).", }));
+      else if ( (setFeedbackMessage("Restarting daemon: starting..."),
+        (startResult = await call("start_daemon")), startResult?.message && setFeedbackMessage(startResult.message),
+        !(await waitForDaemonReachable({ shortCircuitIfStarting: !0 }))) )
         if (startResult?.running && !startResult?.reachable)
           scheduleStartupRecoveryRetry("Daemon is still starting. Reconnect will continue automatically.");
         else throw new Error("Daemon did not become reachable after restart.");
-      return (
-        (daemonTransitionRef.current = !1),
-        await readAuthToken({ suppressFeedback: !0 }),
-        await runRefreshAll(),
-        { ...startResult, restartSkippedExternal }
-      );
-    }, [
-      call,
-      clearDisconnectedData,
-      cortexBase,
-      readAuthToken,
-      resetStartupRetryState,
-      runRefreshAll,
-      scheduleStartupRecoveryRetry,
-      waitForDaemonOffline,
-      waitForDaemonReachable,
-    ]);
-  return {
-    ...ctx,
-    waitForDaemonReachable,
-    waitForDaemonOffline,
-    runRestartDaemonSequence,
-  };
+      return ( (daemonTransitionRef.current = !1), await readAuthToken({ suppressFeedback: !0 }), await runRefreshAll(),
+        { ...startResult, restartSkippedExternal } );
+    }, [ call, clearDisconnectedData, cortexBase, readAuthToken, resetStartupRetryState, runRefreshAll, scheduleStartupRecoveryRetry,
+      waitForDaemonOffline, waitForDaemonReachable, ]);
+  return { ...ctx, waitForDaemonReachable, waitForDaemonOffline, runRestartDaemonSequence, };
 }
 export { useDaemonConnection };
