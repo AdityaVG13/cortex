@@ -182,7 +182,7 @@ pub async fn handle_boot_audit(
             json!({"error":"Team mode requires a caller-scoped ctx_ API key"}),
         );
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     match query_boot_audits(&conn, query.agent.as_deref(), query.limit) {
         Ok(payload) => json_response(StatusCode::OK, payload),
         Err(e) => json_response(

@@ -60,7 +60,7 @@ pub async fn handle_agent_feedback_stats(
     };
     let horizon_days = normalize_horizon_days(query.horizon_days);
     let limit = normalize_limit(query.limit);
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     match build_agent_feedback_stats_payload(
         &conn,
         owner_id,

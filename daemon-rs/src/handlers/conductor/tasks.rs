@@ -470,7 +470,7 @@ pub async fn handle_next_task(
     };
     let capability = query.capability.unwrap_or_else(|| "any".to_string());
     let owner_id = owner_id_from_headers(&headers, &state);
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let sql = if owner_id.is_some() {
         "SELECT task_id, title, description, project, files_json, priority, required_capability, status, claimed_by, created_at, claimed_at, completed_at, summary
          FROM tasks

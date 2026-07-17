@@ -160,7 +160,7 @@ pub async fn handle_feedback_stats(
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM recall_feedback", [], |row| row.get(0))
         .unwrap_or(0);

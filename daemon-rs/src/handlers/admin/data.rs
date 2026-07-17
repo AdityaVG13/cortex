@@ -14,7 +14,7 @@ pub async fn handle_unowned(State(state): State<RuntimeState>, headers: HeaderMa
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
     }
@@ -174,7 +174,7 @@ pub async fn handle_stats(State(state): State<RuntimeState>, headers: HeaderMap)
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
     }

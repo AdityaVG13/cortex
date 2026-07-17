@@ -54,7 +54,7 @@ function buildMonteCarloProjection(
   dailySeries,
   cumulativeSeries,
   horizonDays = 30,
-  simulationCount = 180,
+  simulationCount = 64,
 ) {
   const safeHorizonDays = Math.max(
       1,
@@ -62,7 +62,7 @@ function buildMonteCarloProjection(
     ),
     safeSimulationCount = Math.max(
       20,
-      Math.min(1e3, Math.floor(Number(simulationCount) || 180)),
+      Math.min(1e3, Math.floor(Number(simulationCount) || 64)),
     ),
     basis = sanitizeProjectionBasis(
       projectionBasisFromSeries(dailySeries, cumulativeSeries),

@@ -137,7 +137,7 @@ pub async fn handle_team_list(State(state): State<RuntimeState>, headers: Header
     if let Err(resp) = ensure_auth_rated(&headers, &state).await {
         return resp;
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     if let Err(resp) = ensure_admin(&headers, &state, &conn) {
         return resp;
     }

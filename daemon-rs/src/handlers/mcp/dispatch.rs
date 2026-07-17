@@ -226,7 +226,7 @@ pub(crate) async fn mcp_dispatch(
             let limit = arg_usize(args, &["limit"]);
             let agent = arg_str(args, &["agent", "source_agent"]).map(str::trim);
             let agent = agent.filter(|value| !value.is_empty());
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             crate::handlers::boot::query_boot_audits(&conn, agent, limit)
                 .map_err(|err| format!("boot_audits query failed: {err}"))
         }
@@ -287,7 +287,7 @@ pub(crate) async fn mcp_dispatch(
                 } else {
                     0
                 };
-                let conn = state.db.lock().await;
+                let conn = state.db_read.lock().await;
                 if let Some(policy_val) = recommend_recall_k(&conn, owner_id, agent, task_class, k)?
                 {
                     if let Some(recommended_k) = policy_val
@@ -441,7 +441,7 @@ pub(crate) async fn mcp_dispatch(
             let limit = arg_usize(args, &["limit"]).unwrap_or(400);
             let task_class = arg_str(args, &["taskClass", "task_class"]);
             let agent = arg_str(args, &["agent", "source_agent"]);
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             build_agent_feedback_stats_payload(
                 &conn,
                 owner_id,
@@ -455,7 +455,7 @@ pub(crate) async fn mcp_dispatch(
         "cortex_health" => Ok(build_health_payload(state, false).await),
 
         "cortex_digest" => {
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             build_digest(&conn)
         }
 
@@ -608,7 +608,7 @@ pub(crate) async fn mcp_dispatch(
                 conflict_id,
                 limit,
             };
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             list_conflicts_payload(&conn, &options)
         }
 
@@ -623,7 +623,7 @@ pub(crate) async fn mcp_dispatch(
                 conflict_id: Some(conflict_id.clone()),
                 limit: 200,
             };
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             let payload = list_conflicts_payload(&conn, &options)?;
             let found = payload
                 .get("count")
@@ -903,7 +903,7 @@ pub(crate) async fn mcp_dispatch(
             let horizon_days = arg_i64(args, &["horizonDays", "horizon_days"])
                 .unwrap_or(30)
                 .clamp(1, 180);
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             Ok(crate::eval::build_eval_snapshot(&conn, horizon_days))
         }
 
@@ -932,7 +932,7 @@ pub(crate) async fn mcp_dispatch(
         "cortex_focus_status" => {
             let agent = arg_str(args, &["agent"])
                 .unwrap_or_else(|| source.as_ref().map(|s| s.agent.as_str()).unwrap_or("mcp"));
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
 
             let current = crate::focus::focus_current(&conn, agent);
 
@@ -987,7 +987,7 @@ pub(crate) async fn mcp_dispatch(
             let kind = arg_str(args, &["kind"]);
             let agent_filter = arg_str(args, &["agent", "source_agent"]);
             let ctx = RecallContext::from_caller(caller_id, state);
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             fetch_last_call(&conn, kind, agent_filter, &ctx)
         }
 
@@ -997,7 +997,7 @@ pub(crate) async fn mcp_dispatch(
             } else {
                 0
             };
-            let conn = state.db.lock().await;
+            let conn = state.db_read.lock().await;
             let mut stmt = conn
                 .prepare(
                     "SELECT client_id, permission, scope, granted_by, granted_at

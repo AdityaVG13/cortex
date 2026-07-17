@@ -470,13 +470,41 @@ pub(crate) fn parse_co_occurrence_prediction(entry: &Value) -> Option<(String, i
     }
     Some((source.to_string(), score))
 }
-pub(crate) fn fetch_associative_source_payload(
-    conn: &Connection,
-    source: &str,
+fn associative_payload_from_row(
+    text: String,
+    compressed_text: Option<String>,
+    age_tier: Option<String>,
+    score: Option<f64>,
+    trust_score: Option<f64>,
+    last_accessed: Option<String>,
+    created_at: Option<String>,
+    owner_id: Option<i64>,
+    visibility: Option<String>,
     query_text: &str,
     ctx: &RecallContext,
 ) -> Option<(String, f64, i64)> {
+    if ctx.team_mode && !is_visible(owner_id, visibility.as_deref(), ctx) {
+        return None;
+    }
+    let age_tier = age_tier.as_deref().unwrap_or("fresh");
+    let display = crate::aging::get_display_text(&text, &compressed_text, age_tier);
+    let excerpt = query_focused_excerpt(&display, query_text, 220);
+    let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
+    let ts = last_accessed
+        .as_deref()
+        .or(created_at.as_deref())
+        .map(parse_timestamp_ms)
+        .unwrap_or_else(|| parse_timestamp_ms(&now_iso()));
+    Some((excerpt, importance, ts))
+}
+pub(crate) fn fetch_associative_source_payloads(
+    conn: &Connection,
+    sources: &[&str],
+    query_text: &str,
+    ctx: &RecallContext,
+) -> HashMap<String, (String, f64, i64)> {
     type PayloadRow = (
+        String,
         String,
         Option<String>,
         Option<String>,
@@ -487,95 +515,185 @@ pub(crate) fn fetch_associative_source_payload(
         Option<i64>,
         Option<String>,
     );
-    let mut best: Option<(String, f64, i64)> = None;
-    let memory_row: Option<PayloadRow> = if ctx.team_mode {
-        conn.query_row("SELECT text, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
+    let mut best = HashMap::new();
+    if sources.is_empty() {
+        return best;
+    }
+    let placeholders = numbered_placeholders(1, sources.len());
+    let mut source_params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(sources.len());
+    for source in sources {
+        source_params.push(source);
+    }
+    let memory_sql = if ctx.team_mode {
+        format!(
+            "SELECT source, text, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
              FROM memories
              WHERE status = 'active'
-               AND source = ?1
+               AND source IN ({placeholders})
                AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",params![source],|row|{Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?,row.get::<_,Option<i64>>(7)?,row.get::<_,Option<String>>(8)?,))},).ok()
+             ORDER BY source ASC, COALESCE(last_accessed, created_at) DESC"
+        )
     } else {
-        conn.query_row("SELECT text, compressed_text, age_tier, score, trust_score, last_accessed, created_at
+        format!(
+            "SELECT source, text, compressed_text, age_tier, score, trust_score, last_accessed, created_at
              FROM memories
              WHERE status = 'active'
-               AND source = ?1
+               AND source IN ({placeholders})
                AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",params![source],|row|{Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?,None,None,))},).ok()
+             ORDER BY source ASC, COALESCE(last_accessed, created_at) DESC"
+        )
     };
-    if let Some((
-        text,
-        compressed_text,
-        age_tier,
-        score,
-        trust_score,
-        last_accessed,
-        created_at,
-        owner_id,
-        visibility,
-    )) = memory_row
-    {
-        if !ctx.team_mode || is_visible(owner_id, visibility.as_deref(), ctx) {
-            let display = crate::aging::get_display_text(
-                &text,
-                &compressed_text,
-                &age_tier.unwrap_or_else(|| "fresh".to_string()),
-            );
-            let excerpt = query_focused_excerpt(&display, query_text, 220);
-            let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso));
-            best = Some((excerpt, importance, ts));
+    if let Ok(mut stmt) = conn.prepare(&memory_sql) {
+        if let Ok(rows) = stmt.query_map(source_params.as_slice(), |row| {
+            if ctx.team_mode {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            } else {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    None,
+                    None,
+                ))
+            }
+        }) {
+            for row in rows.flatten() {
+                let (
+                    source,
+                    text,
+                    compressed_text,
+                    age_tier,
+                    score,
+                    trust_score,
+                    last_accessed,
+                    created_at,
+                    owner_id,
+                    visibility,
+                ): PayloadRow = row;
+                if best.contains_key(&source) {
+                    continue;
+                }
+                if let Some(payload) = associative_payload_from_row(
+                    text,
+                    compressed_text,
+                    age_tier,
+                    score,
+                    trust_score,
+                    last_accessed,
+                    created_at,
+                    owner_id,
+                    visibility,
+                    query_text,
+                    ctx,
+                ) {
+                    best.insert(source, payload);
+                }
+            }
         }
     }
-    let decision_row: Option<PayloadRow> = if ctx.team_mode {
-        conn.query_row("SELECT decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
+    let decision_sql = if ctx.team_mode {
+        format!(
+            "SELECT context, decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at, owner_id, visibility
              FROM decisions
              WHERE status = 'active'
-               AND context = ?1
+               AND context IN ({placeholders})
                AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",params![source],|row|{Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?,row.get::<_,Option<i64>>(7)?,row.get::<_,Option<String>>(8)?,))},).ok()
+             ORDER BY context ASC, COALESCE(last_accessed, created_at) DESC"
+        )
     } else {
-        conn.query_row("SELECT decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at
+        format!(
+            "SELECT context, decision, compressed_text, age_tier, score, trust_score, last_accessed, created_at
              FROM decisions
              WHERE status = 'active'
-               AND context = ?1
+               AND context IN ({placeholders})
                AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))
-             ORDER BY COALESCE(last_accessed, created_at) DESC
-             LIMIT 1",params![source],|row|{Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,Option<String>>(5)?,row.get::<_,Option<String>>(6)?,None,None,))},).ok()
+             ORDER BY context ASC, COALESCE(last_accessed, created_at) DESC"
+        )
     };
-    if let Some((
-        decision,
-        compressed_text,
-        age_tier,
-        score,
-        trust_score,
-        last_accessed,
-        created_at,
-        owner_id,
-        visibility,
-    )) = decision_row
-    {
-        if !ctx.team_mode || is_visible(owner_id, visibility.as_deref(), ctx) {
-            let display = crate::aging::get_display_text(
-                &decision,
-                &compressed_text,
-                &age_tier.unwrap_or_else(|| "fresh".to_string()),
-            );
-            let excerpt = query_focused_excerpt(&display, query_text, 220);
-            let importance = blend_importance(score, trust_score).clamp(0.0, 1.0);
-            let ts = parse_timestamp_ms(&last_accessed.or(created_at).unwrap_or_else(now_iso));
-            let replace = match &best {
-                Some((_, best_importance, best_ts)) => {
-                    importance > *best_importance
-                        || (importance == *best_importance && ts > *best_ts)
+    if let Ok(mut stmt) = conn.prepare(&decision_sql) {
+        if let Ok(rows) = stmt.query_map(source_params.as_slice(), |row| {
+            if ctx.team_mode {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            } else {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    None,
+                    None,
+                ))
+            }
+        }) {
+            for row in rows.flatten() {
+                let (
+                    source,
+                    decision,
+                    compressed_text,
+                    age_tier,
+                    score,
+                    trust_score,
+                    last_accessed,
+                    created_at,
+                    owner_id,
+                    visibility,
+                ): PayloadRow = row;
+                let Some((excerpt, importance, ts)) = associative_payload_from_row(
+                    decision,
+                    compressed_text,
+                    age_tier,
+                    score,
+                    trust_score,
+                    last_accessed,
+                    created_at,
+                    owner_id,
+                    visibility,
+                    query_text,
+                    ctx,
+                ) else {
+                    continue;
+                };
+                let replace = match best.get(&source) {
+                    Some((_, best_importance, best_ts)) => {
+                        importance > *best_importance
+                            || (importance == *best_importance && ts > *best_ts)
+                    }
+                    None => true,
+                };
+                if replace {
+                    best.insert(source, (excerpt, importance, ts));
                 }
-                None => true,
-            };
-            if replace {
-                best = Some((excerpt, importance, ts));
             }
         }
     }
@@ -627,18 +745,27 @@ pub(crate) fn build_associative_candidates(
     parsed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let max_co_score = parsed[0].1.max(1);
     let min_required_co_score = ((max_co_score as f64) * 0.35).ceil() as i64;
+    let candidates: Vec<(String, i64)> = parsed
+        .into_iter()
+        .filter(|(source, co_score)| {
+            *co_score >= 2
+                && *co_score >= min_required_co_score
+                && source_matches_prefix(source, source_prefix)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let candidate_sources: Vec<&str> = candidates
+        .iter()
+        .map(|(source, _)| source.as_str())
+        .collect();
+    let mut source_payloads =
+        fetch_associative_source_payloads(conn, &candidate_sources, query_text, ctx);
     let query_terms = extract_search_keywords(query_text);
     let mut associative = Vec::new();
-    for (source, co_score) in parsed {
-        if co_score < 2 || co_score < min_required_co_score {
-            continue;
-        }
-        if !source_matches_prefix(&source, source_prefix) {
-            continue;
-        }
-        let Some((excerpt, importance, ts)) =
-            fetch_associative_source_payload(conn, &source, query_text, ctx)
-        else {
+    for (source, co_score) in candidates {
+        let Some((excerpt, importance, ts)) = source_payloads.remove(source.as_str()) else {
             continue;
         };
         let norm =
@@ -1286,7 +1413,7 @@ pub async fn execute_recall_policy_explain(
     if query_vector_override.is_none() && state.embedding_engine.is_some() {
         update_semantic_search_health(dflag, query_vector.is_some(), true);
     }
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     let (
         budgeted,
         candidate_pool,

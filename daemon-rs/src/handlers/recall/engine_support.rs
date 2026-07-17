@@ -4,45 +4,75 @@ pub(crate) fn round4(value: f64) -> f64 {
     }
     (value * 10000.0).round() / 10000.0
 }
-fn bump_retrievals_keys(conn: &Connection, table: &str, key_col: &str, now: &str, keys: &[String]) {
+fn numbered_placeholders(start: usize, len: usize) -> String {
+    let mut placeholders = String::new();
+    for idx in 0..len {
+        if idx > 0 {
+            placeholders.push(',');
+        }
+        let _ = write!(placeholders, "?{}", start + idx);
+    }
+    placeholders
+}
+fn bump_retrievals_str_keys(
+    conn: &Connection,
+    table: &str,
+    key_col: &str,
+    now: &str,
+    keys: &[&str],
+) {
     if keys.is_empty() {
         return;
     }
-    let placeholders: String = (2..=keys.len() + 1)
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let placeholders = numbered_placeholders(2, keys.len());
     let sql=format!("UPDATE {table} SET retrievals = retrievals + 1, last_accessed = ?1, score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) WHERE {key_col} IN ({placeholders})");
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(keys.len() + 1);
-    params.push(Box::new(now.to_string()));
+    let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(keys.len() + 1);
+    params.push(&now);
     for key in keys {
-        params.push(Box::new(key.clone()));
+        params.push(key);
     }
-    let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let _ = conn.execute(&sql, refs.as_slice());
+    let _ = conn.execute(&sql, params.as_slice());
+}
+fn bump_retrievals_i64_keys(
+    conn: &Connection,
+    table: &str,
+    key_col: &str,
+    now: &str,
+    keys: &[i64],
+) {
+    if keys.is_empty() {
+        return;
+    }
+    let placeholders = numbered_placeholders(2, keys.len());
+    let sql=format!("UPDATE {table} SET retrievals = retrievals + 1, last_accessed = ?1, score = MIN(1.0, score + 0.15 / (1.0 + 0.1 * retrievals)) WHERE {key_col} IN ({placeholders})");
+    let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(keys.len() + 1);
+    params.push(&now);
+    for key in keys {
+        params.push(key);
+    }
+    let _ = conn.execute(&sql, params.as_slice());
 }
 pub(crate) fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
     if items.is_empty() {
         return;
     }
     let now = now_iso();
-    let sources: Vec<String> = items.iter().map(|i| i.source.clone()).collect();
-    bump_retrievals_keys(conn, "memories", "source", &now, &sources);
-    let decision_ids: Vec<String> = sources
+    let sources: Vec<&str> = items.iter().map(|item| item.source.as_str()).collect();
+    bump_retrievals_str_keys(conn, "memories", "source", &now, &sources);
+    let decision_ids: Vec<i64> = sources
         .iter()
         .filter_map(|s| {
             s.strip_prefix("decision::")
                 .and_then(|id| id.parse::<i64>().ok())
-                .map(|id| id.to_string())
         })
         .collect();
-    bump_retrievals_keys(conn, "decisions", "id", &now, &decision_ids);
-    let context_sources: Vec<String> = sources
+    bump_retrievals_i64_keys(conn, "decisions", "id", &now, &decision_ids);
+    let context_sources: Vec<&str> = sources
         .iter()
-        .filter(|s| !s.starts_with("decision::"))
-        .cloned()
+        .copied()
+        .filter(|source| !source.starts_with("decision::"))
         .collect();
-    bump_retrievals_keys(conn, "decisions", "context", &now, &context_sources);
+    bump_retrievals_str_keys(conn, "decisions", "context", &now, &context_sources);
 }
 pub(crate) fn recall_to_json(item: RecallItem) -> Value {
     let mut payload = json!({"source":item.source,"relevance":item.relevance,"excerpt":item.excerpt,"method":item.method});
@@ -560,11 +590,13 @@ pub(crate) async fn predict_and_cache(
     Ok(())
 }
 pub(crate) fn rerank_candidate_text(item: &RecallItem) -> String {
-    let text = if item.excerpt.trim().is_empty() {
-        item.source.clone()
-    } else {
-        format!("{} {}", item.source, item.excerpt)
-    };
+    if item.excerpt.trim().is_empty() {
+        return truncate_chars(&item.source, 1800);
+    }
+    let mut text = String::with_capacity(item.source.len() + 1 + item.excerpt.len());
+    text.push_str(&item.source);
+    text.push(' ');
+    text.push_str(&item.excerpt);
     truncate_chars(&text, 1800)
 }
 pub(crate) fn build_rerank_candidates(

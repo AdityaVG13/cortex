@@ -162,7 +162,7 @@ pub(crate) async fn enforce_client_permission(
         0
     };
     let client_id = source_client_for_permissions(source, args);
-    let conn = state.db.lock().await;
+    let conn = state.db_read.lock().await;
     if state.team_mode
         && required == ClientPermission::Admin
         && !caller_has_team_admin_role(&conn, owner_id)?
