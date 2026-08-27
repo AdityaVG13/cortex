@@ -245,3 +245,9 @@ refactor/artifacts/
 
 # Local performance profiling runs
 daemon-rs/tests/artifacts/perf/
+
+# Windows-only tooling (project is developed on macOS)
+*.ps1
+
+# Cursor/agent upgrade scratch artifacts
+claude-upgrade-progress.json

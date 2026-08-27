@@ -12,11 +12,7 @@
     "desktop:install": "npm --prefix desktop/cortex-control-center install",
     "desktop:dev": "npm --prefix desktop/cortex-control-center run dev",
     "desktop:build": "npm --prefix desktop/cortex-control-center run build",
-    "desktop:verify:lifecycle:dev": "npm --prefix desktop/cortex-control-center run verify:lifecycle:dev",
-    "ops:git-perf-audit": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/git-perf-health.ps1",
-    "ops:git-perf-apply": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/git-perf-health.ps1 -Apply",
-    "ops:prune-build-bloat": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prune-build-bloat.ps1",
-    "ops:prune-build-bloat:apply": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prune-build-bloat.ps1 -Apply"
+    "desktop:verify:lifecycle:dev": "npm --prefix desktop/cortex-control-center run verify:lifecycle:dev"
   },
   "keywords": [
     "ai",
