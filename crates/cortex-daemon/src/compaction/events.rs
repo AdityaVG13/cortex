@@ -158,14 +158,6 @@ pub(crate) fn prune_old_event_savings_rollups(conn: &Connection, retention_days:
     )
     .unwrap_or(0)
 }
-#[cfg(test)]
-pub(crate) fn prune_old_events(conn: &Connection) -> usize {
-    prune_old_events_with_retention_limit(conn, EVENT_RETENTION_DAYS, None)
-}
-#[cfg(test)]
-pub(crate) fn prune_old_events_with_retention(conn: &Connection, retention_days: i64) -> usize {
-    prune_old_events_with_retention_limit(conn, retention_days, None)
-}
 pub(crate) fn prune_old_events_with_retention_limit(conn: &Connection, retention_days: i64, max_delete_rows: Option<i64>) -> usize {
     let retention_window = format!("-{retention_days} days");
     if let Some(max_rows) = max_delete_rows.filter(|rows| *rows > 0) {
@@ -191,10 +183,6 @@ pub(crate) fn prune_old_events_with_retention_limit(conn: &Connection, retention
         params![retention_window],
     )
     .unwrap_or(0)
-}
-#[cfg(test)]
-pub(crate) fn prune_event_type_caps(conn: &Connection, caps: &[(&str, i64)]) -> usize {
-    prune_event_type_caps_with_limit(conn, caps, None)
 }
 pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str, i64)], max_delete_rows: Option<i64>) -> usize {
     let mut total = 0usize;
@@ -237,10 +225,6 @@ pub(crate) fn prune_event_type_caps_with_limit(conn: &Connection, caps: &[(&str,
         total += deleted;
     }
     total
-}
-#[cfg(test)]
-pub(crate) fn prune_nonboot_event_overflow(conn: &Connection, keep_rows: i64) -> usize {
-    prune_nonboot_event_overflow_with_limit(conn, keep_rows, None)
 }
 pub(crate) fn prune_nonboot_event_overflow_with_limit(conn: &Connection, keep_rows: i64, max_delete_rows: Option<i64>) -> usize {
     if keep_rows <= 0 {

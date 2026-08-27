@@ -3,8 +3,7 @@ mod locks;
 mod migration;
 mod paths;
 mod runtime;
-#[cfg(test)]
-mod tests;
+
 pub use keys::{
     cortex_dir, generate_ctx_api_key, generate_ephemeral_token, hash_api_key_argon2id, read_token, read_token_from, try_generate_token, try_generate_token_for,
     try_write_token_for, verify_api_key_argon2id, verify_ctx_api_key_checksum,

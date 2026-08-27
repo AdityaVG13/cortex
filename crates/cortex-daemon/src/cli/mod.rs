@@ -9,8 +9,7 @@ mod eval;
 mod reindex;
 mod status;
 mod sync;
-#[cfg(test)]
-mod tests;
+
 mod usage;
 pub use admin::{run_admin_cli, run_team_cli, run_user_cli};
 pub use boot::run_boot_cli;

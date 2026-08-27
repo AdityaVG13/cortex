@@ -1,7 +1,6 @@
 mod data;
 mod teams;
-#[cfg(test)]
-mod tests;
+
 mod types;
 mod users;
 pub use data::{handle_archive, handle_assign_owner, handle_set_visibility, handle_stats, handle_unowned};

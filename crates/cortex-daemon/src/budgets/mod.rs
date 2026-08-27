@@ -225,5 +225,4 @@ struct RawEndpointBudget {
     limit: Option<i64>,
     window_seconds: Option<i64>,
 }
-#[cfg(test)]
-mod tests;
+

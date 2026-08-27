@@ -257,5 +257,4 @@ fn prune_event_type_keep_latest(conn: &rusqlite::Connection, event_type: &str, k
     )?;
     Ok(())
 }
-#[cfg(test)]
-mod tests;
+

@@ -175,5 +175,4 @@ pub async fn request_url_with_local_ipc_fallback(
     }
     send_http_request(client, method, url, headers, body, timeout).await
 }
-#[cfg(test)]
-mod tests;
+

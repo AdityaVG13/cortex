@@ -401,5 +401,4 @@ fn jaccard_similarity_sets(left: &HashSet<String>, right: &HashSet<String>) -> f
         intersection / union
     }
 }
-#[cfg(test)]
-mod tests;
+

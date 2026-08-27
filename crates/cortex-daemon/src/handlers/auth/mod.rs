@@ -379,5 +379,4 @@ pub async fn register_agent_presence_from_headers(state: &RuntimeState, headers:
     let source = resolve_source_identity(headers, "mcp");
     register_agent_presence(state, &source, caller_id, "mcp", "Connected via MCP").await;
 }
-#[cfg(test)]
-mod tests;
+

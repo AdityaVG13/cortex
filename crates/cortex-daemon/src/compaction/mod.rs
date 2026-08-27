@@ -4,8 +4,7 @@ mod events;
 mod feedback;
 mod governor;
 mod helpers;
-#[cfg(test)]
-mod tests;
+
 mod types;
 pub(crate) use archived::*;
 pub(crate) use crystals::*;

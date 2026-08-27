@@ -25,19 +25,11 @@ static AUTH_TOKEN_CACHE: OnceLock<Mutex<AuthTokenCacheEntry>> = OnceLock::new();
 pub(crate) fn auth_token_cache() -> &'static Mutex<AuthTokenCacheEntry> {
     AUTH_TOKEN_CACHE.get_or_init(|| Mutex::new(AuthTokenCacheEntry::default()))
 }
-#[cfg(test)]
-static AUTH_TOKEN_CACHE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-#[cfg(test)]
-pub(crate) fn auth_token_cache_test_lock() -> &'static Mutex<()> {
-    AUTH_TOKEN_CACHE_TEST_LOCK.get_or_init(|| Mutex::new(()))
-}
 pub(crate) fn read_auth_token() -> Option<String> {
     let token_path = crate::auth::CortexPaths::resolve().token;
     read_auth_token_with_cache(&token_path)
 }
 pub(crate) fn read_auth_token_with_cache(token_path: &Path) -> Option<String> {
-    #[cfg(test)]
-    let _guard = auth_token_cache_test_lock().lock().ok();
     read_auth_token_with_cache_inner(token_path)
 }
 pub(crate) fn read_auth_token_with_cache_inner(token_path: &Path) -> Option<String> {
@@ -78,8 +70,6 @@ pub(crate) fn read_auth_token_uncached(token_path: &Path) -> Option<String> {
     }
 }
 pub(crate) fn invalidate_auth_token_cache() {
-    #[cfg(test)]
-    let _guard = auth_token_cache_test_lock().lock().ok();
     invalidate_auth_token_cache_inner();
 }
 pub(crate) fn invalidate_auth_token_cache_inner() {

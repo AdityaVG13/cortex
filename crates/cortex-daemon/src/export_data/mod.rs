@@ -188,5 +188,4 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
     }
     false
 }
-#[cfg(test)]
-mod tests;
+

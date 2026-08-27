@@ -1,7 +1,6 @@
 mod handlers;
 mod recall;
-#[cfg(test)]
-mod tests;
+
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};

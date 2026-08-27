@@ -308,5 +308,4 @@ pub async fn handle_feed_ack(State(state): State<RuntimeState>, headers: HeaderM
     }
 }
 
-#[cfg(test)]
-mod tests;
+

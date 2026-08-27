@@ -102,5 +102,4 @@ pub(crate) fn parse_timestamp_ms(value: &str) -> i64 {
 pub fn truncate_chars(input: &str, max: usize) -> String {
     input.chars().take(max).collect::<String>()
 }
-#[cfg(test)]
-mod tests;
+

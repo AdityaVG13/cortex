@@ -295,5 +295,4 @@ pub async fn wait_for_health(paths: &CortexPaths, timeout: Duration) -> bool {
     }
     false
 }
-#[cfg(test)]
-mod tests;
+

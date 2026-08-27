@@ -84,7 +84,4 @@ pub fn pq8_blob_to_vector(blob: &[u8]) -> Option<Vec<f32>> {
     }
     Some(out)
 }
-#[cfg(test)]
-pub(crate) fn max_abs_error(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
-}
+

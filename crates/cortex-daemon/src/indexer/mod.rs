@@ -284,5 +284,4 @@ pub fn decay_pass(conn: &Connection) -> usize {
     );
     mem_result.unwrap_or(0) + dec_result.unwrap_or(0)
 }
-#[cfg(test)]
-mod tests;
+

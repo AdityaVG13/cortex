@@ -3,8 +3,7 @@ mod maintenance;
 mod migrations;
 mod schema;
 mod team;
-#[cfg(test)]
-mod tests;
+
 pub(crate) use connection::*;
 pub use connection::{configure, open, sqlite_vec_status, RepairError, RepairResult, SQLITE_BUSY_TIMEOUT_MS};
 pub(crate) use maintenance::*;

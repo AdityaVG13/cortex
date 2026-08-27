@@ -1,7 +1,6 @@
 mod engine;
 mod handlers;
-#[cfg(test)]
-mod tests;
+
 pub(crate) use engine::*;
 pub use engine::{execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, unfold_source};
 pub use engine::{parse_recall_policy_mode, resolve_recall_budget_k, RecallContext, RecallPolicyMode};

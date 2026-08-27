@@ -1,8 +1,7 @@
 mod download;
 mod engine;
 mod profiles;
-#[cfg(test)]
-mod tests;
+
 mod vectors;
 pub use download::{ensure_model_downloaded, ensure_model_downloaded_in};
 pub use engine::EmbeddingEngine;

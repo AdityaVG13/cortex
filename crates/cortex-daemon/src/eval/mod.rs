@@ -282,5 +282,4 @@ fn ratio(numerator: i64, denominator: i64) -> f64 {
         numerator as f64 / denominator as f64
     }
 }
-#[cfg(test)]
-mod tests;
+

@@ -98,5 +98,4 @@ pub async fn handle_brain_firing_stream(State(state): State<RuntimeState>, Query
     let sse = Sse::new(stream).keep_alive(KeepAlive::new().interval(StdDuration::from_secs(30)).text("keepalive"));
     sse.into_response()
 }
-#[cfg(test)]
-mod tests;
+

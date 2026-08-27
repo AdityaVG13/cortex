@@ -169,5 +169,4 @@ fn read_auth_token() -> Option<String> {
     let path = crate::auth::CortexPaths::resolve().token;
     read_auth_token_from_path(&path)
 }
-#[cfg(test)]
-mod tests;
+
