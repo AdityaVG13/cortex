@@ -1426,6 +1426,7 @@ fn assert_coverage_report_current(spec: &Value) {
     let expected = generate_contract_coverage_report(spec);
     let report_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
+        .join("..")
         .join("specs")
         .join("cortex-adapter-contract")
         .join("COVERAGE.md");
