@@ -17,7 +17,7 @@ fn print_daemon_error(result: Result<serde_json::Value, String>) {
     }
 }
 
-pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
     match args.get(2).map(String::as_str).unwrap_or("") {
         "list" => {
             validate_cli_options_or_exit(&args[3..], &[], &[]);
@@ -42,7 +42,7 @@ pub(crate) async fn run_user_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
 }
 
-pub(crate) async fn run_team_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub async fn run_team_cli(paths: &auth::CortexPaths, args: &[String]) {
     match args.get(2).map(String::as_str).unwrap_or("") {
         "list" => {
             validate_cli_options_or_exit(&args[3..], &[], &[]);
@@ -69,7 +69,7 @@ pub(crate) async fn run_team_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
 }
 
-pub(crate) async fn run_admin_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub async fn run_admin_cli(paths: &auth::CortexPaths, args: &[String]) {
     match args.get(2).map(String::as_str).unwrap_or("") {
         "list-unowned" => {
             validate_cli_options_or_exit(&args[3..], &[], &[]);

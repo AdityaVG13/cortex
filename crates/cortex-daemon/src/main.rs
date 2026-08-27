@@ -1,80 +1,17 @@
-pub const DEFAULT_CORTEX_PORT: u16 = 7437;
-mod aging;
-mod api_types;
-mod auth;
-mod budgets;
-mod cli;
-mod compaction;
-mod compiler;
-mod conflict;
-mod crystallize;
-mod daemon_lifecycle;
-mod db;
-mod embeddings;
-mod eval;
-mod export_data;
-mod focus;
-mod handlers;
-mod hook_boot;
-mod indexer;
-mod mcp_proxy;
-mod prompt_inject;
-mod rate_limit;
-mod rerank;
-mod server;
-mod service;
-mod setup;
-mod state;
-#[cfg(test)]
-mod test_env;
-#[cfg(test)]
-mod test_support;
-mod tls;
-mod transport;
-mod workspace;
-use chrono::Utc;
-pub(crate) use cli::run_daemon;
-use cli::{
+use cortex_daemon::auth;
+use cortex_daemon::cli::{
     apply_path_env, cli_capabilities_payload, cli_capabilities_summary, cli_robot_docs_guide, cli_service_usage, ensure_daemon,
     ensure_remote_target_has_api_key, is_disallowed_startup_binary_path, parse_flag_usize, parse_flag_value, print_usage_and_exit, resolve_client_target,
     run_admin_cli, run_backup_cli, run_boot_cli, run_cleanup_cli, run_doctor_cli, run_embeddings_cli, run_embeddings_drain_cli, run_eval_cli, run_export_cli,
     run_import_cli, run_recrystallize_cli, run_reindex_cli, run_restore_cli, run_status_cli, run_sync_cli, run_team_cli, run_user_cli,
     unknown_cli_command_message, unknown_robot_docs_subcommand_message, validate_cli_options_or_exit,
 };
-use std::io::Write as _;
-use std::sync::atomic::{AtomicBool, Ordering};
-pub(crate) fn install_daemon_panic_hook(paths: &auth::CortexPaths) {
-    static INSTALLED: AtomicBool = AtomicBool::new(false);
-    if INSTALLED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let panic_log_path = paths.home.join("panic.log");
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let payload = info.payload();
-        let message = if let Some(s) = payload.downcast_ref::<&str>() {
-            (*s).to_string()
-        } else if let Some(s) = payload.downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "<non-string panic payload>".to_string()
-        };
-        let location = info
-            .location()
-            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
-            .unwrap_or_else(|| "<unknown location>".to_string());
-        let backtrace = std::backtrace::Backtrace::force_capture();
-        let entry = format!("[{ts}] PANIC at {location}: {message}\n{backtrace}\n", ts = Utc::now().to_rfc3339(),);
-        eprintln!("[cortex] {entry}");
-        if let Some(parent) = panic_log_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&panic_log_path) {
-            let _ = file.write_all(entry.as_bytes());
-        }
-        previous(info);
-    }));
-}
+use cortex_daemon::cli::run_daemon;
+use cortex_daemon::hook_boot;
+use cortex_daemon::mcp_proxy;
+use cortex_daemon::prompt_inject;
+use cortex_daemon::service;
+use cortex_daemon::setup;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();

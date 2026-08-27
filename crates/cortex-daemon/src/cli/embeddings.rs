@@ -7,7 +7,7 @@ use crate::auth;
 use crate::state;
 use serde_json::json;
 use std::time::Duration;
-pub(crate) async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub async fn run_embeddings_cli(paths: &auth::CortexPaths, args: &[String]) {
     let subcmd = args.first().map(|s| s.as_str()).unwrap_or("");
     match subcmd {
         "status" => {
@@ -55,7 +55,7 @@ pub(crate) async fn run_embeddings_status_cli(paths: &auth::CortexPaths, json_ou
         println!("backlog: memories={}, decisions={}, total={}", backlog_memories, backlog_decisions, backlog_total);
     }
 }
-pub(crate) async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub async fn run_embeddings_drain_cli(paths: &auth::CortexPaths, args: &[String]) {
     let batch_size = match parse_flag_usize(args, "--batch-size") {
         Ok(Some(value)) => value.clamp(1, 10_000),
         Ok(None) => parse_env_usize("CORTEX_EMBED_BACKFILL_BATCH_SIZE", DEFAULT_EMBED_BACKFILL_BATCH_SIZE).clamp(1, 10_000),

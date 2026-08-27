@@ -395,7 +395,7 @@ pub(crate) fn control_center_is_active(paths: &auth::CortexPaths) -> Result<bool
         Err(err) => Err(format!("probe control-center lock {}: {err}", lock_path.display())),
     }
 }
-pub(crate) async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>, emit_port: bool, allow_service_ensure: bool) -> Result<(), String> {
+pub async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>, emit_port: bool, allow_service_ensure: bool) -> Result<(), String> {
     std::fs::create_dir_all(&paths.home).map_err(|e| format!("create home dir: {e}"))?;
     let local_spawn_allowed = local_spawn_allowed_for_request(allow_service_ensure);
     let control_center_active_snapshot = if local_spawn_allowed { control_center_is_active(paths).ok() } else { None };
@@ -506,7 +506,7 @@ pub(crate) fn path_is_under_root(path: &Path, root: &Path) -> bool {
     }
     normalized_path == normalized_root.trim_end_matches('/') || normalized_path.starts_with(&normalized_root)
 }
-pub(crate) fn is_disallowed_startup_binary_path(path: &Path) -> bool {
+pub fn is_disallowed_startup_binary_path(path: &Path) -> bool {
     let normalized = normalized_path_for_guard(path);
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
     if file_name.starts_with("cortex-daemon-run") {

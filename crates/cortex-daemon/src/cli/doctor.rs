@@ -3,7 +3,7 @@ use crate::auth;
 use crate::compaction;
 use crate::db;
 use std::collections::HashSet;
-pub(crate) fn run_doctor_cli(paths: &auth::CortexPaths) {
+pub fn run_doctor_cli(paths: &auth::CortexPaths) {
     let db_path = paths.db.clone();
     println!("[doctor] db_path={}", db_path.display());
     let conn = match db::open(&db_path) {

@@ -3,7 +3,7 @@ use crate::crystallize;
 use crate::db;
 use crate::state;
 use serde_json::json;
-pub(crate) fn run_reindex_cli(paths: &auth::CortexPaths, json_output: bool) {
+pub fn run_reindex_cli(paths: &auth::CortexPaths, json_output: bool) {
     let conn = match db::open(&paths.db) {
         Ok(conn) => conn,
         Err(err) => {
@@ -36,7 +36,7 @@ decisions_fts,}})
     println!("memories: base={memories_base}, fts={memories_fts}");
     println!("decisions: base={decisions_base}, fts={decisions_fts}");
 }
-pub(crate) async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool) {
+pub async fn run_recrystallize_cli(paths: &auth::CortexPaths, json_output: bool) {
     let (state, _shutdown_rx) = match state::initialize(paths, false) {
         Ok(initialized) => initialized,
         Err(err) => {

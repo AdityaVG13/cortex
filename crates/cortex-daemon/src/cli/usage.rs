@@ -99,10 +99,10 @@ Troubleshooting:
         DEFAULT_CORTEX_PORT
     )
 }
-pub(crate) fn cli_service_usage() -> &'static str {
+pub fn cli_service_usage() -> &'static str {
     "Usage: cortex service <install|uninstall|start|stop|status|ensure>"
 }
-pub(crate) fn cli_capabilities_payload() -> Value {
+pub fn cli_capabilities_payload() -> Value {
     json!({
 "schema_version":1,"contract_version":CLI_CAPABILITIES_CONTRACT_VERSION,"tool":{"name":"cortex","version":env!("CARGO_PKG_VERSION"
 ),"default_port":DEFAULT_CORTEX_PORT,"default_bind":"127.0.0.1"},"agent_entrypoints":[{"name":"help","command":"cortex help",
@@ -134,7 +134,7 @@ pub(crate) fn cli_capabilities_payload() -> Value {
 "Use `cortex boot --json` for local attachment when a daemon may be needed.",
 "Use JSON flags where available and treat non-zero exit as retryable only after inspecting stderr."]})
 }
-pub(crate) fn cli_capabilities_summary() -> String {
+pub fn cli_capabilities_summary() -> String {
     format!(
 "Cortex agent capabilities\n\
          JSON contract: cortex capabilities --json\n\
@@ -144,7 +144,7 @@ pub(crate) fn cli_capabilities_summary() -> String {
          Exit codes: 0 success, 1 user-input or runtime error"
 ,DEFAULT_CORTEX_PORT)
 }
-pub(crate) fn cli_robot_docs_guide() -> &'static str {
+pub fn cli_robot_docs_guide() -> &'static str {
     r#"Cortex robot guide
 
 Discovery:
@@ -191,7 +191,7 @@ fn top_level_command_suggestion(command: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-pub(crate) fn unknown_cli_command_message(command: &str) -> String {
+pub fn unknown_cli_command_message(command: &str) -> String {
     let prefix = if command.starts_with('-') { format!("Unknown option: {command}") } else { format!("Unknown command: {command}") };
     match top_level_command_suggestion(command) {
         Some(suggestion) => {
@@ -200,10 +200,10 @@ pub(crate) fn unknown_cli_command_message(command: &str) -> String {
         None => format!("{prefix}\nRun `cortex help` or `cortex capabilities --json` for supported commands."),
     }
 }
-pub(crate) fn unknown_robot_docs_subcommand_message(subcommand: &str) -> String {
+pub fn unknown_robot_docs_subcommand_message(subcommand: &str) -> String {
     format!("Unknown robot-docs command: {subcommand}\nDid you mean: `cortex robot-docs guide`?")
 }
-pub(crate) fn print_usage_and_exit(code: i32) -> ! {
+pub fn print_usage_and_exit(code: i32) -> ! {
     let usage = cli_usage_text();
     if code == 0 {
         print!("{usage}");

@@ -242,7 +242,7 @@ async fn probe_status_runtime(paths: &auth::CortexPaths) -> StatusRuntimeProbe {
         }
     }
 }
-pub(crate) async fn run_status_cli(paths: &auth::CortexPaths, json_output: bool) -> i32 {
+pub async fn run_status_cli(paths: &auth::CortexPaths, json_output: bool) -> i32 {
     let runtime_probe = probe_status_runtime(paths).await;
     let report = build_status_report(paths, runtime_probe, paths.token.exists(), paths.db.exists());
     if json_output {

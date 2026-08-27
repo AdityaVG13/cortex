@@ -17,7 +17,7 @@ fn validate_import_args(args: &[String]) {
     validate_cli_options_or_exit(args, &["--file", "--user", "--visibility"], &["--dry-run"]);
 }
 
-pub(crate) fn run_sync_cli(_paths: &auth::CortexPaths, args: &[String]) {
+pub fn run_sync_cli(_paths: &auth::CortexPaths, args: &[String]) {
     match args.first().map(String::as_str).unwrap_or("") {
         "export" => {
             validate_export_args(&args[1..]);
@@ -35,12 +35,12 @@ pub(crate) fn run_sync_cli(_paths: &auth::CortexPaths, args: &[String]) {
     }
 }
 
-pub(crate) fn run_export_cli(_paths: &auth::CortexPaths, args: &[String]) {
+pub fn run_export_cli(_paths: &auth::CortexPaths, args: &[String]) {
     validate_export_args(args);
     fail("export requires the full sync feature in this build");
 }
 
-pub(crate) fn run_import_cli(_paths: &auth::CortexPaths, args: &[String]) {
+pub fn run_import_cli(_paths: &auth::CortexPaths, args: &[String]) {
     validate_import_args(args);
     fail("import requires the full sync feature in this build");
 }

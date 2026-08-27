@@ -11,7 +11,7 @@ pub(crate) fn read_auth_token(paths: &auth::CortexPaths) -> Result<String, Strin
         .map(|v| v.trim().to_string())
         .map_err(|_| format!("Cannot read auth token at {}. Is the daemon running?", token_path.display()))
 }
-pub(crate) fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
+pub fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|idx| args.get(idx + 1)).cloned()
 }
 const GLOBAL_VALUE_FLAGS: &[&str] = &["--home", "--db", "--port", "--bind"];
@@ -43,7 +43,7 @@ pub(crate) fn validate_cli_options(args: &[String], value_flags: &[&str], boolea
     }
     Ok(())
 }
-pub(crate) fn validate_cli_options_or_exit(args: &[String], value_flags: &[&str], boolean_flags: &[&str]) {
+pub fn validate_cli_options_or_exit(args: &[String], value_flags: &[&str], boolean_flags: &[&str]) {
     if let Err(err) = validate_cli_options(args, value_flags, boolean_flags) {
         eprintln!("{err}");
         std::process::exit(1);
@@ -85,7 +85,7 @@ pub(crate) fn resolve_client_target_inputs(
     let base_url = resolved_base_url.unwrap_or_else(|| default_base_url.to_string());
     (base_url, resolved_api_key, local_owner_mode)
 }
-pub(crate) fn resolve_client_target(args: &[String], paths: &auth::CortexPaths) -> (String, Option<String>, bool) {
+pub fn resolve_client_target(args: &[String], paths: &auth::CortexPaths) -> (String, Option<String>, bool) {
     let override_url = parse_flag_value(args, "--url");
     let override_api_key = parse_flag_value(args, "--api-key");
     let env_base_url = env_trimmed("CORTEX_API_BASE").or_else(|| env_trimmed("CORTEX_BASE_URL"));
@@ -98,7 +98,7 @@ pub(crate) fn resolve_client_target(args: &[String], paths: &auth::CortexPaths) 
         &local_daemon_base_url(paths),
     )
 }
-pub(crate) fn ensure_remote_target_has_api_key(base_url: &str, api_key: Option<&str>, paths: &auth::CortexPaths) -> Result<(), String> {
+pub fn ensure_remote_target_has_api_key(base_url: &str, api_key: Option<&str>, paths: &auth::CortexPaths) -> Result<(), String> {
     let parsed = reqwest::Url::parse(base_url).map_err(|_| format!("Invalid Cortex target URL '{base_url}'. Use an absolute http:// or https:// URL."))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("Unsupported Cortex target URL scheme '{}' in '{base_url}'. Use http or https.", parsed.scheme()));
@@ -117,7 +117,7 @@ pub(crate) fn ensure_remote_target_has_api_key(base_url: &str, api_key: Option<&
     }
     Ok(())
 }
-pub(crate) fn apply_path_env(paths: &auth::CortexPaths) {
+pub fn apply_path_env(paths: &auth::CortexPaths) {
     std::env::set_var("CORTEX_HOME", &paths.home);
     std::env::set_var("CORTEX_DB", &paths.db);
     std::env::set_var("CORTEX_PORT", paths.port.to_string());
@@ -127,7 +127,7 @@ pub(crate) fn apply_path_env(paths: &auth::CortexPaths) {
         None => std::env::remove_var("CORTEX_IPC_ENDPOINT"),
     }
 }
-pub(crate) fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String> {
+pub fn parse_flag_usize(args: &[String], flag: &str) -> Result<Option<usize>, String> {
     let Some(idx) = args.iter().position(|a| a == flag) else {
         return Ok(None);
     };

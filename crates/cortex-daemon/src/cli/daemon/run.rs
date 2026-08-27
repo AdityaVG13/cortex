@@ -13,7 +13,7 @@ use crate::server;
 use crate::state;
 use daemon_lifecycle::daemon_healthy;
 use std::time::Duration;
-pub(crate) async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl std::future::Future<Output = ()> + Send + 'static) {
+pub async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl std::future::Future<Output = ()> + Send + 'static) {
     let _daemon_lock = match acquire_runtime_lock(&paths) {
         Ok(lock) => lock,
         Err(err) => {

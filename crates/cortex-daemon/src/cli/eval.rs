@@ -2,7 +2,7 @@ use super::common::{open_cli_connection, parse_flag_usize, parse_flag_value, val
 use crate::auth;
 use crate::eval;
 use serde_json::{json, Value};
-pub(crate) fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub fn run_eval_cli(paths: &auth::CortexPaths, args: &[String]) {
     validate_cli_options_or_exit(args, &["--baseline-file", "--max-regression", "--window-days"], &["--json", "--fail-on-regression"]);
     let json_output = args.iter().any(|arg| arg == "--json");
     let fail_on_regression = args.iter().any(|arg| arg == "--fail-on-regression");

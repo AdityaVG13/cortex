@@ -110,7 +110,7 @@ pub(crate) fn top_event_type_counts(conn: &rusqlite::Connection, limit: usize) -
         .unwrap_or_default()
 }
 
-pub(crate) fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_events: bool, _max_event_passes: usize) {
+pub fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_events: bool, _max_event_passes: usize) {
     let mut actions = Vec::new();
     actions.push(format!("{} old backups", if dry_run { "Would prune" } else { "Pruned" }));
     if !dry_run {
@@ -128,7 +128,7 @@ pub(crate) fn run_cleanup_cli(paths: &auth::CortexPaths, dry_run: bool, include_
     }
 }
 
-pub(crate) fn run_backup_cli(paths: &auth::CortexPaths) {
+pub fn run_backup_cli(paths: &auth::CortexPaths) {
     match create_backup(&paths.db, &paths.home.join("backups")) {
         Ok(path) => println!("Backup created: {path}"),
         Err(err) => {
@@ -138,7 +138,7 @@ pub(crate) fn run_backup_cli(paths: &auth::CortexPaths) {
     }
 }
 
-pub(crate) fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
+pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     let restore_file = match args.get(2) {
         Some(path) if !is_cli_option_token(path) => path,
         _ => {

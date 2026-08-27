@@ -50,7 +50,7 @@ pub(crate) async fn request_boot_payload(
     }
     serde_json::from_str::<serde_json::Value>(&body).map_err(|e| format!("parse boot response failed: {e}"))
 }
-pub(crate) async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), String> {
+pub async fn run_boot_cli(paths: &auth::CortexPaths, args: &[String]) -> Result<(), String> {
     validate_cli_options(args, &["--agent", "--budget", "--url", "--api-key"], &["--json"])?;
     let agent = parse_flag_value(args, "--agent").unwrap_or_else(|| "cli".to_string());
     let agent = agent.trim();
