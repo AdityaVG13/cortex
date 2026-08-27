@@ -243,7 +243,7 @@ Initial public release.
 
 [0.6.0]: https://github.com/AdityaVG13/cortex/compare/v0.5.0...v0.6.0
 
-[Unreleased]: https://github.com/AdityaVG13/cortex/commits/master
+[Unreleased]: https://github.com/AdityaVG13/cortex/commits/main
 [0.5.0]: https://github.com/AdityaVG13/cortex/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/AdityaVG13/cortex/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AdityaVG13/cortex/compare/v0.3.0...v0.4.0

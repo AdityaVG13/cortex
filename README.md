@@ -117,7 +117,7 @@ More tool-specific setup: [Info/connecting.md](Info/connecting.md).
 <table>
 <tr>
 <td align="center" valign="top">
-<img width="400" height="1" src="https://raw.githubusercontent.com/AdityaVG13/cortex/master/assets/spacer.png"><br>
+<img width="400" height="1" src="https://raw.githubusercontent.com/AdityaVG13/cortex/main/assets/spacer.png"><br>
 <h3>❌ Without Cortex</h3>
 <p>
 Session 1 &nbsp;→&nbsp; explain preferences<br>
@@ -129,7 +129,7 @@ Session 14 &nbsp;→&nbsp; still explaining<br><br>
 <br>
 </td>
 <td align="center" valign="top">
-<img width="400" height="1" src="https://raw.githubusercontent.com/AdityaVG13/cortex/master/assets/spacer.png"><br>
+<img width="400" height="1" src="https://raw.githubusercontent.com/AdityaVG13/cortex/main/assets/spacer.png"><br>
 <h3>✅ With Cortex</h3>
 <p>
 Session 1 &nbsp;→&nbsp; store once<br>
