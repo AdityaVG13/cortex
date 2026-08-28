@@ -1,7 +1,7 @@
 use super::*;
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
-pub(crate) const SCHEMA_MIGRATIONS: [MigrationDef; 17] = [
+pub(crate) const SCHEMA_MIGRATIONS: [MigrationDef; 18] = [
     ("001_initial_schema", "initial_schema"),
     ("002_aging_columns", "aging_columns"),
     ("003_focus_table", "focus_table"),
@@ -19,6 +19,7 @@ pub(crate) const SCHEMA_MIGRATIONS: [MigrationDef; 17] = [
     ("015", "boot_audits"),
     ("016", "retention_classes"),
     ("017", "recall_hot_path_indexes"),
+    ("018", "owner_visibility_columns"),
 ];
 pub fn migration_definitions() -> &'static [MigrationDef] {
     &SCHEMA_MIGRATIONS
@@ -353,6 +354,30 @@ pub(crate) fn apply_migration_with_logging(conn: &Connection, version: &str, log
                   WHERE status = 'active';
                 CREATE INDEX IF NOT EXISTS idx_embeddings_model_type_target_norm
                   ON embeddings(LOWER(COALESCE(model, '')), target_type, target_id);
+                "#,
+            )?;
+            Ok(())
+        }
+        "018" => {
+            let alters = [
+                "ALTER TABLE memories ADD COLUMN owner_id INTEGER",
+                "ALTER TABLE memories ADD COLUMN visibility TEXT",
+                "ALTER TABLE decisions ADD COLUMN owner_id INTEGER",
+                "ALTER TABLE decisions ADD COLUMN visibility TEXT",
+            ];
+            for sql in alters {
+                match conn.execute(sql, []) {
+                    Ok(_) => {}
+                    Err(error) if error.to_string().contains("duplicate column") => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            conn.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_memories_owner
+                  ON memories(owner_id) WHERE owner_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS idx_decisions_owner
+                  ON decisions(owner_id) WHERE owner_id IS NOT NULL;
                 "#,
             )?;
             Ok(())

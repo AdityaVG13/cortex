@@ -497,13 +497,14 @@ fn cli_admin_requests_use_home_override_for_token_path() {
         String::from_utf8_lossy(&output.stdout)
     );
     let stderr = stderr_text(output);
-    assert!(
-        stderr.contains(&home_arg),
-        "admin request should read the token from --home, stderr={stderr}"
+    let expected = format!(
+        "Cannot read auth token at {}. Is the daemon running?\n",
+        home.join("cortex.token").display()
     );
-    assert!(
-        stderr.contains("cortex.token"),
-        "admin request should report the Cortex token path, stderr={stderr}"
+    assert_eq!(
+        canonicalize(&stderr),
+        canonicalize(&expected),
+        "admin request must read the token from --home"
     );
 }
 

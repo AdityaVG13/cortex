@@ -152,6 +152,7 @@
           "tier",
           "tokenUsageLine"
         ],
+        "firstResultExcerpt": "Adapter golden sentinel memory with POST recall sentinel memory and enough specificity for quality gates",
         "firstResultKeys": [
           "excerpt",
           "method",
@@ -159,7 +160,6 @@
           "source",
           "tokens"
         ],
-        "firstResultMentionsFixture": true,
         "resultCount": 1,
         "savedKind": "number",
         "spentKind": "number",
@@ -190,6 +190,7 @@
           "tier",
           "tokenUsageLine"
         ],
+        "firstResultExcerpt": "Adapter golden sentinel memory with POST recall sentinel memory and enough specificity for quality gates",
         "firstResultKeys": [
           "excerpt",
           "method",
@@ -197,7 +198,6 @@
           "source",
           "tokens"
         ],
-        "firstResultMentionsFixture": true,
         "resultCount": 1,
         "savedKind": "number",
         "spentKind": "number",
@@ -274,7 +274,6 @@
     },
     {
       "body": {
-        "containsGoldenDecision": true,
         "decisionCount": 1,
         "decisionsCount": 1,
         "decisionsOffsetKind": "number",
@@ -315,6 +314,7 @@
           "valid_from",
           "valid_until"
         ],
+        "firstDecisionText": "Adapter golden sentinel memory with POST recall sentinel memory and enough specificity for quality gates",
         "limit": 50,
         "memoriesCount": 0,
         "memoriesOffsetKind": "number",
@@ -369,6 +369,7 @@
           "tier",
           "tokenUsageLine"
         ],
+        "firstResultExcerpt": "Adapter golden sentinel memory with POST recall sentinel memory and enough specificity for quality gates",
         "firstResultKeys": [
           "excerpt",
           "method",
@@ -376,7 +377,6 @@
           "source",
           "tokens"
         ],
-        "firstResultMentionsFixture": true,
         "resultCount": 1,
         "savedKind": "number",
         "spentKind": "number",

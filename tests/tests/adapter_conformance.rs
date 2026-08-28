@@ -14,9 +14,9 @@ use support::{
     shutdown_daemon, shutdown_daemon_best_effort, spawn_daemon, unique_temp_dir, wait_for_exit,
     wait_for_health, JsonHttpResponse, SpawnTrackedExt, STARTUP_TIMEOUT, HEALTH_POLL_INTERVAL,
 };
-const SPEC: &str = include_str!("../../../specs/cortex-adapter-contract.yaml");
-const COVERAGE_REPORT: &str = include_str!("../../../specs/cortex-adapter-contract/COVERAGE.md");
-const DISCREPANCIES: &str = include_str!("../../../specs/cortex-adapter-contract/DISCREPANCIES.md");
+const SPEC: &str = include_str!("../../specs/cortex-adapter-contract.yaml");
+const COVERAGE_REPORT: &str = include_str!("../../specs/cortex-adapter-contract/COVERAGE.md");
+const DISCREPANCIES: &str = include_str!("../../specs/cortex-adapter-contract/DISCREPANCIES.md");
 
 #[test]
 fn adapter_contract_spec_covers_required_matrix() {
@@ -109,11 +109,8 @@ fn http_and_mcp_rpc_match_adapter_contract() {
     .expect("store");
     assert_contract_response(&spec, "store-decision", &store);
     assert_eq!(store.body["stored"], true);
-    assert!(
-        store.body.get("entry").is_some(),
-        "store entry missing: {}",
-        store.body
-    );
+    assert_eq!(store.body["entry"]["action"], "inserted");
+    assert_eq!(store.body["entry"]["status"], "active");
     record_scenario(&mut exercised, "store-decision");
 
     let recall_get = request_json(
@@ -125,9 +122,14 @@ fn http_and_mcp_rpc_match_adapter_contract() {
     )
     .expect("recall get");
     assert_contract_response(&spec, "recall-get", &recall_get);
+    let recall_results = recall_get.body["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("recall results should be an array: {}", recall_get.body));
     assert!(
-        recall_get.body["results"].as_array().is_some(),
-        "recall results should be an array: {}",
+        recall_results
+            .iter()
+            .any(|item| item["excerpt"].as_str() == Some("Adapter conformance sentinel memory")),
+        "recall must return the stored decision excerpt, got {}",
         recall_get.body
     );
     record_scenario(&mut exercised, "recall-get");
@@ -594,9 +596,10 @@ fn http_export_import_roundtrip_preserves_recallable_decisions() {
     )
     .expect("import exported fixture");
     assert_eq!(imported.status, 200);
-    assert!(
-        imported.body["imported"]["decisions"].as_u64().unwrap_or(0) >= 1,
-        "import should report at least one decision: {}",
+    assert_eq!(
+        imported.body["imported"]["decisions"].as_u64(),
+        Some(1),
+        "import should report exactly one decision: {}",
         imported.body
     );
 
@@ -609,9 +612,14 @@ fn http_export_import_roundtrip_preserves_recallable_decisions() {
     )
     .expect("recall imported fixture");
     assert_eq!(recalled.status, 200);
+    let recalled_results = recalled.body["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("imported recall results array missing: {}", recalled.body));
     assert!(
-        recalled.body.to_string().contains(decision_text),
-        "imported decision should be recallable through the public HTTP surface: {}",
+        recalled_results
+            .iter()
+            .any(|item| item["excerpt"].as_str() == Some(decision_text)),
+        "imported decision must round-trip as an exact excerpt, got {}",
         recalled.body
     );
 }
@@ -914,9 +922,9 @@ fn recall_body_summary(body: &Value) -> Value {
         "tokenUsageLineKind": value_kind(&body["tokenUsageLine"]),
         "resultCount": results.len(),
         "firstResultKeys": first.map(object_keys).unwrap_or_else(|| json!([])),
-        "firstResultMentionsFixture": first
-            .map(|value| value.to_string().contains("Adapter golden sentinel memory"))
-            .unwrap_or(false)
+        "firstResultExcerpt": first
+            .and_then(|value| value["excerpt"].as_str())
+            .unwrap_or("")
     })
 }
 
@@ -969,11 +977,10 @@ fn export_body_summary(body: &Value) -> Value {
         "memoryCount": memories.len(),
         "decisionCount": decisions.len(),
         "firstDecisionKeys": decisions.first().map(object_keys).unwrap_or_else(|| json!([])),
-        "containsGoldenDecision": decisions
-            .iter()
-            .any(|decision| decision["decision"].as_str().is_some_and(|value| {
-                value.contains("Adapter golden sentinel memory")
-            }))
+        "firstDecisionText": decisions
+            .first()
+            .and_then(|decision| decision["decision"].as_str())
+            .unwrap_or("")
     })
 }
 

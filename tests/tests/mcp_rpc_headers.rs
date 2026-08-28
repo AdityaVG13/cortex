@@ -175,6 +175,7 @@ fn mcp_rpc_x_auth_header_alias_is_rejected() {
     let body = split_http_body(&response).expect("http body");
     let payload: Value = serde_json::from_str(body.trim()).expect("json payload");
     assert_eq!(payload["jsonrpc"], "2.0");
+    assert_eq!(payload["error"]["code"], -32600);
     assert_eq!(payload["error"]["message"], "Unauthorized");
     assert_eq!(payload["id"], Value::Null);
 
@@ -211,13 +212,15 @@ fn health_runtime_paths_remain_scoped_to_requested_home() {
         .get("stats")
         .and_then(|value| value.as_object())
         .expect("public stats object");
-    assert!(
-        !public_stats.contains_key("home"),
+    assert_eq!(
+        public_stats.get("home"),
+        None,
         "public health payload should redact stats.home"
     );
     for key in ["token_path", "db_path", "pid_path"] {
-        assert!(
-            !public_runtime.contains_key(key),
+        assert_eq!(
+            public_runtime.get(key),
+            None,
             "public health payload should redact runtime.{key}"
         );
     }
@@ -245,13 +248,27 @@ fn health_runtime_paths_remain_scoped_to_requested_home() {
         .get("home")
         .and_then(|value| value.as_str())
         .expect("stats.home");
-    assert_path_scoped_to_home("stats.home", reported_home, &expected_home);
+    assert_eq!(
+        normalize_path_for_compare(reported_home),
+        expected_home,
+        "stats.home must be the requested home"
+    );
 
-    for key in ["token_path", "db_path", "pid_path"] {
+    let expected_paths = [
+        ("token_path", home_dir.join("cortex.token")),
+        ("db_path", home_dir.join("cortex.db")),
+        ("pid_path", home_dir.join("cortex.pid")),
+    ];
+    for (key, expected) in expected_paths {
         let reported = runtime
             .get(key)
             .and_then(|value| value.as_str())
             .unwrap_or_else(|| panic!("runtime.{key}"));
+        assert_eq!(
+            normalize_path_for_compare(reported),
+            normalize_path_for_compare(&expected.to_string_lossy()),
+            "{key} must resolve inside the requested home"
+        );
         assert_path_scoped_to_home(key, reported, &expected_home);
     }
 

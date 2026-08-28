@@ -6,7 +6,7 @@
   "description": "Universal AI Brain - multi-transport memory daemon for Claude Code, Gemini CLI, Codex, Cursor, and local LLMs",
   "scripts": {
     "build": "cargo -p cortex-daemon build --release",
-    "test": "cargo -p cortex-daemon test --all-features",
+    "test": "cargo build -p cortex-daemon --bin cortex && cargo test -p cortex-tests --all-features",
     "daemon:check": "cargo -p cortex-daemon check --all-features",
     "daemon:clippy": "cargo -p cortex-daemon clippy --all-targets --all-features -- -D warnings",
     "desktop:install": "npm --prefix desktop/cortex-control-center install",

@@ -1,15 +1,20 @@
-//! Curated behavioral contract for the auth / paths layer.
+//! Auth / paths: resolved JSON keys and CORTEX_HOME override.
 use cortex_daemon::auth::CortexPaths;
+use cortex_tests::{lock, ScopedEnvVar};
 use serde_json::Value;
 
 #[test]
 fn cortex_paths_resolve_and_serialize() {
+    let _guard = lock();
+    let _home = ScopedEnvVar::remove("CORTEX_HOME");
+    let _db = ScopedEnvVar::remove("CORTEX_DB");
+    let _port = ScopedEnvVar::remove("CORTEX_PORT");
+    let _bind = ScopedEnvVar::remove("CORTEX_BIND");
+
     let paths = CortexPaths::resolve();
     let json = paths.to_json();
     let value: Value = serde_json::from_str(&json).expect("resolved paths serialize to valid JSON");
 
-    // Every resolved path key must be present and well-formed -- not just
-    // "non-empty JSON" (which a degenerate `{{}}` would satisfy).
     for key in ["home", "db", "token", "pid", "port", "bind", "models"] {
         assert!(value.get(key).is_some(), "paths JSON missing key {key}");
     }
@@ -36,4 +41,19 @@ fn cortex_paths_resolve_and_serialize() {
         Some("127.0.0.1"),
         "default bind must be loopback"
     );
+}
+
+#[test]
+fn cortex_paths_honor_cortex_home() {
+    let _guard = lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home = dir.path().join("custom-home");
+    let _home = ScopedEnvVar::set("CORTEX_HOME", &home);
+    let _db = ScopedEnvVar::remove("CORTEX_DB");
+
+    let paths = CortexPaths::resolve();
+    assert_eq!(paths.home, home, "CORTEX_HOME must become paths.home");
+    assert_eq!(paths.db, home.join("cortex.db"));
+    assert_eq!(paths.token, home.join("cortex.token"));
+    assert_eq!(paths.pid, home.join("cortex.pid"));
 }

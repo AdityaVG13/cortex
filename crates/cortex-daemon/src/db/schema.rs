@@ -32,6 +32,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           observed_at TEXT,
           valid_from TEXT,
           valid_until TEXT,
+          owner_id INTEGER,
+          visibility TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -64,6 +66,8 @@ pub fn initialize_schema(conn: &Connection) -> rusqlite::Result<()> {
           observed_at TEXT,
           valid_from TEXT,
           valid_until TEXT,
+          owner_id INTEGER,
+          visibility TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );

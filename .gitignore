@@ -127,6 +127,9 @@ GEMINI.md
 .cursor/
 .planning/
 PLAN.md
+
+# Local beads_rust workspace (SQLite + JSONL; do not commit)
+.beads/
 RECON.md
 cortex-profiles.json
 
@@ -143,6 +146,8 @@ CortexBrain.bat
 Cortex?Ingester?Instructions.txt
 
 # Editor/tool artifacts
+.DS_Store
+.asgrep/
 .aider*
 .tmp-*
 .tmp/

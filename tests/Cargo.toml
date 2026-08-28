@@ -9,7 +9,7 @@ license = "MIT"
 path = "src/lib.rs"
 
 [dependencies]
-cortex-daemon = { path = "../cortex-daemon" }
+cortex-daemon = { path = "../crates/cortex-daemon" }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 tempfile = "3.27"
 proptest = "1"

@@ -401,7 +401,7 @@ pub async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>, emit_
     let control_center_active_snapshot = if local_spawn_allowed { control_center_is_active(paths).ok() } else { None };
     let lock = auth::acquire_daemon_lock(paths);
     match lock {
-        Ok(_guard) => {
+        Ok(guard) => {
             if daemon_healthy(paths).await {
             } else if local_spawn_allowed {
                 let _ = auth::migrate_legacy_db(paths)?;
@@ -415,6 +415,7 @@ pub async fn ensure_daemon(paths: &auth::CortexPaths, agent: Option<&str>, emit_
                         return Err(format!("{} (control-center lock probe failed: {})", app_init_required_error(paths, agent), err));
                     }
                 }
+                drop(guard);
                 #[cfg(windows)]
                 {
                     if !ensure_service_ready_async().await {
@@ -534,6 +535,10 @@ pub(crate) async fn ensure_local_plugin_spawn_async(paths: &auth::CortexPaths, a
     let parent_start = process_pid_start_time(parent_pid).ok_or_else(|| format!("resolve spawn parent start time for pid {parent_pid}"))?;
     let owner_tag = plugin_owner_tag(agent);
     let owner_token = issue_owner_token_for_spawn(paths, &owner_tag, parent_pid).map_err(|e| format!("issue owner token: {e}"))?;
+    let runtime_dir = paths.home.join("runtime");
+    std::fs::create_dir_all(&runtime_dir).map_err(|e| format!("create plugin spawn runtime dir: {e}"))?;
+    let stderr_log_path = runtime_dir.join("plugin-local-spawn.stderr.log");
+    let stderr_log = std::fs::File::create(&stderr_log_path).map_err(|e| format!("create plugin spawn stderr log: {e}"))?;
     let mut cmd = std::process::Command::new(current_exe);
     cmd.arg("serve")
         .arg("--home")
@@ -548,16 +553,40 @@ pub(crate) async fn ensure_local_plugin_spawn_async(paths: &auth::CortexPaths, a
         .env("CORTEX_DAEMON_OWNER_SOURCE", "plugin-local")
         .env("CORTEX_DAEMON_OWNER_AGENT", agent.unwrap_or("plugin"))
         .env("CORTEX_DAEMON_OWNER_MODE", "local-plugin")
+        .env("CORTEX_WAIT_FOR_DAEMON_LOCK", "1")
         .env(SPAWN_PARENT_PID_ENV, parent_pid.to_string())
         .env(SPAWN_PARENT_START_TIME_ENV, parent_start.to_string())
         .env(DAEMON_OWNER_TOKEN_ENV, owner_token)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    cmd.spawn().map_err(|e| format!("spawn local daemon from plugin mode: {e}"))?;
-    if wait_for_health(paths, Duration::from_secs(DAEMON_STARTUP_WAIT_SECS)).await {
-        Ok(())
-    } else {
-        Err(format!("daemon spawn started but health is still unavailable on port {}", paths.port))
+        .stderr(stderr_log);
+    let mut child = cmd.spawn().map_err(|e| format!("spawn local daemon from plugin mode: {e}"))?;
+    let started = std::time::Instant::now();
+    let timeout = Duration::from_secs(DAEMON_STARTUP_WAIT_SECS);
+    loop {
+        if daemon_healthy(paths).await {
+            return Ok(());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stderr = std::fs::read_to_string(&stderr_log_path).unwrap_or_default();
+                return Err(format!(
+                    "daemon spawn exited before health on port {} ({status}): {stderr}",
+                    paths.port
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => return Err(format!("poll spawned daemon: {err}")),
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            let stderr = std::fs::read_to_string(&stderr_log_path).unwrap_or_default();
+            return Err(format!(
+                "daemon spawn started but health is still unavailable on port {}: {stderr}",
+                paths.port
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }

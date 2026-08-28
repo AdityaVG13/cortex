@@ -18,6 +18,45 @@ use support::{
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 
+fn attach_only_stderr(prefix: &str, agent: &str, port: u16) -> String {
+    format!(
+        "{prefix} APP_INIT_REQUIRED: {agent} is attach-only and cannot start the daemon automatically on port {port}. Start Cortex Control Center and initialize the app-managed daemon, then retry.\n"
+    )
+}
+
+fn assert_attach_only_refusal(stderr: &str, prefix: &str, agent: &str, port: u16) {
+    let expected = attach_only_stderr(prefix, agent, port);
+    assert!(
+        stderr.ends_with(&expected),
+        "stderr must end with attach-only refusal\nexpected suffix: {expected:?}\ngot: {stderr:?}"
+    );
+    let last = stderr.lines().rev().find(|line| !line.is_empty()).unwrap_or("");
+    assert_eq!(last, expected.trim_end());
+}
+
+fn assert_initialize_ok(value: &Value, id: u64) {
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(value["id"], id);
+    assert_eq!(value["result"]["protocolVersion"], "2024-11-05");
+    assert_eq!(value["result"]["serverInfo"]["name"], "cortex");
+    assert_eq!(value["result"]["serverInfo"]["version"], "0.6.0");
+    assert_eq!(value["result"]["capabilities"]["tools"]["listChanged"], true);
+    assert_eq!(value["result"]["capabilities"]["resources"]["listChanged"], true);
+    assert_eq!(value.get("error"), None, "initialize must not carry error: {value}");
+}
+
+fn assert_jsonrpc_daemon_unavailable(value: &Value, id: u64) {
+    assert_eq!(value["jsonrpc"], "2.0");
+    assert_eq!(value["id"], id);
+    assert_eq!(value["error"]["code"], -32603);
+    let message = value["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.starts_with("Daemon unavailable: "),
+        "expected Daemon unavailable diagnostic, got {value}"
+    );
+    assert_eq!(value.get("result"), None, "unavailable response must not include result: {value}");
+}
+
 #[test]
 fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
     let _guard = singleton_transport_test_guard();
@@ -36,6 +75,7 @@ fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
             "--port",
             &port.to_string(),
         ])
+        .env("CORTEX_DISABLE_IPC", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -47,12 +87,7 @@ fn direct_mcp_refuses_auto_spawn_when_daemon_absent() {
         !output.status.success(),
         "cli mcp must fail when no daemon is already running"
     );
-    assert!(
-        stderr.contains("cannot start it automatically")
-            || stderr.contains("another process still holds the daemon lock")
-            || stderr.contains("APP_INIT_REQUIRED"),
-        "expected ownership-policy rejection in stderr, got: {stderr}"
-    );
+    assert_attach_only_refusal(&stderr, "[cortex-mcp]", "codex", port);
     assert!(!health_ok(port), "cli mcp must not auto-spawn daemon");
     let _ = fs::remove_dir_all(&home_dir);
 }
@@ -76,34 +111,41 @@ fn plugin_mcp_local_mode_uses_service_first_policy_when_daemon_absent() {
             "--port",
             &port.to_string(),
         ])
+        .env("CORTEX_SINGLE_DAEMON_TEST_BYPASS", "1")
+        .env("CORTEX_DISABLE_IPC", "1")
+        .env("CORTEX_BIND", "127.0.0.1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
         .expect("run cortex plugin mcp");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.success() {
+    if cfg!(windows) {
         assert!(
-            health_ok(port),
-            "successful plugin local ensure should leave daemon healthy on target port"
+            !output.status.success(),
+            "plugin mcp on Windows must not spawn a daemon when service ensure is unavailable"
         );
-        shutdown_daemon(port, &home_dir);
-    } else {
-        assert!(
-            stderr.contains("cannot start it automatically")
-                || stderr.contains("Windows service ensure failed")
-                || stderr.contains("automatic service ensure is only available on Windows")
-                || stderr.contains("another process still holds the daemon lock")
-                || stderr.contains("APP_INIT_REQUIRED")
-                || stderr.contains("spawn local daemon from plugin mode")
-                || stderr.contains("daemon spawn started but health is still unavailable"),
-            "expected service/spawn policy rejection in stderr, got: {stderr}"
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).as_ref(),
+            format!(
+                "[cortex-plugin] daemon is not healthy on port {port} and Windows service ensure failed. Run `cortex service ensure` manually.\n"
+            )
         );
         assert!(
             !health_ok(port),
-            "plugin mcp absent-daemon failure case must not report healthy target"
+            "plugin mcp absent-daemon Windows failure must not report healthy target"
         );
+    } else {
+        assert!(
+            output.status.success(),
+            "plugin mcp on Unix must spawn a local daemon when none is running, stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            health_ok(port),
+            "plugin local ensure should leave daemon healthy on target port"
+        );
+        shutdown_daemon(port, &home_dir);
     }
     let _ = fs::remove_dir_all(&home_dir);
 }
@@ -116,7 +158,7 @@ fn direct_mcp_still_refuses_auto_spawn_when_stdin_closes_immediately() {
     let port = reserve_port();
     let home = home_dir.to_string_lossy().to_string();
 
-    let mut child = Command::new(cortex_tests::cortex_bin())
+    let output = Command::new(cortex_tests::cortex_bin())
         .args([
             "mcp",
             "--agent",
@@ -126,12 +168,23 @@ fn direct_mcp_still_refuses_auto_spawn_when_stdin_closes_immediately() {
             "--port",
             &port.to_string(),
         ])
+        .env("CORTEX_DISABLE_IPC", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn_tracked("spawn idle cortex mcp");
+        .output()
+        .expect("run idle cortex mcp");
 
-    wait_for_exit(&mut child, Duration::from_secs(10));
+    assert!(
+        !output.status.success(),
+        "cli mcp must fail when stdin closes and no daemon is running"
+    );
+    assert_attach_only_refusal(
+        &String::from_utf8_lossy(&output.stderr),
+        "[cortex-mcp]",
+        "codex",
+        port,
+    );
     assert!(!health_ok(port), "cli mcp must not auto-spawn daemon");
     let _ = fs::remove_dir_all(&home_dir);
 }
@@ -234,10 +287,7 @@ fn plugin_mcp_local_attach_does_not_respawn_after_interruption() {
         }),
     );
     let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        initialize.get("result").is_some(),
-        "initialize failed: {initialize}"
-    );
+    assert_initialize_ok(&initialize, 1);
 
     daemon.kill().expect("kill target daemon");
     wait_for_exit(&mut daemon, Duration::from_secs(5));
@@ -251,13 +301,7 @@ fn plugin_mcp_local_attach_does_not_respawn_after_interruption() {
         }),
     );
     let tools = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        tools
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some_and(|msg| msg.contains("Daemon unavailable")),
-        "expected daemon unavailable response after target kill: {tools}"
-    );
+    assert_jsonrpc_daemon_unavailable(&tools, 2);
     thread::sleep(Duration::from_millis(800));
     assert!(
         !health_ok(port),
@@ -325,10 +369,7 @@ fn plugin_mcp_local_attach_allows_non_claude_agent() {
         }),
     );
     let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        initialize.get("result").is_some(),
-        "initialize failed: {initialize}"
-    );
+    assert_initialize_ok(&initialize, 1);
 
     assert!(
         health_ok(port),
@@ -409,10 +450,7 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
         }),
     );
     let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        initialize.get("result").is_some(),
-        "initialize failed: {initialize}"
-    );
+    assert_initialize_ok(&initialize, 1);
 
     assert!(
         health_ok(port),
@@ -430,13 +468,7 @@ fn plugin_mcp_custom_url_does_not_shutdown_or_respawn_target_daemon() {
         }),
     );
     let tools = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        tools
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some_and(|msg| msg.contains("Daemon unavailable")),
-        "expected daemon unavailable response after target kill: {tools}"
-    );
+    assert_jsonrpc_daemon_unavailable(&tools, 2);
     thread::sleep(Duration::from_millis(800));
     assert!(
         !health_ok(port),
@@ -512,10 +544,7 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
         }),
     );
     let initialize = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        initialize.get("result").is_some(),
-        "initialize failed: {initialize}"
-    );
+    assert_initialize_ok(&initialize, 1);
 
     assert!(
         health_ok(port),
@@ -533,13 +562,7 @@ fn plugin_mcp_env_remote_target_disables_local_owner_lifecycle() {
         }),
     );
     let tools = read_json_line(&responses, RESPONSE_TIMEOUT);
-    assert!(
-        tools
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some_and(|msg| msg.contains("Daemon unavailable")),
-        "expected daemon unavailable response after target kill: {tools}"
-    );
+    assert_jsonrpc_daemon_unavailable(&tools, 2);
     thread::sleep(Duration::from_millis(800));
     assert!(
         !health_ok(port),
@@ -583,6 +606,7 @@ fn mcp_local_mode_refuses_spawn_when_control_center_lock_is_active() {
             "--port",
             &port.to_string(),
         ])
+        .env("CORTEX_DISABLE_IPC", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -594,12 +618,7 @@ fn mcp_local_mode_refuses_spawn_when_control_center_lock_is_active() {
         !output.status.success(),
         "mcp should fail when control-center lock is active and daemon is unavailable"
     );
-    assert!(
-        stderr.contains("cannot start it automatically")
-            || stderr.contains("another process still holds the daemon lock")
-            || stderr.contains("APP_INIT_REQUIRED"),
-        "expected ownership-policy rejection in stderr, got: {stderr}"
-    );
+    assert_attach_only_refusal(&stderr, "[cortex-mcp]", "codex", port);
     assert!(
         !health_ok(port),
         "daemon should not be auto-spawned while control-center lock is active"
@@ -735,15 +754,7 @@ fn mcp_withholds_local_token_fallback_until_health_identity_is_valid() {
         }),
     );
     let response = read_json_line(&responses, Duration::from_secs(45));
-    assert_eq!(response["jsonrpc"], "2.0");
-    assert_eq!(response["id"], 1);
-    assert!(
-        response
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .is_some_and(|msg| msg.contains("Daemon unavailable")),
-        "expected daemon unavailable response from adversarial target: {response}"
-    );
+    assert_jsonrpc_daemon_unavailable(&response, 1);
 
     drop(child.stdin.take());
     wait_for_exit(&mut child, Duration::from_secs(15));

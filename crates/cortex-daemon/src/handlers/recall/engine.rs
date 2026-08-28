@@ -1212,8 +1212,8 @@ enum SearchTableKind {
 }
 const MEMORIES_FTS_SQL: &str = "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2";
 const DECISIONS_FTS_SQL: &str = "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.status = 'active' AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2";
-const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
-const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier, owner_id, visibility FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at, owner_id, visibility FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
 const ACTIVE_TEMPORAL:&str="status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))";
 fn fts_keyword_sort(ranked: &mut [SearchCandidate]) {
     ranked.sort_by(|a, b| {
@@ -1270,8 +1270,8 @@ fn search_table_recency(
                         .or(row.get::<_, Option<String>>(if use_aging { 8 } else { 7 })?)
                         .unwrap_or_default(),
                 ),
-                owner_id: None,
-                visibility: None,
+                owner_id: row.get(if use_aging { 11 } else { 8 })?,
+                visibility: row.get(if use_aging { 12 } else { 9 })?,
             })
         })
         .map_err(|e| e.to_string())?;
