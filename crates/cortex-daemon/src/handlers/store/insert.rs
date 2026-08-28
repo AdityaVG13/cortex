@@ -64,7 +64,7 @@ pub(crate) fn round4(value: f64) -> f64 {
 }
 pub(crate) fn assess_quality(text: &str) -> QualityAssessment {
     let trimmed = text.trim();
-    let len = trimmed.chars().count();
+    let len = if trimmed.is_ascii() { trimmed.len() } else { trimmed.chars().count() };
     let length_score = if len < 10 {
         0
     } else if len < 50 {
@@ -80,14 +80,19 @@ pub(crate) fn assess_quality(text: &str) -> QualityAssessment {
     QualityAssessment { score, factors: QualityFactors { length_score, specificity_bonus, question_penalty } }
 }
 pub(crate) fn has_specificity_markers(text: &str) -> bool {
-    let lower = text.to_lowercase();
     let file_extensions = [".rs", ".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".toml", ".yaml", ".yml", ".sql", ".md"];
     let code_prefixes = ["fn ", "func ", "def ", "class ", "struct ", "impl ", "select ", "insert ", "update ", "delete "];
     let has_path = text.contains('/') || text.contains('\\');
-    let has_extension = file_extensions.iter().any(|ext| lower.contains(ext));
-    let has_function = text.contains("::") || text.contains("()") || text.contains("->") || code_prefixes.iter().any(|needle| lower.contains(needle));
+    let has_extension = file_extensions.iter().any(|ext| contains_ascii_ignore_case(text, ext));
+    let has_function = text.contains("::") || text.contains("()") || text.contains("->") || code_prefixes.iter().any(|needle| contains_ascii_ignore_case(text, needle));
     let has_identifier = text.split_whitespace().any(|token| token.contains('_') && token.chars().any(|ch| ch.is_ascii_alphabetic()));
     has_path || has_extension || has_function || has_identifier
+}
+fn contains_ascii_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.as_bytes().windows(needle.len()).any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 pub(crate) fn choose_semantic_dedup_action(candidates: &[SemanticCandidate], incoming_text: &str) -> SemanticDedupAction {
     for candidate in candidates {
@@ -133,7 +138,7 @@ pub(crate) fn fetch_top_semantic_candidates(conn: &Connection, query_vector: &[f
             false,
         )
     };
-    let mut stmt = conn.prepare(sql).map_err(|error| StoreError::Internal(error.to_string()))?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|error| StoreError::Internal(error.to_string()))?;
     let mut candidates = Vec::new();
     if has_owner_scope {
         let rows = stmt

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 pub mod admin;
 pub mod auth;
 pub mod boot;
@@ -28,8 +29,22 @@ pub use redaction::redact_secrets;
 use serde_json::{json, Value};
 const DEFAULT_PARSED_DURATION_SECONDS: i64 = 60 * 60;
 const MAX_PARSED_DURATION_SECONDS: i64 = 100 * 365 * 24 * 60 * 60;
+thread_local! {
+    static NOW_ISO_CACHE: RefCell<(i64, String)> = const { RefCell::new((0, String::new())) };
+}
 pub fn now_iso() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    let now = chrono::Utc::now();
+    let ms = now.timestamp_millis();
+    NOW_ISO_CACHE.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if cache.0 == ms && !cache.1.is_empty() {
+            return cache.1.clone();
+        }
+        let formatted = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        cache.0 = ms;
+        cache.1.clone_from(&formatted);
+        formatted
+    })
 }
 pub fn json_response(status: StatusCode, body: Value) -> Response {
     let mut response = (status, Json(body)).into_response();
@@ -79,7 +94,8 @@ pub(crate) fn parse_json_array(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!([]))
 }
 pub(crate) fn estimate_tokens_from_chars(char_count: usize) -> usize {
-    (char_count as f64 / 3.8).ceil() as usize
+    // ceil(n / 3.8) == (n * 5 + 18) / 19
+    (char_count.saturating_mul(5) + 18) / 19
 }
 pub(crate) fn estimate_tokens(text: &str) -> usize {
     estimate_tokens_from_chars(text.len())

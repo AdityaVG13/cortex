@@ -1,5 +1,5 @@
 use rusqlite::Connection;
-use std::collections::HashSet;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 const RELATED_THRESHOLD: f64 = 0.40;
 const AGREEMENT_THRESHOLD: f64 = 0.84;
 const CORE_CONTRADICTION_OVERLAP_THRESHOLD: f64 = 0.35;
@@ -72,21 +72,49 @@ impl ConflictResult {
         }
     }
 }
-pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
-    let set_a: HashSet<String> = a.split_whitespace().filter(|w| w.len() > 1).map(|w| w.to_lowercase()).collect();
-    let set_b: HashSet<String> = b.split_whitespace().filter(|w| w.len() > 1).map(|w| w.to_lowercase()).collect();
-    if set_a.is_empty() && set_b.is_empty() {
+fn fold_jaccard_token(token: &str) -> String {
+    if token.bytes().all(|byte| byte.is_ascii()) {
+        if token.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            token.to_ascii_lowercase()
+        } else {
+            token.to_owned()
+        }
+    } else {
+        token.to_lowercase()
+    }
+}
+
+fn ascii_tokens_already_folded(text: &str) -> bool {
+    text.bytes().all(|byte| !byte.is_ascii_uppercase())
+}
+
+fn jaccard_borrowed(a: &str, b: &str) -> f64 {
+    let mut left = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
+    for word in a.split_whitespace().filter(|word| word.len() > 1) {
+        left.insert(word);
+    }
+    let mut right = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
+    for word in b.split_whitespace().filter(|word| word.len() > 1) {
+        right.insert(word);
+    }
+    if left.is_empty() && right.is_empty() {
         return 1.0;
     }
-    if set_a.is_empty() || set_b.is_empty() {
+    if left.is_empty() || right.is_empty() {
         return 0.0;
     }
-    let intersection = set_a.intersection(&set_b).count() as f64;
-    let union = (set_a.len() + set_b.len()) as f64 - intersection;
-    if union == 0.0 {
-        return 0.0;
+    let (smaller, larger) = if left.len() <= right.len() { (&left, &right) } else { (&right, &left) };
+    let intersection = smaller.iter().filter(|token| larger.contains(*token)).count() as f64;
+    let union = (left.len() + right.len()) as f64 - intersection;
+    if union == 0.0 { 0.0 } else { intersection / union }
+}
+
+pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
+    if ascii_tokens_already_folded(a) && ascii_tokens_already_folded(b) {
+        jaccard_borrowed(a, b)
+    } else {
+        jaccard_similarity_token_sets(&jaccard_token_set(a), &jaccard_token_set(b))
     }
-    intersection / union
 }
 
 #[derive(Debug, Clone)]
@@ -103,18 +131,28 @@ pub(crate) struct RecentDecisionScan {
     pub(crate) max_jaccard: f64,
 }
 
-pub(crate) fn jaccard_token_set(text: &str) -> HashSet<String> {
-    text.split_whitespace().filter(|word| word.len() > 1).map(|word| word.to_lowercase()).collect()
+fn fill_jaccard_tokens(text: &str, tokens: &mut FxHashSet<String>) {
+    tokens.clear();
+    for word in text.split_whitespace().filter(|word| word.len() > 1) {
+        tokens.insert(fold_jaccard_token(word));
+    }
 }
 
-pub(crate) fn jaccard_similarity_token_sets(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
+pub(crate) fn jaccard_token_set(text: &str) -> FxHashSet<String> {
+    let mut tokens = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
+    fill_jaccard_tokens(text, &mut tokens);
+    tokens
+}
+
+pub(crate) fn jaccard_similarity_token_sets(left: &FxHashSet<String>, right: &FxHashSet<String>) -> f64 {
     if left.is_empty() && right.is_empty() {
         return 1.0;
     }
     if left.is_empty() || right.is_empty() {
         return 0.0;
     }
-    let intersection = left.intersection(right).count() as f64;
+    let (smaller, larger) = if left.len() <= right.len() { (left, right) } else { (right, left) };
+    let intersection = smaller.iter().filter(|token| larger.contains(*token)).count() as f64;
     let union = (left.len() + right.len()) as f64 - intersection;
     if union == 0.0 {
         0.0
@@ -192,7 +230,7 @@ pub(crate) fn fetch_recent_decision_candidates(conn: &Connection, owner_id: Opti
             false,
         )
     };
-    let mut stmt = conn.prepare(sql).map_err(|error| format!("Failed to prepare recent decision query: {error}"))?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|error| format!("Failed to prepare recent decision query: {error}"))?;
     let map_candidate = |row: &rusqlite::Row<'_>| {
         let in_conflict_window: i64 = row.get(4)?;
         Ok(RecentDecisionCandidate {
@@ -221,23 +259,24 @@ pub(crate) fn fetch_recent_decision_candidates(conn: &Connection, owner_id: Opti
 }
 
 pub(crate) fn scan_recent_decision_candidates(
-    candidates: &[RecentDecisionCandidate], decision: &str, source_agent: &str, decision_tokens: &HashSet<String>,
+    candidates: &[RecentDecisionCandidate], decision: &str, source_agent: &str, decision_tokens: &FxHashSet<String>,
 ) -> RecentDecisionScan {
     let mut max_jaccard = 0.0_f64;
     let mut best_conflict_sim = 0.0_f64;
-    let mut best_conflict_candidate: Option<DecisionCandidate> = None;
+    let mut best_conflict_idx: Option<usize> = None;
 
-    for candidate in candidates {
-        let candidate_tokens = jaccard_token_set(&candidate.decision);
+    let mut candidate_tokens = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
+    for (index, candidate) in candidates.iter().enumerate() {
+        fill_jaccard_tokens(&candidate.decision, &mut candidate_tokens);
         let similarity = jaccard_similarity_token_sets(decision_tokens, &candidate_tokens);
         max_jaccard = max_jaccard.max(similarity);
         if candidate.in_conflict_window && similarity > best_conflict_sim {
             best_conflict_sim = similarity;
-            best_conflict_candidate = Some(recent_candidate_to_decision_candidate(candidate));
+            best_conflict_idx = Some(index);
         }
     }
 
-    let Some(best_candidate) = best_conflict_candidate else {
+    let Some(best_candidate) = best_conflict_idx.map(|index| recent_candidate_to_decision_candidate(&candidates[index])) else {
         return RecentDecisionScan { relation: ConflictResult::unrelated(), max_jaccard };
     };
     if best_conflict_sim < RELATED_THRESHOLD {
@@ -274,7 +313,7 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str, ow
             false,
         )
     };
-    let mut stmt = conn.prepare(sql).map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
+    let mut stmt = conn.prepare_cached(sql).map_err(|e| format!("Failed to prepare conflict query: {e}"))?;
     let rows: Vec<DecisionCandidate> = if has_owner_scope {
         stmt.query_map([owner_id.unwrap_or_default()], |row| {
             Ok(DecisionCandidate { id: row.get(0)?, decision: row.get(1)?, source_agent: row.get(2)?, trust_score: row.get(3)? })
@@ -288,23 +327,26 @@ pub fn detect_conflict(conn: &Connection, decision: &str, source_agent: &str, ow
             .filter_map(|r| r.ok())
             .collect()
     };
+    let incoming_tokens = jaccard_token_set(decision);
+    let mut candidate_tokens = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
     let mut best_sim = 0.0_f64;
-    let mut best_candidate: Option<DecisionCandidate> = None;
-    for candidate in &rows {
-        let sim = jaccard_similarity(decision, &candidate.decision);
+    let mut best_idx: Option<usize> = None;
+    for (index, candidate) in rows.iter().enumerate() {
+        fill_jaccard_tokens(&candidate.decision, &mut candidate_tokens);
+        let sim = jaccard_similarity_token_sets(&incoming_tokens, &candidate_tokens);
         if sim > best_sim {
             best_sim = sim;
-            best_candidate = Some(candidate.clone());
+            best_idx = Some(index);
         }
     }
-    let Some(best_candidate) = best_candidate else {
+    let Some(best_candidate) = best_idx.map(|index| &rows[index]) else {
         return Ok(ConflictResult::unrelated());
     };
     if best_sim < RELATED_THRESHOLD {
         return Ok(ConflictResult::unrelated());
     }
-    let classification = classify_relation(decision, source_agent, &best_candidate, best_sim);
-    Ok(ConflictResult::from_candidate(classification, &best_candidate, source_agent, best_sim, None))
+    let classification = classify_relation(decision, source_agent, best_candidate, best_sim);
+    Ok(ConflictResult::from_candidate(classification, best_candidate, source_agent, best_sim, None))
 }
 fn classify_relation(incoming_decision: &str, incoming_agent: &str, candidate: &DecisionCandidate, similarity_jaccard: f64) -> ConflictClassification {
     if similarity_jaccard < RELATED_THRESHOLD {
@@ -337,14 +379,18 @@ fn contradiction_signal(a: &str, b: &str, similarity_jaccard: f64) -> bool {
     let overlap = jaccard_similarity_sets(&core_a, &core_b);
     overlap >= CORE_CONTRADICTION_OVERLAP_THRESHOLD
 }
-fn semantic_tokens(text: &str) -> HashSet<String> {
-    text.to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| token.len() > 1)
-        .map(|token| token.to_string())
-        .collect()
+fn semantic_tokens(text: &str) -> FxHashSet<String> {
+    let mut tokens = FxHashSet::with_capacity_and_hasher(16, FxBuildHasher);
+    for token in text.split(|ch: char| !ch.is_ascii_alphanumeric()).filter(|token| token.len() > 1) {
+        tokens.insert(if token.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            token.to_ascii_lowercase()
+        } else {
+            token.to_owned()
+        });
+    }
+    tokens
 }
-fn has_negation(tokens: &HashSet<String>) -> bool {
+fn has_negation(tokens: &FxHashSet<String>) -> bool {
     const NEGATION_TOKENS: &[&str] = &[
         "not",
         "never",
@@ -362,7 +408,7 @@ fn has_negation(tokens: &HashSet<String>) -> bool {
     ];
     NEGATION_TOKENS.iter().any(|token| tokens.contains(*token))
 }
-fn strip_negation_tokens(tokens: &HashSet<String>) -> HashSet<String> {
+fn strip_negation_tokens(tokens: &FxHashSet<String>) -> FxHashSet<String> {
     const NEGATION_TOKENS: &[&str] = &[
         "not",
         "never",
@@ -380,25 +426,12 @@ fn strip_negation_tokens(tokens: &HashSet<String>) -> HashSet<String> {
     ];
     tokens.iter().filter(|token| !NEGATION_TOKENS.contains(&token.as_str())).cloned().collect()
 }
-fn has_polarity_flip(tokens_a: &HashSet<String>, tokens_b: &HashSet<String>) -> bool {
+fn has_polarity_flip(tokens_a: &FxHashSet<String>, tokens_b: &FxHashSet<String>) -> bool {
     const FLIP_PAIRS: &[(&str, &str)] = &[("always", "never"), ("must", "never"), ("allow", "forbid"), ("enable", "disable"), ("use", "avoid")];
     FLIP_PAIRS
         .iter()
         .any(|(lhs, rhs)| (tokens_a.contains(*lhs) && tokens_b.contains(*rhs)) || (tokens_a.contains(*rhs) && tokens_b.contains(*lhs)))
 }
-fn jaccard_similarity_sets(left: &HashSet<String>, right: &HashSet<String>) -> f64 {
-    if left.is_empty() && right.is_empty() {
-        return 1.0;
-    }
-    if left.is_empty() || right.is_empty() {
-        return 0.0;
-    }
-    let intersection = left.intersection(right).count() as f64;
-    let union = (left.len() + right.len()) as f64 - intersection;
-    if union == 0.0 {
-        0.0
-    } else {
-        intersection / union
-    }
+fn jaccard_similarity_sets(left: &FxHashSet<String>, right: &FxHashSet<String>) -> f64 {
+    jaccard_similarity_token_sets(left, right)
 }
-

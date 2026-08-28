@@ -20,7 +20,7 @@ pub(crate) fn empty_rank_components() -> RankComponents {
 }
 pub(crate) fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
     let mut candidates = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(mut stmt) = conn.prepare_cached(
         "SELECT id, text, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
          FROM memories
          WHERE status = 'active' AND type != 'state'
@@ -45,7 +45,7 @@ pub(crate) fn fetch_rank_candidates(conn: &Connection) -> Vec<RankedCandidate> {
             candidates.extend(rows.flatten());
         }
     }
-    if let Ok(mut stmt) = conn.prepare(
+    if let Ok(mut stmt) = conn.prepare_cached(
         "SELECT id, decision, context, type, retention_class, score, retrievals, last_accessed, updated_at, created_at
          FROM decisions
          WHERE status = 'active'
@@ -104,17 +104,29 @@ pub(crate) fn truncate_to_token_budget(text: &str, token_budget: usize) -> (Stri
     if token_budget == 0 {
         return (String::new(), 0);
     }
+    let total_tokens = estimate_tokens(text);
+    if total_tokens <= token_budget {
+        return (text.to_string(), total_tokens);
+    }
     let total_chars = text.chars().count();
-    let mut char_budget = ((token_budget as f64 * 3.5) as usize).max(1).min(total_chars);
-    loop {
-        let prefix: String = text.chars().take(char_budget).collect();
+    let mut lo = 1usize;
+    let mut hi = total_chars;
+    let mut best = (String::from("..."), estimate_tokens("..."));
+    while lo <= hi {
+        let mid = (lo + hi) / 2;
+        let prefix: String = text.chars().take(mid).collect();
         let candidate = format!("{prefix}...");
         let tokens = estimate_tokens(&candidate);
-        if tokens <= token_budget || char_budget <= 1 {
-            return (candidate, tokens);
+        if tokens <= token_budget {
+            best = (candidate, tokens);
+            lo = mid.saturating_add(1);
+        } else if mid <= 1 {
+            break;
+        } else {
+            hi = mid - 1;
         }
-        char_budget -= 1;
     }
+    best
 }
 pub(crate) fn pack_context_items_greedy(items: &[ContextItem], max_tokens: usize) -> PackedContext {
     let mut budget_remaining = max_tokens;

@@ -12,7 +12,9 @@ pub(crate) fn is_benchmark_entry_type(entry_type: &str) -> bool {
     entry_type.eq_ignore_ascii_case(BENCHMARK_ENTRY_TYPE)
 }
 pub(crate) fn is_benchmark_source_agent(source_agent: &str) -> bool {
-    source_agent.trim().to_ascii_lowercase().starts_with(BENCHMARK_SOURCE_AGENT_PREFIX)
+    let trimmed = source_agent.trim();
+    let prefix = BENCHMARK_SOURCE_AGENT_PREFIX.as_bytes();
+    trimmed.len() >= prefix.len() && trimmed.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DecisionProvenance {

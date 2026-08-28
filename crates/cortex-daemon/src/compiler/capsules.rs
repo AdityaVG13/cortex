@@ -12,7 +12,7 @@ pub(crate) fn get_last_boot_time(conn: &Connection, agent: &str) -> Option<Strin
 }
 pub(crate) fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT sender, message FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC") {
+    if let Ok(mut stmt) = conn.prepare_cached("SELECT sender, message FROM messages WHERE recipient = ?1 ORDER BY timestamp ASC") {
         if let Ok(rows) = stmt.query_map(params![agent], |r| Ok(json!({"from":r.get::<_,String>(0)?,"message":r.get::<_,String>(1)?}))) {
             for row in rows.flatten() {
                 out.push(row);
@@ -23,7 +23,7 @@ pub(crate) fn fetch_messages_for_agent(conn: &Connection, agent: &str) -> Vec<Va
 }
 pub(crate) fn fetch_sessions(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT agent, project, description, files_json FROM sessions WHERE expires_at > ?1") {
+    if let Ok(mut stmt) = conn.prepare_cached("SELECT agent, project, description, files_json FROM sessions WHERE expires_at > ?1") {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         if let Ok(rows) = stmt.query_map(params![now], |r| {
             let files_json: String = r.get(3)?;
@@ -41,7 +41,7 @@ serde_json::from_str::<Value>(&files_json).unwrap_or(json!([]))}))
 pub(crate) fn fetch_locks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
     let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    if let Ok(mut stmt) = conn.prepare("SELECT path, agent, expires_at FROM locks WHERE expires_at > ?1") {
+    if let Ok(mut stmt) = conn.prepare_cached("SELECT path, agent, expires_at FROM locks WHERE expires_at > ?1") {
         if let Ok(rows) = stmt.query_map(params![now], |r| {
             Ok(json!({"path":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"expiresAt":r.get::<_,String
 >(2)?}))
@@ -60,7 +60,7 @@ pub(crate) fn fetch_unread_feed(conn: &Connection, agent: &str) -> Vec<Value> {
         .ok()
         .flatten();
     let mut all: Vec<(String, String, String, String)> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT id, agent, kind, summary FROM feed ORDER BY timestamp ASC") {
+    if let Ok(mut stmt) = conn.prepare_cached("SELECT id, agent, kind, summary FROM feed ORDER BY timestamp ASC") {
         if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))) {
             for row in rows.flatten() {
                 all.push(row);
@@ -93,7 +93,7 @@ entry_agent,"summary":summary})
 pub(crate) fn fetch_pending_tasks(conn: &Connection) -> Vec<Value> {
     let mut out = Vec::new();
     if let Ok(mut stmt) =
-        conn.prepare("SELECT task_id, title, priority, project, files_json FROM tasks WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5")
+        conn.prepare_cached("SELECT task_id, title, priority, project, files_json FROM tasks WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5")
     {
         if let Ok(rows) = stmt.query_map([], |r| {
             let files_json: String = r.get(4)?;
@@ -111,7 +111,7 @@ unwrap_or(json!([]))}))
 pub(crate) fn fetch_claimed_tasks_for_agent(conn: &Connection, agent: &str) -> Vec<Value> {
     let mut out = Vec::new();
     if let Ok(mut stmt) =
-        conn.prepare("SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1 ORDER BY claimed_at ASC")
+        conn.prepare_cached("SELECT task_id, title, priority, claimed_at FROM tasks WHERE status = 'claimed' AND claimed_by = ?1 ORDER BY claimed_at ASC")
     {
         if let Ok(rows) = stmt.query_map(params![agent], |r| {
             Ok(json!({"id":r.get::<_,String>(0)?,"title":r.get::<_,String>(1)?,"priority":r.get
@@ -207,7 +207,7 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
         parts.push(format!("## Your Active Tasks\n{}", lines.join("\n")));
     }
     if let Ok(mut stmt) =
-        conn.prepare("SELECT id, decision, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6")
+        conn.prepare_cached("SELECT id, decision, source_agent, disputes_id FROM decisions WHERE status = 'disputed' ORDER BY created_at DESC LIMIT 6")
     {
         if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<i64>>(3)?))) {
             let mut seen = HashSet::new();
@@ -242,7 +242,7 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
     }
     if let Some(ref lb) = last_boot {
         if let Ok(mut stmt) =
-            conn.prepare("SELECT decision, context, source_agent FROM decisions WHERE status = 'active' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 5")
+            conn.prepare_cached("SELECT decision, context, source_agent FROM decisions WHERE status = 'active' AND created_at >= ?1 ORDER BY created_at DESC LIMIT 5")
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))) {
                 let lines: Vec<String> = rows
@@ -258,7 +258,7 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
             }
         }
         if let Ok(mut stmt) =
-            conn.prepare("SELECT text, type FROM memories WHERE status = 'active' AND updated_at >= ?1 AND type != 'state' ORDER BY updated_at DESC LIMIT 3")
+            conn.prepare_cached("SELECT text, type FROM memories WHERE status = 'active' AND updated_at >= ?1 AND type != 'state' ORDER BY updated_at DESC LIMIT 3")
         {
             if let Ok(rows) = stmt.query_map(params![lb], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
                 let lines: Vec<String> = rows
@@ -284,7 +284,7 @@ pub(crate) fn build_delta_capsule(conn: &Connection, agent: &str) -> (String, us
             }
         }
     } else {
-        if let Ok(mut stmt) = conn.prepare("SELECT decision, context FROM decisions WHERE status = 'active' ORDER BY created_at DESC LIMIT 5") {
+        if let Ok(mut stmt) = conn.prepare_cached("SELECT decision, context FROM decisions WHERE status = 'active' ORDER BY created_at DESC LIMIT 5") {
             if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))) {
                 let lines: Vec<String> = rows
                     .flatten()

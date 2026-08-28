@@ -226,7 +226,8 @@ pub fn log_event(conn: &rusqlite::Connection, kind: &str, data: Value, source_ag
     if should_skip_benchmark_event_persistence(kind, &compacted, source_agent) {
         return Ok(());
     }
-    conn.execute("INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)", rusqlite::params![kind, compacted.to_string(), source_agent])?;
+    let mut stmt = conn.prepare_cached("INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)")?;
+    stmt.execute(rusqlite::params![kind, compacted.to_string(), source_agent])?;
     maybe_prune_high_volume_event(conn, kind)?;
     Ok(())
 }
@@ -244,7 +245,7 @@ fn prune_event_type_keep_latest(conn: &rusqlite::Connection, event_type: &str, k
     if keep_rows < 1 {
         return Ok(());
     }
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "DELETE FROM events
          WHERE id IN (
            SELECT id
@@ -253,8 +254,8 @@ fn prune_event_type_keep_latest(conn: &rusqlite::Connection, event_type: &str, k
            ORDER BY id DESC
            LIMIT -1 OFFSET ?2
          )",
-        rusqlite::params![event_type, keep_rows],
     )?;
+    stmt.execute(rusqlite::params![event_type, keep_rows])?;
     Ok(())
 }
 

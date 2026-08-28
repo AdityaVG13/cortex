@@ -25,7 +25,7 @@ fn bump_retrievals_str_keys(conn: &Connection, table: &str, key_col: &str, now: 
     for key in keys {
         params.push(key);
     }
-    let _ = conn.execute(&sql, params.as_slice());
+    let _ = conn.prepare_cached(&sql).and_then(|mut stmt| stmt.execute(params.as_slice()));
 }
 fn bump_retrievals_i64_keys(conn: &Connection, table: &str, key_col: &str, now: &str, keys: &[i64]) {
     if keys.is_empty() {
@@ -38,7 +38,7 @@ fn bump_retrievals_i64_keys(conn: &Connection, table: &str, key_col: &str, now: 
     for key in keys {
         params.push(key);
     }
-    let _ = conn.execute(&sql, params.as_slice());
+    let _ = conn.prepare_cached(&sql).and_then(|mut stmt| stmt.execute(params.as_slice()));
 }
 pub(crate) fn bump_retrievals_batch(conn: &Connection, items: &[RecallItem]) {
     if items.is_empty() {

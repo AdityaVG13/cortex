@@ -6,6 +6,7 @@ mod merge;
 mod policies;
 
 mod types;
+pub use core::store_decision_with_ttl;
 pub(crate) use core::store_decision_with_input_embedding_and_provenance_retention;
 
 pub use embedding::persist_decision_embedding;

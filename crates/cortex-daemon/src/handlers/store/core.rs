@@ -67,7 +67,7 @@ pub(crate) fn store_decision_internal(
     let entry_type = entry_type.unwrap_or_else(|| "decision".to_string());
     let suppress_benchmark_events = is_benchmark_entry_type(&entry_type) || is_benchmark_source_agent(&source_agent);
     let mut decision_text = decision.trim().to_string();
-    let decision_chars = decision_text.chars().count();
+    let decision_chars = if decision_text.is_ascii() { decision_text.len() } else { decision_text.chars().count() };
     let decision_truncated = !is_benchmark_entry_type(&entry_type) && decision_chars > MAX_DECISION_CHARS;
     if decision_truncated {
         decision_text = truncate_chars(&decision_text, MAX_DECISION_CHARS);

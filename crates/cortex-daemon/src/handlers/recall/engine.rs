@@ -5,10 +5,17 @@ use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::OnceLock;
 use std::time::Instant;
+fn contains_ascii_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.as_bytes().windows(needle.len()).any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct QueryShapeProfile {
     pub(crate) exactish: bool,
@@ -18,17 +25,16 @@ pub(crate) fn query_shape_profile(query_text: &str, source_prefix: Option<&str>)
     let trimmed = query_text.trim();
     let token_count = trimmed.split_whitespace().count();
     let char_count = trimmed.chars().count();
-    let lowered = trimmed.to_ascii_lowercase();
     let has_exact_markers = trimmed.contains('"')
         || trimmed.contains('`')
         || trimmed.contains("::")
         || trimmed.contains('/')
         || trimmed.contains('\\')
-        || lowered.contains(".rs")
-        || lowered.contains(".ts")
-        || lowered.contains(".tsx")
-        || lowered.contains(".js")
-        || lowered.contains(".py");
+        || contains_ascii_ignore_case(trimmed, ".rs")
+        || contains_ascii_ignore_case(trimmed, ".ts")
+        || contains_ascii_ignore_case(trimmed, ".tsx")
+        || contains_ascii_ignore_case(trimmed, ".js")
+        || contains_ascii_ignore_case(trimmed, ".py");
     QueryShapeProfile {
         exactish: has_exact_markers || token_count <= 3 || char_count <= 24 || source_prefix.is_some(),
         naturalish: token_count >= 8 || char_count >= 56 || trimmed.ends_with('?'),
@@ -191,11 +197,11 @@ pub(crate) fn crystal_source(crystal_id: i64, label: &str) -> String {
     format!("crystal::{crystal_id}::{label}")
 }
 pub(crate) fn dedup_preserve_order(values: &mut Vec<String>) {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(values.len());
     values.retain(|value| seen.insert(value.clone()));
 }
 pub(crate) fn normalize_collapsed_source_rank(item: &mut RecallItem) {
-    let mut best_scores: HashMap<String, (f64, usize)> = HashMap::new();
+    let mut best_scores: HashMap<String, (f64, usize)> = HashMap::with_capacity(item.collapsed_sources.len() + item.collapsed_source_scores.len());
     for (order, source) in item.collapsed_sources.iter().enumerate() {
         best_scores.entry(source.clone()).or_insert((0.0, order));
     }
@@ -220,7 +226,7 @@ pub(crate) fn parse_crystal_source_id(source: &str) -> Option<i64> {
 }
 pub(crate) fn crystal_member_sources(conn: &Connection, crystal_id: i64, ctx: &RecallContext) -> Vec<String> {
     let query_rows = |sql: &str, with_visibility: bool| -> Result<Vec<CrystalMemberSourceRow>, rusqlite::Error> {
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare_cached(sql)?;
         let mapped = stmt.query_map(params![crystal_id], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
@@ -476,20 +482,31 @@ pub(crate) fn apply_recall_ranking_boosts(items: &mut [RecallItem], query_text: 
     }
 }
 pub(crate) fn normalize_text(input: &str) -> String {
-    input
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch.is_ascii_whitespace() { ch.to_ascii_lowercase() } else { ' ' })
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch.is_ascii_whitespace() {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(' ');
+        }
+    }
+    out
+}
+fn keyword_stop_words() -> &'static HashSet<&'static str> {
+    static STOP_WORDS: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    STOP_WORDS.get_or_init(|| {
+        [
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+            "may", "might", "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about", "that", "this", "it", "its", "not",
+            "but", "and", "or", "if", "then", "so", "what", "which", "who", "how", "when", "where", "why", "all", "each", "every", "both", "few", "more", "most",
+            "some", "any", "no", "my", "your", "his", "her", "our", "their", "i", "me",
+        ]
+        .into_iter()
         .collect()
+    })
 }
 pub(crate) fn extract_keywords(text: &str) -> Vec<String> {
-    let stop_words: HashSet<&'static str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
-        "may", "might", "shall", "can", "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about", "that", "this", "it", "its", "not",
-        "but", "and", "or", "if", "then", "so", "what", "which", "who", "how", "when", "where", "why", "all", "each", "every", "both", "few", "more", "most",
-        "some", "any", "no", "my", "your", "his", "her", "our", "their", "i", "me",
-    ]
-    .into_iter()
-    .collect();
+    let stop_words = keyword_stop_words();
     normalize_text(text)
         .split_whitespace()
         .filter(|word| word.len() > 2 && !stop_words.contains(*word))
@@ -1132,7 +1149,8 @@ pub(crate) fn fallback_ranking_score(
 }
 pub(crate) fn rrf_fuse_weighted(lists: &[Vec<(i64, f64)>], weights: &[f64], k: f64) -> Vec<(i64, f64)> {
     let smooth_k = if k.is_finite() && k >= 0.0 { k } else { 60.0 };
-    let mut fused: HashMap<i64, f64> = HashMap::new();
+    let fused_cap = lists.iter().map(|list| list.len()).sum();
+    let mut fused: FxHashMap<i64, f64> = FxHashMap::with_capacity_and_hasher(fused_cap, Default::default());
     for (list_index, list) in lists.iter().enumerate() {
         let weight = match weights.get(list_index).copied() {
             Some(value) if value.is_finite() => value.max(0.0),
@@ -1192,6 +1210,10 @@ enum SearchTableKind {
     Memories,
     Decisions,
 }
+const MEMORIES_FTS_SQL: &str = "SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.status = 'active' AND (m.expires_at IS NULL OR m.expires_at > datetime('now')) AND (m.valid_from IS NULL OR m.valid_from <= datetime('now')) AND (m.valid_until IS NULL OR m.valid_until > datetime('now')) AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2";
+const DECISIONS_FTS_SQL: &str = "SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.status = 'active' AND (d.expires_at IS NULL OR d.expires_at > datetime('now')) AND (d.valid_from IS NULL OR d.valid_from <= datetime('now')) AND (d.valid_until IS NULL OR d.valid_until > datetime('now')) AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2";
+const MEMORIES_RECENCY_SQL: &str = "SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
+const DECISIONS_RECENCY_SQL: &str = "SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now')) AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1";
 const ACTIVE_TEMPORAL:&str="status = 'active' AND (expires_at IS NULL OR expires_at > datetime('now')) AND (valid_from IS NULL OR valid_from <= datetime('now')) AND (valid_until IS NULL OR valid_until > datetime('now'))";
 fn fts_keyword_sort(ranked: &mut [SearchCandidate]) {
     ranked.sort_by(|a, b| {
@@ -1215,8 +1237,11 @@ fn search_source_key(kind: SearchTableKind, id: i64, alt: Option<&str>) -> Strin
 fn search_table_recency(
     conn: &Connection, limit: usize, source_prefix: Option<&str>, source_like: Option<&str>, kind: SearchTableKind, excerpt_focus_terms: &[String],
 ) -> Result<Vec<SearchCandidate>, String> {
-    let(sql,use_aging)=match kind{SearchTableKind::Memories=>(format!("SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at, compressed_text, age_tier FROM memories WHERE {ACTIVE_TEMPORAL} AND (?2 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1"),true,),SearchTableKind::Decisions=>(format!("SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE {ACTIVE_TEMPORAL} AND (?2 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?2) ORDER BY COALESCE(last_accessed, created_at) DESC LIMIT ?1"),false,),};
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let (sql, use_aging) = match kind {
+        SearchTableKind::Memories => (MEMORIES_RECENCY_SQL, true),
+        SearchTableKind::Decisions => (DECISIONS_RECENCY_SQL, false),
+    };
+    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![limit as i64, source_like], |row| {
             let effective_score =
@@ -1256,8 +1281,11 @@ fn search_table_fts(
     conn: &Connection, fts_query: &str, limit: usize, source_like: Option<&str>, source_prefix: Option<&str>, kind: SearchTableKind,
     term_groups: &[Vec<String>], excerpt_focus_terms: &[String], query_text: &str, bm25: &Bm25Weights,
 ) -> Result<Vec<SearchCandidate>, String> {
-    let sql=match kind{SearchTableKind::Memories=>format!("SELECT m.id, m.text, m.source, m.tags, m.score, m.trust_score, m.retrievals, m.last_accessed, m.created_at, m.compressed_text, m.age_tier, m.owner_id, m.visibility FROM memories_fts fts JOIN memories m ON m.id = fts.rowid WHERE memories_fts MATCH ?1 AND m.{ACTIVE_TEMPORAL} AND (?6 IS NULL OR COALESCE(m.source, 'memory::' || m.id) LIKE ?6) ORDER BY bm25(memories_fts, ?3, ?4, ?5) LIMIT ?2"),SearchTableKind::Decisions=>format!("SELECT d.id, d.decision, d.context, d.score, d.trust_score, d.retrievals, d.last_accessed, d.created_at, d.compressed_text, d.age_tier, d.owner_id, d.visibility FROM decisions_fts fts JOIN decisions d ON d.id = fts.rowid WHERE decisions_fts MATCH ?1 AND d.{ACTIVE_TEMPORAL} AND (?5 IS NULL OR COALESCE(d.context, 'decision::' || d.id) LIKE ?5) ORDER BY bm25(decisions_fts, ?3, ?4) LIMIT ?2"),};
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let sql = match kind {
+        SearchTableKind::Memories => MEMORIES_FTS_SQL,
+        SearchTableKind::Decisions => DECISIONS_FTS_SQL,
+    };
+    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let mut ranked = Vec::new();
     let mut push_fts_row = |id: i64,
                             primary: String,
@@ -1388,7 +1416,7 @@ fn search_table_scan_fallback(
     let source_like = source_prefix.map(|prefix| format!("{prefix}%"));
     let mut ranked = Vec::new();
     let sql=match kind{SearchTableKind::Memories=>format!("SELECT id, text, source, tags, score, trust_score, retrievals, last_accessed, created_at FROM memories WHERE {ACTIVE_TEMPORAL} AND (?1 IS NULL OR COALESCE(source, 'memory::' || id) LIKE ?1)"),SearchTableKind::Decisions=>format!("SELECT id, decision, context, score, trust_score, retrievals, last_accessed, created_at FROM decisions WHERE {ACTIVE_TEMPORAL} AND (?1 IS NULL OR COALESCE(context, 'decision::' || id) LIKE ?1)"),};
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![source_like.as_deref()], |row| {
             Ok(match kind {

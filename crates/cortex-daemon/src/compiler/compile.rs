@@ -59,16 +59,17 @@ pub fn compile(conn: &Connection, home: &Path, agent: &str, max_tokens: usize) -
     let saved = raw_baseline.saturating_sub(token_estimate);
     let percent = if raw_baseline > 0 { (saved * 100) / raw_baseline } else { 0 };
     if raw_baseline > 0 {
-        let _ = conn.execute(
-            "INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)",
-            params![
-                "boot_savings",
-                serde_json::to_string(&json!({"agent":agent,"served":token_estimate,"baseline":raw_baseline,"saved":saved,"percent":percent,
+        let _ = conn
+            .prepare_cached("INSERT INTO events (type, data, source_agent) VALUES (?1, ?2, ?3)")
+            .and_then(|mut stmt| {
+                stmt.execute(params![
+                    "boot_savings",
+                    serde_json::to_string(&json!({"agent":agent,"served":token_estimate,"baseline":raw_baseline,"saved":saved,"percent":percent,
 "admitted":admitted.len(),"rejected":rejected.len()}))
-                .unwrap_or_default(),
-                "rust-daemon"
-            ],
-        );
+                    .unwrap_or_default(),
+                    "rust-daemon"
+                ])
+            });
     }
     BootResult {
         boot_prompt: assembled,

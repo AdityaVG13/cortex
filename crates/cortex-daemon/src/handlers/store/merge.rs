@@ -88,33 +88,72 @@ pub(crate) fn merge_context(existing_context: Option<String>, existing_decision:
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_decision(
-    conn: &Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance, confidence: f64,
+    conn: &mut Connection, decision: &str, context: Option<String>, entry_type: &str, source_agent: &str, provenance: &DecisionProvenance, confidence: f64,
     trust_score: f64, quality: i32, retention_class: RetentionClass, expires_at: Option<String>, ts: &str, owner_id: Option<i64>, surprise: f64,
     emit_decision_stored_event: bool,
 ) -> Result<(Value, Option<i64>), StoreError> {
     let surprise = (surprise * 10_000.0).round() / 10_000.0;
-    if let
-Some(oid)=owner_id{conn.execute(
-"INSERT INTO decisions \
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| StoreError::Internal(e.to_string()))?;
+    if let Some(oid) = owner_id {
+        let mut stmt = tx
+            .prepare_cached(
+                "INSERT INTO decisions \
              (decision, context, type, source_agent, confidence, surprise, status, owner_id, quality, retention_class, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14, ?15)"
-,params![decision,context,entry_type,source_agent,confidence,surprise,oid,quality,retention_class.as_str(),expires_at,ts,
-provenance.source_client.as_str(),provenance.source_model.as_deref(),provenance.reasoning_depth.as_str(),trust_score,],)}else{conn
-.execute(
-"INSERT INTO decisions \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13, ?14, ?15)",
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        stmt.execute(params![
+            decision,
+            context,
+            entry_type,
+            source_agent,
+            confidence,
+            surprise,
+            oid,
+            quality,
+            retention_class.as_str(),
+            expires_at,
+            ts,
+            provenance.source_client.as_str(),
+            provenance.source_model.as_deref(),
+            provenance.reasoning_depth.as_str(),
+            trust_score,
+        ])
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
+    } else {
+        let mut stmt = tx
+            .prepare_cached(
+                "INSERT INTO decisions \
              (decision, context, type, source_agent, confidence, surprise, status, quality, retention_class, expires_at, created_at, updated_at, source_client, source_model, reasoning_depth, trust_score) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)"
-,params![decision,context,entry_type,source_agent,confidence,surprise,quality,retention_class.as_str(),expires_at,ts,provenance.
-source_client.as_str(),provenance.source_model.as_deref(),provenance.reasoning_depth.as_str(),trust_score,],)}.map_err(|e|
-StoreError::Internal(e.to_string()))?;
-    let id = conn.last_insert_rowid();
-    if emit_decision_stored_event {
-        let _ = log_event(conn, "decision_stored", json!({"id":id,"source_agent":source_agent,"surprise":surprise,"quality":quality,}), "rust-daemon");
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?10, ?11, ?12, ?13, ?14)",
+            )
+            .map_err(|e| StoreError::Internal(e.to_string()))?;
+        stmt.execute(params![
+            decision,
+            context,
+            entry_type,
+            source_agent,
+            confidence,
+            surprise,
+            quality,
+            retention_class.as_str(),
+            expires_at,
+            ts,
+            provenance.source_client.as_str(),
+            provenance.source_model.as_deref(),
+            provenance.reasoning_depth.as_str(),
+            trust_score,
+        ])
+        .map_err(|e| StoreError::Internal(e.to_string()))?;
     }
+    let id = tx.last_insert_rowid();
+    if emit_decision_stored_event {
+        let _ = log_event(&tx, "decision_stored", json!({"id":id,"source_agent":source_agent,"surprise":surprise,"quality":quality,}), "rust-daemon");
+    }
+    tx.commit().map_err(|e| StoreError::Internal(e.to_string()))?;
     checkpoint_wal_best_effort(conn);
     Ok((
-        json!({"action":"inserted","id":id,"status":"active","retention_class":retention_class.as_str
-(),"surprise":surprise,"quality":quality,}),
+        json!({"action":"inserted","id":id,"status":"active","retention_class":retention_class.as_str(),"surprise":surprise,"quality":quality,}),
         Some(id),
     ))
 }
@@ -123,7 +162,8 @@ pub(crate) fn compute_expires_at(conn: &Connection, ttl_seconds: Option<i64>) ->
         return Ok(None);
     };
     let modifier = format!("+{ttl_seconds} seconds");
-    conn.query_row("SELECT datetime('now', ?1)", params![modifier], |row| row.get(0))
+    conn.prepare_cached("SELECT datetime('now', ?1)")
+        .and_then(|mut stmt| stmt.query_row(params![modifier], |row| row.get(0)))
         .map(Some)
         .map_err(|e| format!("Failed to compute expires_at: {e}"))
 }

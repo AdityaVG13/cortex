@@ -362,6 +362,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "rustc-hash",
  "rustls",
  "rustls-pki-types",
  "serde",
