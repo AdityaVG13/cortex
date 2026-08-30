@@ -1,5 +1,3 @@
-"""Core Cortex client using httpx for async/sync HTTP calls."""
-
 # SPDX-License-Identifier: MIT
 
 from __future__ import annotations
@@ -74,18 +72,6 @@ def _is_loopback_base_url(base_url: str) -> bool:
 
 
 class CortexClient:
-    """Synchronous + async Python client for the Cortex daemon.
-
-    Usage::
-
-        from cortex_memory import CortexClient
-
-        client = CortexClient()
-        health = client.health()
-        results = client.recall("What is Cortex?", budget=200)
-        client.store("New decision", source_agent="my-script")
-    """
-
     def __init__(
         self,
         base_url: str = _DEFAULT_BASE,
@@ -149,8 +135,6 @@ class CortexClient:
         resp.raise_for_status()
         return resp.json()
 
-    # ── Public API ──────────────────────────────────────────────────
-
     def health(self) -> HealthResponse:
         """Check daemon health (no auth required)."""
         resp = self._client().get(f"{self.base_url}/health")
@@ -176,13 +160,7 @@ class CortexClient:
         include_metrics: bool = True,
         max_items: Optional[int] = None,
     ) -> str:
-        """
-        Build a prompt-ready context string from recall payloads.
-
-        Content is always prioritized: each returned excerpt is preserved as
-        primary context. Retrieval telemetry is appended as a compact trailing
-        line, never substituted for the memory text.
-        """
+        """Build prompt-ready context from a recall response."""
         entries: list[str] = []
         results = recall.get("results") or []
         limit = len(results) if max_items is None else max(0, max_items)

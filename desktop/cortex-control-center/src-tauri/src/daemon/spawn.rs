@@ -50,8 +50,6 @@ pub fn try_local_app_managed_ensure(state: &DaemonState, port: u16) -> Result<Co
         return Ok(probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS));
     }
 
-    // Re-probe once after the initial wait before declaring "still starting".
-    // A surviving child process alone is not enough signal; it can be stale.
     let post_wait_probe = probe_cortex_reachability_with_port(port, DAEMON_REACHABILITY_TIMEOUT_MS);
     if local_probe_allows_starting_retry(&post_wait_probe) {
         return Ok(post_wait_probe);

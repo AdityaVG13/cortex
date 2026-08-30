@@ -6,9 +6,8 @@ use crate::daemon::state::DaemonState;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tauri::Manager;
 
-/// Watchdog tick: respawn the daemon if it's neither reachable nor managed and
-/// the user hasn't explicitly stopped it. Runs on a blocking thread on a fixed
-/// cadence from `main()`'s setup hook.
+/// Respawns an unreachable, unmanaged daemon unless the user stopped it.
+/// Called on a fixed cadence from the startup watchdog.
 pub fn supervisor_tick(app_handle: &tauri::AppHandle, consecutive_failures: &AtomicU32) {
     let daemon_state = app_handle.state::<DaemonState>();
     if daemon_state.supervisor_paused() {
@@ -24,8 +23,6 @@ pub fn supervisor_tick(app_handle: &tauri::AppHandle, consecutive_failures: &Ato
 
     let (managed, _) = daemon_state.status().unwrap_or((false, None));
     if managed {
-        // Managed child is alive but daemon HTTP isn't up yet. Give it more time
-        // before declaring failure — startup can take several seconds.
         return;
     }
 
@@ -36,7 +33,6 @@ pub fn supervisor_tick(app_handle: &tauri::AppHandle, consecutive_failures: &Ato
             consecutive_failures.store(0, Ordering::SeqCst);
         }
         Err(err) => {
-            // Throttle log noise: only log first failure and every 10th retry.
             if attempt == 0 || attempt % 10 == 0 {
                 eprintln!("[cortex-control-center] supervisor respawn attempt {attempt} failed: {err}");
                 log_startup_path("supervisor", "respawn-failed", &err);

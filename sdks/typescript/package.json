@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && node --test ./test/*.test.mjs"
+    "test": "npm run build && node --test ../../tests/sdk-typescript/*.test.mjs"
   },
   "files": [
     "dist"

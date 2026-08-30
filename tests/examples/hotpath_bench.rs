@@ -1,10 +1,3 @@
-//! Repeatable CPU+SQLite hot-path bench for store/conflict/recall/boot.
-//!
-//! ```text
-//! cargo run -p cortex-tests --example hotpath_bench --profile release-perf
-//! HOTPATH_ROUNDS=20 samply record --save-only -o docs/internal/perf/cpu.json -- \
-//!   ./target/release-perf/examples/hotpath_bench
-//! ```
 use cortex_daemon::compiler;
 use cortex_daemon::conflict;
 use cortex_daemon::db;
@@ -40,7 +33,12 @@ fn time_loop<F: FnMut()>(iters: usize, mut body: F) -> (f64, f64, f64, f64) {
     }
     samples.sort_by(|a, b| a.total_cmp(b));
     let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-    (mean, percentile(&samples, 0.50), percentile(&samples, 0.95), percentile(&samples, 0.99))
+    (
+        mean,
+        percentile(&samples, 0.50),
+        percentile(&samples, 0.95),
+        percentile(&samples, 0.99),
+    )
 }
 
 fn seed_decisions(conn: &mut Connection, n: usize, prefix: &str) {
@@ -92,11 +90,15 @@ async fn run_round(round: usize) {
     let t_seed = Instant::now();
     seed_decisions(&mut write, 800, "seed");
     if round == 0 {
-        println!("seed_800_store_ms={:.1}", t_seed.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "seed_800_store_ms={:.1}",
+            t_seed.elapsed().as_secs_f64() * 1e3
+        );
     }
 
     let corpus_a = "persist sqlite wal checkpoints in cortex-daemon/src/db/maintenance.rs after store_decision";
-    let corpus_b = "hybrid keyword plus semantic recall uses rrf fusion in handlers/recall/engine.rs";
+    let corpus_b =
+        "hybrid keyword plus semantic recall uses rrf fusion in handlers/recall/engine.rs";
     let (mean, p50, p95, p99) = time_loop(8_000, || {
         let _ = conflict::jaccard_similarity(corpus_a, corpus_b);
         let _ = conflict::jaccard_similarity(corpus_a, corpus_a);
@@ -132,14 +134,7 @@ async fn run_round(round: usize) {
     });
     maybe_print_row(round, "boot_compile", 40, mean, p50, p95, p99);
 
-    let state = runtime_state(
-        open_file_db(&db_path),
-        read,
-        false,
-        None,
-        cortex_daemon::rerank::RerankConfig::off(),
-        None,
-    );
+    let state = runtime_state(open_file_db(&db_path), read, false, None);
     let ctx = RecallContext::solo();
     let queries = [
         "sqlite wal checkpoint",

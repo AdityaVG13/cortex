@@ -1,7 +1,3 @@
-//! Promoted from `cortex-daemon/src/test_env.rs`.
-//!
-//! Process-environment test helpers: a global lock plus scoped env-var
-//! setters that restore the previous value on drop.
 use std::ffi::{OsStr, OsString};
 use std::sync::OnceLock;
 use tokio::sync::{Mutex, MutexGuard};
@@ -9,9 +5,7 @@ use tokio::sync::{Mutex, MutexGuard};
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn lock() -> MutexGuard<'static, ()> {
-    ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .blocking_lock()
+    ENV_LOCK.get_or_init(|| Mutex::new(())).blocking_lock()
 }
 
 pub async fn lock_async() -> MutexGuard<'static, ()> {

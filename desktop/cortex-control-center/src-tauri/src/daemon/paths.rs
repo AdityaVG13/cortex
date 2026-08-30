@@ -104,7 +104,7 @@ fn is_shared_workspace_debug_runtime_path(path: &Path) -> bool {
     }
 
     let segments: Vec<String> = path.components().map(|component| component.as_os_str().to_string_lossy().to_ascii_lowercase()).collect();
-    segments.windows(3).any(|window| window == ["daemon-rs", "target", "debug"])
+    segments.windows(2).any(|window| window == ["target", "debug"])
 }
 
 pub fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
@@ -135,7 +135,7 @@ pub fn is_disallowed_daemon_binary_path(path: &Path) -> bool {
 }
 
 pub fn workspace_binary_candidates(home: &Path, prefer_debug: bool) -> Vec<PathBuf> {
-    let daemon_root = home.join("cortex").join("daemon-rs");
+    let daemon_root = home.join("cortex");
     let release_path = daemon_root.join("target").join("release").join(cortex_binary_name());
     let isolated_release_path = daemon_root.join(RELEASE_DAEMON_TARGET_DIR).join("release").join(cortex_binary_name());
     let isolated_debug_path = daemon_root.join(DEV_DAEMON_TARGET_DIR).join("debug").join(cortex_binary_name());
@@ -303,10 +303,6 @@ pub fn find_cortex_binary() -> Option<PathBuf> {
         let plugin_path = home.join(".cortex").join("bin").join(cortex_binary_name());
         let mut candidates = Vec::new();
         if cfg!(debug_assertions) {
-            // In dev builds prefer the Control Center's isolated daemon target
-            // before falling back to the shared workspace target. This avoids
-            // unrelated `target/debug` activity (for example MCP client shims)
-            // from silently hijacking lifecycle verification.
             for candidate in workspace_binary_candidates(&home, true) {
                 if !candidate.exists() {
                     continue;

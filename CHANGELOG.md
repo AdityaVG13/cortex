@@ -9,14 +9,33 @@ Current release: `v0.6.0`.
 
 ## [Unreleased]
 
+Clock-Quorum Recall is the only production retrieval engine. The daemon no longer loads embedding or reranking models. Historical v0.6.0 notes below still describe the MiniLM/BGE/rerank paths that shipped in that tag; they are not the live engine.
+
 ### Added
 
 - **Onboarding readiness**: `cortex status [--json]` reports local memory readiness, runtime identity checks, next action, and repair data without starting another daemon.
 - **Control Center first run**: Overview now shows runtime, AI tool connection, and first-memory readiness with one next action.
+- **Clock-Quorum Recall (CQR)**: admit on a hard anchor, two independent clocks, or strong lexical write. `/recall`, `/recall/semantic`, `/peek`, `/as-of`, and MCP recall tools share this engine.
+- **Model-free query expansion**: Porter-like stems, a closed developer lexicon, sibling clock anchors on the same stored row, and entity-seeded hops when FTS/anchor seeds are empty. Expansion never becomes a hard anchor by itself.
+- **Honest-miss contracts**: unconstrained paraphrase with no shared stem, cluster, alias, path, or co-occurring anchor returns empty.
+
+### Changed
+
+- **Crate layout**: daemon sources live in `crates/daemon`; deterministic types live in `crates/logic`. Tests live in `tests/contracts/`. The Cargo package name remains `cortex-daemon`.
+- **Health**: `{engine:"clock-quorum", modelFree:true}`. sqlite-vec canary is force-off.
+- **Empty home**: does not create `~/.cortex/models`. `cortex embeddings status` is an inert-count shim; rebuild derived state with `cortex rebuild-anchors`.
+- **Crystallize**: clusters by Jaccard, not cosine.
+- **As-of**: reports the row's stored `status` and validity windows rather than stamping every hit `historical`.
+
+### Removed
+
+- **`crates/models`**: embedding/rerank crate deleted. The daemon does not depend on `ort`, `tokenizers`, `sqlite-vec`, or `cortex-models`.
+- Unused semantic-engine and store-embedding modules. Legacy `embeddings` SQL rows and any existing `~/.cortex/models` files are left inert, not deleted.
 
 ### Documentation
 
 - Connection, plugin, SDK, and benchmark docs now separate normal local runtime setup from benchmark-only adapters and keep LongMemEval-S quality claims deferred until funded evidence exists.
+- Public docs describe CQR, not ONNX. Roadmap items that already shipped (query expansion) were moved out of v0.7. Product comparisons live in `Info/memory-landscape.md`.
 
 ## [0.6.0] - 2026-06-06
 

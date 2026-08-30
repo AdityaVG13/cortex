@@ -1,0 +1,81 @@
+[package]
+name = "cortex-daemon"
+version = "0.6.0"
+edition = "2021"
+description = "Cortex memory daemon — standalone Rust binary"
+license = "MIT"
+
+[[bin]]
+name = "cortex"
+path = "src/main.rs"
+
+[dependencies]
+cortex-logic = { path = "../logic" }
+axum = { version = "0.8.9", features = ["macros"] }
+chrono = { version = "0.4.44", features = ["serde", "clock"] }
+futures-util = "0.3.32"
+regex = "1.12.3"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+rustc-hash = "2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tempfile = "3.27.0"
+toml = "1.1.2"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "io-std", "io-util"] }
+tokio-stream = { version = "0.1.18", features = ["sync"] }
+uuid = { version = "1.23.2", features = ["v4", "serde"] }
+argon2 = "0.5.3"
+fs2 = "0.4.3"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+
+reqwest = { version = "0.13.4", features = ["rustls", "json", "blocking", "query"], default-features = false }
+dirs = "6.0.0"
+sysinfo = "0.38.4"
+# HTTP middleware
+tower-http = { version = "0.6.11", features = ["cors", "catch-panic"] }
+
+# TLS (optional, for team/non-loopback deployments)
+rustls = "0.23.40"
+tokio-rustls = "0.26.4"
+rustls-pki-types = { version = "1.14.1", features = ["std"] }
+
+# Required for TLS connection serving (hyper-util is a transitive dep of axum)
+hyper-util = { version = "0.1.20", features = ["tokio", "server-auto", "http1", "http2"] }
+tower = "0.5.3"
+
+# Windows Service support
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[dev-dependencies]
+proptest = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release-perf]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+strip = false

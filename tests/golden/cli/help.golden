@@ -1,0 +1,90 @@
+Cortex v0.6.0 -- Universal AI Memory Daemon
+
+Usage:
+  cortex <command>
+  cortex help
+  cortex capabilities --json
+  cortex robot-docs guide
+
+Options:
+  --version, -V      Print CLI version
+  --help, -h         Print this help
+
+Agent surfaces:
+  capabilities --json  Print a deterministic machine-readable CLI contract
+  robot-docs guide     Print a short operator guide for coding agents
+
+Setup:
+  status [--json]    Show memory readiness, checks, next action, and repair
+  setup              First-run setup: detect AI tools, configure, verify
+  setup --team       Team-mode setup + schema migration + owner API key
+  migrate            Alias for setup --team (solo -> team migration)
+  migrate --dry-run  Preview migration without modifying the database
+
+Daemon:
+  serve [--bind <addr>]  HTTP daemon on :7437 (default bind 127.0.0.1)
+  mcp [--url <base>] [--api-key <key>] [--agent <name>]  MCP stdio
+  paths --json       Print resolved Cortex paths + port + bind as JSON
+  boot [--agent <name>] [--budget <n>] [--json] [--url <base>] [--api-key <key>]
+  plugin ensure-daemon [--agent <name>]  Ensure daemon is running, then print port
+  plugin mcp [--url <base>] [--api-key <key>] [--agent <name>]
+
+Hooks:
+  hook-boot [AGENT]  SessionStart hook (default: claude-opus)
+  hook-status        Statusline one-liner
+
+Tools:
+  prompt-inject      Inject Cortex context into system prompt files
+  export             Export data (--format json|sql, --out <file>)
+  import             Import JSON data (--file <path>, optional --user <username>)
+  sync export        Export changeset JSON (--out <file>, optional --since <iso>)
+  sync import        Import a sync changeset (--file <path>, optional --user/--visibility)
+  sync watch         Watched-folder sync loop (--dir <path>, optional --once)
+  eval               Run retrieval evaluation; supports --json and regression flags
+  doctor             Validate DB schema, migrations, integrity, and FTS health
+  reindex [--json]   Fully rebuild FTS indexes from canonical rows
+  recrystallize [--json]  Rebuild crystal graph from durable text
+  cleanup [--dry-run] [--events] [--max-passes <n>]
+  backup             Create manual backup (stores in ~/.cortex/backups/)
+  restore <file>     Restore from backup file (daemon must be stopped)
+  admin rollback --session-id <id> [--apply] [--json]
+
+Clock projections:
+  rebuild-anchors [--json] [--batch-size <n>]  Rebuild clock projections from durable rows
+  embeddings status [--json]  Show Clock-Quorum Recall status and inert embedding counts
+
+User Management (team mode):
+  user add <name>    Add user [--role member|admin] [--display-name "..."]
+  user rotate-key <name>  Rotate a user's API key
+  user remove <name> Remove user (with confirmation)
+  user list          List all users
+
+Team Management (team mode):
+  team create <name> Create a team
+  team add <team> <user>  Add member [--role member|admin]
+  team remove <team> <user>  Remove member (with confirmation)
+  team list          List all teams
+
+Admin (team mode):
+  admin list-unowned List rows without an owner
+  admin assign-owner [--from <user>] --to <user> [--table <t>]
+  admin stats        Database and per-user statistics
+  admin budgets status [--json]
+  admin budgets validate --path <file> [--json]
+
+Service:
+  service install    Register as Windows Service (manual start by default)
+  service uninstall  Remove Windows Service
+  service start      Start the service
+  service stop       Stop the service
+  service status     Check service status
+  service ensure     Ensure service is installed, running, and healthy
+
+Troubleshooting:
+  cortex doctor      Validate DB schema, migrations, integrity, and FTS state
+  cortex boot        Preferred local boot path (auto-adds auth + SSRF headers)
+  HTTP 403           Add header: X-Cortex-Request: true
+  HTTP 401           Use Authorization: Bearer <token> from ~/.cortex/cortex.token
+  MCP not visible    Restart the client after adding MCP servers; they do not hot-attach mid-session
+  App-hosted daemon  Restart the daemon from Cortex Control Center instead of stopping/starting it manually
+  More help          See Info/connecting.md for full connection and auth examples

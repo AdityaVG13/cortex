@@ -8,7 +8,6 @@ export function clearLegacyBrowserAuthTokens() {
       window.localStorage.removeItem(key);
     }
   } catch {
-    // Ignore storage failures in restricted browser contexts.
   }
 }
 
@@ -52,7 +51,6 @@ export function readBrowserBootstrap() {
   try { storedPanel = window.localStorage.getItem(CORTEX_PANEL_STORAGE_KEY) || "";
     storedBase = window.localStorage.getItem(CORTEX_BASE_STORAGE_KEY) || DEFAULT_CORTEX_BASE;
   } catch {
-    // Ignore storage failures in restricted browser contexts.
   }
 
   const requestedPanel = params.get("panel") || storedPanel || "";
@@ -66,12 +64,10 @@ export function readBrowserBootstrap() {
     if (params.get("cortexBase")) { window.localStorage.setItem(CORTEX_BASE_STORAGE_KEY, cortexBase);
     }
   } catch {
-    // Ignore storage failures in restricted browser contexts.
   }
   if (authTokenFromParams) { try { window.sessionStorage.setItem(CORTEX_AUTH_STORAGE_KEY, authToken);
       window.localStorage.removeItem(CORTEX_AUTH_STORAGE_KEY);
     } catch {
-      // Ignore storage failures in restricted browser contexts.
     }
     params.delete("authToken");
     const nextQuery = params.toString();
@@ -106,7 +102,6 @@ export function persistBrowserAuthToken(token) {
       clearLegacyBrowserAuthTokens();
     }
   } catch {
-    // Ignore storage failures in restricted browser contexts.
   }
 }
 

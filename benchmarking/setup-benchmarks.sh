@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Clone/update the pinned agent-memory-benchmark harness into benchmarking/tools/.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

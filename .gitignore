@@ -63,8 +63,7 @@ debug-*.log
 docs.zip
 
 # Rust build outputs
-daemon-rs/target/
-daemon-rs/target-*/
+target-*/
 desktop/cortex-control-center/src-tauri/target/
 desktop/cortex-control-center/src-tauri/target-*/
 target-tests/
@@ -249,7 +248,7 @@ skill-runs/
 refactor/artifacts/
 
 # Local performance profiling runs
-daemon-rs/tests/artifacts/perf/
+tests/artifacts/perf/
 
 # Windows-only tooling (project is developed on macOS)
 *.ps1

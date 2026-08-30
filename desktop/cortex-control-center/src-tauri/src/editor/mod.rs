@@ -4,8 +4,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// ─── MCP Auto-Registration ──────────────────────────────────────────────────
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorDetection {
@@ -362,7 +360,7 @@ pub fn ensure_editor_binary_path() -> Result<PathBuf, String> {
     use crate::daemon::paths::{copy_if_changed, installed_plugin_binary_path, is_disallowed_daemon_binary_path};
     let home = cortex_home()?;
     let source = find_cortex_binary().ok_or_else(|| {
-        "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/daemon-rs/{target-control-center-dev,target-control-center-release,target}/{debug,release}/".to_string()
+        "Could not find cortex binary in sidecar directory, ~/.cortex/bin/, or ~/cortex/{target-control-center-dev,target-control-center-release,target}/{debug,release}/".to_string()
     })?;
     if is_disallowed_daemon_binary_path(&source) {
         return Err(format!("Refusing disallowed daemon binary source path for editor registration: {}", source.display()));
@@ -432,4 +430,5 @@ pub fn detect_editors() -> Result<Vec<EditorDetection>, String> {
 }
 
 #[cfg(test)]
+#[path = "../../../../../tests/control-center/rust/editor.rs"]
 mod tests;

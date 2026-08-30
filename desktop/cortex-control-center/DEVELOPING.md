@@ -55,9 +55,9 @@ npm run desktop:expect
   - desktop HTTP/auth retry behavior
 - `src-tauri/src/main.rs`
   - app-owned daemon lifecycle commands
-- `../../daemon-rs/src/main.rs`
+- `../../crates/daemon/src/main.rs`
   - daemon boot, readiness, and lifecycle policy
-- `../../daemon-rs/src/handlers/`
+- `../../crates/daemon/src/handlers/`
   - daemon HTTP/MCP behavior the app depends on
 
 ## Release-Safety Notes

@@ -1,13 +1,3 @@
-/**
- * Cortex Memory SDK -- TypeScript fetch client for the Cortex daemon REST API.
- *
- * Usage:
- *   import { CortexClient } from "@cortex-memory/client";
- *   const client = new CortexClient();
- *   const health = await client.health();
- *   const results = await client.recall("What is Cortex?");
- */
-
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "fs";
@@ -157,8 +147,6 @@ export class CortexClient {
     if (!resp.ok) throw new Error(`Cortex ${path}: ${resp.status} ${resp.statusText}`);
     return resp.json() as Promise<T>;
   }
-
-  // ── Public API ─────────────────────────────────────────────────────────────
 
   async health(): Promise<HealthResult> {
     const url = `${this.baseUrl}/health`;

@@ -9,7 +9,7 @@ license = "MIT"
 path = "src/lib.rs"
 
 [dependencies]
-cortex-daemon = { path = "../crates/cortex-daemon" }
+cortex-daemon = { path = "../crates/daemon" }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 tempfile = "3.27"
 proptest = "1"
@@ -17,7 +17,71 @@ tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "ti
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-[dev-dependencies]
-# The migrated external integration tests (adapter_conformance, cli_goldens,
-# mcp_rpc_headers, mcp_transport) only need std + serde_json + the support
-# harness; the curated contracts add nothing beyond the above.
+[[test]]
+name = "adapter_conformance"
+path = "contracts/adapter_conformance.rs"
+
+[[test]]
+name = "auth"
+path = "contracts/auth.rs"
+
+[[test]]
+name = "boot_determinism"
+path = "contracts/boot_determinism.rs"
+
+[[test]]
+name = "cli_goldens"
+path = "contracts/cli_goldens.rs"
+
+[[test]]
+name = "clock_quorum"
+path = "contracts/clock_quorum.rs"
+
+
+[[test]]
+name = "conflict"
+path = "contracts/conflict.rs"
+
+[[test]]
+name = "crystallize"
+path = "contracts/crystallize.rs"
+
+[[test]]
+name = "entity_spike"
+path = "contracts/entity_spike.rs"
+
+[[test]]
+name = "failure_classes"
+path = "contracts/failure_classes.rs"
+
+[[test]]
+name = "history"
+path = "contracts/history.rs"
+
+[[test]]
+name = "mcp_layers"
+path = "contracts/mcp_layers.rs"
+
+[[test]]
+name = "mcp_rpc_headers"
+path = "contracts/mcp_rpc_headers.rs"
+
+[[test]]
+name = "mcp_transport"
+path = "contracts/mcp_transport.rs"
+
+[[test]]
+name = "recall_truth"
+path = "contracts/recall_truth.rs"
+
+[[test]]
+name = "redaction_store"
+path = "contracts/redaction_store.rs"
+
+[[test]]
+name = "store_recall"
+path = "contracts/store_recall.rs"
+
+[[test]]
+name = "temporal"
+path = "contracts/temporal.rs"

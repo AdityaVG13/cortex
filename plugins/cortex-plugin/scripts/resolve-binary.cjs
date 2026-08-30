@@ -1,14 +1,4 @@
 #!/usr/bin/env node
-/**
- * Shared binary resolution for plugin entrypoints.
- *
- * Resolution order:
- * 1. Explicit env overrides
- * 2. Canonical app-managed install (~/.cortex/bin)
- * 3. Common local workspace build outputs
- * 4. Bundled plugin runtime binary
- */
-
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -51,10 +41,10 @@ function resolveCanonicalUserHome() {
 function workspaceBinaryCandidates(workspaceRoot, binaryName) {
   if (!workspaceRoot) return [];
   return [
-    path.join(workspaceRoot, 'daemon-rs', 'target-control-center-dev', 'debug', binaryName),
-    path.join(workspaceRoot, 'daemon-rs', 'target', 'debug', binaryName),
-    path.join(workspaceRoot, 'daemon-rs', 'target-control-center-release', 'release', binaryName),
-    path.join(workspaceRoot, 'daemon-rs', 'target', 'release', binaryName)
+    path.join(workspaceRoot, 'target-control-center-dev', 'debug', binaryName),
+    path.join(workspaceRoot, 'target', 'debug', binaryName),
+    path.join(workspaceRoot, 'target-control-center-release', 'release', binaryName),
+    path.join(workspaceRoot, 'target', 'release', binaryName)
   ];
 }
 

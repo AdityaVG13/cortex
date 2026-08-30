@@ -25,3 +25,5 @@ unsafe_op_in_unsafe_fn = "deny"
 [lints.clippy]
 missing_safety_doc = "deny"
 undocumented_unsafe_blocks = "deny"
+
+[workspace]

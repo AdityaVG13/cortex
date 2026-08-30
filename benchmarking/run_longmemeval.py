@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Minimal LongMemEval runner: isolated Cortex daemon + pure HTTP adapter + AMB."""
 from __future__ import annotations
 
 import argparse
@@ -39,8 +38,8 @@ def _find_port() -> int:
 def _find_cortex_bin() -> Path:
     for candidate in (
         os.environ.get("CORTEX_BIN"),
-        REPO_ROOT / "daemon-rs" / "target" / "debug" / "cortex",
-        REPO_ROOT / "daemon-rs" / "target" / "release" / "cortex",
+        REPO_ROOT / "target" / "debug" / "cortex",
+        REPO_ROOT / "target" / "release" / "cortex",
         Path.home() / ".cortex" / "bin" / "cortex",
     ):
         if candidate and Path(candidate).exists():

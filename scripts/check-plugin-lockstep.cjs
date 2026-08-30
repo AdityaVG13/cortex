@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 "use strict";const fs=require("fs");const path=require("path");const repoRoot=path.resolve(__dirname,"..")
-;const cargoTomlPath=path.join(repoRoot,"daemon-rs","Cargo.toml")
+;const cargoTomlPath=path.join(repoRoot,"crates","daemon","Cargo.toml")
 ;const pluginJsonPath=path.join(repoRoot,"plugins","cortex-plugin",".claude-plugin","plugin.json")
 ;const prepareRuntimePath=path.join(repoRoot,"plugins","cortex-plugin","scripts","prepare-runtime.cjs");function die(msg){
 console.error(`[lockstep] ERROR: ${msg}`);process.exit(1)}function warn(msg){console.warn(`[lockstep] WARN : ${msg}`)}function readCargoVersion(){
@@ -12,7 +12,7 @@ die(`plugin.json not found: ${pluginJsonPath}`)}let obj;try{obj=JSON.parse(fs.re
 die(`plugin.json is not valid JSON: ${e.message}`)}if(!obj.version||typeof obj.version!=="string"){die("plugin.json is missing a version field")}
 return obj.version}function readPrepareRuntimeFallback(){if(!fs.existsSync(prepareRuntimePath)){return null}
 const text=fs.readFileSync(prepareRuntimePath,"utf8");const match=text.match(/let\s+version\s*=\s*'([^']+)'/);return match?match[1]:null}function main(){
-const cargoVersion=readCargoVersion();const pluginVersion=readPluginVersion();console.error(`[lockstep] daemon-rs/Cargo.toml      : ${cargoVersion}`)
+const cargoVersion=readCargoVersion();const pluginVersion=readPluginVersion();console.error(`[lockstep] crates/daemon/Cargo.toml  : ${cargoVersion}`)
 ;console.error(`[lockstep] plugin.json               : ${pluginVersion}`);if(cargoVersion!==pluginVersion){
 die(`version mismatch: daemon=${cargoVersion} plugin=${pluginVersion}. `+"Bump both simultaneously before tagging a release.")}
 const fallback=readPrepareRuntimeFallback();if(fallback&&fallback!==cargoVersion){

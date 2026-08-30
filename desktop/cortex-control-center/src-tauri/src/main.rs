@@ -54,10 +54,6 @@ fn main() {
                 .await;
             });
 
-            // Watchdog: re-spawn the daemon if it disappears for any reason
-            // (panic, OOM, manual kill, crash). The daemon is the user's
-            // memory store — it must stay up unless they explicitly stop it.
-            // Runs on a plain OS thread so it survives any Tauri runtime hiccup.
             std::thread::Builder::new()
                 .name("cortex-daemon-supervisor".to_string())
                 .spawn(move || {

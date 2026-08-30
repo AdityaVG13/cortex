@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""Audit daemon spawn ownership paths.
-
-Outputs a compact spawn-path map and can fail on unauthorized runtime callsites.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -22,12 +17,12 @@ def get_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 AUTHORIZED_RUNTIME_SPAWN_CALLERS = {
-    "daemon-rs/src/daemon_lifecycle.rs",
-    "daemon-rs/src/main.rs",
+    "crates/daemon/src/daemon_lifecycle/mod.rs",
+    "crates/daemon/src/main.rs",
 }
 
 AUTHORIZED_RESPAWN_CALLERS = {
-    "daemon-rs/src/daemon_lifecycle.rs",
+    "crates/daemon/src/daemon_lifecycle/mod.rs",
 }
 
 
@@ -78,8 +73,8 @@ def scan(
 
 
 def gather_findings(repo_root: Path) -> dict[str, list[Finding]]:
-    rust_runtime = sorted((repo_root / "daemon-rs" / "src").rglob("*.rs"))
-    rust_tests = sorted((repo_root / "daemon-rs" / "tests").rglob("*.rs"))
+    rust_runtime = sorted((repo_root / "crates" / "daemon" / "src").rglob("*.rs"))
+    rust_tests = sorted((repo_root / "tests" / "contracts").rglob("*.rs"))
     plugin_scripts = sorted((repo_root / "plugins" / "cortex-plugin" / "scripts").glob("*.cjs"))
     control_center_main = [
         repo_root / "desktop" / "cortex-control-center" / "src-tauri" / "src" / "main.rs"
@@ -192,7 +187,7 @@ def unauthorized_paths(
     for finding in findings:
         if finding.path in allowed_paths:
             continue
-        if allow_tests and finding.path.startswith("daemon-rs/tests/"):
+        if allow_tests and finding.path.startswith("tests/"):
             continue
         offenders.add(finding.path)
     return offenders

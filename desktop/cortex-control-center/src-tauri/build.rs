@@ -27,14 +27,13 @@ fn copy_sidecar_binary() {
 
     let profile = env::var("PROFILE").unwrap_or_default();
 
-    // Always copy the latest binary (daemon is built by the desktop npm scripts).
     let mut candidates = Vec::new();
     if let Some(sidecar_override) = env::var_os("CORTEX_SIDECAR_BIN") {
         candidates.push(PathBuf::from(sidecar_override));
     }
 
     if let Some(repo_root) = manifest_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-        let daemon_root = repo_root.join("daemon-rs");
+        let daemon_root = repo_root;
         if profile != "release" {
             candidates.push(daemon_root.join(DEV_DAEMON_TARGET_DIR).join("debug").join(format!("cortex{ext}")));
             candidates.push(daemon_root.join("target").join("debug").join(format!("cortex{ext}")));
@@ -49,7 +48,7 @@ fn copy_sidecar_binary() {
 
     if let Some(home) = home {
         candidates.push(home.join(".cortex").join("bin").join(format!("cortex{ext}")));
-        candidates.push(home.join("cortex").join("daemon-rs").join("target").join("release").join(format!("cortex{ext}")));
+        candidates.push(home.join("cortex").join("target").join("release").join(format!("cortex{ext}")));
     }
 
     for src in candidates {
@@ -62,7 +61,7 @@ fn copy_sidecar_binary() {
     }
 
     println!(
-    "cargo:warning=Cortex sidecar binary not found. Expected one of: CORTEX_SIDECAR_BIN, <repo>/daemon-rs/{DEV_DAEMON_TARGET_DIR}/debug/cortex{ext}, <repo>/daemon-rs/{RELEASE_DAEMON_TARGET_DIR}/release/cortex{ext}, <repo>/daemon-rs/target/release/cortex{ext}, ~/.cortex/bin/cortex{ext}, ~/cortex/daemon-rs/target/release/cortex{ext}"
+    "cargo:warning=Cortex sidecar binary not found. Expected one of: CORTEX_SIDECAR_BIN, <repo>/{DEV_DAEMON_TARGET_DIR}/debug/cortex{ext}, <repo>/{RELEASE_DAEMON_TARGET_DIR}/release/cortex{ext}, <repo>/target/release/cortex{ext}, ~/.cortex/bin/cortex{ext}, ~/cortex/target/release/cortex{ext}"
   );
 }
 

@@ -4,7 +4,7 @@
   "version": "0.6.0",
   "identifier": "ai.cortex.controlcenter",
   "build": {
-    "beforeBuildCommand": "cargo build --release --target-dir ../../daemon-rs/target-control-center-release --manifest-path ../../daemon-rs/Cargo.toml && npm run web:build",
+    "beforeBuildCommand": "cargo build -p cortex-daemon --release --target-dir ../../target-control-center-release --manifest-path ../../Cargo.toml && npm run web:build",
     "beforeDevCommand": "node scripts/ensure-daemon-dev-binary.mjs && npm run web:dev",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"

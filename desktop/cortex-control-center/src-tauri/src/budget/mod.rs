@@ -273,4 +273,5 @@ pub fn save_budget_from_draft(draft: BudgetConfigDraft) -> Result<BudgetConfigSn
 }
 
 #[cfg(test)]
+#[path = "../../../../../tests/control-center/rust/budget.rs"]
 mod tests;

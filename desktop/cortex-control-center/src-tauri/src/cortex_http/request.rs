@@ -41,8 +41,6 @@ pub fn should_use_partial_response_on_read_timeout(err: &std::io::Error, respons
         return true;
     }
 
-    // Windows socket timeouts are sometimes reported as WSAETIMEDOUT (10060)
-    // with a non-timeout ErrorKind; treat them as timeout-equivalent.
     err.raw_os_error() == Some(10060)
 }
 
@@ -98,7 +96,6 @@ pub fn send_cortex_request_with_port(
         }
     }
 
-    // Split headers from body
     if let Some(pos) = find_bytes(&response, b"\r\n\r\n") {
         let headers = &response[..pos];
         let body = &response[pos + 4..];
@@ -109,7 +106,6 @@ pub fn send_cortex_request_with_port(
             lower.starts_with("transfer-encoding:") && lower.contains("chunked")
         });
 
-        // Check for chunked transfer encoding
         let body_bytes = if chunked { decode_chunked_bytes(body)? } else { body.to_vec() };
         let body_text = String::from_utf8(body_bytes).map_err(|e| format!("Response body is not valid UTF-8: {e}"))?;
         Ok(FetchCortexResponse { status, body: body_text })

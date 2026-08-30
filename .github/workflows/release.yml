@@ -67,20 +67,20 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            daemon-rs/target
+            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       - name: Build release binary
         shell: bash
-        run: cargo build --manifest-path daemon-rs/Cargo.toml --release --target "${{ matrix.rust_target }}"
+        run: cargo build -p cortex-daemon --manifest-path Cargo.toml --release --target "${{ matrix.rust_target }}"
 
       - name: Stage binary artifact
         shell: bash
         run: |
           mkdir -p dist
-          cp "daemon-rs/target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}" "dist/${{ matrix.artifact_name }}"
+          cp "target/${{ matrix.rust_target }}/release/${{ matrix.binary_name }}" "dist/${{ matrix.artifact_name }}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

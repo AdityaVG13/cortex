@@ -1,0 +1,10 @@
+mod engine;
+mod handlers;
+
+pub(crate) use engine::clock_health_payload;
+pub(crate) use engine::*;
+pub use engine::{execute_recall_policy_explain, execute_semantic_recall, execute_unified_recall, unfold_source};
+pub use engine::{parse_recall_policy_mode, resolve_recall_budget_k, RecallContext, RecallPolicyMode};
+pub use handlers::{
+    handle_as_of, handle_budget_recall, handle_peek, handle_recall, handle_recall_explain, handle_recall_post, handle_semantic_recall, handle_unfold,
+};

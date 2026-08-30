@@ -23,7 +23,7 @@ bash benchmarking/setup-benchmarks.sh
 cd benchmarking/tools/agent-memory-benchmark && uv sync && cd -
 
 # 3. Build cortex (or set CORTEX_BIN)
-cargo build -p cortex --manifest-path daemon-rs/Cargo.toml
+cargo build -p cortex-daemon --manifest-path Cargo.toml
 
 # 4. Set a scorer LLM key (GEMINI_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY)
 export GROQ_API_KEY=...
@@ -44,4 +44,4 @@ Each run writes `benchmarking/runs/<timestamp>/` with `summary.json`, `run-manif
 
 ## Purity gate
 
-`scripts/purity-gates/adapter-surface-check.sh` keeps the pure adapter under 150 LOC and free of tuning patterns.
+`tests/purity-gates/adapter-surface-check.sh` keeps the pure adapter under 150 LOC and free of tuning patterns.

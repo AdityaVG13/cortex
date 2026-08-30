@@ -14,9 +14,6 @@ use std::sync::Mutex;
 pub struct DaemonState {
     pub exe_path: Option<PathBuf>,
     pub child: Mutex<Option<Child>>,
-    /// Set true by `stop()`, cleared by `ensure_local_daemon()`. Watchdog reads
-    /// this to decide whether a missing daemon should be auto-respawned. Lets
-    /// the user explicitly stop the daemon without immediate revival.
     pub intentional_stop: AtomicBool,
 }
 
@@ -74,8 +71,6 @@ impl DaemonState {
         let paths = resolved_cortex_paths();
         let home = paths.home.clone().ok_or_else(|| "Could not resolve Cortex home path for app-managed local mode.".to_string())?;
         let db = paths.db.clone().ok_or_else(|| "Could not resolve Cortex database path for app-managed local mode.".to_string())?;
-        // App-managed mode is intentionally local-only. We always bind to loopback
-        // so Control Center can own daemon lifecycle without exposing it on LAN.
         let bind = "127.0.0.1".to_string();
         let port = paths.port.unwrap_or(DEFAULT_DAEMON_PORT);
 
@@ -103,15 +98,11 @@ impl DaemonState {
         let spawned = command.spawn().map_err(|err| format!("Failed to spawn app-managed daemon from {}: {err}", exe_path.display()))?;
         let pid = spawned.id();
         *child = Some(spawned);
-        // A successful spawn implicitly arms the supervisor: any later death
-        // should trigger an auto-respawn until the user explicitly stops.
         self.intentional_stop.store(false, Ordering::SeqCst);
         Ok(Some(pid))
     }
 
     pub fn stop(&self) -> Result<(), String> {
-        // Pause the supervisor BEFORE killing the child so the watchdog does
-        // not race in and spawn a new instance during teardown.
         self.intentional_stop.store(true, Ordering::SeqCst);
         let mut child = self.child.lock().map_err(|_| "Failed to lock managed daemon state.".to_string())?;
         if let Some(managed_child) = child.as_mut() {

@@ -1,6 +1,6 @@
 # Rust build outputs and test targets
-daemon-rs/target/
-daemon-rs/target-*/
+target/
+target-*/
 desktop/cortex-control-center/src-tauri/target/
 desktop/cortex-control-center/src-tauri/target-*/
 target-tests/

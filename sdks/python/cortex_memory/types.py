@@ -1,5 +1,3 @@
-"""Typed payloads for the Cortex Python SDK."""
-
 from __future__ import annotations
 
 from typing import TypedDict

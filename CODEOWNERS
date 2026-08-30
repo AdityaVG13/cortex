@@ -5,10 +5,10 @@
 # CHANGELOG drift would silently invalidate published recall-quality
 # claims.
 #
-# This file is referenced by scripts/purity-gates/codeowners-protection.sh.
+# This file is referenced by tests/purity-gates/codeowners-protection.sh.
 
 /benchmarking/adapters/cortex_http_pure_provider.py   @AdityaVG13
 /CHANGELOG.md                                         @AdityaVG13
-/scripts/purity-gates/                                @AdityaVG13
+/tests/purity-gates/                                @AdityaVG13
 /scripts/run-longmemeval.sh                           @AdityaVG13
 /benchmarking/run_longmemeval.py                      @AdityaVG13

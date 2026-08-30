@@ -6,7 +6,6 @@ async function loadPlugins() { try { const updater = await import("@tauri-apps/p
     _check = updater.check;
     _relaunch = process.relaunch;
   } catch {
-    // Running outside Tauri (web dev) -- plugins unavailable
   }
 }
 

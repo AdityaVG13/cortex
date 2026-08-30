@@ -1,4 +1,3 @@
-"""Pure Cortex HTTP adapter for AMB. One GET /recall per query, daemon order verbatim."""
 from __future__ import annotations
 
 import os
