@@ -35,7 +35,7 @@ Clock-Quorum Recall is the only production retrieval engine. The daemon no longe
 ### Documentation
 
 - Connection, plugin, SDK, and benchmark docs now separate normal local runtime setup from benchmark-only adapters and keep LongMemEval-S quality claims deferred until funded evidence exists.
-- Public docs describe CQR, not ONNX. Roadmap items that already shipped (query expansion) were moved out of v0.7. Product comparisons live in `Info/memory-landscape.md`.
+- Public docs describe CQR, not ONNX. Roadmap items that already shipped (query expansion) were moved out of v0.7.
 
 ## [0.6.0] - 2026-06-06
 

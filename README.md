@@ -312,14 +312,14 @@ LongMemEval quality claims are deferred. CQR is scored on honest miss, as-of win
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,50:3b2580,100:0d1117&height=110&text=Connected%20Agents&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 <p align="center">Cortex tracks active agent sessions when clients identify themselves through <code>cortex_boot</code> or <code>GET /boot?agent=NAME</code>.</p>
 
 <table>
 <tr>
 <td width="55%">
 
-__omp_shell("[Connected agents in Control Center](assets/cc-agents.png)")
+![Connected agents in Control Center](assets/cc-agents.png)
 
 </td>
 <td width="45%" valign="top">
@@ -339,7 +339,7 @@ Claude Code, Codex, Cursor, and custom scripts can all be connected simultaneous
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,70:6B4FBB,100:2d1b69&height=110&text=Works%20With&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 <div align="center">
 
 | Tool | Connection | Setup |
@@ -358,7 +358,7 @@ __omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:7C3AED,60:5B21B6,100:1e1040&height=110&text=Install&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 <p align="center"><b>Desktop app (Control Center)</b><br>
 Download from the <a href="https://github.com/AdityaVG13/cortex/releases/latest">latest tagged release page</a>. The Control Center manages daemon lifecycle for you.</p>
 
@@ -393,7 +393,7 @@ claude plugin install cortex@cortex-marketplace
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,80:4a2d8a,100:1a1030&height=110&text=Daemon%20Behavior&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 <p align="center">Cortex enforces a <b>single-daemon invariant</b>: only one daemon process runs at a time.</p>
 
 <div align="center">
@@ -411,7 +411,7 @@ If using the Control Center, manage the daemon from there. Do not run a second <
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:3b2580,100:0d1117&height=110&text=Release%20Verification&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 <p align="center">After installing, verify the product path:</p>
 
 ```bash
@@ -452,7 +452,7 @@ cargo audit
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a,60:6B4FBB,100:2d1b69&height=110&text=Documentation&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 <div align="center">
 
 | Document | Covers |
@@ -461,8 +461,6 @@ __omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a
 | **[Connecting](Info/connecting.md)** | Setup, MCP, HTTP, auth, troubleshooting |
 | **[Architecture](ARCHITECTURE.md)** | Store, CQR, boot, schema, crate map |
 | **[MCP Tools](Info/mcp-tools.md)** | All 29 MCP tool definitions and parameters |
-| **[Research](Info/research.md)** | Papers that shaped CQR, and what was rejected |
-| **[Memory landscape](Info/memory-landscape.md)** | Cortex vs Mem0, Letta, OptMem, and related systems |
 | **[Roadmap](Info/roadmap.md)** | What shipped, what's next, what's still open |
 | **[Security](Info/security-rules.md)** | Threat model, auth rules, vulnerability reporting |
 | **[Team mode](Info/team-mode-setup.md)** | Shared-server setup for engineering teams |
@@ -491,13 +489,13 @@ __omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:4a2d8a
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:6B4FBB,80:4a2d8a,100:1a1030&height=110&text=Security&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35&reversal=true)
 <p align="center">Cortex defaults to localhost-only access with bearer-token auth.<br>
 Full threat model, auth rules, and vulnerability reporting: <a href="Info/security-rules.md"><b>Info/security-rules.md</b></a></p>
 
 ---
 
-__omp_shell("[](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=FAQ&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)")
+![](https://capsule-render.vercel.app/api?type=waving&color=0:5B3FA0,60:7B5FCC,100:1a1030&height=110&text=FAQ&fontSize=36&fontColor=ffffff&fontAlign=50&fontAlignY=35)
 
 <details>
 <summary>How much disk space does Cortex use?</summary>
@@ -544,7 +542,6 @@ Delete <code>~/.cortex/cortex.db</code> and restart the daemon. A new empty data
 <p align="center">
   <a href="https://ko-fi.com/adityavg13"><b>Support Cortex</b></a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="Info/README.md">Docs</a>&nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="Info/research.md">Research</a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="Info/connecting.md">Connecting</a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="Info/security-rules.md">Security</a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="CONTRIBUTING.md">Contributing</a>&nbsp;&nbsp;·&nbsp;&nbsp;

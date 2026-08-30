@@ -49,7 +49,7 @@ Production recall is CQR only. No local embedding or reranker model.
 | **Vocabulary mismatch** | Morphology, closed developer lexicon, sibling anchors, entity-seeded hops |
 | **Honest miss** | Unconstrained paraphrase with no shared handle stays empty |
 
-Details: [ARCHITECTURE.md](../ARCHITECTURE.md), [research.md](research.md).
+Details: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ---
 
@@ -72,13 +72,13 @@ Query expansion (alias / path / task-context) that used to sit here **already sh
 
 ## Open product decisions
 
-These used to be listed as v0.8 / v1.0 as if they were scheduled. They are **not** committed. They need a product choice. Comparison and paper notes: [memory-landscape.md](memory-landscape.md).
+These used to be listed as v0.8 / v1.0 as if they were scheduled. They are **not** committed. They need a product choice.
 
 | Decision | Why it is open | What “done” would look like |
 |----------|----------------|-----------------------------|
-| **Verified working board** | Recuris shows WM-only beats skill libraries. Cortex boot still snapshots tasks; nothing commits `done` from a receipt | A `board` target in `/boot` and `/pack`; `done` only from a tool/test/user receipt |
-| **Pack as the default loop** | Boot exists; agents still start with `/recall`. `ee pack` / OptMem `wake` are the better product shape | `/pack` (or boot-by-default) with a deterministic hash |
-| **Offline distill** | Traces stay chatty. Mem0 extracts; Cortex refuses to summarize on the hot path — and then never summarizes offline either | Steward pass proposes typed heads (`rule`, `scar`, `anti-pattern`); promotion is audited |
+| **Verified working board** | Boot still snapshots tasks; nothing commits `done` from a receipt | A `board` target in `/boot` and `/pack`; `done` only from a tool/test/user receipt |
+| **Pack as the default loop** | Boot exists; agents still start with `/recall` | `/pack` (or boot-by-default) with a deterministic hash |
+| **Offline distill** | Traces stay chatty; Cortex refuses to summarize on the hot path — and then never summarizes offline either | Steward pass proposes typed heads (`rule`, `scar`, `anti-pattern`); promotion is audited |
 | **Event-shaped recall** | Recall is `q=`. Edit/`src/auth.rs` should not parse “how does auth work” | `event=edit\|test\|boot` + path/board/scars |
 | **Outcome-gated admission** | `used_with` exists; harmful feedback cannot strip `strong_lexical` | Harm cannot admit alone; helpful cannot resurrect superseded |
 | **External ingest** | ChatGPT / Claude / Gemini import is a product, not a retrieval problem | Read-only parsers, dry-run, dedup against traces |
