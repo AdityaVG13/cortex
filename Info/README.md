@@ -18,7 +18,7 @@ Product documentation for Cortex. Start at the [README](../README.md) if you are
 | Document | Covers |
 |----------|--------|
 | [Architecture](../ARCHITECTURE.md) | Crate map, store / recall / boot, clocks, schema |
-| [Roadmap](roadmap.md) | What shipped, what is next, what is still an open product decision |
+| [Roadmap](roadmap.md) | What shipped and what is next |
 
 ## Operating the repo
 

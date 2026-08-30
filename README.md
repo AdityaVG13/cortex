@@ -461,7 +461,7 @@ cargo audit
 | **[Connecting](Info/connecting.md)** | Setup, MCP, HTTP, auth, troubleshooting |
 | **[Architecture](ARCHITECTURE.md)** | Store, CQR, boot, schema, crate map |
 | **[MCP Tools](Info/mcp-tools.md)** | All 29 MCP tool definitions and parameters |
-| **[Roadmap](Info/roadmap.md)** | What shipped, what's next, what's still open |
+| **[Roadmap](Info/roadmap.md)** | What shipped and what's next |
 | **[Security](Info/security-rules.md)** | Threat model, auth rules, vulnerability reporting |
 | **[Team mode](Info/team-mode-setup.md)** | Shared-server setup for engineering teams |
 | **[Contributing](CONTRIBUTING.md)** | Development setup and PR guidelines |

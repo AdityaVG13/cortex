@@ -2,11 +2,9 @@
 
 # Roadmap
 
-What shipped, what is next, and what is still an open product decision.
+What shipped and what is next.
 
 Current release: **v0.6.0**. Source on `main` also includes the Clock-Quorum Recall cutover (model-free recall, `crates/models` removed, daemon/logic split). That work is documented in [CHANGELOG.md](../CHANGELOG.md) under Unreleased until the next tagged release.
-
-This page is **not** a committed schedule. Items under “Open product decisions” need a design choice before implementation.
 
 ---
 
@@ -55,7 +53,7 @@ Details: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Next (v0.7 direction)
 
-Privacy, fairness, and team-mode hardening. These are the least controversial follow-ons because they extend existing surfaces.
+Privacy, fairness, and team-mode hardening.
 
 | Theme | Details |
 |-------|---------|
@@ -70,31 +68,13 @@ Query expansion (alias / path / task-context) that used to sit here **already sh
 
 ---
 
-## Open product decisions
-
-These used to be listed as v0.8 / v1.0 as if they were scheduled. They are **not** committed. They need a product choice.
-
-| Decision | Why it is open | What “done” would look like |
-|----------|----------------|-----------------------------|
-| **Verified working board** | Boot still snapshots tasks; nothing commits `done` from a receipt | A `board` target in `/boot` and `/pack`; `done` only from a tool/test/user receipt |
-| **Pack as the default loop** | Boot exists; agents still start with `/recall` | `/pack` (or boot-by-default) with a deterministic hash |
-| **Offline distill** | Traces stay chatty; Cortex refuses to summarize on the hot path — and then never summarizes offline either | Steward pass proposes typed heads (`rule`, `scar`, `anti-pattern`); promotion is audited |
-| **Event-shaped recall** | Recall is `q=`. Edit/`src/auth.rs` should not parse “how does auth work” | `event=edit\|test\|boot` + path/board/scars |
-| **Outcome-gated admission** | `used_with` exists; harmful feedback cannot strip `strong_lexical` | Harm cannot admit alone; helpful cannot resurrect superseded |
-| **External ingest** | ChatGPT / Claude / Gemini import is a product, not a retrieval problem | Read-only parsers, dry-run, dedup against traces |
-| **Branch-aware relevance** | Useful for coding agents; not designed | Memory scoped to git branch without breaking as-of |
-
-Until those are chosen, do not treat them as issue fodder for drive-by PRs.
-
----
-
 ## Cross-cutting backlog (anytime)
 
 - Key rotation and operational key hygiene
 - Optional at-rest encryption path
 - Documentation and onboarding UX
 - Accessibility evidence (screen-reader walkthroughs) before any conformance claim
-- Funded LongMemEval run before any public quality-gain claim — and expect CQR to lose unconstrained paraphrase vs embedding systems
+- Funded LongMemEval run before any public quality-gain claim
 
 ---
 
@@ -102,6 +82,5 @@ Until those are chosen, do not treat them as issue fodder for drive-by PRs.
 
 1. Prefer a shipped-surface bug or a v0.7 isolation/backup slice.
 2. Do not open PRs that reinstall embeddings, ONNX, or an LLM on the hot path.
-3. If you want an open product decision, write a short design note first.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md).
