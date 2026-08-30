@@ -129,12 +129,13 @@ curl -s \
   "http://localhost:7437/boot?agent=YOUR_NAME"
 ```
 
-Returns two capsules:
+Returns extractive capsules (no summarizer):
 
 | Capsule | Tokens | Contents |
 |---------|--------|----------|
 | **Identity** | ~200 | User identity, platform rules, constraints. Stable across sessions. |
-| **Delta** | ~50-100 | What changed since your last boot. New decisions, conflicts, state. |
+| **Delta** | ~50–100 | What changed since last boot: conflicts, tasks, focus, messages, locks, agents, feed. |
+| **TRUTH** | variable | Top current facts with `FACT!` / `FACT?` / `FACT~` sigils, packed to budget. |
 
 <details>
 <summary>Example response</summary>
@@ -152,7 +153,8 @@ Returns two capsules:
   },
   "capsules": [
     {"name": "identity", "tokens": 245, "freshness": "stable"},
-    {"name": "delta", "tokens": 55, "freshness": "since 2026-03-28 04:17"}
+    {"name": "delta", "tokens": 55, "freshness": "since 2026-03-28 04:17"},
+    {"name": "truth", "tokens": 80, "freshness": "current"}
   ]
 }
 ```
@@ -168,7 +170,7 @@ curl -s \
   "http://localhost:7437/recall?q=authentication+architecture&k=5"
 ```
 
-Hybrid search: ONNX embeddings (in-process) + tokenized keyword fallback. Always works, no external dependencies.
+Clock-Quorum Recall (CQR): Cortex admits a result when a hard engineering anchor matches or when two or more independent clocks agree — write (FTS/exact observation), truth (entities/aliases), task (path/symbol/goal), and history (explicit as-of or version). It does not guess from paraphrase similarity. A miss with no shared anchor is expected, not a defect.
 
 ### 3. Store — save a decision
 
@@ -229,7 +231,8 @@ curl http://localhost:7437/readiness
 | Method | Path | Auth | Description |
 |--------|------|:----:|-------------|
 | GET | `/boot?agent=NAME` | ✓ | Capsule-compiled boot prompt |
-| GET | `/recall?q=QUERY&k=7` | ✓ | Hybrid semantic + keyword search |
+| GET | `/recall?q=QUERY&k=7` | ✓ | Clock-Quorum Recall (admit on hard anchor, two clocks, or strong lexical write) |
+| GET | `/as-of?q=QUERY&t=RFC3339&k=7` | ✓ | CQR at an explicit validity time; returns stored status and validity windows |
 | POST | `/recall` | ✓ | Same as GET, body avoids query-string leakage |
 | POST | `/store` | ✓ | Store decision with conflict detection |
 | GET | `/health` | — | Liveness and system status |
@@ -240,7 +243,7 @@ curl http://localhost:7437/readiness
 
 | Method | Path | Auth | Description |
 |--------|------|:----:|-------------|
-| GET | `/dump` | ✓ | All active memories + decisions (batch) |
+| GET | `/dump` | ✓ | Active, disputed, and superseded memories + decisions with validity fields |
 | POST | `/archive` | ✓ | Bulk status change to archived |
 | POST | `/forget` | ✓ | Decay entries matching keyword |
 | POST | `/resolve` | ✓ | Resolve disputed decision pair |
@@ -283,7 +286,7 @@ curl http://localhost:7437/readiness
 | **APP_INIT_REQUIRED** | The client is attach-only. Open Cortex Control Center or explicitly start the local runtime, then retry. |
 | **MCP tools missing after add** | Restart your MCP client. Servers added mid-session take effect next session. |
 | **Empty boot prompt** | No memories stored yet. Store some context and boot again. |
-| **No semantic results** | ONNX model may still be downloading on first run. Keyword fallback works meanwhile. Check `~/.cortex/models/`. |
+| **Honest miss / no results** | CQR does not return a plausible neighbor without lexical, alias, task, history, or graph evidence. Add a path, symbol, alias, or citation rather than expecting paraphrase match. |
 | **Auth token not found** | Token generates on daemon start. Start daemon first. |
 
 ---
@@ -292,24 +295,18 @@ curl http://localhost:7437/readiness
 
 ```
 cortex/
-├─ daemon-rs/src/
-│  ├─ main.rs           Entry, startup, background tasks
-│  ├─ server.rs         Axum router, CORS, auth middleware
-│  ├─ state.rs          RuntimeState (DB, auth, embeddings, SSE)
-│  ├─ embeddings.rs     In-process ONNX (BGE default, MiniLM/Qwen3 opt-in)
-│  ├─ indexer.rs        Knowledge indexer + score decay
-│  ├─ compiler.rs       Capsule boot prompt compiler
-│  ├─ conflict.rs       Conflict detection (cosine + Jaccard)
-│  ├─ auth.rs           Token, PID, stale daemon management
-│  ├─ db.rs             SQLite schema, WAL, indexes, migrations
-│  └─ mcp_proxy.rs      MCP stdio proxy (JSON-RPC 2.0 → HTTP)
+├─ crates/
+│  ├─ daemon/           HTTP, MCP, SQLite, CQR collection, boot compiler
+│  └─ logic/            clocks, graph, traces, conflict, budgets
+├─ tests/contracts/     public daemon contracts
 ├─ desktop/cortex-control-center/
-│  ├─ src/App.jsx        React dashboard
-│  └─ src-tauri/src/     Tauri sidecar lifecycle
-├─ workers/              Background processing
-└─ tools/                CLI utilities
+├─ plugins/cortex-plugin/
+├─ sdks/
+└─ Info/                product docs (this folder)
 ```
 
-**Database** at `~/.cortex/cortex.db` — tables: `memories`, `decisions`, `embeddings`, `events`, `sessions`, `locks`, `tasks`, `feed`, `messages`, `activity`, `client_permissions`, `agent_feedback`, `event_savings_rollups`.
+**Database** (`~/.cortex/cortex.db`): `memories`, `decisions`, `clock_anchors`, `clock_links`, `entities`, `traces`. Legacy `embeddings` rows stay inert.
 
-**Embeddings**: In-process ONNX vectors. Default: `bge-base-en-v1.5` (768-dim). Configurable via `CORTEX_EMBEDDING_MODEL`; MiniLM profiles remain available at 384 dimensions, and `qwen3-embedding-0.6b` is available as a 1024-dim opt-in profile.
+**Recall**: Clock-Quorum Recall. No local model download. Empty is a valid answer.
+
+See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full map.

@@ -4,7 +4,7 @@
 
 > Cortex security posture, threat model, and vulnerability reporting.
 
-Top-level GitHub policy file: [`SECURITY.md`](../SECURITY.md)
+GitHub private advisory: [new security advisory](https://github.com/AdityaVG13/cortex/security/advisories/new)
 
 ---
 
@@ -39,7 +39,7 @@ Include: affected version/commit, OS, reproduction steps, impact, and whether au
 
 ### Protected data
 
-Cortex stores developer knowledge that may be sensitive intellectual property: architecture decisions, coding conventions, debugging lessons, memory/decision embeddings, team metadata, and API-key hashes.
+Cortex stores developer knowledge that may be sensitive intellectual property: architecture decisions, coding conventions, debugging lessons, traces, clock projections, team metadata, and API-key hashes.
 
 ### Trust boundary
 
@@ -104,7 +104,7 @@ Cortex stores developer knowledge that may be sensitive intellectual property: a
 
 ### What's in the database
 
-Memories, decisions, events, embeddings (ONNX-generated), recall feedback, team/user ownership metadata, API key hashes (not plaintext keys).
+Memories, decisions, events, clock projections, recall feedback, team/user ownership metadata, API key hashes (not plaintext keys). Legacy `embeddings` rows, if present, stay inert.
 
 ### Encryption and telemetry
 
@@ -173,7 +173,7 @@ Keep default localhost bind. No extra hardening needed for local-only usage.
 
 This policy covers:
 
-- Rust daemon (`daemon-rs/`)
+- Rust daemon (`crates/daemon/`)
 - Claude Code plugin (`plugins/cortex-plugin/`)
 - Control Center desktop app (`desktop/cortex-control-center/`)
 - MCP tools and proxy surfaces

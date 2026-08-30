@@ -2,125 +2,106 @@
 
 # Roadmap
 
-> What shipped, what's next, and what's further out. Enough detail to start contributing, without internal planning artifacts.
+What shipped, what is next, and what is still an open product decision.
 
-> Current release: `v0.6.0`.
+Current release: **v0.6.0**. Source on `main` also includes the Clock-Quorum Recall cutover (model-free recall, `crates/models` removed, daemon/logic split). That work is documented in [CHANGELOG.md](../CHANGELOG.md) under Unreleased until the next tagged release.
 
----
-
-## v0.5.0 — Stabilization
-
-> Reliable, one-daemon, local-first release. Benchmark-honest and adapter-consistent.
-
-- One-daemon lifecycle hardening and spawn-path guardrails
-- Cross-surface adapter conformance + contract test coverage
-- OpenAPI / version sweep + clippy / test release gates
-- Retrieval: RRF, crystal family recall, synonym parity
-- Control Center: analytics, agents, Monte Carlo projections
-- Agent telemetry, conflict detection, client permissions
-- Public docs, CHANGELOG, security policy, and release verification
-- TTL / hard expiration for temporal facts
-- Schema migration framework with `cortex doctor` validation
-- Derived-state repair CLIs: `reindex`, `re-embed`, `recrystallize`
-- Semantic dedup on store path
-- Recall feedback loop — agent usage tunes future ranking
-- Embedding profile selection (`all-MiniLM-L6-v2` default, `L12-v2` opt-in)
+This page is **not** a committed schedule. Items under “Open product decisions” need a design choice before implementation.
 
 ---
 
-## v0.6.0 — Accessibility, Governance & Recall Quality &nbsp; `current release`
+## Shipped
 
-> Made Cortex more usable day-to-day, more manageable at team scale, and more disciplined about recall measurement.
+### v0.5.0 — Stabilization
+
+Reliable, one-daemon, local-first release.
+
+- One-daemon lifecycle and spawn-path guardrails
+- Adapter conformance and contract tests
+- Control Center analytics, agents, Monte Carlo projections
+- Agent telemetry, Jaccard conflict detection, client permissions
+- TTL / hard expiration, schema migrations, `cortex doctor`
+- Derived-state repair: `reindex`, `rebuild-anchors`, `recrystallize`
+
+v0.5 also shipped a hybrid embedding retriever (MiniLM, RRF, sqlite-vec shadow). That path is **gone** from the live daemon. See Unreleased.
+
+### v0.6.0 — Accessibility, governance, measurement
 
 | Theme | Details |
 |-------|---------|
-| **Accessibility & Settings** | First-class Settings panel with accessibility preferences for high contrast, reduced motion, keyboard hints, and compact navigation. Includes stronger focus states, semantics, live-region handling, contrast checks, and narrow reflow gates. |
-| **Motion system** | Unified sidebar, panel, tab, and numeric transitions with shared motion tokens and reduced-motion bypasses. |
-| **Recall quality** | Phase 0 purity (`cortex-http-pure` adapter, 5 CI gates, CAS-100 + triangle judge). Phase 1 embedding upgrade (`bge-base-en-v1.5` default). Phase 2 cross-encoder reranker (`ms-marco-MiniLM-L-6-v2` int8) is implemented default-off behind shadow/primary gates while public benchmark claims remain gated on LongMemEval/API-backed evidence. |
-| **Budget governance** | Local per-endpoint limits for store, recall-family, boot, and MCP calls, plus Control Center budget status and a Tauri-only local budget editor. |
-| **Retention classes** | Durable knowledge vs operational context vs audit vs ephemera. Prereq for budget governance. |
-| **Context ranking** | Dynamic ranking in injectors — top-N by activeness × relevance, not fixed set. |
-| **Adapter conformance** | Shared contract tests across HTTP, MCP-RPC, Python SDK, and TypeScript SDK surfaces. |
-| **Foundation carryovers** | Session rollback CLI (`cortex admin rollback`). Boot prompt audit trail. Score-adaptive truncation for boot. `DEFAULT_CORTEX_PORT` consolidation. |
+| **Accessibility & Settings** | First-class Settings panel: high contrast, reduced motion, keyboard hints, compact navigation |
+| **Budgets** | Local per-endpoint limits; Control Center editor for `budgets.toml` |
+| **Retention classes** | Durable / operational / audit / ephemeral |
+| **Boot audits** | `GET /boot/audit`, `cortex_boot_audit` |
+| **Admin rollback** | `cortex admin rollback --session-id` |
+| **Measurement floor** | `cortex-http-pure` adapter and purity gates. No public LongMemEval quality claim |
 
-<details>
-<summary>Proof follow-ups before broad release claims</summary>
+### Unreleased on `main` — Clock-Quorum Recall
 
-- Capture manual screen-reader walkthrough evidence for NVDA+Firefox, VoiceOver+Safari, and Narrator+Edge before making formal accessibility conformance claims.
-- Capture browser-harness-based automated accessibility evidence for main flows.
-- Commit LongMemEval/API-backed recall benchmark artifacts before making public quality-gain claims.
-- Refresh public screenshots and release artifacts during the next patch or docs refresh.
-
-</details>
-
----
-
-## v0.7.0 — Multi-Tenant Hardening &nbsp; `next`
-
-> Privacy, fairness, and auth for team deployments.
+Production recall is CQR only. No local embedding or reranker model.
 
 | Theme | Details |
 |-------|---------|
-| **Privacy** | Deep erasure across core rows + derived indices. Crystal lineage tracking. |
-| **Auth hardening** | Capability-scoped identity model for agent calls (IBCTs). |
-| **Fairness** | Per-user quotas, admission control, backup/restore workflows. |
-| **Isolation** | Namespace / team-aware embedding boundaries. |
-| **Query expansion** | HyDE-style query rewriting after the v0.6.0 default-off reranker path has benchmark evidence. |
-| **External memory bridges** | First read-only bridge (ChatGPT import) against the v0.6.0 acceptance gate spec. |
+| **Single engine** | `/recall`, `/recall/semantic`, `/peek`, `/as-of`, MCP recall tools all call CQR |
+| **Admit rule** | Hard anchor, two clocks, or strong lexical write. Otherwise empty |
+| **Model-free home** | Empty install does not create `~/.cortex/models`. `crates/models` deleted |
+| **Crate split** | `crates/daemon` + `crates/logic`. Tests in `tests/contracts/` |
+| **Vocabulary mismatch** | Morphology, closed developer lexicon, sibling anchors, entity-seeded hops |
+| **Honest miss** | Unconstrained paraphrase with no shared handle stays empty |
 
-<details>
-<summary>Contributor-ready tasks</summary>
-
-- Visibility/isolation integration tests
-- Backup and restore dry-run tooling
-- Observability improvements for auth/quotas
-
-</details>
+Details: [ARCHITECTURE.md](../ARCHITECTURE.md), [research.md](research.md).
 
 ---
 
-## v0.8.0 — Advanced Agent Support &nbsp; `planned`
+## Next (v0.7 direction)
 
-> Improve multi-agent coordination and provenance.
+Privacy, fairness, and team-mode hardening. These are the least controversial follow-ons because they extend existing surfaces.
 
 | Theme | Details |
 |-------|---------|
-| **Branch-aware relevance** | Memory relevance tied to active branch context |
-| **Reasoning provenance** | Traceability from recall result back to original source |
-| **Multi-agent orchestration** | Deadlock-safe task coordination |
-| **Control Center dispatch** | Task dispatch and live progress from the dashboard |
+| **Privacy** | Deep erasure across core rows and derived indices |
+| **Auth** | Capability-scoped identity for agent calls |
+| **Fairness** | Per-user quotas, backup / restore workflows |
+| **Isolation** | Namespace / team-aware recall (ACL already exists; this is the remaining edge) |
+
+Contributor-sized slices: visibility/isolation contracts, backup dry-run, auth/quota observability.
+
+Query expansion (alias / path / task-context) that used to sit here **already shipped** in Unreleased CQR.
 
 ---
 
-## v1.0.0 — AI Information Ingester &nbsp; `future`
+## Open product decisions
 
-> Import and normalize knowledge from major AI platforms.
+These used to be listed as v0.8 / v1.0 as if they were scheduled. They are **not** committed. They need a product choice. Comparison and paper notes: [memory-landscape.md](memory-landscape.md).
 
-| Theme | Details |
-|-------|---------|
-| **Export parsers** | ChatGPT, Claude, Gemini conversation ingestion |
-| **Normalization** | Classify imported content into durable memory types |
-| **Quality controls** | Dedup against existing memories, confidence scoring |
-| **Operator tooling** | Bulk ingest CLI with preview + dry-run |
+| Decision | Why it is open | What “done” would look like |
+|----------|----------------|-----------------------------|
+| **Verified working board** | Recuris shows WM-only beats skill libraries. Cortex boot still snapshots tasks; nothing commits `done` from a receipt | A `board` target in `/boot` and `/pack`; `done` only from a tool/test/user receipt |
+| **Pack as the default loop** | Boot exists; agents still start with `/recall`. `ee pack` / OptMem `wake` are the better product shape | `/pack` (or boot-by-default) with a deterministic hash |
+| **Offline distill** | Traces stay chatty. Mem0 extracts; Cortex refuses to summarize on the hot path — and then never summarizes offline either | Steward pass proposes typed heads (`rule`, `scar`, `anti-pattern`); promotion is audited |
+| **Event-shaped recall** | Recall is `q=`. Edit/`src/auth.rs` should not parse “how does auth work” | `event=edit\|test\|boot` + path/board/scars |
+| **Outcome-gated admission** | `used_with` exists; harmful feedback cannot strip `strong_lexical` | Harm cannot admit alone; helpful cannot resurrect superseded |
+| **External ingest** | ChatGPT / Claude / Gemini import is a product, not a retrieval problem | Read-only parsers, dry-run, dedup against traces |
+| **Branch-aware relevance** | Useful for coding agents; not designed | Memory scoped to git branch without breaking as-of |
+
+Until those are chosen, do not treat them as issue fodder for drive-by PRs.
 
 ---
 
-## Cross-milestone backlog
+## Cross-cutting backlog (anytime)
 
-These are open contribution areas that may land in any release:
-
-- Key rotation and operational key hygiene workflows
-- Optional at-rest encryption integration path
-- Expanded adapter compatibility (OpenAI-style function interfaces)
-- Additional diagnostics and memory quality metrics
-- Documentation and onboarding UX improvements
+- Key rotation and operational key hygiene
+- Optional at-rest encryption path
+- Documentation and onboarding UX
+- Accessibility evidence (screen-reader walkthroughs) before any conformance claim
+- Funded LongMemEval run before any public quality-gain claim — and expect CQR to lose unconstrained paraphrase vs embedding systems
 
 ---
 
 ## Contributing
 
-1. Pick a roadmap item and open/claim an issue.
-2. Propose a small implementation slice with clear acceptance criteria.
-3. Link tests or verification output in your PR.
+1. Prefer a shipped-surface bug or a v0.7 isolation/backup slice.
+2. Do not open PRs that reinstall embeddings, ONNX, or an LLM on the hot path.
+3. If you want an open product decision, write a short design note first.
 
-See **[CONTRIBUTING.md](../CONTRIBUTING.md)** for setup, checks, and PR expectations.
+See [CONTRIBUTING.md](../CONTRIBUTING.md).

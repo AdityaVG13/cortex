@@ -2,7 +2,7 @@
 
 Cortex ships two artifacts that **must** move in lockstep:
 
-1. The daemon binary version from `daemon-rs/Cargo.toml`
+1. The daemon binary version from `crates/daemon/Cargo.toml`
 2. The plugin bundle version from `plugins/cortex-plugin/.claude-plugin/plugin.json`
 
 A plugin bundle shipped with a different daemon version is a split-brain bug:
@@ -44,14 +44,13 @@ the build before any artifacts are produced.
 
 ## Local workflow — bumping versions
 
-1. Edit `daemon-rs/Cargo.toml` `[package] version`.
+1. Edit `crates/daemon/Cargo.toml` `[package] version`.
 2. Edit `plugins/cortex-plugin/.claude-plugin/plugin.json` `version`.
 3. If `prepare-runtime.cjs` has a hard-coded fallback (`let version = '...'`),
    update it too.
 4. Run `node scripts/check-plugin-lockstep.cjs` locally. It must print PASS
    with zero warnings before you commit.
-5. Commit all version changes in a **single commit** so `git log -- daemon-rs
-   Cargo.toml plugins/` never shows one file drifting ahead.
+5. Commit all version changes in a **single commit** so `git log -- crates/daemon/Cargo.toml plugins/` never shows one file drifting ahead.
 
 ## Future enhancement TODO
 

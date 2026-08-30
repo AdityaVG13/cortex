@@ -31,7 +31,7 @@ Daemon:     Running on port 7437
 Memories:   142
 Decisions:  89
 Mode:       Solo (local)
-Version:    0.4.0
+Version:    0.6.0
 ```
 
 ## Troubleshooting
@@ -40,7 +40,7 @@ If status shows issues:
 
 | Problem | Check |
 |---------|-------|
-| Daemon not running | Run `cortex serve` or restart plugin |
+| Daemon not running | Open Control Center or run `cortex serve`. The plugin is attach-only. |
 | Can't connect | Check port 7437 is not blocked |
 | Team mode fails | Verify `CORTEX_URL` and `CORTEX_API_KEY` |
 | Low memory count | Check if you're using the correct DB path |

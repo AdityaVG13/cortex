@@ -1,5 +1,7 @@
 # Codex Verification Report -- v0.4.0
 
+> Historical snapshot from 2026-04-06. Not current product documentation. See [Info/README.md](README.md).
+
 ## Date
 2026-04-06
 
@@ -35,7 +37,7 @@
 
 | Item | Status | Notes |
 |---|---|---|
-| `scripts/release-smoke-test.sh` exists | VERIFIED | Present and runnable shell script |
+| `tests/scripts/release-smoke-test.sh` exists | VERIFIED | Present and runnable shell script |
 | Smoke-test coverage vs tracker claims | PARTIAL | Missing explicit legacy-migration/concurrency checks |
 | Plugin assets package | MISSING | `plugins/cortex-plugin/assets/` contains only `.gitkeep` |
 | Full install flow test | BLOCKED | Depends on packaged platform assets |

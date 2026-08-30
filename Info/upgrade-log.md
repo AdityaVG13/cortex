@@ -1,5 +1,8 @@
 # Dependency Upgrade Log
 
+> Historical operator log from 2026-05-22. Crate paths and embedding/sqlite-vec versions below describe that date, not the live daemon. Current layout is `crates/daemon` + `crates/logic`. See [ARCHITECTURE.md](../ARCHITECTURE.md).
+
+
 **Date:** 2026-05-22
 **Project:** cortex
 **Language:** Rust, Node.js, Python

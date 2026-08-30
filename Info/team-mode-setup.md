@@ -70,8 +70,8 @@ Container `0.0.0.0` is fine because the host port is on `127.0.0.1`. Do not use 
 
 ```bash
 git clone https://github.com/AdityaVG13/cortex.git
-cd cortex/daemon-rs
-cargo build --release
+cd cortex
+cargo build -p cortex-daemon --release
 ./target/release/cortex serve
 ```
 

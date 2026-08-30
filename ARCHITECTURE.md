@@ -1,196 +1,239 @@
-# Cortex - Technical Architecture Report
+# Architecture
 
-Generated: 2026-05-22
+Cortex is a private, local-first memory system for AI tools. A Rust daemon owns one SQLite brain and exposes it over HTTP and MCP. The Control Center is a Tauri desktop app that supervises that daemon.
 
-## Executive Summary
+Clock-Quorum Recall (CQR) is the only production retrieval engine. The daemon does not download, load, or run language, embedding, or reranking models. Older databases may still contain inert `embeddings` rows; they are not read. `~/.cortex/models` is neither required nor created.
 
-Cortex is a private local memory system for AI tools. The main product is a Rust daemon that exposes HTTP and MCP-compatible memory operations, backed by SQLite and local ONNX embeddings; the companion Control Center is a Tauri desktop app with a React/Vite frontend.
+Current version: **0.6.0**.
 
-Key statistics:
-- Version: `0.6.0` in the root package, daemon crate, and Control Center package (`package.json:3`, `daemon-rs/Cargo.toml:3`, `desktop/cortex-control-center/package.json:3`).
-- Source footprint: about 71,793 lines across 104 Rust/JavaScript/JSX/TypeScript source files under the daemon, desktop frontend, and Tauri shell.
-- Main runtime surfaces: daemon binary `cortex`, local HTTP API, MCP stdio proxy, Tauri desktop app, React Control Center, plugin skills/docs, benchmark tooling.
+---
 
-## Entry Points
+## Products in this tree
 
-| Entry | Location | Purpose |
-| --- | --- | --- |
-| Root package scripts | `package.json:6` | Top-level build, test, daemon clippy, desktop build/dev, and ops wrappers. |
-| Daemon binary declaration | `daemon-rs/Cargo.toml:8` | Builds the `cortex` binary from `daemon-rs/src/main.rs`. |
-| Daemon CLI dispatcher | `daemon-rs/src/main.rs:445` | Parses command mode and dispatches `serve`, `mcp`, `boot`, `paths`, plugin, import/export, admin, cleanup, and other CLI flows. |
-| HTTP daemon mode | `daemon-rs/src/main.rs:487` | `cortex serve` installs shutdown handlers and starts the Axum daemon runtime. |
-| MCP stdio mode | `daemon-rs/src/main.rs:514` | `cortex mcp` ensures or targets a daemon and runs the MCP proxy transport. |
-| Runtime initialization | `daemon-rs/src/main.rs:4744` | Creates `RuntimeState`, opens/configures SQLite, loads token state, and prepares graceful shutdown. |
-| HTTP router | `daemon-rs/src/server.rs:46` | Defines public, core, conductor, feed, admin, event, brain telemetry, import/export, and MCP-RPC routes. |
-| Tauri desktop main | `desktop/cortex-control-center/src-tauri/src/main.rs:2903` | Enforces single Control Center instance, wires Tauri plugins/state, bootstraps/supervises the daemon. |
-| Tauri daemon commands | `desktop/cortex-control-center/src-tauri/src/main.rs:1551` | Exposes desktop commands such as quit, hide-to-tray, daemon status, daemon start, and later lifecycle operations. |
-| React mount | `desktop/cortex-control-center/src/main.jsx:7` | Mounts the React `App` into the Vite/Tauri webview. |
-| Control Center app | `desktop/cortex-control-center/src/App.jsx:1456` | Holds the main panel state, daemon state, analytics, live-surface data, settings, and UI workflows. |
-| Frontend API client | `desktop/cortex-control-center/src/api-client.js:154` | Calls the daemon through Tauri IPC when available, falling back to authenticated local HTTP. |
+| Product | Path | Role |
+|---------|------|------|
+| Daemon | `crates/daemon` (`cortex-daemon`, binary `cortex`) | HTTP API, MCP stdio proxy, SQLite, CQR collection, boot compiler |
+| Logic | `crates/logic` (`cortex-logic`) | Deterministic types: clocks, graph, traces, conflict, budgets |
+| Tests | `tests/` (`cortex-tests`) | Public contracts. Production crates have no inline tests |
+| Control Center | `desktop/cortex-control-center` | Operator UI, daemon supervisor, budgets, brain view |
+| Plugin | `plugins/cortex-plugin` | Claude Code attach-only MCP bridge |
+| SDKs | `sdks/python`, `sdks/typescript` | Thin HTTP clients |
 
-## Key Types
+---
 
-| Type | Location | Purpose |
-| --- | --- | --- |
-| `RuntimeState` | `daemon-rs/src/state.rs:251` | Shared Axum state containing SQLite connections, token, event channels, sessions, recall caches, embedding/rerank engines, rate limiter, team-mode metadata, and readiness/degradation flags. |
-| `StoreRequest` | `daemon-rs/src/api_types.rs:127` | JSON body for storing a memory/decision, including text, context, source identity, model metadata, confidence, TTL, and retention class. |
-| `RetentionClass` | `daemon-rs/src/api_types.rs:23` | Durable/operational/audit/ephemeral classification that controls default TTLs and retention semantics. |
-| `RecallQuery` / `RecallBody` | `daemon-rs/src/handlers/recall.rs:985` | Query/body model for recall, semantic recall, budgeted recall, and related lookup endpoints. |
-| `BootQuery` | `daemon-rs/src/handlers/boot.rs:87` | Query model for boot profile, agent identity, and token budget. |
-| `BootResult` | `daemon-rs/src/compiler.rs:75` | Compiled boot capsule with prompt text, token estimate, savings metadata, and source capsules. |
-| `EmbeddingEngine` | `daemon-rs/src/embeddings.rs:253` | Local ONNX embedding engine with a session pool and model metadata for semantic indexing/search. |
-| `BudgetConfig` / `BudgetEndpoint` | `daemon-rs/src/budgets.rs:12` | Local endpoint budget model for store, recall, boot, and MCP request enforcement. |
-| `SourceIdentity` | `daemon-rs/src/handlers/mod.rs:31` | Normalized caller identity assembled from source-agent and source-model headers. |
-| `RerankConfig` | `daemon-rs/src/rerank.rs:41` | Optional cross-encoder rerank settings with off/shadow/primary modes. |
+## Runtime surfaces
 
-## Data Flow
+| Surface | How to start | Notes |
+|---------|--------------|-------|
+| HTTP daemon | `cortex serve` | Default `127.0.0.1:7437` |
+| MCP stdio | `cortex mcp --agent <name>` | Proxies onto the running daemon; does not spawn a second one from plugin paths |
+| Control Center | Desktop installer / `npm run desktop:dev` | Owns daemon lifecycle in app-managed mode |
+| Status | `cortex status --json` | Readiness without starting another daemon |
 
-### Store Path
+Protected HTTP requires `Authorization: Bearer …` and `X-Cortex-Request` (SSRF guard). Solo mode uses `~/.cortex/cortex.token`. Team mode uses Argon2id-hashed `ctx_` keys.
 
-```text
-AI tool / Control Center
-    -> POST /store with X-Cortex-Request + bearer token
-    -> Axum router
-    -> auth, source identity, endpoint budgets
-    -> StoreRequest validation and retention classification
-    -> optional embedding generation
-    -> SQLite write transaction, conflict/dedup policy, FTS/vector rows
-    -> JSON result + event/savings telemetry
-```
+---
 
-`/store` is registered on the router at `daemon-rs/src/server.rs:58`. The handler validates TTL, resolves provenance, computes an embedding if the engine is loaded, locks the write connection, persists the decision, optionally stores the embedding, updates focus state, and returns `{ "stored": true }` on success (`daemon-rs/src/handlers/store.rs:249`).
+## Two layers of truth
 
-### Recall Path
+Source of truth is the written row, not a vector or a summary.
+
+| Layer | Tables | Role |
+|-------|--------|------|
+| Facts | `memories`, `decisions` | Text, status, retention, TTL, validity windows, owner, visibility |
+| Provenance | `traces`, `versions`, `head_state` | Every store is a trace + version. Rollback orphans later versions |
+| Search cache | `memories_fts`, `decisions_fts` | FTS5, trigger-maintained |
+| Identity graph | `entities`, `entity_aliases`, `entity_mentions` | Deterministic mentions (`auth service`, tickets, paths) |
+| Clocks | `clock_anchors`, `clock_anchor_evidence`, `clock_links`, `clock_meta` | Derived handles. Rebuild with `cortex rebuild-anchors` |
+| Coordination | `locks`, `sessions`, `tasks`, `messages`, `feed`, `focus` | Multi-agent conductor |
+| Governance | `decision_conflicts`, `recall_feedback`, `agent_feedback`, `client_permissions` | Jaccard conflicts, use/harm signals |
+| Inert | `embeddings` | Schema leftover. Not read |
+
+Retention classes: **durable** (no TTL), **operational** (90d), **audit** (365d), **ephemeral** (14d).
+
+---
+
+## Store path
 
 ```text
-AI tool / Control Center
-    -> GET or POST /recall, /recall/semantic, /recall/budget, /peek, /unfold
-    -> auth + rate/budget checks
-    -> recall policy and token budget resolution
-    -> keyword FTS + semantic/vector candidates
-    -> RRF/fallback ranking, optional rerank, budget compaction
-    -> JSON matches and token-savings metadata
+client
+  -> POST /store
+  -> redact secrets
+  -> classify retention / TTL
+  -> Jaccard conflict vs recent decisions
+       AGREES / CONTRADICTS / REFINES / UNRELATED
+  -> insert (or dispute / refine / merge)
+  -> FTS trigger
+  -> record trace + HEAD version
+  -> ingest entities / aliases / mentions
+  -> project clock anchors and co-occurrence links
 ```
 
-Recall routes are registered at `daemon-rs/src/server.rs:59`. `handle_recall` authenticates the caller, enforces team-mode caller scope, validates `q`, resolves recall policy/budget, and then enters the unified recall pipeline (`daemon-rs/src/handlers/recall.rs:1009`). `/peek` returns lighter headlines and token-usage metadata from the same underlying recall machinery (`daemon-rs/src/handlers/recall.rs:1421`).
+Projection extracts inspectable handles from the text (and from explicit `paths` / `symbols` / `anchors` on the request):
 
-### Boot Path
+- Hard-capable: path, `path::symbol`, ticket, error code, citation
+- Named: entity, quoted phrase, acronym, flag, URL host, rare term
+- Morphological variants of term anchors (`cache` also stores `caching`)
+- Path ancestors (`src/auth.rs` also evidence-links `src`)
+
+Origin is `explicit` if the client sent anchors, else `deterministic_extract`. Query expansion on read never writes new facts.
+
+---
+
+## Recall path: Clock-Quorum Recall
+
+Every recall surface uses the same engine: `/recall`, `/recall/semantic`, `/recall/budget`, `/peek`, `/as-of`, MCP `cortex_recall` / `cortex_semantic_recall`. The name `semantic` is a compatibility surface. No query vector is used.
+
+### 1. Parse a query frame
+
+Terms, quoted phrases, path/symbol/session/goal context, temporal mode (`current` | `historical` | `explicit_as_of` | `any`), ACL owner, HEAD id.
+
+### 2. Expand (never a hard admit)
+
+`expand_query_frame` may add, all at low specificity:
+
+| Handle | Closes | Is not |
+|--------|--------|--------|
+| Porter-like stem | `cache` ↔ `caching` | WordNet |
+| Closed developer lexicon | `authenticate` ↔ `oauth`; `webhook` ↔ `callback` | a self-growing thesaurus |
+| Sibling anchors on the same stored row | this-corpus co-occurrence | an LLM rewriter |
+| Entity re-resolve | expanded terms can pick up mentions | a walk of the whole graph |
+
+Caps: 16 extra terms, 6 siblings, 32 anchors. Common words still cannot admit a hit.
+
+### 3. Collect six arms
+
+| Arm | Clock | Seeds |
+|-----|-------|-------|
+| write | lexical / FTS | unigram `OR`; `write=2` only on quoted hit or unique stem/cluster hit |
+| anchor | identity | `clock_anchors` specificity ≥ 2; ≥ 3 is hard |
+| truth | entity | `entity_mentions`; entity hit is hard |
+| task | work context | paths / symbols, or query path/symbol anchors ≥ 2 |
+| history | use | `used_with` links / feedback |
+| hop | neighborhood | FTS/anchor seeds; if empty, entity mentions, then ≤2 hops |
+
+SQL gates run here: status, expiry, validity windows, orphaned versions, ACL, HEAD.
+
+### 4. Admit, then rank
+
+A row is admitted if:
+
+1. a hard anchor matches, or
+2. two independent clocks are nonzero, or
+3. strong lexical write (`write ≥ 2`) holds.
+
+Otherwise it is dropped. Empty is a valid answer.
+
+Rank is a deterministic tuple: hard anchor → clock count → strength → specificity → fewer hops → FTS → use score → recency (`created_at`, not last access) → type → id.
+
+`why` is machine-readable: clocks, anchors, links, filters. `validAt` is the requested as-of instant or `"current"` — not wall-clock now. As-of reports the row's stored `status` and validity windows.
+
+Unconstrained paraphrase with no shared stem, cluster, alias, path, or co-occurring anchor remains empty on purpose.
+
+---
+
+## Boot path
+
+`GET /boot` is an extractive compiler. No model summarizes.
+
+Packed today:
+
+1. **Identity** — durable constraints and platform facts
+2. **Delta** — conflicts, tasks, focus, messages, locks, agents, recent decisions, feed, activity since last boot
+3. **TRUTH** — top-N current facts ranked by retention × recency × relevance × activity, with `FACT!` / `FACT?` / `FACT~` sigils
+
+Then token-pack against the budget. Savings vs a raw dump are logged.
+
+Named capsules SCARS / WAKE / SKILLS / BOARD are **not** separate compilers yet. Tasks, locks, and focus already exist as data and appear inside delta.
+
+---
+
+## Time, HEAD, ACL
+
+Three independent gates, all SQL:
+
+- **Validity windows** on the row (`valid_from` / `valid_until` / `expires_at`)
+- **HEAD** via `versions` + `head_state` — rollback hides later stores
+- **ACL** — team caller, `owner_id`, visibility
+
+`/as-of` is not a costume that stamps every hit `historical`.
+
+---
+
+## Surrounding subsystems
+
+| Subsystem | Job |
+|-----------|-----|
+| Conflict | Jaccard on store; CONTRADICTS opens a dispute |
+| Focus | Checkpoint on start; stores append; end consolidates a summary row |
+| Conductor | File locks, sessions, tasks, agent messages |
+| Feed | Activity stream + ack |
+| Feedback | Recall `used_with` / reject; agent outcome stats |
+| Aging | Compress → archive; GC low score. Does not re-embed |
+| Crystallize | Cluster similar rows by Jaccard |
+| Compaction | Storage governor, archived blobs |
+| Budgets | `~/.cortex/budgets.toml` per store / recall / boot / MCP |
+
+---
+
+## Crate map
 
 ```text
-AI tool startup
-    -> GET /boot?agent=...&budget=...
-    -> auth + endpoint budget
-    -> register agent presence
-    -> clear recently served content for that agent
-    -> compiler builds identity, delta, conductor/feed/task capsules
-    -> response becomes session boot context
+crates/logic/src/clockwork/
+  anchors.rs        kinds, extraction, morph variants on persist
+  query.rs          QueryFrame, temporal mode
+  morph.rs          stem / variants / hay_has_lexical
+  bridge.rs         expand_query_frame
+  evidence.rs       ClockEvidence, ClockWhy
+  quorum.rs         admit + RankKey
+  links.rs          project, hops, used_with, DDL
+
+crates/logic/src/graph/     entities, closed synonym clusters
+crates/logic/src/traces/    traces, versions, HEAD
+crates/logic/src/conflict/  Jaccard classes
+
+crates/daemon/src/handlers/recall/engine_clockwork.rs   six arms + gates
+crates/daemon/src/handlers/store/                       write + project
+crates/daemon/src/compiler/                             boot pack
+crates/daemon/src/db/                                   schema, FTS, migrations
 ```
 
-`/boot` is registered at `daemon-rs/src/server.rs:73`. The handler authenticates, checks team-mode caller requirements, registers the agent, clears scoped served-content cache, cleans expired conductor state, and calls the compiler (`daemon-rs/src/handlers/boot.rs:95`). The compiler returns a `BootResult` with prompt, token estimate, savings data, and capsules (`daemon-rs/src/compiler.rs:75`).
+Admission math lives in `cortex-logic`. Candidate SQL lives in the daemon. Rebuild projections without changing admit.
 
-### Desktop Path
-
-```text
-Tauri app startup
-    -> single-instance guard
-    -> locate bundled cortex binary
-    -> bootstrap and supervise daemon
-    -> React app polls status/stats/sessions/tasks/feed
-    -> API client uses Tauri IPC fetch_cortex, then local HTTP fallback
-```
-
-The Tauri main function acquires an app-instance guard and supervises the daemon (`desktop/cortex-control-center/src-tauri/src/main.rs:2903`). The React app owns dashboard state and panel selection (`desktop/cortex-control-center/src/App.jsx:1456`). The frontend API client prefers Tauri IPC, handles token refresh/retry, and falls back to local HTTP when IPC is unavailable or times out (`desktop/cortex-control-center/src/api-client.js:154`).
-
-## External Dependencies
-
-| Dependency | Location | Purpose | Critical? |
-| --- | --- | --- | --- |
-| `axum`, `tower`, `tower-http` | `daemon-rs/Cargo.toml:13`, `daemon-rs/Cargo.toml:40` | HTTP server, routing, middleware, CORS, panic handling. | Yes |
-| `tokio`, `tokio-stream` | `daemon-rs/Cargo.toml:22` | Async runtime, background tasks, signal handling, channels, network IO. | Yes |
-| `rusqlite` with bundled SQLite | `daemon-rs/Cargo.toml:17` | Local durable storage for memories, decisions, sessions, events, migrations, FTS. | Yes |
-| `sqlite-vec` | `daemon-rs/Cargo.toml:37` | Local vector storage/search support. | Yes for semantic path |
-| `ort`, `tokenizers`, `ndarray` | `daemon-rs/Cargo.toml:31` | In-process ONNX embeddings and reranking model execution. | Yes for semantic path |
-| `argon2`, `hmac`, `sha2` | `daemon-rs/Cargo.toml:25` | Team-mode API key hashing and auth-related crypto. | Yes |
-| `rustls`, `tokio-rustls` | `daemon-rs/Cargo.toml:42` | TLS for explicit team/non-loopback deployments. | Conditional |
-| `reqwest` | `daemon-rs/Cargo.toml:34` | HTTP client work such as model/download or remote-target interactions. | Conditional |
-| `tauri`, `tauri-plugin-updater` | `desktop/cortex-control-center/src-tauri/Cargo.toml:17` | Native desktop shell, updater plugin, daemon supervision commands. | Yes for desktop app |
-| `react`, `react-dom`, `three` | `desktop/cortex-control-center/package.json:26` | Control Center UI and brain visualization. | Yes for desktop UI |
-| `vite`, `vitest` | `desktop/cortex-control-center/package.json:31` | Frontend dev/build and unit test runner. | Development |
+---
 
 ## Configuration
 
-| Source | Location / Example | Priority |
-| --- | --- | --- |
-| CLI flags | `--home`, `--db`, `--port`, `--bind` parsed in `daemon-rs/src/auth.rs:83` | Highest for path/daemon bind fields |
-| Environment variables | `CORTEX_HOME`, `CORTEX_DB`, `CORTEX_PORT`, `CORTEX_BIND` in `daemon-rs/src/auth.rs:48` | Below CLI flags |
-| Runtime defaults | `~/.cortex`, `cortex.db`, `cortex.token`, `cortex.pid`, default port `7437` in `daemon-rs/src/auth.rs:48` and `daemon-rs/src/main.rs:6` | Fallback |
-| Local budgets | `~/.cortex/budgets.toml` loaded by `BudgetConfigStatus::load_from_home` (`daemon-rs/src/budgets.rs:200`) | Runtime file |
-| Embedding model | `CORTEX_EMBEDDING_MODEL` profile selection and fallback in `daemon-rs/src/embeddings.rs:181` | Optional runtime env |
-| Embedding pool | `CORTEX_EMBEDDING_POOL_SIZE` clamped in `daemon-rs/src/embeddings.rs:233` | Optional runtime env |
-| Rerank mode | `CORTEX_RERANK_MODE`, `CORTEX_RERANK_ENABLED`, `CORTEX_RERANK_TOP_N`, `CORTEX_RERANK_FUSION_ALPHA` in `daemon-rs/src/rerank.rs:16` | Optional runtime env |
-| Root env template | `.env.example:1` | Documentation/sample only |
-| Vite dev server | `desktop/cortex-control-center/vite.config.js:4` | Desktop frontend dev config |
-| Tauri app config | `desktop/cortex-control-center/src-tauri/tauri.conf.json:1` | Desktop product, build, CSP, bundle, updater |
+| Source | Fields |
+|--------|--------|
+| CLI | `--home`, `--db`, `--port`, `--bind` |
+| Environment | `CORTEX_HOME`, `CORTEX_DB`, `CORTEX_PORT`, `CORTEX_BIND` |
+| Defaults | `~/.cortex`, `cortex.db`, `cortex.token`, port `7437` |
+| Budgets | `~/.cortex/budgets.toml` |
 
-## Module Structure
+Removed from the runtime: `CORTEX_EMBEDDING_MODEL`, `CORTEX_EMBED_SESSION_POOL_SIZE`, `CORTEX_RERANK_*`. Historical changelog and benchmark text may still mention them.
 
-```text
-daemon-rs/src/
-  main.rs              CLI dispatcher, daemon lifecycle, background jobs
-  server.rs            Axum router, HTTP/TLS/IPC serving
-  state.rs             shared RuntimeState and startup initialization
-  db.rs                SQLite config, migrations, repair, WAL/FTS helpers
-  api_types.rs         shared API payload and retention types
-  handlers/            HTTP/MCP handler modules for store/recall/boot/admin/etc.
-  embeddings.rs        local ONNX embedding models and vector codecs
-  compiler.rs          boot capsule compilation
-  mcp_proxy.rs         MCP stdio-to-daemon proxy
-  auth.rs              paths, token auth, API keys, source identity helpers
-  budgets.rs           local request budget configuration
-  rerank.rs            optional cross-encoder reranking
+The daemon crate does not depend on `ort`, `tokenizers`, `sqlite-vec`, or `cortex-models`. That crate is gone.
 
-desktop/cortex-control-center/
-  src-tauri/src/main.rs    native app, commands, daemon supervision
-  src/main.jsx             React mount
-  src/App.jsx              main Control Center UI state and panels
-  src/api-client.js        IPC/HTTP daemon client
-  src/brain-v2/            Three.js brain visualization modules
-```
+---
 
-## Test Infrastructure
+## Tests
 
-| Type | Location | Count / Notes |
-| --- | --- | --- |
-| Root test script | `package.json:8` | Runs daemon tests with `cargo test --all-features`. |
-| Daemon Rust tests | `daemon-rs/src`, `daemon-rs/tests` | 563 inline Rust test attributes found across 50 Rust files. |
-| Desktop Vitest suite | `desktop/cortex-control-center/package.json:17` | Runs `vitest run`. |
-| Desktop unit/UI tests | `desktop/cortex-control-center/src` | 23 `*.test.*` files covering API client, analytics, settings, keyboard access, reflow, panels, brain-v2 helpers, and import cycles. |
-| Desktop lifecycle smoke | `desktop/cortex-control-center/package.json:20` | `verify:lifecycle:dev` drives a dev lifecycle verification script. |
-| Frontend build | `desktop/cortex-control-center/package.json:9` | `vite build` via `web:build`; Tauri build composes daemon and frontend work. |
-| Daemon clippy wrapper | `package.json:9` | `cargo clippy --all-targets --all-features -- -D warnings`. |
+| Kind | Location |
+|------|----------|
+| Rust contracts | `tests/contracts/` — including `clock_quorum.rs` |
+| Desktop | `desktop/cortex-control-center` Vitest |
+| First-run smoke | `tests/scripts/first-run-smoke.sh` |
 
-Common local checks:
+Production crates have no inline tests. CQR, store, conflict, temporal, and history contracts are the recall bar.
 
-```bash
-npm test
-npm run daemon:clippy
-npm --prefix desktop/cortex-control-center test
-npm --prefix desktop/cortex-control-center run web:build
-```
+---
 
-## Error Handling And Safety
+## Safety
 
-- Handler panics are converted to HTTP 500 responses by `CatchPanicLayer`, keeping the daemon process alive (`daemon-rs/src/server.rs:225`).
-- Protected HTTP endpoints require `X-Cortex-Request` as an SSRF guard before auth is accepted (`daemon-rs/src/handlers/mod.rs:150`).
-- Auth uses bearer token comparison for solo mode and Argon2-verified `ctx_` API keys for team mode (`daemon-rs/src/handlers/mod.rs:190`).
-- Startup opens/configures SQLite, runs schema initialization, quick-checks integrity, and can attempt auto-repair before continuing in degraded mode (`daemon-rs/src/state.rs:363`).
-- Startup checkpoints WAL before background work and again on shutdown (`daemon-rs/src/main.rs:4790`, `daemon-rs/src/main.rs:5205`).
-- Non-loopback/team TLS policy lives in the server layer; plain HTTP can be rejected for unsafe external binds (`daemon-rs/src/server.rs:691`).
+- Handler panics become HTTP 500 via `CatchPanicLayer`.
+- Secret redaction runs before anchor extraction.
+- ACL, HEAD, validity, and expiry are SQL gates during candidate generation.
+- Empty evidence is returned rather than a neighbor guess.
 
-## Notes And Gotchas
-
-- The repository has two major products in one tree: the daemon and the desktop Control Center. Root package scripts primarily orchestrate daemon and desktop subprojects rather than owning a standalone Node app.
-- The daemon is intentionally localhost-first. External bind and team-mode behavior are explicit configuration paths, not the default.
-- Semantic recall depends on local model assets. The code can degrade or queue/download assets when the model is unavailable, so semantic behavior can differ between first-run and warm installations.
-- The React app can run in browser/dev mode, but production desktop paths assume Tauri IPC is available and fall back to local HTTP when needed.
-- `target`, `node_modules`, generated benchmark outputs, Graphify outputs, and local runtime databases/logs are present in the working tree but should be treated as build/runtime artifacts unless intentionally tracked.
+See [Info/security-rules.md](Info/security-rules.md) for the threat model.

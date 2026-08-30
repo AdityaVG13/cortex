@@ -5,7 +5,7 @@ description: Search Cortex memory for past decisions, conventions, and lessons. 
 
 # Cortex Recall
 
-Search your persistent memory for relevant past knowledge.
+Search your persistent memory for relevant past knowledge. Cortex uses Clock-Quorum Recall: it admits a stored row when a path, symbol, alias, entity, stem, or closed-lexicon handle matches — not because a sentence is “nearby” in embedding space. An empty result means there was no shared handle. That is expected. Narrow with a path, symbol, or quoted phrase rather than rephrasing into vaguer English.
 
 ## Usage
 

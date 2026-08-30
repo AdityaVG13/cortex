@@ -28,11 +28,11 @@ Thanks for contributing. Cortex is a local-first memory system for AI agents, wi
 ### Core daemon
 
 ```bash
-git clone https://github.com/cortex-project/cortex.git
+git clone https://github.com/AdityaVG13/cortex.git
 cd cortex
-cd daemon-rs
-cargo build --release
+cargo build -p cortex-daemon --release
 # Binary at target/release/cortex(.exe)
+# Package name is cortex-daemon; sources live in crates/daemon and crates/logic.
 ```
 
 ### Desktop app
@@ -50,14 +50,15 @@ Run the checks relevant to the area you changed. See [Info/testing-philosophy.md
 ### Daemon / Rust changes
 
 ```bash
-cd daemon-rs
 cargo fmt
-cargo check --all-features
+cargo check -p cortex-daemon --all-features
 # Optional for most PRs; required before release or when touching CLI output:
-cargo test --test cli_goldens
+cargo test -p cortex-tests --test cli_goldens
+# When changing recall, store, clocks, or graph:
+cargo test -p cortex-tests --offline --test clock_quorum --test cli_goldens --test store_recall --test conflict --test temporal --test history --test recall_truth -- --test-threads=4
 # Full suite only when changing core recall/store/MCP behavior:
-cargo test --all-features
-cargo clippy --all-targets --all-features -- -D warnings
+cargo test -p cortex-tests
+cargo clippy -p cortex-daemon --all-targets --all-features -- -D warnings
 ```
 
 For setup or auth-token changes, include a focused regression check for token persistence failures. Team setup must not report success unless the owner API key was written to the shared `cortex.token` path. Token permission changes need platform proof: Unix mode checks or Windows DACL/ACL regression coverage.
@@ -74,8 +75,8 @@ npm run verify:lifecycle:dev
 ### Release / smoke (maintainers)
 
 ```bash
-bash scripts/first-run-smoke.sh
-cd daemon-rs && cargo test --test cli_goldens
+bash tests/scripts/first-run-smoke.sh
+cargo test -p cortex-tests --test cli_goldens
 ```
 
 ### Root convenience scripts
@@ -111,6 +112,7 @@ Please update docs when you change:
 ## Scope and Style
 
 - Keep dependencies justified; local-first and low-runtime-complexity are project priorities.
+- Do not reinstall embeddings, ONNX, tokenizers, or a reranker on the hot path.
 - Avoid silently changing security-sensitive defaults.
 - Do not commit local databases, logs, personal config, or machine-specific artifacts.
 
