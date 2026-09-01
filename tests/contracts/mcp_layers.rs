@@ -42,6 +42,11 @@ async fn team_recall_hides_other_owner_decisions() {
         &RecallContext {
             caller_id: Some(2),
             team_mode: true,
+            paths: Vec::new(),
+            symbols: Vec::new(),
+            goal_id: None,
+            session_id: None,
+            as_of: None,
         },
         None,
     )
@@ -66,6 +71,11 @@ async fn team_recall_hides_other_owner_decisions() {
         &RecallContext {
             caller_id: Some(1),
             team_mode: true,
+            paths: Vec::new(),
+            symbols: Vec::new(),
+            goal_id: None,
+            session_id: None,
+            as_of: None,
         },
         None,
     )

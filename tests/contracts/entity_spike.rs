@@ -200,13 +200,21 @@ fn entity_arm_recalls_alias_row_with_zero_keyword_overlap() {
         });
     assert_eq!(
         hit["method"].as_str(),
-        Some("entity"),
-        "hit must come from the entity arm, got {hit}"
+        Some("clock-quorum"),
+        "hit must come from the production engine (CQR only), got {hit}"
     );
     assert_eq!(
-        hit["why"]["boosts"]["entity"].as_f64().map(|v| v > 0.0),
+        hit["why"]["hardAnchor"].as_bool(),
         Some(true),
-        "why must attribute the entity arm, got {hit}"
+        "alias row with zero keyword overlap must be hard-anchored, got {hit}"
+    );
+    let entity_anchored = hit["why"]["anchors"]
+        .as_array()
+        .map(|anchors| anchors.iter().any(|a| a["kind"].as_str() == Some("entity")))
+        .unwrap_or(false);
+    assert!(
+        entity_anchored,
+        "why must attribute the entity anchor, got {hit}"
     );
 
     shutdown_daemon(port, &home_dir);

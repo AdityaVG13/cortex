@@ -227,7 +227,7 @@
         "bootPrompt": {
           "containsAgentName": false,
           "kind": "string",
-          "lineCount": 8
+          "lineCount": 10
         },
         "fieldKeys": [
           "bootPrompt",
