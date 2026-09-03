@@ -154,7 +154,18 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
         "cluster_members",
         "locks",
     ];
-    let mut table_exports: Vec<(String, Vec<String>)> = Vec::new();
+    // The fresh schema must exist BEFORE salvage so each table's INSERT column
+    // list can be intersected with the columns the fresh DB actually has.
+    // Boot-time migrations add columns (e.g. compressed_text, age_tier) that
+    // initialize_schema alone does not; naming them in the INSERT fails every
+    // row ("no column named ...") while exports still counted as recovered.
+    let tmp_path = db_path.with_extension("repair_tmp");
+    let _ = std::fs::remove_file(&tmp_path);
+    let fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
+    configure(&fresh).map_err(RepairError::Import)?;
+    initialize_schema(&fresh).map_err(RepairError::Import)?;
+    fresh.execute_batch("PRAGMA foreign_keys = OFF;").map_err(RepairError::Import)?;
+    const MAX_CONSECUTIVE_ROW_ERRORS: usize = 100;
     let mut memories_recovered = 0usize;
     let mut decisions_recovered = 0usize;
     for &table in DATA_TABLES {
@@ -171,9 +182,22 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
             eprintln!("[cortex] auto_repair: table '{table}' has no columns, skipping");
             continue;
         }
-        let col_list = columns.join(", ");
-        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
-        let placeholder_list = placeholders.join(", ");
+        let fresh_columns: Vec<String> = fresh
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(RepairError::Import)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(RepairError::Import)?
+            .filter_map(|r| r.ok())
+            .collect();
+        let common_columns: Vec<String> =
+            columns.iter().filter(|c| fresh_columns.contains(c)).cloned().collect();
+        if common_columns.is_empty() {
+            eprintln!(
+                "[cortex] auto_repair: table '{table}' has no columns in common with the fresh schema, skipping"
+            );
+            continue;
+        }
+        let col_list = common_columns.join(", ");
         let mut data_stmt = match corrupt_conn.prepare(&format!("SELECT {col_list} FROM {table}")) {
             Ok(s) => s,
             Err(e) => {
@@ -189,13 +213,14 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
                 continue;
             }
         };
-        let insert_prefix = format!("INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({placeholder_list})");
         let mut row_values: Vec<Vec<String>> = Vec::new();
+        let mut consecutive_row_errors = 0usize;
         loop {
             match rows.next() {
                 Ok(Some(row)) => {
+                    consecutive_row_errors = 0;
                     let mut vals: Vec<String> = Vec::new();
-                    for i in 0..columns.len() {
+                    for i in 0..common_columns.len() {
                         use rusqlite::types::ValueRef;
                         let val = match row.get_ref(i) {
                             Ok(ValueRef::Null) => "NULL".to_string(),
@@ -217,40 +242,43 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
                 }
                 Ok(None) => break,
                 Err(e) => {
+                    consecutive_row_errors += 1;
                     eprintln!("[cortex] auto_repair: row error in '{table}': {e} -- skipping row");
+                    if consecutive_row_errors >= MAX_CONSECUTIVE_ROW_ERRORS {
+                        eprintln!(
+                            "[cortex] auto_repair: '{table}' hit {MAX_CONSECUTIVE_ROW_ERRORS} consecutive row errors -- abandoning remaining rows of this table"
+                        );
+                        break;
+                    }
                     continue;
                 }
             }
         }
-        eprintln!("[cortex] auto_repair: exported {} rows from '{table}'", row_values.len());
-        if table == "memories" {
-            memories_recovered = row_values.len();
-        } else if table == "decisions" {
-            decisions_recovered = row_values.len();
+        // Honest counts: "recovered" means rows actually inserted into the
+        // fresh DB, never rows exported from the corrupt one. A dropped
+        // INSERT OR IGNORE reports changes() == 0, so silent loss is visible
+        // as inserted/exported in the log line.
+        let exported = row_values.len();
+        let mut inserted = 0usize;
+        for vals in &row_values {
+            let stmt = format!(
+                "INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({});",
+                vals.join(", ")
+            );
+            if let Err(e) = fresh.execute_batch(&stmt) {
+                eprintln!("[cortex] auto_repair: insert skipped ({e}): {stmt:.80}");
+                continue;
+            }
+            inserted += usize::try_from(fresh.changes()).unwrap_or(0);
         }
-        let inserts: Vec<String> = row_values
-            .into_iter()
-            .map(|vals| {
-                let val_list = vals.join(", ");
-                format!("INSERT OR IGNORE INTO {table} ({col_list}) VALUES ({val_list});")
-            })
-            .collect();
-        table_exports.push((insert_prefix, inserts));
+        eprintln!("[cortex] auto_repair: {inserted}/{exported} rows recovered into '{table}'");
+        if table == "memories" {
+            memories_recovered = inserted;
+        } else if table == "decisions" {
+            decisions_recovered = inserted;
+        }
     }
     drop(corrupt_conn);
-    let tmp_path = db_path.with_extension("repair_tmp");
-    let _ = std::fs::remove_file(&tmp_path);
-    let fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
-    configure(&fresh).map_err(RepairError::Import)?;
-    initialize_schema(&fresh).map_err(RepairError::Import)?;
-    fresh.execute_batch("PRAGMA foreign_keys = OFF;").map_err(RepairError::Import)?;
-    for (_prefix, inserts) in &table_exports {
-        for stmt in inserts {
-            if let Err(e) = fresh.execute_batch(stmt) {
-                eprintln!("[cortex] auto_repair: insert skipped ({e}): {stmt:.80}");
-            }
-        }
-    }
     fresh.execute_batch("PRAGMA foreign_keys = ON;").map_err(RepairError::Import)?;
     fresh
         .execute_batch(

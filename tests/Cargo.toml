@@ -51,6 +51,10 @@ name = "crystallize"
 path = "contracts/crystallize.rs"
 
 [[test]]
+name = "db_repair"
+path = "contracts/db_repair.rs"
+
+[[test]]
 name = "entity_spike"
 path = "contracts/entity_spike.rs"
 
