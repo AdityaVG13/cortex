@@ -1,5 +1,18 @@
 use super::*;
 use rusqlite::{params, Connection};
+
+/// One failed destructive/maintenance operation.
+///
+/// Contract: `op` names the operation and its target table; `error` is the
+/// driver message. An empty `failures` vec on a result struct means every
+/// destructive op succeeded — a failed purge must never be indistinguishable
+/// from an empty one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaintenanceFailure {
+    pub op: String,
+    pub error: String,
+}
+
 #[derive(Debug, Default)]
 pub struct CompactionResult {
     pub events_pruned: usize,
@@ -15,6 +28,10 @@ pub struct CompactionResult {
     pub fts_optimized: bool,
     pub bytes_before: i64,
     pub bytes_after: i64,
+    /// Destructive ops executed by this module that failed. Empty = all
+    /// succeeded. Sibling-module prunes (events/feedback/crystals/archived)
+    /// are outside this report (no-claim boundary).
+    pub failures: Vec<MaintenanceFailure>,
 }
 #[derive(Debug, Default)]
 pub struct BenchmarkPurgeResult {
@@ -41,6 +58,30 @@ impl BenchmarkPurgeResult {
 }
 pub(crate) fn bytes_to_mb(bytes: i64) -> i64 {
     bytes / (1024 * 1024)
+}
+
+/// Runs one destructive maintenance statement, returning rows affected.
+/// On failure the error is logged (op + driver message) and recorded in
+/// `failures` so the outcome struct reflects it; returns 0 — a failed purge
+/// is never counted as work.
+fn exec_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &str, sql: &str, params: impl rusqlite::Params) -> usize {
+    match conn.execute(sql, params) {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!("[compaction] {op} FAILED: {err}");
+            failures.push(MaintenanceFailure { op: op.to_string(), error: err.to_string() });
+            0
+        }
+    }
+}
+
+/// Same contract as `exec_counted` for batch maintenance statements (VACUUM,
+/// wal_checkpoint) that return no row count.
+fn exec_batch_counted(conn: &Connection, failures: &mut Vec<MaintenanceFailure>, op: &str, sql: &str) {
+    if let Err(err) = conn.execute_batch(sql) {
+        eprintln!("[compaction] {op} FAILED: {err}");
+        failures.push(MaintenanceFailure { op: op.to_string(), error: err.to_string() });
+    }
 }
 pub fn classify_storage_pressure(db_size_bytes: i64) -> &'static str {
     if db_size_bytes >= STORAGE_HARD_LIMIT_BYTES {
@@ -111,8 +152,8 @@ pub(crate) fn run_compaction_governor_with_options(conn: &Connection, allow_vacu
         result.archived_text_stripped += strip_archived_text_with_retention(conn, AGGRESSIVE_ARCHIVED_TEXT_RETENTION_DAYS);
         result.cluster_members_pruned += prune_orphan_cluster_members(conn);
         result.feedback_aggregated += aggregate_old_feedback_with_window(conn, AGGRESSIVE_FEEDBACK_AGGREGATION_DAYS);
-        let _ =
-            if allow_vacuum { conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") } else { conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);") };
+        let vacuum_sql = if allow_vacuum { "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;" } else { "PRAGMA wal_checkpoint(PASSIVE);" };
+        exec_batch_counted(conn, &mut result.failures, "governor aggressive checkpoint+VACUUM", vacuum_sql);
         result.bytes_after = db_size_bytes(conn);
     }
     let pressure_after = classify_storage_pressure(result.bytes_after);
@@ -128,6 +169,9 @@ pub(crate) fn run_compaction_governor_with_options(conn: &Connection, allow_vacu
         fts_segment_rows_before,
         fts_segment_rows_after,
     );
+    if !result.failures.is_empty() {
+        eprintln!("[compaction] governor: {} destructive op(s) FAILED; see FAILED lines above, reported in CompactionResult.failures", result.failures.len());
+    }
     Some(result)
 }
 pub fn run_compaction(conn: &Connection) -> CompactionResult {
@@ -148,10 +192,10 @@ pub(crate) fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool)
     result.crystal_embeddings_pruned = prune_crystal_member_embeddings(conn);
     result.cluster_members_pruned = prune_orphan_cluster_members(conn);
     result.feedback_aggregated = aggregate_old_feedback(conn);
-    result.stale_embeddings_pruned = prune_stale_embeddings(conn);
-    result.co_occurrence_pruned = prune_singleton_co_occurrence(conn);
+    result.stale_embeddings_pruned = prune_stale_embeddings(conn, &mut result.failures);
+    result.co_occurrence_pruned = prune_singleton_co_occurrence(conn, &mut result.failures);
     result.legacy_embeddings_migrated = migrate_legacy_embeddings_to_pq8(conn);
-    result.fts_optimized = optimize_fts_indexes(conn);
+    result.fts_optimized = optimize_fts_indexes(conn, &mut result.failures);
     checkpoint_after_compaction(conn, allow_vacuum);
     let freelist_pages = freelist_count(conn);
     let total_deleted = result.events_pruned
@@ -164,7 +208,7 @@ pub(crate) fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool)
         + result.co_occurrence_pruned
         + result.legacy_embeddings_migrated;
     if allow_vacuum && (freelist_pages > VACUUM_FREELIST_THRESHOLD_PAGES || result.fts_optimized) {
-        let _ = conn.execute_batch("VACUUM;");
+        exec_batch_counted(conn, &mut result.failures, "post-compaction VACUUM", "VACUUM;");
     }
     result.bytes_after = db_size_bytes(conn);
     if total_deleted > 0 || result.fts_optimized {
@@ -175,9 +219,12 @@ pub(crate) fn run_compaction_with_options(conn: &Connection, allow_vacuum: bool)
 ,result.cluster_members_pruned,result.feedback_aggregated,result.stale_embeddings_pruned,result.co_occurrence_pruned,result.
 legacy_embeddings_migrated,result.fts_optimized,saved_kb);
     }
+    if !result.failures.is_empty() {
+        eprintln!("[compaction] {} destructive op(s) FAILED; see FAILED lines above, reported in CompactionResult.failures", result.failures.len());
+    }
     result
 }
-pub(crate) fn optimize_fts_indexes(conn: &Connection) -> bool {
+pub(crate) fn optimize_fts_indexes(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> bool {
     let tables = ["decisions_fts", "memories_fts"];
     let mut any = false;
     for table in tables {
@@ -190,7 +237,8 @@ pub(crate) fn optimize_fts_indexes(conn: &Connection) -> bool {
                 any = true;
             }
             Err(err) => {
-                eprintln!("[compaction] FTS optimize failed for {table}: {err}");
+                eprintln!("[compaction] FTS optimize FAILED for {table}: {err}");
+                failures.push(MaintenanceFailure { op: format!("optimize_fts_indexes {table}"), error: err.to_string() });
             }
         }
     }
@@ -200,10 +248,13 @@ pub(crate) fn table_exists(conn: &Connection, name: &str) -> bool {
     conn.query_row("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?1", params![name], |_| Ok(()))
         .is_ok()
 }
-pub(crate) fn prune_stale_embeddings(_conn: &Connection) -> usize {
+// Disabled stub (returns 0 unconditionally); params document the intended
+// contract and are only referenced from the unreachable body.
+#[allow(unused_variables)]
+pub(crate) fn prune_stale_embeddings(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
     return 0;
     #[allow(unreachable_code)]
-    let conn = _conn;
+    let conn = conn;
     let active = String::new();
     let active_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM embeddings WHERE LOWER(model) = ?1", params![active], |row| row.get(0))
@@ -211,13 +262,25 @@ pub(crate) fn prune_stale_embeddings(_conn: &Connection) -> usize {
     if active_count < 50 {
         return 0;
     }
-    conn.execute("DELETE FROM embeddings WHERE model IS NULL OR LOWER(model) != ?1", params![active]).unwrap_or(0)
+    exec_counted(
+        conn,
+        failures,
+        "prune_stale_embeddings DELETE embeddings",
+        "DELETE FROM embeddings WHERE model IS NULL OR LOWER(model) != ?1",
+        params![active],
+    )
 }
-pub(crate) fn prune_singleton_co_occurrence(conn: &Connection) -> usize {
+pub(crate) fn prune_singleton_co_occurrence(conn: &Connection, failures: &mut Vec<MaintenanceFailure>) -> usize {
     if !table_exists(conn, "co_occurrence") {
         return 0;
     }
-    conn.execute("DELETE FROM co_occurrence WHERE \"count\" <= 1", []).unwrap_or(0)
+    exec_counted(
+        conn,
+        failures,
+        "prune_singleton_co_occurrence DELETE co_occurrence",
+        "DELETE FROM co_occurrence WHERE \"count\" <= 1",
+        [],
+    )
 }
 pub(crate) const PQ8_MIGRATION_BATCH: usize = 1024;
 pub(crate) fn migrate_legacy_embeddings_to_pq8(_conn: &Connection) -> usize {

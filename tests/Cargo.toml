@@ -67,6 +67,10 @@ name = "history"
 path = "contracts/history.rs"
 
 [[test]]
+name = "maintenance_errors"
+path = "contracts/maintenance_errors.rs"
+
+[[test]]
 name = "mcp_layers"
 path = "contracts/mcp_layers.rs"
 

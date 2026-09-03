@@ -190,9 +190,12 @@ pub async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl std::futu
                 tokio::time::sleep(startup_delay).await;
             }
             if let Some(conn) = acquire_background_db_lock(&db_aging, "initial aging pass", lock_wait).await {
-                let (compressed, archived) = aging::run_aging_pass(&conn);
-                if compressed > 0 || archived > 0 {
-                    eprintln!("[cortex] Initial aging: {compressed} compressed, {archived} archived");
+                let report = aging::run_aging_pass(&conn);
+                if report.compressed > 0 || report.archived > 0 {
+                    eprintln!("[cortex] Initial aging: {} compressed, {} archived", report.compressed, report.archived);
+                }
+                if !report.failures.is_empty() {
+                    eprintln!("[cortex] Initial aging: {} maintenance operation(s) FAILED (see [aging] FAILED lines)", report.failures.len());
                 }
                 cleanup_expired_rows(&conn, "Initial expired cleanup");
             }
@@ -201,7 +204,10 @@ pub async fn run_daemon(paths: auth::CortexPaths, extra_shutdown: impl std::futu
             loop {
                 interval.tick().await;
                 if let Some(conn) = acquire_background_db_lock(&db_aging, "aging pass", lock_wait).await {
-                    aging::run_aging_pass(&conn);
+                    let report = aging::run_aging_pass(&conn);
+                    if !report.failures.is_empty() {
+                        eprintln!("[cortex] Aging pass: {} maintenance operation(s) FAILED (see [aging] FAILED lines)", report.failures.len());
+                    }
                     cleanup_expired_rows(&conn, "Expired cleanup");
                 }
             }

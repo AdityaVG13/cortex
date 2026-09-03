@@ -9,6 +9,11 @@ pub(crate) async fn handle_compact(State(state): State<RuntimeState>, headers: H
     }
     let conn = state.db.lock().await;
     let result = crate::compaction::run_compaction(&conn);
+    let failures: Vec<serde_json::Value> = result
+        .failures
+        .iter()
+        .map(|f| serde_json::json!({"op": f.op, "error": f.error}))
+        .collect();
     handlers::json_response(
         axum::http::StatusCode::OK,
         serde_json::json!({"eventsPruned":result.events_pruned,"benchmarkPruned"
@@ -16,7 +21,8 @@ pub(crate) async fn handle_compact(State(state): State<RuntimeState>, headers: H
 "crystalEmbeddingsPruned":result.crystal_embeddings_pruned,"clusterMembersPruned":result.cluster_members_pruned,
 "feedbackAggregated":result.feedback_aggregated,"staleEmbeddingsPruned":result.stale_embeddings_pruned,"coOccurrencePruned":result
 .co_occurrence_pruned,"legacyEmbeddingsMigrated":result.legacy_embeddings_migrated,"ftsOptimized":result.fts_optimized,
-"bytesBefore":result.bytes_before,"bytesAfter":result.bytes_after,"savedKB":(result.bytes_before-result.bytes_after)/1024,}),
+"bytesBefore":result.bytes_before,"bytesAfter":result.bytes_after,"savedKB":(result.bytes_before-result.bytes_after)/1024,
+"failures":failures}),
     )
 }
 pub(crate) async fn handle_compact_benchmark(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
