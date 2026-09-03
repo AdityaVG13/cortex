@@ -1,3 +1,5 @@
+use cortex_daemon::handlers::store::store_decision_with_ttl;
+use cortex_tests::support::test_conn;
 use serde_json::json;
 use std::fs;
 use std::time::Duration;
@@ -334,4 +336,100 @@ fn store_redacts_context_field_exact() {
     shutdown_daemon(port, &home_dir);
     wait_for_exit(&mut daemon, Duration::from_secs(10));
     let _ = fs::remove_dir_all(&home_dir);
+}
+
+#[test]
+fn lib_store_redacts_before_graph_and_clock_projection() {
+    let mut conn = test_conn();
+
+    let raw_sk = "sk-test1234567890abcdefFAKE";
+    let raw_ghp = "ghp_abcdefghijklmnopqrstuvFAKE";
+    let raw_decision = format!(
+        "Deployment pipeline wires {raw_sk} service into production handler and syncs {raw_ghp} service with staging cache cluster"
+    );
+    let expected_decision =
+        "Deployment pipeline wires [redacted] service into production handler and syncs [redacted] service with staging cache cluster";
+    // Secret cores that survive entity/anchor normalization (non-alphanumerics
+    // stripped, lowercased): a leaked value may be stored in either form.
+    let normalized_sk = "sktest1234567890abcdeffake";
+    let normalized_ghp = "ghpabcdefghijklmnopqrstuvfake";
+
+    let (entry, id) = store_decision_with_ttl(
+        &mut conn,
+        &raw_decision,
+        Some("redaction projection context".into()),
+        Some("decision".into()),
+        "redaction-test".into(),
+        Some(0.92),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("lib store must succeed: {err}"));
+    assert_eq!(entry["action"], "inserted", "store must insert, got {entry}");
+    let row_id = id.expect("store must return a row id");
+
+    let persisted: String = conn
+        .query_row(
+            "SELECT decision FROM decisions WHERE id = ?1",
+            [row_id],
+            |row| row.get(0),
+        )
+        .expect("select decision");
+    assert_eq!(
+        persisted, expected_decision,
+        "lib-persisted row must be redacted, got {persisted:?}"
+    );
+
+    // The projection surface: graph ingest writes entities/entity_aliases,
+    // clock projection writes clock_anchors. None of them may ever see the
+    // raw secret from the public lib API.
+    let column_values = |sql: &str| -> Vec<String> {
+        let mut stmt = conn
+            .prepare(sql)
+            .unwrap_or_else(|err| panic!("prepare {sql}: {err}"));
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap_or_else(|err| panic!("query {sql}: {err}"));
+        rows.map(|row| row.expect("row value")).collect()
+    };
+    let projections = [
+        (
+            "entities.canonical_name",
+            column_values("SELECT canonical_name FROM entities"),
+        ),
+        (
+            "entity_aliases.alias",
+            column_values("SELECT alias FROM entity_aliases"),
+        ),
+        (
+            "clock_anchors.value",
+            column_values("SELECT value FROM clock_anchors"),
+        ),
+        (
+            "clock_anchors.display_value",
+            column_values("SELECT COALESCE(display_value, '') FROM clock_anchors"),
+        ),
+    ];
+    for (label, values) in projections.iter() {
+        for value in values {
+            let lowered = value.to_lowercase();
+            for needle in [raw_sk, raw_ghp, normalized_sk, normalized_ghp] {
+                assert!(
+                    !lowered.contains(&needle.to_lowercase()),
+                    "{label} leaked secret {needle:?}: got {value:?}"
+                );
+            }
+        }
+    }
+
+    // Positive control: projection must have run on the redacted text, so the
+    // redacted surface lands in every projected table. Without this, a fix
+    // that silently disabled projection entirely would pass vacuously.
+    let redacted_surface = "[redacted] service";
+    for (label, values) in projections.iter().take(3) {
+        assert!(
+            values.iter().any(|value| value == redacted_surface),
+            "{label} must contain the redacted surface {redacted_surface:?}, projection did not run or redacted differently: got {values:?}"
+        );
+    }
 }

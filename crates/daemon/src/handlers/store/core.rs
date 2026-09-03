@@ -10,15 +10,21 @@ pub fn store_decision_with_ttl(
     conn: &mut Connection, decision: &str, context: Option<String>, entry_type: Option<String>, source_agent: String, confidence: Option<f64>,
     ttl_seconds: Option<i64>, owner_id: Option<i64>,
 ) -> Result<(Value, Option<i64>), String> {
+    // Redact BEFORE persist and BEFORE graph/clock projection. The handler path
+    // (handlers/store/handler.rs) redacts upstream, but direct lib callers pass
+    // raw text; projecting the raw parameter here leaked secrets into
+    // entities/entity_aliases/clock_anchors even though the stored row is
+    // redacted inside store_decision_internal.
+    let decision = crate::handlers::redact_secrets(decision.trim());
     let provenance = DecisionProvenance::from_fields(&source_agent, None, None);
-    let result = store_decision_internal(conn, decision, context.clone(), entry_type, source_agent, provenance, confidence, ttl_seconds, None, None, owner_id)
+    let result = store_decision_internal(conn, &decision, context.clone(), entry_type, source_agent, provenance, confidence, ttl_seconds, None, None, owner_id)
         .map_err(|err| err.to_string());
     if let Ok((ref entry, id)) = result {
         let target_id = id.or_else(|| entry.get("id").and_then(|v| v.as_i64()));
         if let Some(target_id) = target_id {
-            crate::graph::ingest_for_target(conn, decision, "decision", Some(target_id), None, owner_id);
+            crate::graph::ingest_for_target(conn, &decision, "decision", Some(target_id), None, owner_id);
             let extra = Vec::new();
-            let _ = crate::clockwork::project_target(conn, decision, &extra, "decision", target_id, crate::clockwork::ClockOrigin::DeterministicExtract, None);
+            let _ = crate::clockwork::project_target(conn, &decision, &extra, "decision", target_id, crate::clockwork::ClockOrigin::DeterministicExtract, None);
         }
     }
     result
