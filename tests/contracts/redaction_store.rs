@@ -92,7 +92,15 @@ fn store_redacts_sk_and_ghp_to_redacted_exact() {
     );
 
     let db_path = db_path_for_home(&home_dir);
-    if db_path.is_file() {
+    // The DB location is contract-pinned (health reports db_path = home/cortex.db)
+    // and the 200 store above already committed a row, so these DB-layer
+    // assertions must never be silently skipped behind an existence check.
+    assert!(
+        db_path.is_file(),
+        "daemon db must exist at {} after a successful store; DB-layer redaction assertions must not be skippable",
+        db_path.display()
+    );
+    {
         let conn = rusqlite::Connection::open(&db_path).expect("open db");
         let row_id = hit["id"]
             .as_i64()
@@ -125,7 +133,10 @@ fn store_redacts_sk_and_ghp_to_redacted_exact() {
             None,
         )
         .expect("raw recall");
-        if let Some(arr) = raw_recall.body["results"].as_array() {
+        let arr = raw_recall.body["results"]
+            .as_array()
+            .expect("raw recall results array must be present for the FTS leak check");
+        {
             let still_contains_raw = arr.iter().any(|item| {
                 item["excerpt"]
                     .as_str()
@@ -203,7 +214,15 @@ fn store_preserves_benign_text_no_false_positive() {
     );
 
     let db_path = db_path_for_home(&home_dir);
-    if db_path.is_file() {
+    // The DB location is contract-pinned (health reports db_path = home/cortex.db)
+    // and the 200 store above already committed a row, so these DB-layer
+    // assertions must never be silently skipped behind an existence check.
+    assert!(
+        db_path.is_file(),
+        "daemon db must exist at {} after a successful store; DB-layer redaction assertions must not be skippable",
+        db_path.display()
+    );
+    {
         let conn = rusqlite::Connection::open(&db_path).expect("open db");
         let row_id = hit["id"]
             .as_i64()
@@ -286,7 +305,15 @@ fn store_redacts_context_field_exact() {
     assert!(source.contains("[redacted]"));
 
     let db_path = db_path_for_home(&home_dir);
-    if db_path.is_file() {
+    // The DB location is contract-pinned (health reports db_path = home/cortex.db)
+    // and the 200 store above already committed a row, so these DB-layer
+    // assertions must never be silently skipped behind an existence check.
+    assert!(
+        db_path.is_file(),
+        "daemon db must exist at {} after a successful store; DB-layer redaction assertions must not be skippable",
+        db_path.display()
+    );
+    {
         let conn = rusqlite::Connection::open(&db_path).expect("open db");
         let row_id = hit["id"]
             .as_i64()

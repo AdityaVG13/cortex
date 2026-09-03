@@ -80,9 +80,14 @@ fn http_store_rejects_vague_decision_with_400() {
         store.status, 400,
         "vague decision must be rejected with 400"
     );
+    assert_eq!(
+        store.body["error"], "Memory too vague",
+        "vague decision rejection must carry the exact validation message: {}",
+        store.body
+    );
     assert!(
-        store.body.get("error").is_some(),
-        "vague decision rejection must carry an error field: {}",
+        store.body.get("quality").is_some() && store.body.get("factors").is_some(),
+        "vague decision rejection must carry quality/factors evidence: {}",
         store.body
     );
 
@@ -222,6 +227,57 @@ fn concurrent_store_requests_serialize_without_loss() {
     assert_eq!(
         stored_count, n,
         "all {n} concurrent stores must succeed without loss (serialized writes)"
+    );
+
+    // "Without loss" must mean more than client-side acks. Near-identical
+    // sentinels trip the daemon's agreement-merge dedupe (jaccard > merge
+    // threshold): the 12 acks must survive inside ONE merged decision
+    // (merged_count == 11) with every acknowledged text retrievable from the
+    // row itself -- not 12 literal rows.
+    let conn = rusqlite::Connection::open(home_dir.join("cortex.db"))
+        .expect("open daemon db for loss check");
+    let _ = conn.busy_timeout(Duration::from_millis(2000));
+    let (row_count, merged_count, decision_text, context_text): (i64, i64, String, Option<String>) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(merged_count), -1), COALESCE(MAX(decision), ''), \
+             COALESCE(MAX(context), '') FROM decisions \
+             WHERE decision LIKE 'concurrent sentinel memory number %'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read persisted concurrent sentinels");
+    assert_eq!(
+        row_count, 1,
+        "near-identical concurrent stores must agreement-merge into exactly one row, found {row_count}"
+    );
+    assert_eq!(
+        merged_count, 11,
+        "the merged row must record all 11 merged acks, found merged_count={merged_count}"
+    );
+    let stored_everywhere = format!("{decision_text}\n\n{}", context_text.unwrap_or_default());
+    for i in 0..n {
+        let sentinel = format!("concurrent sentinel memory number {i} with enough specificity to pass the quality gate");
+        assert!(
+            stored_everywhere.contains(&sentinel),
+            "acknowledged store {i} must survive the merge verbatim"
+        );
+    }
+    let (stored_events, merge_events): (i64, i64) = conn
+        .query_row(
+            "SELECT \
+             (SELECT COUNT(*) FROM events WHERE type = 'decision_stored'), \
+             (SELECT COUNT(*) FROM events WHERE type = 'decision_agreement_merge')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read store/merge event counts");
+    assert_eq!(
+        stored_events, 1,
+        "exactly one decision_stored event for the surviving row"
+    );
+    assert_eq!(
+        merge_events, 11,
+        "exactly 11 decision_agreement_merge events, one per merged ack"
     );
 
     shutdown_daemon(port, &home_dir);
