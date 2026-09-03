@@ -222,6 +222,33 @@ else
 fi
 
 echo ""
+echo "[3b/6] Purity gates (tests/purity-gates)"
+
+# Each gate is invoked for real (never skipped in a standard run) and its
+# nonzero exit marks the section failed with the gate's own output shown.
+run_purity_gate() {
+  local gate="$1"
+  local output=""
+  local status=0
+  set +e
+  output="$(bash "${REPO_ROOT}/tests/purity-gates/${gate}.sh" 2>&1)"
+  status=$?
+  set -e
+  if [ "${status}" -eq 0 ]; then
+    report ok "purity gate ${gate}: ${output}"
+  else
+    report fail "purity gate ${gate} exited ${status}"
+    show_output_limited "${output}"
+  fi
+}
+
+run_purity_gate "adapter-surface-check"
+run_purity_gate "codeowners-protection"
+run_purity_gate "daemon-clean"
+run_purity_gate "no-helper-envvar"
+run_purity_gate "changelog-truthfulness"
+
+echo ""
 echo "[4/5] No hardcoded source paths"
 
 check_pattern_absent \

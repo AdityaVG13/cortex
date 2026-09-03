@@ -13,10 +13,11 @@ suspicious=$(grep -nE '(accuracy|hit rate|precision)[^.]*([0-9]+\.[0-9]+|[0-9]+/
   || true)
 
 if [[ -n "$suspicious" ]]; then
-  echo "WARN: CHANGELOG has benchmark claims not explicitly tied to pure measurements:" >&2
+  echo "FAIL: CHANGELOG has benchmark claims not explicitly tied to pure measurements:" >&2
   echo "$suspicious" >&2
   echo "If these are historical, tag them as '(helper-augmented)' in the line." >&2
   echo "If they are new claims, they must reference a pure-* JSON in benchmarking/results/." >&2
+  exit 1
 fi
 
-echo "PASS: CHANGELOG truthfulness check (advisory)"
+echo "PASS: CHANGELOG truthfulness check"

@@ -7,6 +7,7 @@
   "scripts": {
     "build": "cargo -p cortex-daemon build --release",
     "test": "cargo build -p cortex-daemon --bin cortex && cargo test -p cortex-tests --all-features",
+    "purity": "bash tests/purity-gates/adapter-surface-check.sh && bash tests/purity-gates/codeowners-protection.sh && bash tests/purity-gates/daemon-clean.sh && bash tests/purity-gates/no-helper-envvar.sh && bash tests/purity-gates/changelog-truthfulness.sh",
     "daemon:check": "cargo -p cortex-daemon check --all-features",
     "daemon:clippy": "cargo -p cortex-daemon clippy --all-targets --all-features -- -D warnings",
     "desktop:install": "npm --prefix desktop/cortex-control-center install",

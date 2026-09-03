@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODE="${CORTEX_BENCHMARK_MODE:-}"
-if [[ "$MODE" != "pure" ]]; then
-  echo "SKIP: gate only enforces when CORTEX_BENCHMARK_MODE=pure (got: ${MODE:-<unset>})"
+# Enforces by default: any run this gate is wired into (smoke lane, purity
+# lane) must be free of helper/benchmark env vars. Opt out ONLY for explicit
+# helper-augmented benchmark runs by setting CORTEX_PURITY_ALLOW_HELPER_ENV=1
+# in that run's environment.
+
+if [[ "${CORTEX_PURITY_ALLOW_HELPER_ENV:-0}" == "1" ]]; then
+  echo "SKIP: helper env vars explicitly permitted via CORTEX_PURITY_ALLOW_HELPER_ENV=1"
   exit 0
 fi
 
