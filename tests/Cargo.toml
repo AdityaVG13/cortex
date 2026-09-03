@@ -30,6 +30,10 @@ name = "boot_determinism"
 path = "contracts/boot_determinism.rs"
 
 [[test]]
+name = "budget_denial"
+path = "contracts/budget_denial.rs"
+
+[[test]]
 name = "cli_goldens"
 path = "contracts/cli_goldens.rs"
 
