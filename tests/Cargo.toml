@@ -93,6 +93,10 @@ name = "mcp_transport"
 path = "contracts/mcp_transport.rs"
 
 [[test]]
+name = "migration_property"
+path = "contracts/migration_property.rs"
+
+[[test]]
 name = "perf_smoke"
 path = "contracts/perf_smoke.rs"
 
