@@ -44,6 +44,12 @@ fn process_is_running(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
+    // SAFETY: signal 0 only checks existence/permission and delivers nothing,
+    // so no process can be harmed. The `try_from` above guarantees the pid is
+    // non-negative and fits pid_t, so `kill` targets exactly one pid rather
+    // than the special negative forms (process group / all processes). No
+    // pointers are involved. A stale file containing pid 0 would query the
+    // caller's process group -- a liveness misreport at worst, never unsound.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 pub fn db_path() -> PathBuf {
