@@ -10,16 +10,22 @@ path = "src/lib.rs"
 
 [dependencies]
 cortex-daemon = { path = "../crates/daemon" }
+axum = "0.8"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 tempfile = "3.27"
 proptest = "1"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tower = { version = "0.5", features = ["util"] }
 
 [[test]]
 name = "adapter_conformance"
 path = "contracts/adapter_conformance.rs"
+
+[[test]]
+name = "admin_acl"
+path = "contracts/admin_acl.rs"
 
 [[test]]
 name = "auth"

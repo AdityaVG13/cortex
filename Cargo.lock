@@ -353,6 +353,7 @@ dependencies = [
 name = "cortex-tests"
 version = "0.6.0"
 dependencies = [
+ "axum",
  "cortex-daemon",
  "proptest",
  "rusqlite",
@@ -360,6 +361,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tower",
 ]
 
 [[package]]
