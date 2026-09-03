@@ -43,6 +43,10 @@ name = "conflict"
 path = "contracts/conflict.rs"
 
 [[test]]
+name = "crash_durability"
+path = "contracts/crash_durability.rs"
+
+[[test]]
 name = "crystallize"
 path = "contracts/crystallize.rs"
 
