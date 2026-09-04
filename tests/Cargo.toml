@@ -131,3 +131,7 @@ path = "contracts/store_recall.rs"
 [[test]]
 name = "temporal"
 path = "contracts/temporal.rs"
+
+[[test]]
+name = "wire_error_contract"
+path = "contracts/wire_error_contract.rs"

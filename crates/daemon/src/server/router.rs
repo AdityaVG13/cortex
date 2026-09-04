@@ -8,7 +8,7 @@ use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use serde_json::Value;
@@ -183,6 +183,8 @@ pub(crate) async fn handle_mcp_rpc(State(state): State<RuntimeState>, headers: H
     handlers::register_agent_presence_from_headers(&state, &headers, caller_id).await;
     match handle_mcp_message_with_caller(&state, &msg, caller_id, Some(&source)).await {
         Some(resp) => handlers::json_response(StatusCode::OK, resp),
-        None => handlers::json_response(StatusCode::OK, serde_json::json!({})),
+        // JSON-RPC 2.0 forbids replying to notifications; the MCP HTTP
+        // transport expresses that as 202 Accepted with no body.
+        None => StatusCode::ACCEPTED.into_response(),
     }
 }

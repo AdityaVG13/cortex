@@ -20,9 +20,9 @@ pub use auth::{
     ensure_events_stream_auth, ensure_ssrf_protection, log_budget_rejection, register_agent_presence, register_agent_presence_from_headers, resolve_caller_id,
     resolve_source_identity, runtime_token_matches, SourceIdentity, CORTEX_PEER_IP_HEADER,
 };
+use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{NaiveDateTime, TimeZone, Utc};
 pub use event_log::log_event;
 pub use redaction::redact_secrets;
@@ -47,9 +47,32 @@ pub fn now_iso() -> String {
     })
 }
 pub fn json_response(status: StatusCode, body: Value) -> Response {
-    let mut response = (status, Json(body)).into_response();
+    let mut response = (status, axum::Json(body)).into_response();
     apply_json_headers(response.headers_mut());
     response
+}
+/// JSON body extractor with daemon-contract error envelopes.
+///
+/// Wire contract: every daemon error response is an `application/json` body
+/// with a string `error` field. axum's default `Json` extractor rejections
+/// (missing/wrong Content-Type, malformed JSON, type mismatch) answer with
+/// axum's rejection STATUS but a `text/plain` body, which would leak a
+/// non-JSON error from every POST handler that takes a JSON body. This
+/// extractor preserves each rejection's status code (400/415/422) and
+/// re-wraps axum's rejection message in the standard envelope.
+pub struct Json<T>(pub T);
+impl<S, T> FromRequest<S> for Json<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(axum::Json(value)) => Ok(Json(value)),
+            Err(rejection) => Err(json_response(rejection.status(), json!({"error": rejection.body_text()}))),
+        }
+    }
 }
 pub fn json_error(status: StatusCode, msg: &str) -> Response {
     json_response(status, serde_json::json!({"error":msg}))
