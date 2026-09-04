@@ -21,15 +21,15 @@ pub fn run_sync_cli(_paths: &auth::CortexPaths, args: &[String]) {
     match args.first().map(String::as_str).unwrap_or("") {
         "export" => {
             validate_export_args(&args[1..]);
-            fail("sync export requires the full sync feature in this build");
+            fail("sync export is not implemented in this build; use the HTTP GET /export endpoint (JSON format) or the desktop app instead");
         }
         "import" => {
             validate_import_args(&args[1..]);
-            fail("sync import requires the full sync feature in this build");
+            fail("sync import is not implemented in this build; use the HTTP POST /import endpoint or the desktop app instead");
         }
         "watch" => {
             validate_cli_options_or_exit(&args[1..], &["--dir", "--interval-secs", "--out", "--since", "--user", "--visibility"], &["--once", "--dry-run"]);
-            fail("sync watch requires the full sync feature in this build");
+            fail("sync watch is not implemented in this build; use the HTTP /export and /import endpoints or the desktop app instead");
         }
         _ => fail(SYNC_USAGE),
     }
@@ -37,10 +37,10 @@ pub fn run_sync_cli(_paths: &auth::CortexPaths, args: &[String]) {
 
 pub fn run_export_cli(_paths: &auth::CortexPaths, args: &[String]) {
     validate_export_args(args);
-    fail("export requires the full sync feature in this build");
+    fail("CLI export is not implemented in this build; use the HTTP GET /export endpoint (JSON format) or the desktop app instead");
 }
 
 pub fn run_import_cli(_paths: &auth::CortexPaths, args: &[String]) {
     validate_import_args(args);
-    fail("import requires the full sync feature in this build");
+    fail("CLI import is not implemented in this build; use the HTTP POST /import endpoint or the desktop app instead");
 }

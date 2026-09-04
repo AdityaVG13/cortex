@@ -481,8 +481,8 @@ cargo audit
 | `cortex status --json` | Local memory readiness and next action |
 | `cortex rebuild-anchors` | Rebuild derived clock projections |
 | `cortex setup --team` | Initialize team mode and generate API keys |
-| `cortex export` | Export data (json or sql) |
-| `cortex import` | Import from a previous export |
+| `cortex export` | Export data (json or sql) — **not implemented in the CLI** (default builds exit 1); use the daemon's HTTP `GET /export` endpoint (JSON format) or the desktop app |
+| `cortex import` | Import from a previous export — **not implemented in the CLI** (default builds exit 1); use the daemon's HTTP `POST /import` endpoint or the desktop app |
 | `cortex admin rollback --session-id <id>` | Soft-delete a session's memory writes (dry-run default; `--apply` to persist) |
 
 </details>

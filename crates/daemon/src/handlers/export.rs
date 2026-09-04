@@ -32,7 +32,7 @@ pub async fn handle_export(State(state): State<RuntimeState>, headers: HeaderMap
         ExportFormat::Sql => json_response(
             StatusCode::BAD_REQUEST,
             json!({"error":
-"HTTP SQL export is disabled because it requires a full in-memory export; use the CLI export command instead"}),
+"HTTP SQL export is disabled because it requires a full in-memory export; use this endpoint's default JSON format instead. The CLI export command is not implemented in this build"}),
         ),
     }
 }
