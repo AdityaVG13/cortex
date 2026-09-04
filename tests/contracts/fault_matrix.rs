@@ -20,8 +20,8 @@
 //!   must survive and the next valid TLS request must succeed.
 //! - F18 oversized request body: axum 0.8 `DefaultBodyLimit` (2_097_152 bytes, no
 //!   explicit override anywhere in `crates/daemon/src`); body of exactly the limit is
-//!   accepted, limit+1 is rejected 413 "Failed to buffer the request body: length
-//!   limit exceeded", and the daemon keeps serving. Ground truth: axum 0.8.9 /
+//!   accepted, limit+1 is rejected 413 with axum's exact LengthLimitError message
+//!   enveloped as {"error": ...} (see the F18 comment at the assertion), and the daemon keeps serving. Ground truth: axum 0.8.9 /
 //!   axum-core 0.5.6 + http-body-util 0.1.x
 //!   (`data.remaining() > remaining` => `LengthLimitError` => PAYLOAD_TOO_LARGE).
 //! - F19 slowloris: NO read/header timeout layer exists (`runtime.rs` layers are
@@ -531,8 +531,11 @@ fn f18_oversized_body_rejected_413_at_exact_2mb_default_and_daemon_survives() {
         "at-limit store must ack stored:true, got {body}"
     );
 
-    // One byte past the limit: 413 with axum's exact LengthLimitError body,
-    // produced by the extractor before the handler (so no envelope rewrite).
+    // One byte past the limit: 413 carrying axum's exact LengthLimitError message.
+    // Since 2c857f4 the daemon's re-wrapping Json extractor envelopes EVERY extractor
+    // rejection as {"error": <body_text()>} application/json (the repo-wide wire
+    // contract, wire_error_contract.rs); the status and the exact message string are
+    // unchanged, only the envelope is new — oracle updated for that commit.
     let over_limit = store_body_of_exact_bytes(AXUM_DEFAULT_BODY_LIMIT + 1);
     let (status, body) = raw_store(over_limit);
     assert_eq!(
@@ -540,8 +543,16 @@ fn f18_oversized_body_rejected_413_at_exact_2mb_default_and_daemon_survives() {
         "a body one byte past the default limit must be rejected 413"
     );
     assert_eq!(
-        body, "Failed to buffer the request body: length limit exceeded",
-        "413 must carry axum's exact LengthLimitError body"
+        body,
+        "{\"error\":\"Failed to buffer the request body: length limit exceeded\"}",
+        "413 must envelope axum's exact LengthLimitError message as JSON"
+    );
+    let envelope: Value = serde_json::from_str(&body)
+        .unwrap_or_else(|err| panic!("413 body must be json: {err}; body={body}"));
+    assert_eq!(
+        envelope["error"].as_str(),
+        Some("Failed to buffer the request body: length limit exceeded"),
+        "the raw axum message must survive verbatim inside the error envelope"
     );
 
     // The daemon and its store path survive the rejection untouched.
