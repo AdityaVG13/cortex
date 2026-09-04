@@ -465,6 +465,86 @@ fn auto_repair_handles_partially_damaged_team_identity() {
     let _ = fs::remove_dir_all(&home_b);
 }
 
+/// Round-6 completeness case for the users-table inference: the mode row is
+/// READABLE but its value garbled by payload-level damage. Every writer stores
+/// exactly 'team' or 'solo' (create_team_mode_tables seeds 'solo',
+/// migrate_to_team_mode flips to 'team', the post-salvage guard downgrades to
+/// 'solo'), so a readable value that is neither is damage to that cell, not a
+/// verdict. Trusting it classifies the DB as solo, excludes the identity
+/// tables from salvage, and silently drops the credential roster with no
+/// warning -- the post-salvage guard never runs because it is gated on
+/// corrupt_team_mode. The users-table inference must cover this branch exactly
+/// like the unreadable-row branch (round-5 Case A), with the honest loud solo
+/// downgrade when the team flag itself is unrecoverable.
+#[test]
+fn auto_repair_handles_garbled_but_readable_mode_value() {
+    let home_dir = unique_temp_dir("dbrepair_team_garbled");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let db_path = home_dir.join("cortex.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("open db");
+        cortex_daemon::db::configure(&conn).expect("configure db");
+        cortex_daemon::db::initialize_schema(&conn).expect("init schema");
+        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
+        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables");
+        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "garbled-owner", None, "hash-garbled-r6")
+            .expect("seed owner user");
+        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate team");
+        conn.execute(
+            "INSERT INTO decisions (decision, type, status) VALUES ('garbled mode sentinel r6', 'decision', 'active')",
+            [],
+        )
+        .expect("seed decision");
+        // Observable state of payload-level damage to the mode cell: the row
+        // is structurally readable, its value is no longer a legal mode.
+        conn.execute(
+            "UPDATE config SET value = 'corrupted' WHERE key = 'mode'",
+            [],
+        )
+        .expect("garble mode value");
+    }
+    // Prove the damage is of the readable-but-illegal class, not the
+    // unreadable class round-5 Case A covers: the query must SUCCEED and
+    // return a value that is neither 'team' nor 'solo'.
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("reopen garbled db");
+        let value: String = conn
+            .query_row("SELECT value FROM config WHERE key = 'mode' LIMIT 1", [], |row| row.get(0))
+            .expect("mode row must still be readable");
+        assert_ne!(value, "team", "seed must not leave a legal team value");
+        assert_ne!(value, "solo", "seed must not leave a legal solo value");
+    }
+    let result = cortex_daemon::db::auto_repair(&db_path, "gauntletr6").expect("auto_repair must succeed");
+    assert_eq!(
+        result.decisions_recovered, 1,
+        "data salvage must be unaffected by the garbled mode value, got {result:?}"
+    );
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("open repaired db");
+        let (users, hash): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'garbled-owner'), '') FROM users",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("query repaired users");
+        assert_eq!(
+            users, 1,
+            "a garbled-but-readable mode value must not silently drop the credential roster"
+        );
+        assert_eq!(
+            hash, "hash-garbled-r6",
+            "salvaged credential hash must be verbatim, got {hash:?}"
+        );
+        assert_eq!(
+            cortex_daemon::db::current_mode(&conn),
+            "solo",
+            "with the team flag itself garbled beyond recognition the repaired DB must honestly boot solo (recoverable via setup --team), not claim team"
+        );
+    }
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 #[test]
 fn repair_failure_degrades_predictably() {
     let home_dir = unique_temp_dir("dbrepair_degraded");

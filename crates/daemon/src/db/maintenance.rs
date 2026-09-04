@@ -166,16 +166,22 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     // silently excluded from salvage -- every credential hash dropped with no
     // warning, the same loss bed9809 fixed in the fully-readable-config case.
     // The `users` table only exists in team-mode DBs (initialize_schema does
-    // not create it), so its presence disambiguates the fallback. A readable
-    // mode row keeps the exact solo/team verdict (no inference for a DB that
-    // was already downgraded to solo before the corruption).
+    // not create it), so its presence disambiguates the fallback. Every writer
+    // stores exactly 'team' or 'solo' (create_team_mode_tables seed,
+    // migrate_to_team_mode flip, the post-salvage guard downgrade), so a
+    // READABLE row whose value is neither is payload-level damage to that
+    // cell, not a verdict -- it takes the same inference as the unreadable
+    // arm. A plainly readable 'solo' row keeps the exact solo verdict (no
+    // inference for a DB already downgraded to solo before the corruption --
+    // no false warnings), and a plainly readable 'team' row stays exact.
     let corrupt_team_mode = match corrupt_conn.query_row(
         "SELECT value FROM config WHERE key = 'mode' LIMIT 1",
         [],
         |row| row.get::<_, String>(0),
     ) {
-        Ok(mode) => mode == "team",
-        Err(_) => corrupt_conn
+        Ok(mode) if mode == "team" => true,
+        Ok(mode) if mode == "solo" => false,
+        Ok(_) | Err(_) => corrupt_conn
             .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name='users' LIMIT 1", params![], |_| Ok(()))
             .is_ok(),
     };
