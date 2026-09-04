@@ -598,6 +598,313 @@ async fn admin_acl_team_create_wire_payload_contract() {
     );
 }
 
+/// Drive one raw request and return (status, raw body text). The axum `Json`
+/// extractor rejects bad wire shapes (422) with a plain-text body, so
+/// wire-shape probes that expect rejection must read the body unparsed.
+async fn raw_call(router: &axum::Router, method: &str, path: &str, bearer: &str, body: Value) -> (u16, String) {
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("x-cortex-request", "true")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("build raw request");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("router service responds");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("read raw response body");
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Shared wire-contract fixture (cortex-xw3 class): team-mode tables, an
+/// admin team user ("admin-one", id 1) plus `extras` seeded as members in id
+/// order starting at 2, auth cache populated, and `seed` run against the same
+/// connection before the router is built. Returns the real router so payload
+/// probes cross routing + extractors exactly as the daemon would see them,
+/// plus the admin ctx_ key.
+async fn wire_contract_router(
+    port: u16,
+    extras: &[&str],
+    seed: impl FnOnce(&rusqlite::Connection),
+) -> (axum::Router, String) {
+    let mut state = team_state(1);
+    let admin_key;
+    {
+        let conn = state.db.lock().await;
+        db::create_team_mode_tables(&conn).expect("create team tables");
+        let (admin_id, a_key, a_hash) = seed_team_user(&conn, "admin-one", "admin");
+        assert_eq!(admin_id, 1, "admin-one is user id 1");
+        admin_key = a_key;
+        let mut hashes = state.team_api_key_hashes.write().expect("hash cache lock");
+        hashes.push((admin_id, a_hash));
+        for (idx, name) in extras.iter().enumerate() {
+            let (id, _, hash) = seed_team_user(&conn, name, "member");
+            assert_eq!(id, idx as i64 + 2, "seed order fixes member ids at 2..");
+            hashes.push((id, hash));
+        }
+        seed(&conn);
+    }
+    (build_router(state, port), admin_key)
+}
+
+/// Read helper: `member_count` of `team` via GET /admin/teams, or None when
+/// the team is absent — the read model a CLI team add/remove must move.
+async fn member_count(router: &axum::Router, admin_key: &str, team: &str) -> Option<i64> {
+    let (status, body) = call(router, "GET", "/admin/teams", Some(admin_key), true, None).await;
+    assert_eq!(status, 200, "team list read must succeed, body {body}");
+    body["teams"]
+        .as_array()
+        .expect("teams array")
+        .iter()
+        .find(|t| t["name"] == team)
+        .and_then(|t| t["member_count"].as_i64())
+}
+
+/// Read helper: the unowned decisions count via GET /admin/unowned — the read
+/// model a CLI assign-owner must move.
+async fn unowned_decisions(router: &axum::Router, admin_key: &str) -> i64 {
+    let (status, body) = call(router, "GET", "/admin/unowned", Some(admin_key), true, None).await;
+    assert_eq!(status, 200, "unowned read must succeed, body {body}");
+    body["unowned"]["decisions"].as_i64().expect("decisions count")
+}
+
+/// Regression (cortex-xw3): `cortex team add/remove <team> <user>` used to
+/// POST `{"team":...,"username":...}`, but the handlers deserialize
+/// `TeamMemberBody`/`TeamRemoveMemberBody` (handlers/admin/types.rs:35,41)
+/// with the field `team_name` — every CLI team add/remove died in the Json
+/// extractor as 422 before the handler ran. Same bug class as the cortex-70s
+/// create fix. Pins BOTH sides of the wire: the CLI's corrected
+/// `{"team_name":...}` payload is accepted (200) with the membership effect
+/// verified through GET /admin/teams reads, while the legacy `{"team":...}`
+/// shape stays pinned as a 422 that changes nothing.
+#[tokio::test]
+async fn admin_acl_team_add_remove_wire_payload_contract() {
+    let (router, admin_key) = wire_contract_router(7439, &["member-one", "member-two"], |_| {}).await;
+    let router = &router;
+
+    // Fixture team via the already-pinned correct create shape.
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/team/create",
+        Some(&admin_key),
+        true,
+        Some(json!({"name":"cli-team"})),
+    )
+    .await;
+    assert_eq!(status, 200, "team create fixture must succeed, body {body}");
+    assert_eq!(member_count(router, &admin_key, "cli-team").await, Some(0), "fixture team starts empty");
+
+    // Legacy buggy add shape: 422 in the extractor, membership unchanged.
+    let (status, raw) = raw_call(
+        router,
+        "POST",
+        "/admin/team/add-member",
+        &admin_key,
+        json!({"team":"cli-team","username":"member-one"}),
+    )
+    .await;
+    assert_eq!(status, 422, "legacy {{\"team\":...}} add shape must die in the extractor, body {raw}");
+    assert!(
+        raw.contains("missing field `team_name`"),
+        "add rejection must cite the missing `team_name` field, body {raw}"
+    );
+    assert_eq!(
+        member_count(router, &admin_key, "cli-team").await,
+        Some(0),
+        "legacy-shaped add must not add a member"
+    );
+
+    // Corrected CLI add shape (no --role): 200, handler defaults role to member.
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/team/add-member",
+        Some(&admin_key),
+        true,
+        Some(json!({"team_name":"cli-team","username":"member-one"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CLI-shaped add must be accepted, body {body}");
+    assert_eq!(body["team"], "cli-team", "add echoes team_name as team");
+    assert_eq!(body["username"], "member-one", "add echoes username");
+    assert_eq!(body["role"], "member", "role defaults to member without --role");
+    assert_eq!(member_count(router, &admin_key, "cli-team").await, Some(1), "add must be visible in the read model");
+
+    // Corrected CLI add shape with the forwarded --role admin flag.
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/team/add-member",
+        Some(&admin_key),
+        true,
+        Some(json!({"team_name":"cli-team","username":"member-two","role":"admin"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CLI-shaped add with --role must be accepted, body {body}");
+    assert_eq!(body["role"], "admin", "forwarded --role must reach the handler");
+    assert_eq!(member_count(router, &admin_key, "cli-team").await, Some(2), "second add visible in the read model");
+
+    // Legacy buggy remove shape: 422 in the extractor, membership unchanged.
+    let (status, raw) = raw_call(
+        router,
+        "POST",
+        "/admin/team/remove-member",
+        &admin_key,
+        json!({"team":"cli-team","username":"member-two"}),
+    )
+    .await;
+    assert_eq!(status, 422, "legacy {{\"team\":...}} remove shape must die in the extractor, body {raw}");
+    assert!(
+        raw.contains("missing field `team_name`"),
+        "remove rejection must cite the missing `team_name` field, body {raw}"
+    );
+    assert_eq!(
+        member_count(router, &admin_key, "cli-team").await,
+        Some(2),
+        "legacy-shaped remove must not remove a member"
+    );
+
+    // Corrected CLI remove shape: exact envelope + effect verified by read.
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/team/remove-member",
+        Some(&admin_key),
+        true,
+        Some(json!({"team_name":"cli-team","username":"member-two"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CLI-shaped remove must be accepted, body {body}");
+    assert_eq!(
+        body,
+        json!({"removed":{"team":"cli-team","username":"member-two"}}),
+        "remove-member exact envelope"
+    );
+    assert_eq!(
+        member_count(router, &admin_key, "cli-team").await,
+        Some(1),
+        "removed member must vanish from the read model"
+    );
+}
+
+/// Regression (cortex-xw3): `cortex admin assign-owner` used to POST `{}`
+/// (the --from/--to/--table flags were validated, then dropped), but
+/// `AssignOwnerBody` (handlers/admin/types.rs:46) requires `to_user` — every
+/// CLI assign-owner died in the Json extractor as 422. Pins the corrected CLI
+/// shape (`to_user` + null-able `from_user`/`table`, and the full-flag
+/// variant) with the reassignment effect verified through GET /admin/unowned
+/// and /admin/stats reads, and the legacy `{}` shape as a 422 that reassigns
+/// nothing.
+#[tokio::test]
+async fn admin_acl_assign_owner_wire_payload_contract() {
+    let (router, admin_key) = wire_contract_router(7440, &["member-one"], |conn| {
+        conn.execute("INSERT INTO decisions (decision) VALUES (?1)", ["WIRE_ASSIGN_A"])
+            .expect("seed decision a");
+        conn.execute("INSERT INTO decisions (decision) VALUES (?1)", ["WIRE_ASSIGN_B"])
+            .expect("seed decision b");
+    })
+    .await;
+    let router = &router;
+
+    assert_eq!(unowned_decisions(router, &admin_key).await, 2, "both seeded decisions start unowned");
+
+    // Legacy buggy empty-{} shape: 422 in the extractor, nothing reassigned.
+    let (status, raw) = raw_call(router, "POST", "/admin/assign-owner", &admin_key, json!({})).await;
+    assert_eq!(status, 422, "legacy {{}} assign-owner shape must die in the extractor, body {raw}");
+    assert!(
+        raw.contains("missing field `to_user`"),
+        "rejection must cite the missing `to_user` field, body {raw}"
+    );
+    assert_eq!(unowned_decisions(router, &admin_key).await, 2, "legacy-shaped assign-owner must reassign nothing");
+
+    // Corrected CLI shape with flags absent (from_user/table serialize as
+    // null): reassigns all NULL-owner rows to --to.
+    let from_user: Option<String> = None;
+    let table: Option<String> = None;
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/assign-owner",
+        Some(&admin_key),
+        true,
+        Some(json!({"to_user":"member-one","from_user":from_user,"table":table})),
+    )
+    .await;
+    assert_eq!(status, 200, "CLI-shaped assign-owner must be accepted, body {body}");
+    assert_eq!(body["assigned"]["decisions"], 2, "both NULL-owner decisions reassigned");
+    assert_eq!(unowned_decisions(router, &admin_key).await, 0, "unowned read must drop to zero");
+
+    // Corrected CLI shape with --from/--table forwarded: scoped transfer back.
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/assign-owner",
+        Some(&admin_key),
+        true,
+        Some(json!({"to_user":"admin-one","from_user":"member-one","table":"decisions"})),
+    )
+    .await;
+    assert_eq!(status, 200, "full-flag assign-owner must be accepted, body {body}");
+    assert_eq!(body["assigned"]["decisions"], 2, "scoped transfer moves both rows");
+    let (status, body) = call(router, "GET", "/admin/stats", Some(&admin_key), true, None).await;
+    assert_eq!(status, 200, "stats read must succeed, body {body}");
+    let admin_row = body["per_user"]
+        .as_array()
+        .expect("per_user array")
+        .iter()
+        .find(|u| u["username"] == "admin-one")
+        .unwrap_or_else(|| panic!("admin-one in per_user stats, body {body}"));
+    assert_eq!(admin_row["decisions"], 2, "from_user/table forwarding must be visible in the read model");
+}
+
+/// Regression (cortex-xw3 companion): `cortex user add` validated --role and
+/// --display-name but dropped both from the payload; `UserAddBody`
+/// (handlers/admin/types.rs:21) accepts them as optional fields, so the
+/// handler silently defaulted role to "member" and the CLI's advertised
+/// flags never took effect. Pins the corrected CLI shape (username + role +
+/// display_name, optional fields serialized as null when absent) with
+/// role/display_name verified through the GET /admin/users read. There is no
+/// legacy-422 half here: the pre-fix payload `{"username":...}` was and stays
+/// wire-valid — the defect was silent flag loss, pinned by the CLI diff.
+#[tokio::test]
+async fn admin_acl_user_add_wire_payload_contract() {
+    let (router, admin_key) = wire_contract_router(7441, &[], |_| {}).await;
+    let router = &router;
+
+    let (status, body) = call(
+        router,
+        "POST",
+        "/admin/user/add",
+        Some(&admin_key),
+        true,
+        Some(json!({"username":"cli-user","role":"admin","display_name":"CLI User"})),
+    )
+    .await;
+    assert_eq!(status, 200, "CLI-shaped user add must be accepted, body {body}");
+    assert_eq!(body["username"], "cli-user", "user add echoes username");
+    assert_eq!(body["role"], "admin", "forwarded --role must reach the handler");
+    let api_key = body["api_key"].as_str().expect("api_key in add response");
+    assert!(api_key.starts_with("ctx_"), "generated key is ctx_-prefixed");
+
+    let (status, body) = call(router, "GET", "/admin/users", Some(&admin_key), true, None).await;
+    assert_eq!(status, 200, "users read must succeed, body {body}");
+    let user = body["users"]
+        .as_array()
+        .expect("users array")
+        .iter()
+        .find(|u| u["username"] == "cli-user")
+        .unwrap_or_else(|| panic!("cli-user must exist after CLI-shaped add, body {body}"));
+    assert_eq!(user["role"], "admin", "role persisted from the forwarded flag");
+    assert_eq!(user["display_name"], "CLI User", "display_name persisted from the forwarded flag");
+}
+
 #[test]
 fn admin_acl_team_mode_refuses_plain_http_at_boot() {
     let _guard = daemon_spawn_test_guard();
