@@ -66,7 +66,15 @@ fn process_is_running(pid: u32) -> bool {
     // than the special negative forms (process group / all processes). No
     // pointers are involved. A stale file containing pid 0 would query the
     // caller's process group -- a liveness misreport at worst, never unsound.
-    unsafe { libc::kill(pid, 0) == 0 }
+    //
+    // EPERM means the signal was denied but the target EXISTS (foreign-user
+    // daemon, or a seccomp/sandbox denying kill outright). Treating it as dead
+    // made `pid_file_live_pid` -- and through it the `cortex restore`
+    // destructive-op gate and stale-pid cleanup -- silently proceed against a
+    // live daemon in exactly the environments where signals are restricted.
+    // Conservative direction: only ESRCH (and other real errors) count as dead.
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 pub fn db_path() -> PathBuf {
     cortex_dir().join("cortex.db")

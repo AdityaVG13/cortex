@@ -144,6 +144,22 @@ fn wire_error_bodies_are_application_json_envelopes() {
     // Conductor family (B5 facade surface): 400 syntax error on /lock.
     let (status, ctype, body) = raw(&daemon, "POST", "/lock", &headers, Some("{bad"));
     assert_json_envelope(status, &ctype, &body, 400, "POST /lock malformed JSON");
+
+    // Server-handler family (server/handlers.rs): these three routes live in
+    // their own module and were missed by the pass that converted every other
+    // handler to the envelope extractor. Failure history (RED pre-fix): axum's
+    // default `Json` extractor leaked text/plain rejection bodies here.
+    let (status, ctype, body) = raw(&daemon, "POST", "/focus/start", &headers, Some("{bad"));
+    assert_json_envelope(status, &ctype, &body, 400, "POST /focus/start malformed JSON");
+    let (status, ctype, body) = raw(&daemon, "POST", "/focus/end", &headers, Some("{bad"));
+    assert_json_envelope(status, &ctype, &body, 400, "POST /focus/end malformed JSON");
+    let (status, ctype, body) = raw(&daemon, "POST", "/rollback", &headers, Some("{bad"));
+    assert_json_envelope(status, &ctype, &body, 400, "POST /rollback malformed JSON");
+
+    // 415 media-type rejection on the same family: valid JSON sent as
+    // text/plain must still get the daemon envelope, not axum's plaintext.
+    let (status, ctype, body) = raw(&daemon, "POST", "/focus/end", &wrong_type, Some(r#"{"label":"wire-envelope-probe"}"#));
+    assert_json_envelope(status, &ctype, &body, 415, "POST /focus/end text/plain content-type");
 }
 
 /// Contract 2: JSON-RPC notifications get NO reply body. The daemon must

@@ -2,7 +2,10 @@ use crate::handlers;
 use crate::state::RuntimeState;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::Json;
+// The daemon-contract envelope extractor (handlers::Json), not axum's
+// default: /rollback, /focus/start and /focus/end take JSON bodies and must
+// reject malformed ones with the standard application/json error envelope.
+use crate::handlers::Json;
 pub(crate) async fn handle_compact(State(state): State<RuntimeState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
