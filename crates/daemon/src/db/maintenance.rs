@@ -154,6 +154,18 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
         "cluster_members",
         "locks",
     ];
+    // Team identity tables. initialize_schema does not create these, and a
+    // team-mode DB that loses them during repair silently boots in solo mode
+    // with every member's credential hash destroyed (all ctx_ keys die, no
+    // warning). Detect team mode up front, create the team schema in the
+    // fresh DB, and salvage the identity rows alongside the data tables.
+    const TEAM_IDENTITY_TABLES: &[&str] = &["config", "users", "teams", "team_members"];
+    let corrupt_team_mode = current_mode(&corrupt_conn) == "team";
+    let tables: Vec<&str> = if corrupt_team_mode {
+        DATA_TABLES.iter().copied().chain(TEAM_IDENTITY_TABLES.iter().copied()).collect()
+    } else {
+        DATA_TABLES.to_vec()
+    };
     // The fresh schema must exist BEFORE salvage so each table's INSERT column
     // list can be intersected with the columns the fresh DB actually has.
     // Boot-time migrations add columns (e.g. compressed_text, age_tier) that
@@ -164,11 +176,20 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
     let fresh = Connection::open(&tmp_path).map_err(RepairError::OpenFresh)?;
     configure(&fresh).map_err(RepairError::Import)?;
     initialize_schema(&fresh).map_err(RepairError::Import)?;
+    if corrupt_team_mode {
+        create_team_mode_tables(&fresh).map_err(RepairError::Import)?;
+        // create_team_mode_tables seeds config.mode='solo'; the salvage loop
+        // inserts with INSERT OR IGNORE, so the seeded row would outcompete
+        // the corrupt DB's mode='team' row. Drop the seed before salvage; if
+        // the corrupt DB's config cannot be salvaged, current_mode falls back
+        // to solo below and the post-salvage guard warns loudly.
+        fresh.execute("DELETE FROM config WHERE key = 'mode'", []).map_err(RepairError::Import)?;
+    }
     fresh.execute_batch("PRAGMA foreign_keys = OFF;").map_err(RepairError::Import)?;
     const MAX_CONSECUTIVE_ROW_ERRORS: usize = 100;
     let mut memories_recovered = 0usize;
     let mut decisions_recovered = 0usize;
-    for &table in DATA_TABLES {
+    for &table in &tables {
         let exists: bool = corrupt_conn
             .query_row("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1", params![table], |_| Ok(()))
             .is_ok();
@@ -289,6 +310,31 @@ pub fn auto_repair(db_path: &Path, timestamp: &str) -> Result<RepairResult, Repa
         )
         .map_err(RepairError::Import)?;
     fresh.execute_batch("VACUUM;").map_err(RepairError::Import)?;
+    // Team-mode safety net: booting in team mode with an empty users roster
+    // bricks every credential (all ctx_ keys fail, the caller-less runtime
+    // token is admin-locked), which is worse than an honest solo downgrade.
+    // If team identity did not fully survive the salvage, fall back to solo
+    // and say so loudly instead of flipping silently.
+    if corrupt_team_mode {
+        let users_survived: bool = fresh
+            .query_row("SELECT 1 FROM users LIMIT 1", [], |_| Ok(()))
+            .optional()
+            .map(|found| found.is_some())
+            .unwrap_or(false);
+        if current_mode(&fresh) != "team" || !users_survived {
+            let _ = fresh.execute(
+                "INSERT INTO config (key, value) VALUES ('mode', 'solo') ON CONFLICT(key) DO UPDATE SET value = 'solo'",
+                [],
+            );
+            eprintln!(
+                "[cortex] auto_repair: WARNING -- corrupt DB was in TEAM MODE but team identity (config/users) \
+                 could not be fully salvaged. The repaired DB starts in SOLO MODE; all team API keys are invalid. \
+                 Re-run `cortex setup --team` to recreate team mode (it will re-assign salvaged rows to the new owner). \
+                 The pre-repair file will be preserved as {}",
+                db_path.with_extension(format!("corrupt.{timestamp}")).display()
+            );
+        }
+    }
     let integrity_ok = verify_integrity(&fresh).unwrap_or(false);
     drop(fresh);
     if !integrity_ok {

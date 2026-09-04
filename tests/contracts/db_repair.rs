@@ -288,6 +288,73 @@ fn poisoned_db_boots_via_auto_repair() {
     let _ = fs::remove_dir_all(&home_dir);
 }
 
+/// Journey contract (fresh-eyes round 4, corrupt->repair leg): a team-mode
+/// database that goes through auto_repair must keep its team identity.
+/// auto_repair rebuilds the DB from initialize_schema only, which knows
+/// nothing about the team tables (config/users/teams/team_members), so before
+/// this contract the repaired DB silently came back in SOLO mode with every
+/// user credential hash destroyed -- members' ctx_ keys all died with no
+/// warning while the daemon kept serving. The repaired DB must retain
+/// mode='team', the user rows (credential hashes), and salvage-able data.
+#[test]
+fn auto_repair_preserves_team_mode_and_credentials() {
+    let home_dir = unique_temp_dir("dbrepair_team");
+    fs::create_dir_all(&home_dir).expect("create temp home");
+    let db_path = home_dir.join("cortex.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("open fresh db");
+        cortex_daemon::db::configure(&conn).expect("configure db");
+        cortex_daemon::db::initialize_schema(&conn).expect("initialize schema");
+        cortex_daemon::crystallize::migrate_crystal_tables(&conn);
+        cortex_daemon::db::create_team_mode_tables(&conn).expect("create team tables");
+        let owner_id = cortex_daemon::db::upsert_owner_user(&conn, "repair-owner", None, "hash-owner-r4")
+            .expect("seed owner user");
+        cortex_daemon::db::migrate_to_team_mode(&conn, owner_id).expect("migrate to team mode");
+        conn.execute(
+            "INSERT INTO decisions (decision, type, status) VALUES ('team salvage sentinel r4', 'decision', 'active')",
+            [],
+        )
+        .expect("seed one salvage-able decision row");
+    }
+    let corrupt_mode = {
+        let conn = rusqlite::Connection::open(&db_path).expect("reopen seeded db");
+        cortex_daemon::db::current_mode(&conn)
+    };
+    assert_eq!(
+        corrupt_mode, "team",
+        "seed must produce a team-mode DB before repair"
+    );
+
+    let result = cortex_daemon::db::auto_repair(&db_path, "gauntletr4").expect("auto_repair must succeed");
+    assert_eq!(
+        result.decisions_recovered, 1,
+        "salvage must keep the seeded decision row, got {result:?}"
+    );
+
+    let conn = rusqlite::Connection::open(&db_path).expect("open repaired db");
+    assert_eq!(
+        cortex_daemon::db::current_mode(&conn),
+        "team",
+        "auto-repair must preserve team mode -- a silent solo flip kills every member credential"
+    );
+    let (users, hash): (i64, String) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE((SELECT api_key_hash FROM users WHERE username = 'repair-owner'), '') FROM users",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("query repaired users");
+    assert_eq!(
+        users, 1,
+        "auto-repair must preserve the team user roster, got {users} users"
+    );
+    assert_eq!(
+        hash, "hash-owner-r4",
+        "auto-repair must preserve user credential hashes verbatim, got {hash:?}"
+    );
+    let _ = fs::remove_dir_all(&home_dir);
+}
+
 #[test]
 fn repair_failure_degrades_predictably() {
     let home_dir = unique_temp_dir("dbrepair_degraded");
