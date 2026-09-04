@@ -109,6 +109,11 @@ pub async fn run_admin_cli(paths: &auth::CortexPaths, args: &[String]) {
             validate_cli_options_or_exit(&args[3..], &[], &[]);
             print_daemon_error(admin_request(paths, "GET", "/admin/stats", None).await);
         }
+        // Wire truth (cortex-04h companion): no /admin/budgets/* route exists in
+        // server/router.rs and BudgetEndpoint is only used for MCP rate limiting
+        // (router.rs:172), so both subcommands 404 today. Building the surface vs
+        // removing these subcommands is tracked in
+        // cortex-admin-budgets-surface-missing-crm (removal needs Rule-1 approval).
         "budgets" => match args.get(3).map(String::as_str).unwrap_or("") {
             "status" => {
                 validate_cli_options_or_exit(&args[4..], &[], &["--json"]);
@@ -122,7 +127,25 @@ pub async fn run_admin_cli(paths: &auth::CortexPaths, args: &[String]) {
         },
         "rollback" => {
             validate_cli_options_or_exit(&args[3..], &["--session-id"], &["--apply", "--json"]);
-            print_daemon_error(admin_request(paths, "POST", "/admin/rollback", Some(serde_json::json!({}))).await);
+            let session_id = match parse_flag_value(&args[3..], "--session-id") {
+                Some(value) => value,
+                None => fail("Usage: cortex admin rollback --session-id <id> [--apply] [--json]"),
+            };
+            // Wire contract (cortex-04h): the rollback route is TOP-LEVEL
+            // /rollback (server/router.rs:59, handle_rollback), not
+            // /admin/rollback — the old path 404'd — and RollbackRequest
+            // (server/handlers.rs:91) requires the i64 field `to`, a
+            // versions.id consumed by traces::rollback_to. Forward it as a
+            // number; a non-numeric value is rejected here instead of as an
+            // opaque extractor 422. `--apply` is accepted but has NO wire
+            // field (RollbackRequest deserializes only `to`): no dry-run
+            // semantics exist on the wire, so the flag is currently
+            // accepted-and-ignored (cortex-04h close note).
+            let to: i64 = match session_id.parse() {
+                Ok(value) => value,
+                Err(_) => fail("--session-id must be an integer versions.id"),
+            };
+            print_daemon_error(admin_request(paths, "POST", "/rollback", Some(serde_json::json!({"to": to}))).await);
         }
         _ => fail("Usage: cortex admin <list-unowned|assign-owner|stats|budgets|rollback>"),
     }

@@ -905,6 +905,52 @@ async fn admin_acl_user_add_wire_payload_contract() {
     assert_eq!(user["display_name"], "CLI User", "display_name persisted from the forwarded flag");
 }
 
+/// Regression (cortex-04h): `cortex admin rollback` used to POST
+/// `/admin/rollback` (a route that does not exist anywhere in
+/// server/router.rs -> daemon 404) with an empty `{}` body that
+/// `RollbackRequest` (server/handlers.rs:91, required field `to`: i64) would
+/// reject as 422 even on the right path. The corrected CLI POSTs the
+/// TOP-LEVEL `/rollback` route (server/router.rs:59) with
+/// `{"to": <versions.id>}`. A 200 is deliberately not pinned here: asserting
+/// success would require seeding real trace versions through
+/// crate::traces, which is out of scope for this contract. Instead the
+/// corrected payload is pinned at the handler's explicit BAD_REQUEST branch
+/// (server/handlers.rs:110, `{"error": ...}` surfaced by
+/// traces::rollback_to) for an unknown version id — which simultaneously
+/// proves the route exists (a 404 would fail) and that the `{"to": N}` body
+/// passes the Json extractor — while the legacy empty-`{}` shape stays
+/// pinned as a 422 that names the missing `to` field.
+#[tokio::test]
+async fn rollback_wire_contract() {
+    let (router, admin_key) = wire_contract_router(7442, &[], |_| {}).await;
+    let router = &router;
+
+    // Legacy buggy CLI shape: empty {} body dies in the extractor.
+    let (status, raw) = raw_call(router, "POST", "/rollback", &admin_key, json!({})).await;
+    assert_eq!(status, 422, "legacy {{}} rollback body must die in the extractor, body {raw}");
+    assert!(
+        raw.contains("missing field `to`"),
+        "extractor rejection must cite the missing `to` field, body {raw}"
+    );
+
+    // Corrected CLI shape: the route exists and the body parses; the unknown
+    // version id reaches the handler and returns its explicit 400 envelope.
+    let (status, raw) = raw_call(router, "POST", "/rollback", &admin_key, json!({"to": 424242})).await;
+    assert_eq!(
+        status, 400,
+        "/rollback must exist (404 would mean the route regressed) and accept {{\"to\":N}}, body {raw}"
+    );
+    let body: Value = serde_json::from_str(&raw).expect("400 body must be the handler's JSON error envelope");
+    assert!(
+        body.get("error").and_then(Value::as_str).is_some(),
+        "400 must carry the handler's error field, body {raw}"
+    );
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("Unknown version id: 424242"),
+        "error must name the unknown version id, body {raw}"
+    );
+}
+
 #[test]
 fn admin_acl_team_mode_refuses_plain_http_at_boot() {
     let _guard = daemon_spawn_test_guard();
