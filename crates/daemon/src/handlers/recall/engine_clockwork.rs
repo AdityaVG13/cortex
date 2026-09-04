@@ -836,13 +836,19 @@ fn resolve_source<'a>(conn: &Connection, source: &'a str) -> Option<(&'a str, i6
     if let Some(id) = source.strip_prefix("decision::").and_then(|s| s.parse().ok()) {
         return Some(("decision", id));
     }
-    conn.query_row("SELECT id FROM decisions WHERE context = ?1 LIMIT 1", params![source], |row| row.get(0))
+    // cortex-7db determinism contract: context/source are not unique (the
+    // store path inserts freely and dedupes only on decision-text similarity;
+    // the indexer deliberately leaves superseded rows sharing a source), and
+    // the chosen id decides which row load_target loads. The cut must be
+    // data-defined, never SQLite-plan-defined: minimum id, matching the
+    // hop-frontier/shared-anchor tiebreak.
+    conn.query_row("SELECT id FROM decisions WHERE context = ?1 ORDER BY id ASC LIMIT 1", params![source], |row| row.get(0))
         .optional()
         .ok()
         .flatten()
         .map(|id| ("decision", id))
         .or_else(|| {
-            conn.query_row("SELECT id FROM memories WHERE source = ?1 LIMIT 1", params![source], |row| row.get(0))
+            conn.query_row("SELECT id FROM memories WHERE source = ?1 ORDER BY id ASC LIMIT 1", params![source], |row| row.get(0))
                 .optional()
                 .ok()
                 .flatten()

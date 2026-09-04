@@ -752,3 +752,65 @@ async fn contract_20_shared_anchor_link_cut_is_data_defined() {
         );
     }
 }
+
+async fn store_contextual(state: &cortex_daemon::state::RuntimeState, text: &str, context: Option<String>) -> i64 {
+    let mut conn = state.db.lock().await;
+    let (entry, id) = store_decision_with_ttl(
+        &mut conn,
+        text,
+        context,
+        Some("decision".into()),
+        AGENT.into(),
+        Some(0.9),
+        None,
+        None,
+    )
+    .unwrap_or_else(|err| panic!("store {text:?}: {err}"));
+    id.or_else(|| entry.get("id").and_then(|v| v.as_i64())).expect("stored id")
+}
+
+/// cortex-7db companion (sweep pass 46): `resolve_source` re-resolves the raw
+/// context string emitted by `entity_arm_candidates` (its SELECT is
+/// `COALESCE(d.context, 'decision::' || d.id)`) back to one concrete decision
+/// row via `WHERE context = ?1 LIMIT 1`. Context is not unique: the store path
+/// inserts freely and dedupes only on decision-text similarity, so many rows
+/// legally share one context. The chosen id decides which row `load_target`
+/// loads — identity-sensitive — so the cut must be data-defined: minimum id,
+/// matching the hop-frontier/shared-anchor tiebreak. Seeds three
+/// entity-mention holders sharing one context plus a fourth row that shares
+/// ONLY the context (no mention): the fourth row is reachable exclusively
+/// through the resolve_source lookup, so whether it surfaces in recall output
+/// is the direct observable of which row the LIMIT picked.
+#[tokio::test]
+async fn contract_21_shared_context_resolve_source_cut_is_min_id() {
+    let state = solo_state();
+    let shared = Some("ctxq7-shared-ctx".to_string());
+    let id_min = store_contextual(&state, "CTXQ-7 minrow_cqr journal wal durability", shared.clone()).await;
+    let _id_mid = store_contextual(&state, "CTXQ-7 midrow_cqr spinner render layout", shared.clone()).await;
+    let _id_new = store_contextual(&state, "CTXQ-7 newrow_cqr anchor qubit lattice", shared.clone()).await;
+    let id_ctx_only = store_contextual(&state, "gravel_prism column note", shared.clone()).await;
+    assert_eq!(id_ctx_only, id_min + 3, "seed layout: three mention holders then the context-only row");
+    {
+        let conn = state.db.lock().await;
+        // Make the index-order and rowid-order candidates disagree while every
+        // row stays recall-gate-legal: 'closed' passes the recall gates (only
+        // 'superseded'/'archived' are excluded) but sorts after 'active' in
+        // idx_decisions_context_status(context, status).
+        for row_id in id_min..id_ctx_only {
+            conn.execute("UPDATE decisions SET status = 'closed' WHERE id = ?1", [row_id])
+                .expect("close mention holder");
+        }
+    }
+    let results = recall_results(&state, "CTXQ-7", &RecallContext::solo()).await;
+    let texts = excerpts(&results);
+    assert!(
+        texts.iter().any(|t| t.contains("minrow_cqr")),
+        "mention holders must surface via the truth arm: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("gravel_prism")),
+        "resolve_source cut must be data-defined (minimum id): the context-only \
+         row must never surface; its presence means the unordered LIMIT picked \
+         id {id_ctx_only}: {texts:?}"
+    );
+}
