@@ -12,6 +12,23 @@ const ACTIVE_GATES: &str = "status NOT IN ('superseded','archived') \
  AND (valid_until IS NULL OR julianday(valid_until) > julianday('now')) \
  AND (version_id IS NULL OR version_id NOT IN (SELECT id FROM versions WHERE status = 'orphaned'))";
 
+/// Per-arm provenance markers. Each collector arm stamps the candidates it
+/// contributes to; `scored_to_item` surfaces the merged list as
+/// `clockVotes.admittedArms` in the why payload. Additive metadata only:
+/// markers never influence admission, ranking, or tie-breaking.
+const ARM_LEXICAL: &str = "lexical";
+const ARM_ANCHOR: &str = "anchor";
+const ARM_TRUTH: &str = "truth";
+const ARM_TASK: &str = "task";
+const ARM_HISTORY: &str = "history";
+const ARM_HOP: &str = "hop";
+
+fn mark_arm(arms: &mut Vec<&'static str>, arm: &'static str) {
+    if !arms.contains(&arm) {
+        arms.push(arm);
+    }
+}
+
 #[derive(Clone)]
 struct ScoredCandidate {
     target_type: String,
@@ -33,6 +50,7 @@ struct ScoredCandidate {
     use_score: i64,
     anchors: Vec<WhyAnchor>,
     links: Vec<LinkHit>,
+    arms: Vec<&'static str>,
     status: String,
     valid_from: Option<String>,
     valid_until: Option<String>,
@@ -151,8 +169,14 @@ fn scored_to_item(candidate: ScoredCandidate, frame: &QueryFrame, valid_at: &str
             target_id: candidate.target_id,
         },
     );
+    let admitted_arms =
+        Value::Array(candidate.arms.iter().map(|arm| Value::String((*arm).to_string())).collect());
     let mut item = RecallItem::new_with_why(candidate.source, relevance, candidate.excerpt, "clock-quorum".to_string());
-    item.clock_why = Some(serde_json::to_value(&why).unwrap_or_else(|_| json!({"engine":"clock-quorum"})));
+    let mut why_value = serde_json::to_value(&why).unwrap_or_else(|_| json!({"engine":"clock-quorum"}));
+    if let Some(votes) = why_value.get_mut("clockVotes").and_then(|v| v.as_object_mut()) {
+        votes.insert("admittedArms".to_string(), admitted_arms);
+    }
+    item.clock_why = Some(why_value);
     item.status = Some(candidate.status).filter(|s| !s.is_empty());
     item.valid_from = candidate.valid_from;
     item.valid_until = candidate.valid_until;
@@ -216,7 +240,9 @@ fn collect_write_arm(
             let quoted_hit = quoted && frame.quoted_phrases.iter().any(|p| hay.contains(p));
             let write = if quoted_hit || unique { 2 } else { 1 };
             let strong_lexical = write == 2;
-            upsert(out, loaded_candidate(conn, &row, 0, write, 0, 0, 0, false, strong_lexical, if write == 2 { 2 } else { 1 })?);
+            let mut candidate = loaded_candidate(conn, &row, 0, write, 0, 0, 0, false, strong_lexical, if write == 2 { 2 } else { 1 })?;
+            mark_arm(&mut candidate.arms, ARM_LEXICAL);
+            upsert(out, candidate);
         }
     }
     Ok(())
@@ -267,6 +293,7 @@ fn collect_anchor_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext
         let Some(mut row) = load_target(conn, &target.target_type, target.target_id, ctx)? else {
             continue;
         };
+        mark_arm(&mut row.arms, ARM_ANCHOR);
         let matched: Vec<_> = frame.anchors.iter().filter(|a| a.specificity >= 2).cloned().collect();
         row.hard_anchor = matched.iter().any(|a| a.specificity >= 3);
         row.write = row.write.max(if row.hard_anchor { 2 } else { 1 });
@@ -292,6 +319,7 @@ fn collect_truth_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext,
             let Some(mut row) = load_target(conn, &target_type, target_id, ctx)? else {
                 continue;
             };
+            mark_arm(&mut row.arms, ARM_TRUTH);
             row.truth = 2;
             row.hard_anchor = true;
             row.specificity = row.specificity.max(2);
@@ -307,6 +335,7 @@ fn collect_truth_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext,
             let Some(mut row) = load_target(conn, target_type, target_id, ctx)? else {
                 continue;
             };
+            mark_arm(&mut row.arms, ARM_TRUTH);
             row.truth = row.truth.max(if score >= 1.0 { 2 } else { 1 });
             if score >= 1.0 {
                 row.hard_anchor = true;
@@ -345,6 +374,7 @@ fn collect_task_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext, 
         let Some(mut row) = load_target(conn, &target.target_type, target.target_id, ctx)? else {
             continue;
         };
+        mark_arm(&mut row.arms, ARM_TASK);
         row.task = 2;
         row.hard_anchor = true;
         row.specificity = 3;
@@ -359,6 +389,7 @@ fn collect_task_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext, 
             let Some(mut row) = load_target(conn, &target.target_type, target.target_id, ctx)? else {
                 continue;
             };
+            mark_arm(&mut row.arms, ARM_TASK);
             row.task = row.task.max(1);
             upsert(out, row);
         }
@@ -443,6 +474,7 @@ fn collect_history_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContex
             use_score: 0,
             anchors: Vec::new(),
             links: Vec::new(),
+            arms: vec![ARM_HISTORY],
             status,
             valid_from,
             valid_until,
@@ -481,6 +513,7 @@ fn collect_hop_arm(conn: &Connection, frame: &QueryFrame, ctx: &RecallContext, o
         let Some(mut row) = load_target(conn, &target.target_type, target.target_id, ctx)? else {
             continue;
         };
+        mark_arm(&mut row.arms, ARM_HOP);
         row.hops = hop;
         row.write = row.write.max(1);
         row.truth = row.truth.max(1);
@@ -625,6 +658,7 @@ fn loaded_candidate(
         use_score: feedback_use_score(conn, &row.source),
         anchors: Vec::new(),
         links: Vec::new(),
+        arms: Vec::new(),
         status: row.status.clone(),
         valid_from: row.valid_from.clone(),
         valid_until: row.valid_until.clone(),
@@ -693,6 +727,7 @@ fn load_target(conn: &Connection, target_type: &str, target_id: i64, ctx: &Recal
         use_score: feedback_use_score(conn, &source),
         anchors: Vec::new(),
         links: Vec::new(),
+        arms: Vec::new(),
         status,
         valid_from,
         valid_until,
@@ -774,6 +809,9 @@ fn upsert(out: &mut HashMap<(String, i64), ScoredCandidate>, incoming: ScoredCan
                 if !existing.anchors.iter().any(|a| a.kind == anchor.kind && a.value == anchor.value) {
                     existing.anchors.push(anchor.clone());
                 }
+            }
+            for arm in &incoming.arms {
+                mark_arm(&mut existing.arms, arm);
             }
             existing.links.extend(incoming.links.iter().cloned());
             if existing.status.is_empty() {

@@ -82,6 +82,17 @@ fn why_of(results: &[Value], excerpt: &str) -> Value {
         .unwrap_or_else(|| panic!("missing why for {excerpt:?} in {results:?}"))
 }
 
+/// Per-arm provenance: `clockVotes.admittedArms` lists exactly which CQR
+/// collector arms contributed to a result, in fixed engine order.
+fn admitted_arms(why: &Value) -> Vec<String> {
+    why["clockVotes"]["admittedArms"]
+        .as_array()
+        .expect("clockVotes.admittedArms array")
+        .iter()
+        .map(|arm| arm.as_str().expect("arm marker string").to_string())
+        .collect()
+}
+
 #[test]
 fn contract_1_empty_home_no_models_dir() {
     let _guard = daemon_spawn_test_guard();
@@ -177,13 +188,15 @@ async fn contract_3_alias_login_system() {
         "generic OAuth library fact must not win, got {got:?}"
     );
     let why = why_of(&results, canonical);
-    let why_s = why.to_string().to_ascii_lowercase();
-    assert!(
-        why_s.contains("auth")
-            || why_s.contains("oauth")
-            || why_s.contains("entity")
-            || why_s.contains("login"),
-        "why must name alias/entity evidence: {why}"
+    assert_eq!(
+        admitted_arms(&why),
+        vec!["lexical", "truth"],
+        "alias recall must be admitted by exactly the lexical+entity-truth arms: {why}"
+    );
+    assert_eq!(
+        why["admittedBy"].as_str(),
+        Some("hard_anchor"),
+        "entity truth arm must hard-anchor the alias hit: {why}"
     );
 }
 
@@ -201,10 +214,20 @@ async fn contract_4_multihop_jake_postgres() {
         "multi-hop must admit Postgres decision, got {got:?}"
     );
     let why = why_of(&results, second);
-    let why_s = why.to_string();
-    assert!(
-        why_s.contains("observed_with") || why_s.contains("links"),
-        "why must show relation path: {why}"
+    assert_eq!(
+        admitted_arms(&why),
+        vec!["anchor", "truth"],
+        "graph admission must come from exactly the anchor+entity-truth arms: {why}"
+    );
+    assert_eq!(
+        why["admittedBy"].as_str(),
+        Some("hard_anchor"),
+        "entity truth arm must hard-anchor the paired decision: {why}"
+    );
+    assert_eq!(
+        why["tieBreak"]["hops"].as_u64(),
+        Some(0),
+        "pair admission is direct entity truth, not a multi-hop walk: {why}"
     );
 }
 
@@ -244,10 +267,15 @@ async fn contract_5_current_truth_and_as_of() {
         "as-of must recover the first fact, got {historical_excerpts:?}"
     );
     let why = why_of(&historical, old);
-    let why_s = why.to_string().to_ascii_lowercase();
-    assert!(
-        why_s.contains("valid") || why_s.contains("filter") || why_s.contains("supersed"),
-        "historical why must name validity/supersession: {why}"
+    assert_eq!(
+        admitted_arms(&why),
+        vec!["lexical", "anchor", "history"],
+        "as-of recovery must be admitted by exactly the lexical+anchor+history arms: {why}"
+    );
+    assert_eq!(
+        why["admittedBy"].as_str(),
+        Some("clock_quorum"),
+        "as-of recovery must admit via clock quorum, not hard anchor: {why}"
     );
 }
 
@@ -327,10 +355,15 @@ async fn contract_7_task_path_context() {
         &recall_results(&state, "reviewed scar timeout", &pay_ctx).await,
         payments,
     );
-    let why_s = why.to_string().to_ascii_lowercase();
-    assert!(
-        why_s.contains("task") || why_s.contains("path") || why_s.contains("hard"),
-        "why must name the task/path clock: {why}"
+    assert_eq!(
+        admitted_arms(&why),
+        vec!["lexical", "anchor", "truth", "task"],
+        "path context must be admitted by exactly the lexical+anchor+truth+task arms: {why}"
+    );
+    assert_eq!(
+        why["admittedBy"].as_str(),
+        Some("hard_anchor"),
+        "task path arm must hard-anchor the in-context scar: {why}"
     );
     let mut ui_ctx = RecallContext::solo();
     ui_ctx.paths.push("src/ui/**".into());
