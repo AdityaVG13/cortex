@@ -160,6 +160,25 @@ fn wire_error_bodies_are_application_json_envelopes() {
     // text/plain must still get the daemon envelope, not axum's plaintext.
     let (status, ctype, body) = raw(&daemon, "POST", "/focus/end", &wrong_type, Some(r#"{"label":"wire-envelope-probe"}"#));
     assert_json_envelope(status, &ctype, &body, 415, "POST /focus/end text/plain content-type");
+
+    // Query-string family (GET routes): axum's default `Query` extractor has
+    // the same text/plain rejection defect the Json conversion fixed — an
+    // unknown enum variant, a non-numeric integer, or a duplicate key all
+    // die in the extractor before any handler code. Round-2 RED history:
+    // every probe below leaked `text/plain; charset=utf-8` bodies.
+    let (status, ctype, body) = raw(&daemon, "GET", "/export?format=bogus", &headers, None);
+    assert_json_envelope(status, &ctype, &body, 400, "GET /export unknown format variant");
+    let (status, ctype, body) = raw(&daemon, "GET", "/recall?q=x&k=abc", &headers, None);
+    assert_json_envelope(status, &ctype, &body, 400, "GET /recall non-numeric k");
+    let (status, ctype, body) = raw(&daemon, "GET", "/unfold?sources=a&sources=b", &headers, None);
+    assert_json_envelope(status, &ctype, &body, 400, "GET /unfold duplicate sources key");
+    let (status, ctype, body) = raw(&daemon, "GET", "/boot?budget=zzz", &headers, None);
+    assert_json_envelope(status, &ctype, &body, 400, "GET /boot non-numeric budget");
+
+    // Path family: a percent-encoded invalid-UTF-8 segment dies in the
+    // `Path` extractor and must carry the envelope too.
+    let (status, ctype, body) = raw(&daemon, "GET", "/feed/%FF", &headers, None);
+    assert_json_envelope(status, &ctype, &body, 400, "GET /feed invalid-UTF-8 path segment");
 }
 
 /// Contract 2: JSON-RPC notifications get NO reply body. The daemon must

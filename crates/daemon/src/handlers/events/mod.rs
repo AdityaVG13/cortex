@@ -1,6 +1,7 @@
 use super::{ensure_events_stream_auth, json_response, now_iso, runtime_token_matches};
 use crate::state::{BrainFiringEvent, RuntimeState};
-use axum::extract::{Query, State};
+use axum::extract::State;
+use crate::handlers::Query;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};

@@ -181,10 +181,22 @@ pub fn run_restore_cli(paths: &auth::CortexPaths, args: &[String]) {
     }
     // The WAL sidecars describe the replaced database. Leaving them lets
     // SQLite replay old frames onto the restored file, so they are dropped
-    // with the file they belonged to (after the copy succeeded).
+    // with the file they belonged to (after the copy succeeded). A failed
+    // removal must NOT look like success: a stale -wal would be replayed on
+    // the next open, corrupting exactly the restore this step protects.
+    // Absent sidecars are fine (nothing to replay).
     let db_wal = sqlite_sidecar_path(&paths.db, "-wal");
     let db_shm = sqlite_sidecar_path(&paths.db, "-shm");
-    let _ = std::fs::remove_file(&db_wal);
-    let _ = std::fs::remove_file(&db_shm);
+    for sidecar in [&db_wal, &db_shm] {
+        if let Err(err) = std::fs::remove_file(sidecar) {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                continue;
+            }
+            eprintln!("[cortex] Error: failed to remove WAL sidecar {}: {err}", sidecar.display());
+            eprintln!("[cortex] The restored database is staged but NOT safe to open until this sidecar is removed manually.");
+            eprintln!("[cortex] Pre-restore backup preserved at: {}", pre_backup.display());
+            std::process::exit(1);
+        }
+    }
     println!("Restore complete. Pre-restore backup preserved at: {}", pre_backup.display());
 }

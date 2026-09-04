@@ -20,8 +20,8 @@ pub use auth::{
     ensure_events_stream_auth, ensure_ssrf_protection, log_budget_rejection, register_agent_presence, register_agent_presence_from_headers, resolve_caller_id,
     resolve_source_identity, runtime_token_matches, SourceIdentity, CORTEX_PEER_IP_HEADER,
 };
-use axum::extract::{FromRequest, Request};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::extract::{FromRequest, FromRequestParts, Request};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Response};
 use chrono::{NaiveDateTime, TimeZone, Utc};
 pub use event_log::log_event;
@@ -70,6 +70,41 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match axum::Json::<T>::from_request(req, state).await {
             Ok(axum::Json(value)) => Ok(Json(value)),
+            Err(rejection) => Err(json_response(rejection.status(), json!({"error": rejection.body_text()}))),
+        }
+    }
+}
+/// Query-string extractor with the daemon-contract error envelope (same wire
+/// contract as [`Json`], which only covered body parsing). axum's default
+/// `Query` extractor answers deserialization failures — unknown enum variant,
+/// non-numeric integer, duplicate key — with a `text/plain` body. This
+/// wrapper preserves the rejection status and re-wraps the message.
+pub struct Query<T>(pub T);
+impl<S, T> FromRequestParts<S> for Query<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(Query(value)),
+            Err(rejection) => Err(json_response(rejection.status(), json!({"error": rejection.body_text()}))),
+        }
+    }
+}
+/// Path extractor with the daemon-contract error envelope: axum's default
+/// rejects invalid percent-decoding or type mismatches with `text/plain`.
+pub struct Path<T>(pub T);
+impl<S, T> FromRequestParts<S> for Path<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Path(value)) => Ok(Path(value)),
             Err(rejection) => Err(json_response(rejection.status(), json!({"error": rejection.body_text()}))),
         }
     }

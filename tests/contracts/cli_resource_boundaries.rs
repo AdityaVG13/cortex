@@ -173,6 +173,50 @@ fn restore_drops_wal_sidecars_of_replaced_database() {
 }
 
 #[test]
+fn restore_fails_loudly_when_wal_sidecar_cannot_be_removed() {
+    // The sidecar drop exists so SQLite cannot replay stale frames onto the
+    // restored file. A removal failure (permissions, watcher holding the
+    // file) must NOT surface as "Restore complete." — pre-fix the drops were
+    // `let _ =` swallowed, so a failed removal reported success while the
+    // next daemon open would replay stale WAL over the restore. A directory
+    // at the sidecar path makes remove_file fail on every platform.
+    let home = unique_temp_home("restore-wal-stuck");
+    fs::write(home.join("cortex.db"), b"old-db").expect("write db");
+    fs::create_dir(home.join("cortex.db-wal")).expect("create wal-dir blocker");
+    let backup = home.join("backup.db");
+    fs::write(&backup, b"restored-bytes").expect("write backup");
+
+    let output = run_bin(
+        &["restore", backup.to_str().expect("utf-8 backup")],
+        &home,
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "restore must fail loudly when a WAL sidecar cannot be removed; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("cortex.db-wal"),
+        "failure must name the sidecar it could not remove; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        fs::read(home.join("cortex.db")).expect("read db"),
+        b"restored-bytes",
+        "the database copy itself precedes the sidecar drop and must still have happened"
+    );
+    let pre_restore = fs::read_dir(&home)
+        .expect("list home")
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with("cortex.pre-restore."))
+        .unwrap_or_else(|| panic!("pre-restore backup must be preserved on sidecar-drop failure; home: {}", home.display()));
+    assert!(
+        pre_restore.metadata().expect("backup meta").len() > 0,
+        "pre-restore backup must not be empty"
+    );
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
 fn migrate_honors_home_flag_over_env_home() {
     let env_home = unique_temp_home("mig-env");
     let flag_home = unique_temp_home("mig-flag");

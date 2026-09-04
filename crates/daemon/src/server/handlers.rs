@@ -1,6 +1,7 @@
 use crate::handlers;
 use crate::state::RuntimeState;
 use axum::extract::State;
+use crate::handlers::Query;
 use axum::http::HeaderMap;
 // The daemon-contract envelope extractor (handlers::Json), not axum's
 // default: /rollback, /focus/start and /focus/end take JSON bodies and must
@@ -118,7 +119,7 @@ pub(crate) struct EntitiesQuery {
     q: Option<String>,
 }
 pub(crate) async fn handle_entities(
-    State(state): State<RuntimeState>, headers: HeaderMap, axum::extract::Query(query): axum::extract::Query<EntitiesQuery>,
+    State(state): State<RuntimeState>, headers: HeaderMap, Query(query): Query<EntitiesQuery>,
 ) -> axum::response::Response {
     if let Err(resp) = handlers::ensure_auth_rated(&headers, &state).await {
         return resp;
