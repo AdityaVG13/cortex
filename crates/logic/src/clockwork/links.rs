@@ -234,12 +234,19 @@ fn link_shared_strong_anchors(
     trace_id: Option<i64>,
 ) -> rusqlite::Result<()> {
     for anchor in anchors.iter().filter(|a| a.specificity >= 2) {
+        // cortex-7db determinism contract: this LIMIT decides which clock
+        // links exist, so the cut must be data-defined, never SQLite-plan
+        // defined. The order is total: specificity is constant for a fixed
+        // (kind, value) because clock_anchors has UNIQUE(kind, value), so
+        // evidence_count is the strength signal, and (target_type, target_id,
+        // origin) is the clock_anchor_evidence PK tail.
         let mut stmt = conn.prepare_cached(
             "SELECT e.target_type, e.target_id
              FROM clock_anchor_evidence e
              JOIN clock_anchors a ON a.id = e.anchor_id
              WHERE a.kind = ?1 AND a.value = ?2
                AND NOT (e.target_type = ?3 AND e.target_id = ?4)
+             ORDER BY e.evidence_count DESC, e.target_type ASC, e.target_id ASC, e.origin ASC
              LIMIT 8",
         )?;
         let rows = stmt.query_map(
@@ -436,12 +443,22 @@ pub fn traverse_hops(
             if *depth >= max_hops {
                 continue;
             }
+            // cortex-7db determinism contract: this LIMIT decides BFS frontier
+            // membership, so the cut must be data-defined. It mirrors the
+            // quorum compare_rank_keys shape: strongest link first, then
+            // target_type/target_id ASC. The order is total over the union:
+            // relation completes the clock_links PK tail, and a row cannot
+            // appear in both halves because src == dst rows are never written
+            // (upsert_link refuses self-links).
             let mut stmt = conn.prepare_cached(
-                "SELECT dst_type, dst_id FROM clock_links
+                "SELECT dst_type AS t_type, dst_id AS t_id, evidence_count AS strength, relation AS rel
+                 FROM clock_links
                  WHERE src_type = ?1 AND src_id = ?2 AND status != 'rejected'
                  UNION ALL
-                 SELECT src_type, src_id FROM clock_links
+                 SELECT src_type, src_id, evidence_count, relation
+                 FROM clock_links
                  WHERE dst_type = ?1 AND dst_id = ?2 AND status != 'rejected'
+                 ORDER BY strength DESC, t_type ASC, t_id ASC, rel ASC
                  LIMIT 16",
             )?;
             let rows = stmt.query_map(params![seed.target_type, seed.target_id], |row| {

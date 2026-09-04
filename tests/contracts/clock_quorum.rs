@@ -2,7 +2,8 @@
 mod support;
 
 use cortex_daemon::clockwork::{
-    parse_query_frame, rebuild_clock_projections, record_used_with, reject_used_with, ClockTarget,
+    parse_query_frame, project_target, rebuild_clock_projections, record_used_with,
+    reject_used_with, traverse_hops, ClockOrigin, ClockTarget,
 };
 
 use cortex_daemon::handlers::recall::{execute_unified_recall, RecallContext};
@@ -646,4 +647,108 @@ async fn contract_18_honest_miss_still_holds() {
         results.is_empty() || excerpts(&results).iter().all(|e| !e.contains("almonds")),
         "bridge expansion must not admit snack policy: {results:?}"
     );
+}
+
+/// cortex-7db: the hop-frontier `LIMIT 16` cut decides BFS frontier
+/// membership, so it must be data-defined, not SQLite-plan-defined. Seeds 24
+/// equal-strength used_with links into a hub and boosts two to strength 3;
+/// the exact frontier must be strongest-link-first (evidence_count DESC) with
+/// (target_type, target_id) ASC tiebreaks, mirroring compare_rank_keys. Under
+/// the old unordered LIMIT this exact selection was plan-defined (a SQLite
+/// upgrade or ANALYZE could permute it with no data change).
+#[tokio::test]
+async fn contract_19_hop_frontier_cut_is_data_defined() {
+    let state = solo_state();
+    let hub = ClockTarget {
+        target_type: "decision".into(),
+        target_id: 100,
+    };
+    let neighbors = |id: i64| ClockTarget {
+        target_type: "decision".into(),
+        target_id: id,
+    };
+    {
+        let conn = state.db.lock().await;
+        for neighbor_id in 1..=24i64 {
+            record_used_with(&conn, &hub, &neighbors(neighbor_id), None)
+                .unwrap_or_else(|err| panic!("used_with {neighbor_id}: {err}"));
+        }
+        // Two links raised to strength 3: they must outrank every strength-1
+        // row regardless of target id.
+        for boosted in [21i64, 24] {
+            for _ in 0..2 {
+                record_used_with(&conn, &hub, &neighbors(boosted), None)
+                    .unwrap_or_else(|err| panic!("boost {boosted}: {err}"));
+            }
+        }
+        let hops = traverse_hops(&conn, &[hub], 1, 1000).expect("traverse_hops");
+        let ids: Vec<i64> = hops.iter().map(|(target, _)| target.target_id).collect();
+        assert_eq!(
+            ids,
+            vec![100, 21, 24, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+            "frontier cut must be strongest-link-first with lowest-id tiebreak, got {ids:?}"
+        );
+        for (index, (target, hop)) in hops.iter().enumerate() {
+            assert_eq!(target.target_type, "decision", "unexpected target {target:?}");
+            assert_eq!(
+                hop,
+                &(if index == 0 { 0 } else { 1 }),
+                "seed must be hop 0 and every survivor hop 1: {hops:?}"
+            );
+        }
+    }
+}
+
+/// cortex-7db: the shared-strong-anchor `LIMIT 8` cut decides which clock
+/// links get created, so it must be data-defined. Twelve decisions share one
+/// specificity-3 symbol with equal evidence_count; the thirteenth (hub) must
+/// link to exactly the 8 lowest target ids. Under the old unordered LIMIT the
+/// surviving 8 were plan-defined.
+#[tokio::test]
+async fn contract_20_shared_anchor_link_cut_is_data_defined() {
+    let state = solo_state();
+    {
+        let conn = state.db.lock().await;
+        for sharer_id in 1..=12i64 {
+            project_target(
+                &conn,
+                &format!("hop cut probe ZZHOP41::anchorlim sharer {sharer_id}"),
+                &[],
+                "decision",
+                sharer_id,
+                ClockOrigin::DeterministicExtract,
+                None,
+            )
+            .unwrap_or_else(|err| panic!("project sharer {sharer_id}: {err}"));
+        }
+        project_target(
+            &conn,
+            "hop cut probe ZZHOP41::anchorlim hub",
+            &[],
+            "decision",
+            100,
+            ClockOrigin::DeterministicExtract,
+            None,
+        )
+        .unwrap_or_else(|err| panic!("project hub: {err}"));
+        let mut stmt = conn
+            .prepare(
+                "SELECT src_id FROM clock_links
+                 WHERE relation = 'same_symbol'
+                   AND src_type = 'decision' AND dst_type = 'decision'
+                   AND dst_id = 100
+                 ORDER BY src_id ASC",
+            )
+            .expect("link query");
+        let linked: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))
+            .expect("link rows")
+            .flatten()
+            .collect();
+        assert_eq!(
+            linked,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            "symbol link cut must take the 8 strongest (ties: lowest target ids), got {linked:?}"
+        );
+    }
 }
